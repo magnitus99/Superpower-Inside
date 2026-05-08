@@ -148,6 +148,12 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   app: App;
   settings: SuperObsidianSettings;
   saveSettings(): Promise<void>;
+  eventDrivenRagStats?: {
+    totalFiles: number;
+    indexedFiles: number;
+    pendingFiles: number;
+    totalVectors: number;
+  } | null;
 }
 
 // Tab Types and Configuration
@@ -181,6 +187,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
   private saveTimeout: ReturnType<typeof setTimeout> | null = null;
   private pendingSave = false;
+
+  private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
+  private pendingEmbeddingModel: string | null = null;
 
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
@@ -216,6 +225,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
 
   hide(): void {
+    if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
+      this.pendingEmbeddingProvider = null;
+      this.pendingEmbeddingModel = null;
+      new Notice('임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)');
+    }
     this.flushSave();
     super.hide();
   }
@@ -397,11 +411,23 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '임베딩 프로바이더' });
 
     const rag = this.plugin.settings.rag;
-    const modelsForProvider = EMBEDDING_MODELS[rag.embeddingProvider];
-    const isOther = rag.embeddingProvider === 'other';
+
+    const effectiveProvider = this.pendingEmbeddingProvider ?? rag.embeddingProvider;
+    const effectiveModel = this.pendingEmbeddingModel ?? rag.embeddingModel;
+
+    const modelsForProvider = EMBEDDING_MODELS[effectiveProvider];
+    const isOther = effectiveProvider === 'other';
+    const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
 
     const providerNotice = section.createDiv({ cls: 'super-obsidian-model-description' });
     providerNotice.setText('API 키는 Providers 탭에서 설정한 값을 사용합니다. 여기서는 임베딩 전용 모델만 선택하세요.');
+
+    if (isPending) {
+      const warningEl = section.createDiv({ cls: 'super-obsidian-settings-warning' });
+      warningEl.setText('⚠️ 임베딩 프로바이더/모델 변경은 자동으로 저장되지 않습니다. "저장" 버튼을 클릭해야 적용됩니다. 변경 시 기존 임베딩 데이터가 삭제되지 않습니다. 새 모델을 모든 데이터에 적용하려면 "전체 재인덱싱"을 실행하세요.');
+      warningEl.style.marginBottom = '12px';
+      warningEl.style.whiteSpace = 'normal';
+    }
 
     new Setting(section)
       .setName('Provider')
@@ -410,17 +436,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         for (const [key, label] of Object.entries(EMBEDDING_PROVIDER_LABELS)) {
           dropdown.addOption(key, label);
         }
-        dropdown.setValue(rag.embeddingProvider);
+        dropdown.setValue(effectiveProvider);
         dropdown.onChange((value) => {
-          rag.embeddingProvider = value as EmbeddingProviderKey;
+          this.pendingEmbeddingProvider = value as EmbeddingProviderKey;
           const newModels = EMBEDDING_MODELS[value as EmbeddingProviderKey];
           if (newModels.length > 0) {
-            rag.embeddingModel = newModels[0].id;
+            this.pendingEmbeddingModel = newModels[0].id;
           } else {
-            rag.embeddingModel = '';
+            this.pendingEmbeddingModel = '';
           }
-          this.debouncedSave();
-          section.empty();
+          section.remove();
           this.buildEmbeddingProviderSection(containerEl);
         });
       });
@@ -431,11 +456,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         .setDesc('임베딩 모델 ID를 직접 입력하세요')
         .addText((text) =>
           text
-            .setValue(rag.embeddingModel)
+            .setValue(effectiveModel)
             .setPlaceholder('예: my-custom-model')
             .onChange((value) => {
-              rag.embeddingModel = value.trim();
-              this.debouncedSave();
+              this.pendingEmbeddingModel = value.trim();
             }),
         );
     } else if (modelsForProvider.length > 0) {
@@ -446,20 +470,48 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           for (const model of modelsForProvider) {
             dropdown.addOption(model.id, `${model.name} (${model.dimensions}차원)`);
           }
-          dropdown.setValue(rag.embeddingModel);
+          dropdown.setValue(effectiveModel);
           dropdown.onChange((value) => {
-            rag.embeddingModel = value;
-            this.debouncedSave();
-            const selected = modelsForProvider.find((m) => m.id === value);
-            if (selected && descEl) {
-              descEl.setText(selected.description);
-            }
+            this.pendingEmbeddingModel = value;
+            section.remove();
+            this.buildEmbeddingProviderSection(containerEl);
           });
         });
 
-      const selectedModel = modelsForProvider.find((m) => m.id === rag.embeddingModel);
+      const selectedModel = modelsForProvider.find((m) => m.id === effectiveModel);
       const descEl = section.createDiv({ cls: 'super-obsidian-model-description' });
       descEl.setText(selectedModel?.description ?? '');
+    }
+
+    if (isPending) {
+      const btnRow = section.createDiv({ cls: 'super-obsidian-rag-controls' });
+      btnRow.style.marginTop = '8px';
+
+      const saveBtn = btnRow.createEl('button', { text: '저장' });
+      saveBtn.addEventListener('click', () => {
+        void (async () => {
+          if (this.pendingEmbeddingProvider !== null) {
+            rag.embeddingProvider = this.pendingEmbeddingProvider;
+          }
+          if (this.pendingEmbeddingModel !== null) {
+            rag.embeddingModel = this.pendingEmbeddingModel;
+          }
+          this.pendingEmbeddingProvider = null;
+          this.pendingEmbeddingModel = null;
+          await this.plugin.saveSettings();
+          new Notice('임베딩 설정이 저장되었습니다.');
+          section.remove();
+          this.buildEmbeddingProviderSection(containerEl);
+        })();
+      });
+
+      const cancelBtn = btnRow.createEl('button', { text: '취소' });
+      cancelBtn.addEventListener('click', () => {
+        this.pendingEmbeddingProvider = null;
+        this.pendingEmbeddingModel = null;
+        section.remove();
+        this.buildEmbeddingProviderSection(containerEl);
+      });
     }
 
     const statusEl = section.createDiv({ cls: 'super-obsidian-connection-status' });
@@ -473,13 +525,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           statusEl.setText('🔄 Testing...');
 
           try {
-            const config = rag.embeddingProvider === 'other'
+            const config = effectiveProvider === 'other'
               ? null
-              : this.plugin.settings[rag.embeddingProvider as ProviderKey];
+              : this.plugin.settings[effectiveProvider as ProviderKey];
             const { validateEmbeddingConnection } = await import('./llm/validation');
             const result = await validateEmbeddingConnection(
-              rag.embeddingProvider,
-              rag.embeddingModel,
+              effectiveProvider,
+              effectiveModel,
               config ?? { apiKey: '', models: [], enabled: false },
             );
 
@@ -525,14 +577,28 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const rag = this.plugin.settings.rag;
     const vault = this.plugin.app.vault;
 
-    // Total files
+    if (this.plugin.eventDrivenRagStats) {
+      const cache = this.plugin.eventDrivenRagStats;
+      const stats = [
+        { value: String(cache.totalFiles), label: '전체 파일', desc: '볼트 내 마크다운 파일 수' },
+        { value: String(cache.indexedFiles), label: '인덱싱 완료', desc: '임베딩 처리된 파일 수' },
+        { value: String(cache.pendingFiles), label: '대기 중', desc: '아직 인덱싱되지 않은 파일 수' },
+        { value: String(cache.totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
+      ];
+      for (const stat of stats) {
+        const card = gridEl.createDiv({ cls: 'super-obsidian-stat-card' });
+        card.createDiv({ cls: 'super-obsidian-stat-value', text: stat.value });
+        card.createDiv({ cls: 'super-obsidian-stat-label', text: stat.label });
+        card.createDiv({ cls: 'super-obsidian-stat-desc', text: stat.desc });
+      }
+      return;
+    }
     const { getMarkdownFilesFiltered } = await import('./utils/vault');
     const allFiles = getMarkdownFilesFiltered(vault, rag.excludePaths).filter(
       (f) => !isExcludedExt(f.path, rag.excludeExts),
     );
     const totalFiles = allFiles.length;
 
-    // Indexed files and vectors (from plugin's vector store)
     let indexedFiles = 0;
     let totalVectors = 0;
     const p = this.plugin as unknown as { vectorStore?: VectorStore };
@@ -560,6 +626,38 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     }
   }
 
+  refreshStats(): void {
+    const ragPanel = this.tabPanels.get('rag');
+    if (!ragPanel) return;
+    const grid = ragPanel.querySelector('.super-obsidian-stats-grid');
+    if (!grid || !(grid instanceof HTMLElement)) return;
+    grid.empty();
+    void this.renderStats(grid);
+  }
+
+  private diagnoseRAGInitFailure(): string {
+    const rag = this.plugin.settings.rag;
+    const providerKey = rag.embeddingProvider;
+
+    if (providerKey !== 'other') {
+      const config = this.plugin.settings[providerKey as ProviderKey];
+      if (!config?.enabled) {
+        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 Enabled 토글을 켜주세요.`;
+      }
+      if (!config.apiKey.trim()) {
+        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 API Key를 입력하세요.`;
+      }
+      if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+        return `임베딩 모델이 선택되지 않았습니다. Embedding Provider 섹션에서 모델을 선택하고 "저장" 버튼을 클릭하세요.`;
+      }
+    } else {
+      if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+        return `임베딩 모델 ID를 직접 입력하고 "저장" 버튼을 클릭하세요.`;
+      }
+    }
+    return `프로바이더 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
+  }
+
   private buildControlsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
     section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 제어' });
@@ -572,7 +670,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       btn.addEventListener('click', () => {
         void (async () => {
           if (!hasIndexer) {
-            new Notice('RAG 인덱서가 초기화되지 않았습니다.');
+            new Notice('RAG 인덱서가 초기화되지 않았습니다. ' + this.diagnoseRAGInitFailure());
             return;
           }
           new Notice('대기 중인 파일 인덱싱 시작...');
@@ -591,7 +689,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       btn.addEventListener('click', () => {
         void (async () => {
           if (!hasIndexer) {
-            new Notice('RAG 인덱서가 초기화되지 않았습니다.');
+            new Notice('RAG 인덱서가 초기화되지 않았습니다. ' + this.diagnoseRAGInitFailure());
             return;
           }
           new Notice('전체 재인덱싱 시작...');

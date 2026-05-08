@@ -18,6 +18,7 @@ import {
 } from './src/llm/embedding';
 import { JsonFileVectorStore, type VectorStore } from './src/rag/store';
 import { VaultIndexer, registerModifyEvent } from './src/rag/indexer';
+import { isExcludedExt } from './src/utils/vault';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { saveChat, type ChatMessage } from './src/chat/persistence';
@@ -35,6 +36,15 @@ export default class SuperObsidianPlugin extends Plugin {
   private mcpRegistry: MCPRegistry | null = null;
   private modifyCleanup: (() => void) | null = null;
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+
+  // 실시간 통계 캐시 (이벤트 기반 업데이트)
+  eventDrivenRagStats: {
+    totalFiles: number;
+    indexedFiles: number;
+    pendingFiles: number;
+    totalVectors: number;
+  } | null = null;
+  private statsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -62,7 +72,22 @@ export default class SuperObsidianPlugin extends Plugin {
       name: 'Reindex Vault for RAG',
       callback: async () => {
         if (!this.vaultIndexer) {
-          new Notice('RAG 인덱서가 초기화되지 않았습니다.');
+          const rag = this.settings.rag;
+          const providerKey = rag.embeddingProvider;
+          let reason = 'RAG 인덱서가 초기화되지 않았습니다.';
+          if (providerKey !== 'other') {
+            const config = this.settings[providerKey as ProviderKey];
+            if (!config?.enabled) {
+              reason += ` Providers 탭에서 "${providerKey}"의 Enabled 토글을 켜주세요.`;
+            } else if (!config.apiKey.trim()) {
+              reason += ` Providers 탭에서 "${providerKey}"의 API Key를 입력하세요.`;
+            } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+              reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
+            } else {
+              reason += ` "${providerKey}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
+            }
+          }
+          new Notice(reason);
           return;
         }
         new Notice('볼트 인덱싱 시작...');
@@ -96,7 +121,7 @@ export default class SuperObsidianPlugin extends Plugin {
         this.app.vault,
         this.vaultIndexer,
         () => {
-          // 자동 재인덱싱 완료 (조용히)
+          this.debouncedRefreshStats();
         },
       );
     }
@@ -225,7 +250,53 @@ export default class SuperObsidianPlugin extends Plugin {
     }
   }
 
+  private debouncedRefreshStats(): void {
+    if (this.statsDebounceTimer) {
+      clearTimeout(this.statsDebounceTimer);
+    }
+    this.statsDebounceTimer = setTimeout(() => {
+      void this.refreshStats();
+    }, 500);
+  }
+
+  private async refreshStats(): Promise<void> {
+    if (!this.vectorStore) return;
+    try {
+      const rag = this.settings.rag;
+      const { getMarkdownFilesFiltered } = await import('./src/utils/vault');
+      const allFiles = getMarkdownFilesFiltered(this.app.vault, rag.excludePaths).filter(
+        (f) => !isExcludedExt(f.path, rag.excludeExts),
+      );
+      const totalFiles = allFiles.length;
+
+      const indexedPaths = await this.vectorStore.getIndexedFilePaths();
+      const indexedFiles = indexedPaths.length;
+
+      const stats = await this.vectorStore.getStats();
+      const totalVectors = stats.totalEntries;
+
+      this.eventDrivenRagStats = {
+        totalFiles,
+        indexedFiles,
+        pendingFiles: Math.max(0, totalFiles - indexedFiles),
+        totalVectors,
+      };
+
+      const appWithSetting = this.app as unknown as { setting?: { activeTab?: { refreshStats?(): void } } };
+      if (appWithSetting.setting?.activeTab?.refreshStats) {
+        appWithSetting.setting.activeTab.refreshStats();
+      }
+    } catch {
+      /* empty */
+    }
+  }
+
   private initRAG(): void {
+    // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
+    // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
+    // button or "Reindex All" command). Re-initializing RAG with a new provider/model must
+    // preserve existing vector store data so users can incrementally reindex.
+
     // Clear any existing timer
     this.clearRAG();
 
