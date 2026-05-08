@@ -93,8 +93,25 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   pluginAwareEnabled: false,
 };
 
+// Tab Types and Configuration
+type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
+
+const TABS: { id: SettingsTabId; label: string }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'providers', label: 'Providers' },
+  { id: 'rag', label: 'RAG' },
+  { id: 'chat', label: 'Chat' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'advanced', label: 'Advanced' },
+];
+
 export class SuperObsidianSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
+  
+  // Tab Management Properties
+  private activeTab: SettingsTabId = 'general';
+  private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
+  private tabPanels: Map<SettingsTabId, HTMLDivElement> = new Map();
 
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
@@ -104,24 +121,115 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-
+    
+    // Header
     containerEl.createEl('h2', { text: 'Super Obsidian by AI — Settings' });
-
+    
+    // Security Warning
     const warning = containerEl.createDiv({
       cls: 'super-obsidian-settings-warning',
     });
     warning.setText(
       'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
     );
+    
+    // Tab Bar
+    const tabBar = containerEl.createDiv({ cls: 'super-obsidian-settings-tabs' });
+    TABS.forEach(tab => {
+      const button = tabBar.createEl('button', { 
+        text: tab.label, 
+        cls: 'super-obsidian-settings-tab' 
+      });
+      this.tabButtons.set(tab.id, button);
+      button.addEventListener('click', () => this.switchTab(tab.id));
+    });
+    
+    // Tab Content Panels
+    const tabContentContainer = containerEl.createDiv();
+    TABS.forEach(tab => {
+      const panel = tabContentContainer.createDiv({ 
+        cls: 'super-obsidian-settings-tab-content' 
+      });
+      this.tabPanels.set(tab.id, panel);
+      
+      // Build content for each tab
+      switch (tab.id) {
+        case 'general':
+          this.buildGeneralTab(panel);
+          break;
+        case 'providers':
+          this.buildProvidersTab(panel);
+          break;
+        case 'rag':
+          this.buildRAGTab(panel);
+          break;
+        case 'chat':
+          this.buildChatTab(panel);
+          break;
+        case 'mcp':
+          this.buildMCPTab(panel);
+          break;
+        case 'advanced':
+          this.buildAdvancedTab(panel);
+          break;
+      }
+    });
+    
+    // Initialize first tab as active
+    this.switchTab(this.activeTab);
+  }
 
-    containerEl.createEl('h3', { text: 'LLM Providers' });
+  private switchTab(tabId: SettingsTabId): void {
+    // Update active tab
+    this.activeTab = tabId;
+    
+    // Toggle classes on buttons
+    this.tabButtons.forEach((button, id) => {
+      if (id === tabId) {
+        button.classList.add('is-active');
+      } else {
+        button.classList.remove('is-active');
+      }
+    });
+    
+    // Toggle classes on panels
+    this.tabPanels.forEach((panel, id) => {
+      if (id === tabId) {
+        panel.classList.add('is-active');
+      } else {
+        panel.classList.remove('is-active');
+      }
+    });
+  }
+  
+  private buildGeneralTab(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName('Default LLM Provider')
+      .setDesc('Default provider for chat and commands')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('openai', 'OpenAI')
+          .addOption('claude', 'Claude')
+          .addOption('ollama', 'Ollama (Local)')
+          .addOption('ollamaCloud', 'Ollama (Cloud)')
+          .addOption('openRouter', 'OpenRouter')
+          .setValue(this.plugin.settings.chat.defaultProvider)
+          .onChange(async (value) => {
+            this.plugin.settings.chat.defaultProvider = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+  }
+  
+  private buildProvidersTab(containerEl: HTMLElement): void {
     this.buildProviderSettings(containerEl, 'OpenAI', 'openai');
     this.buildProviderSettings(containerEl, 'Claude (Anthropic)', 'claude');
     this.buildProviderSettings(containerEl, 'Ollama (Local)', 'ollama');
     this.buildProviderSettings(containerEl, 'Ollama (Cloud)', 'ollamaCloud');
     this.buildProviderSettings(containerEl, 'OpenRouter', 'openRouter');
-
-    containerEl.createEl('h3', { text: 'RAG (Vault Indexing)' });
+  }
+  
+  private buildRAGTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName('Exclude Paths')
       .setDesc('Folders to exclude from indexing, comma-separated')
@@ -179,8 +287,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
-
-    containerEl.createEl('h3', { text: 'Chat' });
+  }
+  
+  private buildChatTab(containerEl: HTMLElement): void {
+    // Chat settings - currently only save folder is implemented
     new Setting(containerEl)
       .setName('Chat Save Folder')
       .setDesc('Vault folder path to save conversations')
@@ -192,29 +302,14 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
-
-    new Setting(containerEl)
-      .setName('Default LLM Provider')
-      .setDesc('Default provider for chat and commands')
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('openai', 'OpenAI')
-          .addOption('claude', 'Claude')
-          .addOption('ollama', 'Ollama (Local)')
-          .addOption('ollamaCloud', 'Ollama (Cloud)')
-          .addOption('openRouter', 'OpenRouter')
-          .setValue(this.plugin.settings.chat.defaultProvider)
-          .onChange(async (value) => {
-            this.plugin.settings.chat.defaultProvider = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    containerEl.createEl('h3', { text: 'MCP Servers' });
+  }
+  
+  private buildMCPTab(containerEl: HTMLElement): void {
     const mcpSection = containerEl.createDiv();
     this.buildMCPList(mcpSection);
-
-    containerEl.createEl('h3', { text: 'Plugin Compatibility' });
+  }
+  
+  private buildAdvancedTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName('Enable Plugin-Aware Generation')
       .setDesc(
@@ -229,7 +324,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
   }
-
+  
   private buildProviderSettings(
     containerEl: HTMLElement,
     label: string,

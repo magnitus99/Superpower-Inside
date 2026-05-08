@@ -138,3 +138,41 @@
   margin-bottom: 8px;
   color: var(--text-normal);
 }
+
+/* Tab Navigation */
+.super-obsidian-settings-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin: 12px 0 16px;
+}
+
+.super-obsidian-settings-tab {
+  padding: 6px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.super-obsidian-settings-tab:hover {
+  color: var(--text-normal);
+}
+
+.super-obsidian-settings-tab.is-active {
+  color: var(--text-normal);
+  font-weight: 600;
+  border-bottom-color: var(--interactive-accent);
+}
+
+.super-obsidian-settings-tab-content {
+  display: none;
+}
+
+.super-obsidian-settings-tab-content.is-active {
+  display: block;
+}
