@@ -333,6 +333,14 @@ function normalizeOllamaBaseUrl(baseUrl: string): string {
   return url.replace(/\/+$/, '');
 }
 
+function normalizeOpenRouterBaseUrl(baseUrl: string): string {
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  if (!url.endsWith('/api')) {
+    url = url + '/api';
+  }
+  return url;
+}
+
 /* ---------- Provider Factory ---------- */
 
 export type ProviderKey = 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
@@ -351,7 +359,7 @@ export function createProvider(
     case 'ollamaCloud':
       return new OllamaProvider(config, modelOverride);
     case 'openRouter': {
-      const url = config.baseUrl ?? 'https://openrouter.ai/api';
+      const url = normalizeOpenRouterBaseUrl(config.baseUrl ?? 'https://openrouter.ai/api');
       return new OpenAICompatibleProvider(
         config,
         `${url}/v1/chat/completions`,
