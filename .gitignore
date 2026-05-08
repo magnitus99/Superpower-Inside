@@ -61,6 +61,3 @@ temp/
 # --- OMO ---
 .sisyphus/
 
-# --- Feature Request ---
-# 에이전트에게 명령할 것들을 정리 해 두는 문서들입니다.
-feature*.md
