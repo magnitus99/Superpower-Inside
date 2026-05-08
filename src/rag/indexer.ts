@@ -157,6 +157,29 @@ export class VaultIndexer {
     await this.vectorStore.clear();
     return this.indexVault();
   }
+
+  async indexPending(): Promise<{ indexed: number; skipped: number }> {
+    const files = getMarkdownFilesFiltered(this.vault, [
+      ...this.ragConfig.excludePaths,
+    ]).filter((f) => !isExcludedExt(f.path, this.ragConfig.excludeExts));
+
+    const indexedPaths = await this.vectorStore.getIndexedFilePaths();
+    const indexedSet = new Set(indexedPaths);
+
+    let indexed = 0;
+    let skipped = 0;
+
+    for (const file of files) {
+      if (indexedSet.has(file.path)) {
+        skipped++;
+        continue;
+      }
+      await this.indexFile(file);
+      indexed++;
+    }
+
+    return { indexed, skipped };
+  }
 }
 
 /** 파일 변경 이벤트를 등록하여 자동 재인덱싱합니다. */

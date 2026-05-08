@@ -12,11 +12,21 @@ export interface VectorEntry {
   };
 }
 
+export interface VectorStoreStats {
+  totalEntries: number;
+  totalFiles: number;
+  totalVectors: number;
+  averageVectorsPerFile: number;
+  lastUpdated: number | null;
+}
+
 export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
   query(vector: number[], topK: number): Promise<VectorEntry[]>;
   clear(): Promise<void>;
   persist(): Promise<void>;
+  getStats(): Promise<VectorStoreStats>;
+  getIndexedFilePaths(): Promise<string[]>;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -88,6 +98,24 @@ export class JsonFileVectorStore implements VectorStore {
       this.entries = data as VectorEntry[];
     }
   }
+
+  async getStats(): Promise<VectorStoreStats> {
+    await this.loadIfNeeded();
+    const uniqueFiles = new Set(this.entries.map((e) => e.metadata.filePath));
+    const totalFiles = uniqueFiles.size;
+    return {
+      totalEntries: this.entries.length,
+      totalFiles,
+      totalVectors: this.entries.length,
+      averageVectorsPerFile: totalFiles > 0 ? this.entries.length / totalFiles : 0,
+      lastUpdated: this.entries.length > 0 ? Date.now() : null,
+    };
+  }
+
+  async getIndexedFilePaths(): Promise<string[]> {
+    await this.loadIfNeeded();
+    return [...new Set(this.entries.map((e) => e.metadata.filePath))];
+  }
 }
 
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
@@ -123,5 +151,21 @@ export class MemoryVectorStore implements VectorStore {
 
   async persist(): Promise<void> {
     // no-op
+  }
+
+  getStats(): Promise<VectorStoreStats> {
+    const uniqueFiles = new Set(this.entries.map((e) => e.metadata.filePath));
+    const totalFiles = uniqueFiles.size;
+    return Promise.resolve({
+      totalEntries: this.entries.length,
+      totalFiles,
+      totalVectors: this.entries.length,
+      averageVectorsPerFile: totalFiles > 0 ? this.entries.length / totalFiles : 0,
+      lastUpdated: this.entries.length > 0 ? Date.now() : null,
+    });
+  }
+
+  getIndexedFilePaths(): Promise<string[]> {
+    return Promise.resolve([...new Set(this.entries.map((e) => e.metadata.filePath))]);
   }
 }
