@@ -117,14 +117,20 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 export class CachedEmbeddingProvider implements EmbeddingProvider {
   private inner: EmbeddingProvider;
   private memoryCache: Map<string, number[]>;
+  private modelName: string;
 
-  constructor(inner: EmbeddingProvider) {
+  constructor(inner: EmbeddingProvider, modelName: string) {
     this.inner = inner;
     this.memoryCache = new Map();
+    this.modelName = modelName;
+  }
+
+  private async computeHash(text: string): Promise<string> {
+    return sha256Hex(`${this.modelName}::${text}`);
   }
 
   async embed(text: string): Promise<number[]> {
-    const hash = await sha256Hex(text);
+    const hash = await this.computeHash(text);
     const mem = this.memoryCache.get(hash);
     if (mem) return mem;
 
@@ -143,7 +149,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   async embedBatch(texts: string[]): Promise<number[][]> {
     const hashes: string[] = [];
     for (const t of texts) {
-      hashes.push(await sha256Hex(t));
+      hashes.push(await this.computeHash(t));
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];
     const missingIndices: number[] = [];

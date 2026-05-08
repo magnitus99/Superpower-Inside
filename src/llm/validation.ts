@@ -1,5 +1,5 @@
 import { requestUrl } from 'obsidian';
-import type { ProviderConfig } from '../settings';
+import type { EmbeddingProviderKey, ProviderConfig } from '../settings';
 import type { ProviderKey } from './providers';
 
 export interface ValidationResult {
@@ -141,4 +141,68 @@ async function validateOllama(config: ProviderConfig): Promise<ValidationResult>
     console.error('[SuperObsidian] Ollama validate error:', err);
     return { valid: false, models: [], error: classifyFetchError(err) };
   }
+}
+
+export async function validateEmbeddingConnection(
+  providerKey: EmbeddingProviderKey,
+  modelId: string,
+  config: ProviderConfig,
+): Promise<ValidationResult> {
+  if (providerKey === 'other') {
+    return { valid: true, models: [modelId], error: 'Custom endpoint — manual validation only' };
+  }
+
+  if (providerKey === 'ollama') {
+    const baseUrl = normalizeOllamaBaseUrl(config.baseUrl ?? 'http://localhost:11434');
+    try {
+      const res = await requestUrl({
+        url: `${baseUrl}/api/embed`,
+        method: 'POST',
+        headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
+        body: JSON.stringify({ input: ['test'] }),
+      });
+      if (res.status >= 400) {
+        const text = typeof res.text === 'string' ? res.text : String(res.text);
+        return { valid: false, models: [], error: classifyHttpError(res.status, text) };
+      }
+      const data = (res.json as { embeddings?: unknown[] }) ?? {};
+      if (Array.isArray(data.embeddings) && data.embeddings.length > 0) {
+        return { valid: true, models: [modelId] };
+      }
+      return { valid: false, models: [], error: 'Invalid embedding response' };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  if (providerKey === 'openai' || providerKey === 'openRouter') {
+    let baseUrl = (config.baseUrl ?? 'https://api.openai.com').replace(/\/$/, '');
+    if (providerKey === 'openRouter') {
+      baseUrl = normalizeOpenRouterBaseUrl(config.baseUrl ?? 'https://openrouter.ai/api');
+    }
+    try {
+      const res = await requestUrl({
+        url: `${baseUrl}/v1/embeddings`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ input: 'test', model: modelId }),
+      });
+      if (res.status >= 400) {
+        const text = typeof res.text === 'string' ? res.text : String(res.text);
+        return { valid: false, models: [], error: classifyHttpError(res.status, text) };
+      }
+      const data = (res.json as { data?: Array<{ embedding: unknown }> }) ?? {};
+      if (data.data?.[0]?.embedding) {
+        return { valid: true, models: [modelId] };
+      }
+      return { valid: false, models: [], error: 'Invalid embedding response' };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  return { valid: false, models: [], error: 'Unknown embedding provider' };
 }
