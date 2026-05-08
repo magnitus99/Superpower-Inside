@@ -114,7 +114,48 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const data: unknown = await this.loadData();
+    const raw = (await this.loadData()) as Record<string, unknown>;
+    const data = raw == null ? {} : { ...raw };
+
+    const providerKeys = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
+    for (const pk of providerKeys) {
+      const pConf = data[pk] as Record<string, unknown> | undefined;
+      if (pConf && 'model' in pConf && Array.isArray(pConf.models) === false) {
+        const rawModel = pConf.model;
+        const oldModel = typeof rawModel === 'string' ? rawModel : '';
+        pConf.models = oldModel ? [oldModel] : [];
+      }
+      if (pConf && typeof pConf.baseUrl === 'string') {
+        let url = pConf.baseUrl.trim();
+        if ((pk === 'ollama' || pk === 'ollamaCloud') && url === 'https://api.ollama.com') {
+          url = 'https://ollama.com';
+        }
+        url = url.replace(/\/+$/, '');
+        if (url.endsWith('/api')) {
+          url = url.slice(0, -4);
+        }
+        url = url.replace(/\/+$/, '');
+        pConf.baseUrl = url;
+      }
+    }
+
+    const chat = data.chat;
+    if (
+      chat &&
+      typeof chat === 'object' &&
+      !Array.isArray(chat) &&
+      'defaultProvider' in chat &&
+      !('defaultModel' in chat)
+    ) {
+      const chatObj = chat as Record<string, unknown>;
+      const rawProvider = chatObj.defaultProvider;
+      const oldProvider = typeof rawProvider === 'string' ? rawProvider : '';
+      const oldModel = ((data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined)?.[0] ?? '';
+      if (oldProvider && oldModel) {
+        chatObj.defaultModel = `${oldProvider}:${oldModel}`;
+      }
+    }
+
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperObsidianSettings>);
   }
 
@@ -136,21 +177,49 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   private initProvider(): void {
-    const key = this.settings.chat.defaultProvider as ProviderKey;
-    const config = this.settings[key];
-    if (config?.enabled) {
-      try {
-        this.provider = createProvider(key, config);
-      } catch {
-        this.provider = null;
-      }
-    } else {
+    const defaultModel = this.settings.chat.defaultModel;
+    if (!defaultModel) {
+      this.provider = null;
+      return;
+    }
+    const parts = defaultModel.split(':');
+    if (parts.length < 2) {
+      this.provider = null;
+      return;
+    }
+    const providerKey = parts[0] as ProviderKey;
+    const modelName = parts.slice(1).join(':');
+
+    const config = this.settings[providerKey];
+    if (!config?.enabled || !config.models.includes(modelName)) {
+      this.provider = null;
+      return;
+    }
+    try {
+      this.provider = createProvider(providerKey, config, modelName);
+    } catch {
       this.provider = null;
     }
   }
 
   private initRAG(): void {
-    const activeKey = this.settings.chat.defaultProvider as ProviderKey;
+    const defaultModel = this.settings.chat.defaultModel;
+    if (!defaultModel) {
+      this.vectorStore = null;
+      this.embeddingProvider = null;
+      this.ragEngine = null;
+      this.vaultIndexer = null;
+      return;
+    }
+    const parts = defaultModel.split(':');
+    if (parts.length < 2) {
+      this.vectorStore = null;
+      this.embeddingProvider = null;
+      this.ragEngine = null;
+      this.vaultIndexer = null;
+      return;
+    }
+    const activeKey = parts[0] as ProviderKey;
     const config = this.settings[activeKey];
     if (!config?.enabled) {
       this.vectorStore = null;
@@ -163,7 +232,7 @@ export default class SuperObsidianPlugin extends Plugin {
     // Embedding provider 선택
     if (activeKey === 'ollama' || activeKey === 'ollamaCloud') {
       this.embeddingProvider = new CachedEmbeddingProvider(
-        new OllamaEmbeddingProvider(config.baseUrl, 'nomic-embed-text'),
+        new OllamaEmbeddingProvider(config.baseUrl, 'nomic-embed-text', config.apiKey),
       );
     } else {
       this.embeddingProvider = new CachedEmbeddingProvider(

@@ -1,9 +1,28 @@
-import { App, PluginSettingTab, Setting, type Plugin } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 
 export interface ProviderConfig {
   apiKey: string;
   baseUrl?: string;
-  model: string;
+  models: string[];
+  enabled: boolean;
+}
+
+export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
+
+export const PROVIDER_LABELS: Record<typeof PROVIDER_KEYS[number], string> = {
+  openai: 'OpenAI',
+  claude: 'Claude',
+  ollama: 'Ollama (Local)',
+  ollamaCloud: 'Ollama (Cloud)',
+  openRouter: 'OpenRouter',
+};
+
+export type ProviderKey = typeof PROVIDER_KEYS[number];
+
+export interface ProviderConfig {
+  apiKey: string;
+  baseUrl?: string;
+  models: string[];
   enabled: boolean;
 }
 
@@ -26,7 +45,7 @@ export interface RAGConfig {
 
 export interface ChatConfig {
   saveFolder: string;
-  defaultProvider: string;
+  defaultModel: string;
 }
 
 export interface SuperObsidianSettings {
@@ -41,41 +60,35 @@ export interface SuperObsidianSettings {
   pluginAwareEnabled: boolean;
 }
 
-export interface PluginLike {
-  app: App;
-  settings: SuperObsidianSettings;
-  saveSettings(): Promise<void>;
-}
-
 export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   openai: {
     apiKey: '',
     baseUrl: 'https://api.openai.com',
-    model: 'gpt-4o-mini',
+    models: ['gpt-4o-mini'],
     enabled: false,
   },
   claude: {
     apiKey: '',
     baseUrl: 'https://api.anthropic.com',
-    model: 'claude-3-5-sonnet-20241022',
+    models: ['claude-3-5-sonnet-20241022'],
     enabled: false,
   },
   ollama: {
     apiKey: '',
     baseUrl: 'http://localhost:11434',
-    model: 'llama3.1',
+    models: ['llama3.1'],
     enabled: false,
   },
   ollamaCloud: {
     apiKey: '',
-    baseUrl: 'https://api.ollama.com',
-    model: 'llama3.1',
+    baseUrl: 'https://ollama.com',
+    models: ['llama3.1'],
     enabled: false,
   },
   openRouter: {
     apiKey: '',
     baseUrl: 'https://openrouter.ai/api',
-    model: 'openrouter/auto',
+    models: ['openrouter/auto'],
     enabled: false,
   },
   rag: {
@@ -88,10 +101,14 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   mcpServers: [],
   chat: {
     saveFolder: 'chats',
-    defaultProvider: 'openai',
+    defaultModel: 'openai:gpt-4o-mini',
   },
   pluginAwareEnabled: false,
-};
+};export interface PluginLike {
+  app: App;
+  settings: SuperObsidianSettings;
+  saveSettings(): Promise<void>;
+}
 
 // Tab Types and Configuration
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
@@ -105,13 +122,22 @@ const TABS: { id: SettingsTabId; label: string }[] = [
   { id: 'advanced', label: 'Advanced' },
 ];
 
+interface ProviderValidationCache {
+  [key: string]: {
+    valid: boolean;
+    models: string[];
+    error?: string;
+  };
+}
+
 export class SuperObsidianSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
-  
-  // Tab Management Properties
+
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
   private tabPanels: Map<SettingsTabId, HTMLDivElement> = new Map();
+  
+  private validationCache: ProviderValidationCache = {};
 
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
@@ -203,22 +229,34 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
   
   private buildGeneralTab(containerEl: HTMLElement): void {
+    const allModels: { value: string; label: string }[] = [];
+    for (const key of PROVIDER_KEYS) {
+      const conf = this.plugin.settings[key];
+      if (!conf.enabled) continue;
+      for (const model of conf.models) {
+        allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
+      }
+    }
+
     new Setting(containerEl)
-      .setName('Default LLM Provider')
-      .setDesc('Default provider for chat and commands')
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('openai', 'OpenAI')
-          .addOption('claude', 'Claude')
-          .addOption('ollama', 'Ollama (Local)')
-          .addOption('ollamaCloud', 'Ollama (Cloud)')
-          .addOption('openRouter', 'OpenRouter')
-          .setValue(this.plugin.settings.chat.defaultProvider)
-          .onChange(async (value) => {
-            this.plugin.settings.chat.defaultProvider = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+      .setName('Default Model')
+      .setDesc('Default model for chat and commands')
+      .addDropdown((dropdown) => {
+        if (allModels.length === 0) {
+          dropdown.addOption('', 'No models enabled');
+          dropdown.setDisabled(true);
+        } else {
+          for (const opt of allModels) {
+            dropdown.addOption(opt.value, opt.label);
+          }
+          dropdown.setValue(this.plugin.settings.chat.defaultModel);
+          dropdown.setDisabled(false);
+        }
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.chat.defaultModel = value;
+          await this.plugin.saveSettings();
+        });
+      });
   }
   
   private buildProvidersTab(containerEl: HTMLElement): void {
@@ -328,10 +366,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private buildProviderSettings(
     containerEl: HTMLElement,
     label: string,
-    key: keyof Omit<
-      SuperObsidianSettings,
-      'rag' | 'mcpServers' | 'chat' | 'pluginAwareEnabled'
-    >,
+    key: ProviderKey,
   ): void {
     const config = this.plugin.settings[key];
     const section = containerEl.createDiv({ cls: 'super-obsidian-settings-section' });
@@ -365,22 +400,84 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           .setPlaceholder('https://api...')
           .setValue(config.baseUrl ?? '')
           .onChange(async (value) => {
-            config.baseUrl = value.trim() || undefined;
+            let url = value.trim();
+            if (key === 'ollama' || key === 'ollamaCloud') {
+              url = url.replace(/\/+$/, '');
+              if (url.endsWith('/api')) {
+                url = url.slice(0, -4);
+              }
+              url = url.replace(/\/+$/, '');
+            }
+            config.baseUrl = url || undefined;
             await this.plugin.saveSettings();
           }),
       );
 
-    new Setting(section)
-      .setName('Model')
-      .addText((text) =>
-        text
-          .setPlaceholder('gpt-4o-mini')
-          .setValue(config.model)
-          .onChange(async (value) => {
-            config.model = value.trim();
+    const modelListContainer = section.createDiv({ cls: 'super-obsidian-settings-model-list' });
+    modelListContainer.style.display = 'none';
+
+    const statusContainer = section.createDiv({ cls: 'super-obsidian-settings-validation-status' });
+
+    const renderModelList = (models: string[]) => {
+      modelListContainer.empty();
+      if (models.length === 0) {
+        modelListContainer.setText('No models found.');
+        return;
+      }
+      models.forEach((model) => {
+        const item = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-item' });
+        const checkbox = item.createEl('input', { type: 'checkbox' });
+        checkbox.checked = config.models.includes(model);
+        item.appendText(` ${model}`);
+        checkbox.addEventListener('change', () => {
+          void (async () => {
+            if (checkbox.checked) {
+              config.models.push(model);
+            } else {
+              config.models = config.models.filter((m) => m !== model);
+            }
             await this.plugin.saveSettings();
-          }),
-      );
+          })();
+        });
+      });
+    };
+
+    new Setting(section)
+      .setName('Validate API Key')
+      .addButton((button) => {
+        button.setButtonText('Validate');
+        button.onClick(async () => {
+          statusContainer.setText('');
+          button.setDisabled(true);
+          const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
+
+          try {
+            const { validateProviderApi } = await import('./llm/validation');
+            const result = await validateProviderApi(key, config);
+            spinner.remove();
+
+            if (result.valid) {
+              statusContainer.setText(`✅ Valid! ${result.models.length} models found.`);
+              modelListContainer.style.display = 'block';
+              renderModelList(result.models);
+              this.validationCache[key] = result;
+            } else {
+              statusContainer.setText(`❌ Invalid: ${result.error}`);
+              modelListContainer.style.display = 'none';
+              modelListContainer.empty();
+              this.validationCache[key] = result;
+            }
+          } catch (err) {
+            spinner.remove();
+            const msg = err instanceof Error ? err.message : String(err);
+            statusContainer.setText(`❌ Error: ${msg}`);
+            modelListContainer.style.display = 'none';
+            modelListContainer.empty();
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
   }
 
   private buildMCPList(containerEl: HTMLElement): void {

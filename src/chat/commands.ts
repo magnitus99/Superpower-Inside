@@ -81,12 +81,24 @@ export async function executeDirective(
     let result = '';
 
     const { createProvider } = await import('../llm/providers');
-    const key = plugin.settings.chat.defaultProvider as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+    
+    const defaultModel = plugin.settings.chat.defaultModel;
+    if (!defaultModel) {
+      throw new Error('기본 모델이 설정되지 않았습니다.');
+    }
+    
+    const parts = defaultModel.split(':');
+    if (parts.length < 2) {
+      throw new Error('기본 모델 설정 형식이 잘못되었습니다.');
+    }
+    
+    const key = parts[0] as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+    const modelName = parts.slice(1).join(':');
     const config = plugin.settings[key];
     if (!config.enabled) {
       throw new Error('기본 Provider가 활성화되지 않았습니다.');
     }
-    const provider = createProvider(key, config);
+    const provider = createProvider(key, config, modelName);
 
     await provider.streamChat(
       messages,

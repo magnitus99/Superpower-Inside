@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import type { ProviderConfig } from '../settings';
 
 export interface ChatMessage {
@@ -24,15 +25,18 @@ export interface LLMProvider {
 class OpenAICompatibleProvider implements LLMProvider {
   protected config: ProviderConfig;
   protected endpoint: string;
+  protected modelOverride?: string;
 
-  constructor(config: ProviderConfig, endpointOverride?: string) {
+  constructor(config: ProviderConfig, endpointOverride?: string, modelOverride?: string) {
     this.config = config;
-    this.endpoint = endpointOverride ?? `${config.baseUrl ?? 'https://api.openai.com'}/v1/chat/completions`;
+    this.endpoint =
+      endpointOverride ?? `${config.baseUrl ?? 'https://api.openai.com'}/v1/chat/completions`;
+    this.modelOverride = modelOverride;
   }
 
   async chat(messages: ChatMessage[], temperature = 0.7): Promise<string> {
     const body = {
-      model: this.config.model,
+      model: this.modelOverride ?? this.config.models[0] ?? '',
       messages,
       temperature,
       stream: false,
@@ -57,7 +61,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     temperature = 0.7,
   ): Promise<void> {
     const body = {
-      model: this.config.model,
+      model: this.modelOverride ?? this.config.models[0] ?? '',
       messages,
       temperature,
       stream: true,
@@ -120,30 +124,37 @@ class OpenAICompatibleProvider implements LLMProvider {
 
 class ClaudeProvider implements LLMProvider {
   private config: ProviderConfig;
+  private modelOverride?: string;
 
-  constructor(config: ProviderConfig) {
+  constructor(config: ProviderConfig, modelOverride?: string) {
     this.config = config;
+    this.modelOverride = modelOverride;
   }
 
   async chat(messages: ChatMessage[], temperature = 0.7): Promise<string> {
-    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
+    const res = await fetch(
+      `${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.modelOverride ?? this.config.models[0] ?? '',
+          max_tokens: 4096,
+          temperature,
+          messages: messages
+            .filter((m) => m.role !== 'system')
+            .map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          system: messages.find((m) => m.role === 'system')?.content,
+        }),
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: 4096,
-        temperature,
-        messages: messages.filter((m) => m.role !== 'system').map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        system: messages.find((m) => m.role === 'system')?.content,
-      }),
-    });
+    );
     if (!res.ok) {
       throw new Error(`Claude chat failed: ${res.status} ${await res.text()}`);
     }
@@ -158,25 +169,30 @@ class ClaudeProvider implements LLMProvider {
     onChunk: (chunk: StreamChunk) => void,
     temperature = 0.7,
   ): Promise<void> {
-    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
+    const res = await fetch(
+      `${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.modelOverride ?? this.config.models[0] ?? '',
+          max_tokens: 4096,
+          temperature,
+          stream: true,
+          messages: messages
+            .filter((m) => m.role !== 'system')
+            .map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          system: messages.find((m) => m.role === 'system')?.content,
+        }),
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: 4096,
-        temperature,
-        stream: true,
-        messages: messages.filter((m) => m.role !== 'system').map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        system: messages.find((m) => m.role === 'system')?.content,
-      }),
-    });
+    );
     if (!res.ok) {
       throw new Error(`Claude stream failed: ${res.status} ${await res.text()}`);
     }
@@ -221,9 +237,11 @@ class ClaudeProvider implements LLMProvider {
 
 class OllamaProvider implements LLMProvider {
   private config: ProviderConfig;
+  private modelOverride?: string;
 
-  constructor(config: ProviderConfig) {
+  constructor(config: ProviderConfig, modelOverride?: string) {
     this.config = config;
+    this.modelOverride = modelOverride;
   }
 
   private buildHeaders(): Record<string, string> {
@@ -237,20 +255,24 @@ class OllamaProvider implements LLMProvider {
   }
 
   async chat(messages: ChatMessage[], temperature = 0.7): Promise<string> {
-    const res = await fetch(`${this.config.baseUrl ?? 'http://localhost:11434'}/api/chat`, {
+    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? 'http://localhost:11434');
+    const targetUrl = `${baseUrl}/api/chat`;
+    console.log('[SuperObsidian] Ollama chat URL:', targetUrl, 'original baseUrl:', this.config.baseUrl);
+    const res = await requestUrl({
+      url: targetUrl,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify({
-        model: this.config.model,
+        model: this.modelOverride ?? this.config.models[0] ?? '',
         messages,
         options: { temperature },
         stream: false,
       }),
     });
-    if (!res.ok) {
-      throw new Error(`Ollama chat failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`Ollama chat failed: ${res.status} ${res.text}`);
     }
-    const data = (await res.json()) as { message?: { content?: string } };
+    const data = res.json as { message?: { content?: string } };
     return data.message?.content ?? '';
   }
 
@@ -259,32 +281,25 @@ class OllamaProvider implements LLMProvider {
     onChunk: (chunk: StreamChunk) => void,
     temperature = 0.7,
   ): Promise<void> {
-    const res = await fetch(`${this.config.baseUrl ?? 'http://localhost:11434'}/api/chat`, {
-      method: 'POST',
-      headers: this.buildHeaders(),
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        options: { temperature },
-        stream: true,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Ollama stream failed: ${res.status} ${await res.text()}`);
-    }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? 'http://localhost:11434');
+    const targetUrl = `${baseUrl}/api/chat`;
+    try {
+      const res = await requestUrl({
+        url: targetUrl,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify({
+          model: this.modelOverride ?? this.config.models[0] ?? '',
+          messages,
+          options: { temperature },
+          stream: true,
+        }),
+      });
+      if (res.status >= 400) {
+        throw new Error(`Ollama stream failed: ${res.status} ${res.text}`);
+      }
+      const text = res.text;
+      const lines = text.split('\n');
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
@@ -300,28 +315,48 @@ class OllamaProvider implements LLMProvider {
           // 잘못된 JSON 라인 무시
         }
       }
+      onChunk({ content: '', done: true });
+    } catch (err) {
+      if (err instanceof Error) {
+        throw new Error(`Ollama stream failed: ${err.message}`);
+      }
+      throw err;
     }
-    onChunk({ content: '', done: true });
   }
+}
+
+function normalizeOllamaBaseUrl(baseUrl: string): string {
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  if (url.endsWith('/api')) {
+    url = url.slice(0, -4);
+  }
+  return url.replace(/\/+$/, '');
 }
 
 /* ---------- Provider Factory ---------- */
 
 export type ProviderKey = 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
 
-export function createProvider(key: ProviderKey, config: ProviderConfig): LLMProvider {
+export function createProvider(
+  key: ProviderKey,
+  config: ProviderConfig,
+  modelOverride?: string,
+): LLMProvider {
   switch (key) {
     case 'openai':
-      return new OpenAICompatibleProvider(config);
+      return new OpenAICompatibleProvider(config, undefined, modelOverride);
     case 'claude':
-      return new ClaudeProvider(config);
+      return new ClaudeProvider(config, modelOverride);
     case 'ollama':
     case 'ollamaCloud':
-      return new OllamaProvider(config);
+      return new OllamaProvider(config, modelOverride);
     case 'openRouter': {
-      // OpenRouter는 OpenAI-compatible endpoint
       const url = config.baseUrl ?? 'https://openrouter.ai/api';
-      return new OpenAICompatibleProvider(config, `${url}/v1/chat/completions`);
+      return new OpenAICompatibleProvider(
+        config,
+        `${url}/v1/chat/completions`,
+        modelOverride,
+      );
     }
     default:
       throw new Error(`Unknown provider: ${String(key)}`);

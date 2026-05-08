@@ -99,15 +99,31 @@ export class ChatView extends ItemView {
     if (!text || this.isStreaming) return;
 
     const { createProvider } = await import('../llm/providers');
-    const key = this.plugin.settings.chat.defaultProvider as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+    
+    const defaultModel = this.plugin.settings.chat.defaultModel;
+    if (!defaultModel) {
+      new Notice('기본 모델이 설정되지 않았습니다. 설정 탭에서 모델을 선택하세요.');
+      return;
+    }
+    
+    const parts = defaultModel.split(':');
+    if (parts.length < 2) {
+      new Notice('기본 모델 설정 형식이 잘못되었습니다.');
+      return;
+    }
+    
+    const key = parts[0] as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+    const modelName = parts.slice(1).join(':');
     const config = this.plugin.settings[key];
+    
     if (!config?.enabled) {
       new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
       return;
     }
-    const provider = createProvider(key, config);
+    
+    const provider = createProvider(key, config, modelName);
     if (!provider) {
-      new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
+      new Notice('Provider 생성에 실패했습니다.');
       return;
     }
 
