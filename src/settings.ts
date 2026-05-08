@@ -2,6 +2,8 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { isExcludedExt } from './utils/vault';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
+import { type Language, t } from './i18n';
+import { MCPClientManager } from './mcp/client';
 
 export interface ProviderConfig {
   apiKey: string;
@@ -29,6 +31,8 @@ export interface MCPServerConfig {
   args?: string[];
   url?: string;
   enabled: boolean;
+  token?: string;
+  registryUrl?: string;
 }
 
 export type EmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
@@ -53,7 +57,7 @@ export const EMBEDDING_MODELS: Record<EmbeddingProviderKey, EmbeddingModelInfo[]
   ollama: [
     { id: 'nomic-embed-text', name: 'nomic-embed-text', dimensions: 768, description: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.' },
   ],
-  other: [], // 자유 입력 모델
+  other: [],
 };
 
 export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
@@ -62,6 +66,35 @@ export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
   openRouter: 'OpenRouter',
   other: 'Other (Custom)',
 };
+
+export const MCP_TRANSPORT_LABELS: Record<MCPServerConfig['transport'], string> = {
+  stdio: 'stdio',
+  sse: 'sse',
+  http: 'http',
+};
+
+export const MCP_PRESETS: { label: string; config: Partial<MCPServerConfig> }[] = [
+  {
+    label: 'uvx (npx-like for uv)',
+    config: { transport: 'stdio', command: 'uvx', args: ['mcp-server-example'] },
+  },
+  {
+    label: 'npx (Node)',
+    config: { transport: 'stdio', command: 'npx', args: ['-y', '@ anthropic-ai/mcp-server'] },
+  },
+  {
+    label: 'bunx (Bun)',
+    config: { transport: 'stdio', command: 'bunx', args: ['@ anthropic-ai/mcp-server'] },
+  },
+  {
+    label: 'Custom stdio',
+    config: { transport: 'stdio', command: '', args: [] },
+  },
+  {
+    label: 'Custom HTTP/SSE',
+    config: { transport: 'http', url: '' },
+  },
+];
 
 export interface RAGConfig {
   excludePaths: string[];
@@ -92,6 +125,7 @@ export interface SuperObsidianSettings {
   pluginAwareEnabled: boolean;
   autoSaveEnabled: boolean;
   autoSaveDebounceMs: number;
+  language: Language;
 }
 
 export const DEFAULT_SETTINGS: SuperObsidianSettings = {
@@ -134,7 +168,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
-    autoUpdateIntervalMs: 300000,
+    autoUpdateIntervalMs: 30000,
   },
   mcpServers: [],
   chat: {
@@ -144,7 +178,9 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
   autoSaveDebounceMs: 500,
-};export interface PluginLike {
+  language: 'ko',
+};
+export interface PluginLike {
   app: App;
   settings: SuperObsidianSettings;
   saveSettings(): Promise<void>;
@@ -160,12 +196,12 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
 
 const TABS: { id: SettingsTabId; label: string }[] = [
-  { id: 'general', label: 'General' },
-  { id: 'providers', label: 'Providers' },
-  { id: 'rag', label: 'RAG' },
-  { id: 'chat', label: 'Chat' },
-  { id: 'mcp', label: 'MCP' },
-  { id: 'advanced', label: 'Advanced' },
+  { id: 'general', label: t('tabGeneral') },
+  { id: 'providers', label: t('tabProviders') },
+  { id: 'rag', label: t('tabRag') },
+  { id: 'chat', label: t('tabChat') },
+  { id: 'mcp', label: t('tabMcp') },
+  { id: 'advanced', label: t('tabAdvanced') },
 ];
 
 interface ProviderValidationCache {
@@ -239,15 +275,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     containerEl.empty();
     
     // Header
-    containerEl.createEl('h2', { text: 'Super Obsidian by AI — Settings' });
-    
+    containerEl.createEl('h2', { text: t('settingsTitle') });
+
     // Security Warning
     const warning = containerEl.createDiv({
       cls: 'super-obsidian-settings-warning',
     });
-    warning.setText(
-      'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
-    );
+    warning.setText(t('securityWarning'));
     
     // Tab Bar
     const tabBar = containerEl.createDiv({ cls: 'super-obsidian-settings-tabs' });
@@ -332,8 +366,35 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   
   private buildGeneralTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
-      .setName('Auto-save settings')
-      .setDesc('Automatically save settings after changes (reduces disk I/O)')
+      .setName(t('language'))
+      .setDesc(t('languageDesc'))
+      .addDropdown((dropdown) => {
+        dropdown.addOption('ko', t('langKo'));
+        dropdown.addOption('en', t('langEn'));
+        dropdown.setValue(this.plugin.settings.language);
+        dropdown.onChange(async (value) => {
+          const newLang = value as Language;
+          const currentLang = this.plugin.settings.language;
+
+          if (newLang === currentLang) {
+            return;
+          }
+
+          const confirmed = confirm(t('languageChangeConfirm'));
+          if (!confirmed) {
+            dropdown.setValue(currentLang);
+            return;
+          }
+
+          this.plugin.settings.language = newLang;
+          await this.plugin.saveSettings();
+          window.location.reload();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName(t('autoSaveSettings'))
+      .setDesc(t('autoSaveSettingsDesc'))
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoSaveEnabled)
@@ -344,18 +405,25 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Auto-save debounce delay')
-      .setDesc('Milliseconds to wait after a change before saving (0–5000 ms)')
-      .addSlider((slider) =>
-        slider
-          .setLimits(0, 5000, 100)
-          .setValue(this.plugin.settings.autoSaveDebounceMs)
-          .setDynamicTooltip()
-          .onChange((value) => {
-            this.plugin.settings.autoSaveDebounceMs = value;
+      .setName(t('autoSaveDelay'))
+      .setDesc(t('autoSaveDelayDesc'))
+      .addText((text) => {
+        text.inputEl.type = 'number';
+        text.setValue(String(this.plugin.settings.autoSaveDebounceMs));
+        const unit = document.createElement('span');
+        unit.textContent = ` ${t('delayMs')}`;
+        unit.style.marginLeft = '6px';
+        unit.style.color = 'var(--text-muted)';
+        unit.style.fontSize = 'var(--font-ui-small)';
+        text.inputEl.parentElement?.appendChild(unit);
+        text.onChange((value) => {
+          const num = parseInt(value, 10);
+          if (!Number.isNaN(num) && num >= 0 && num <= 5000) {
+            this.plugin.settings.autoSaveDebounceMs = num;
             this.debouncedSave();
-          }),
-      );
+          }
+        });
+      });
 
     const allModels: { value: string; label: string }[] = [];
     for (const key of PROVIDER_KEYS) {
@@ -366,15 +434,14 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }
     }
 
-    // Sort models by label alphabetically
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
 
     new Setting(containerEl)
-      .setName('Default Model')
-      .setDesc('Default model for chat and commands')
+      .setName(t('defaultModel'))
+      .setDesc(t('defaultModelDesc'))
       .addDropdown((dropdown) => {
         if (allModels.length === 0) {
-          dropdown.addOption('', 'No models enabled');
+          dropdown.addOption('', t('noModelsEnabled'));
           dropdown.setDisabled(true);
         } else {
           for (const opt of allModels) {
@@ -998,23 +1065,55 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private buildMCPList(containerEl: HTMLElement): void {
     containerEl.empty();
 
+    const mcpClientManager = new MCPClientManager();
+
+    const statusSection = containerEl.createDiv({ cls: 'super-obsidian-mcp-status' });
+    this.renderMCPStatus(statusSection);
+
+    containerEl.createEl('h3', { text: t('mcpQuickTemplates'), cls: 'super-obsidian-mcp-section-title' });
+    const presetSection = containerEl.createDiv({ cls: 'super-obsidian-mcp-presets' });
+    for (const preset of MCP_PRESETS) {
+      const presetBtn = presetSection.createEl('button', { text: preset.label, cls: 'super-obsidian-mcp-preset-btn' });
+      presetBtn.addEventListener('click', () => {
+        const existing = this.plugin.settings.mcpServers.find(s => s.name === preset.label);
+        if (existing) {
+          new Notice(`"${preset.label}" 서버가 이미 존재합니다.`);
+          return;
+        }
+        this.plugin.settings.mcpServers.push({
+          name: preset.label,
+          transport: preset.config.transport ?? 'stdio',
+          command: preset.config.command,
+          args: preset.config.args,
+          url: preset.config.url,
+          enabled: false,
+          token: undefined,
+          registryUrl: undefined,
+        });
+        this.flushSave();
+        this.buildMCPList(containerEl);
+      });
+    }
+
+    containerEl.createEl('h3', { text: t('mcpCustom'), cls: 'super-obsidian-mcp-section-title' });
+
     for (let i = 0; i < this.plugin.settings.mcpServers.length; i++) {
       const server = this.plugin.settings.mcpServers[i];
-      const row = containerEl.createDiv({ cls: 'super-obsidian-settings-section' });
+      const row = containerEl.createDiv({ cls: 'super-obsidian-mcp-card' });
 
-      row.createEl('strong', { text: server.name || `Server ${i + 1}` });
+      const header = row.createDiv({ cls: 'super-obsidian-mcp-card-header' });
+      const nameInput = header.createEl('input', { type: 'text', value: server.name, cls: 'super-obsidian-mcp-name-input' });
+      nameInput.addEventListener('change', () => {
+        server.name = nameInput.value.trim();
+        this.debouncedSave();
+      });
+
+      const statusBadge = header.createDiv({ cls: `super-obsidian-mcp-status-badge ${server.enabled ? 'active' : 'inactive'}` });
+      statusBadge.setText(server.enabled ? t('mcpActive') : t('mcpInactive'));
 
       new Setting(row)
-        .setName('Enabled')
-        .addToggle((toggle) =>
-          toggle.setValue(server.enabled).onChange((value) => {
-            server.enabled = value;
-            this.debouncedSave();
-          }),
-        );
-
-      new Setting(row)
-        .setName('Transport')
+        .setName(t('mcpTransport'))
+        .setDesc(t('mcpTransportDesc'))
         .addDropdown((dropdown) =>
           dropdown
             .addOption('stdio', 'stdio')
@@ -1028,9 +1127,21 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             }),
         );
 
+      new Setting(row)
+        .setName(t('enabled'))
+        .addToggle((toggle) =>
+          toggle.setValue(server.enabled).onChange((value) => {
+            server.enabled = value;
+            this.debouncedSave();
+            statusBadge.setText(server.enabled ? t('mcpActive') : t('mcpInactive'));
+            statusBadge.className = `super-obsidian-mcp-status-badge ${server.enabled ? 'active' : 'inactive'}`;
+          }),
+        );
+
       if (server.transport === 'stdio') {
         new Setting(row)
-          .setName('Command')
+          .setName(t('mcpCommand'))
+          .setDesc(t('mcpCommandDesc'))
           .addText((text) =>
             text.setValue(server.command ?? '').onChange((value) => {
               server.command = value.trim();
@@ -1038,7 +1149,8 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             }),
           );
         new Setting(row)
-          .setName('Arguments')
+          .setName(t('mcpArgs'))
+          .setDesc(t('mcpArgsDesc'))
           .addText((text) =>
             text.setValue((server.args ?? []).join(' ')).onChange((value) => {
               server.args = value.trim().split(/\s+/).filter(Boolean);
@@ -1047,7 +1159,8 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           );
       } else {
         new Setting(row)
-          .setName('URL')
+          .setName(t('mcpUrl'))
+          .setDesc(t('mcpUrlDesc'))
           .addText((text) =>
             text.setValue(server.url ?? '').onChange((value) => {
               server.url = value.trim();
@@ -1056,8 +1169,34 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           );
       }
 
+      const testStatus = row.createDiv({ cls: 'super-obsidian-mcp-test-status' });
+      new Setting(row)
+        .setName(t('mcpConnectionTest'))
+        .addButton((btn) => {
+          btn.setButtonText(t('testConnection'));
+          btn.onClick(async () => {
+            testStatus.setText('');
+            btn.setDisabled(true);
+            testStatus.setText(t('testing'));
+
+            try {
+              const result = await mcpClientManager.testConnection(server);
+              if (result.success) {
+                testStatus.setText(`\u2705 ${t('mcpTestSuccess')}`);
+              } else {
+                testStatus.setText(`\u274c ${t('mcpTestFailed', { error: result.error ?? 'Unknown error' })}`);
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              testStatus.setText(`\u274c ${t('mcpTestError', { error: msg })}`);
+            } finally {
+              btn.setDisabled(false);
+            }
+          });
+        });
+
       new Setting(row).addButton((btn) =>
-        btn.setButtonText('Delete').onClick(() => {
+        btn.setButtonText(t('deleteMcpServer')).setWarning().onClick(() => {
           this.plugin.settings.mcpServers.splice(i, 1);
           this.flushSave();
           this.buildMCPList(containerEl);
@@ -1067,17 +1206,48 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).addButton((btn) =>
       btn
-        .setButtonText('+ Add MCP Server')
+        .setButtonText(`+ ${t('addMcpServer')}`)
         .setCta()
         .onClick(() => {
           this.plugin.settings.mcpServers.push({
             name: `mcp-server-${this.plugin.settings.mcpServers.length + 1}`,
             transport: 'http',
-            enabled: true,
+            enabled: false,
+            command: undefined,
+            args: undefined,
+            url: '',
+            token: undefined,
+            registryUrl: undefined,
           });
           this.flushSave();
           this.buildMCPList(containerEl);
         }),
     );
+  }
+
+  private renderMCPStatus(containerEl: HTMLElement): void {
+    containerEl.empty();
+    const enabledCount = this.plugin.settings.mcpServers.filter(s => s.enabled).length;
+    const totalCount = this.plugin.settings.mcpServers.length;
+
+    const statusBox = containerEl.createDiv({ cls: 'super-obsidian-mcp-status-box' });
+    statusBox.createDiv({ cls: 'super-obsidian-mcp-status-title', text: t('mcpStatus') });
+    statusBox.createDiv({
+      cls: 'super-obsidian-mcp-status-count',
+      text: t('mcpTotalActive', { count: enabledCount, total: totalCount }),
+    });
+
+    if (totalCount > 0) {
+      const list = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-list' });
+      for (const server of this.plugin.settings.mcpServers) {
+        const item = list.createDiv({ cls: 'super-obsidian-mcp-status-item' });
+        void item.createDiv({ cls: `super-obsidian-mcp-status-dot ${server.enabled ? 'active' : 'inactive'}` });
+        item.createSpan({ text: server.name, cls: 'super-obsidian-mcp-status-name' });
+        item.createSpan({
+          text: server.enabled ? t('mcpActive') : t('mcpInactive'),
+          cls: `super-obsidian-mcp-status-label ${server.enabled ? 'active' : 'inactive'}`,
+        });
+      }
+    }
   }
 }

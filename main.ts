@@ -25,6 +25,7 @@ import { saveChat, type ChatMessage } from './src/chat/persistence';
 import { executeDirective, parseDirective } from './src/chat/commands';
 import { MCPClientManager } from './src/mcp/client';
 import { MCPRegistry } from './src/mcp/registry';
+import { setLanguage, t } from './src/i18n';
 
 export default class SuperObsidianPlugin extends Plugin {
   settings!: SuperObsidianSettings;
@@ -56,20 +57,20 @@ export default class SuperObsidianPlugin extends Plugin {
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
 
     // 리본 아이콘
-    this.addRibbonIcon('message-circle', 'Open AI Chat', () => {
+    this.addRibbonIcon('message-circle', t('cmdOpenAiChat'), () => {
       void this.openChatView();
     });
 
     // 명령어
     this.addCommand({
       id: 'open-ai-chat',
-      name: 'Open AI Chat',
+      name: t('cmdOpenAiChat'),
       callback: () => this.openChatView(),
     });
 
     this.addCommand({
       id: 'reindex-vault',
-      name: 'Reindex Vault for RAG',
+      name: t('cmdReindexVault'),
       callback: async () => {
         if (!this.vaultIndexer) {
           const rag = this.settings.rag;
@@ -103,12 +104,12 @@ export default class SuperObsidianPlugin extends Plugin {
 
     this.addCommand({
       id: 'execute-ai-directive',
-      name: 'Execute AI Directive',
+      name: t('cmdExecuteAiDirective'),
       editorCallback: async (editor) => {
         const line = editor.getLine(editor.getCursor().line);
         const directive = parseDirective(line);
         if (!directive) {
-          new Notice('현재 줄에서 AI 지시어를 찾을 수 없습니다.');
+          new Notice(t('noDirectiveFound'));
           return;
         }
         await executeDirective(editor, this, directive);
@@ -205,6 +206,7 @@ export default class SuperObsidianPlugin extends Plugin {
     }
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperObsidianSettings>);
+    setLanguage(this.settings.language);
   }
 
   async saveSettings(): Promise<void> {
