@@ -44,12 +44,17 @@ export function isExcludedExt(filePath: string, excludeExts: string[]): boolean 
 
 /**
  * Vault adapter를 통해 JSON 파일을 씁니다.
+ * 상위 디렉토리가 없으면 자동으로 생성합니다.
  */
 export async function writeJsonToVault(
   adapter: DataAdapter,
   path: string,
   data: unknown,
 ): Promise<void> {
+  const dir = path.split('/').slice(0, -1).join('/');
+  if (dir) {
+    await adapter.mkdir(dir);
+  }
   const json = JSON.stringify(data, null, 2);
   await adapter.write(path, json);
 }
