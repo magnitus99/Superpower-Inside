@@ -237,6 +237,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
       }
     }
+    
+    // Sort models by label alphabetically
+    allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
 
     new Setting(containerEl)
       .setName('Default Model')
@@ -424,11 +427,20 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         modelListContainer.setText('No models found.');
         return;
       }
-      models.forEach((model) => {
+      
+      // Sort models alphabetically
+      const sortedModels = [...models].sort((a, b) => a.localeCompare(b, 'en'));
+      
+      // Add model count header
+      const header = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-list-header' });
+      header.textContent = `${sortedModels.length} models available`;
+      
+      sortedModels.forEach((model) => {
         const item = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-item' });
         const checkbox = item.createEl('input', { type: 'checkbox' });
         checkbox.checked = config.models.includes(model);
-        item.appendText(` ${model}`);
+        item.createSpan({ text: model });
+
         checkbox.addEventListener('change', () => {
           void (async () => {
             if (checkbox.checked) {
