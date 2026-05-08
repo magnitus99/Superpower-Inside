@@ -16,6 +16,14 @@ function normalizeOllamaBaseUrl(baseUrl: string): string {
   return url.replace(/\/+$/, '');
 }
 
+function normalizeOpenRouterBaseUrl(baseUrl: string): string {
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  if (!url.endsWith('/api')) {
+    url = url + '/api';
+  }
+  return url;
+}
+
 export async function validateProviderApi(
   key: ProviderKey,
   config: ProviderConfig,
@@ -27,6 +35,12 @@ export async function validateProviderApi(
     return validateClaude(config);
   }
   if (key === 'openai' || key === 'openRouter') {
+    if (key === 'openRouter') {
+      config = {
+        ...config,
+        baseUrl: normalizeOpenRouterBaseUrl(config.baseUrl ?? 'https://openrouter.ai/api'),
+      };
+    }
     return validateOpenAICompatible(config);
   }
   return { valid: false, models: [], error: 'Unknown provider' };
@@ -62,19 +76,20 @@ function classifyFetchError(err: unknown): string {
 async function validateOpenAICompatible(config: ProviderConfig): Promise<ValidationResult> {
   const baseUrl = (config.baseUrl ?? 'https://api.openai.com').replace(/\/$/, '');
   try {
-    const res = await fetch(`${baseUrl}/v1/models`, {
+    const res = await requestUrl({
+      url: `${baseUrl}/v1/models`,
       method: 'GET',
       headers: config.apiKey
         ? { Authorization: `Bearer ${config.apiKey}` }
         : {},
     });
-    if (!res.ok) {
-      const text = await res.text();
+    if (res.status >= 400) {
+      const text = typeof res.text === 'string' ? res.text : String(res.text);
       return { valid: false, models: [], error: classifyHttpError(res.status, text) };
     }
-    const data = (await res.json()) as { data?: Array<{ id: string }> };
+    const data = (res.json as { data?: Array<{ id: string }> }) ?? { data: [] };
     const models =
-      data.data?.map((m) => m.id).filter((id) => !id.includes('embedding') && !id.includes('tts') && !id.includes('dall-e') && !id.includes('whisper')) ?? [];
+      data.data?.map((m) => m.id).filter((id) => !id.includes('embedding') && !id.includes('tts') && !id.includes('dall-e') && !id.includes('whisper')).sort((a, b) => a.localeCompare(b)) ?? [];
     return { valid: true, models };
   } catch (err) {
     return { valid: false, models: [], error: classifyFetchError(err) };
@@ -84,19 +99,20 @@ async function validateOpenAICompatible(config: ProviderConfig): Promise<Validat
 async function validateClaude(config: ProviderConfig): Promise<ValidationResult> {
   const baseUrl = (config.baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '');
   try {
-    const res = await fetch(`${baseUrl}/v1/models`, {
+    const res = await requestUrl({
+      url: `${baseUrl}/v1/models`,
       method: 'GET',
       headers: {
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
       },
     });
-    if (!res.ok) {
-      const text = await res.text();
+    if (res.status >= 400) {
+      const text = typeof res.text === 'string' ? res.text : String(res.text);
       return { valid: false, models: [], error: classifyHttpError(res.status, text) };
     }
-    const data = (await res.json()) as { data?: Array<{ id: string }> };
-    const models = data.data?.map((m) => m.id) ?? [];
+    const data = (res.json as { data?: Array<{ id: string }> }) ?? { data: [] };
+    const models = (data.data?.map((m) => m.id) ?? []).sort((a, b) => a.localeCompare(b));
     return { valid: true, models };
   } catch (err) {
     return { valid: false, models: [], error: classifyFetchError(err) };
@@ -119,7 +135,7 @@ async function validateOllama(config: ProviderConfig): Promise<ValidationResult>
       return { valid: false, models: [], error: classifyHttpError(res.status, text) };
     }
     const data = (res.json as { models?: Array<{ name: string }> }) ?? { models: [] };
-    const models = data.models?.map((m) => m.name) ?? [];
+    const models = (data.models?.map((m) => m.name) ?? []).sort((a, b) => a.localeCompare(b));
     return { valid: true, models };
   } catch (err) {
     console.error('[SuperObsidian] Ollama validate error:', err);
