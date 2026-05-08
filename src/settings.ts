@@ -58,6 +58,8 @@ export interface SuperObsidianSettings {
   mcpServers: MCPServerConfig[];
   chat: ChatConfig;
   pluginAwareEnabled: boolean;
+  autoSaveEnabled: boolean;
+  autoSaveDebounceMs: number;
 }
 
 export const DEFAULT_SETTINGS: SuperObsidianSettings = {
@@ -104,6 +106,8 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     defaultModel: 'openai:gpt-4o-mini',
   },
   pluginAwareEnabled: false,
+  autoSaveEnabled: true,
+  autoSaveDebounceMs: 500,
 };export interface PluginLike {
   app: App;
   settings: SuperObsidianSettings;
@@ -136,12 +140,48 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
   private tabPanels: Map<SettingsTabId, HTMLDivElement> = new Map();
-  
+
   private validationCache: ProviderValidationCache = {};
+
+  private saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pendingSave = false;
 
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
     this.plugin = plugin;
+  }
+
+  debouncedSave(): void {
+    if (!this.plugin.settings.autoSaveEnabled) {
+      void this.plugin.saveSettings();
+      return;
+    }
+
+    this.pendingSave = true;
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+    }
+    this.saveTimeout = setTimeout(() => {
+      this.saveTimeout = null;
+      this.pendingSave = false;
+      void this.plugin.saveSettings();
+    }, this.plugin.settings.autoSaveDebounceMs);
+  }
+
+  flushSave(): void {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+      this.saveTimeout = null;
+    }
+    if (this.pendingSave) {
+      this.pendingSave = false;
+      void this.plugin.saveSettings();
+    }
+  }
+
+  hide(): void {
+    this.flushSave();
+    super.hide();
   }
 
   display(): void {
@@ -229,6 +269,32 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
   
   private buildGeneralTab(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName('Auto-save settings')
+      .setDesc('Automatically save settings after changes (reduces disk I/O)')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoSaveEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.autoSaveEnabled = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-save debounce delay')
+      .setDesc('Milliseconds to wait after a change before saving (0–5000 ms)')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 5000, 100)
+          .setValue(this.plugin.settings.autoSaveDebounceMs)
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.autoSaveDebounceMs = value;
+            this.debouncedSave();
+          }),
+      );
+
     const allModels: { value: string; label: string }[] = [];
     for (const key of PROVIDER_KEYS) {
       const conf = this.plugin.settings[key];
@@ -237,7 +303,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
       }
     }
-    
+
     // Sort models by label alphabetically
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
 
@@ -255,9 +321,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           dropdown.setValue(this.plugin.settings.chat.defaultModel);
           dropdown.setDisabled(false);
         }
-        dropdown.onChange(async (value) => {
+        dropdown.onChange((value) => {
           this.plugin.settings.chat.defaultModel = value;
-          await this.plugin.saveSettings();
+          this.debouncedSave();
         });
       });
   }
@@ -277,12 +343,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setValue(this.plugin.settings.rag.excludePaths.join(', '))
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.rag.excludePaths = value
               .split(',')
               .map((s) => s.trim())
               .filter(Boolean);
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
 
@@ -292,12 +358,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setValue(this.plugin.settings.rag.excludeExts.join(', '))
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.rag.excludeExts = value
               .split(',')
               .map((s) => s.trim())
               .filter(Boolean);
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
 
@@ -309,9 +375,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           .setLimits(100, 5000, 100)
           .setValue(this.plugin.settings.rag.chunkSize)
           .setDynamicTooltip()
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.rag.chunkSize = value;
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
 
@@ -323,9 +389,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           .addOption('json', 'JSON File (vault.adapter)')
           .addOption('indexeddb', 'IndexedDB (Dexie)')
           .setValue(this.plugin.settings.rag.vectorStoreType)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.rag.vectorStoreType = value as 'json' | 'indexeddb';
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
   }
@@ -338,9 +404,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setValue(this.plugin.settings.chat.saveFolder)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.chat.saveFolder = value.trim();
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
   }
@@ -359,9 +425,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.pluginAwareEnabled)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.pluginAwareEnabled = value;
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
   }
@@ -378,9 +444,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName('Enabled')
       .addToggle((toggle) =>
-        toggle.setValue(config.enabled).onChange(async (value) => {
+        toggle.setValue(config.enabled).onChange((value) => {
           config.enabled = value;
-          await this.plugin.saveSettings();
+          this.debouncedSave();
         }),
       );
 
@@ -390,9 +456,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         text
           .setPlaceholder('sk-...')
           .setValue(config.apiKey)
-          .onChange(async (value) => {
+          .onChange((value) => {
             config.apiKey = value.trim();
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
 
@@ -402,7 +468,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         text
           .setPlaceholder('https://api...')
           .setValue(config.baseUrl ?? '')
-          .onChange(async (value) => {
+          .onChange((value) => {
             let url = value.trim();
             if (key === 'ollama' || key === 'ollamaCloud') {
               url = url.replace(/\/+$/, '');
@@ -412,7 +478,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
               url = url.replace(/\/+$/, '');
             }
             config.baseUrl = url || undefined;
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
       );
 
@@ -442,14 +508,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         item.createSpan({ text: model });
 
         checkbox.addEventListener('change', () => {
-          void (async () => {
-            if (checkbox.checked) {
-              config.models.push(model);
-            } else {
-              config.models = config.models.filter((m) => m !== model);
-            }
-            await this.plugin.saveSettings();
-          })();
+          if (checkbox.checked) {
+            config.models.push(model);
+          } else {
+            config.models = config.models.filter((m) => m !== model);
+          }
+          this.debouncedSave();
         });
       });
     };
@@ -504,9 +568,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       new Setting(row)
         .setName('Enabled')
         .addToggle((toggle) =>
-          toggle.setValue(server.enabled).onChange(async (value) => {
+          toggle.setValue(server.enabled).onChange((value) => {
             server.enabled = value;
-            await this.plugin.saveSettings();
+            this.debouncedSave();
           }),
         );
 
@@ -518,9 +582,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             .addOption('sse', 'sse')
             .addOption('http', 'http')
             .setValue(server.transport)
-            .onChange(async (value) => {
+            .onChange((value) => {
               server.transport = value as 'stdio' | 'sse' | 'http';
-              await this.plugin.saveSettings();
+              this.debouncedSave();
               this.buildMCPList(containerEl);
             }),
         );
@@ -529,34 +593,34 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         new Setting(row)
           .setName('Command')
           .addText((text) =>
-            text.setValue(server.command ?? '').onChange(async (value) => {
+            text.setValue(server.command ?? '').onChange((value) => {
               server.command = value.trim();
-              await this.plugin.saveSettings();
+              this.debouncedSave();
             }),
           );
         new Setting(row)
           .setName('Arguments')
           .addText((text) =>
-            text.setValue((server.args ?? []).join(' ')).onChange(async (value) => {
+            text.setValue((server.args ?? []).join(' ')).onChange((value) => {
               server.args = value.trim().split(/\s+/).filter(Boolean);
-              await this.plugin.saveSettings();
+              this.debouncedSave();
             }),
           );
       } else {
         new Setting(row)
           .setName('URL')
           .addText((text) =>
-            text.setValue(server.url ?? '').onChange(async (value) => {
+            text.setValue(server.url ?? '').onChange((value) => {
               server.url = value.trim();
-              await this.plugin.saveSettings();
+              this.debouncedSave();
             }),
           );
       }
 
       new Setting(row).addButton((btn) =>
-        btn.setButtonText('Delete').onClick(async () => {
+        btn.setButtonText('Delete').onClick(() => {
           this.plugin.settings.mcpServers.splice(i, 1);
-          await this.plugin.saveSettings();
+          this.flushSave();
           this.buildMCPList(containerEl);
         }),
       );
@@ -566,13 +630,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       btn
         .setButtonText('+ Add MCP Server')
         .setCta()
-        .onClick(async () => {
+        .onClick(() => {
           this.plugin.settings.mcpServers.push({
             name: `mcp-server-${this.plugin.settings.mcpServers.length + 1}`,
             transport: 'http',
             enabled: true,
           });
-          await this.plugin.saveSettings();
+          this.flushSave();
           this.buildMCPList(containerEl);
         }),
     );
