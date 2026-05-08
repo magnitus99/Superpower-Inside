@@ -113,6 +113,26 @@
   margin-left: 6px;
 }
 
+.super-obsidian-settings-validation-status {
+  font-size: var(--font-ui-smaller);
+  margin-top: 4px;
+  min-height: 1.2em;
+}
+
+.super-obsidian-settings-model-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.super-obsidian-settings-model-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-small);
+}
+
 @keyframes super-obsidian-spin {
   to {
     transform: rotate(360deg);

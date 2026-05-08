@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import Dexie from 'dexie';
 
 export interface EmbeddingRecord {
@@ -78,10 +79,12 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private baseUrl: string;
   private model: string;
+  private apiKey?: string;
 
-  constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text') {
+  constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text', apiKey?: string) {
     this.baseUrl = baseUrl;
     this.model = model;
+    this.apiKey = apiKey;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -90,15 +93,20 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const res = await fetch(`${this.baseUrl}/api/embed`, {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+    const res = await requestUrl({
+      url: `${this.baseUrl}/api/embed`,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ model: this.model, input: texts }),
     });
-    if (!res.ok) {
-      throw new Error(`Ollama embedding failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`Ollama embedding failed: ${res.status} ${res.text}`);
     }
-    const data = (await res.json()) as { embeddings?: number[][] };
+    const data = res.json as { embeddings?: number[][] };
     if (!data.embeddings) {
       throw new Error('Ollama embedding response missing embeddings');
     }
