@@ -266,6 +266,18 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         panel.classList.remove('is-active');
       }
     });
+
+    if (tabId === 'general') {
+      this.refreshGeneralTab();
+    }
+  }
+
+  private refreshGeneralTab(): void {
+    const generalPanel = this.tabPanels.get('general');
+    if (generalPanel) {
+      generalPanel.empty();
+      this.buildGeneralTab(generalPanel);
+    }
   }
   
   private buildGeneralTab(containerEl: HTMLElement): void {
