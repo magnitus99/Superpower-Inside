@@ -1,4 +1,7 @@
-import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { isExcludedExt } from './utils/vault';
+import type { VectorStore } from './rag/store';
+import type { VaultIndexer } from './rag/indexer';
 
 export interface ProviderConfig {
   apiKey: string;
@@ -19,13 +22,6 @@ export const PROVIDER_LABELS: Record<typeof PROVIDER_KEYS[number], string> = {
 
 export type ProviderKey = typeof PROVIDER_KEYS[number];
 
-export interface ProviderConfig {
-  apiKey: string;
-  baseUrl?: string;
-  models: string[];
-  enabled: boolean;
-}
-
 export interface MCPServerConfig {
   name: string;
   transport: 'stdio' | 'sse' | 'http';
@@ -35,12 +31,48 @@ export interface MCPServerConfig {
   enabled: boolean;
 }
 
+export type EmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
+
+export interface EmbeddingModelInfo {
+  id: string;
+  name: string;
+  dimensions: number;
+  description: string;
+}
+
+export const EMBEDDING_MODELS: Record<EmbeddingProviderKey, EmbeddingModelInfo[]> = {
+  openai: [
+    { id: 'text-embedding-3-small', name: 'text-embedding-3-small', dimensions: 1536, description: '가장 널리 쓰이는 기본 모델. 성능과 비용의 균형이 뛰어납니다.' },
+    { id: 'text-embedding-3-large', name: 'text-embedding-3-large', dimensions: 3072, description: '최고 성능 모델. 다국어와 복잡한 문맥에 강점이 있습니다.' },
+  ],
+  openRouter: [
+    { id: 'openai/text-embedding-3-small', name: 'OpenAI text-embedding-3-small (via OpenRouter)', dimensions: 1536, description: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.' },
+    { id: 'baai/bge-m3', name: 'BAAI bge-m3', dimensions: 1024, description: '다국어(한국어 포함) 최적화. 8K 컨텍스트.' },
+    { id: 'qwen/qwen3-embedding-8b', name: 'Qwen3 Embedding 8B', dimensions: 1024, description: '32K 컨텍스트 지원. 긴 문서에 적합.' },
+  ],
+  ollama: [
+    { id: 'nomic-embed-text', name: 'nomic-embed-text', dimensions: 768, description: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.' },
+  ],
+  other: [], // 자유 입력 모델
+};
+
+export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
+  openai: 'OpenAI',
+  ollama: 'Ollama (Local)',
+  openRouter: 'OpenRouter',
+  other: 'Other (Custom)',
+};
+
 export interface RAGConfig {
   excludePaths: string[];
   excludeExts: string[];
   chunkSize: number;
   overlap: number;
   vectorStoreType: 'json' | 'indexeddb';
+  embeddingProvider: EmbeddingProviderKey;
+  embeddingModel: string;
+  autoUpdateEnabled: boolean;
+  autoUpdateIntervalMs: number;
 }
 
 export interface ChatConfig {
@@ -99,6 +131,10 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     chunkSize: 1000,
     overlap: 100,
     vectorStoreType: 'json',
+    embeddingProvider: 'openai',
+    embeddingModel: 'text-embedding-3-small',
+    autoUpdateEnabled: false,
+    autoUpdateIntervalMs: 300000,
   },
   mcpServers: [],
   chat: {
@@ -348,10 +384,287 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     this.buildProviderSettings(containerEl, 'OpenRouter', 'openRouter');
   }
   
+  // RAG 탭 — 4섹션 구조
   private buildRAGTab(containerEl: HTMLElement): void {
-    new Setting(containerEl)
-      .setName('Exclude Paths')
-      .setDesc('Folders to exclude from indexing, comma-separated')
+    this.buildEmbeddingProviderSection(containerEl);
+    this.buildStatsSection(containerEl);
+    this.buildControlsSection(containerEl);
+    this.buildIndexingOptionsSection(containerEl);
+  }
+
+  private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '임베딩 프로바이더' });
+
+    const rag = this.plugin.settings.rag;
+    const modelsForProvider = EMBEDDING_MODELS[rag.embeddingProvider];
+    const isOther = rag.embeddingProvider === 'other';
+
+    const providerNotice = section.createDiv({ cls: 'super-obsidian-model-description' });
+    providerNotice.setText('API 키는 Providers 탭에서 설정한 값을 사용합니다. 여기서는 임베딩 전용 모델만 선택하세요.');
+
+    new Setting(section)
+      .setName('Provider')
+      .setDesc('임베딩에 사용할 프로바이더를 선택하세요')
+      .addDropdown((dropdown) => {
+        for (const [key, label] of Object.entries(EMBEDDING_PROVIDER_LABELS)) {
+          dropdown.addOption(key, label);
+        }
+        dropdown.setValue(rag.embeddingProvider);
+        dropdown.onChange((value) => {
+          rag.embeddingProvider = value as EmbeddingProviderKey;
+          const newModels = EMBEDDING_MODELS[value as EmbeddingProviderKey];
+          if (newModels.length > 0) {
+            rag.embeddingModel = newModels[0].id;
+          } else {
+            rag.embeddingModel = '';
+          }
+          this.debouncedSave();
+          section.empty();
+          this.buildEmbeddingProviderSection(containerEl);
+        });
+      });
+
+    if (isOther) {
+      new Setting(section)
+        .setName('Model ID')
+        .setDesc('임베딩 모델 ID를 직접 입력하세요')
+        .addText((text) =>
+          text
+            .setValue(rag.embeddingModel)
+            .setPlaceholder('예: my-custom-model')
+            .onChange((value) => {
+              rag.embeddingModel = value.trim();
+              this.debouncedSave();
+            }),
+        );
+    } else if (modelsForProvider.length > 0) {
+      new Setting(section)
+        .setName('Model')
+        .setDesc('사용할 임베딩 모델을 선택하세요')
+        .addDropdown((dropdown) => {
+          for (const model of modelsForProvider) {
+            dropdown.addOption(model.id, `${model.name} (${model.dimensions}차원)`);
+          }
+          dropdown.setValue(rag.embeddingModel);
+          dropdown.onChange((value) => {
+            rag.embeddingModel = value;
+            this.debouncedSave();
+            const selected = modelsForProvider.find((m) => m.id === value);
+            if (selected && descEl) {
+              descEl.setText(selected.description);
+            }
+          });
+        });
+
+      const selectedModel = modelsForProvider.find((m) => m.id === rag.embeddingModel);
+      const descEl = section.createDiv({ cls: 'super-obsidian-model-description' });
+      descEl.setText(selectedModel?.description ?? '');
+    }
+
+    const statusEl = section.createDiv({ cls: 'super-obsidian-connection-status' });
+    new Setting(section)
+      .setName('연결 테스트')
+      .addButton((button) => {
+        button.setButtonText('Test Connection');
+        button.onClick(async () => {
+          statusEl.setText('');
+          button.setDisabled(true);
+          statusEl.setText('🔄 Testing...');
+
+          try {
+            const config = rag.embeddingProvider === 'other'
+              ? null
+              : this.plugin.settings[rag.embeddingProvider as ProviderKey];
+            const { validateEmbeddingConnection } = await import('./llm/validation');
+            const result = await validateEmbeddingConnection(
+              rag.embeddingProvider,
+              rag.embeddingModel,
+              config ?? { apiKey: '', models: [], enabled: false },
+            );
+
+            if (result.valid) {
+              statusEl.setText(`✅ 연결 성공! ${result.models.length}개 모델 확인됨`);
+            } else {
+              statusEl.setText(`❌ 연결 실패: ${result.error}`);
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            statusEl.setText(`❌ 오류: ${msg}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
+  }
+
+  private buildStatsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱스 통계' });
+
+    const grid = section.createDiv({ cls: 'super-obsidian-stats-grid' });
+
+    // Async load stats
+    this.renderStats(grid).catch(() => {
+      grid.setText('통계를 불러올 수 없습니다.');
+    });
+
+    // Refresh button
+    new Setting(section)
+      .setName('')
+      .addButton((btn) => {
+        btn.setButtonText('새로고침');
+        btn.onClick(() => {
+          grid.empty();
+          void this.renderStats(grid);
+        });
+      });
+  }
+
+  private async renderStats(gridEl: HTMLElement): Promise<void> {
+    const rag = this.plugin.settings.rag;
+    const vault = this.plugin.app.vault;
+
+    // Total files
+    const { getMarkdownFilesFiltered } = await import('./utils/vault');
+    const allFiles = getMarkdownFilesFiltered(vault, rag.excludePaths).filter(
+      (f) => !isExcludedExt(f.path, rag.excludeExts),
+    );
+    const totalFiles = allFiles.length;
+
+    // Indexed files and vectors (from plugin's vector store)
+    let indexedFiles = 0;
+    let totalVectors = 0;
+    const p = this.plugin as unknown as { vectorStore?: VectorStore };
+    if (p.vectorStore) {
+      const indexedPaths = await p.vectorStore.getIndexedFilePaths();
+      indexedFiles = indexedPaths.length;
+      const stats = await p.vectorStore.getStats();
+      totalVectors = stats.totalEntries;
+    }
+
+    const pendingFiles = Math.max(0, totalFiles - indexedFiles);
+
+    const stats = [
+      { value: String(totalFiles), label: '전체 파일', desc: '볼트 내 마크다운 파일 수' },
+      { value: String(indexedFiles), label: '인덱싱 완료', desc: '임베딩 처리된 파일 수' },
+      { value: String(pendingFiles), label: '대기 중', desc: '아직 인덱싱되지 않은 파일 수' },
+      { value: String(totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
+    ];
+
+    for (const stat of stats) {
+      const card = gridEl.createDiv({ cls: 'super-obsidian-stat-card' });
+      card.createDiv({ cls: 'super-obsidian-stat-value', text: stat.value });
+      card.createDiv({ cls: 'super-obsidian-stat-label', text: stat.label });
+      card.createDiv({ cls: 'super-obsidian-stat-desc', text: stat.desc });
+    }
+  }
+
+  private buildControlsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 제어' });
+
+    const controls = section.createDiv({ cls: 'super-obsidian-rag-controls' });
+    const p = this.plugin as unknown as { vaultIndexer?: VaultIndexer; vectorStore?: VectorStore; embeddingProvider?: { clearCache(): Promise<void> } };
+    const hasIndexer = !!p.vaultIndexer;
+
+    controls.createEl('button', { text: '대기 중인 파일 업데이트' }, (btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          if (!hasIndexer) {
+            new Notice('RAG 인덱서가 초기화되지 않았습니다.');
+            return;
+          }
+          new Notice('대기 중인 파일 인덱싱 시작...');
+          try {
+            const result = await p.vaultIndexer!.indexPending();
+            new Notice(`${result.indexed}개 파일 인덱싱 완료, ${result.skipped}개 파일 스킵됨`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`인덱싱 실패: ${msg}`);
+          }
+        })();
+      });
+    });
+
+    controls.createEl('button', { text: '전체 재인덱싱' }, (btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          if (!hasIndexer) {
+            new Notice('RAG 인덱서가 초기화되지 않았습니다.');
+            return;
+          }
+          new Notice('전체 재인덱싱 시작...');
+          try {
+            const count = await p.vaultIndexer!.reindexAll();
+            new Notice(`${count}개 파일 재인덱싱 완료`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`재인덱싱 실패: ${msg}`);
+          }
+        })();
+      });
+    });
+
+    controls.createEl('button', { text: '임베딩 데이터 초기화' }, (btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          if (!confirm('모든 임베딩 데이터를 삭제하시겠습니까? 복구할 수 없습니다.')) {
+            return;
+          }
+          try {
+            if (p.vectorStore) {
+              await p.vectorStore.clear();
+            }
+            if (p.embeddingProvider) {
+              await p.embeddingProvider.clearCache();
+            }
+            new Notice('모든 임베딩 데이터가 초기화되었습니다.');
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`초기화 실패: ${msg}`);
+          }
+        })();
+      });
+    });
+  }
+
+  private buildIndexingOptionsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 옵션' });
+
+    // Auto-update toggle
+    new Setting(section)
+      .setName('자동 업데이트')
+      .setDesc('설정된 간격으로 새 파일을 자동으로 인덱싱합니다')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.rag.autoUpdateEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.rag.autoUpdateEnabled = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    // Auto-update interval slider
+    new Setting(section)
+      .setName('자동 업데이트 간격')
+      .setDesc('자동 인덱싱 간격 (분)')
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 60, 1)
+          .setValue(this.plugin.settings.rag.autoUpdateIntervalMs / 60000)
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.rag.autoUpdateIntervalMs = value * 60000;
+            this.debouncedSave();
+          }),
+      );
+
+    // Exclude Paths
+    new Setting(section)
+      .setName('제외할 경로')
+      .setDesc('인덱싱에서 제외할 폴더 (쉼표로 구분)')
       .addText((text) =>
         text
           .setValue(this.plugin.settings.rag.excludePaths.join(', '))
@@ -364,9 +677,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName('Exclude Extensions')
-      .setDesc('Extensions to exclude from indexing, comma-separated')
+    // Exclude Extensions
+    new Setting(section)
+      .setName('제외할 확장자')
+      .setDesc('인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)')
       .addText((text) =>
         text
           .setValue(this.plugin.settings.rag.excludeExts.join(', '))
@@ -379,9 +693,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName('Chunk Size')
-      .setDesc('Max characters per markdown chunk')
+    // Chunk Size
+    new Setting(section)
+      .setName('청크 크기')
+      .setDesc('마크다운 청크당 최대 문자 수')
       .addSlider((slider) =>
         slider
           .setLimits(100, 5000, 100)
@@ -393,13 +708,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName('Vector Store Type')
-      .setDesc('IndexedDB works on desktop/mobile but does not sync with Obsidian Sync')
+    // Vector Store Type
+    new Setting(section)
+      .setName('벡터 저장소 유형')
+      .setDesc(
+        'JSON File은 볼트 안의 JSON 파일에 저장되어 Obsidian Sync/Git 등으로 동기화됩니다. IndexedDB는 브라우저 로컬 데이터베이스에 저장되며, 큰 임베딩 데이터에서 더 빠르고 효율적이지만 수동 백업 없이는 동기화되지 않습니다.',
+      )
       .addDropdown((dropdown) =>
         dropdown
-          .addOption('json', 'JSON File (vault.adapter)')
-          .addOption('indexeddb', 'IndexedDB (Dexie)')
+          .addOption('json', 'JSON File')
+          .addOption('indexeddb', 'IndexedDB')
           .setValue(this.plugin.settings.rag.vectorStoreType)
           .onChange((value) => {
             this.plugin.settings.rag.vectorStoreType = value as 'json' | 'indexeddb';

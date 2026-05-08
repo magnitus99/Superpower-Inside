@@ -1,6 +1,7 @@
 import { Plugin, Notice } from 'obsidian';
 import {
   type SuperObsidianSettings,
+  type ProviderConfig,
   DEFAULT_SETTINGS,
   SuperObsidianSettingTab,
 } from './src/settings';
@@ -33,6 +34,7 @@ export default class SuperObsidianPlugin extends Plugin {
   private vaultIndexer: VaultIndexer | null = null;
   private mcpRegistry: MCPRegistry | null = null;
   private modifyCleanup: (() => void) | null = null;
+  private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -108,6 +110,10 @@ export default class SuperObsidianPlugin extends Plugin {
       this.modifyCleanup();
       this.modifyCleanup = null;
     }
+    if (this.autoUpdateTimer) {
+      clearInterval(this.autoUpdateTimer);
+      this.autoUpdateTimer = null;
+    }
     if (this.mcpRegistry) {
       void this.mcpRegistry.disconnectAll();
     }
@@ -153,6 +159,23 @@ export default class SuperObsidianPlugin extends Plugin {
       const oldModel = ((data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined)?.[0] ?? '';
       if (oldProvider && oldModel) {
         chatObj.defaultModel = `${oldProvider}:${oldModel}`;
+      }
+    }
+
+    // Migrate old RAG settings (pre-overhaul)
+    const rag = data.rag as Record<string, unknown> | undefined;
+    if (rag && typeof rag === 'object') {
+      if (!('embeddingProvider' in rag)) {
+        rag.embeddingProvider = 'openai';
+      }
+      if (!('embeddingModel' in rag)) {
+        rag.embeddingModel = 'text-embedding-3-small';
+      }
+      if (typeof rag.autoUpdateEnabled !== 'boolean') {
+        rag.autoUpdateEnabled = false;
+      }
+      if (typeof rag.autoUpdateIntervalMs !== 'number') {
+        rag.autoUpdateIntervalMs = 300000;
       }
     }
 
@@ -203,42 +226,39 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   private initRAG(): void {
-    const defaultModel = this.settings.chat.defaultModel;
-    if (!defaultModel) {
-      this.vectorStore = null;
-      this.embeddingProvider = null;
-      this.ragEngine = null;
-      this.vaultIndexer = null;
-      return;
-    }
-    const parts = defaultModel.split(':');
-    if (parts.length < 2) {
-      this.vectorStore = null;
-      this.embeddingProvider = null;
-      this.ragEngine = null;
-      this.vaultIndexer = null;
-      return;
-    }
-    const activeKey = parts[0] as ProviderKey;
-    const config = this.settings[activeKey];
-    if (!config?.enabled) {
-      this.vectorStore = null;
-      this.embeddingProvider = null;
-      this.ragEngine = null;
-      this.vaultIndexer = null;
-      return;
+    // Clear any existing timer
+    this.clearRAG();
+
+    const rag = this.settings.rag;
+    const providerKey = rag.embeddingProvider;
+
+    // Resolve config for known providers (use provider tab settings)
+    let config: ProviderConfig | null = null;
+    if (providerKey !== 'other') {
+      config = this.settings[providerKey as ProviderKey];
+      if (!config?.enabled) {
+        console.warn(`[Super-Obsidian] RAG embedding provider "${providerKey}" is disabled.`);
+        return;
+      }
     }
 
-    // Embedding provider 선택
-    if (activeKey === 'ollama' || activeKey === 'ollamaCloud') {
-      this.embeddingProvider = new CachedEmbeddingProvider(
-        new OllamaEmbeddingProvider(config.baseUrl, 'nomic-embed-text', config.apiKey),
-      );
-    } else {
-      this.embeddingProvider = new CachedEmbeddingProvider(
-        new OpenAIEmbeddingProvider(config.apiKey, config.baseUrl),
-      );
+    let baseUrl: string | undefined;
+    let apiKey = '';
+    if (config) {
+      baseUrl = config.baseUrl;
+      apiKey = config.apiKey;
     }
+
+    // Create embedding provider
+    let rawProvider: EmbeddingProvider;
+    if (providerKey === 'ollama') {
+      rawProvider = new OllamaEmbeddingProvider(baseUrl, rag.embeddingModel, apiKey);
+    } else {
+      // openai, openRouter, other all use OpenAI-compatible endpoint
+      rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel);
+    }
+
+    this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, rag.embeddingModel);
 
     // Vector store
     this.vectorStore = new JsonFileVectorStore(
@@ -246,7 +266,7 @@ export default class SuperObsidianPlugin extends Plugin {
       '.super-obsidian/vectors.json',
     );
 
-    // RAG 엔진
+    // RAG engine
     this.ragEngine = new RAGQueryEngine(this.vectorStore, this.embeddingProvider);
 
     // Indexer
@@ -256,6 +276,35 @@ export default class SuperObsidianPlugin extends Plugin {
       this.embeddingProvider,
       this.settings.rag,
     );
+
+    // Auto-update timer
+    this.setupAutoUpdate();
+  }
+
+  private clearRAG(): void {
+    if (this.autoUpdateTimer) {
+      clearInterval(this.autoUpdateTimer);
+      this.autoUpdateTimer = null;
+    }
+    this.vectorStore = null;
+    this.embeddingProvider = null;
+    this.ragEngine = null;
+    this.vaultIndexer = null;
+  }
+
+  private setupAutoUpdate(): void {
+    if (this.autoUpdateTimer) {
+      clearInterval(this.autoUpdateTimer);
+      this.autoUpdateTimer = null;
+    }
+    if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
+      this.autoUpdateTimer = setInterval(
+        () => {
+          void this.vaultIndexer!.indexPending();
+        },
+        this.settings.rag.autoUpdateIntervalMs,
+      );
+    }
   }
 
   private initMCP(): void {

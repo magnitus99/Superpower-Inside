@@ -245,3 +245,83 @@
 .super-obsidian-settings-tab-content.is-active {
   display: block;
 }
+
+/* RAG Section */
+.super-obsidian-rag-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-rag-section-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  margin-bottom: 8px;
+  color: var(--text-normal);
+}
+
+/* Stats Grid */
+.super-obsidian-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.super-obsidian-stat-card {
+  background-color: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.super-obsidian-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.super-obsidian-stat-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.super-obsidian-stat-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+/* Connection Status */
+.super-obsidian-connection-status {
+  margin-top: 8px;
+  min-height: 1.2em;
+  font-size: var(--font-ui-smaller);
+}
+
+/* Model Description */
+.super-obsidian-model-description {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  padding: 8px;
+  background-color: var(--background-secondary);
+  border-radius: 6px;
+  border-left: 4px solid var(--interactive-accent);
+  margin: 8px 0;
+}
+
+/* RAG Controls */
+.super-obsidian-rag-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.super-obsidian-rag-controls button {
+  flex: 1 1 auto;
+  min-width: 120px;
+  max-width: 300px;
+}
