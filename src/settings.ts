@@ -495,7 +495,6 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
 
     const modelListContainer = section.createDiv({ cls: 'super-obsidian-settings-model-list' });
-    modelListContainer.style.display = 'none';
 
     const statusContainer = section.createDiv({ cls: 'super-obsidian-settings-validation-status' });
 
@@ -530,6 +529,17 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       });
     };
 
+    // 초기 렌더링: 저장된 모델 + 캐시된 모델 리스트를 합쳐서 항상 보여줌
+    const getInitialModels = () => {
+      const cached = this.validationCache[key];
+      const models = new Set<string>(config.models);
+      if (cached && cached.valid && cached.models.length > 0) {
+        cached.models.forEach(m => models.add(m));
+      }
+      return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
+    };
+    renderModelList(getInitialModels());
+
     new Setting(section)
       .setName('Validate API Key')
       .addButton((button) => {
@@ -546,21 +556,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
             if (result.valid) {
               statusContainer.setText(`✅ Valid! ${result.models.length} models found.`);
-              modelListContainer.style.display = 'block';
               renderModelList(result.models);
               this.validationCache[key] = result;
             } else {
               statusContainer.setText(`❌ Invalid: ${result.error}`);
-              modelListContainer.style.display = 'none';
-              modelListContainer.empty();
-              this.validationCache[key] = result;
+              // 모델 리스트는 그대로 유지, 숨기지 않음
+              this.validationCache[key] = {
+                valid: false,
+                models: this.validationCache[key]?.models ?? [],
+                error: result.error,
+              };
             }
           } catch (err) {
             spinner.remove();
             const msg = err instanceof Error ? err.message : String(err);
             statusContainer.setText(`❌ Error: ${msg}`);
-            modelListContainer.style.display = 'none';
-            modelListContainer.empty();
+            // 모델 리스트는 그대로 유지, 숨기지 않음
           } finally {
             button.setDisabled(false);
           }
