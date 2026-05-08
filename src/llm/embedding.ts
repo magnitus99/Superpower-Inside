@@ -82,7 +82,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private apiKey?: string;
 
   constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text', apiKey?: string) {
-    this.baseUrl = baseUrl;
+    let normalized = baseUrl.trim().replace(/\/+$/, '');
+    if (normalized.endsWith('/api')) {
+      normalized = normalized.slice(0, -4);
+    }
+    this.baseUrl = normalized.replace(/\/+$/, '');
     this.model = model;
     this.apiKey = apiKey;
   }

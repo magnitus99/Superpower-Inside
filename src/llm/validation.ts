@@ -159,7 +159,7 @@ export async function validateEmbeddingConnection(
         url: `${baseUrl}/api/embed`,
         method: 'POST',
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-        body: JSON.stringify({ input: ['test'] }),
+        body: JSON.stringify({ model: modelId, input: ['test'] }),
       });
       if (res.status >= 400) {
         const text = typeof res.text === 'string' ? res.text : String(res.text);
