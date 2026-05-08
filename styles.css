@@ -1,0 +1,140 @@
+/* Super Obsidian by AI — Plugin Styles */
+
+:root {
+  --super-obsidian-chat-bg: var(--background-primary);
+  --super-obsidian-user-msg-bg: var(--background-modifier-success);
+  --super-obsidian-ai-msg-bg: var(--background-modifier-form-field);
+  --super-obsidian-border: var(--background-modifier-border);
+  --super-obsidian-accent: var(--interactive-accent);
+}
+
+/* Chat View Container */
+.super-obsidian-chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--super-obsidian-chat-bg);
+  padding: 8px;
+  gap: 8px;
+}
+
+.super-obsidian-chat-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px;
+}
+
+/* Message Bubbles */
+.super-obsidian-chat-message {
+  max-width: 90%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.super-obsidian-chat-message.user {
+  align-self: flex-end;
+  background-color: var(--super-obsidian-user-msg-bg);
+  color: var(--text-normal);
+}
+
+.super-obsidian-chat-message.assistant {
+  align-self: flex-start;
+  background-color: var(--super-obsidian-ai-msg-bg);
+  color: var(--text-normal);
+}
+
+.super-obsidian-chat-message.system {
+  align-self: center;
+  background-color: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-style: italic;
+}
+
+/* Input Area */
+.super-obsidian-chat-input-area {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.super-obsidian-chat-input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 36px;
+  max-height: 200px;
+  border: 1px solid var(--super-obsidian-border);
+  border-radius: 6px;
+  padding: 8px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: var(--font-ui-small);
+}
+
+.super-obsidian-chat-send-btn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background-color: var(--super-obsidian-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+
+.super-obsidian-chat-send-btn:hover {
+  filter: brightness(1.1);
+}
+
+.super-obsidian-chat-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Spinner */
+.super-obsidian-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--super-obsidian-border);
+  border-top-color: var(--super-obsidian-accent);
+  border-radius: 50%;
+  animation: super-obsidian-spin 0.8s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+@keyframes super-obsidian-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Settings Tab */
+.super-obsidian-settings-warning {
+  color: var(--text-warning);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 12px;
+}
+
+.super-obsidian-settings-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--super-obsidian-border);
+}
+
+.super-obsidian-settings-section-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  margin-bottom: 8px;
+  color: var(--text-normal);
+}

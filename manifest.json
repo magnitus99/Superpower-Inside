@@ -1,0 +1,9 @@
+{
+  "id": "super-obsidian-by-ai",
+  "name": "Super Obsidian by AI",
+  "version": "0.1.0",
+  "minAppVersion": "0.15.0",
+  "description": "LLM, RAG, MCP, internet search, and sidebar chat for Obsidian",
+  "author": "Super Obsidian Team",
+  "isDesktopOnly": false
+}
