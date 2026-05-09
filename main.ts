@@ -17,7 +17,7 @@ import {
   type EmbeddingProvider,
 } from './src/llm/embedding';
 import { JsonFileVectorStore, type VectorStore } from './src/rag/store';
-import { VaultIndexer, registerModifyEvent } from './src/rag/indexer';
+import { VaultIndexer, registerModifyEvent, registerDeleteEvent, registerRenameEvent } from './src/rag/indexer';
 import { isExcludedExt } from './src/utils/vault';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
@@ -36,6 +36,8 @@ export default class SuperObsidianPlugin extends Plugin {
   private vaultIndexer: VaultIndexer | null = null;
   mcpRegistry: MCPRegistry | null = null;
   private modifyCleanup: (() => void) | null = null;
+  private deleteCleanup: (() => void) | null = null;
+  private renameCleanup: (() => void) | null = null;
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
@@ -127,6 +129,25 @@ export default class SuperObsidianPlugin extends Plugin {
       );
     }
 
+    // 파일 삭제/이름 변경 이벤트
+    if (this.vaultIndexer && this.vectorStore) {
+      this.deleteCleanup = registerDeleteEvent(
+        this.app.vault,
+        this.vectorStore,
+        () => {
+          this.debouncedRefreshStats();
+        },
+      );
+      this.renameCleanup = registerRenameEvent(
+        this.app.vault,
+        this.vaultIndexer,
+        this.vectorStore,
+        () => {
+          this.debouncedRefreshStats();
+        },
+      );
+    }
+
     // 설정 탭
     this.addSettingTab(new SuperObsidianSettingTab(this.app, this));
   }
@@ -135,6 +156,14 @@ export default class SuperObsidianPlugin extends Plugin {
     if (this.modifyCleanup) {
       this.modifyCleanup();
       this.modifyCleanup = null;
+    }
+    if (this.deleteCleanup) {
+      this.deleteCleanup();
+      this.deleteCleanup = null;
+    }
+    if (this.renameCleanup) {
+      this.renameCleanup();
+      this.renameCleanup = null;
     }
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
@@ -204,8 +233,13 @@ export default class SuperObsidianPlugin extends Plugin {
       if (typeof rag.autoUpdateEnabled !== 'boolean') {
         rag.autoUpdateEnabled = false;
       }
-      if (typeof rag.autoUpdateIntervalMs !== 'number') {
-        rag.autoUpdateIntervalMs = 300000;
+      if (typeof rag.autoUpdateIntervalMin !== 'number') {
+        rag.autoUpdateIntervalMin = 5;
+      }
+      rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, rag.autoUpdateIntervalMin as number));
+      if ('autoUpdateIntervalMs' in rag && !('autoUpdateIntervalMin' in rag)) {
+        rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, Math.round((rag.autoUpdateIntervalMs as number) / 60000)));
+        delete rag.autoUpdateIntervalMs;
       }
     }
 
@@ -398,7 +432,7 @@ export default class SuperObsidianPlugin extends Plugin {
     this.vaultIndexer = null;
   }
 
-  private setupAutoUpdate(): void {
+  setupAutoUpdate(): void {
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
@@ -406,10 +440,24 @@ export default class SuperObsidianPlugin extends Plugin {
     if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
       this.autoUpdateTimer = setInterval(
         () => {
-          void this.vaultIndexer!.indexPending();
+          void this.autoIndex();
         },
-        this.settings.rag.autoUpdateIntervalMs,
+        this.settings.rag.autoUpdateIntervalMin * 60000,
       );
+    }
+  }
+
+  private async autoIndex(): Promise<void> {
+    if (!this.vaultIndexer) return;
+    new Notice(t('autoUpdateIndexingStarted'));
+    try {
+      const result = await this.vaultIndexer.indexPending();
+      if (result.indexed > 0) {
+        new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     }
   }
 

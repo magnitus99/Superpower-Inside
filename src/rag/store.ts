@@ -22,6 +22,7 @@ export interface VectorStoreStats {
 
 export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
+  removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number): Promise<VectorEntry[]>;
   clear(): Promise<void>;
   persist(): Promise<void>;
@@ -75,6 +76,17 @@ export class JsonFileVectorStore implements VectorStore {
       }
     }
     await this.persist();
+  }
+
+  async removeByFilePath(filePath: string): Promise<number> {
+    await this.loadIfNeeded();
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
+    const removed = before - this.entries.length;
+    if (removed > 0) {
+      await this.persist();
+    }
+    return removed;
   }
 
   async query(vector: number[], topK: number): Promise<VectorEntry[]> {
@@ -140,7 +152,13 @@ export class MemoryVectorStore implements VectorStore {
     await this.persist();
   }
 
-    async query(vector: number[], topK: number): Promise<VectorEntry[]> {
+  removeByFilePath(filePath: string): Promise<number> {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
+    return Promise.resolve(before - this.entries.length);
+  }
+
+  async query(vector: number[], topK: number): Promise<VectorEntry[]> {
     return Promise.resolve(scoredQuery(this.entries, vector, topK));
   }
 

@@ -9,6 +9,7 @@ export interface I18nKeys {
   delayMs: string;
   defaultModel: string;
   defaultModelDesc: string;
+  refreshModelList: string;
   noModelsEnabled: string;
   pluginAwareGeneration: string;
   pluginAwareGenerationDesc: string;
@@ -79,13 +80,16 @@ export interface I18nKeys {
   reindexingStarted: string;
   reindexingDone: string;
   reindexingFailed: string;
+  autoUpdateIndexingStarted: string;
+  autoUpdateIndexingDone: string;
+  autoUpdateIndexingFailed: string;
 
   // RAG 옵션
   autoUpdate: string;
   autoUpdateDesc: string;
   autoUpdateInterval: string;
   autoUpdateIntervalDesc: string;
-  intervalSeconds: string;
+  intervalMinutes: string;
   excludePaths: string;
   excludePathsDesc: string;
   excludeExts: string;
@@ -132,6 +136,9 @@ export interface I18nKeys {
   mcpToolInvalidField: string;
   mcpMentionServers: string;
   mcpMentionFiles: string;
+  mcpMentionFolders: string;
+  reasoningLabel: string;
+  modelSelector: string;
   mcpRefresh: string;
   mcpRefreshing: string;
   mcpNoActiveServers: string;
@@ -216,6 +223,7 @@ const ko: I18nKeys = {
   delayMs: 'ms',
   defaultModel: '기본 모델',
   defaultModelDesc: '채팅 및 명령어에 사용할 기본 모델',
+  refreshModelList: '모델 목록 새로고침',
   noModelsEnabled: '활성화된 모델 없음',
   pluginAwareGeneration: '플러그인 인식 생성 활성화',
   pluginAwareGenerationDesc: 'LLM 프롬프트에 활성 플러그인 목록을 포함하여 호환 문법을 유도합니다. (비공식 API 사용)',
@@ -286,19 +294,22 @@ const ko: I18nKeys = {
   reindexingStarted: '전체 재인덱싱 시작...',
   reindexingDone: '개 파일 재인덱싱 완료',
   reindexingFailed: '재인덱싱 실패',
+  autoUpdateIndexingStarted: '자동 인덱싱 시작...',
+  autoUpdateIndexingDone: '개 파일 자동 인덱싱 완료',
+  autoUpdateIndexingFailed: '자동 인덱싱 실패',
 
   // RAG Options
   autoUpdate: '자동 업데이트',
   autoUpdateDesc: '설정된 간격으로 새 파일을 자동으로 인덱싱합니다',
   autoUpdateInterval: '자동 업데이트 간격',
-  autoUpdateIntervalDesc: '자동 인덱싱 간격 (1초 – 60초)',
-  intervalSeconds: '초',
+  autoUpdateIntervalDesc: '자동 인덱싱 간격 (1~99분, 자연수)',
+  intervalMinutes: '분',
   excludePaths: '제외할 경로',
   excludePathsDesc: '인덱싱에서 제외할 폴더 (쉼표로 구분)',
   excludeExts: '제외할 확장자',
   excludeExtsDesc: '인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)',
   chunkSize: '청크 크기',
-  chunkSizeDesc: '마크다운 청크당 최대 문자 수',
+  chunkSizeDesc: '마크다운 청크당 최대 문자 수 (100~5000)',
   vectorStoreType: '벡터 저장소 유형',
   vectorStoreTypeDesc:
     'JSON File은 볼트 안의 JSON 파일에 저장되어 Obsidian Sync/Git 등으로 동기화됩니다. IndexedDB는 브라우저 로컬 데이터베이스에 저장되며, 큰 임베딩 데이터에서 더 빠르고 효율적이지만 수동 백업 없이는 동기화되지 않습니다.',
@@ -340,6 +351,9 @@ const ko: I18nKeys = {
   mcpToolInvalidField: '필드 "{field}"의 값이 올바르지 않습니다. {detail}',
   mcpMentionServers: 'MCP 서버',
   mcpMentionFiles: '볼트 파일',
+  mcpMentionFolders: '폴더',
+  reasoningLabel: '생각 과정',
+  modelSelector: '모델',
   mcpRefresh: '새로고침',
   mcpRefreshing: '재연결 중...',
   mcpNoActiveServers: '활성 MCP 서버 없음',
@@ -424,6 +438,7 @@ const en: I18nKeys = {
   delayMs: 'ms',
   defaultModel: 'Default Model',
   defaultModelDesc: 'Default model for chat and commands',
+  refreshModelList: 'Refresh model list',
   noModelsEnabled: 'No models enabled',
   pluginAwareGeneration: 'Enable Plugin-Aware Generation',
   pluginAwareGenerationDesc: 'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
@@ -494,19 +509,22 @@ const en: I18nKeys = {
   reindexingStarted: 'Reindexing all...',
   reindexingDone: 'files reindexed',
   reindexingFailed: 'Reindexing failed',
+  autoUpdateIndexingStarted: 'Auto-indexing started...',
+  autoUpdateIndexingDone: 'files auto-indexed',
+  autoUpdateIndexingFailed: 'Auto-indexing failed',
 
   // RAG Options
   autoUpdate: 'Auto Update',
   autoUpdateDesc: 'Automatically index new files at the set interval',
   autoUpdateInterval: 'Auto-update Interval',
-  autoUpdateIntervalDesc: 'Automatic indexing interval (1–60 seconds)',
-  intervalSeconds: 'seconds',
+  autoUpdateIntervalDesc: 'Automatic indexing interval (1–99 minutes, integer)',
+  intervalMinutes: 'minutes',
   excludePaths: 'Exclude Paths',
   excludePathsDesc: 'Folders to exclude from indexing (comma-separated)',
   excludeExts: 'Exclude Extensions',
   excludeExtsDesc: 'File extensions to exclude (comma-separated, no dot)',
   chunkSize: 'Chunk Size',
-  chunkSizeDesc: 'Maximum characters per markdown chunk',
+  chunkSizeDesc: 'Maximum characters per markdown chunk (100–5000)',
   vectorStoreType: 'Vector Store Type',
   vectorStoreTypeDesc:
     'JSON File stores in vault JSON, syncable via Obsidian Sync/Git. IndexedDB stores in browser local DB, faster for large embeddings but not auto-synced without manual backup.',
@@ -548,6 +566,9 @@ const en: I18nKeys = {
   mcpToolInvalidField: 'Field "{field}" has an invalid value. {detail}',
   mcpMentionServers: 'MCP Servers',
   mcpMentionFiles: 'Vault Files',
+  mcpMentionFolders: 'Folders',
+  reasoningLabel: 'Thinking',
+  modelSelector: 'Model',
   mcpRefresh: 'Refresh',
   mcpRefreshing: 'Reconnecting...',
   mcpNoActiveServers: 'No active MCP servers',

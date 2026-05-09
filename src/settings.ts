@@ -111,7 +111,7 @@ export interface RAGConfig {
   embeddingProvider: EmbeddingProviderKey;
   embeddingModel: string;
   autoUpdateEnabled: boolean;
-  autoUpdateIntervalMs: number;
+  autoUpdateIntervalMin: number;
 }
 
 export interface ChatConfig {
@@ -176,7 +176,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
-    autoUpdateIntervalMs: 30000,
+    autoUpdateIntervalMin: 5,
   },
   mcpServers: [],
   mcpPath: '',
@@ -195,6 +195,7 @@ export interface PluginLike {
   settings: SuperObsidianSettings;
   saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
   reconnectMCP(): Promise<string[]>;
+  setupAutoUpdate(): void;
   mcpRegistry: MCPRegistry | null;
   eventDrivenRagStats?: {
     totalFiles: number;
@@ -465,6 +466,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         dropdown.onChange((value) => {
           this.plugin.settings.chat.defaultModel = value;
           this.debouncedSave();
+        });
+      })
+      .addButton((button) => {
+        button.setIcon('refresh');
+        button.setTooltip(t('refreshModelList'));
+        button.onClick(() => {
+          this.refreshGeneralTab();
         });
       });
   }
@@ -820,23 +828,29 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.rag.autoUpdateEnabled = value;
             await this.plugin.saveSettings();
+            this.plugin.setupAutoUpdate();
           }),
       );
 
-    // 자동 업데이트 간격 슬라이더
+    // 자동 업데이트 간격 (분)
     new Setting(section)
-      .setName('자동 업데이트 간격')
-      .setDesc('자동 인덱싱 간격 (분)')
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 60, 1)
-          .setValue(this.plugin.settings.rag.autoUpdateIntervalMs / 60000)
-          .setDynamicTooltip()
+      .setName(t('autoUpdateInterval'))
+      .setDesc(t('autoUpdateIntervalDesc'))
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.autoUpdateIntervalMin))
+          .setPlaceholder('5')
           .onChange((value) => {
-            this.plugin.settings.rag.autoUpdateIntervalMs = value * 60000;
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 1 || num > 99 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.autoUpdateIntervalMin = num;
             this.debouncedSave();
-          }),
-      );
+            this.plugin.setupAutoUpdate();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '1';
+        text.inputEl.max = '99';
+      });
 
     // 제외 경로
     new Setting(section)
@@ -872,18 +886,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     // 청크 크기
     new Setting(section)
-      .setName('청크 크기')
-      .setDesc('마크다운 청크당 최대 문자 수')
-      .addSlider((slider) =>
-        slider
-          .setLimits(100, 5000, 100)
-          .setValue(this.plugin.settings.rag.chunkSize)
-          .setDynamicTooltip()
+      .setName(t('chunkSize'))
+      .setDesc(t('chunkSizeDesc'))
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.chunkSize))
+          .setPlaceholder('1000')
           .onChange((value) => {
-            this.plugin.settings.rag.chunkSize = value;
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 100 || num > 5000 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.chunkSize = num;
             this.debouncedSave();
-          }),
-      );
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '100';
+        text.inputEl.max = '5000';
+      });
 
     // 벡터 저장소 유형
     new Setting(section)

@@ -199,3 +199,42 @@ export function registerModifyEvent(
   });
   return () => vault.offref(ref);
 }
+
+/** 파일 삭제 이벤트를 등록하여 벡터 저장소에서 해당 항목을 제거합니다. */
+export function registerDeleteEvent(
+  vault: Vault,
+  vectorStore: VectorStore,
+  onComplete?: (filePath: string) => void,
+): () => void {
+  const ref = vault.on('delete', async (file) => {
+    if (!('path' in file)) return;
+    const filePath = (file as { path: string }).path;
+    if (isExcluded(filePath, []) || isExcludedExt(filePath, [])) return;
+    if (!filePath.endsWith('.md')) return;
+    const removed = await vectorStore.removeByFilePath(filePath);
+    if (removed > 0) {
+      onComplete?.(filePath);
+    }
+  });
+  return () => vault.offref(ref);
+}
+
+/** 파일 이름 변경/이동 이벤트를 등록하여 기존 항목을 제거하고 새 경로로 재인덱싱합니다. */
+export function registerRenameEvent(
+  vault: Vault,
+  indexer: VaultIndexer,
+  vectorStore: VectorStore,
+  onComplete?: (oldPath: string, newPath: string) => void,
+): () => void {
+  const ref = vault.on('rename', async (file, oldPath) => {
+    if (!(file instanceof Object) || !('path' in file)) return;
+    const f = file as TFile;
+    const newPath = f.path;
+    if (isExcluded(newPath, []) || isExcludedExt(newPath, [])) return;
+    if (!newPath.endsWith('.md')) return;
+    await vectorStore.removeByFilePath(oldPath);
+    await indexer.indexFile(f);
+    onComplete?.(oldPath, newPath);
+  });
+  return () => vault.offref(ref);
+}
