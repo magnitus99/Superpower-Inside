@@ -51,7 +51,7 @@ export default class SuperObsidianPlugin extends Plugin {
     await this.loadSettings();
     this.initProvider();
     this.initRAG();
-    this.initMCP();
+    void this.initMCP();
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
@@ -205,15 +205,44 @@ export default class SuperObsidianPlugin extends Plugin {
       }
     }
 
+    // Migrate old MCP settings to standard format
+    const mcpServers = data.mcpServers as unknown[] | undefined;
+    if (Array.isArray(mcpServers)) {
+      const migrated: Array<{ name: string; command?: string; args?: string[]; env?: Record<string, string> }> = [];
+      for (const s of mcpServers) {
+        if (typeof s !== 'object' || s === null) continue;
+        const server = s as Record<string, unknown>;
+        // Skip non-stdio transports (HTTP/SSE servers are removed)
+        const transport = server.transport;
+        if (transport === 'http' || transport === 'sse') {
+          continue;
+        }
+        const name = typeof server.name === 'string' ? server.name : '';
+        const command = typeof server.command === 'string' ? server.command : undefined;
+        const args = Array.isArray(server.args) ? server.args.filter((a): a is string => typeof a === 'string') : undefined;
+        const env =
+          typeof server.env === 'object' && server.env !== null && !Array.isArray(server.env)
+            ? (Object.fromEntries(
+                Object.entries(server.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+              ) as Record<string, string>)
+            : undefined;
+        if (name && command) {
+          migrated.push({ name, command, args, env });
+        }
+      }
+      data.mcpServers = migrated;
+    }
+
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperObsidianSettings>);
     setLanguage(this.settings.language);
   }
 
-  async saveSettings(): Promise<void> {
+  async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
     await this.saveData(this.settings);
     this.initProvider();
     this.initRAG();
-    this.initMCP();
+    const mcpErrors = await this.initMCP();
+    return { success: mcpErrors.length === 0, mcpErrors };
   }
 
   getActiveProvider(): LLMProvider | null {
@@ -380,20 +409,64 @@ export default class SuperObsidianPlugin extends Plugin {
     }
   }
 
-  private initMCP(): void {
-    if (!this.mcpRegistry) {
-      this.mcpRegistry = new MCPRegistry(this.settings.mcpServers);
-    }
-    // 활성 stdio 서버에 대해 클라이언트 연결 시도
-    for (const server of this.mcpRegistry.getEnabledServers()) {
-      if (server.transport === 'stdio' && server.command) {
-        const client = new MCPClientManager();
-        this.mcpRegistry.setClient(server.name, client);
-        void client.connectStdio({ name: server.name, enabled: server.enabled, command: server.command, args: server.args, transport: 'stdio' }).catch(() => {
-          // ignore connection failure
-        });
+  private async initMCP(): Promise<string[]> {
+    const errors = await this.runMcpConnections();
+    return errors;
+  }
+
+  async reconnectMCP(): Promise<string[]> {
+    const errors = await this.runMcpConnections();
+    return errors;
+  }
+
+  private async runMcpConnections(): Promise<string[]> {
+    const errors: string[] = [];
+
+    if (this.mcpRegistry) {
+      try {
+        await this.mcpRegistry.disconnectAll();
+      } catch {
+        /* ignore disconnect errors */
       }
     }
+    this.mcpRegistry = new MCPRegistry(this.settings.mcpServers);
+
+    const promises = [];
+    for (const server of this.mcpRegistry.getEnabledServers()) {
+      const client = new MCPClientManager();
+      this.mcpRegistry.setClient(server.name, client);
+
+      const promise = (async () => {
+        try {
+          if (!server.command) {
+            throw new Error('Command is required for stdio transport');
+          }
+
+          const effectivePath = this.settings.mcpPath || process.env.PATH || '';
+          const env: Record<string, string> = {
+            ...(server.env || {}),
+            PATH: server.env?.PATH || effectivePath,
+          };
+
+          await client.connectStdio({
+            name: server.name,
+            command: server.command,
+            args: server.args,
+            env,
+          });
+          this.mcpRegistry!.setConnectionStatus(server.name, 'connected');
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.mcpRegistry!.setConnectionStatus(server.name, 'error');
+          errors.push(`${server.name}: ${msg}`);
+        }
+      })();
+
+      promises.push(promise);
+    }
+
+    await Promise.all(promises);
+    return errors;
   }
 
   private async openChatView(): Promise<void> {
