@@ -46,7 +46,9 @@ export class MCPClientManager {
     await this.client.connect(this.transport);
   }
 
-  async listTools(): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
+  async listTools(): Promise<
+    { name: string; description?: string; inputSchema?: Record<string, unknown> }[]
+  > {
     if (!this.client) throw new Error('MCP client not connected');
     const result = await this.client.listTools();
     return (result.tools ?? []).map((t) => ({

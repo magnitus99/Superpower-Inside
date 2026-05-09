@@ -79,9 +79,7 @@ async function validateOpenAICompatible(config: ProviderConfig): Promise<Validat
     const res = await requestUrl({
       url: `${baseUrl}/v1/models`,
       method: 'GET',
-      headers: config.apiKey
-        ? { Authorization: `Bearer ${config.apiKey}` }
-        : {},
+      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
     });
     if (res.status >= 400) {
       const text = typeof res.text === 'string' ? res.text : String(res.text);
@@ -89,7 +87,16 @@ async function validateOpenAICompatible(config: ProviderConfig): Promise<Validat
     }
     const data = (res.json as { data?: Array<{ id: string }> }) ?? { data: [] };
     const models =
-      data.data?.map((m) => m.id).filter((id) => !id.includes('embedding') && !id.includes('tts') && !id.includes('dall-e') && !id.includes('whisper')).sort((a, b) => a.localeCompare(b)) ?? [];
+      data.data
+        ?.map((m) => m.id)
+        .filter(
+          (id) =>
+            !id.includes('embedding') &&
+            !id.includes('tts') &&
+            !id.includes('dall-e') &&
+            !id.includes('whisper'),
+        )
+        .sort((a, b) => a.localeCompare(b)) ?? [];
     return { valid: true, models };
   } catch (err) {
     return { valid: false, models: [], error: classifyFetchError(err) };
@@ -122,7 +129,12 @@ async function validateClaude(config: ProviderConfig): Promise<ValidationResult>
 async function validateOllama(config: ProviderConfig): Promise<ValidationResult> {
   const baseUrl = normalizeOllamaBaseUrl(config.baseUrl ?? 'http://localhost:11434');
   const targetUrl = `${baseUrl}/api/tags`;
-  console.log('[SuperObsidian] Ollama validate URL:', targetUrl, 'original baseUrl:', config.baseUrl);
+  console.log(
+    '[SuperObsidian] Ollama validate URL:',
+    targetUrl,
+    'original baseUrl:',
+    config.baseUrl,
+  );
   try {
     const res = await requestUrl({
       url: targetUrl,

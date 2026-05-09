@@ -119,9 +119,9 @@ export class VaultIndexer {
   }
 
   async indexVault(): Promise<number> {
-    const files = getMarkdownFilesFiltered(this.vault, [
-      ...this.ragConfig.excludePaths,
-    ]).filter((f) => !isExcludedExt(f.path, this.ragConfig.excludeExts));
+    const files = getMarkdownFilesFiltered(this.vault, [...this.ragConfig.excludePaths]).filter(
+      (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
+    );
 
     let indexed = 0;
     for (const file of files) {
@@ -159,9 +159,9 @@ export class VaultIndexer {
   }
 
   async indexPending(): Promise<{ indexed: number; skipped: number }> {
-    const files = getMarkdownFilesFiltered(this.vault, [
-      ...this.ragConfig.excludePaths,
-    ]).filter((f) => !isExcludedExt(f.path, this.ragConfig.excludeExts));
+    const files = getMarkdownFilesFiltered(this.vault, [...this.ragConfig.excludePaths]).filter(
+      (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
+    );
 
     const indexedPaths = await this.vectorStore.getIndexedFilePaths();
     const indexedSet = new Set(indexedPaths);

@@ -51,7 +51,7 @@ export interface ProviderConfig {
 
 export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
 
-export const PROVIDER_LABELS: Record<typeof PROVIDER_KEYS[number], string> = {
+export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openai: 'OpenAI',
   claude: 'Claude',
   ollama: 'Ollama (Local)',
@@ -59,7 +59,7 @@ export const PROVIDER_LABELS: Record<typeof PROVIDER_KEYS[number], string> = {
   openRouter: 'OpenRouter',
 };
 
-export type ProviderKey = typeof PROVIDER_KEYS[number];
+export type ProviderKey = (typeof PROVIDER_KEYS)[number];
 
 export interface MCPServerConfig {
   name: string;
@@ -79,16 +79,46 @@ export interface EmbeddingModelInfo {
 
 export const EMBEDDING_MODELS: Record<EmbeddingProviderKey, EmbeddingModelInfo[]> = {
   openai: [
-    { id: 'text-embedding-3-small', name: 'text-embedding-3-small', dimensions: 1536, description: '가장 널리 쓰이는 기본 모델. 성능과 비용의 균형이 뛰어납니다.' },
-    { id: 'text-embedding-3-large', name: 'text-embedding-3-large', dimensions: 3072, description: '최고 성능 모델. 다국어와 복잡한 문맥에 강점이 있습니다.' },
+    {
+      id: 'text-embedding-3-small',
+      name: 'text-embedding-3-small',
+      dimensions: 1536,
+      description: '가장 널리 쓰이는 기본 모델. 성능과 비용의 균형이 뛰어납니다.',
+    },
+    {
+      id: 'text-embedding-3-large',
+      name: 'text-embedding-3-large',
+      dimensions: 3072,
+      description: '최고 성능 모델. 다국어와 복잡한 문맥에 강점이 있습니다.',
+    },
   ],
   openRouter: [
-    { id: 'openai/text-embedding-3-small', name: 'OpenAI text-embedding-3-small (via OpenRouter)', dimensions: 1536, description: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.' },
-    { id: 'baai/bge-m3', name: 'BAAI bge-m3', dimensions: 1024, description: '다국어(한국어 포함) 최적화. 8K 컨텍스트.' },
-    { id: 'qwen/qwen3-embedding-8b', name: 'Qwen3 Embedding 8B', dimensions: 1024, description: '32K 컨텍스트 지원. 긴 문서에 적합.' },
+    {
+      id: 'openai/text-embedding-3-small',
+      name: 'OpenAI text-embedding-3-small (via OpenRouter)',
+      dimensions: 1536,
+      description: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.',
+    },
+    {
+      id: 'baai/bge-m3',
+      name: 'BAAI bge-m3',
+      dimensions: 1024,
+      description: '다국어(한국어 포함) 최적화. 8K 컨텍스트.',
+    },
+    {
+      id: 'qwen/qwen3-embedding-8b',
+      name: 'Qwen3 Embedding 8B',
+      dimensions: 1024,
+      description: '32K 컨텍스트 지원. 긴 문서에 적합.',
+    },
   ],
   ollama: [
-    { id: 'nomic-embed-text', name: 'nomic-embed-text', dimensions: 768, description: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.' },
+    {
+      id: 'nomic-embed-text',
+      name: 'nomic-embed-text',
+      dimensions: 768,
+      description: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.',
+    },
   ],
   other: [],
 };
@@ -99,8 +129,6 @@ export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
   openRouter: 'OpenRouter',
   other: 'Other (Custom)',
 };
-
-
 
 export interface RAGConfig {
   excludePaths: string[];
@@ -205,7 +233,7 @@ export interface PluginLike {
   } | null;
 }
 
-  // 탭 타입 및 설정
+// 탭 타입 및 설정
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
 
 const TABS: { id: SettingsTabId; label: string }[] = [
@@ -277,7 +305,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
       this.pendingEmbeddingProvider = null;
       this.pendingEmbeddingModel = null;
-      new Notice('임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)');
+      new Notice(
+        '임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)',
+      );
     }
     this.flushSave();
     super.hide();
@@ -286,7 +316,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    
+
     // 헤더
     containerEl.createEl('h2', { text: t('settingsTitle') });
 
@@ -295,26 +325,26 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       cls: 'super-obsidian-settings-warning',
     });
     warning.setText(t('securityWarning'));
-    
+
     // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'super-obsidian-settings-tabs' });
-    TABS.forEach(tab => {
-      const button = tabBar.createEl('button', { 
-        text: tab.label, 
-        cls: 'super-obsidian-settings-tab' 
+    TABS.forEach((tab) => {
+      const button = tabBar.createEl('button', {
+        text: tab.label,
+        cls: 'super-obsidian-settings-tab',
       });
       this.tabButtons.set(tab.id, button);
       button.addEventListener('click', () => this.switchTab(tab.id));
     });
-    
+
     // 탭 콘텐츠 패널
     const tabContentContainer = containerEl.createDiv();
-    TABS.forEach(tab => {
-      const panel = tabContentContainer.createDiv({ 
-        cls: 'super-obsidian-settings-tab-content' 
+    TABS.forEach((tab) => {
+      const panel = tabContentContainer.createDiv({
+        cls: 'super-obsidian-settings-tab-content',
       });
       this.tabPanels.set(tab.id, panel);
-      
+
       // 각 탭 콘텐츠 구성
       switch (tab.id) {
         case 'general':
@@ -337,7 +367,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           break;
       }
     });
-    
+
     // 첫 번째 탭을 활성 상태로 초기화
     this.switchTab(this.activeTab);
   }
@@ -345,7 +375,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private switchTab(tabId: SettingsTabId): void {
     // 활성 탭 업데이트
     this.activeTab = tabId;
-    
+
     // 버튼 클래스 토글
     this.tabButtons.forEach((button, id) => {
       if (id === tabId) {
@@ -354,7 +384,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         button.classList.remove('is-active');
       }
     });
-    
+
     // 패널 클래스 토글
     this.tabPanels.forEach((panel, id) => {
       if (id === tabId) {
@@ -376,7 +406,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       this.buildGeneralTab(generalPanel);
     }
   }
-  
+
   private buildGeneralTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName(t('language'))
@@ -409,12 +439,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .setName(t('autoSaveSettings'))
       .setDesc(t('autoSaveSettingsDesc'))
       .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.autoSaveEnabled)
-          .onChange(async (value) => {
-            this.plugin.settings.autoSaveEnabled = value;
-            await this.plugin.saveSettings();
-          }),
+        toggle.setValue(this.plugin.settings.autoSaveEnabled).onChange(async (value) => {
+          this.plugin.settings.autoSaveEnabled = value;
+          await this.plugin.saveSettings();
+        }),
       );
 
     new Setting(containerEl)
@@ -476,7 +504,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         });
       });
   }
-  
+
   private buildProvidersTab(containerEl: HTMLElement): void {
     this.buildProviderSettings(containerEl, 'OpenAI', 'openai');
     this.buildProviderSettings(containerEl, 'Claude (Anthropic)', 'claude');
@@ -484,7 +512,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     this.buildProviderSettings(containerEl, 'Ollama (Cloud)', 'ollamaCloud');
     this.buildProviderSettings(containerEl, 'OpenRouter', 'openRouter');
   }
-  
+
   // RAG 탭 4섹션 구조
   private buildRAGTab(containerEl: HTMLElement): void {
     this.buildEmbeddingProviderSection(containerEl);
@@ -507,11 +535,15 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
 
     const providerNotice = section.createDiv({ cls: 'super-obsidian-model-description' });
-    providerNotice.setText('API 키는 Providers 탭에서 설정한 값을 사용합니다. 여기서는 임베딩 전용 모델만 선택하세요.');
+    providerNotice.setText(
+      'API 키는 Providers 탭에서 설정한 값을 사용합니다. 여기서는 임베딩 전용 모델만 선택하세요.',
+    );
 
     if (isPending) {
       const warningEl = section.createDiv({ cls: 'super-obsidian-settings-warning' });
-      warningEl.setText('⚠️ 임베딩 프로바이더/모델 변경은 자동으로 저장되지 않습니다. "저장" 버튼을 클릭해야 적용됩니다. 변경 시 기존 임베딩 데이터가 삭제되지 않습니다. 새 모델을 모든 데이터에 적용하려면 "전체 재인덱싱"을 실행하세요.');
+      warningEl.setText(
+        '⚠️ 임베딩 프로바이더/모델 변경은 자동으로 저장되지 않습니다. "저장" 버튼을 클릭해야 적용됩니다. 변경 시 기존 임베딩 데이터가 삭제되지 않습니다. 새 모델을 모든 데이터에 적용하려면 "전체 재인덱싱"을 실행하세요.',
+      );
       warningEl.style.marginBottom = '12px';
       warningEl.style.whiteSpace = 'normal';
     }
@@ -602,39 +634,38 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     }
 
     const statusEl = section.createDiv({ cls: 'super-obsidian-connection-status' });
-    new Setting(section)
-      .setName('연결 테스트')
-      .addButton((button) => {
-        button.setButtonText(t('testConnection'));
-        button.onClick(async () => {
-          statusEl.setText('');
-          button.setDisabled(true);
-          statusEl.setText(t('testing'));
+    new Setting(section).setName('연결 테스트').addButton((button) => {
+      button.setButtonText(t('testConnection'));
+      button.onClick(async () => {
+        statusEl.setText('');
+        button.setDisabled(true);
+        statusEl.setText(t('testing'));
 
-          try {
-            const config = effectiveProvider === 'other'
+        try {
+          const config =
+            effectiveProvider === 'other'
               ? null
               : this.plugin.settings[effectiveProvider as ProviderKey];
-            const { validateEmbeddingConnection } = await import('./llm/validation');
-            const result = await validateEmbeddingConnection(
-              effectiveProvider,
-              effectiveModel,
-              config ?? { apiKey: '', models: [], enabled: false },
-            );
+          const { validateEmbeddingConnection } = await import('./llm/validation');
+          const result = await validateEmbeddingConnection(
+            effectiveProvider,
+            effectiveModel,
+            config ?? { apiKey: '', models: [], enabled: false },
+          );
 
-            if (result.valid) {
-              statusEl.setText(`✅ 연결 성공! ${result.models.length}개 모델 확인됨`);
-            } else {
-              statusEl.setText(`❌ 연결 실패: ${result.error}`);
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            statusEl.setText(`❌ 오류: ${msg}`);
-          } finally {
-            button.setDisabled(false);
+          if (result.valid) {
+            statusEl.setText(`✅ 연결 성공! ${result.models.length}개 모델 확인됨`);
+          } else {
+            statusEl.setText(`❌ 연결 실패: ${result.error}`);
           }
-        });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          statusEl.setText(`❌ 오류: ${msg}`);
+        } finally {
+          button.setDisabled(false);
+        }
       });
+    });
   }
 
   private buildStatsSection(containerEl: HTMLElement): void {
@@ -649,15 +680,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     });
 
     // 새로고침 버튼
-    new Setting(section)
-      .setName('')
-      .addButton((btn) => {
-        btn.setButtonText('새로고침');
-        btn.onClick(() => {
-          grid.empty();
-          void this.renderStats(grid);
-        });
+    new Setting(section).setName('').addButton((btn) => {
+      btn.setButtonText('새로고침');
+      btn.onClick(() => {
+        grid.empty();
+        void this.renderStats(grid);
       });
+    });
   }
 
   private async renderStats(gridEl: HTMLElement): Promise<void> {
@@ -669,7 +698,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       const stats = [
         { value: String(cache.totalFiles), label: '전체 파일', desc: '볼트 내 마크다운 파일 수' },
         { value: String(cache.indexedFiles), label: '인덱싱 완료', desc: '임베딩 처리된 파일 수' },
-        { value: String(cache.pendingFiles), label: '대기 중', desc: '아직 인덱싱되지 않은 파일 수' },
+        {
+          value: String(cache.pendingFiles),
+          label: '대기 중',
+          desc: '아직 인덱싱되지 않은 파일 수',
+        },
         { value: String(cache.totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
       ];
       for (const stat of stats) {
@@ -750,7 +783,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 제어' });
 
     const controls = section.createDiv({ cls: 'super-obsidian-rag-controls' });
-    const p = this.plugin as unknown as { vaultIndexer?: VaultIndexer; vectorStore?: VectorStore; embeddingProvider?: { clearCache(): Promise<void> } };
+    const p = this.plugin as unknown as {
+      vaultIndexer?: VaultIndexer;
+      vectorStore?: VectorStore;
+      embeddingProvider?: { clearCache(): Promise<void> };
+    };
     const hasIndexer = !!p.vaultIndexer;
 
     controls.createEl('button', { text: '대기 중인 파일 업데이트' }, (btn) => {
@@ -823,13 +860,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .setName('자동 업데이트')
       .setDesc('설정된 간격으로 새 파일을 자동으로 인덱싱합니다')
       .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.rag.autoUpdateEnabled)
-          .onChange(async (value) => {
-            this.plugin.settings.rag.autoUpdateEnabled = value;
-            await this.plugin.saveSettings();
-            this.plugin.setupAutoUpdate();
-          }),
+        toggle.setValue(this.plugin.settings.rag.autoUpdateEnabled).onChange(async (value) => {
+          this.plugin.settings.rag.autoUpdateEnabled = value;
+          await this.plugin.saveSettings();
+          this.plugin.setupAutoUpdate();
+        }),
       );
 
     // 자동 업데이트 간격 (분)
@@ -857,15 +892,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .setName('제외할 경로')
       .setDesc('인덱싱에서 제외할 폴더 (쉼표로 구분)')
       .addText((text) =>
-        text
-          .setValue(this.plugin.settings.rag.excludePaths.join(', '))
-          .onChange((value) => {
-            this.plugin.settings.rag.excludePaths = value
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-            this.debouncedSave();
-          }),
+        text.setValue(this.plugin.settings.rag.excludePaths.join(', ')).onChange((value) => {
+          this.plugin.settings.rag.excludePaths = value
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          this.debouncedSave();
+        }),
       );
 
     // 제외 확장자
@@ -873,15 +906,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .setName('제외할 확장자')
       .setDesc('인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)')
       .addText((text) =>
-        text
-          .setValue(this.plugin.settings.rag.excludeExts.join(', '))
-          .onChange((value) => {
-            this.plugin.settings.rag.excludeExts = value
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-            this.debouncedSave();
-          }),
+        text.setValue(this.plugin.settings.rag.excludeExts.join(', ')).onChange((value) => {
+          this.plugin.settings.rag.excludeExts = value
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          this.debouncedSave();
+        }),
       );
 
     // 청크 크기
@@ -920,18 +951,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
   }
-  
+
   private buildChatTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName(t('chatSaveFolder'))
       .setDesc(t('chatSaveFolderDesc'))
       .addText((text) =>
-        text
-          .setValue(this.plugin.settings.chat.saveFolder)
-          .onChange((value) => {
-            this.plugin.settings.chat.saveFolder = value.trim();
-            this.debouncedSave();
-          }),
+        text.setValue(this.plugin.settings.chat.saveFolder).onChange((value) => {
+          this.plugin.settings.chat.saveFolder = value.trim();
+          this.debouncedSave();
+        }),
       );
 
     new Setting(containerEl)
@@ -949,13 +978,32 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const presetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
     const presets: { label: string; prompt: string }[] = [
-      { label: t('quickPresetGeneral'), prompt: '당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다. 마크다운 문법을 잘 알고 있으며, 사용자의 질문에 정확하고 간결하게 답변합니다.' },
-      { label: t('quickPresetCodeReview'), prompt: '당신은 시니어 개발자입니다. 사용자가 제시한 코드를 리뷰하고, 버그, 성능 문제, 가독성 개선점을 찾아 한국어로 설명합니다.' },
-      { label: t('quickPresetTranslate'), prompt: '당신은 전문 번역가입니다. 사용자가 요청한 텍스트를 지정한 언어로 자연스럽게 번역합니다. 원문의 뉘앙스와 전문 용어를 최대한 살려주세요.' },
-      { label: t('quickPresetSummarize'), prompt: '당신은 요약 전문가입니다. 사용자가 제공한 긴 텍스트나 문서를 핵심만 간결하게 요약합니다. bullet point 형식을 사용하세요.' },
+      {
+        label: t('quickPresetGeneral'),
+        prompt:
+          '당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다. 마크다운 문법을 잘 알고 있으며, 사용자의 질문에 정확하고 간결하게 답변합니다.',
+      },
+      {
+        label: t('quickPresetCodeReview'),
+        prompt:
+          '당신은 시니어 개발자입니다. 사용자가 제시한 코드를 리뷰하고, 버그, 성능 문제, 가독성 개선점을 찾아 한국어로 설명합니다.',
+      },
+      {
+        label: t('quickPresetTranslate'),
+        prompt:
+          '당신은 전문 번역가입니다. 사용자가 요청한 텍스트를 지정한 언어로 자연스럽게 번역합니다. 원문의 뉘앙스와 전문 용어를 최대한 살려주세요.',
+      },
+      {
+        label: t('quickPresetSummarize'),
+        prompt:
+          '당신은 요약 전문가입니다. 사용자가 제공한 긴 텍스트나 문서를 핵심만 간결하게 요약합니다. bullet point 형식을 사용하세요.',
+      },
     ];
     for (const preset of presets) {
-      const btn = presetRow.createEl('button', { text: preset.label, cls: 'super-obsidian-mcp-preset-btn' });
+      const btn = presetRow.createEl('button', {
+        text: preset.label,
+        cls: 'super-obsidian-mcp-preset-btn',
+      });
       btn.addEventListener('click', () => {
         this.plugin.settings.chat.systemPrompt = preset.prompt;
         this.debouncedSave();
@@ -969,7 +1017,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     }
 
     const resetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
-    const resetBtn = resetRow.createEl('button', { text: t('resetToDefault'), cls: 'super-obsidian-mcp-preset-btn' });
+    const resetBtn = resetRow.createEl('button', {
+      text: t('resetToDefault'),
+      cls: 'super-obsidian-mcp-preset-btn',
+    });
     resetBtn.addEventListener('click', () => {
       this.plugin.settings.chat.systemPrompt = '';
       this.debouncedSave();
@@ -981,7 +1032,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       new Notice('시스템 프롬프트가 초기화되었습니다.');
     });
   }
-  
+
   private buildMCPTab(containerEl: HTMLElement): void {
     containerEl.empty();
     const mcpSection = containerEl.createDiv();
@@ -1106,12 +1157,19 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     this.renderMCPStatus(statusSection);
 
     mcpSection.createDiv({ cls: 'super-obsidian-mcp-section-divider' });
-    mcpSection.createEl('h3', { text: t('mcpJsonEditor'), cls: 'super-obsidian-mcp-section-title' });
+    mcpSection.createEl('h3', {
+      text: t('mcpJsonEditor'),
+      cls: 'super-obsidian-mcp-section-title',
+    });
 
     const lintStatus = mcpSection.createDiv({ cls: 'super-obsidian-mcp-lint-status' });
     lintStatus.setText('');
 
-    const defaultJson = JSON.stringify(internalToStandard(this.plugin.settings.mcpServers), null, 2);
+    const defaultJson = JSON.stringify(
+      internalToStandard(this.plugin.settings.mcpServers),
+      null,
+      2,
+    );
     const jsonTextArea = mcpSection.createEl('textarea', {
       cls: 'super-obsidian-mcp-json-editor',
     });
@@ -1136,7 +1194,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
       lintTimeout = setTimeout(() => {
         lintTimeout = null;
-          const result = validateMcpJson(jsonTextArea.value);
+        const result = validateMcpJson(jsonTextArea.value);
 
         if (result.valid) {
           lintStatus.setText('✅ ' + t('mcpJsonLintOk'));
@@ -1145,9 +1203,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
           autoSaveTimeout = setTimeout(() => {
             autoSaveTimeout = null;
-            this.plugin.settings.mcpServers = standardToInternal(
-              result.data as StandardMcpConfig,
-            );
+            this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
             void (async () => {
               const saveResult = await this.plugin.saveSettings();
               if (saveResult.success) {
@@ -1189,42 +1245,41 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }
     });
 
-    new Setting(mcpSection)
-      .addButton((btn) =>
-        btn.setButtonText(t('save')).onClick(async () => {
+    new Setting(mcpSection).addButton((btn) =>
+      btn.setButtonText(t('save')).onClick(async () => {
         const result = validateMcpJson(jsonTextArea.value);
-          if (result.valid) {
-            this.plugin.settings.mcpServers = standardToInternal(
-              result.data as StandardMcpConfig,
+        if (result.valid) {
+          this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
+          const saveResult = await this.plugin.saveSettings();
+
+          if (saveResult.success) {
+            lintStatus.setText('✅ ' + t('mcpJsonSaved'));
+            lintStatus.addClass('success');
+            lintStatus.removeClass('error');
+            new Notice(t('mcpJsonSaved'));
+            jsonTextArea.value = JSON.stringify(result.data, null, 2);
+          } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
+            lintStatus.setText(
+              `⚠️ 설정은 저장되었으나 ${saveResult.mcpErrors.length}개 서버 연결 실패`,
             );
-            const saveResult = await this.plugin.saveSettings();
-
-            if (saveResult.success) {
-              lintStatus.setText('✅ ' + t('mcpJsonSaved'));
-              lintStatus.addClass('success');
-              lintStatus.removeClass('error');
-              new Notice(t('mcpJsonSaved'));
-              jsonTextArea.value = JSON.stringify(result.data, null, 2);
-            } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
-              lintStatus.setText(`⚠️ 설정은 저장되었으나 ${saveResult.mcpErrors.length}개 서버 연결 실패`);
-              lintStatus.addClass('error');
-              lintStatus.removeClass('success');
-
-              const errorDetails = saveResult.mcpErrors.map((err) => `• ${err}`).join('\n');
-              new Notice(`MCP 연결 오류:\n${errorDetails}`, 10000);
-            }
-
-            statusSection.empty();
-            this.renderMCPStatus(statusSection);
-          } else {
-            const detailedError = this.buildDetailedMcpError(result.error ?? '');
-            lintStatus.setText(`❌ ${detailedError.short}`);
             lintStatus.addClass('error');
             lintStatus.removeClass('success');
-            new Notice(detailedError.full, 10000);
+
+            const errorDetails = saveResult.mcpErrors.map((err) => `• ${err}`).join('\n');
+            new Notice(`MCP 연결 오류:\n${errorDetails}`, 10000);
           }
-        }),
-      );
+
+          statusSection.empty();
+          this.renderMCPStatus(statusSection);
+        } else {
+          const detailedError = this.buildDetailedMcpError(result.error ?? '');
+          lintStatus.setText(`❌ ${detailedError.short}`);
+          lintStatus.addClass('error');
+          lintStatus.removeClass('success');
+          new Notice(detailedError.full, 10000);
+        }
+      }),
+    );
   }
 
   private buildDetailedMcpError(rawError: string): { short: string; full: string } {
@@ -1276,72 +1331,58 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       full: `❌ 오류: ${rawError}`,
     };
   }
-  
+
   private buildAdvancedTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName(t('pluginAwareGeneration'))
-      .setDesc(
-        t('pluginAwareGenerationDesc'),
-      )
+      .setDesc(t('pluginAwareGenerationDesc'))
       .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.pluginAwareEnabled)
-          .onChange((value) => {
-            this.plugin.settings.pluginAwareEnabled = value;
-            this.debouncedSave();
-          }),
+        toggle.setValue(this.plugin.settings.pluginAwareEnabled).onChange((value) => {
+          this.plugin.settings.pluginAwareEnabled = value;
+          this.debouncedSave();
+        }),
       );
   }
-  
-  private buildProviderSettings(
-    containerEl: HTMLElement,
-    label: string,
-    key: ProviderKey,
-  ): void {
+
+  private buildProviderSettings(containerEl: HTMLElement, label: string, key: ProviderKey): void {
     const config = this.plugin.settings[key];
     const section = containerEl.createDiv({ cls: 'super-obsidian-settings-section' });
     section.createDiv({ cls: 'super-obsidian-settings-section-title', text: label });
 
-    new Setting(section)
-      .setName(t('enabled'))
-      .addToggle((toggle) =>
-        toggle.setValue(config.enabled).onChange((value) => {
-          config.enabled = value;
+    new Setting(section).setName(t('enabled')).addToggle((toggle) =>
+      toggle.setValue(config.enabled).onChange((value) => {
+        config.enabled = value;
+        this.debouncedSave();
+      }),
+    );
+
+    new Setting(section).setName(t('apiKey')).addText((text) =>
+      text
+        .setPlaceholder('sk-...')
+        .setValue(config.apiKey)
+        .onChange((value) => {
+          config.apiKey = value.trim();
           this.debouncedSave();
         }),
-      );
+    );
 
-    new Setting(section)
-      .setName(t('apiKey'))
-      .addText((text) =>
-        text
-          .setPlaceholder('sk-...')
-          .setValue(config.apiKey)
-          .onChange((value) => {
-            config.apiKey = value.trim();
-            this.debouncedSave();
-          }),
-      );
-
-    new Setting(section)
-      .setName(t('baseUrl'))
-      .addText((text) =>
-        text
-          .setPlaceholder('https://api...')
-          .setValue(config.baseUrl ?? '')
-          .onChange((value) => {
-            let url = value.trim();
-            if (key === 'ollama' || key === 'ollamaCloud') {
-              url = url.replace(/\/+$/, '');
-              if (url.endsWith('/api')) {
-                url = url.slice(0, -4);
-              }
-              url = url.replace(/\/+$/, '');
+    new Setting(section).setName(t('baseUrl')).addText((text) =>
+      text
+        .setPlaceholder('https://api...')
+        .setValue(config.baseUrl ?? '')
+        .onChange((value) => {
+          let url = value.trim();
+          if (key === 'ollama' || key === 'ollamaCloud') {
+            url = url.replace(/\/+$/, '');
+            if (url.endsWith('/api')) {
+              url = url.slice(0, -4);
             }
-            config.baseUrl = url || undefined;
-            this.debouncedSave();
-          }),
-      );
+            url = url.replace(/\/+$/, '');
+          }
+          config.baseUrl = url || undefined;
+          this.debouncedSave();
+        }),
+    );
 
     const modelListContainer = section.createDiv({ cls: 'super-obsidian-settings-model-list' });
 
@@ -1353,14 +1394,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         modelListContainer.setText(t('noModelsFound'));
         return;
       }
-      
+
       // 모델 알파벳 순 정렬
       const sortedModels = [...models].sort((a, b) => a.localeCompare(b, 'en'));
-      
+
       // 모델 개수 헤더 추가
-      const header = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-list-header' });
+      const header = modelListContainer.createDiv({
+        cls: 'super-obsidian-settings-model-list-header',
+      });
       header.textContent = `${sortedModels.length} models available`;
-      
+
       sortedModels.forEach((model) => {
         const item = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-item' });
         const checkbox = item.createEl('input', { type: 'checkbox' });
@@ -1383,55 +1426,56 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       const cached = this.validationCache[key];
       const models = new Set<string>(config.models);
       if (cached && cached.valid && cached.models.length > 0) {
-        cached.models.forEach(m => models.add(m));
+        cached.models.forEach((m) => models.add(m));
       }
       return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
     };
     renderModelList(getInitialModels());
 
-    new Setting(section)
-      .setName(t('validateApiKey'))
-      .addButton((button) => {
-        button.setButtonText(t('validateApiKey'));
-        button.onClick(async () => {
-          statusContainer.setText('');
-          button.setDisabled(true);
-          const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
+    new Setting(section).setName(t('validateApiKey')).addButton((button) => {
+      button.setButtonText(t('validateApiKey'));
+      button.onClick(async () => {
+        statusContainer.setText('');
+        button.setDisabled(true);
+        const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
 
-          try {
-            const { validateProviderApi } = await import('./llm/validation');
-            const result = await validateProviderApi(key, config);
-            spinner.remove();
+        try {
+          const { validateProviderApi } = await import('./llm/validation');
+          const result = await validateProviderApi(key, config);
+          spinner.remove();
 
-            if (result.valid) {
-              statusContainer.setText(`✅ ${t('valid')}! ${result.models.length}${t('modelsFound')}`);
-              renderModelList(result.models);
-              this.validationCache[key] = result;
-            } else {
-              statusContainer.setText(`❌ ${t('invalid')}: ${result.error}`);
-              // 모델 리스트는 그대로 유지, 숨기지 않음
-              this.validationCache[key] = {
-                valid: false,
-                models: this.validationCache[key]?.models ?? [],
-                error: result.error,
-              };
-            }
-          } catch (err) {
-            spinner.remove();
-            const msg = err instanceof Error ? err.message : String(err);
-            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
+          if (result.valid) {
+            statusContainer.setText(`✅ ${t('valid')}! ${result.models.length}${t('modelsFound')}`);
+            renderModelList(result.models);
+            this.validationCache[key] = result;
+          } else {
+            statusContainer.setText(`❌ ${t('invalid')}: ${result.error}`);
             // 모델 리스트는 그대로 유지, 숨기지 않음
-          } finally {
-            button.setDisabled(false);
+            this.validationCache[key] = {
+              valid: false,
+              models: this.validationCache[key]?.models ?? [],
+              error: result.error,
+            };
           }
-        });
+        } catch (err) {
+          spinner.remove();
+          const msg = err instanceof Error ? err.message : String(err);
+          statusContainer.setText(`❌ ${t('error')}: ${msg}`);
+          // 모델 리스트는 그대로 유지, 숨기지 않음
+        } finally {
+          button.setDisabled(false);
+        }
       });
+    });
   }
 
   private renderMCPStatus(containerEl: HTMLElement): void {
     containerEl.empty();
-    
-    const plugin = this.plugin as unknown as { mcpRegistry: import('./mcp/registry').MCPRegistry | null; reconnectMCP?(): Promise<string[]> };
+
+    const plugin = this.plugin as unknown as {
+      mcpRegistry: import('./mcp/registry').MCPRegistry | null;
+      reconnectMCP?(): Promise<string[]>;
+    };
     const registry = plugin.mcpRegistry;
     const servers = this.plugin.settings.mcpServers;
     const totalCount = servers.length;
@@ -1443,7 +1487,10 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     headerRow.createDiv({ cls: 'super-obsidian-mcp-status-title', text: t('mcpConnectionHealth') });
 
     const actionsRow = headerRow.createDiv({ cls: 'super-obsidian-mcp-status-actions' });
-    const refreshBtn = actionsRow.createEl('button', { cls: 'super-obsidian-mcp-refresh-btn', attr: { 'aria-label': '연결 상태 새로고침' } });
+    const refreshBtn = actionsRow.createEl('button', {
+      cls: 'super-obsidian-mcp-refresh-btn',
+      attr: { 'aria-label': '연결 상태 새로고침' },
+    });
     refreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <polyline points="23 4 23 10 17 10"></polyline>
       <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
@@ -1496,11 +1543,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         item.createDiv({ cls: `super-obsidian-mcp-status-dot ${status}` });
         item.createSpan({ text: server.name, cls: 'super-obsidian-mcp-status-name' });
 
-        const labelText = status === 'connected'
-          ? t('mcpStatusConnected')
-          : status === 'error'
-            ? t('mcpStatusError')
-            : t('mcpStatusDisconnected');
+        const labelText =
+          status === 'connected'
+            ? t('mcpStatusConnected')
+            : status === 'error'
+              ? t('mcpStatusError')
+              : t('mcpStatusDisconnected');
         item.createSpan({
           text: labelText,
           cls: `super-obsidian-mcp-status-label ${status}`,
@@ -1509,4 +1557,3 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     }
   }
 }
-

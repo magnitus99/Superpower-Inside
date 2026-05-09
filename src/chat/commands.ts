@@ -19,7 +19,9 @@ export function parseDirective(line: string): Directive | null {
 export interface CommandContext {
   editor: Editor;
   plugin: PluginLike;
-  provider: NonNullable<ReturnType<typeof import('../llm/providers').createProvider> extends infer R ? R : never>;
+  provider: NonNullable<
+    ReturnType<typeof import('../llm/providers').createProvider> extends infer R ? R : never
+  >;
 }
 
 export async function executeDirective(
@@ -61,7 +63,11 @@ export async function executeDirective(
         break;
       case 'search':
       case '검색': {
-        const rag = (plugin as unknown as { ragEngine?: { queryWithContext: (q: string, k: number) => Promise<string> } }).ragEngine;
+        const rag = (
+          plugin as unknown as {
+            ragEngine?: { queryWithContext: (q: string, k: number) => Promise<string> };
+          }
+        ).ragEngine;
         const context = rag ? await rag.queryWithContext(directive.args || content, 3) : '';
         prompt = `볼트 내용을 바탕으로 다음 질문에 답해줘:\n\n질문: ${directive.args || content}\n\n컨텍스트:\n${context || '관련 내용을 찾을 수 없습니다.'}`;
         break;
@@ -81,17 +87,17 @@ export async function executeDirective(
     let result = '';
 
     const { createProvider } = await import('../llm/providers');
-    
+
     const defaultModel = plugin.settings.chat.defaultModel;
     if (!defaultModel) {
       throw new Error('기본 모델이 설정되지 않았습니다.');
     }
-    
+
     const parts = defaultModel.split(':');
     if (parts.length < 2) {
       throw new Error('기본 모델 설정 형식이 잘못되었습니다.');
     }
-    
+
     const key = parts[0] as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
     const modelName = parts.slice(1).join(':');
     const config = plugin.settings[key];

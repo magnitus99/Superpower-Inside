@@ -1,6 +1,10 @@
 import { t } from '../i18n';
 
-export function validateMcpJson(jsonString: string): { valid: boolean; data?: unknown; error?: string } {
+export function validateMcpJson(jsonString: string): {
+  valid: boolean;
+  data?: unknown;
+  error?: string;
+} {
   try {
     const parsed = JSON.parse(jsonString) as unknown;
 
@@ -33,7 +37,10 @@ export function validateMcpJson(jsonString: string): { valid: boolean; data?: un
         return { valid: false, error: `${t('mcpJsonInvalidArgs')} (${name})` };
       }
 
-      if (server.env !== undefined && (typeof server.env !== 'object' || server.env === null || Array.isArray(server.env))) {
+      if (
+        server.env !== undefined &&
+        (typeof server.env !== 'object' || server.env === null || Array.isArray(server.env))
+      ) {
         return { valid: false, error: `${t('mcpJsonInvalidEnv')} (${name})` };
       }
     }

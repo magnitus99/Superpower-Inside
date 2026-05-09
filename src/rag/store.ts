@@ -63,7 +63,7 @@ export class JsonFileVectorStore implements VectorStore {
     this.entries = [];
   }
 
-    async add(newEntries: VectorEntry[]): Promise<void> {
+  async add(newEntries: VectorEntry[]): Promise<void> {
     await this.loadIfNeeded();
     const seen = new Set(this.entries.map((e) => e.id));
     for (const entry of newEntries) {
@@ -138,7 +138,7 @@ export class MemoryVectorStore implements VectorStore {
     this.entries = [];
   }
 
-    async add(newEntries: VectorEntry[]): Promise<void> {
+  async add(newEntries: VectorEntry[]): Promise<void> {
     const seen = new Set(this.entries.map((e) => e.id));
     for (const entry of newEntries) {
       if (seen.has(entry.id)) {

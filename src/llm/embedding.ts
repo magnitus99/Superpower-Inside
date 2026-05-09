@@ -39,7 +39,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private baseUrl: string;
   private model: string;
 
-  constructor(apiKey: string, baseUrl = 'https://api.openai.com', model = 'text-embedding-3-small') {
+  constructor(
+    apiKey: string,
+    baseUrl = 'https://api.openai.com',
+    model = 'text-embedding-3-small',
+  ) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
     this.model = model;
