@@ -1,5 +1,5 @@
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile } from 'obsidian';
-import type { PluginLike } from '../settings';
+import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile, TFolder } from 'obsidian';
+import { PROVIDER_KEYS, PROVIDER_LABELS, type PluginLike } from '../settings';
 import type { ChatMessage, StreamChunk } from '../llm/providers';
 import { t } from '../i18n';
 
@@ -8,11 +8,12 @@ export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
 interface ChatMessageWithMeta extends ChatMessage {
   id: string;
   timestamp: number;
+  reasoning?: string;
 }
 
 interface ParsedMention {
   raw: string;
-  type: 'file' | 'server';
+  type: 'file' | 'server' | 'folder';
   name: string;
 }
 
@@ -33,10 +34,11 @@ export class ChatView extends ItemView {
   private scrollBtn: HTMLElement | null;
   private sysPromptEditor: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
+  private modelSelectEl: HTMLSelectElement | null;
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
   private mentionSelectedIndex: number;
-  private mentionItems: { label: string; value: string; type: 'server' | 'file' }[];
+  private mentionItems: { label: string; value: string; type: 'server' | 'file' | 'folder' }[];
   private mentionStartIndex: number;
 
   private messageEls: Map<string, HTMLElement>;
@@ -59,6 +61,7 @@ export class ChatView extends ItemView {
     this.scrollBtn = null;
     this.sysPromptEditor = null;
     this.mcpStatusBar = null;
+    this.modelSelectEl = null;
     this.mentionDropdown = null;
     this.mentionQuery = '';
     this.mentionSelectedIndex = -1;
@@ -249,6 +252,25 @@ export class ChatView extends ItemView {
     const wrapper = container.createDiv({ cls: 'super-obsidian-chat-input-wrapper' });
 
     const toolbar = wrapper.createDiv({ cls: 'super-obsidian-chat-input-toolbar' });
+
+    this.modelSelectEl = toolbar.createEl('select', {
+      cls: 'super-obsidian-chat-model-select',
+      attr: { 'aria-label': t('modelSelector') },
+    });
+    this.populateModelSelect();
+
+    const modelRefreshBtn = toolbar.createEl('button', {
+      cls: 'super-obsidian-chat-model-refresh-btn',
+      attr: { 'aria-label': t('refresh') },
+    });
+    modelRefreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"></polyline>
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+    </svg>`;
+    modelRefreshBtn.addEventListener('click', () => {
+      this.populateModelSelect();
+    });
+
     this.mcpBtn = toolbar.createEl('button', {
       cls: 'super-obsidian-chat-toolbar-btn',
       text: t('toolbarTools'),
@@ -274,6 +296,42 @@ export class ChatView extends ItemView {
       text: t('sendButton'),
     });
     this.sendBtn.addEventListener('click', () => void this.handleSend());
+  }
+
+  private populateModelSelect(): void {
+    if (!this.modelSelectEl) return;
+    this.modelSelectEl.empty();
+
+    const allModels: { value: string; label: string }[] = [];
+    for (const key of PROVIDER_KEYS) {
+      const conf = this.plugin.settings[key];
+      if (!conf.enabled) continue;
+      for (const model of conf.models) {
+        allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
+      }
+    }
+
+    if (allModels.length === 0) {
+      const opt = this.modelSelectEl.createEl('option');
+      opt.value = '';
+      opt.text = t('noModelsEnabled');
+      this.modelSelectEl.disabled = true;
+      return;
+    }
+
+    allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
+    const defaultModel = this.plugin.settings.chat.defaultModel;
+
+    for (const m of allModels) {
+      const opt = this.modelSelectEl.createEl('option');
+      opt.value = m.value;
+      opt.text = m.label;
+    }
+
+    this.modelSelectEl.value = defaultModel && allModels.some((m) => m.value === defaultModel)
+      ? defaultModel
+      : allModels[0].value;
+    this.modelSelectEl.disabled = false;
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
@@ -361,6 +419,29 @@ export class ChatView extends ItemView {
       }
     }
 
+    const allFolders = new Set<string>();
+    const maxFolders = 10;
+    let folderCount = 0;
+    for (const file of this.app.vault.getFiles()) {
+      if (folderCount >= maxFolders) break;
+      const parts = file.path.split('/');
+      parts.pop();
+      for (let i = 0; i < parts.length; i++) {
+        const folderPath = parts.slice(0, i + 1).join('/');
+        if (allFolders.has(folderPath)) continue;
+        if (folderPath.toLowerCase().includes(query)) {
+          this.mentionItems.push({
+            label: folderPath,
+            value: folderPath,
+            type: 'folder',
+          });
+          allFolders.add(folderPath);
+          folderCount++;
+          if (folderCount >= maxFolders) break;
+        }
+      }
+    }
+
     this.mentionSelectedIndex = this.mentionItems.length > 0 ? 0 : -1;
   }
 
@@ -378,6 +459,7 @@ export class ChatView extends ItemView {
 
     const serverItems = this.mentionItems.filter((i) => i.type === 'server');
     const fileItems = this.mentionItems.filter((i) => i.type === 'file');
+    const folderItems = this.mentionItems.filter((i) => i.type === 'folder');
 
     if (serverItems.length > 0) {
       const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
@@ -388,6 +470,20 @@ export class ChatView extends ItemView {
       for (const item of serverItems) {
         const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
         el.createSpan({ cls: 'super-obsidian-mention-item-icon', text: '🔌' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        el.addEventListener('click', () => this.insertMention(item));
+      }
+    }
+
+    if (folderItems.length > 0) {
+      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      group.createDiv({
+        cls: 'super-obsidian-mention-group-label',
+        text: t('mcpMentionFolders'),
+      });
+      for (const item of folderItems) {
+        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-icon folder', text: '📁' });
         el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
       }
@@ -415,11 +511,22 @@ export class ChatView extends ItemView {
     if (!this.mentionDropdown || !this.inputArea) return;
     const inputRect = this.inputArea.getBoundingClientRect();
     const containerRect = this.container!.getBoundingClientRect();
-    const top = inputRect.bottom - containerRect.top;
+    const spaceBelow = containerRect.height - (inputRect.bottom - containerRect.top);
+    const spaceAbove = inputRect.top - containerRect.top;
+
     this.mentionDropdown.style.position = 'absolute';
     this.mentionDropdown.style.left = '12px';
-    this.mentionDropdown.style.top = `${top}px`;
     this.mentionDropdown.style.right = '12px';
+
+    if (spaceBelow < 200 && spaceAbove > 200) {
+      this.mentionDropdown.style.bottom = `${containerRect.height - (inputRect.top - containerRect.top) + 4}px`;
+      this.mentionDropdown.style.top = 'auto';
+      this.mentionDropdown.addClass('above');
+    } else {
+      this.mentionDropdown.style.top = `${inputRect.bottom - containerRect.top + 4}px`;
+      this.mentionDropdown.style.bottom = 'auto';
+      this.mentionDropdown.removeClass('above');
+    }
   }
 
   private selectMentionItem(index: number): void {
@@ -445,7 +552,7 @@ export class ChatView extends ItemView {
     }
   }
 
-  private insertMention(item: { label: string; value: string; type: 'server' | 'file' }): void {
+  private insertMention(item: { label: string; value: string; type: 'server' | 'file' | 'folder' }): void {
     if (!this.inputArea) return;
     const value = this.inputArea.value;
     const before = value.slice(0, this.mentionStartIndex);
@@ -490,9 +597,9 @@ export class ChatView extends ItemView {
     if (this.scrollBtn) this.scrollBtn.style.display = 'none';
   }
 
-  addMessage(role: ChatMessage['role'], content: string): string {
+  addMessage(role: ChatMessage['role'], content: string, reasoning?: string): string {
     const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const msg: ChatMessageWithMeta = { id, role, content, timestamp: Date.now() };
+    const msg: ChatMessageWithMeta = { id, role, content, timestamp: Date.now(), reasoning };
     this.messages.push(msg);
 
     const wrapper = this.messagesArea!.createDiv({
@@ -512,6 +619,19 @@ export class ChatView extends ItemView {
       text: this.formatTimestamp(msg.timestamp),
     });
 
+    if (reasoning) {
+      const details = bubbleContainer.createEl('details', {
+        cls: 'super-obsidian-chat-reasoning',
+      });
+      details.addEventListener('toggle', () => {
+        if (this.autoScroll) this.scrollToBottom();
+      });
+      const summary = details.createEl('summary');
+      summary.setText(t('reasoningLabel'));
+      const contentDiv = details.createDiv({ cls: 'super-obsidian-chat-reasoning-content' });
+      contentDiv.setText(reasoning);
+    }
+
     const bubble = bubbleContainer.createDiv({
       cls: `super-obsidian-chat-bubble ${role}`,
     });
@@ -523,11 +643,33 @@ export class ChatView extends ItemView {
     return id;
   }
 
-  updateMessage(id: string, content: string, isDone: boolean): void {
+  updateMessage(id: string, content: string, isDone: boolean, reasoning?: string): void {
     const wrapper = this.messageEls.get(id);
     if (!wrapper) return;
     const bubble = wrapper.querySelector('.super-obsidian-chat-bubble');
     if (!(bubble instanceof HTMLElement)) return;
+
+    if (reasoning !== undefined) {
+      let details = wrapper.querySelector('.super-obsidian-chat-reasoning');
+      if (!details) {
+        const bubbleContainer = wrapper.querySelector('.super-obsidian-chat-bubble-container');
+        if (bubbleContainer) {
+          details = document.createElement('details');
+          details.addClass('super-obsidian-chat-reasoning');
+          const summary = document.createElement('summary');
+          summary.setText(t('reasoningLabel'));
+          details.appendChild(summary);
+          const contentDiv = document.createElement('div');
+          contentDiv.addClass('super-obsidian-chat-reasoning-content');
+          details.appendChild(contentDiv);
+          bubbleContainer.insertBefore(details, bubbleContainer.firstChild);
+        }
+      }
+      if (details) {
+        const contentDiv = details.querySelector('.super-obsidian-chat-reasoning-content');
+        if (contentDiv) contentDiv.setText(reasoning);
+      }
+    }
 
     if (!isDone) {
       bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
@@ -544,6 +686,46 @@ export class ChatView extends ItemView {
     bubble.empty();
     await MarkdownRenderer.renderMarkdown(content, bubble, '', this);
     this.enhanceCodeBlocks(bubble);
+    this.stylizeMentions(bubble);
+  }
+
+  private stylizeMentions(container: HTMLElement): void {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if (node.parentElement?.closest('a, code, pre')) continue;
+      textNodes.push(node as Text);
+    }
+    for (const textNode of textNodes) {
+      const text = textNode.textContent ?? '';
+      const regex = /@([^\s\n<>,;:!?()[\]{}]+)/g;
+      if (!regex.test(text)) continue;
+      regex.lastIndex = 0;
+      const fragments: (Text | HTMLElement)[] = [];
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          fragments.push(document.createTextNode(text.slice(lastIndex, match.index)));
+        }
+        const span = document.createElement('span');
+        span.addClass('super-obsidian-mention-inline');
+        span.setText(match[1]);
+        fragments.push(span);
+        lastIndex = regex.lastIndex;
+      }
+      if (lastIndex < text.length) {
+        fragments.push(document.createTextNode(text.slice(lastIndex)));
+      }
+      if (fragments.length === 0) continue;
+      const parent = textNode.parentNode;
+      if (!parent) continue;
+      for (const frag of fragments) {
+        parent.insertBefore(frag, textNode);
+      }
+      parent.removeChild(textNode);
+    }
   }
 
   private enhanceCodeBlocks(container: HTMLElement): void {
@@ -628,15 +810,15 @@ export class ChatView extends ItemView {
 
     const { createProvider } = await import('../llm/providers');
 
-    const defaultModel = this.plugin.settings.chat.defaultModel;
-    if (!defaultModel) {
+    const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
+    if (!selectedModel) {
       new Notice('기본 모델이 설정되지 않았습니다. 설정 탭에서 모델을 선택하세요.');
       return;
     }
 
-    const parts = defaultModel.split(':');
+    const parts = selectedModel.split(':');
     if (parts.length < 2) {
-      new Notice('기본 모델 설정 형식이 잘못되었습니다.');
+      new Notice('모델 설정 형식이 잘못되었습니다.');
       return;
     }
 
@@ -673,17 +855,21 @@ export class ChatView extends ItemView {
       const assistantId = this.addMessage('assistant', '');
 
       let fullText = '';
+      let fullReasoning = '';
       await provider.streamChat(
         messages,
         (chunk: StreamChunk) => {
           if (chunk.content) {
             fullText += chunk.content;
-            this.updateMessage(assistantId, fullText, chunk.done);
           }
+          if (chunk.reasoning) {
+            fullReasoning += chunk.reasoning;
+          }
+          this.updateMessage(assistantId, fullText, chunk.done, fullReasoning || undefined);
         },
         0.7,
       );
-      this.updateMessage(assistantId, fullText, true);
+      this.updateMessage(assistantId, fullText, true, fullReasoning || undefined);
     } catch (err) {
       if (this.typingIndicator) this.typingIndicator.style.display = 'none';
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -698,6 +884,7 @@ export class ChatView extends ItemView {
     if (this.sendBtn) this.sendBtn.disabled = loading;
     if (this.inputArea) this.inputArea.disabled = loading;
     if (this.mcpBtn) this.mcpBtn.disabled = loading;
+    if (this.modelSelectEl) this.modelSelectEl.disabled = loading;
   }
 
   private async buildSystemPrompt(lastUserText: string): Promise<string | null> {
@@ -756,6 +943,27 @@ export class ChatView extends ItemView {
               mentionParts.push(`\n\n[MCP Server: ${mention.name}]\n(연결되지 않은 서버입니다)`);
             }
           }
+        } else if (mention.type === 'folder') {
+          const folder = this.app.vault.getAbstractFileByPath(mention.name);
+          if (folder instanceof TFolder) {
+            const folderFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(mention.name + '/'));
+            if (folderFiles.length === 0) {
+              mentionParts.push(`\n\n[Folder: ${mention.name}]\n(폴더가 비어 있습니다)`);
+            } else {
+              const contents: string[] = [];
+              for (const f of folderFiles.slice(0, 50)) {
+                try {
+                  const content = await this.app.vault.cachedRead(f);
+                  contents.push(`--- ${f.path} ---\n${content}`);
+                } catch {
+                  contents.push(`--- ${f.path} ---\n(파일을 읽을 수 없습니다)`);
+                }
+              }
+              mentionParts.push(`\n\n[Folder: ${mention.name}]\n${contents.join('\n\n')}`);
+            }
+          } else {
+            mentionParts.push(`\n\n[Folder: ${mention.name}]\n(폴더를 찾을 수 없습니다)`);
+          }
         }
       }
       if (mentionParts.length > 0) {
@@ -788,6 +996,12 @@ export class ChatView extends ItemView {
       const file = this.app.vault.getAbstractFileByPath(name);
       if (file instanceof TFile) {
         mentions.push({ raw, type: 'file', name });
+        continue;
+      }
+
+      if (file instanceof TFolder) {
+        mentions.push({ raw, type: 'folder', name });
+        continue;
       }
     }
     return mentions;

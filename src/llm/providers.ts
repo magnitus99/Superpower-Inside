@@ -9,6 +9,7 @@ export interface ChatMessage {
 export interface StreamChunk {
   content: string;
   done: boolean;
+  reasoning?: string;
 }
 
 export interface LLMProvider {
@@ -97,10 +98,13 @@ class OpenAICompatibleProvider implements LLMProvider {
         if (!data) continue;
         try {
           const chunk = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string } }>;
+            choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
           };
           const content = chunk.choices?.[0]?.delta?.content ?? '';
-          onChunk({ content, done: false });
+          const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
+          if (content || reasoning) {
+            onChunk({ content, done: false, ...(reasoning ? { reasoning } : {}) });
+          }
         } catch {
           // 잘못된 SSE 라인 무시
         }
@@ -216,9 +220,14 @@ class ClaudeProvider implements LLMProvider {
         try {
           const event = JSON.parse(data) as {
             type: string;
-            delta?: { text?: string };
+            content_block?: { type: string };
+            delta?: { type?: string; text?: string; thinking?: string };
           };
-          if (event.type === 'content_block_delta') {
+          if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+            onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
+          } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+            onChunk({ content: event.delta.text ?? '', done: false });
+          } else if (event.type === 'content_block_delta' && !event.delta?.type) {
             onChunk({ content: event.delta?.text ?? '', done: false });
           } else if (event.type === 'message_stop') {
             onChunk({ content: '', done: true });

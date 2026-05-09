@@ -1448,3 +1448,147 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Thought Process Accordion */
+.super-obsidian-chat-reasoning {
+  margin-bottom: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+  overflow: hidden;
+}
+.super-obsidian-chat-reasoning summary {
+  padding: 6px 10px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  user-select: none;
+}
+.super-obsidian-chat-reasoning summary::before {
+  content: '💭';
+  font-size: 12px;
+}
+.super-obsidian-chat-reasoning[open] summary::before {
+  content: '🧠';
+}
+.super-obsidian-chat-reasoning-content {
+  padding: 8px 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.5;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  font-style: italic;
+}
+.super-obsidian-chat-reasoning-content p:first-child {
+  margin-top: 0;
+}
+.super-obsidian-chat-reasoning-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* @Mention Inline Styling */
+.super-obsidian-mention-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
+  font-weight: 600;
+  font-size: 0.95em;
+  cursor: default;
+  white-space: nowrap;
+  border: 1px solid var(--interactive-accent);
+}
+.super-obsidian-mention-inline::before {
+  content: '@';
+  opacity: 0.8;
+}
+
+/* Dropdown Upward Positioning */
+.super-obsidian-mention-dropdown.above {
+  bottom: 100%;
+  top: auto;
+  margin-bottom: 4px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Inline Model Selector */
+.super-obsidian-chat-model-select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  max-width: 160px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.super-obsidian-chat-model-select:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+.super-obsidian-chat-model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.super-obsidian-chat-model-refresh-btn {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.super-obsidian-chat-model-refresh-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-chat-model-refresh-btn:active {
+  background: var(--background-modifier-active);
+}
+
+.super-obsidian-chat-model-refresh-btn svg {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Folder Mention Icon (reuses existing dropdown styles) */
+.super-obsidian-mention-item-icon.folder {
+  color: var(--text-warning);
+}
+
+/* Mention Pill in Input Area */
+.super-obsidian-chat-input-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 0.9em;
+  font-weight: 600;
+  white-space: nowrap;
+  margin: 0 1px;
+}
+
