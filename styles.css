@@ -487,3 +487,172 @@
 .super-obsidian-language-select {
   margin-bottom: 12px;
 }
+
+/* MCP Empty State */
+.super-obsidian-mcp-empty-state {
+  text-align: center;
+  padding: 32px 16px;
+  background: var(--background-primary-alt);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  margin: 16px 0;
+}
+
+.super-obsidian-mcp-empty-state-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+  margin-bottom: 8px;
+}
+
+.super-obsidian-mcp-empty-state-desc {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+/* Section Divider */
+.super-obsidian-mcp-section-divider {
+  border-top: 1px solid var(--background-modifier-border);
+  margin: 20px 0 12px;
+  padding-top: 12px;
+}
+
+/* Connection Status Dots — actual health states */
+.super-obsidian-mcp-status-dot.connected {
+  background-color: var(--background-modifier-success);
+}
+
+.super-obsidian-mcp-status-dot.disconnected {
+  background-color: var(--text-faint);
+}
+
+.super-obsidian-mcp-status-dot.error {
+  background-color: var(--background-modifier-error);
+}
+
+/* Status Labels */
+.super-obsidian-mcp-status-label.connected {
+  background: var(--background-modifier-success);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-mcp-status-label.disconnected {
+  background: var(--text-faint);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-mcp-status-label.error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+/* Transport Badge on Cards */
+.super-obsidian-mcp-card-transport-badge {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Test Result Styling */
+.super-obsidian-mcp-test-result.success {
+  color: var(--text-success);
+}
+
+.super-obsidian-mcp-test-result.error {
+  color: var(--text-error);
+}
+
+.super-obsidian-mcp-lint-status {
+  font-size: var(--font-ui-smaller);
+  min-height: 1.4em;
+  margin: 4px 0;
+}
+
+.super-obsidian-mcp-lint-status.success {
+  color: var(--text-success);
+}
+
+.super-obsidian-mcp-lint-status.error {
+  color: var(--text-error);
+}
+
+.super-obsidian-mcp-json-editor {
+  width: 100%;
+  min-height: 200px;
+  font-family: monospace;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 8px;
+  color: var(--text-normal);
+  resize: vertical;
+}
+.super-obsidian-mcp-status-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--background-secondary);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.super-obsidian-mcp-status-summary-count {
+  font-weight: 600;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.super-obsidian-mcp-status-summary-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.super-obsidian-mcp-refresh-btn {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.super-obsidian-mcp-refresh-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.super-obsidian-mcp-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.super-obsidian-mcp-refresh-btn svg {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.super-obsidian-mcp-refresh-btn.spinning svg {
+  animation: super-obsidian-spin 0.8s linear infinite;
+}
+
+.super-obsidian-mcp-status-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.super-obsidian-mcp-status-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}

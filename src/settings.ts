@@ -1,9 +1,44 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { execSync } from 'node:child_process';
+import { accessSync, constants as fsConstants } from 'node:fs';
 import { isExcludedExt } from './utils/vault';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { type Language, t } from './i18n';
-import { MCPClientManager } from './mcp/client';
+
+interface StandardMcpServerEntry {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+interface StandardMcpConfig {
+  mcpServers: Record<string, StandardMcpServerEntry>;
+}
+
+function internalToStandard(servers: MCPServerConfig[]): StandardMcpConfig {
+  const mcpServers: Record<string, StandardMcpServerEntry> = {};
+  for (const s of servers) {
+    const entry: StandardMcpServerEntry = { command: s.command };
+    if (s.args !== undefined && s.args.length > 0) entry.args = s.args;
+    if (s.env !== undefined && Object.keys(s.env).length > 0) entry.env = s.env;
+    mcpServers[s.name] = entry;
+  }
+  return { mcpServers };
+}
+
+function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
+  const result: MCPServerConfig[] = [];
+  for (const [name, cfg] of Object.entries(standard.mcpServers)) {
+    result.push({
+      name,
+      command: cfg.command,
+      args: cfg.args,
+      env: cfg.env,
+    });
+  }
+  return result;
+}
 
 export interface ProviderConfig {
   apiKey: string;
@@ -26,13 +61,9 @@ export type ProviderKey = typeof PROVIDER_KEYS[number];
 
 export interface MCPServerConfig {
   name: string;
-  transport: 'stdio' | 'sse' | 'http';
-  command?: string;
+  command: string;
   args?: string[];
-  url?: string;
-  enabled: boolean;
-  token?: string;
-  registryUrl?: string;
+  env?: Record<string, string>;
 }
 
 export type EmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
@@ -67,34 +98,7 @@ export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
   other: 'Other (Custom)',
 };
 
-export const MCP_TRANSPORT_LABELS: Record<MCPServerConfig['transport'], string> = {
-  stdio: 'stdio',
-  sse: 'sse',
-  http: 'http',
-};
 
-export const MCP_PRESETS: { label: string; config: Partial<MCPServerConfig> }[] = [
-  {
-    label: 'uvx (npx-like for uv)',
-    config: { transport: 'stdio', command: 'uvx', args: ['mcp-server-example'] },
-  },
-  {
-    label: 'npx (Node)',
-    config: { transport: 'stdio', command: 'npx', args: ['-y', '@ anthropic-ai/mcp-server'] },
-  },
-  {
-    label: 'bunx (Bun)',
-    config: { transport: 'stdio', command: 'bunx', args: ['@ anthropic-ai/mcp-server'] },
-  },
-  {
-    label: 'Custom stdio',
-    config: { transport: 'stdio', command: '', args: [] },
-  },
-  {
-    label: 'Custom HTTP/SSE',
-    config: { transport: 'http', url: '' },
-  },
-];
 
 export interface RAGConfig {
   excludePaths: string[];
@@ -121,6 +125,7 @@ export interface SuperObsidianSettings {
   openRouter: ProviderConfig;
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
+  mcpPath: string;
   chat: ChatConfig;
   pluginAwareEnabled: boolean;
   autoSaveEnabled: boolean;
@@ -171,6 +176,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     autoUpdateIntervalMs: 30000,
   },
   mcpServers: [],
+  mcpPath: '',
   chat: {
     saveFolder: 'chats',
     defaultModel: 'openai:gpt-4o-mini',
@@ -183,7 +189,8 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
 export interface PluginLike {
   app: App;
   settings: SuperObsidianSettings;
-  saveSettings(): Promise<void>;
+  saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
+  reconnectMCP(): Promise<string[]>;
   eventDrivenRagStats?: {
     totalFiles: number;
     indexedFiles: number;
@@ -907,8 +914,295 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
   
   private buildMCPTab(containerEl: HTMLElement): void {
+    containerEl.empty();
     const mcpSection = containerEl.createDiv();
-    this.buildMCPList(mcpSection);
+
+    mcpSection.createEl('h3', { text: t('mcpPathTitle'), cls: 'super-obsidian-mcp-section-title' });
+
+    const pathDesc = mcpSection.createDiv({ cls: 'setting-item-description' });
+    pathDesc.setText(t('mcpPathDesc'));
+
+    const pathRow = mcpSection.createDiv({ cls: 'super-obsidian-mcp-path-row' });
+
+    const pathText = pathRow.createEl('textarea', {
+      cls: 'super-obsidian-mcp-json-editor',
+      attr: { placeholder: t('mcpPathPlaceholder'), rows: '3' },
+    });
+    pathText.value = this.plugin.settings.mcpPath;
+
+    const pathActions = pathRow.createDiv({ cls: 'super-obsidian-mcp-path-actions' });
+
+    const fetchBtn = pathActions.createEl('button', { text: t('mcpPathFetch') });
+    fetchBtn.addEventListener('click', () => {
+      void (async () => {
+        const originalText = fetchBtn.textContent;
+        fetchBtn.setText(t('mcpPathFetching'));
+        fetchBtn.disabled = true;
+
+        try {
+          let shell = process.env.SHELL ?? '';
+
+          if (!shell || !shell.startsWith('/')) {
+            const candidates = [
+              '/opt/homebrew/bin/fish',
+              '/usr/local/bin/fish',
+              '/usr/bin/fish',
+              '/bin/zsh',
+              '/bin/bash',
+              '/bin/sh',
+            ];
+            for (const c of candidates) {
+              try {
+                accessSync(c, fsConstants.X_OK);
+                shell = c;
+                break;
+              } catch {
+                void 0;
+              }
+            }
+          }
+
+          let output: string;
+          if (shell.includes('fish')) {
+            output = execSync(`${shell} -lc 'printenv PATH'`, {
+              encoding: 'utf8',
+              timeout: 5000,
+            }).trim();
+          } else {
+            output = execSync(`${shell} -ilc 'printenv PATH'`, {
+              encoding: 'utf8',
+              timeout: 5000,
+            }).trim();
+          }
+
+          if (output.includes(':') || output.includes(';')) {
+            pathText.value = output;
+            this.plugin.settings.mcpPath = output;
+            await this.plugin.saveSettings();
+            new Notice(t('mcpPathFetchSuccess'));
+          } else {
+            throw new Error(`Unexpected PATH output: "${output}"`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          new Notice(`${t('mcpPathFetchError')}: ${msg}`);
+        } finally {
+          fetchBtn.setText(originalText);
+          fetchBtn.disabled = false;
+        }
+      })();
+    });
+
+    const saveBtn = pathActions.createEl('button', { text: t('save') });
+    saveBtn.addEventListener('click', () => {
+      void (async () => {
+        this.plugin.settings.mcpPath = pathText.value.trim();
+        await this.plugin.saveSettings();
+        new Notice(t('mcpJsonSaved'));
+      })();
+    });
+
+    mcpSection.createDiv({ cls: 'super-obsidian-mcp-section-divider' });
+
+    const statusSection = mcpSection.createDiv({ cls: 'super-obsidian-mcp-status' });
+    this.renderMCPStatus(statusSection);
+
+    mcpSection.createDiv({ cls: 'super-obsidian-mcp-section-divider' });
+    mcpSection.createEl('h3', { text: t('mcpJsonEditor'), cls: 'super-obsidian-mcp-section-title' });
+
+    const lintStatus = mcpSection.createDiv({ cls: 'super-obsidian-mcp-lint-status' });
+    lintStatus.setText('');
+
+    const defaultJson = JSON.stringify(internalToStandard(this.plugin.settings.mcpServers), null, 2);
+    const jsonTextArea = mcpSection.createEl('textarea', {
+      cls: 'super-obsidian-mcp-json-editor',
+    });
+    jsonTextArea.value = defaultJson;
+
+    let lintTimeout: ReturnType<typeof setTimeout> | null = null;
+    let autoSaveTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const runLint = () => {
+      lintStatus.setText(t('mcpJsonLinting'));
+      lintStatus.removeClass('success');
+      lintStatus.removeClass('error');
+
+      if (lintTimeout) {
+        clearTimeout(lintTimeout);
+        lintTimeout = null;
+      }
+      if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+        autoSaveTimeout = null;
+      }
+
+      lintTimeout = setTimeout(() => {
+        lintTimeout = null;
+        const result = this.validateMcpJson(jsonTextArea.value);
+
+        if (result.valid) {
+          lintStatus.setText('✅ ' + t('mcpJsonLintOk'));
+          lintStatus.addClass('success');
+          lintStatus.removeClass('error');
+
+          autoSaveTimeout = setTimeout(() => {
+            autoSaveTimeout = null;
+            this.plugin.settings.mcpServers = standardToInternal(
+              result.data as StandardMcpConfig,
+            );
+            void (async () => {
+              const saveResult = await this.plugin.saveSettings();
+              if (saveResult.success) {
+                lintStatus.setText('✅ ' + t('mcpJsonSaved'));
+              } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
+                lintStatus.setText(`⚠️ 저장됨, ${saveResult.mcpErrors.length}개 서버 연결 실패`);
+                lintStatus.addClass('error');
+                lintStatus.removeClass('success');
+              }
+            })();
+          }, 1000);
+        } else {
+          lintStatus.setText(`❌ ${t('mcpJsonLintError', { error: result.error ?? '' })}`);
+          lintStatus.addClass('error');
+          lintStatus.removeClass('success');
+        }
+      }, 1000);
+    };
+
+    jsonTextArea.addEventListener('input', () => {
+      runLint();
+    });
+
+    new Setting(mcpSection)
+      .addButton((btn) =>
+        btn.setButtonText(t('save')).onClick(async () => {
+          const result = this.validateMcpJson(jsonTextArea.value);
+          if (result.valid) {
+            this.plugin.settings.mcpServers = standardToInternal(
+              result.data as StandardMcpConfig,
+            );
+            const saveResult = await this.plugin.saveSettings();
+
+            if (saveResult.success) {
+              lintStatus.setText('✅ ' + t('mcpJsonSaved'));
+              lintStatus.addClass('success');
+              lintStatus.removeClass('error');
+              new Notice(t('mcpJsonSaved'));
+            } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
+              lintStatus.setText(`⚠️ 설정은 저장되었으나 ${saveResult.mcpErrors.length}개 서버 연결 실패`);
+              lintStatus.addClass('error');
+              lintStatus.removeClass('success');
+
+              const errorDetails = saveResult.mcpErrors.map((err) => `• ${err}`).join('\n');
+              new Notice(`MCP 연결 오류:\n${errorDetails}`, 10000);
+            }
+
+            statusSection.empty();
+            this.renderMCPStatus(statusSection);
+          } else {
+            const detailedError = this.buildDetailedMcpError(result.error ?? '');
+            lintStatus.setText(`❌ ${detailedError.short}`);
+            lintStatus.addClass('error');
+            lintStatus.removeClass('success');
+            new Notice(detailedError.full, 10000);
+          }
+        }),
+      );
+  }
+
+  private validateMcpJson(jsonString: string): { valid: boolean; data?: unknown; error?: string } {
+    try {
+      const parsed = JSON.parse(jsonString) as unknown;
+
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { valid: false, error: t('mcpJsonInvalidObject') };
+      }
+
+      const obj = parsed as Record<string, unknown>;
+      if (!('mcpServers' in obj)) {
+        return { valid: false, error: t('mcpJsonMissingMcpServers') };
+      }
+
+      const mcpServers = obj.mcpServers;
+      if (typeof mcpServers !== 'object' || mcpServers === null || Array.isArray(mcpServers)) {
+        return { valid: false, error: t('mcpJsonInvalidMcpServers') };
+      }
+
+      for (const [name, cfg] of Object.entries(mcpServers)) {
+        if (typeof cfg !== 'object' || cfg === null) {
+          return { valid: false, error: `${t('mcpJsonInvalidServerValue')} (${name})` };
+        }
+
+        const server = cfg as Record<string, unknown>;
+
+        if (server.command === undefined) {
+          return { valid: false, error: `${t('mcpJsonServerNeedsCommand')} (${name})` };
+        }
+
+        if (server.args !== undefined && !Array.isArray(server.args)) {
+          return { valid: false, error: `${t('mcpJsonInvalidArgs')} (${name})` };
+        }
+
+        if (server.env !== undefined && (typeof server.env !== 'object' || server.env === null || Array.isArray(server.env))) {
+          return { valid: false, error: `${t('mcpJsonInvalidEnv')} (${name})` };
+        }
+      }
+
+      return { valid: true, data: parsed };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { valid: false, error: msg };
+    }
+  }
+
+  private buildDetailedMcpError(rawError: string): { short: string; full: string } {
+    if (rawError.includes(t('mcpJsonInvalidObject'))) {
+      return {
+        short: 'JSON 형식 오류',
+        full: `❌ ${t('mcpJsonInvalidObject')}\n\n✅ 예시:\n  {\n    "mcpServers": {\n      "my-server": {\n        "command": "npx",\n        "args": ["-y", "@modelcontextprotocol/server-filesystem"]\n      }\n    }\n  }`,
+      };
+    }
+    if (rawError.includes(t('mcpJsonMissingMcpServers'))) {
+      return {
+        short: '"mcpServers" 키 누락',
+        full: `❌ ${t('mcpJsonMissingMcpServers')}\n\n✅ 예시:\n  {\n    "mcpServers": { ... }\n  }`,
+      };
+    }
+    if (rawError.includes(t('mcpJsonInvalidMcpServers'))) {
+      return {
+        short: '"mcpServers" 형식 오류',
+        full: `❌ ${t('mcpJsonInvalidMcpServers')}\n\n✅ 예시:\n  {\n    "mcpServers": {\n      "server-name": { ... }\n    }\n  }`,
+      };
+    }
+    if (rawError.includes(t('mcpJsonServerNeedsCommand'))) {
+      return {
+        short: '서버 설정 누락',
+        full: `❌ ${t('mcpJsonServerNeedsCommand')}\n\n✅ 예시:\n  "my-server": {\n    "command": "npx",\n    "args": ["-y", "@modelcontextprotocol/server-filesystem"]\n  }`,
+      };
+    }
+    if (rawError.includes(t('mcpJsonInvalidArgs'))) {
+      return {
+        short: '"args" 형식 오류',
+        full: `❌ ${t('mcpJsonInvalidArgs')}\n\n✅ 예시:\n  "args": ["-y", "@modelcontextprotocol/server-filesystem"]`,
+      };
+    }
+    if (rawError.includes(t('mcpJsonInvalidEnv'))) {
+      return {
+        short: '"env" 형식 오류',
+        full: `❌ ${t('mcpJsonInvalidEnv')}\n\n✅ 예시:\n  "env": {\n    "API_KEY": "secret"\n  }`,
+      };
+    }
+
+    if (rawError.includes('Unexpected token') || rawError.includes('JSON')) {
+      return {
+        short: 'JSON 문법 오류',
+        full: `❌ JSON 문법 오류: ${rawError}\n\n확인 항목:\n• 마지막 속성 뒤에 쉼표(,)가 없는지\n• 따옴표(")가 짝을 이루는지\n• 중괄호({})와 대괄호([])가 짝을 이루는지`,
+      };
+    }
+    return {
+      short: rawError,
+      full: `❌ 오류: ${rawError}`,
+    };
   }
   
   private buildAdvancedTab(containerEl: HTMLElement): void {
@@ -1062,192 +1356,85 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       });
   }
 
-  private buildMCPList(containerEl: HTMLElement): void {
-    containerEl.empty();
-
-    const mcpClientManager = new MCPClientManager();
-
-    const statusSection = containerEl.createDiv({ cls: 'super-obsidian-mcp-status' });
-    this.renderMCPStatus(statusSection);
-
-    containerEl.createEl('h3', { text: t('mcpQuickTemplates'), cls: 'super-obsidian-mcp-section-title' });
-    const presetSection = containerEl.createDiv({ cls: 'super-obsidian-mcp-presets' });
-    for (const preset of MCP_PRESETS) {
-      const presetBtn = presetSection.createEl('button', { text: preset.label, cls: 'super-obsidian-mcp-preset-btn' });
-      presetBtn.addEventListener('click', () => {
-        const existing = this.plugin.settings.mcpServers.find(s => s.name === preset.label);
-        if (existing) {
-          new Notice(`"${preset.label}" 서버가 이미 존재합니다.`);
-          return;
-        }
-        this.plugin.settings.mcpServers.push({
-          name: preset.label,
-          transport: preset.config.transport ?? 'stdio',
-          command: preset.config.command,
-          args: preset.config.args,
-          url: preset.config.url,
-          enabled: false,
-          token: undefined,
-          registryUrl: undefined,
-        });
-        this.flushSave();
-        this.buildMCPList(containerEl);
-      });
-    }
-
-    containerEl.createEl('h3', { text: t('mcpCustom'), cls: 'super-obsidian-mcp-section-title' });
-
-    for (let i = 0; i < this.plugin.settings.mcpServers.length; i++) {
-      const server = this.plugin.settings.mcpServers[i];
-      const row = containerEl.createDiv({ cls: 'super-obsidian-mcp-card' });
-
-      const header = row.createDiv({ cls: 'super-obsidian-mcp-card-header' });
-      const nameInput = header.createEl('input', { type: 'text', value: server.name, cls: 'super-obsidian-mcp-name-input' });
-      nameInput.addEventListener('change', () => {
-        server.name = nameInput.value.trim();
-        this.debouncedSave();
-      });
-
-      const statusBadge = header.createDiv({ cls: `super-obsidian-mcp-status-badge ${server.enabled ? 'active' : 'inactive'}` });
-      statusBadge.setText(server.enabled ? t('mcpActive') : t('mcpInactive'));
-
-      new Setting(row)
-        .setName(t('mcpTransport'))
-        .setDesc(t('mcpTransportDesc'))
-        .addDropdown((dropdown) =>
-          dropdown
-            .addOption('stdio', 'stdio')
-            .addOption('sse', 'sse')
-            .addOption('http', 'http')
-            .setValue(server.transport)
-            .onChange((value) => {
-              server.transport = value as 'stdio' | 'sse' | 'http';
-              this.debouncedSave();
-              this.buildMCPList(containerEl);
-            }),
-        );
-
-      new Setting(row)
-        .setName(t('enabled'))
-        .addToggle((toggle) =>
-          toggle.setValue(server.enabled).onChange((value) => {
-            server.enabled = value;
-            this.debouncedSave();
-            statusBadge.setText(server.enabled ? t('mcpActive') : t('mcpInactive'));
-            statusBadge.className = `super-obsidian-mcp-status-badge ${server.enabled ? 'active' : 'inactive'}`;
-          }),
-        );
-
-      if (server.transport === 'stdio') {
-        new Setting(row)
-          .setName(t('mcpCommand'))
-          .setDesc(t('mcpCommandDesc'))
-          .addText((text) =>
-            text.setValue(server.command ?? '').onChange((value) => {
-              server.command = value.trim();
-              this.debouncedSave();
-            }),
-          );
-        new Setting(row)
-          .setName(t('mcpArgs'))
-          .setDesc(t('mcpArgsDesc'))
-          .addText((text) =>
-            text.setValue((server.args ?? []).join(' ')).onChange((value) => {
-              server.args = value.trim().split(/\s+/).filter(Boolean);
-              this.debouncedSave();
-            }),
-          );
-      } else {
-        new Setting(row)
-          .setName(t('mcpUrl'))
-          .setDesc(t('mcpUrlDesc'))
-          .addText((text) =>
-            text.setValue(server.url ?? '').onChange((value) => {
-              server.url = value.trim();
-              this.debouncedSave();
-            }),
-          );
-      }
-
-      const testStatus = row.createDiv({ cls: 'super-obsidian-mcp-test-status' });
-      new Setting(row)
-        .setName(t('mcpConnectionTest'))
-        .addButton((btn) => {
-          btn.setButtonText(t('testConnection'));
-          btn.onClick(async () => {
-            testStatus.setText('');
-            btn.setDisabled(true);
-            testStatus.setText(t('testing'));
-
-            try {
-              const result = await mcpClientManager.testConnection(server);
-              if (result.success) {
-                testStatus.setText(`\u2705 ${t('mcpTestSuccess')}`);
-              } else {
-                testStatus.setText(`\u274c ${t('mcpTestFailed', { error: result.error ?? 'Unknown error' })}`);
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              testStatus.setText(`\u274c ${t('mcpTestError', { error: msg })}`);
-            } finally {
-              btn.setDisabled(false);
-            }
-          });
-        });
-
-      new Setting(row).addButton((btn) =>
-        btn.setButtonText(t('deleteMcpServer')).setWarning().onClick(() => {
-          this.plugin.settings.mcpServers.splice(i, 1);
-          this.flushSave();
-          this.buildMCPList(containerEl);
-        }),
-      );
-    }
-
-    new Setting(containerEl).addButton((btn) =>
-      btn
-        .setButtonText(`+ ${t('addMcpServer')}`)
-        .setCta()
-        .onClick(() => {
-          this.plugin.settings.mcpServers.push({
-            name: `mcp-server-${this.plugin.settings.mcpServers.length + 1}`,
-            transport: 'http',
-            enabled: false,
-            command: undefined,
-            args: undefined,
-            url: '',
-            token: undefined,
-            registryUrl: undefined,
-          });
-          this.flushSave();
-          this.buildMCPList(containerEl);
-        }),
-    );
-  }
-
   private renderMCPStatus(containerEl: HTMLElement): void {
     containerEl.empty();
-    const enabledCount = this.plugin.settings.mcpServers.filter(s => s.enabled).length;
-    const totalCount = this.plugin.settings.mcpServers.length;
+    
+    const plugin = this.plugin as unknown as { mcpRegistry?: import('./mcp/registry').MCPRegistry; reconnectMCP?(): Promise<string[]> };
+    const registry = plugin.mcpRegistry;
+    const servers = this.plugin.settings.mcpServers;
+    const totalCount = servers.length;
+    const connectedCount = registry?.getConnectedCount() ?? 0;
 
     const statusBox = containerEl.createDiv({ cls: 'super-obsidian-mcp-status-box' });
-    statusBox.createDiv({ cls: 'super-obsidian-mcp-status-title', text: t('mcpStatus') });
-    statusBox.createDiv({
-      cls: 'super-obsidian-mcp-status-count',
-      text: t('mcpTotalActive', { count: enabledCount, total: totalCount }),
+
+    const headerRow = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-header-row' });
+    headerRow.createDiv({ cls: 'super-obsidian-mcp-status-title', text: t('mcpConnectionHealth') });
+
+    const actionsRow = headerRow.createDiv({ cls: 'super-obsidian-mcp-status-actions' });
+    const refreshBtn = actionsRow.createEl('button', { cls: 'super-obsidian-mcp-refresh-btn', attr: { 'aria-label': '연결 상태 새로고침' } });
+    refreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"></polyline>
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+    </svg>`;
+
+    refreshBtn.addEventListener('click', () => {
+      void (async () => {
+        refreshBtn.disabled = true;
+        refreshBtn.addClass('spinning');
+
+        try {
+          if (plugin.reconnectMCP) {
+            const errors = await plugin.reconnectMCP();
+            containerEl.empty();
+            this.renderMCPStatus(containerEl);
+
+            if (errors.length > 0) {
+              const errorDetails = errors.map((err) => `• ${err}`).join('\n');
+              new Notice(`MCP 연결 오류:\n${errorDetails}`, 10000);
+            } else {
+              new Notice('연결 상태가 새로고침되었습니다.');
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          new Notice(`새로고침 실패: ${msg}`);
+        } finally {
+          refreshBtn.disabled = false;
+          refreshBtn.removeClass('spinning');
+        }
+      })();
     });
+
+    const countEl = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-count' });
+    const statusText = registry
+      ? `${t('mcpConnected')}: ${connectedCount} | Total: ${totalCount}`
+      : t('mcpTotalActive', { count: connectedCount, total: totalCount });
+    countEl.setText(statusText);
 
     if (totalCount > 0) {
       const list = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-list' });
-      for (const server of this.plugin.settings.mcpServers) {
+      for (const server of servers) {
         const item = list.createDiv({ cls: 'super-obsidian-mcp-status-item' });
-        void item.createDiv({ cls: `super-obsidian-mcp-status-dot ${server.enabled ? 'active' : 'inactive'}` });
+        let status: 'connected' | 'disconnected' | 'error' = 'disconnected';
+
+        if (registry) {
+          status = registry.getConnectionStatus(server.name);
+        }
+
+        item.createDiv({ cls: `super-obsidian-mcp-status-dot ${status}` });
         item.createSpan({ text: server.name, cls: 'super-obsidian-mcp-status-name' });
+
+        const labelText = status === 'connected'
+          ? t('mcpStatusConnected')
+          : status === 'error'
+            ? t('mcpStatusError')
+            : t('mcpStatusDisconnected');
         item.createSpan({
-          text: server.enabled ? t('mcpActive') : t('mcpInactive'),
-          cls: `super-obsidian-mcp-status-label ${server.enabled ? 'active' : 'inactive'}`,
+          text: labelText,
+          cls: `super-obsidian-mcp-status-label ${status}`,
         });
       }
     }
   }
 }
+
