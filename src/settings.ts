@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { isExcludedExt } from './utils/vault';
 import { validateMcpJson, formatMcpJson } from './utils/mcp-json';
+import type { MCPRegistry } from './mcp/registry';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { type Language, t } from './i18n';
@@ -116,6 +117,7 @@ export interface RAGConfig {
 export interface ChatConfig {
   saveFolder: string;
   defaultModel: string;
+  systemPrompt?: string;
 }
 
 export interface SuperObsidianSettings {
@@ -179,8 +181,9 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   mcpServers: [],
   mcpPath: '',
   chat: {
-    saveFolder: 'chats',
+    saveFolder: 'SuperObsidianByAI',
     defaultModel: 'openai:gpt-4o-mini',
+    systemPrompt: '',
   },
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
@@ -192,6 +195,7 @@ export interface PluginLike {
   settings: SuperObsidianSettings;
   saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
   reconnectMCP(): Promise<string[]>;
+  mcpRegistry: MCPRegistry | null;
   eventDrivenRagStats?: {
     totalFiles: number;
     indexedFiles: number;
@@ -200,7 +204,7 @@ export interface PluginLike {
   } | null;
 }
 
-// Tab Types and Configuration
+  // 탭 타입 및 설정
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
 
 const TABS: { id: SettingsTabId; label: string }[] = [
@@ -282,16 +286,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     
-    // Header
+    // 헤더
     containerEl.createEl('h2', { text: t('settingsTitle') });
 
-    // Security Warning
+    // 보안 경고
     const warning = containerEl.createDiv({
       cls: 'super-obsidian-settings-warning',
     });
     warning.setText(t('securityWarning'));
     
-    // Tab Bar
+    // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'super-obsidian-settings-tabs' });
     TABS.forEach(tab => {
       const button = tabBar.createEl('button', { 
@@ -302,7 +306,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       button.addEventListener('click', () => this.switchTab(tab.id));
     });
     
-    // Tab Content Panels
+    // 탭 콘텐츠 패널
     const tabContentContainer = containerEl.createDiv();
     TABS.forEach(tab => {
       const panel = tabContentContainer.createDiv({ 
@@ -310,7 +314,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       });
       this.tabPanels.set(tab.id, panel);
       
-      // Build content for each tab
+      // 각 탭 콘텐츠 구성
       switch (tab.id) {
         case 'general':
           this.buildGeneralTab(panel);
@@ -333,15 +337,15 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }
     });
     
-    // Initialize first tab as active
+    // 첫 번째 탭을 활성 상태로 초기화
     this.switchTab(this.activeTab);
   }
 
   private switchTab(tabId: SettingsTabId): void {
-    // Update active tab
+    // 활성 탭 업데이트
     this.activeTab = tabId;
     
-    // Toggle classes on buttons
+    // 버튼 클래스 토글
     this.tabButtons.forEach((button, id) => {
       if (id === tabId) {
         button.classList.add('is-active');
@@ -350,7 +354,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }
     });
     
-    // Toggle classes on panels
+    // 패널 클래스 토글
     this.tabPanels.forEach((panel, id) => {
       if (id === tabId) {
         panel.classList.add('is-active');
@@ -473,7 +477,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     this.buildProviderSettings(containerEl, 'OpenRouter', 'openRouter');
   }
   
-  // RAG 탭 — 4섹션 구조
+  // RAG 탭 4섹션 구조
   private buildRAGTab(containerEl: HTMLElement): void {
     this.buildEmbeddingProviderSection(containerEl);
     this.buildStatsSection(containerEl);
@@ -505,7 +509,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     }
 
     new Setting(section)
-      .setName('Provider')
+      .setName(t('embeddingProvider'))
       .setDesc('임베딩에 사용할 프로바이더를 선택하세요')
       .addDropdown((dropdown) => {
         for (const [key, label] of Object.entries(EMBEDDING_PROVIDER_LABELS)) {
@@ -527,7 +531,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     if (isOther) {
       new Setting(section)
-        .setName('Model ID')
+        .setName(t('embeddingModelId'))
         .setDesc('임베딩 모델 ID를 직접 입력하세요')
         .addText((text) =>
           text
@@ -539,7 +543,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         );
     } else if (modelsForProvider.length > 0) {
       new Setting(section)
-        .setName('Model')
+        .setName(t('embeddingModel'))
         .setDesc('사용할 임베딩 모델을 선택하세요')
         .addDropdown((dropdown) => {
           for (const model of modelsForProvider) {
@@ -593,11 +597,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName('연결 테스트')
       .addButton((button) => {
-        button.setButtonText('Test Connection');
+        button.setButtonText(t('testConnection'));
         button.onClick(async () => {
           statusEl.setText('');
           button.setDisabled(true);
-          statusEl.setText('🔄 Testing...');
+          statusEl.setText(t('testing'));
 
           try {
             const config = effectiveProvider === 'other'
@@ -631,12 +635,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const grid = section.createDiv({ cls: 'super-obsidian-stats-grid' });
 
-    // Async load stats
+    // 통계 비동기 로드
     this.renderStats(grid).catch(() => {
       grid.setText('통계를 불러올 수 없습니다.');
     });
 
-    // Refresh button
+    // 새로고침 버튼
     new Setting(section)
       .setName('')
       .addButton((btn) => {
@@ -806,7 +810,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
     section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 옵션' });
 
-    // Auto-update toggle
+    // 자동 업데이트 토글
     new Setting(section)
       .setName('자동 업데이트')
       .setDesc('설정된 간격으로 새 파일을 자동으로 인덱싱합니다')
@@ -819,7 +823,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Auto-update interval slider
+    // 자동 업데이트 간격 슬라이더
     new Setting(section)
       .setName('자동 업데이트 간격')
       .setDesc('자동 인덱싱 간격 (분)')
@@ -834,7 +838,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Exclude Paths
+    // 제외 경로
     new Setting(section)
       .setName('제외할 경로')
       .setDesc('인덱싱에서 제외할 폴더 (쉼표로 구분)')
@@ -850,7 +854,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Exclude Extensions
+    // 제외 확장자
     new Setting(section)
       .setName('제외할 확장자')
       .setDesc('인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)')
@@ -866,7 +870,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Chunk Size
+    // 청크 크기
     new Setting(section)
       .setName('청크 크기')
       .setDesc('마크다운 청크당 최대 문자 수')
@@ -881,7 +885,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Vector Store Type
+    // 벡터 저장소 유형
     new Setting(section)
       .setName('벡터 저장소 유형')
       .setDesc(
@@ -900,10 +904,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
   
   private buildChatTab(containerEl: HTMLElement): void {
-    // Chat settings - currently only save folder is implemented
     new Setting(containerEl)
-      .setName('Chat Save Folder')
-      .setDesc('Vault folder path to save conversations')
+      .setName(t('chatSaveFolder'))
+      .setDesc(t('chatSaveFolderDesc'))
       .addText((text) =>
         text
           .setValue(this.plugin.settings.chat.saveFolder)
@@ -912,6 +915,53 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             this.debouncedSave();
           }),
       );
+
+    new Setting(containerEl)
+      .setName(t('systemPrompt'))
+      .setDesc(t('systemPromptDesc'))
+      .addTextArea((text) => {
+        text.inputEl.rows = 6;
+        text.setValue(this.plugin.settings.chat.systemPrompt ?? '');
+        text.setPlaceholder(t('systemPromptPlaceholder'));
+        text.onChange((value) => {
+          this.plugin.settings.chat.systemPrompt = value;
+          this.debouncedSave();
+        });
+      });
+
+    const presetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
+    const presets: { label: string; prompt: string }[] = [
+      { label: t('quickPresetGeneral'), prompt: '당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다. 마크다운 문법을 잘 알고 있으며, 사용자의 질문에 정확하고 간결하게 답변합니다.' },
+      { label: t('quickPresetCodeReview'), prompt: '당신은 시니어 개발자입니다. 사용자가 제시한 코드를 리뷰하고, 버그, 성능 문제, 가독성 개선점을 찾아 한국어로 설명합니다.' },
+      { label: t('quickPresetTranslate'), prompt: '당신은 전문 번역가입니다. 사용자가 요청한 텍스트를 지정한 언어로 자연스럽게 번역합니다. 원문의 뉘앙스와 전문 용어를 최대한 살려주세요.' },
+      { label: t('quickPresetSummarize'), prompt: '당신은 요약 전문가입니다. 사용자가 제공한 긴 텍스트나 문서를 핵심만 간결하게 요약합니다. bullet point 형식을 사용하세요.' },
+    ];
+    for (const preset of presets) {
+      const btn = presetRow.createEl('button', { text: preset.label, cls: 'super-obsidian-mcp-preset-btn' });
+      btn.addEventListener('click', () => {
+        this.plugin.settings.chat.systemPrompt = preset.prompt;
+        this.debouncedSave();
+        const chatPanel = this.tabPanels.get('chat');
+        if (chatPanel) {
+          chatPanel.empty();
+          this.buildChatTab(chatPanel);
+        }
+        new Notice(`${preset.label} 프리셋이 적용되었습니다.`);
+      });
+    }
+
+    const resetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
+    const resetBtn = resetRow.createEl('button', { text: t('resetToDefault'), cls: 'super-obsidian-mcp-preset-btn' });
+    resetBtn.addEventListener('click', () => {
+      this.plugin.settings.chat.systemPrompt = '';
+      this.debouncedSave();
+      const chatPanel = this.tabPanels.get('chat');
+      if (chatPanel) {
+        chatPanel.empty();
+        this.buildChatTab(chatPanel);
+      }
+      new Notice('시스템 프롬프트가 초기화되었습니다.');
+    });
   }
   
   private buildMCPTab(containerEl: HTMLElement): void {
@@ -1211,9 +1261,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   
   private buildAdvancedTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
-      .setName('Enable Plugin-Aware Generation')
+      .setName(t('pluginAwareGeneration'))
       .setDesc(
-        'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
+        t('pluginAwareGenerationDesc'),
       )
       .addToggle((toggle) =>
         toggle
@@ -1235,7 +1285,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     section.createDiv({ cls: 'super-obsidian-settings-section-title', text: label });
 
     new Setting(section)
-      .setName('Enabled')
+      .setName(t('enabled'))
       .addToggle((toggle) =>
         toggle.setValue(config.enabled).onChange((value) => {
           config.enabled = value;
@@ -1244,7 +1294,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
 
     new Setting(section)
-      .setName('API Key')
+      .setName(t('apiKey'))
       .addText((text) =>
         text
           .setPlaceholder('sk-...')
@@ -1256,7 +1306,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
 
     new Setting(section)
-      .setName('Base URL')
+      .setName(t('baseUrl'))
       .addText((text) =>
         text
           .setPlaceholder('https://api...')
@@ -1282,14 +1332,14 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const renderModelList = (models: string[]) => {
       modelListContainer.empty();
       if (models.length === 0) {
-        modelListContainer.setText('No models found.');
+        modelListContainer.setText(t('noModelsFound'));
         return;
       }
       
-      // Sort models alphabetically
+      // 모델 알파벳 순 정렬
       const sortedModels = [...models].sort((a, b) => a.localeCompare(b, 'en'));
       
-      // Add model count header
+      // 모델 개수 헤더 추가
       const header = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-list-header' });
       header.textContent = `${sortedModels.length} models available`;
       
@@ -1322,9 +1372,9 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     renderModelList(getInitialModels());
 
     new Setting(section)
-      .setName('Validate API Key')
+      .setName(t('validateApiKey'))
       .addButton((button) => {
-        button.setButtonText('Validate');
+        button.setButtonText(t('validateApiKey'));
         button.onClick(async () => {
           statusContainer.setText('');
           button.setDisabled(true);
@@ -1336,11 +1386,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             spinner.remove();
 
             if (result.valid) {
-              statusContainer.setText(`✅ Valid! ${result.models.length} models found.`);
+              statusContainer.setText(`✅ ${t('valid')}! ${result.models.length}${t('modelsFound')}`);
               renderModelList(result.models);
               this.validationCache[key] = result;
             } else {
-              statusContainer.setText(`❌ Invalid: ${result.error}`);
+              statusContainer.setText(`❌ ${t('invalid')}: ${result.error}`);
               // 모델 리스트는 그대로 유지, 숨기지 않음
               this.validationCache[key] = {
                 valid: false,
@@ -1351,7 +1401,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           } catch (err) {
             spinner.remove();
             const msg = err instanceof Error ? err.message : String(err);
-            statusContainer.setText(`❌ Error: ${msg}`);
+            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
             // 모델 리스트는 그대로 유지, 숨기지 않음
           } finally {
             button.setDisabled(false);
@@ -1363,7 +1413,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private renderMCPStatus(containerEl: HTMLElement): void {
     containerEl.empty();
     
-    const plugin = this.plugin as unknown as { mcpRegistry?: import('./mcp/registry').MCPRegistry; reconnectMCP?(): Promise<string[]> };
+    const plugin = this.plugin as unknown as { mcpRegistry: import('./mcp/registry').MCPRegistry | null; reconnectMCP?(): Promise<string[]> };
     const registry = plugin.mcpRegistry;
     const servers = this.plugin.settings.mcpServers;
     const totalCount = servers.length;
@@ -1411,7 +1461,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const countEl = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-count' });
     const statusText = registry
-      ? `${t('mcpConnected')}: ${connectedCount} | Total: ${totalCount}`
+      ? `${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
       : t('mcpTotalActive', { count: connectedCount, total: totalCount });
     countEl.setText(statusText);
 

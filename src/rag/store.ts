@@ -150,7 +150,7 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async persist(): Promise<void> {
-    // no-op
+    // 아무것도 하지 않음
   }
 
   getStats(): Promise<VectorStoreStats> {

@@ -34,7 +34,7 @@ export default class SuperObsidianPlugin extends Plugin {
   private embeddingProvider: EmbeddingProvider | null = null;
   ragEngine: RAGQueryEngine | null = null;
   private vaultIndexer: VaultIndexer | null = null;
-  private mcpRegistry: MCPRegistry | null = null;
+  mcpRegistry: MCPRegistry | null = null;
   private modifyCleanup: (() => void) | null = null;
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -188,6 +188,10 @@ export default class SuperObsidianPlugin extends Plugin {
       }
     }
 
+    if (chat && typeof chat === 'object' && !Array.isArray(chat) && !('systemPrompt' in chat)) {
+      (chat as Record<string, unknown>).systemPrompt = '';
+    }
+
     // Migrate old RAG settings (pre-overhaul)
     const rag = data.rag as Record<string, unknown> | undefined;
     if (rag && typeof rag === 'object') {
@@ -251,8 +255,8 @@ export default class SuperObsidianPlugin extends Plugin {
     return this.provider;
   }
 
-  async saveChat(messages: ChatMessage[]): Promise<void> {
-    await saveChat(this.app.vault, messages, this.settings.chat.saveFolder);
+  async saveChat(messages: ChatMessage[], sessionSystemPrompt?: string): Promise<void> {
+    await saveChat(this.app.vault, messages, this.settings.chat.saveFolder, sessionSystemPrompt);
   }
 
   private initProvider(): void {

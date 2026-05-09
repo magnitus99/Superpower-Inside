@@ -2,7 +2,7 @@ import { requestUrl } from 'obsidian';
 import type { ProviderConfig } from '../settings';
 
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
 }
 

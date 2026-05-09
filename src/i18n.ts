@@ -1,7 +1,7 @@
 export type Language = 'ko' | 'en';
 
 export interface I18nKeys {
-  // General Tab
+  // 일반 탭
   autoSaveSettings: string;
   autoSaveSettingsDesc: string;
   autoSaveDelay: string;
@@ -18,7 +18,7 @@ export interface I18nKeys {
   langEn: string;
   languageChangeConfirm: string;
 
-  // Providers Tab
+  // 프로바이더 탭
   apiKey: string;
   baseUrl: string;
   validateApiKey: string;
@@ -29,7 +29,7 @@ export interface I18nKeys {
   noModelsFound: string;
   enabled: string;
 
-  // RAG Tab
+  // RAG 탭
   embeddingProvider: string;
   embeddingProviderDesc: string;
   embeddingModel: string;
@@ -46,7 +46,7 @@ export interface I18nKeys {
   connectionFailed: string;
   connectionError: string;
 
-  // RAG Stats
+  // RAG 통계
   indexStats: string;
   totalFiles: string;
   totalFilesDesc: string;
@@ -64,7 +64,7 @@ export interface I18nKeys {
   enterModelId: string;
   connectionFailedGeneric: string;
 
-  // RAG Controls
+  // RAG 제어
   indexingControls: string;
   updatePendingFiles: string;
   reindexAll: string;
@@ -80,7 +80,7 @@ export interface I18nKeys {
   reindexingDone: string;
   reindexingFailed: string;
 
-  // RAG Options
+  // RAG 옵션
   autoUpdate: string;
   autoUpdateDesc: string;
   autoUpdateInterval: string;
@@ -97,9 +97,41 @@ export interface I18nKeys {
   jsonFile: string;
   indexedDB: string;
 
-  // Chat Tab
+  // 채팅 탭
+  chatTabTitle: string;
+  toolbarTools: string;
+  sendButton: string;
   chatSaveFolder: string;
   chatSaveFolderDesc: string;
+  systemPrompt: string;
+  systemPromptDesc: string;
+  systemPromptPlaceholder: string;
+  resetToDefault: string;
+  chatClear: string;
+  chatScrollToBottom: string;
+  chatTyping: string;
+  copyCode: string;
+  copied: string;
+  toolResult: string;
+  executeTool: string;
+  toolArgs: string;
+  selectTool: string;
+  noToolsAvailable: string;
+  messageUser: string;
+  messageAssistant: string;
+  messageSystem: string;
+  messageTool: string;
+  timestampJustNow: string;
+  timestampMinutesAgo: string;
+  timestampHoursAgo: string;
+  sessionPromptModified: string;
+  mcpToolRunning: string;
+  mcpToolSuccess: string;
+  mcpToolError: string;
+  quickPresetGeneral: string;
+  quickPresetCodeReview: string;
+  quickPresetTranslate: string;
+  quickPresetSummarize: string;
 
   // MCP PATH
   mcpPathTitle: string;
@@ -110,7 +142,7 @@ export interface I18nKeys {
   mcpPathFetchError: string;
   mcpPathPlaceholder: string;
 
-  // MCP Tab
+  // MCP 탭
   mcpCommand: string;
   mcpCommandDesc: string;
   mcpArgs: string;
@@ -146,12 +178,13 @@ export interface I18nKeys {
   mcpJsonLine: string;
   mcpJsonAutoSave: string;
   mcpJsonAutoSaveDesc: string;
+  totalLabel: string;
 
-  // Settings Header
+  // 설정 헤더
   settingsTitle: string;
   securityWarning: string;
 
-  // Tabs
+  // 탭
   tabGeneral: string;
   tabProviders: string;
   tabRag: string;
@@ -159,7 +192,7 @@ export interface I18nKeys {
   tabMcp: string;
   tabAdvanced: string;
 
-  // Commands
+  // 명령어
   cmdOpenAiChat: string;
   cmdReindexVault: string;
   cmdExecuteAiDirective: string;
@@ -186,7 +219,7 @@ const ko: I18nKeys = {
 
   // Providers
   apiKey: 'API 키',
-  baseUrl: 'Base URL',
+  baseUrl: '기본 URL',
   validateApiKey: 'API 키 검증',
   valid: '유효함',
   modelsFound: '개 모델 발견',
@@ -265,8 +298,40 @@ const ko: I18nKeys = {
   indexedDB: 'IndexedDB',
 
   // Chat
+  chatTabTitle: 'AI 채팅',
+  toolbarTools: '🔧 도구',
+  sendButton: '전송',
   chatSaveFolder: '채팅 저장 폴더',
   chatSaveFolderDesc: '대화를 저장할 볼트 내 폴더 경로',
+  systemPrompt: '시스템 프롬프트',
+  systemPromptDesc: 'AI의 역할과 응답 방식을 정의하는 글로벌 시스템 프롬프트입니다. 비워두면 기본 프롬프트가 사용됩니다.',
+  systemPromptPlaceholder: '예: 당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다...',
+  resetToDefault: '기본값으로 초기화',
+  chatClear: '대화 지우기',
+  chatScrollToBottom: '맨 아래로',
+  chatTyping: 'AI가 생각 중...',
+  copyCode: '복사',
+  copied: '복사됨',
+  toolResult: '툴 결과',
+  executeTool: '실행',
+  toolArgs: '인자',
+  selectTool: '툴 선택',
+  noToolsAvailable: '사용 가능한 MCP 툴이 없습니다.',
+  messageUser: '사용자',
+  messageAssistant: 'AI',
+  messageSystem: '시스템',
+  messageTool: '툴',
+  timestampJustNow: '방금',
+  timestampMinutesAgo: '{count}분 전',
+  timestampHoursAgo: '{count}시간 전',
+  sessionPromptModified: '수정됨',
+  mcpToolRunning: '툴 실행 중...',
+  mcpToolSuccess: '툴 실행 성공',
+  mcpToolError: '툴 실행 실패',
+  quickPresetGeneral: '일반',
+  quickPresetCodeReview: '코드 리뷰',
+  quickPresetTranslate: '번역',
+  quickPresetSummarize: '요약',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH 환경변수',
@@ -313,6 +378,7 @@ const ko: I18nKeys = {
   mcpJsonLine: '줄',
   mcpJsonAutoSave: '자동 저장',
   mcpJsonAutoSaveDesc: 'JSON 편집 후 1초 후 자동 저장 (JSON이 유효할 때만)',
+  totalLabel: '전체',
 
   // Settings Header
   settingsTitle: 'Super Obsidian by AI — 설정',
@@ -432,8 +498,40 @@ const en: I18nKeys = {
   indexedDB: 'IndexedDB',
 
   // Chat
+  chatTabTitle: 'AI Chat',
+  toolbarTools: '🔧 Tools',
+  sendButton: 'Send',
   chatSaveFolder: 'Chat Save Folder',
   chatSaveFolderDesc: 'Vault folder path to save conversations',
+  systemPrompt: 'System Prompt',
+  systemPromptDesc: 'Global system prompt that defines AI role and response style. Leave empty to use default.',
+  systemPromptPlaceholder: 'e.g., You are an expert assistant helping with Obsidian note-taking...',
+  resetToDefault: 'Reset to Default',
+  chatClear: 'Clear Chat',
+  chatScrollToBottom: 'Scroll to Bottom',
+  chatTyping: 'AI is thinking...',
+  copyCode: 'Copy',
+  copied: 'Copied',
+  toolResult: 'Tool Result',
+  executeTool: 'Execute',
+  toolArgs: 'Arguments',
+  selectTool: 'Select Tool',
+  noToolsAvailable: 'No MCP tools available.',
+  messageUser: 'You',
+  messageAssistant: 'AI',
+  messageSystem: 'System',
+  messageTool: 'Tool',
+  timestampJustNow: 'just now',
+  timestampMinutesAgo: '{count}m ago',
+  timestampHoursAgo: '{count}h ago',
+  sessionPromptModified: 'modified',
+  mcpToolRunning: 'Running tool...',
+  mcpToolSuccess: 'Tool executed successfully',
+  mcpToolError: 'Tool execution failed',
+  quickPresetGeneral: 'General',
+  quickPresetCodeReview: 'Code Review',
+  quickPresetTranslate: 'Translate',
+  quickPresetSummarize: 'Summarize',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH Environment Variable',
@@ -480,6 +578,7 @@ const en: I18nKeys = {
   mcpJsonLine: 'Line',
   mcpJsonAutoSave: 'Auto Save',
   mcpJsonAutoSaveDesc: 'Auto-save 1 second after editing (only if JSON is valid)',
+  totalLabel: 'Total',
 
   // Settings Header
   settingsTitle: 'Super Obsidian by AI — Settings',
