@@ -101,27 +101,51 @@ export interface I18nKeys {
   chatSaveFolder: string;
   chatSaveFolderDesc: string;
 
+  // MCP PATH
+  mcpPathTitle: string;
+  mcpPathDesc: string;
+  mcpPathFetch: string;
+  mcpPathFetching: string;
+  mcpPathFetchSuccess: string;
+  mcpPathFetchError: string;
+  mcpPathPlaceholder: string;
+
   // MCP Tab
-  mcpTransport: string;
-  mcpTransportDesc: string;
   mcpCommand: string;
   mcpCommandDesc: string;
   mcpArgs: string;
   mcpArgsDesc: string;
-  mcpUrl: string;
-  mcpUrlDesc: string;
   addMcpServer: string;
   deleteMcpServer: string;
-  mcpQuickTemplates: string;
-  mcpCustom: string;
   mcpStatus: string;
-  mcpActive: string;
-  mcpInactive: string;
   mcpTotalActive: string;
-  mcpConnectionTest: string;
-  mcpTestSuccess: string;
-  mcpTestFailed: string;
-  mcpTestError: string;
+  mcpConnected: string;
+  mcpDisconnected: string;
+  mcpConnectionFailed: string;
+  mcpConnectionHealth: string;
+  mcpNoServers: string;
+  mcpInitFailed: string;
+  mcpStatusConnected: string;
+  mcpStatusDisconnected: string;
+  mcpStatusError: string;
+  mcpJsonEditor: string;
+  mcpJsonSaved: string;
+  mcpJsonInvalid: string;
+  mcpJsonInvalidObject: string;
+  mcpJsonMissingMcpServers: string;
+  mcpJsonInvalidMcpServers: string;
+  mcpJsonInvalidServerValue: string;
+  mcpJsonServerNeedsCommand: string;
+  mcpJsonInvalidArgs: string;
+  mcpJsonInvalidEnv: string;
+  mcpJsonInvalidArray: string;
+  mcpJsonLinting: string;
+  mcpJsonLintOk: string;
+  mcpJsonLintError: string;
+  mcpJsonSchemaError: string;
+  mcpJsonLine: string;
+  mcpJsonAutoSave: string;
+  mcpJsonAutoSaveDesc: string;
 
   // Settings Header
   settingsTitle: string;
@@ -244,27 +268,51 @@ const ko: I18nKeys = {
   chatSaveFolder: '채팅 저장 폴더',
   chatSaveFolderDesc: '대화를 저장할 볼트 내 폴더 경로',
 
+  // MCP PATH
+  mcpPathTitle: 'MCP PATH 환경변수',
+  mcpPathDesc: 'MCP 서버 실행 시 사용할 PATH 값을 설정합니다. 비워두면 기본 PATH를 사용합니다.',
+  mcpPathFetch: '터미널에서 PATH 불러오기',
+  mcpPathFetching: '불러오는 중...',
+  mcpPathFetchSuccess: '터미널 PATH 불러오기 완료',
+  mcpPathFetchError: '터미널 PATH 불러오기 실패',
+  mcpPathPlaceholder: '예: /opt/homebrew/bin:/usr/local/bin:/usr/bin',
+
   // MCP
-  mcpTransport: '전송 방식',
-  mcpTransportDesc: 'MCP 서버 통신 방식',
   mcpCommand: '명령어',
   mcpCommandDesc: 'stdio 실행 명령어',
   mcpArgs: '인자',
   mcpArgsDesc: 'stdio 실행 인자 (공백으로 구분)',
-  mcpUrl: 'URL',
-  mcpUrlDesc: 'SSE/HTTP 서버 엔드포인트',
   addMcpServer: 'MCP 서버 추가',
   deleteMcpServer: '삭제',
-  mcpQuickTemplates: '빠른 템플릿',
-  mcpCustom: '커스텀 설정',
   mcpStatus: 'MCP 상태',
-  mcpActive: '활성',
-  mcpInactive: '비활성',
   mcpTotalActive: '활성 {count} / 전체 {total}',
-  mcpConnectionTest: '연결 테스트',
-  mcpTestSuccess: '연결 성공',
-  mcpTestFailed: '연결 실패: {error}',
-  mcpTestError: '테스트 오류: {error}',
+  mcpConnected: '연결됨',
+  mcpDisconnected: '연결 안 됨',
+  mcpConnectionFailed: '연결 실패',
+  mcpConnectionHealth: '연결 상태',
+  mcpNoServers: '등록된 MCP 서버가 없습니다.',
+  mcpInitFailed: 'MCP 서버 "{name}" 연결 실패: {error}',
+  mcpStatusConnected: '연결됨',
+  mcpStatusDisconnected: '연결 안 됨',
+  mcpStatusError: '오류',
+  mcpJsonEditor: 'JSON 편집기',
+  mcpJsonSaved: '설정이 저장되었습니다.',
+  mcpJsonInvalid: 'JSON 파싱 오류',
+  mcpJsonInvalidObject: 'JSON은 객체({})여야 합니다.',
+  mcpJsonMissingMcpServers: '"mcpServers" 키가 누락되었습니다.',
+  mcpJsonInvalidMcpServers: '"mcpServers"는 객체여야 합니다.',
+  mcpJsonInvalidServerValue: '서버 값이 객체가 아닙니다',
+  mcpJsonServerNeedsCommand: '서버는 "command"가 필요합니다',
+  mcpJsonInvalidArgs: '"args"는 배열이어야 합니다',
+  mcpJsonInvalidEnv: '"env"는 객체여야 합니다',
+  mcpJsonInvalidArray: 'mcpServers는 반드시 배열(JSON Array)이어야 합니다.',
+  mcpJsonLinting: 'JSON 검사 중...',
+  mcpJsonLintOk: 'JSON 문법 OK',
+  mcpJsonLintError: 'JSON 문법 오류: {error}',
+  mcpJsonSchemaError: '스키마 오류: {field} 필드가 누락되었습니다',
+  mcpJsonLine: '줄',
+  mcpJsonAutoSave: '자동 저장',
+  mcpJsonAutoSaveDesc: 'JSON 편집 후 1초 후 자동 저장 (JSON이 유효할 때만)',
 
   // Settings Header
   settingsTitle: 'Super Obsidian by AI — 설정',
@@ -387,27 +435,51 @@ const en: I18nKeys = {
   chatSaveFolder: 'Chat Save Folder',
   chatSaveFolderDesc: 'Vault folder path to save conversations',
 
+  // MCP PATH
+  mcpPathTitle: 'MCP PATH Environment Variable',
+  mcpPathDesc: 'Set the PATH value used when running MCP servers. Leave empty to use the default PATH.',
+  mcpPathFetch: 'Fetch PATH from Terminal',
+  mcpPathFetching: 'Fetching...',
+  mcpPathFetchSuccess: 'Terminal PATH fetched successfully',
+  mcpPathFetchError: 'Failed to fetch terminal PATH',
+  mcpPathPlaceholder: 'e.g., /usr/local/bin:/usr/bin:/bin',
+
   // MCP
-  mcpTransport: 'Transport',
-  mcpTransportDesc: 'MCP server communication method',
   mcpCommand: 'Command',
   mcpCommandDesc: 'stdio execution command',
   mcpArgs: 'Arguments',
   mcpArgsDesc: 'stdio execution arguments (space-separated)',
-  mcpUrl: 'URL',
-  mcpUrlDesc: 'SSE/HTTP server endpoint',
   addMcpServer: 'Add MCP Server',
   deleteMcpServer: 'Delete',
-  mcpQuickTemplates: 'Quick Templates',
-  mcpCustom: 'Custom',
   mcpStatus: 'MCP Status',
-  mcpActive: 'Active',
-  mcpInactive: 'Inactive',
   mcpTotalActive: 'Active {count} / Total {total}',
-  mcpConnectionTest: 'Test Connection',
-  mcpTestSuccess: 'Connection successful',
-  mcpTestFailed: 'Connection failed: {error}',
-  mcpTestError: 'Test error: {error}',
+  mcpConnected: 'Connected',
+  mcpDisconnected: 'Disconnected',
+  mcpConnectionFailed: 'Connection failed',
+  mcpConnectionHealth: 'Connection Health',
+  mcpNoServers: 'No MCP servers registered.',
+  mcpInitFailed: 'Failed to connect MCP server "{name}": {error}',
+  mcpStatusConnected: 'Connected',
+  mcpStatusDisconnected: 'Disconnected',
+  mcpStatusError: 'Error',
+  mcpJsonEditor: 'JSON Editor',
+  mcpJsonSaved: 'Settings saved.',
+  mcpJsonInvalid: 'JSON parse error',
+  mcpJsonInvalidObject: 'JSON must be an object({}).',
+  mcpJsonMissingMcpServers: '"mcpServers" key is missing.',
+  mcpJsonInvalidMcpServers: '"mcpServers" must be an object.',
+  mcpJsonInvalidServerValue: 'Server value is not an object',
+  mcpJsonServerNeedsCommand: 'Server needs "command"',
+  mcpJsonInvalidArgs: '"args" must be an array',
+  mcpJsonInvalidEnv: '"env" must be an object',
+  mcpJsonInvalidArray: 'mcpServers must be a JSON Array.',
+  mcpJsonLinting: 'Linting JSON...',
+  mcpJsonLintOk: 'JSON syntax OK',
+  mcpJsonLintError: 'JSON syntax error: {error}',
+  mcpJsonSchemaError: 'Schema error: {field} field is missing',
+  mcpJsonLine: 'Line',
+  mcpJsonAutoSave: 'Auto Save',
+  mcpJsonAutoSaveDesc: 'Auto-save 1 second after editing (only if JSON is valid)',
 
   // Settings Header
   settingsTitle: 'Super Obsidian by AI — Settings',
