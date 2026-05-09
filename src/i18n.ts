@@ -128,6 +128,14 @@ export interface I18nKeys {
   mcpToolRunning: string;
   mcpToolSuccess: string;
   mcpToolError: string;
+  mcpToolValidationError: string;
+  mcpToolInvalidField: string;
+  mcpMentionServers: string;
+  mcpMentionFiles: string;
+  mcpRefresh: string;
+  mcpRefreshing: string;
+  mcpNoActiveServers: string;
+  mcpActiveServers: string;
   quickPresetGeneral: string;
   quickPresetCodeReview: string;
   quickPresetTranslate: string;
@@ -328,6 +336,14 @@ const ko: I18nKeys = {
   mcpToolRunning: '툴 실행 중...',
   mcpToolSuccess: '툴 실행 성공',
   mcpToolError: '툴 실행 실패',
+  mcpToolValidationError: '입력값이 잘못되었습니다.',
+  mcpToolInvalidField: '필드 "{field}"의 값이 올바르지 않습니다. {detail}',
+  mcpMentionServers: 'MCP 서버',
+  mcpMentionFiles: '볼트 파일',
+  mcpRefresh: '새로고침',
+  mcpRefreshing: '재연결 중...',
+  mcpNoActiveServers: '활성 MCP 서버 없음',
+  mcpActiveServers: '활성 {count} / 전체 {total}',
   quickPresetGeneral: '일반',
   quickPresetCodeReview: '코드 리뷰',
   quickPresetTranslate: '번역',
@@ -528,6 +544,14 @@ const en: I18nKeys = {
   mcpToolRunning: 'Running tool...',
   mcpToolSuccess: 'Tool executed successfully',
   mcpToolError: 'Tool execution failed',
+  mcpToolValidationError: 'Invalid input value.',
+  mcpToolInvalidField: 'Field "{field}" has an invalid value. {detail}',
+  mcpMentionServers: 'MCP Servers',
+  mcpMentionFiles: 'Vault Files',
+  mcpRefresh: 'Refresh',
+  mcpRefreshing: 'Reconnecting...',
+  mcpNoActiveServers: 'No active MCP servers',
+  mcpActiveServers: 'Active {count} / Total {total}',
   quickPresetGeneral: 'General',
   quickPresetCodeReview: 'Code Review',
   quickPresetTranslate: 'Translate',

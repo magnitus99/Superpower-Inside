@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile } from 'obsidian';
 import type { PluginLike } from '../settings';
 import type { ChatMessage, StreamChunk } from '../llm/providers';
 import { t } from '../i18n';
@@ -8,6 +8,12 @@ export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
 interface ChatMessageWithMeta extends ChatMessage {
   id: string;
   timestamp: number;
+}
+
+interface ParsedMention {
+  raw: string;
+  type: 'file' | 'server';
+  name: string;
 }
 
 export class ChatView extends ItemView {
@@ -26,6 +32,12 @@ export class ChatView extends ItemView {
   private typingIndicator: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
   private sysPromptEditor: HTMLElement | null;
+  private mcpStatusBar: HTMLElement | null;
+  private mentionDropdown: HTMLElement | null;
+  private mentionQuery: string;
+  private mentionSelectedIndex: number;
+  private mentionItems: { label: string; value: string; type: 'server' | 'file' }[];
+  private mentionStartIndex: number;
 
   private messageEls: Map<string, HTMLElement>;
 
@@ -46,6 +58,12 @@ export class ChatView extends ItemView {
     this.typingIndicator = null;
     this.scrollBtn = null;
     this.sysPromptEditor = null;
+    this.mcpStatusBar = null;
+    this.mentionDropdown = null;
+    this.mentionQuery = '';
+    this.mentionSelectedIndex = -1;
+    this.mentionItems = [];
+    this.mentionStartIndex = -1;
   }
 
   getViewType(): string {
@@ -64,6 +82,7 @@ export class ChatView extends ItemView {
     this.container = root;
 
     this.buildHeader(root);
+    this.buildMcpStatusBar(root);
 
     this.messagesArea = root.createDiv({ cls: 'super-obsidian-chat-messages' });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
@@ -160,6 +179,72 @@ export class ChatView extends ItemView {
 
   private updateSystemPromptBadge(): void {}
 
+  private buildMcpStatusBar(container: HTMLElement): void {
+    this.mcpStatusBar = container.createDiv({ cls: 'super-obsidian-chat-mcp-status-bar' });
+    this.renderMcpStatusBar();
+  }
+
+  private renderMcpStatusBar(): void {
+    if (!this.mcpStatusBar) return;
+    this.mcpStatusBar.empty();
+
+    const registry = this.plugin.mcpRegistry;
+    if (!registry || registry.getConnectedCount() === 0) {
+      const emptyLabel = this.mcpStatusBar.createSpan({ cls: 'super-obsidian-chat-mcp-status-label' });
+      emptyLabel.setText(t('mcpNoActiveServers'));
+      const refreshBtn = this.mcpStatusBar.createEl('button', {
+        cls: 'super-obsidian-chat-mcp-refresh-btn',
+        text: t('mcpRefresh'),
+      });
+      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      return;
+    }
+
+    const servers = registry.getEnabledServers();
+    const connectedCount = registry.getConnectedCount();
+    const totalCount = servers.length;
+
+    const summary = this.mcpStatusBar.createSpan({ cls: 'super-obsidian-chat-mcp-status-label' });
+    summary.setText(t('mcpActiveServers', { count: connectedCount, total: totalCount }));
+
+    for (const server of servers) {
+      const status = registry.getConnectionStatus(server.name);
+      if (status !== 'connected') continue;
+      const chip = this.mcpStatusBar.createSpan({
+        cls: `super-obsidian-chat-mcp-server-chip ${status}`,
+      });
+      chip.setText(server.name);
+    }
+
+    const refreshBtn = this.mcpStatusBar.createEl('button', {
+      cls: 'super-obsidian-chat-mcp-refresh-btn',
+      text: t('mcpRefresh'),
+    });
+    refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+  }
+
+  private async refreshMcpServers(btn: HTMLButtonElement): Promise<void> {
+    if (btn.disabled) return;
+    const originalText = btn.textContent || '';
+    btn.setText(t('mcpRefreshing'));
+    btn.disabled = true;
+    try {
+      const errors = await this.plugin.reconnectMCP();
+      if (errors.length > 0) {
+        new Notice(`MCP 재연결 중 ${errors.length}개 서버 실패`, 5000);
+      } else {
+        new Notice('MCP 서버 재연결 완료');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`MCP 재연결 실패: ${msg}`, 5000);
+    } finally {
+      this.renderMcpStatusBar();
+      btn.setText(originalText);
+      btn.disabled = false;
+    }
+  }
+
   private buildInputArea(container: HTMLElement): void {
     const wrapper = container.createDiv({ cls: 'super-obsidian-chat-input-wrapper' });
 
@@ -175,19 +260,211 @@ export class ChatView extends ItemView {
       cls: 'super-obsidian-chat-input',
       attr: { placeholder: '메시지를 입력하세요...', rows: '2' },
     });
-    this.inputArea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        void this.handleSend();
-      }
+    this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
+    this.inputArea.addEventListener('input', () => {
+      this.autoResizeInput();
+      this.handleMentionInput();
     });
-    this.inputArea.addEventListener('input', () => this.autoResizeInput());
+    this.inputArea.addEventListener('blur', () => {
+      setTimeout(() => this.hideMentionDropdown(), 200);
+    });
 
     this.sendBtn = inputRow.createEl('button', {
       cls: 'super-obsidian-chat-send-btn',
       text: t('sendButton'),
     });
     this.sendBtn.addEventListener('click', () => void this.handleSend());
+  }
+
+  private handleInputKeydown(e: KeyboardEvent): void {
+    if (this.mentionDropdown && this.mentionDropdown.style.display !== 'none') {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.selectMentionItem(this.mentionSelectedIndex + 1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.selectMentionItem(this.mentionSelectedIndex - 1);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        this.confirmMentionSelection();
+        return;
+      }
+      if (e.key === 'Escape') {
+        this.hideMentionDropdown();
+        return;
+      }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void this.handleSend();
+    }
+  }
+
+  private handleMentionInput(): void {
+    if (!this.inputArea) return;
+    const value = this.inputArea.value;
+    const cursorPos = this.inputArea.selectionStart || 0;
+    const textBeforeCursor = value.slice(0, cursorPos);
+
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    if (lastAtIndex === -1) {
+      this.hideMentionDropdown();
+      return;
+    }
+
+    const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
+    if (textAfterAt.includes(' ') || textAfterAt.includes('\n')) {
+      this.hideMentionDropdown();
+      return;
+    }
+
+    this.mentionQuery = textAfterAt.toLowerCase();
+    this.mentionStartIndex = lastAtIndex;
+    this.buildMentionItems();
+    this.showMentionDropdown();
+  }
+
+  private buildMentionItems(): void {
+    this.mentionItems = [];
+    const query = this.mentionQuery;
+
+    const registry = this.plugin.mcpRegistry;
+    if (registry) {
+      for (const server of registry.getEnabledServers()) {
+        if (server.name.toLowerCase().includes(query)) {
+          this.mentionItems.push({
+            label: server.name,
+            value: server.name,
+            type: 'server',
+          });
+        }
+      }
+    }
+
+    const files = this.app.vault.getMarkdownFiles();
+    const maxFiles = 20;
+    let fileCount = 0;
+    for (const file of files) {
+      if (fileCount >= maxFiles) break;
+      if (file.path.toLowerCase().includes(query)) {
+        this.mentionItems.push({
+          label: file.path,
+          value: file.path,
+          type: 'file',
+        });
+        fileCount++;
+      }
+    }
+
+    this.mentionSelectedIndex = this.mentionItems.length > 0 ? 0 : -1;
+  }
+
+  private showMentionDropdown(): void {
+    if (!this.inputArea || !this.container || this.mentionItems.length === 0) {
+      if (this.mentionDropdown) this.mentionDropdown.style.display = 'none';
+      return;
+    }
+
+    if (!this.mentionDropdown) {
+      this.mentionDropdown = this.container.createDiv({ cls: 'super-obsidian-mention-dropdown' });
+    }
+    this.mentionDropdown.empty();
+    this.mentionDropdown.style.display = 'block';
+
+    const serverItems = this.mentionItems.filter((i) => i.type === 'server');
+    const fileItems = this.mentionItems.filter((i) => i.type === 'file');
+
+    if (serverItems.length > 0) {
+      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      group.createDiv({
+        cls: 'super-obsidian-mention-group-label',
+        text: t('mcpMentionServers'),
+      });
+      for (const item of serverItems) {
+        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-icon', text: '🔌' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        el.addEventListener('click', () => this.insertMention(item));
+      }
+    }
+
+    if (fileItems.length > 0) {
+      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      group.createDiv({
+        cls: 'super-obsidian-mention-group-label',
+        text: t('mcpMentionFiles'),
+      });
+      for (const item of fileItems) {
+        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-icon', text: '📄' });
+        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        el.addEventListener('click', () => this.insertMention(item));
+      }
+    }
+
+    this.positionMentionDropdown();
+    this.selectMentionItem(0);
+  }
+
+  private positionMentionDropdown(): void {
+    if (!this.mentionDropdown || !this.inputArea) return;
+    const inputRect = this.inputArea.getBoundingClientRect();
+    const containerRect = this.container!.getBoundingClientRect();
+    const top = inputRect.bottom - containerRect.top;
+    this.mentionDropdown.style.position = 'absolute';
+    this.mentionDropdown.style.left = '12px';
+    this.mentionDropdown.style.top = `${top}px`;
+    this.mentionDropdown.style.right = '12px';
+  }
+
+  private selectMentionItem(index: number): void {
+    if (!this.mentionDropdown) return;
+    const items = this.mentionDropdown.querySelectorAll('.super-obsidian-mention-item');
+    if (items.length === 0) return;
+
+    let targetIndex = index;
+    if (targetIndex < 0) targetIndex = items.length - 1;
+    if (targetIndex >= items.length) targetIndex = 0;
+
+    this.mentionSelectedIndex = targetIndex;
+    for (let i = 0; i < items.length; i++) {
+      items[i].toggleClass('selected', i === targetIndex);
+    }
+  }
+
+  private confirmMentionSelection(): void {
+    if (this.mentionSelectedIndex >= 0 && this.mentionSelectedIndex < this.mentionItems.length) {
+      this.insertMention(this.mentionItems[this.mentionSelectedIndex]);
+    } else {
+      this.hideMentionDropdown();
+    }
+  }
+
+  private insertMention(item: { label: string; value: string; type: 'server' | 'file' }): void {
+    if (!this.inputArea) return;
+    const value = this.inputArea.value;
+    const before = value.slice(0, this.mentionStartIndex);
+    const after = value.slice(this.inputArea.selectionStart || 0);
+    const insertText = item.type === 'server' ? `@${item.value} ` : `@${item.value} `;
+    this.inputArea.value = before + insertText + after;
+    const newCursorPos = before.length + insertText.length;
+    this.inputArea.setSelectionRange(newCursorPos, newCursorPos);
+    this.hideMentionDropdown();
+    this.autoResizeInput();
+  }
+
+  private hideMentionDropdown(): void {
+    if (this.mentionDropdown) {
+      this.mentionDropdown.style.display = 'none';
+    }
+    this.mentionSelectedIndex = -1;
+    this.mentionItems = [];
+    this.mentionStartIndex = -1;
   }
 
   private autoResizeInput(): void {
@@ -386,7 +663,7 @@ export class ChatView extends ItemView {
     if (this.typingIndicator) this.typingIndicator.style.display = 'flex';
 
     try {
-      const systemPrompt = await this.buildSystemPrompt();
+      const systemPrompt = await this.buildSystemPrompt(text);
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...this.messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
@@ -423,7 +700,7 @@ export class ChatView extends ItemView {
     if (this.mcpBtn) this.mcpBtn.disabled = loading;
   }
 
-  private async buildSystemPrompt(): Promise<string | null> {
+  private async buildSystemPrompt(lastUserText: string): Promise<string | null> {
     const parts: string[] = [];
     const globalPrompt = this.plugin.settings.chat.systemPrompt?.trim();
     const sessionPrompt = this.sessionSystemPrompt ?? globalPrompt;
@@ -435,24 +712,85 @@ export class ChatView extends ItemView {
       if (pluginInfo) parts.push(pluginInfo);
     }
 
-    const lastUserMsg = this.messages[this.messages.length - 1];
-    if (lastUserMsg && lastUserMsg.role === 'user') {
-      try {
-        const rag = (
-          this.plugin as unknown as {
-            ragEngine?: { queryWithContext: (q: string, k: number) => Promise<string> };
-          }
-        ).ragEngine;
-        const context = rag ? await rag.queryWithContext(lastUserMsg.content, 3) : '';
-        if (context) {
-          parts.push(`\n\n[Vault Context]\n${context}`);
+    try {
+      const rag = (
+        this.plugin as unknown as {
+          ragEngine?: { queryWithContext: (q: string, k: number) => Promise<string> };
         }
-      } catch {
-        // RAG 실패 시 무시
+      ).ragEngine;
+      const context = rag ? await rag.queryWithContext(lastUserText, 3) : '';
+      if (context) {
+        parts.push(`\n\n[Vault Context]\n${context}`);
+      }
+    } catch {
+      // RAG 실패 시 무시
+    }
+
+    const mentions = this.parseMentions(lastUserText);
+    if (mentions.length > 0) {
+      const mentionParts: string[] = [];
+      for (const mention of mentions) {
+        if (mention.type === 'file') {
+          try {
+            const file = this.app.vault.getAbstractFileByPath(mention.name);
+            if (file instanceof TFile) {
+              const content = await this.app.vault.cachedRead(file);
+              mentionParts.push(`\n\n[File: ${mention.name}]\n${content}`);
+            }
+          } catch {
+            mentionParts.push(`\n\n[File: ${mention.name}]\n(파일을 읽을 수 없습니다)`);
+          }
+        } else if (mention.type === 'server') {
+          const registry = this.plugin.mcpRegistry;
+          if (registry) {
+            const client = registry.getClient(mention.name);
+            if (client) {
+              try {
+                const tools = await client.listTools();
+                const toolList = tools.map((t) => `- ${t.name}: ${t.description ?? ''}`).join('\n');
+                mentionParts.push(`\n\n[MCP Server: ${mention.name}]\nAvailable tools:\n${toolList}`);
+              } catch {
+                mentionParts.push(`\n\n[MCP Server: ${mention.name}]\n(툴 목록을 가져올 수 없습니다)`);
+              }
+            } else {
+              mentionParts.push(`\n\n[MCP Server: ${mention.name}]\n(연결되지 않은 서버입니다)`);
+            }
+          }
+        }
+      }
+      if (mentionParts.length > 0) {
+        parts.push(mentionParts.join(''));
       }
     }
 
     return parts.length > 0 ? parts.join('\n') : null;
+  }
+
+  private parseMentions(text: string): ParsedMention[] {
+    const mentions: ParsedMention[] = [];
+    const seen = new Set<string>();
+    const regex = /@([^\s\n]+)/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const name = match[1];
+      const raw = match[0];
+      const key = `${raw}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const registry = this.plugin.mcpRegistry;
+      const isServer = registry ? registry.getEnabledServers().some((s) => s.name === name) : false;
+      if (isServer) {
+        mentions.push({ raw, type: 'server', name });
+        continue;
+      }
+
+      const file = this.app.vault.getAbstractFileByPath(name);
+      if (file instanceof TFile) {
+        mentions.push({ raw, type: 'file', name });
+      }
+    }
+    return mentions;
   }
 
   private async openMcpToolPicker(): Promise<void> {
@@ -548,14 +886,16 @@ export class ChatView extends ItemView {
     const inputs: {
       key: string;
       el: HTMLInputElement | HTMLTextAreaElement;
+      def: { type?: string; description?: string; pattern?: string; minimum?: number; maximum?: number };
+      required: boolean;
     }[] = [];
 
     const schema = inputSchema as {
-      properties?: Record<string, { type?: string; description?: string }>;
+      properties?: Record<string, { type?: string; description?: string; pattern?: string; minimum?: number; maximum?: number }>;
       required?: string[];
     };
     const properties = schema.properties ?? {};
-    const required = new Set(schema.required ?? []);
+    const requiredSet = new Set(schema.required ?? []);
 
     for (const [propName, propDef] of Object.entries(properties)) {
       const row = form.createDiv({ cls: 'super-obsidian-mcp-tool-form-row' });
@@ -593,10 +933,10 @@ export class ChatView extends ItemView {
           attr: { rows: '3' },
         });
       }
-      if (required.has(propName)) {
+      if (requiredSet.has(propName)) {
         inputEl.required = true;
       }
-      inputs.push({ key: propName, el: inputEl });
+      inputs.push({ key: propName, el: inputEl, def: propDef, required: requiredSet.has(propName) });
     }
 
     const actions = panel.createDiv({
@@ -608,24 +948,66 @@ export class ChatView extends ItemView {
     });
     execBtn.addEventListener('click', () => {
       const values: Record<string, unknown> = {};
-      for (const { key, el } of inputs) {
+      const validationErrors: string[] = [];
+
+      for (const { key, el, def, required } of inputs) {
         if (el.type === 'checkbox') {
           values[key] = (el as HTMLInputElement).checked;
         } else if (el.type === 'number') {
-          values[key] = parseFloat(el.value);
+          const numVal = parseFloat(el.value);
+          if (Number.isNaN(numVal)) {
+            if (required) {
+              validationErrors.push(t('mcpToolInvalidField', { field: key, detail: '숫자 값이 필요합니다.' }));
+              continue;
+            }
+            continue;
+          }
+          if (def.minimum !== undefined && numVal < def.minimum) {
+            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `최소값 ${def.minimum} 이상이어야 합니다.` }));
+            continue;
+          }
+          if (def.maximum !== undefined && numVal > def.maximum) {
+            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `최대값 ${def.maximum} 이하여야 합니다.` }));
+            continue;
+          }
+          values[key] = numVal;
         } else {
+          const trimmed = el.value.trim();
+          if (required && trimmed === '') {
+            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: '필수 입력값입니다.' }));
+            continue;
+          }
+          if (trimmed === '' && !required) {
+            continue;
+          }
+          if (def.pattern && trimmed !== '') {
+            try {
+              const regex = new RegExp(def.pattern);
+              if (!regex.test(trimmed)) {
+                validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `형식이 올바르지 않습니다. (패턴: ${def.pattern})` }));
+                continue;
+              }
+            } catch {
+              // 잘못된 regex 패턴은 무시
+            }
+          }
           try {
-            const trimmed = el.value.trim();
             if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
               values[key] = JSON.parse(trimmed);
             } else {
               values[key] = trimmed;
             }
           } catch {
-            values[key] = el.value.trim();
+            values[key] = trimmed;
           }
         }
       }
+
+      if (validationErrors.length > 0) {
+        new Notice(t('mcpToolValidationError') + '\n' + validationErrors.join('\n'), 8000);
+        return;
+      }
+
       close();
       void this.executeMcpTool(serverName, toolName, values);
     });
@@ -652,9 +1034,28 @@ export class ChatView extends ItemView {
         true,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.updateMessage(runId, `**${t('mcpToolError')} — ${toolName}**\n\n${msg}`, true);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const friendlyMsg = this.normalizeToolError(rawMsg);
+      this.updateMessage(runId, `**${t('mcpToolError')} — ${toolName}**\n\n${friendlyMsg}`, true);
     }
+  }
+
+  private normalizeToolError(rawMsg: string): string {
+    if (rawMsg.includes('Input validation error')) {
+      const match = rawMsg.match(/does not match '(.+?)'/);
+      if (match) {
+        return `입력값의 형식이 올바르지 않습니다. 요구되는 패턴: \`${match[1]}\``;
+      }
+      const fieldMatch = rawMsg.match(/'([^']+)'/);
+      if (fieldMatch) {
+        return `필드 \`${fieldMatch[1]}\`의 입력값이 잘못되었습니다.`;
+      }
+      return '입력값이 스키마 검증을 통과하지 못했습니다. 필수 필드와 값의 형식을 확인해주세요.';
+    }
+    if (rawMsg.includes('required')) {
+      return '필수 입력값이 누락되었습니다. 모든 필수 필드를 채워주세요.';
+    }
+    return rawMsg;
   }
 
   private formatToolResult(result: unknown): string {
