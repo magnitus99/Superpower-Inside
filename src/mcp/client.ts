@@ -1,28 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-export interface MCPTool {
+export interface MCPServerConfig {
   name: string;
-  description?: string;
-  inputSchema?: Record<string, unknown>;
-}
-
-export interface StdioServerConfig {
-  name: string;
-  transport: 'stdio';
   command: string;
   args?: string[];
-  enabled: boolean;
-}
-
-export interface MCPServerConfigLike {
-  name: string;
-  transport: 'stdio' | 'sse' | 'http';
-  command?: string;
-  args?: string[];
-  url?: string;
-  enabled: boolean;
-  token?: string;
+  env?: Record<string, string>;
 }
 
 export class MCPClientManager {
@@ -34,57 +17,36 @@ export class MCPClientManager {
     this.transport = null;
   }
 
-  async testConnection(config: MCPServerConfigLike): Promise<{ success: boolean; error?: string }> {
-    if (config.transport === 'stdio') {
-      if (!config.command) {
-        return { success: false, error: 'Command is required for stdio transport' };
-      }
-      const tempClient = new MCPClientManager();
-      try {
-        await tempClient.connectStdio({
-          name: config.name,
-          enabled: true,
-          command: config.command,
-          args: config.args,
-          transport: 'stdio',
-        });
-        await tempClient.disconnect();
-        return { success: true };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { success: false, error: msg };
-      }
-    } else {
-      if (!config.url) {
-        return { success: false, error: 'URL is required for SSE/HTTP transport' };
-      }
-      try {
-        const response = await fetch(config.url, {
-          method: 'GET',
-          headers: config.token ? { Authorization: `Bearer ${config.token}` } : {},
-        });
-        if (response.ok) {
-          return { success: true };
-        } else {
-          return { success: false, error: `HTTP ${response.status}` };
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { success: false, error: msg };
-      }
+  isConnected(): boolean {
+    return this.client !== null && this.transport !== null;
+  }
+
+  async testConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
+    if (!config.command) {
+      return { success: false, error: 'Command is required' };
+    }
+    const tempClient = new MCPClientManager();
+    try {
+      await tempClient.connectStdio(config);
+      await tempClient.disconnect();
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: msg };
     }
   }
 
-  async connectStdio(config: StdioServerConfig): Promise<void> {
+  async connectStdio(config: MCPServerConfig): Promise<void> {
     this.transport = new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
+      env: config.env,
     });
     this.client = new Client({ name: 'super-obsidian', version: '0.1.0' });
     await this.client.connect(this.transport);
   }
 
-  async listTools(): Promise<MCPTool[]> {
+  async listTools(): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]> {
     if (!this.client) throw new Error('MCP client not connected');
     const result = await this.client.listTools();
     return (result.tools ?? []).map((t) => ({

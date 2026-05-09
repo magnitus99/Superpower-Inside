@@ -4,6 +4,7 @@ import type { MCPClientManager } from './client';
 export class MCPRegistry {
   private servers: MCPServerConfig[];
   private clients: Map<string, MCPClientManager>;
+  private connectionStatus: Map<string, 'connected' | 'disconnected' | 'error'> = new Map();
 
   constructor(initialServers: MCPServerConfig[] = []) {
     this.servers = [...initialServers];
@@ -26,10 +27,11 @@ export class MCPRegistry {
       void client.disconnect();
       this.clients.delete(name);
     }
+    this.connectionStatus.delete(name);
   }
 
   getEnabledServers(): MCPServerConfig[] {
-    return this.servers.filter((s) => s.enabled);
+    return [...this.servers];
   }
 
   getServer(name: string): MCPServerConfig | undefined {
@@ -38,6 +40,22 @@ export class MCPRegistry {
 
   allServers(): MCPServerConfig[] {
     return [...this.servers];
+  }
+
+  setConnectionStatus(name: string, status: 'connected' | 'disconnected' | 'error'): void {
+    this.connectionStatus.set(name, status);
+  }
+
+  getConnectionStatus(name: string): 'connected' | 'disconnected' | 'error' {
+    return this.connectionStatus.get(name) ?? 'disconnected';
+  }
+
+  getConnectedCount(): number {
+    let count = 0;
+    for (const status of this.connectionStatus.values()) {
+      if (status === 'connected') count++;
+    }
+    return count;
   }
 
   setClient(name: string, client: MCPClientManager): void {
@@ -53,5 +71,6 @@ export class MCPRegistry {
       await client.disconnect();
       this.clients.delete(name);
     }
+    this.connectionStatus.clear();
   }
 }
