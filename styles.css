@@ -703,3 +703,621 @@
   padding-top: 0;
   padding-bottom: 0;
 }
+
+.super-obsidian-chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--background-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+.super-obsidian-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.super-obsidian-chat-title {
+  font-weight: 700;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+  letter-spacing: -0.2px;
+}
+
+.super-obsidian-chat-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.super-obsidian-chat-header-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+
+.super-obsidian-chat-header-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-system-prompt-editor {
+  padding: 10px 12px;
+  background: var(--background-primary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  animation: super-obsidian-slide-down 0.2s ease;
+}
+
+.super-obsidian-system-prompt-editor-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.super-obsidian-system-prompt-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+@keyframes super-obsidian-slide-down {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 300px;
+  }
+}
+
+.super-obsidian-chat-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  scroll-behavior: smooth;
+}
+
+.super-obsidian-chat-message-wrapper {
+  display: flex;
+  gap: 10px;
+  max-width: 100%;
+  animation: super-obsidian-fade-in 0.25s ease;
+}
+
+.super-obsidian-chat-message-wrapper.user {
+  flex-direction: row-reverse;
+}
+
+.super-obsidian-chat-message-wrapper.assistant,
+.super-obsidian-chat-message-wrapper.tool {
+  flex-direction: row;
+}
+
+.super-obsidian-chat-message-wrapper.system {
+  flex-direction: row;
+  justify-content: center;
+  opacity: 0.8;
+}
+
+@keyframes super-obsidian-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.super-obsidian-chat-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  background: var(--background-secondary);
+  user-select: none;
+}
+
+.super-obsidian-chat-message-wrapper.user .super-obsidian-chat-avatar {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-chat-message-wrapper.assistant .super-obsidian-chat-avatar {
+  background: var(--background-modifier-form-field);
+  color: var(--text-normal);
+}
+
+.super-obsidian-chat-message-wrapper.tool .super-obsidian-chat-avatar {
+  background: var(--text-warning);
+  color: var(--background-primary);
+}
+
+.super-obsidian-chat-bubble-container {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+  min-width: 0;
+}
+
+.super-obsidian-chat-message-wrapper.user .super-obsidian-chat-bubble-container {
+  align-items: flex-end;
+}
+
+.super-obsidian-chat-message-wrapper.assistant .super-obsidian-chat-bubble-container,
+.super-obsidian-chat-message-wrapper.tool .super-obsidian-chat-bubble-container {
+  align-items: flex-start;
+}
+
+.super-obsidian-chat-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.super-obsidian-chat-role {
+  font-weight: 600;
+}
+
+.super-obsidian-chat-timestamp {
+  opacity: 0.7;
+}
+
+.super-obsidian-chat-bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.super-obsidian-chat-bubble.user {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-bottom-right-radius: 4px;
+}
+
+.super-obsidian-chat-bubble.assistant {
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-bottom-left-radius: 4px;
+}
+
+.super-obsidian-chat-bubble.system {
+  background: transparent;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+}
+
+.super-obsidian-chat-bubble.tool {
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  border: 1px solid var(--text-warning);
+  border-left-width: 3px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  border-bottom-left-radius: 4px;
+}
+
+.super-obsidian-chat-bubble p:first-child {
+  margin-top: 0;
+}
+
+.super-obsidian-chat-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.super-obsidian-chat-bubble pre {
+  margin: 0.5em 0;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  padding: 10px;
+  overflow-x: auto;
+}
+
+.super-obsidian-chat-bubble code {
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
+  background: var(--background-secondary);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.super-obsidian-chat-bubble pre > code {
+  padding: 0;
+  background: transparent;
+}
+
+.super-obsidian-code-block-wrapper {
+  position: relative;
+  margin: 0.5em 0;
+}
+
+.super-obsidian-code-block-wrapper pre {
+  margin: 0;
+  padding-right: 70px;
+}
+
+.super-obsidian-code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease, color 0.2s ease;
+  line-height: 1.4;
+}
+
+.super-obsidian-code-block-wrapper:hover .super-obsidian-code-copy-btn {
+  opacity: 1;
+}
+
+.super-obsidian-code-copy-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.super-obsidian-typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  align-self: flex-start;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.super-obsidian-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: super-obsidian-typing-bounce 1.2s infinite ease-in-out;
+}
+
+.super-obsidian-typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.super-obsidian-typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes super-obsidian-typing-bounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.super-obsidian-typing-text {
+  margin-left: 4px;
+}
+
+.super-obsidian-scroll-to-bottom {
+  position: absolute;
+  bottom: 80px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  opacity: 0.9;
+  font-weight: 700;
+}
+
+.super-obsidian-scroll-to-bottom:hover {
+  transform: translateY(-2px);
+  opacity: 1;
+}
+
+.super-obsidian-chat-input-wrapper {
+  flex-shrink: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.super-obsidian-chat-input-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.super-obsidian-chat-toolbar-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.super-obsidian-chat-toolbar-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-chat-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.super-obsidian-chat-input-area {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.super-obsidian-chat-input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 36px;
+  max-height: 200px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  transition: border-color 0.15s ease;
+}
+
+.super-obsidian-chat-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.super-obsidian-chat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.super-obsidian-chat-send-btn {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.super-obsidian-chat-send-btn:hover {
+  filter: brightness(1.1);
+}
+
+.super-obsidian-chat-send-btn:active {
+  transform: scale(0.96);
+}
+
+.super-obsidian-chat-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.super-obsidian-mcp-tool-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.super-obsidian-mcp-tool-picker {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.super-obsidian-mcp-tool-picker-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  font-weight: 700;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-mcp-tool-picker-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.super-obsidian-mcp-tool-picker-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-mcp-tool-list {
+  overflow-y: auto;
+  padding: 8px 0;
+  flex: 1;
+}
+
+.super-obsidian-mcp-tool-server {
+  padding: 8px 16px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+
+.super-obsidian-mcp-tool-item {
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  border-left: 3px solid transparent;
+}
+
+.super-obsidian-mcp-tool-item:hover {
+  background: var(--background-modifier-hover);
+  border-left-color: var(--interactive-accent);
+}
+
+.super-obsidian-mcp-tool-name {
+  font-weight: 600;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  margin-bottom: 2px;
+}
+
+.super-obsidian-mcp-tool-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.super-obsidian-mcp-tool-form {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  max-height: 50vh;
+}
+
+.super-obsidian-mcp-tool-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.super-obsidian-mcp-tool-form-label {
+  font-weight: 600;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.super-obsidian-mcp-tool-form-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.super-obsidian-mcp-tool-form-input {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-family: inherit;
+}
+
+.super-obsidian-mcp-tool-form-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.super-obsidian-mcp-tool-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-chat-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+@media (max-width: 280px) {
+  .super-obsidian-chat-bubble-container {
+    max-width: 92%;
+  }
+  .super-obsidian-chat-avatar {
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
+  }
+}
