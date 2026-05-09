@@ -2001,3 +2001,224 @@
   margin: 0 1px;
 }
 
+/* Session Title */
+.super-obsidian-chat-session-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.super-obsidian-chat-session-title:hover {
+  color: var(--text-accent);
+}
+
+.super-obsidian-chat-session-title.unsaved::after {
+  content: '•';
+  margin-left: 4px;
+  color: var(--text-accent);
+}
+
+.super-obsidian-session-rename-input {
+  width: 100%;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--interactive-accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+/* Session History Modal */
+.super-obsidian-session-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.super-obsidian-session-modal {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.super-obsidian-session-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+
+.super-obsidian-session-modal-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.super-obsidian-session-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.super-obsidian-session-modal-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-session-modal-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  gap: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-session-modal-toolbar .super-obsidian-session-refresh-btn {
+  padding: 4px 8px;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.super-obsidian-session-modal-toolbar .super-obsidian-session-refresh-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.super-obsidian-session-modal-toolbar .super-obsidian-session-count {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.super-obsidian-session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.super-obsidian-session-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--background-modifier-border);
+  transition: background 0.15s;
+  gap: 8px;
+}
+
+.super-obsidian-session-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.super-obsidian-session-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.super-obsidian-session-item-title {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.super-obsidian-session-item-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.super-obsidian-session-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.super-obsidian-session-item-actions button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.super-obsidian-session-item-actions button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.super-obsidian-session-item-actions .delete-confirm {
+  color: var(--text-error);
+  font-weight: 600;
+  font-size: var(--font-ui-smaller);
+  padding: 4px 8px;
+}
+
+.super-obsidian-session-item-actions .delete-confirm:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-error);
+}
+
+.super-obsidian-session-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  gap: 8px;
+}
+
+.super-obsidian-session-empty-icon {
+  font-size: 32px;
+  opacity: 0.5;
+}
+
+.super-obsidian-session-rename-inline {
+  width: 100%;
+  font-size: var(--font-ui-small);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--interactive-accent);
+  border-radius: 4px;
+  padding: 2px 4px;
+  outline: none;
+}
+

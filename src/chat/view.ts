@@ -1,24 +1,12 @@
 import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile, TFolder } from 'obsidian';
 import { PROVIDER_KEYS, PROVIDER_LABELS, type PluginLike } from '../settings';
 import type { ChatMessage, StreamChunk, ToolCallInfo, ToolCallDelta } from '../llm/providers';
+import type { ChatMessageWithMeta, SessionState, ToolCallRecord } from './types';
+import { loadChat, saveChat } from './persistence';
+import { openSessionHistoryModal } from './session-modal';
 import { t } from '../i18n';
 
 export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
-
-interface ToolCallRecord {
-  id: string;
-  name: string;
-  arguments: string;
-  result?: string;
-  status: 'running' | 'success' | 'error';
-}
-
-interface ChatMessageWithMeta extends ChatMessage {
-  id: string;
-  timestamp: number;
-  reasoning?: string;
-  toolCalls?: ToolCallRecord[];
-}
 
 interface ParsedMention {
   raw: string;
@@ -32,9 +20,12 @@ export class ChatView extends ItemView {
   private sessionSystemPrompt: string | null;
   private isStreaming: boolean;
   private autoScroll: boolean;
+  private session: SessionState;
+  private autoSaveTimer: ReturnType<typeof setTimeout> | null;
 
   private container: HTMLElement | null;
   private headerEl: HTMLElement | null;
+  private sessionTitleEl: HTMLElement | null;
   private messagesArea: HTMLElement | null;
   private inputArea: HTMLTextAreaElement | null;
   private sendBtn: HTMLButtonElement | null;
@@ -59,9 +50,12 @@ export class ChatView extends ItemView {
     this.sessionSystemPrompt = null;
     this.isStreaming = false;
     this.autoScroll = true;
+    this.session = { filePath: null, title: '', isDirty: false };
+    this.autoSaveTimer = null;
     this.messageEls = new Map();
     this.container = null;
     this.headerEl = null;
+    this.sessionTitleEl = null;
     this.messagesArea = null;
     this.inputArea = null;
     this.sendBtn = null;
@@ -114,35 +108,39 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    if (this.messages.length > 0 && this.plugin.settings.chat.saveFolder) {
-      const { saveChat } = await import('./persistence');
-      await saveChat(
-        this.app.vault,
-        this.messages,
-        this.plugin.settings.chat.saveFolder,
-        this.sessionSystemPrompt ?? undefined,
-      );
-    }
+    this.clearAutoSaveTimer();
+    await this.saveCurrentSession();
   }
 
   private buildHeader(container: HTMLElement): void {
     this.headerEl = container.createDiv({ cls: 'super-obsidian-chat-header' });
-    this.headerEl.createSpan({ cls: 'super-obsidian-chat-title', text: t('chatTabTitle') });
+
+    this.sessionTitleEl = this.headerEl.createSpan({
+      cls: 'super-obsidian-chat-session-title',
+      text: this.session.title || t('chatTabTitle'),
+    });
+    this.sessionTitleEl.addEventListener('click', () => this.promptRenameSession());
 
     const actions = this.headerEl.createDiv({ cls: 'super-obsidian-chat-header-actions' });
+
+    const newChatBtn = actions.createEl('button', {
+      cls: 'super-obsidian-chat-header-btn',
+      text: t('chatNewSession'),
+    });
+    newChatBtn.addEventListener('click', () => this.startNewSession());
+
+    const historyBtn = actions.createEl('button', {
+      cls: 'super-obsidian-chat-header-btn',
+      text: t('chatHistory'),
+    });
+    historyBtn.addEventListener('click', () => this.openSessionHistoryModal());
 
     const sysToggle = actions.createEl('button', {
       cls: 'super-obsidian-chat-header-btn',
       text: '⚙️',
-      attr: { 'aria-label': '시스템 프롬프트' },
+      attr: { 'aria-label': t('systemPrompt') },
     });
     sysToggle.addEventListener('click', () => this.toggleSystemPromptEditor());
-
-    const clearBtn = actions.createEl('button', {
-      cls: 'super-obsidian-chat-header-btn',
-      text: t('chatClear'),
-    });
-    clearBtn.addEventListener('click', () => this.clearMessages());
 
     this.sysPromptEditor = container.createDiv({ cls: 'super-obsidian-system-prompt-editor' });
     this.sysPromptEditor.style.display = 'none';
@@ -629,6 +627,7 @@ export class ChatView extends ItemView {
       toolCalls,
     };
     this.messages.push(msg);
+    this.markDirtyAndAutoSave();
 
     const wrapper = this.messagesArea!.createDiv({
       cls: `super-obsidian-chat-message-wrapper ${role}`,
@@ -684,6 +683,7 @@ export class ChatView extends ItemView {
       if (toolCalls) {
         message.toolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
       }
+      this.markDirtyAndAutoSave();
     }
 
     const isTool = wrapper.classList.contains('tool');
@@ -986,6 +986,9 @@ export class ChatView extends ItemView {
   clearMessages(): void {
     this.messages = [];
     this.sessionSystemPrompt = null;
+    this.session = { filePath: null, title: '', isDirty: false };
+    this.clearAutoSaveTimer();
+    this.updateSessionTitle();
     this.messageEls.clear();
     if (this.messagesArea) {
       const children = Array.from(this.messagesArea.children);
@@ -995,6 +998,230 @@ export class ChatView extends ItemView {
         }
       }
     }
+  }
+
+  startNewSession(): void {
+    this.messages = [];
+    this.sessionSystemPrompt = null;
+    this.messageEls.clear();
+    this.session = { filePath: null, title: '', isDirty: false };
+    if (this.messagesArea) {
+      const children = Array.from(this.messagesArea.children);
+      for (const child of children) {
+        if (!child.hasClass('super-obsidian-typing-indicator')) {
+          child.remove();
+        }
+      }
+    }
+    this.updateHeaderTitle();
+  }
+
+  private updateHeaderTitle(): void {
+    if (this.sessionTitleEl) {
+      this.sessionTitleEl.textContent = this.session.title || t('chatTabTitle');
+      this.sessionTitleEl.toggleClass('unsaved', this.session.isDirty);
+    }
+  }
+
+  private updateSessionTitle(): void {
+    if (this.session.title) return;
+    const firstUserMsg = this.messages.find((m) => m.role === 'user');
+    if (firstUserMsg) {
+      this.session.title = firstUserMsg.content.replace(/\n/g, ' ').trim().slice(0, 50);
+      this.updateHeaderTitle();
+    }
+  }
+
+  private markDirtyAndAutoSave(): void {
+    this.session.isDirty = true;
+    this.updateSessionTitle();
+    this.updateHeaderTitle();
+
+    if (!this.plugin.settings.chat.autoSaveEnabled) return;
+    if (!this.plugin.settings.chat.saveFolder) return;
+
+    this.clearAutoSaveTimer();
+    this.autoSaveTimer = setTimeout(() => {
+      this.autoSaveTimer = null;
+      void this.saveCurrentSession();
+    }, this.plugin.settings.chat.autoSaveDebounceMs);
+  }
+
+  private clearAutoSaveTimer(): void {
+    if (!this.autoSaveTimer) return;
+    clearTimeout(this.autoSaveTimer);
+    this.autoSaveTimer = null;
+  }
+
+  private async saveCurrentSession(): Promise<void> {
+    const folder = this.plugin.settings.chat.saveFolder;
+    if (!folder || this.messages.length === 0 || !this.session.isDirty) return;
+
+    try {
+      const file = await saveChat(
+        this.app.vault,
+        this.messages,
+        folder,
+        this.sessionSystemPrompt ?? undefined,
+        { filePath: this.session.filePath ?? undefined, title: this.session.title || undefined },
+      );
+      this.session.filePath = file.path;
+      this.session.isDirty = false;
+      this.updateHeaderTitle();
+    } catch (err) {
+      console.error('[Super-Obsidian] 채팅 자동 저장 실패:', err);
+    }
+  }
+
+  async loadSession(filePath: string): Promise<void> {
+    try {
+      const session = await loadChat(this.app.vault, filePath);
+      this.messages = session.messages.map((m) => ({
+        id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp ?? Date.now(),
+        reasoning: m.reasoning,
+        toolCalls: m.toolCalls
+          ? m.toolCalls.map((tc) => {
+              if ('function' in tc) {
+                return {
+                  id: tc.id ?? '',
+                  name: tc.function.name,
+                  arguments: tc.function.arguments,
+                  status: 'success' as const,
+                };
+              }
+              return { ...tc };
+            })
+          : undefined,
+      }));
+      this.sessionSystemPrompt = session.systemPrompt ?? null;
+      this.session = {
+        filePath,
+        title: session.title || '',
+        isDirty: false,
+      };
+      this.rebuildMessagesDOM();
+      this.updateHeaderTitle();
+    } catch (err) {
+      new Notice(`채팅 불러오기 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private rebuildMessagesDOM(): void {
+    if (!this.messagesArea) return;
+    const children = Array.from(this.messagesArea.children);
+    for (const child of children) {
+      if (!child.hasClass('super-obsidian-typing-indicator')) {
+        child.remove();
+      }
+    }
+    this.messageEls.clear();
+    for (const msg of this.messages) {
+      this.renderExistingMessage(msg);
+    }
+    if (this.autoScroll) {
+      this.scrollToBottom();
+    }
+  }
+
+  private renderExistingMessage(msg: ChatMessageWithMeta): void {
+    if (!this.messagesArea) return;
+
+    const wrapper = this.messagesArea.createDiv({
+      cls: `super-obsidian-chat-message-wrapper ${msg.role}`,
+    });
+    this.messageEls.set(msg.id, wrapper);
+
+    const avatar = wrapper.createDiv({ cls: 'super-obsidian-chat-avatar' });
+    avatar.setText(this.getAvatarText(msg.role));
+
+    const bubbleContainer = wrapper.createDiv({ cls: 'super-obsidian-chat-bubble-container' });
+    const meta = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-meta' });
+    meta.createSpan({ cls: 'super-obsidian-chat-role', text: this.getRoleLabel(msg.role) });
+    meta.createSpan({
+      cls: 'super-obsidian-chat-timestamp',
+      text: this.formatTimestamp(msg.timestamp),
+    });
+
+    if (msg.role === 'assistant') {
+      this.createAssistantLayers(
+        bubbleContainer,
+        msg.content,
+        msg.reasoning,
+        msg.toolCalls?.map((tc) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
+          result: tc.result,
+          status: tc.status,
+        })),
+      );
+    } else if (msg.role === 'tool') {
+      const bubble = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-bubble tool' });
+      this.renderToolBubble(bubble, msg.content, 'success');
+    } else {
+      const bubble = bubbleContainer.createDiv({ cls: `super-obsidian-chat-bubble ${msg.role}` });
+      bubble.setText(msg.content);
+    }
+  }
+
+  private promptRenameSession(): void {
+    if (!this.session.filePath && this.messages.length === 0) {
+      new Notice(t('chatNoSavedSessions'));
+      return;
+    }
+
+    const currentTitle = this.session.title || t('chatSessionTitle');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentTitle;
+    input.className = 'super-obsidian-session-rename-input';
+    input.placeholder = t('chatRenameSession');
+
+    const finishRename = (): void => {
+      const newTitle = input.value.trim();
+      if (!newTitle || newTitle === currentTitle) {
+        this.updateHeaderTitle();
+        return;
+      }
+      this.session.title = newTitle;
+      this.updateHeaderTitle();
+      this.markDirtyAndAutoSave();
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      }
+      if (e.key === 'Escape') {
+        this.updateHeaderTitle();
+      }
+    });
+    input.addEventListener('blur', () => void finishRename());
+
+    if (this.sessionTitleEl) {
+      this.sessionTitleEl.empty();
+      this.sessionTitleEl.appendChild(input);
+      input.focus();
+      input.select();
+    }
+  }
+
+  private openSessionHistoryModal(): void {
+    if (!this.plugin.settings.chat.saveFolder) {
+      new Notice(t('chatSaveFolder') + ' 경로를 먼저 설정하세요.');
+      return;
+    }
+    openSessionHistoryModal(
+      this.container!,
+      this.app,
+      this.app.vault,
+      this.plugin.settings.chat.saveFolder,
+      (filePath: string) => void this.loadSession(filePath),
+    );
   }
 
   private async handleSend(): Promise<void> {
