@@ -591,6 +591,9 @@
   padding: 8px;
   color: var(--text-normal);
   resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
 }
 .super-obsidian-mcp-status-summary {
   display: flex;
@@ -655,4 +658,48 @@
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+.super-obsidian-mcp-collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 0;
+  margin: 16px 0 8px;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.super-obsidian-mcp-collapsible-header:hover {
+  opacity: 0.7;
+}
+
+.super-obsidian-mcp-collapsible-chevron {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+}
+
+.super-obsidian-mcp-collapsible-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+}
+
+.super-obsidian-mcp-collapsible-content {
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+  max-height: 1000px;
+  opacity: 1;
+}
+
+.super-obsidian-mcp-collapsible-content.is-collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
 }

@@ -2,6 +2,7 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { execSync } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { isExcludedExt } from './utils/vault';
+import { validateMcpJson, formatMcpJson } from './utils/mcp-json';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { type Language, t } from './i18n';
@@ -917,12 +918,26 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     containerEl.empty();
     const mcpSection = containerEl.createDiv();
 
-    mcpSection.createEl('h3', { text: t('mcpPathTitle'), cls: 'super-obsidian-mcp-section-title' });
+    const pathHeader = mcpSection.createEl('div', {
+      cls: 'super-obsidian-mcp-collapsible-header',
+    });
+    const pathChevron = pathHeader.createEl('span', {
+      cls: 'super-obsidian-mcp-collapsible-chevron',
+      text: '▶',
+    });
+    pathHeader.createEl('span', {
+      cls: 'super-obsidian-mcp-collapsible-title',
+      text: t('mcpPathTitle'),
+    });
 
-    const pathDesc = mcpSection.createDiv({ cls: 'setting-item-description' });
+    const pathContent = mcpSection.createDiv({
+      cls: 'super-obsidian-mcp-collapsible-content',
+    });
+
+    const pathDesc = pathContent.createDiv({ cls: 'setting-item-description' });
     pathDesc.setText(t('mcpPathDesc'));
 
-    const pathRow = mcpSection.createDiv({ cls: 'super-obsidian-mcp-path-row' });
+    const pathRow = pathContent.createDiv({ cls: 'super-obsidian-mcp-path-row' });
 
     const pathText = pathRow.createEl('textarea', {
       cls: 'super-obsidian-mcp-json-editor',
@@ -1002,6 +1017,21 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       })();
     });
 
+    pathHeader.addEventListener('click', () => {
+      const isExpanded = pathContent.style.display !== 'none';
+      if (isExpanded) {
+        pathContent.style.display = 'none';
+        pathChevron.textContent = '▶';
+        pathHeader.removeClass('is-expanded');
+      } else {
+        pathContent.style.display = 'block';
+        pathChevron.textContent = '▼';
+        pathHeader.addClass('is-expanded');
+      }
+    });
+
+    pathContent.style.display = 'none';
+
     mcpSection.createDiv({ cls: 'super-obsidian-mcp-section-divider' });
 
     const statusSection = mcpSection.createDiv({ cls: 'super-obsidian-mcp-status' });
@@ -1038,7 +1068,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
       lintTimeout = setTimeout(() => {
         lintTimeout = null;
-        const result = this.validateMcpJson(jsonTextArea.value);
+          const result = validateMcpJson(jsonTextArea.value);
 
         if (result.valid) {
           lintStatus.setText('✅ ' + t('mcpJsonLintOk'));
@@ -1073,10 +1103,28 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       runLint();
     });
 
+    jsonTextArea.addEventListener('blur', () => {
+      const formatted = formatMcpJson(jsonTextArea.value);
+      if (formatted !== null) {
+        jsonTextArea.value = formatted;
+      }
+    });
+
+    jsonTextArea.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = jsonTextArea.selectionStart;
+        const end = jsonTextArea.selectionEnd;
+        const indent = '  ';
+        jsonTextArea.setRangeText(indent, start, end, 'end');
+        runLint();
+      }
+    });
+
     new Setting(mcpSection)
       .addButton((btn) =>
         btn.setButtonText(t('save')).onClick(async () => {
-          const result = this.validateMcpJson(jsonTextArea.value);
+        const result = validateMcpJson(jsonTextArea.value);
           if (result.valid) {
             this.plugin.settings.mcpServers = standardToInternal(
               result.data as StandardMcpConfig,
@@ -1088,6 +1136,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
               lintStatus.addClass('success');
               lintStatus.removeClass('error');
               new Notice(t('mcpJsonSaved'));
+              jsonTextArea.value = JSON.stringify(result.data, null, 2);
             } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
               lintStatus.setText(`⚠️ 설정은 저장되었으나 ${saveResult.mcpErrors.length}개 서버 연결 실패`);
               lintStatus.addClass('error');
@@ -1108,51 +1157,6 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }
         }),
       );
-  }
-
-  private validateMcpJson(jsonString: string): { valid: boolean; data?: unknown; error?: string } {
-    try {
-      const parsed = JSON.parse(jsonString) as unknown;
-
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        return { valid: false, error: t('mcpJsonInvalidObject') };
-      }
-
-      const obj = parsed as Record<string, unknown>;
-      if (!('mcpServers' in obj)) {
-        return { valid: false, error: t('mcpJsonMissingMcpServers') };
-      }
-
-      const mcpServers = obj.mcpServers;
-      if (typeof mcpServers !== 'object' || mcpServers === null || Array.isArray(mcpServers)) {
-        return { valid: false, error: t('mcpJsonInvalidMcpServers') };
-      }
-
-      for (const [name, cfg] of Object.entries(mcpServers)) {
-        if (typeof cfg !== 'object' || cfg === null) {
-          return { valid: false, error: `${t('mcpJsonInvalidServerValue')} (${name})` };
-        }
-
-        const server = cfg as Record<string, unknown>;
-
-        if (server.command === undefined) {
-          return { valid: false, error: `${t('mcpJsonServerNeedsCommand')} (${name})` };
-        }
-
-        if (server.args !== undefined && !Array.isArray(server.args)) {
-          return { valid: false, error: `${t('mcpJsonInvalidArgs')} (${name})` };
-        }
-
-        if (server.env !== undefined && (typeof server.env !== 'object' || server.env === null || Array.isArray(server.env))) {
-          return { valid: false, error: `${t('mcpJsonInvalidEnv')} (${name})` };
-        }
-      }
-
-      return { valid: true, data: parsed };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { valid: false, error: msg };
-    }
   }
 
   private buildDetailedMcpError(rawError: string): { short: string; full: string } {
