@@ -151,6 +151,20 @@ export interface I18nKeys {
   quickPresetTranslate: string;
   quickPresetSummarize: string;
 
+  chatNewSession: string;
+  chatHistory: string;
+  chatSessionTitle: string;
+  chatRenameSession: string;
+  chatDeleteSession: string;
+  chatDeleteConfirm: string;
+  chatLoadSession: string;
+  chatAutoSave: string;
+  chatAutoSaveDesc: string;
+  chatAutoSaveDelay: string;
+  chatAutoSaveDelayDesc: string;
+  chatNoSavedSessions: string;
+  chatUnsavedChanges: string;
+
   // MCP PATH
   mcpPathTitle: string;
   mcpPathDesc: string;
@@ -373,6 +387,20 @@ const ko: I18nKeys = {
   quickPresetCodeReview: '코드 리뷰',
   quickPresetTranslate: '번역',
   quickPresetSummarize: '요약',
+
+  chatNewSession: '새 대화',
+  chatHistory: '기록',
+  chatSessionTitle: '대화 제목',
+  chatRenameSession: '대화 이름 변경',
+  chatDeleteSession: '대화 삭제',
+  chatDeleteConfirm: '이 대화를 정말 삭제하시겠습니까?',
+  chatLoadSession: '대화 불러오기',
+  chatAutoSave: '자동 저장',
+  chatAutoSaveDesc: '대화 내용을 자동으로 저장합니다',
+  chatAutoSaveDelay: '자동 저장 지연(ms)',
+  chatAutoSaveDelayDesc: '마지막 메시지 후 저장까지의 지연 시간',
+  chatNoSavedSessions: '저장된 대화가 없습니다',
+  chatUnsavedChanges: '저장되지 않은 변경사항이 있습니다',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH 환경변수',
@@ -597,6 +625,20 @@ const en: I18nKeys = {
   quickPresetCodeReview: 'Code Review',
   quickPresetTranslate: 'Translate',
   quickPresetSummarize: 'Summarize',
+
+  chatNewSession: 'New Chat',
+  chatHistory: 'History',
+  chatSessionTitle: 'Session Title',
+  chatRenameSession: 'Rename Session',
+  chatDeleteSession: 'Delete Session',
+  chatDeleteConfirm: 'Are you sure you want to delete this session?',
+  chatLoadSession: 'Load Session',
+  chatAutoSave: 'Auto Save',
+  chatAutoSaveDesc: 'Automatically save conversation content',
+  chatAutoSaveDelay: 'Auto-save delay (ms)',
+  chatAutoSaveDelayDesc: 'Delay before saving after last message',
+  chatNoSavedSessions: 'No saved sessions',
+  chatUnsavedChanges: 'Unsaved changes',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH Environment Variable',

@@ -146,6 +146,8 @@ export interface ChatConfig {
   saveFolder: string;
   defaultModel: string;
   systemPrompt?: string;
+  autoSaveEnabled: boolean;
+  autoSaveDebounceMs: number;
 }
 
 export interface SuperObsidianSettings {
@@ -212,6 +214,8 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     saveFolder: 'SuperObsidianByAI',
     defaultModel: 'openai:gpt-4o-mini',
     systemPrompt: '',
+    autoSaveEnabled: true,
+    autoSaveDebounceMs: 3000,
   },
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
@@ -1031,6 +1035,30 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }
       new Notice('시스템 프롬프트가 초기화되었습니다.');
     });
+
+    new Setting(containerEl)
+      .setName(t('chatAutoSave'))
+      .setDesc(t('chatAutoSaveDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.chat.autoSaveEnabled).onChange((value) => {
+          this.plugin.settings.chat.autoSaveEnabled = value;
+          this.debouncedSave();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('chatAutoSaveDelay'))
+      .setDesc(t('chatAutoSaveDelayDesc'))
+      .addSlider((slider) =>
+        slider
+          .setLimits(1000, 10000, 500)
+          .setValue(this.plugin.settings.chat.autoSaveDebounceMs)
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.chat.autoSaveDebounceMs = value;
+            this.debouncedSave();
+          }),
+      );
   }
 
   private buildMCPTab(containerEl: HTMLElement): void {
