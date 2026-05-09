@@ -4,12 +4,45 @@ import type { ProviderConfig } from '../settings';
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  toolCalls?: Array<ToolCallInfo | ToolCallRecordInfo>;
+  reasoning?: string;
+}
+
+/** LLM이 호출한 툴 정보 (스트리밍 중 점진적 누적) */
+export interface ToolCallInfo {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+/** UI/저장 계층에서 사용하는 툴 호출 표시 정보 */
+export interface ToolCallRecordInfo {
+  id: string;
+  name: string;
+  arguments: string;
+  result?: string;
+  status: 'running' | 'success' | 'error';
+}
+
+/** StreamChunk에 전달되는 툴 호출 델타 */
+export interface ToolCallDelta {
+  index: number;
+  id?: string;
+  type?: 'function';
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
 }
 
 export interface StreamChunk {
   content: string;
   done: boolean;
   reasoning?: string;
+  toolCalls?: ToolCallDelta[];
 }
 
 export interface LLMProvider {
@@ -98,15 +131,42 @@ class OpenAICompatibleProvider implements LLMProvider {
         if (!data) continue;
         try {
           const chunk = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                reasoning_content?: string;
+                tool_calls?: Array<{
+                  index: number;
+                  id?: string;
+                  type?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+            }>;
           };
-          const content = chunk.choices?.[0]?.delta?.content ?? '';
-          const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
-          if (content || reasoning) {
-            onChunk({ content, done: false, ...(reasoning ? { reasoning } : {}) });
+          const delta = chunk.choices?.[0]?.delta;
+          const content = delta?.content ?? '';
+          const reasoning = delta?.reasoning_content;
+          const toolCalls = delta?.tool_calls?.map(
+            (tc): ToolCallDelta => ({
+              index: tc.index,
+              id: tc.id,
+              type: tc.type as 'function' | undefined,
+              function: tc.function
+                ? { name: tc.function.name, arguments: tc.function.arguments }
+                : undefined,
+            }),
+          );
+          if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
+            onChunk({
+              content,
+              done: false,
+              ...(reasoning ? { reasoning } : {}),
+              ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+            });
           }
         } catch {
-          // 잘못된 SSE 라인 무시
+          // malformed SSE line — skip
         }
       }
     }
@@ -136,29 +196,26 @@ class ClaudeProvider implements LLMProvider {
   }
 
   async chat(messages: ChatMessage[], temperature = 0.7): Promise<string> {
-    const res = await fetch(
-      `${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: this.modelOverride ?? this.config.models[0] ?? '',
-          max_tokens: 4096,
-          temperature,
-          messages: messages
-            .filter((m) => m.role !== 'system')
-            .map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          system: messages.find((m) => m.role === 'system')?.content,
-        }),
+    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.config.apiKey,
+        'anthropic-version': '2023-06-01',
       },
-    );
+      body: JSON.stringify({
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        max_tokens: 4096,
+        temperature,
+        messages: messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        system: messages.find((m) => m.role === 'system')?.content,
+      }),
+    });
     if (!res.ok) {
       throw new Error(`Claude chat failed: ${res.status} ${await res.text()}`);
     }
@@ -173,30 +230,27 @@ class ClaudeProvider implements LLMProvider {
     onChunk: (chunk: StreamChunk) => void,
     temperature = 0.7,
   ): Promise<void> {
-    const res = await fetch(
-      `${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: this.modelOverride ?? this.config.models[0] ?? '',
-          max_tokens: 4096,
-          temperature,
-          stream: true,
-          messages: messages
-            .filter((m) => m.role !== 'system')
-            .map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          system: messages.find((m) => m.role === 'system')?.content,
-        }),
+    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.config.apiKey,
+        'anthropic-version': '2023-06-01',
       },
-    );
+      body: JSON.stringify({
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        max_tokens: 4096,
+        temperature,
+        stream: true,
+        messages: messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        system: messages.find((m) => m.role === 'system')?.content,
+      }),
+    });
     if (!res.ok) {
       throw new Error(`Claude stream failed: ${res.status} ${await res.text()}`);
     }
@@ -220,13 +274,33 @@ class ClaudeProvider implements LLMProvider {
         try {
           const event = JSON.parse(data) as {
             type: string;
-            content_block?: { type: string };
-            delta?: { type?: string; text?: string; thinking?: string };
+            content_block?: { type: string; id?: string; name?: string };
+            index?: number;
+            delta?: {
+              type?: string;
+              text?: string;
+              thinking?: string;
+              partial_json?: string;
+            };
           };
-          if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+          if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+            const toolCall: ToolCallDelta = {
+              index: event.index ?? 0,
+              id: event.content_block.id ?? '',
+              type: 'function',
+              function: { name: event.content_block.name ?? '', arguments: '' },
+            };
+            onChunk({ content: '', done: false, toolCalls: [toolCall] });
+          } else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
             onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
           } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
             onChunk({ content: event.delta.text ?? '', done: false });
+          } else if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+            const toolCall: ToolCallDelta = {
+              index: event.index ?? 0,
+              function: { arguments: event.delta.partial_json ?? '' },
+            };
+            onChunk({ content: '', done: false, toolCalls: [toolCall] });
           } else if (event.type === 'content_block_delta' && !event.delta?.type) {
             onChunk({ content: event.delta?.text ?? '', done: false });
           } else if (event.type === 'message_stop') {
@@ -234,7 +308,7 @@ class ClaudeProvider implements LLMProvider {
             return;
           }
         } catch {
-          // 잘못된 SSE 라인 무시
+          // malformed SSE line — skip
         }
       }
     }
@@ -266,7 +340,12 @@ class OllamaProvider implements LLMProvider {
   async chat(messages: ChatMessage[], temperature = 0.7): Promise<string> {
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? 'http://localhost:11434');
     const targetUrl = `${baseUrl}/api/chat`;
-    console.log('[SuperObsidian] Ollama chat URL:', targetUrl, 'original baseUrl:', this.config.baseUrl);
+    console.log(
+      '[SuperObsidian] Ollama chat URL:',
+      targetUrl,
+      'original baseUrl:',
+      this.config.baseUrl,
+    );
     const res = await requestUrl({
       url: targetUrl,
       method: 'POST',
@@ -369,11 +448,7 @@ export function createProvider(
       return new OllamaProvider(config, modelOverride);
     case 'openRouter': {
       const url = normalizeOpenRouterBaseUrl(config.baseUrl ?? 'https://openrouter.ai/api');
-      return new OpenAICompatibleProvider(
-        config,
-        `${url}/v1/chat/completions`,
-        modelOverride,
-      );
+      return new OpenAICompatibleProvider(config, `${url}/v1/chat/completions`, modelOverride);
     }
     default:
       throw new Error(`Unknown provider: ${String(key)}`);

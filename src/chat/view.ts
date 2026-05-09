@@ -1,14 +1,23 @@
 import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile, TFolder } from 'obsidian';
 import { PROVIDER_KEYS, PROVIDER_LABELS, type PluginLike } from '../settings';
-import type { ChatMessage, StreamChunk } from '../llm/providers';
+import type { ChatMessage, StreamChunk, ToolCallInfo, ToolCallDelta } from '../llm/providers';
 import { t } from '../i18n';
 
 export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
+
+interface ToolCallRecord {
+  id: string;
+  name: string;
+  arguments: string;
+  result?: string;
+  status: 'running' | 'success' | 'error';
+}
 
 interface ChatMessageWithMeta extends ChatMessage {
   id: string;
   timestamp: number;
   reasoning?: string;
+  toolCalls?: ToolCallRecord[];
 }
 
 interface ParsedMention {
@@ -193,7 +202,9 @@ export class ChatView extends ItemView {
 
     const registry = this.plugin.mcpRegistry;
     if (!registry || registry.getConnectedCount() === 0) {
-      const emptyLabel = this.mcpStatusBar.createSpan({ cls: 'super-obsidian-chat-mcp-status-label' });
+      const emptyLabel = this.mcpStatusBar.createSpan({
+        cls: 'super-obsidian-chat-mcp-status-label',
+      });
       emptyLabel.setText(t('mcpNoActiveServers'));
       const refreshBtn = this.mcpStatusBar.createEl('button', {
         cls: 'super-obsidian-chat-mcp-refresh-btn',
@@ -328,9 +339,10 @@ export class ChatView extends ItemView {
       opt.text = m.label;
     }
 
-    this.modelSelectEl.value = defaultModel && allModels.some((m) => m.value === defaultModel)
-      ? defaultModel
-      : allModels[0].value;
+    this.modelSelectEl.value =
+      defaultModel && allModels.some((m) => m.value === defaultModel)
+        ? defaultModel
+        : allModels[0].value;
     this.modelSelectEl.disabled = false;
   }
 
@@ -552,7 +564,11 @@ export class ChatView extends ItemView {
     }
   }
 
-  private insertMention(item: { label: string; value: string; type: 'server' | 'file' | 'folder' }): void {
+  private insertMention(item: {
+    label: string;
+    value: string;
+    type: 'server' | 'file' | 'folder';
+  }): void {
     if (!this.inputArea) return;
     const value = this.inputArea.value;
     const before = value.slice(0, this.mentionStartIndex);
@@ -597,9 +613,21 @@ export class ChatView extends ItemView {
     if (this.scrollBtn) this.scrollBtn.style.display = 'none';
   }
 
-  addMessage(role: ChatMessage['role'], content: string, reasoning?: string): string {
+  addMessage(
+    role: ChatMessage['role'],
+    content: string,
+    reasoning?: string,
+    toolCalls?: ToolCallRecord[],
+  ): string {
     const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const msg: ChatMessageWithMeta = { id, role, content, timestamp: Date.now(), reasoning };
+    const msg: ChatMessageWithMeta = {
+      id,
+      role,
+      content,
+      timestamp: Date.now(),
+      reasoning,
+      toolCalls,
+    };
     this.messages.push(msg);
 
     const wrapper = this.messagesArea!.createDiv({
@@ -619,23 +647,19 @@ export class ChatView extends ItemView {
       text: this.formatTimestamp(msg.timestamp),
     });
 
-    if (reasoning) {
-      const details = bubbleContainer.createEl('details', {
-        cls: 'super-obsidian-chat-reasoning',
+    if (role === 'assistant') {
+      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls);
+    } else if (role === 'tool') {
+      const bubble = bubbleContainer.createDiv({
+        cls: 'super-obsidian-chat-bubble tool',
       });
-      details.addEventListener('toggle', () => {
-        if (this.autoScroll) this.scrollToBottom();
+      this.renderToolBubble(bubble, content, 'running');
+    } else {
+      const bubble = bubbleContainer.createDiv({
+        cls: `super-obsidian-chat-bubble ${role}`,
       });
-      const summary = details.createEl('summary');
-      summary.setText(t('reasoningLabel'));
-      const contentDiv = details.createDiv({ cls: 'super-obsidian-chat-reasoning-content' });
-      contentDiv.setText(reasoning);
+      bubble.setText(content);
     }
-
-    const bubble = bubbleContainer.createDiv({
-      cls: `super-obsidian-chat-bubble ${role}`,
-    });
-    bubble.setText(content);
 
     if (this.autoScroll) {
       this.scrollToBottom();
@@ -643,43 +667,212 @@ export class ChatView extends ItemView {
     return id;
   }
 
-  updateMessage(id: string, content: string, isDone: boolean, reasoning?: string): void {
+  updateMessage(
+    id: string,
+    content: string,
+    isDone: boolean,
+    reasoning?: string,
+    toolCalls?: ToolCallRecord[],
+  ): void {
     const wrapper = this.messageEls.get(id);
     if (!wrapper) return;
-    const bubble = wrapper.querySelector('.super-obsidian-chat-bubble');
-    if (!(bubble instanceof HTMLElement)) return;
 
-    if (reasoning !== undefined) {
-      let details = wrapper.querySelector('.super-obsidian-chat-reasoning');
-      if (!details) {
-        const bubbleContainer = wrapper.querySelector('.super-obsidian-chat-bubble-container');
-        if (bubbleContainer) {
-          details = document.createElement('details');
-          details.addClass('super-obsidian-chat-reasoning');
-          const summary = document.createElement('summary');
-          summary.setText(t('reasoningLabel'));
-          details.appendChild(summary);
-          const contentDiv = document.createElement('div');
-          contentDiv.addClass('super-obsidian-chat-reasoning-content');
-          details.appendChild(contentDiv);
-          bubbleContainer.insertBefore(details, bubbleContainer.firstChild);
-        }
-      }
-      if (details) {
-        const contentDiv = details.querySelector('.super-obsidian-chat-reasoning-content');
-        if (contentDiv) contentDiv.setText(reasoning);
+    const message = this.messages.find((m) => m.id === id);
+    if (message) {
+      message.content = content;
+      message.reasoning = reasoning;
+      if (toolCalls) {
+        message.toolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
       }
     }
 
-    if (!isDone) {
-      bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+    const isTool = wrapper.classList.contains('tool');
+    const isAssistant = wrapper.classList.contains('assistant');
+
+    if (isAssistant) {
+      this.updateAssistantLayers(wrapper, content, isDone, reasoning, toolCalls);
+      if (this.autoScroll) {
+        this.scrollToBottom();
+      }
+      return;
+    }
+
+    if (isTool) {
+      const bubble = wrapper.querySelector('.super-obsidian-chat-bubble.tool');
+      if (bubble instanceof HTMLElement) {
+        const status = isDone ? 'success' : 'running';
+        this.renderToolBubble(bubble, content, status);
+      }
     } else {
-      void this.renderMarkdownBubble(bubble, content);
+      const bubble = wrapper.querySelector('.super-obsidian-chat-bubble');
+      if (bubble instanceof HTMLElement) {
+        if (!isDone) {
+          bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+        } else {
+          void this.renderMarkdownBubble(bubble, content);
+        }
+      }
     }
 
     if (this.autoScroll) {
       this.scrollToBottom();
     }
+  }
+
+  private createAssistantLayers(
+    bubbleContainer: HTMLElement,
+    content: string,
+    reasoning?: string,
+    toolCalls?: ToolCallRecord[],
+  ): void {
+    const shouldShowStreamingPlaceholders = this.isStreaming && !content;
+
+    const thinking = bubbleContainer.createEl('details', {
+      cls: 'super-obsidian-chat-thinking super-obsidian-chat-reasoning',
+    });
+    thinking.style.display = reasoning || shouldShowStreamingPlaceholders ? '' : 'none';
+    if (shouldShowStreamingPlaceholders) {
+      thinking.open = true;
+    }
+    thinking.addEventListener('toggle', () => {
+      if (this.autoScroll) this.scrollToBottom();
+    });
+    const thinkingSummary = thinking.createEl('summary');
+    thinkingSummary.setText(`💭 ${t('reasoningLabel')}`);
+    const thinkingContent = thinking.createDiv({
+      cls: 'super-obsidian-chat-thinking-content super-obsidian-chat-reasoning-content',
+    });
+    thinkingContent.setText(reasoning ?? t('thinkingPlaceholder'));
+
+    const toolCallsSection = bubbleContainer.createDiv({
+      cls: 'super-obsidian-chat-tool-calls',
+    });
+    toolCallsSection.style.display =
+      toolCalls && toolCalls.length > 0 ? '' : shouldShowStreamingPlaceholders ? '' : 'none';
+    this.renderToolCallsSection(toolCallsSection, toolCalls ?? [], shouldShowStreamingPlaceholders);
+
+    const answerLayer = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-answer' });
+    answerLayer.createDiv({ cls: 'super-obsidian-chat-answer-label', text: `💬 ${t('answerLabel')}` });
+    const bubble = answerLayer.createDiv({
+      cls: 'super-obsidian-chat-bubble assistant',
+    });
+    bubble.setText(content);
+  }
+
+  private updateAssistantLayers(
+    wrapper: HTMLElement,
+    content: string,
+    isDone: boolean,
+    reasoning?: string,
+    toolCalls?: ToolCallRecord[],
+  ): void {
+    const bubbleContainer = wrapper.querySelector('.super-obsidian-chat-bubble-container');
+    if (!(bubbleContainer instanceof HTMLElement)) return;
+
+    let thinking = bubbleContainer.querySelector('.super-obsidian-chat-thinking');
+    if (!(thinking instanceof HTMLDetailsElement)) {
+      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls);
+      thinking = bubbleContainer.querySelector('.super-obsidian-chat-thinking');
+    }
+
+    if (thinking instanceof HTMLDetailsElement) {
+      const hasReasoning = reasoning !== undefined && reasoning.length > 0;
+      thinking.style.display = hasReasoning || !isDone ? '' : 'none';
+      const thinkingContent = thinking.querySelector('.super-obsidian-chat-thinking-content');
+      if (thinkingContent instanceof HTMLElement) {
+        if (!isDone) {
+          const text = hasReasoning ? reasoning : t('thinkingPlaceholder');
+          thinkingContent.innerHTML = escapeHtml(text ?? '').replace(/\n/g, '<br>');
+        } else if (hasReasoning) {
+          void this.renderMarkdownBubble(thinkingContent, reasoning ?? '');
+          thinking.open = false;
+        }
+      }
+    }
+
+    const toolCallsSection = bubbleContainer.querySelector('.super-obsidian-chat-tool-calls');
+    if (toolCallsSection instanceof HTMLElement) {
+      const calls = toolCalls ?? [];
+      toolCallsSection.style.display = calls.length > 0 || !isDone ? '' : 'none';
+      this.renderToolCallsSection(toolCallsSection, calls, !isDone);
+    }
+
+    const bubble = bubbleContainer.querySelector('.super-obsidian-chat-bubble.assistant');
+    if (bubble instanceof HTMLElement) {
+      if (!isDone) {
+        bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+      } else {
+        void this.renderMarkdownBubble(bubble, content);
+      }
+    }
+  }
+
+  private renderToolCallsSection(
+    section: HTMLElement,
+    toolCalls: ToolCallRecord[],
+    showPlaceholder: boolean,
+  ): void {
+    section.empty();
+    section.createDiv({ cls: 'super-obsidian-chat-tool-calls-label', text: `🔧 ${t('toolCallLabel')}` });
+
+    if (toolCalls.length === 0 && showPlaceholder) {
+      const row = section.createDiv({ cls: 'super-obsidian-tool-call placeholder' });
+      row.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
+      row.createSpan({ cls: 'super-obsidian-tool-call-name', text: t('mcpToolRunning') });
+      const statusBadge = row.createSpan({ cls: 'super-obsidian-tool-call-status running' });
+      this.renderRunningDots(statusBadge);
+      return;
+    }
+
+    for (const toolCall of toolCalls) {
+      const callRow = section.createDiv({ cls: 'super-obsidian-tool-call' });
+      callRow.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
+      callRow.createSpan({
+        cls: 'super-obsidian-tool-call-name',
+        text: toolCall.name || t('toolCallLabel'),
+      });
+      const statusBadge = callRow.createSpan({
+        cls: `super-obsidian-tool-call-status ${toolCall.status}`,
+      });
+      this.renderToolCallStatus(statusBadge, toolCall.status);
+
+      const argumentPreview = toolCall.arguments.trim();
+      if (argumentPreview) {
+        const args = section.createEl('details', { cls: 'super-obsidian-tool-arguments' });
+        args.createEl('summary', { text: t('toolArgs') });
+        args.createEl('pre', { text: argumentPreview });
+      }
+
+      if (toolCall.result) {
+        const resultDetails = section.createEl('details', {
+          cls: 'super-obsidian-tool-result-details',
+        });
+        resultDetails.createEl('summary', { text: t('toolResult') });
+        const resultArea = resultDetails.createDiv({ cls: 'super-obsidian-tool-result' });
+        void this.renderMarkdownBubble(resultArea, toolCall.result);
+      }
+    }
+  }
+
+  private renderToolCallStatus(
+    statusBadge: HTMLElement,
+    status: ToolCallRecord['status'],
+  ): void {
+    if (status === 'running') {
+      this.renderRunningDots(statusBadge);
+    } else if (status === 'success') {
+      statusBadge.setText('✓');
+    } else {
+      statusBadge.setText('✗');
+    }
+  }
+
+  private renderRunningDots(container: HTMLElement): void {
+    container.empty();
+    const dots = container.createSpan({ cls: 'super-obsidian-tool-running-dots' });
+    dots.createSpan({});
+    dots.createSpan({});
+    dots.createSpan({});
   }
 
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
@@ -848,7 +1041,7 @@ export class ChatView extends ItemView {
       const systemPrompt = await this.buildSystemPrompt(text);
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...this.messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
       ];
 
       if (this.typingIndicator) this.typingIndicator.style.display = 'none';
@@ -856,6 +1049,7 @@ export class ChatView extends ItemView {
 
       let fullText = '';
       let fullReasoning = '';
+      const toolCallMap = new Map<number, ToolCallRecord>();
       await provider.streamChat(
         messages,
         (chunk: StreamChunk) => {
@@ -865,11 +1059,26 @@ export class ChatView extends ItemView {
           if (chunk.reasoning) {
             fullReasoning += chunk.reasoning;
           }
-          this.updateMessage(assistantId, fullText, chunk.done, fullReasoning || undefined);
+          if (chunk.toolCalls) {
+            this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+          }
+          this.updateMessage(
+            assistantId,
+            fullText,
+            chunk.done,
+            fullReasoning || undefined,
+            Array.from(toolCallMap.values()),
+          );
         },
         0.7,
       );
-      this.updateMessage(assistantId, fullText, true, fullReasoning || undefined);
+      this.updateMessage(
+        assistantId,
+        fullText,
+        true,
+        fullReasoning || undefined,
+        Array.from(toolCallMap.values()),
+      );
     } catch (err) {
       if (this.typingIndicator) this.typingIndicator.style.display = 'none';
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -885,6 +1094,48 @@ export class ChatView extends ItemView {
     if (this.inputArea) this.inputArea.disabled = loading;
     if (this.mcpBtn) this.mcpBtn.disabled = loading;
     if (this.modelSelectEl) this.modelSelectEl.disabled = loading;
+  }
+
+  private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
+    const providerMessage: ChatMessage = {
+      role: message.role,
+      content: message.content,
+      ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+    };
+    if (message.toolCalls && message.toolCalls.length > 0) {
+      providerMessage.toolCalls = message.toolCalls.map((toolCall): ToolCallInfo => {
+        return {
+          id: toolCall.id,
+          type: 'function',
+          function: {
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          },
+        };
+      });
+    }
+    return providerMessage;
+  }
+
+  private mergeToolCallDeltas(
+    toolCallMap: Map<number, ToolCallRecord>,
+    deltas: ToolCallDelta[],
+  ): void {
+    for (const toolCallDelta of deltas) {
+      const existing = toolCallMap.get(toolCallDelta.index);
+      if (existing) {
+        if (toolCallDelta.id) existing.id = toolCallDelta.id;
+        if (toolCallDelta.function?.name) existing.name = toolCallDelta.function.name;
+        if (toolCallDelta.function?.arguments) existing.arguments += toolCallDelta.function.arguments;
+      } else {
+        toolCallMap.set(toolCallDelta.index, {
+          id: toolCallDelta.id ?? '',
+          name: toolCallDelta.function?.name ?? '',
+          arguments: toolCallDelta.function?.arguments ?? '',
+          status: 'running',
+        });
+      }
+    }
   }
 
   private async buildSystemPrompt(lastUserText: string): Promise<string | null> {
@@ -935,9 +1186,13 @@ export class ChatView extends ItemView {
               try {
                 const tools = await client.listTools();
                 const toolList = tools.map((t) => `- ${t.name}: ${t.description ?? ''}`).join('\n');
-                mentionParts.push(`\n\n[MCP Server: ${mention.name}]\nAvailable tools:\n${toolList}`);
+                mentionParts.push(
+                  `\n\n[MCP Server: ${mention.name}]\nAvailable tools:\n${toolList}`,
+                );
               } catch {
-                mentionParts.push(`\n\n[MCP Server: ${mention.name}]\n(툴 목록을 가져올 수 없습니다)`);
+                mentionParts.push(
+                  `\n\n[MCP Server: ${mention.name}]\n(툴 목록을 가져올 수 없습니다)`,
+                );
               }
             } else {
               mentionParts.push(`\n\n[MCP Server: ${mention.name}]\n(연결되지 않은 서버입니다)`);
@@ -946,7 +1201,9 @@ export class ChatView extends ItemView {
         } else if (mention.type === 'folder') {
           const folder = this.app.vault.getAbstractFileByPath(mention.name);
           if (folder instanceof TFolder) {
-            const folderFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(mention.name + '/'));
+            const folderFiles = this.app.vault
+              .getMarkdownFiles()
+              .filter((f) => f.path.startsWith(mention.name + '/'));
             if (folderFiles.length === 0) {
               mentionParts.push(`\n\n[Folder: ${mention.name}]\n(폴더가 비어 있습니다)`);
             } else {
@@ -1100,12 +1357,27 @@ export class ChatView extends ItemView {
     const inputs: {
       key: string;
       el: HTMLInputElement | HTMLTextAreaElement;
-      def: { type?: string; description?: string; pattern?: string; minimum?: number; maximum?: number };
+      def: {
+        type?: string;
+        description?: string;
+        pattern?: string;
+        minimum?: number;
+        maximum?: number;
+      };
       required: boolean;
     }[] = [];
 
     const schema = inputSchema as {
-      properties?: Record<string, { type?: string; description?: string; pattern?: string; minimum?: number; maximum?: number }>;
+      properties?: Record<
+        string,
+        {
+          type?: string;
+          description?: string;
+          pattern?: string;
+          minimum?: number;
+          maximum?: number;
+        }
+      >;
       required?: string[];
     };
     const properties = schema.properties ?? {};
@@ -1150,7 +1422,12 @@ export class ChatView extends ItemView {
       if (requiredSet.has(propName)) {
         inputEl.required = true;
       }
-      inputs.push({ key: propName, el: inputEl, def: propDef, required: requiredSet.has(propName) });
+      inputs.push({
+        key: propName,
+        el: inputEl,
+        def: propDef,
+        required: requiredSet.has(propName),
+      });
     }
 
     const actions = panel.createDiv({
@@ -1171,24 +1448,38 @@ export class ChatView extends ItemView {
           const numVal = parseFloat(el.value);
           if (Number.isNaN(numVal)) {
             if (required) {
-              validationErrors.push(t('mcpToolInvalidField', { field: key, detail: '숫자 값이 필요합니다.' }));
+              validationErrors.push(
+                t('mcpToolInvalidField', { field: key, detail: '숫자 값이 필요합니다.' }),
+              );
               continue;
             }
             continue;
           }
           if (def.minimum !== undefined && numVal < def.minimum) {
-            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `최소값 ${def.minimum} 이상이어야 합니다.` }));
+            validationErrors.push(
+              t('mcpToolInvalidField', {
+                field: key,
+                detail: `최소값 ${def.minimum} 이상이어야 합니다.`,
+              }),
+            );
             continue;
           }
           if (def.maximum !== undefined && numVal > def.maximum) {
-            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `최대값 ${def.maximum} 이하여야 합니다.` }));
+            validationErrors.push(
+              t('mcpToolInvalidField', {
+                field: key,
+                detail: `최대값 ${def.maximum} 이하여야 합니다.`,
+              }),
+            );
             continue;
           }
           values[key] = numVal;
         } else {
           const trimmed = el.value.trim();
           if (required && trimmed === '') {
-            validationErrors.push(t('mcpToolInvalidField', { field: key, detail: '필수 입력값입니다.' }));
+            validationErrors.push(
+              t('mcpToolInvalidField', { field: key, detail: '필수 입력값입니다.' }),
+            );
             continue;
           }
           if (trimmed === '' && !required) {
@@ -1198,7 +1489,12 @@ export class ChatView extends ItemView {
             try {
               const regex = new RegExp(def.pattern);
               if (!regex.test(trimmed)) {
-                validationErrors.push(t('mcpToolInvalidField', { field: key, detail: `형식이 올바르지 않습니다. (패턴: ${def.pattern})` }));
+                validationErrors.push(
+                  t('mcpToolInvalidField', {
+                    field: key,
+                    detail: `형식이 올바르지 않습니다. (패턴: ${def.pattern})`,
+                  }),
+                );
                 continue;
               }
             } catch {
@@ -1231,27 +1527,76 @@ export class ChatView extends ItemView {
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
+    messageId?: string,
   ): Promise<void> {
     const registry = this.plugin.mcpRegistry;
     if (!registry) return;
     const client = registry.getClient(serverName);
     if (!client) return;
 
-    const runId = this.addMessage('tool', `${t('mcpToolRunning')} ${toolName}...`);
+    let runId: string | null = null;
+    if (messageId) {
+      this.updateToolCallInMessage(messageId, toolName, {
+        arguments: JSON.stringify(args),
+        status: 'running',
+      });
+    } else {
+      runId = this.addMessage('tool', `${t('mcpToolRunning')} ${toolName}...`);
+    }
 
     try {
       const result = await client.callTool(toolName, args);
       const formatted = this.formatToolResult(result);
-      this.updateMessage(
-        runId,
-        `**${t('mcpToolSuccess')} — ${toolName}**\n\n${formatted}`,
-        true,
-      );
+      if (messageId) {
+        this.updateToolCallInMessage(messageId, toolName, {
+          result: formatted,
+          status: 'success',
+        });
+      } else if (runId) {
+        this.updateMessage(runId, `**${t('mcpToolSuccess')} — ${toolName}**\n\n${formatted}`, true);
+      }
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : String(err);
       const friendlyMsg = this.normalizeToolError(rawMsg);
-      this.updateMessage(runId, `**${t('mcpToolError')} — ${toolName}**\n\n${friendlyMsg}`, true);
+      if (messageId) {
+        this.updateToolCallInMessage(messageId, toolName, {
+          result: friendlyMsg,
+          status: 'error',
+        });
+      } else if (runId) {
+        this.updateMessage(runId, `**${t('mcpToolError')} — ${toolName}**\n\n${friendlyMsg}`, true);
+      }
     }
+  }
+
+  private updateToolCallInMessage(
+    messageId: string,
+    toolName: string,
+    patch: Partial<ToolCallRecord>,
+  ): void {
+    const message = this.messages.find((m) => m.id === messageId);
+    if (!message) return;
+    const toolCalls = message.toolCalls ?? [];
+    const existing = toolCalls.find((toolCall) => toolCall.name === toolName);
+    if (existing) {
+      Object.assign(existing, patch);
+    } else {
+      toolCalls.push({
+        id: patch.id ?? '',
+        name: patch.name ?? toolName,
+        arguments: patch.arguments ?? '',
+        result: patch.result,
+        status: patch.status ?? 'running',
+      });
+    }
+    message.toolCalls = toolCalls;
+    this.updateMessage(
+      messageId,
+      message.content,
+      true,
+      message.reasoning,
+      toolCalls.map((toolCall) => ({ ...toolCall })),
+    );
   }
 
   private normalizeToolError(rawMsg: string): string {
@@ -1277,6 +1622,88 @@ export class ChatView extends ItemView {
     if (typeof result === 'string') return result;
     if (typeof result === 'number' || typeof result === 'boolean') return String(result);
     return '```json\n' + JSON.stringify(result, null, 2) + '\n```';
+  }
+
+  private renderToolBubble(
+    bubble: HTMLElement,
+    content: string,
+    status: 'running' | 'success' | 'error',
+  ): void {
+    bubble.empty();
+
+    // Content formats (i18n):
+    //   Running:  "툴 실행 중... {toolName}..." / "Running tool... {toolName}..."
+    //   Success: "**툴 실행 성공 — toolName**\n\n{formatted}" / "**Tool executed successfully — toolName**\n\n{formatted}"
+    //   Error:    "**툴 실행 실패 — toolName**\n\n{friendlyMsg}" / "**Tool execution failed — toolName**\n\n{friendlyMsg}"
+
+    let toolName = '';
+    let resultText = '';
+
+    const runningMatch = content.match(/(?:툴 실행 중|Running tool)\s*\.{0,3}\s*(.+)/);
+    const successMatch = content.match(
+      /\*\*(?:툴 실행 성공|Tool executed successfully)\s*[—–]\s*(.+?)\*\*\s*\n+([\s\S]*)/,
+    );
+    const errorMatch = content.match(
+      /\*\*(?:툴 실행 실패|Tool execution failed)\s*[—–]\s*(.+?)\*\*\s*\n+([\s\S]*)/,
+    );
+
+    if (runningMatch) {
+      toolName = runningMatch[1].replace(/\.\.\.+$/, '').trim();
+    } else if (successMatch) {
+      toolName = successMatch[1].trim();
+      resultText = successMatch[2].trim();
+      status = 'success';
+    } else if (errorMatch) {
+      toolName = errorMatch[1].trim();
+      resultText = errorMatch[2].trim();
+      status = 'error';
+    } else {
+      toolName = content.length > 40 ? content.slice(0, 40) + '…' : content;
+      resultText = content;
+    }
+
+    const callRow = bubble.createDiv({ cls: 'super-obsidian-tool-call' });
+    callRow.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
+    callRow.createSpan({
+      cls: 'super-obsidian-tool-call-name',
+      text: toolName || t('messageTool'),
+    });
+    const statusBadge = callRow.createSpan({
+      cls: `super-obsidian-tool-call-status ${status}`,
+    });
+    if (status === 'running') {
+      statusBadge.setText('');
+      const dots = statusBadge.createSpan({ cls: 'super-obsidian-tool-running-dots' });
+      dots.createSpan({});
+      dots.createSpan({});
+      dots.createSpan({});
+    } else if (status === 'success') {
+      statusBadge.setText('✓');
+    } else if (status === 'error') {
+      statusBadge.setText('✗');
+    }
+
+    const resultArea = bubble.createDiv({ cls: 'super-obsidian-tool-result' });
+    if (resultText && status !== 'running') {
+      void this.renderMarkdownBubble(resultArea, resultText);
+    }
+
+    if (resultText && status !== 'running') {
+      const toggle = bubble.createDiv({ cls: 'super-obsidian-tool-result-toggle collapsed' });
+      toggle.createSpan({ cls: 'super-obsidian-tool-result-toggle-chevron', text: '▾' });
+      toggle.createSpan({ text: t('toolResult') });
+      toggle.addEventListener('click', () => {
+        const isCollapsed = resultArea.classList.contains('collapsed');
+        if (isCollapsed) {
+          resultArea.classList.remove('collapsed');
+          toggle.classList.remove('collapsed');
+        } else {
+          resultArea.classList.add('collapsed');
+          toggle.classList.add('collapsed');
+        }
+      });
+      resultArea.classList.add('collapsed');
+    }
   }
 }
 

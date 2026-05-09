@@ -138,6 +138,9 @@ export interface I18nKeys {
   mcpMentionFiles: string;
   mcpMentionFolders: string;
   reasoningLabel: string;
+  toolCallLabel: string;
+  answerLabel: string;
+  thinkingPlaceholder: string;
   modelSelector: string;
   mcpRefresh: string;
   mcpRefreshing: string;
@@ -226,12 +229,14 @@ const ko: I18nKeys = {
   refreshModelList: '모델 목록 새로고침',
   noModelsEnabled: '활성화된 모델 없음',
   pluginAwareGeneration: '플러그인 인식 생성 활성화',
-  pluginAwareGenerationDesc: 'LLM 프롬프트에 활성 플러그인 목록을 포함하여 호환 문법을 유도합니다. (비공식 API 사용)',
+  pluginAwareGenerationDesc:
+    'LLM 프롬프트에 활성 플러그인 목록을 포함하여 호환 문법을 유도합니다. (비공식 API 사용)',
   language: '언어',
   languageDesc: '플러그인 전체 UI 언어를 선택합니다',
   langKo: '한국어',
   langEn: 'English',
-  languageChangeConfirm: '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
+  languageChangeConfirm:
+    '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
 
   // Providers
   apiKey: 'API 키',
@@ -275,9 +280,11 @@ const ko: I18nKeys = {
   loadStatsFailed: '통계를 불러올 수 없습니다.',
   enableProviderFirst: 'Providers 탭에서 "{provider}"의 Enabled 토글을 켜주세요.',
   enterApiKeyFirst: 'Providers 탭에서 "{provider}"의 API Key를 입력하세요.',
-  selectAndSaveModel: '임베딩 모델이 선택되지 않았습니다. Embedding Provider 섹션에서 모델을 선택하고 "저장" 버튼을 클릭하세요.',
+  selectAndSaveModel:
+    '임베딩 모델이 선택되지 않았습니다. Embedding Provider 섹션에서 모델을 선택하고 "저장" 버튼을 클릭하세요.',
   enterModelId: '임베딩 모델 ID를 직접 입력하고 "저장" 버튼을 클릭하세요.',
-  connectionFailedGeneric: '프로바이더 "{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
+  connectionFailedGeneric:
+    '프로바이더 "{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
 
   // RAG Controls
   indexingControls: '인덱싱 제어',
@@ -323,7 +330,8 @@ const ko: I18nKeys = {
   chatSaveFolder: '채팅 저장 폴더',
   chatSaveFolderDesc: '대화를 저장할 볼트 내 폴더 경로',
   systemPrompt: '시스템 프롬프트',
-  systemPromptDesc: 'AI의 역할과 응답 방식을 정의하는 글로벌 시스템 프롬프트입니다. 비워두면 기본 프롬프트가 사용됩니다.',
+  systemPromptDesc:
+    'AI의 역할과 응답 방식을 정의하는 글로벌 시스템 프롬프트입니다. 비워두면 기본 프롬프트가 사용됩니다.',
   systemPromptPlaceholder: '예: 당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다...',
   resetToDefault: '기본값으로 초기화',
   chatClear: '대화 지우기',
@@ -353,6 +361,9 @@ const ko: I18nKeys = {
   mcpMentionFiles: '볼트 파일',
   mcpMentionFolders: '폴더',
   reasoningLabel: '생각 과정',
+  toolCallLabel: '툴 호출',
+  answerLabel: '답변',
+  thinkingPlaceholder: '생각 중...',
   modelSelector: '모델',
   mcpRefresh: '새로고침',
   mcpRefreshing: '재연결 중...',
@@ -434,19 +445,22 @@ const en: I18nKeys = {
   autoSaveSettings: 'Auto-save settings',
   autoSaveSettingsDesc: 'Automatically save settings after changes (reduces disk I/O)',
   autoSaveDelay: 'Settings auto-save delay',
-  autoSaveDelayDesc: 'Milliseconds to wait after changing a setting value before auto-saving (0–5000 ms)',
+  autoSaveDelayDesc:
+    'Milliseconds to wait after changing a setting value before auto-saving (0–5000 ms)',
   delayMs: 'ms',
   defaultModel: 'Default Model',
   defaultModelDesc: 'Default model for chat and commands',
   refreshModelList: 'Refresh model list',
   noModelsEnabled: 'No models enabled',
   pluginAwareGeneration: 'Enable Plugin-Aware Generation',
-  pluginAwareGenerationDesc: 'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
+  pluginAwareGenerationDesc:
+    'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
   language: 'Language',
   languageDesc: 'Select the plugin UI language',
   langKo: 'Korean',
   langEn: 'English',
-  languageChangeConfirm: 'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
+  languageChangeConfirm:
+    'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
 
   // Providers
   apiKey: 'API Key',
@@ -490,9 +504,11 @@ const en: I18nKeys = {
   loadStatsFailed: 'Unable to load statistics.',
   enableProviderFirst: 'Please enable "{provider}" in the Providers tab.',
   enterApiKeyFirst: 'Please enter the API Key for "{provider}" in the Providers tab.',
-  selectAndSaveModel: 'Embedding model not selected. Please select a model in the Embedding Provider section and click "Save".',
+  selectAndSaveModel:
+    'Embedding model not selected. Please select a model in the Embedding Provider section and click "Save".',
   enterModelId: 'Please enter the embedding model ID and click "Save".',
-  connectionFailedGeneric: 'Failed to connect to provider "{provider}" ({model}). Please check Base URL or API Key.',
+  connectionFailedGeneric:
+    'Failed to connect to provider "{provider}" ({model}). Please check Base URL or API Key.',
 
   // RAG Controls
   indexingControls: 'Indexing Controls',
@@ -538,7 +554,8 @@ const en: I18nKeys = {
   chatSaveFolder: 'Chat Save Folder',
   chatSaveFolderDesc: 'Vault folder path to save conversations',
   systemPrompt: 'System Prompt',
-  systemPromptDesc: 'Global system prompt that defines AI role and response style. Leave empty to use default.',
+  systemPromptDesc:
+    'Global system prompt that defines AI role and response style. Leave empty to use default.',
   systemPromptPlaceholder: 'e.g., You are an expert assistant helping with Obsidian note-taking...',
   resetToDefault: 'Reset to Default',
   chatClear: 'Clear Chat',
@@ -568,6 +585,9 @@ const en: I18nKeys = {
   mcpMentionFiles: 'Vault Files',
   mcpMentionFolders: 'Folders',
   reasoningLabel: 'Thinking',
+  toolCallLabel: 'Tool Call',
+  answerLabel: 'Answer',
+  thinkingPlaceholder: 'Thinking...',
   modelSelector: 'Model',
   mcpRefresh: 'Refresh',
   mcpRefreshing: 'Reconnecting...',
@@ -580,7 +600,8 @@ const en: I18nKeys = {
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH Environment Variable',
-  mcpPathDesc: 'Set the PATH value used when running MCP servers. Leave empty to use the default PATH.',
+  mcpPathDesc:
+    'Set the PATH value used when running MCP servers. Leave empty to use the default PATH.',
   mcpPathFetch: 'Fetch PATH from Terminal',
   mcpPathFetching: 'Fetching...',
   mcpPathFetchSuccess: 'Terminal PATH fetched successfully',
@@ -627,7 +648,8 @@ const en: I18nKeys = {
 
   // Settings Header
   settingsTitle: 'Super Obsidian by AI — Settings',
-  securityWarning: 'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
+  securityWarning:
+    'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
 
   // Tabs
   tabGeneral: 'General',
@@ -666,7 +688,10 @@ export function getLanguage(): Language {
  * Translate a key into the current language.
  * Supports simple interpolation with {key} placeholders.
  */
-export function t<K extends keyof I18nKeys>(key: K, vars?: Record<string, string | number>): string {
+export function t<K extends keyof I18nKeys>(
+  key: K,
+  vars?: Record<string, string | number>,
+): string {
   let text = STRINGS[currentLang][key] ?? STRINGS['en'][key] ?? String(key);
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {

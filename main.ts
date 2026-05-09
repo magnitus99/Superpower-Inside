@@ -5,11 +5,7 @@ import {
   DEFAULT_SETTINGS,
   SuperObsidianSettingTab,
 } from './src/settings';
-import {
-  createProvider,
-  type ProviderKey,
-  type LLMProvider,
-} from './src/llm/providers';
+import { createProvider, type ProviderKey, type LLMProvider } from './src/llm/providers';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -17,11 +13,15 @@ import {
   type EmbeddingProvider,
 } from './src/llm/embedding';
 import { JsonFileVectorStore, type VectorStore } from './src/rag/store';
-import { VaultIndexer, registerModifyEvent, registerDeleteEvent, registerRenameEvent } from './src/rag/indexer';
+import {
+  VaultIndexer,
+  registerModifyEvent,
+  registerDeleteEvent,
+  registerRenameEvent,
+} from './src/rag/indexer';
 import { isExcludedExt } from './src/utils/vault';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
-import { saveChat, type ChatMessage } from './src/chat/persistence';
 import { executeDirective, parseDirective } from './src/chat/commands';
 import { MCPClientManager } from './src/mcp/client';
 import { MCPRegistry } from './src/mcp/registry';
@@ -120,24 +120,16 @@ export default class SuperObsidianPlugin extends Plugin {
 
     // 파일 변경 이벤트
     if (this.vaultIndexer) {
-      this.modifyCleanup = registerModifyEvent(
-        this.app.vault,
-        this.vaultIndexer,
-        () => {
-          this.debouncedRefreshStats();
-        },
-      );
+      this.modifyCleanup = registerModifyEvent(this.app.vault, this.vaultIndexer, () => {
+        this.debouncedRefreshStats();
+      });
     }
 
     // 파일 삭제/이름 변경 이벤트
     if (this.vaultIndexer && this.vectorStore) {
-      this.deleteCleanup = registerDeleteEvent(
-        this.app.vault,
-        this.vectorStore,
-        () => {
-          this.debouncedRefreshStats();
-        },
-      );
+      this.deleteCleanup = registerDeleteEvent(this.app.vault, this.vectorStore, () => {
+        this.debouncedRefreshStats();
+      });
       this.renameCleanup = registerRenameEvent(
         this.app.vault,
         this.vaultIndexer,
@@ -211,7 +203,10 @@ export default class SuperObsidianPlugin extends Plugin {
       const chatObj = chat as Record<string, unknown>;
       const rawProvider = chatObj.defaultProvider;
       const oldProvider = typeof rawProvider === 'string' ? rawProvider : '';
-      const oldModel = ((data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined)?.[0] ?? '';
+      const oldModel =
+        (
+          (data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined
+        )?.[0] ?? '';
       if (oldProvider && oldModel) {
         chatObj.defaultModel = `${oldProvider}:${oldModel}`;
       }
@@ -238,7 +233,10 @@ export default class SuperObsidianPlugin extends Plugin {
       }
       rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, rag.autoUpdateIntervalMin as number));
       if ('autoUpdateIntervalMs' in rag && !('autoUpdateIntervalMin' in rag)) {
-        rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, Math.round((rag.autoUpdateIntervalMs as number) / 60000)));
+        rag.autoUpdateIntervalMin = Math.max(
+          1,
+          Math.min(99, Math.round((rag.autoUpdateIntervalMs as number) / 60000)),
+        );
         delete rag.autoUpdateIntervalMs;
       }
     }
@@ -246,7 +244,12 @@ export default class SuperObsidianPlugin extends Plugin {
     // Migrate old MCP settings to standard format
     const mcpServers = data.mcpServers as unknown[] | undefined;
     if (Array.isArray(mcpServers)) {
-      const migrated: Array<{ name: string; command?: string; args?: string[]; env?: Record<string, string> }> = [];
+      const migrated: Array<{
+        name: string;
+        command?: string;
+        args?: string[];
+        env?: Record<string, string>;
+      }> = [];
       for (const s of mcpServers) {
         if (typeof s !== 'object' || s === null) continue;
         const server = s as Record<string, unknown>;
@@ -257,11 +260,15 @@ export default class SuperObsidianPlugin extends Plugin {
         }
         const name = typeof server.name === 'string' ? server.name : '';
         const command = typeof server.command === 'string' ? server.command : undefined;
-        const args = Array.isArray(server.args) ? server.args.filter((a): a is string => typeof a === 'string') : undefined;
+        const args = Array.isArray(server.args)
+          ? server.args.filter((a): a is string => typeof a === 'string')
+          : undefined;
         const env =
           typeof server.env === 'object' && server.env !== null && !Array.isArray(server.env)
             ? (Object.fromEntries(
-                Object.entries(server.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+                Object.entries(server.env).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === 'string',
+                ),
               ) as Record<string, string>)
             : undefined;
         if (name && command) {
@@ -287,10 +294,6 @@ export default class SuperObsidianPlugin extends Plugin {
     if (this.provider) return this.provider;
     this.initProvider();
     return this.provider;
-  }
-
-  async saveChat(messages: ChatMessage[], sessionSystemPrompt?: string): Promise<void> {
-    await saveChat(this.app.vault, messages, this.settings.chat.saveFolder, sessionSystemPrompt);
   }
 
   private initProvider(): void {
@@ -351,7 +354,9 @@ export default class SuperObsidianPlugin extends Plugin {
         totalVectors,
       };
 
-      const appWithSetting = this.app as unknown as { setting?: { activeTab?: { refreshStats?(): void } } };
+      const appWithSetting = this.app as unknown as {
+        setting?: { activeTab?: { refreshStats?(): void } };
+      };
       if (appWithSetting.setting?.activeTab?.refreshStats) {
         appWithSetting.setting.activeTab.refreshStats();
       }
@@ -438,12 +443,9 @@ export default class SuperObsidianPlugin extends Plugin {
       this.autoUpdateTimer = null;
     }
     if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
-      this.autoUpdateTimer = setInterval(
-        () => {
-          void this.autoIndex();
-        },
-        this.settings.rag.autoUpdateIntervalMin * 60000,
-      );
+      this.autoUpdateTimer = setInterval(() => {
+        void this.autoIndex();
+      }, this.settings.rag.autoUpdateIntervalMin * 60000);
     }
   }
 

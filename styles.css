@@ -924,11 +924,177 @@
 .super-obsidian-chat-bubble.tool {
   background: var(--background-primary-alt);
   color: var(--text-normal);
-  border: 1px solid var(--text-warning);
-  border-left-width: 3px;
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller);
+  border: 1px solid var(--background-modifier-border);
   border-bottom-left-radius: 4px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.super-obsidian-tool-call {
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  color: var(--text-normal);
+  cursor: default;
+}
+
+.super-obsidian-tool-call-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.super-obsidian-tool-call-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.super-obsidian-tool-call-status {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.super-obsidian-tool-call-status.running {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.super-obsidian-tool-call-status.success {
+  background: var(--background-modifier-success);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-tool-call-status.error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-tool-result {
+  padding: 8px 12px;
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  color: var(--text-normal);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.super-obsidian-tool-result:empty {
+  padding: 0;
+  max-height: 0;
+}
+
+.super-obsidian-tool-result pre {
+  margin: 0.3em 0;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.super-obsidian-tool-result code {
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
+  background: var(--background-secondary);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.super-obsidian-tool-result pre > code {
+  padding: 0;
+  background: transparent;
+}
+
+.super-obsidian-tool-result p:first-child {
+  margin-top: 0;
+}
+
+.super-obsidian-tool-result p:last-child {
+  margin-bottom: 0;
+}
+
+.super-obsidian-tool-running-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.super-obsidian-tool-running-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: super-obsidian-tool-pulse 1.2s ease-in-out infinite;
+}
+
+.super-obsidian-tool-running-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.super-obsidian-tool-running-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes super-obsidian-tool-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.super-obsidian-tool-result-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid var(--background-modifier-border);
+  transition: color 0.15s ease;
+}
+
+.super-obsidian-tool-result-toggle:hover {
+  color: var(--text-normal);
+}
+
+.super-obsidian-tool-result-toggle-chevron {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  font-size: 0.85em;
+  transition: transform 0.2s ease;
+}
+
+.super-obsidian-tool-result-toggle.collapsed .super-obsidian-tool-result-toggle-chevron {
+  transform: rotate(-90deg);
+}
+
+.super-obsidian-tool-result-container {
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  overflow: hidden;
+}
+
+.super-obsidian-tool-result-container.collapsed {
+  max-height: 0 !important;
+  opacity: 0;
+  padding: 0 !important;
 }
 
 .super-obsidian-chat-bubble p:first-child {
@@ -1489,6 +1655,249 @@
 }
 .super-obsidian-chat-reasoning-content p:last-child {
   margin-bottom: 0;
+}
+
+/* 3-Layer Message Structure */
+.super-obsidian-chat-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Thinking Layer */
+.super-obsidian-chat-thinking {
+  margin-bottom: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+  overflow: hidden;
+}
+.super-obsidian-chat-thinking summary {
+  padding: 6px 10px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+.super-obsidian-chat-thinking summary:hover {
+  color: var(--text-normal);
+}
+.super-obsidian-chat-thinking summary::before {
+  content: '💭';
+  font-size: 12px;
+}
+.super-obsidian-chat-thinking[open] summary::before {
+  content: '🧠';
+}
+.super-obsidian-chat-thinking-content {
+  padding: 8px 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.5;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  font-style: italic;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.super-obsidian-chat-thinking-content p:first-child {
+  margin-top: 0;
+}
+.super-obsidian-chat-thinking-content p:last-child {
+  margin-bottom: 0;
+}
+
+.super-obsidian-chat-thinking-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.super-obsidian-chat-thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.super-obsidian-chat-thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: super-obsidian-thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.super-obsidian-chat-thinking-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.super-obsidian-chat-thinking-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes super-obsidian-thinking-pulse {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Tool Calls Layer */
+.super-obsidian-chat-tool-calls {
+  margin-bottom: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+  overflow: hidden;
+}
+
+.super-obsidian-chat-tool-calls-label {
+  padding: 6px 10px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  user-select: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.super-obsidian-tool-call {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--font-ui-smaller);
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+  transition: background 0.15s ease;
+}
+
+.super-obsidian-tool-call:last-child {
+  border-bottom: none;
+}
+
+.super-obsidian-tool-call:hover {
+  background: var(--background-modifier-hover);
+}
+
+.super-obsidian-tool-call.placeholder {
+  opacity: 0.7;
+}
+
+.super-obsidian-tool-call-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.super-obsidian-tool-call-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.super-obsidian-tool-call-status {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.super-obsidian-tool-call-status.running {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.super-obsidian-tool-call-status.success {
+  background: var(--background-modifier-success);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-tool-call-status.error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-chat-tool-call-result {
+  padding: 6px 12px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  color: var(--text-normal);
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-chat-tool-call-result:empty {
+  padding: 0;
+  max-height: 0;
+  border-top: none;
+}
+
+.super-obsidian-chat-tool-call-args {
+  padding: 4px 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  background: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Answer Layer - main content area */
+.super-obsidian-chat-answer-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Streaming cursor animation */
+.super-obsidian-chat-streaming-cursor::after {
+  content: '▊';
+  animation: super-obsidian-cursor-blink 0.8s ease infinite;
+  color: var(--text-accent);
+  font-weight: normal;
+}
+
+@keyframes super-obsidian-cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* @Mention Inline Styling */
