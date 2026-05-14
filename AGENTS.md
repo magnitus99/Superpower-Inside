@@ -1,149 +1,178 @@
 # AGENTS.md — Super-Obsidian-by-AI
 
-**Generated:** 2026-05-09
-**Commit:** (current)
-**Branch:** main
+**Generated:** 2026-05-14
+**Commit:** b02790e
+**Branch:** feat/chat-research-copilot
 
-> Obsidian 플러그인. LLM, RAG, MCP, 사이드바 채팅 통합.
+> Obsidian 플러그인. LLM, RAG, MCP 도구 호출, 인터넷 검색 도구, 사이드바 채팅, 채팅 세션 저장, 출처/컨텍스트 첨부를 통합한다.
+> TypeScript strict 모드, esbuild CJS 번들, Obsidian DOM API 기반 UI.
 
 ## STRUCTURE
 
 ```
 .
-├── main.ts                   # Plugin 진입점 (onload/onunload)
-├── manifest.json             # Obsidian plugin metadata
+├── main.ts                       # Plugin 진입점(onload/onunload), provider/RAG/MCP 조립 — 533줄
+├── manifest.json                 # Obsidian plugin metadata (id: super-obsidian-by-ai)
+├── styles.css                    # 플러그인 전용 CSS, super-obsidian- 프리픽스 — 2533줄
 ├── src/
-│   ├── settings.ts           # PluginSettingTab + 설정 인터페이스
-│   ├── i18n.ts               # UI 문구/언어 설정 공용 모듈
-│   ├── llm/
-│   │   ├── providers.ts      # OpenAI/Claude/Ollama/OpenRouter 공통 인터페이스
-│   │   ├── embedding.ts      # 임베딩 생성 + IndexedDB 캐싱 (Dexie)
-│   │   └── validation.ts     # LLM/임베딩 연결 검증
-│   ├── rag/
-│   │   ├── indexer.ts        # 마크다운 헤딩/코드블록 존중 청킹 + 인덱싱
-│   │   ├── store.ts          # 벡터 저장소 (JSON 파일 + 인메모리 fallback)
-│   │   └── query.ts          # 코사인 유사도 기반 RAG 쿼리
-│   ├── chat/
-│   │   ├── view.ts           # 사이드바 ChatView (WorkspaceLeaf)
-│   │   ├── persistence.ts    # 채팅 → 마크다운 파일 저장/불러오기
-│   │   └── commands.ts       # 에디터 내 AI 지시어 처리
-│   ├── mcp/
-│   │   ├── client.ts         # MCP SDK Client (stdio transport)
-│   │   └── registry.ts       # MCP 서버 목록/설정 관리
-│   └── utils/
-│       ├── vault.ts          # 파일 필터 + vault adapter JSON IO
-│       └── obsidian-compat.ts # 활성 플러그인 탐지 (비공식 API)
-├── esbuild.config.mjs        # esbuild 번들 설정 (main.ts → main.js)
-├── eslint.config.mjs         # ESLint + typescript-eslint/recommended-type-checked
-├── .prettierrc.json          # Prettier 설정 (semi, singleQuote, trailingComma: all)
-├── tsconfig.json             # strict: true, noImplicitAny, strictNullChecks
-├── package.json              # npm scripts (dev, build, lint, typecheck, format)
-├── styles.css                # 플러그인 전용 CSS
-├── scripts/
-│   ├── setup-dev.fish        # 테스트 볼트 + 심링크 초기화
-│   ├── launch-obsidian-debug.fish # Obsidian 디버그 실행
-│   └── bump-version.fish     # 릴리스 버전 증가
-├── docs/
-│   ├── DEV_SETUP.md          # 개발 환경 설정 (심링크 + hot-reload)
-│   ├── README_FOR_DEV.md     # 아키텍처 개요 + 디버깅 가이드
-│   └── OBSIDIAN_COMMUNITY_SUBMISSION.md # 커뮤니티 플러그인 제출 체크리스트
-└── .github/workflows/release.yml # 태그 푸시 시 린트/타입체크/빌드/릴리스
+│   ├── settings.ts               # 설정 타입 + PluginSettingTab UI — 1590줄
+│   ├── i18n.ts                   # 한국어/영어 다국어 문자열 — 790줄
+│   ├── llm/                      # Provider, 스트리밍, 도구 호출 delta, 임베딩
+│   ├── rag/                      # 청킹, 벡터 저장소, RAG 쿼리
+│   ├── chat/                     # ItemView 채팅 UI, 저장, 멘션/컨텍스트, 세션 모달
+│   ├── mcp/                      # MCP stdio client/registry
+│   └── utils/                    # vault adapter JSON IO, 플러그인 탐지, MCP JSON 검증
+├── scripts/                      # fish 스크립트(setup-dev, launch-obsidian-debug, bump-version)
+├── docs/                         # 개발/제출 문서
+├── simulations/                  # chat-sim.html UI 시뮬레이션(미추적/배포 제외 성격)
+├── .test-vault/                  # 실제 개발용 Obsidian 테스트 볼트(.gitignore 대상)
+├── esbuild.config.mjs            # main.ts → main.js 번들, format:cjs, target:es2022
+├── eslint.config.mjs             # flat config + typescript-eslint/recommended-type-checked
+├── tsconfig.json                 # strict, noUnused*, noImplicit*, isolatedModules
+└── .github/workflows/release.yml # v*.*.* 태그 릴리스 workflow
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| LLM Provider 변경 | `src/llm/providers.ts` + `src/settings.ts` | 팩토리 함수 + 설정 UI 동시 확인 |
-| 임베딩 캐시/백엔드 변경 | `src/llm/embedding.ts` | Dexie 기반 IndexedDB 캐시 |
-| RAG 저장소 백엔드 변경 | `src/rag/store.ts` | VectorStore 인터페이스 구현체 확인 |
-| 청킹 로직 수정 | `src/rag/indexer.ts` | 헤딩/코드블록 경계 존중 규칙 |
-| 채팅 UI 수정 | `src/chat/view.ts` | ItemView 확장, Obsidian DOM API |
-| 에디터 AI 명령어 | `src/chat/commands.ts` | `executeDirective` switch case |
-| MCP 연결/설정 | `src/mcp/client.ts` + `src/mcp/registry.ts` | stdio transport, JSON 편집 |
-| 활성 플러그인 탐지 | `src/utils/obsidian-compat.ts` | 비공식 API, try/catch 필수 |
-| 다국어 문자열 추가 | `src/i18n.ts` | 언어 키-값 맵 |
-| 빌드 설정 변경 | `esbuild.config.mjs` | external 목록 수정 시 주의 |
-| 릴리스 워크플로우 | `.github/workflows/release.yml` | 태그 기반 릴리스 |
+| 플러그인 생명주기/명령어 | `main.ts` | `open-ai-chat`, `reindex-vault`, `execute-ai-directive`, RAG 이벤트 훅 |
+| 설정 타입/설정 UI | `src/settings.ts` | Provider/RAG/MCP/Chat 설정 탭. 저장 시 provider/RAG/MCP 재초기화 |
+| LLM Provider 변경 | `src/llm/providers.ts` + `src/settings.ts` | `createProvider`, `PROVIDER_KEYS`, `PROVIDER_LABELS`, 기본 설정 동시 확인 |
+| 임베딩 변경 | `src/llm/embedding.ts` | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼 |
+| LLM/임베딩 연결 테스트 | `src/llm/validation.ts` | 설정 UI의 연결 검증과 연결됨 |
+| RAG 청킹/인덱싱 | `src/rag/indexer.ts` | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트 |
+| RAG 저장소 | `src/rag/store.ts` | `JsonFileVectorStore`는 `.super-obsidian/vectors.json` 사용 |
+| RAG 질의/컨텍스트 | `src/rag/query.ts` + `src/chat/context.ts` | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감 |
+| 채팅 UI | `src/chat/view.ts` | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨 |
+| 채팅 저장/로드 | `src/chat/persistence.ts` | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원 |
+| 멘션 처리 | `src/chat/mention-parser.ts` + `src/chat/context.ts` | `@server`, `@file.md`, `@[path with spaces.md]`, 폴더 멘션 |
+| 멘션 테스트 | `src/chat/mention-parser.test.ts` | 현재 유일한 Vitest 테스트 |
+| 세션 히스토리 모달 | `src/chat/session-modal.ts` | `FuzzySuggestModal`, 채팅 메타 로드 |
+| MCP 연결/도구 호출 | `src/mcp/client.ts` + `src/mcp/registry.ts` | stdio 전용. `mcpPath`/env PATH 처리 |
+| MCP JSON 편집 | `src/utils/mcp-json.ts` | 표준 `mcpServers` JSON 검증/포맷 |
+| 활성 플러그인 탐지 | `src/utils/obsidian-compat.ts` | 비공식 Obsidian API 접근이므로 try/catch 유지 |
+| 개발 볼트/QA | `.test-vault/` | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인 |
 
 ## CODE MAP
 
 | Symbol | Type | Location | Role |
 |--------|------|----------|------|
-| `SuperObsidianPlugin` | class | `main.ts` | Plugin 진입점, provider/RAG/MCP 초기화 및 조립 |
-| `PluginLike` | interface | `src/settings.ts` | `main.ts` ↔ `settings.ts` 간 느슨한 결합 |
-| `SuperObsidianSettingTab` | class | `src/settings.ts` | 설정 UI (PluginSettingTab), debouncedSave |
-| `DEFAULT_SETTINGS` | const | `src/settings.ts` | 기본 설정값 |
+| `SuperObsidianPlugin` | class | `main.ts` | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
+| `SuperObsidianSettings` | interface | `src/settings.ts` | 전체 설정 스키마 |
+| `DEFAULT_SETTINGS` | const | `src/settings.ts` | Provider/RAG/MCP/Chat 기본값 |
+| `SuperObsidianSettingTab` | class | `src/settings.ts` | 설정 UI와 debounced save |
 | `createProvider` | function | `src/llm/providers.ts` | ProviderKey → LLMProvider 팩토리 |
-| `OpenAICompatibleProvider` | class | `src/llm/providers.ts` | OpenAI/OpenRouter 호환 공통 클래스 |
-| `CachedEmbeddingProvider` | class | `src/llm/embedding.ts` | 메모리 + IndexedDB 이중 캐시 |
-| `validateProviderApi` | function | `src/llm/validation.ts` | LLM 연결 테스트 |
-| `chunkMarkdown` | function | `src/rag/indexer.ts` | 마크다운 구조 존중 청킹 |
-| `VaultIndexer` | class | `src/rag/indexer.ts` | 볼트 전체/증분 인덱싱 |
-| `JsonFileVectorStore` | class | `src/rag/store.ts` | vault.adapter 기반 JSON 저장 |
-| `MemoryVectorStore` | class | `src/rag/store.ts` | 인메모리 fallback |
-| `RAGQueryEngine` | class | `src/rag/query.ts` | 임베딩 → 유사도 검색 → 컨텍스트 |
-| `ChatView` | class | `src/chat/view.ts` | 사이드바 채팅 ItemView, 스트리밍 응답 |
-| `CHAT_VIEW_TYPE` | const | `src/chat/view.ts` | 뷰 타입 식별자 |
-| `executeDirective` | function | `src/chat/commands.ts` | 에디터 AI 지시어 실행 |
-| `MCPClientManager` | class | `src/mcp/client.ts` | MCP stdio 클라이언트 래퍼 |
-| `MCPRegistry` | class | `src/mcp/registry.ts` | MCP 서버/클라이언트 레지스트리 |
-| `getMarkdownFilesFiltered` | function | `src/utils/vault.ts` | 볼트 파일 필터링 |
-| `getActivePluginIds` | function | `src/utils/obsidian-compat.ts` | 비공식 API로 활성 플러그인 탐지 |
+| `OpenAICompatibleProvider` | class | `src/llm/providers.ts` | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리 |
+| `ClaudeProvider` | class | `src/llm/providers.ts` | Anthropic Claude Provider |
+| `OllamaProvider` | class | `src/llm/providers.ts` | Ollama Local/Cloud Provider |
+| `CachedEmbeddingProvider` | class | `src/llm/embedding.ts` | 메모리 + IndexedDB(Dexie) 임베딩 캐시 |
+| `chunkMarkdown` | function | `src/rag/indexer.ts` | 헤딩/코드블록 경계 존중 Markdown 청킹 |
+| `VaultIndexer` | class | `src/rag/indexer.ts` | 전체/증분/파일별 인덱싱 |
+| `JsonFileVectorStore` | class | `src/rag/store.ts` | vault.adapter 기반 JSON 벡터 저장소 |
+| `RAGQueryEngine` | class | `src/rag/query.ts` | 임베딩 → 코사인 유사도 → 컨텍스트 |
+| `ChatView` | class | `src/chat/view.ts` | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI |
+| `buildChatContext` | function | `src/chat/context.ts` | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성 |
+| `parseMentions` | function | `src/chat/mention-parser.ts` | `@...` 멘션 파싱과 중복 제거 |
+| `saveChat` / `loadChat` | function | `src/chat/persistence.ts` | 채팅 세션 Markdown 저장/복원 |
+| `executeDirective` | function | `src/chat/commands.ts` | 에디터 `>AI:` 지시어 실행 |
+| `MCPClientManager` | class | `src/mcp/client.ts` | MCP SDK Client + stdio transport |
+| `MCPRegistry` | class | `src/mcp/registry.ts` | MCP 서버 설정/클라이언트/연결 상태 관리 |
+
+## TEST VAULT
+
+`.test-vault/`는 저장소 내부 개발용 Obsidian 볼트이며 `.gitignore` 대상이다. 새 에이전트는 이 폴더를 샘플 fixture로만 보지 말고, 실제 QA 상태와 런타임 산출물을 담는 작업 공간으로 취급한다.
+
+| Path | Meaning |
+|------|---------|
+| `.test-vault/.obsidian/plugins/super-obsidian-by-ai` | 저장소 루트로 향하는 심링크. 복사본이 아니어야 `npm run dev` 결과가 즉시 반영됨 |
+| `.test-vault/.obsidian/plugins/hot-reload/` | `pjeby/hot-reload` 클론. `main.js` 변경 시 플러그인 자동 리로드 |
+| `.test-vault/.obsidian/community-plugins.json` | `super-obsidian-by-ai`, `hot-reload` 활성화 상태 |
+| `.test-vault/.obsidian/workspace.json` | Obsidian UI 상태. 개인/일시 상태라 커밋 대상 아님 |
+| `.test-vault/.super-obsidian/vectors.json` | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준 |
+| `.test-vault/SuperObsidianByAIChats/` | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용 |
+| `.test-vault/catholic bible/` | RAG 인덱싱 대용량 한국어 Markdown corpus. 약 110개 이상의 장/입문 파일 |
+| `.test-vault/Base.base` | Obsidian Bases 기능 확인용 파일 |
+| `.test-vault/test.md`, `Welcome.md` | 간단한 문서 요약/링크/멘션 QA용 |
+
+`.test-vault/SuperObsidianByAIChats/*.md`는 두 종류의 포맷이 섞여 있다. 2026-05-10 파일들은 이전 저장 포맷에 가깝고, 2026-05-14 파일들은 `tags`, `pinned`, `sourceCount`, `summary`, `contextAttachments`, `citations` 등 최신 메타가 포함된다. `persistence.ts` 수정 시 두 계열을 모두 열 수 있어야 한다.
+
+`.test-vault/.super-obsidian/vectors.json`은 실제 임베딩 배열을 포함하므로 크고 민감할 수 있다. RAG 저장소/청킹 변경 QA에는 유용하지만, 일반 코드 변경에서 diff에 올리지 않는다. 재인덱싱 테스트를 하면 이 파일과 채팅 세션 파일이 바뀔 수 있으니 작업 전후 `git status --short`로 범위를 확인한다.
+
+## DEVELOPMENT WORKFLOW
+
+```fish
+# 1회성 개발 볼트/심링크/hot-reload 준비
+./scripts/setup-dev.fish
+
+# 터미널 1: esbuild watch
+npm run dev
+
+# 터미널 2: Obsidian 디버그 모드로 .test-vault 열기
+./scripts/launch-obsidian-debug.fish
+```
+
+검증 순서:
+
+```fish
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+```
+
+현재 `npm run test`는 `vitest run`이며 `src/chat/mention-parser.test.ts`만 확인한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
 
 ## CONVENTIONS
 
-- **언어**: 답변/주석은 한국어, 코드 식별자(변수명, 함수명)는 영어.
-- **Shell**: fish (`and`/`or`, `set`, `if test`)
-- **Node**: `npm` (Obsidian 플러그인 표준). Python/uv는 이 프로젝트에서 사용하지 않는다.
-- **개발 언어**: TypeScript (엄격 모드)
-- **검증 순서**: `npm run lint` → `npm run typecheck` → `npm run build`
-  - 각 단계는 반드시 **0 warning, 0 error** 상태를 유지해야 한다.
-  - 린트 규칙은 **Prettier + ESLint(typescript-eslint/recommended-type-checked)** 기반.
-- **타입 검사**: `tsconfig.json`에 `strict: true`, `noImplicitAny: true`, `strictNullChecks: true` 등을 포함.
-- **포맷**: Prettier — `semi: true`, `singleQuote: true`, `tabWidth: 2`, `trailingComma: all`, `printWidth: 100`, `endOfLine: lf`.
-- **수동 QA**: 개발 빌드를 실제 Obsidian 볼트에 설치하고 채팅/인덱싱/설정 UI를 직접 확인.
-- **import/export**: 대부분 named import/export + `import type` 적극 사용. `main.ts`만 `export default`.
-- **네이밍**: 클래스는 `SuperObsidian*`(PascalCase), 상수는 `DEFAULT_SETTINGS`, `CHAT_VIEW_TYPE` 등 대문자 스네이크, 플러그인/뷰 식별자는 kebab-case.
+- 답변과 코드 주석은 한국어로 작성한다. 변수명/함수명/타입명 등 코드 식별자는 영어를 사용한다.
+- 터미널 스크립트와 예시는 fish 문법을 사용한다. `export`, `&&`, `||`, `if [` 대신 `set`, `and`, `or`, `if test`를 사용한다.
+- 이 프로젝트는 Node/npm 기반 Obsidian 플러그인이다. Python/uv는 별도 지시가 없으면 사용하지 않는다.
+- Obsidian 파일 접근은 `this.app.vault`, `vault.adapter`, `cachedRead`, `modify`, `create`를 우선한다. 런타임 코드에서 직접 `fs` 접근을 늘리지 않는다.
+- 대부분 named import/export와 `import type`을 사용한다. 하위 디렉터리 barrel 파일은 없다.
+- DOM은 Obsidian `createEl`, `createDiv`, `createSpan` 계열을 우선한다. 사용자/모델 출력에 `innerHTML` 직접 할당하지 않는다.
+- Provider 추가 시 `PROVIDER_KEYS`, `PROVIDER_LABELS`, `DEFAULT_SETTINGS`, 설정 UI, `createProvider`, validation 경로를 함께 확인한다.
+- RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.super-obsidian/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
+- `manifest.json`은 `isDesktopOnly: false`지만 MCP stdio는 데스크톱 전용이다. 모바일 호환성을 깨지 않도록 런타임 분기를 유지한다.
 
-## ANTI-PATTERNS (THIS PROJECT)
+## ANTI-PATTERNS
 
 | 금지 패턴 | 이유 |
-|------|------|
-| `as any`, `@ts-ignore`, `@ts-expect-error` | TS 엄격 모드 위반 |
-| `eslint-disable`, `prettier-ignore` | 예외 처리 최소화 원칙 |
-| Python/uv 사용 | Obsidian 플러그인은 npm 표준 |
-| React/Vue/Svelte 사용 | 번들 크기 증가 + esbuild 복잡도 상승 |
-| 단순 `\n\n` 분할로 청킹 | RAG 품질 저하 |
-| Node `http` 모듈 사용 | 반드시 `fetch` 또는 `requestUrl` 사용 |
-| 직접 파일 시스템 접근 | `this.app.vault` API만 사용 (sandboxed 환경 대응) |
-| `this.app.plugins.plugins` 비공식 속성 의존 | Obsidian 업데이트로 깨질 수 있음 |
-| 웹 세션(쿠키) 기반 크롤링 | Obsidian 보안 정책상 미권장 |
-| `.env` 런타임 의존 | `process.env`는 런타임에 존재하지 않음 |
+|----------|------|
+| `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반 |
+| `eslint-disable`, `prettier-ignore` | 예외를 만들기보다 타입/구조를 바로잡을 것 |
+| `ChatView`에 큰 기능을 계속 누적 | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리 |
+| 단순 `\n\n` 청킹 | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지 |
+| 런타임 `.env`/`process.env` 의존 | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸 |
+| 웹 세션/쿠키 기반 크롤링 | Obsidian 보안/배포 정책상 부적합 |
+| `.test-vault` 산출물 무심코 커밋 | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음 |
+| `package-lock.json`을 전제로 한 CI 변경 | `.gitignore`가 lockfile을 제외한다. `npm ci` 사용 시 정책 변경이 먼저 필요 |
+| `src/llm/providers.ts.bak` 유지 | 백업 파일 성격. 정리 작업 시 삭제 후보 |
 
 ## COMMANDS
 
-```bash
-# 개발
-npm run dev      # esbuild watch (main.js 자동 재빌드)
-
-# 검증 (0 warning, 0 error 필수)
-npm run lint       # ESLint (src/, main.ts)
-npm run typecheck  # TypeScript 검사 (tsc --noEmit)
-npm run build      # production 빌드 (minify, no sourcemap)
-
-# 포맷팅
+```fish
+npm run dev        # esbuild watch, 개발 중 main.js 자동 재빌드
+npm run lint       # ESLint: src/, main.ts
+npm run typecheck  # tsc --noEmit
+npm run test       # Vitest
+npm run build      # production 번들(minify, no sourcemap)
 npm run format     # Prettier --write src/ main.ts
+```
 
-# 릴리스
-npm version patch  # manifest.json, package.json, git tag 동기화
-# CI: .github/workflows/release.yml (태그 푸시 시 자동 빌드/릴리스)
+```fish
+./scripts/setup-dev.fish             # .test-vault 생성, 플러그인 심링크, hot-reload 설치
+./scripts/launch-obsidian-debug.fish # macOS Obsidian 디버그 실행, remote debugging port 9222
+./scripts/bump-version.fish patch    # manifest/package 버전, build, commit, tag, push
 ```
 
 ## NOTES
 
-- **API 키 보안**: `data.json`에 평문 저장 — 키 노출 위험을 사용자에게 명시.
-- **CORS**: 외부 API 호출 시 Obsidian의 브라우저 네트워크 스택을 따름. 프록시 서버가 필요할 수 있다.
-- **MCP stdio**: Desktop-only 기능. stdio 대신 SSE transport를 fallback으로 제공하려면 별도 구현 필요.
-- **심링크**: 개발 시 `.test-vault/.obsidian/plugins/super-obsidian-by-ai/` → `repo/` 심링크 사용 필수.
-- **Hot Reload**: `pjeby/hot-reload` 클론 후 활성화하면 `main.js` 변경 시 자동 리로드.
+- API 키는 Obsidian 플러그인 `data.json`에 평문 저장된다. 공유/동기화/로그 출력 시 항상 민감 정보로 취급한다.
+- `data.json`, `main.js`, `.test-vault/`, `.sisyphus/`, `package-lock.json`은 현재 `.gitignore` 대상이다.
+- `main.ts loadSettings()`는 provider 모델 배열, Ollama URL, chat `defaultModel`, RAG auto-update, MCP stdio 설정 migration을 수행한다.
+- `saveSettings()`는 provider 재초기화, RAG 재초기화, MCP 재연결을 유발한다. 설정 UI 변경은 런타임 부작용까지 확인한다.
+- MCP 설정은 표준 `mcpServers` JSON으로 가져오고 내부 `MCPServerConfig[]`로 변환한다. HTTP/SSE 레거시 서버는 migration에서 제거된다.
+- 채팅 컨텍스트는 자동 RAG 결과를 항상 먼저 시도하고, 질문 내 멘션(`@server`, `@file`, `@[folder/path]`)을 추가 컨텍스트로 붙인다.
+- 출처 카드는 파일 열기, Obsidian 링크 복사, 활성 노트에 출처 삽입 동작을 가진다.
+- `simulations/chat-sim.html`과 `sim-*.png`는 현재 작업트리에 미추적 산출물로 보인다. UI 회귀 확인 자료로 쓸 수 있지만 배포 산출물은 아니다.
