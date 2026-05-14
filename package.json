@@ -8,6 +8,7 @@
     "build": "node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "prettier": "^3.5.3",
     "tslib": "^2.8.1",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.32.0"
+    "typescript-eslint": "^8.32.0",
+    "vitest": "^4.1.6"
   }
 }
