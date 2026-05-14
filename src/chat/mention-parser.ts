@@ -43,3 +43,11 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
 
   return mentions;
 }
+
+export function shouldUseAutoRagForMentions(mentions: ParsedMention[]): boolean {
+  const hasServerMention = mentions.some((mention) => mention.type === 'server');
+  const hasVaultMention = mentions.some(
+    (mention) => mention.type === 'file' || mention.type === 'folder',
+  );
+  return !hasServerMention || hasVaultMention;
+}

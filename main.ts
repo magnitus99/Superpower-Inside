@@ -215,6 +215,14 @@ export default class SuperObsidianPlugin extends Plugin {
     if (chat && typeof chat === 'object' && !Array.isArray(chat) && !('systemPrompt' in chat)) {
       (chat as Record<string, unknown>).systemPrompt = '';
     }
+    if (
+      chat &&
+      typeof chat === 'object' &&
+      !Array.isArray(chat) &&
+      !('mcpToolExecutionPolicy' in chat)
+    ) {
+      (chat as Record<string, unknown>).mcpToolExecutionPolicy = 'mentioned-auto';
+    }
 
     // Migrate old RAG settings (pre-overhaul)
     const rag = data.rag as Record<string, unknown> | undefined;
@@ -230,6 +238,13 @@ export default class SuperObsidianPlugin extends Plugin {
       }
       if (typeof rag.autoUpdateIntervalMin !== 'number') {
         rag.autoUpdateIntervalMin = 5;
+      }
+      if (Array.isArray(rag.excludePaths)) {
+        for (const path of ['SuperObsidianByAI', 'SuperObsidianByAIChats']) {
+          if (!rag.excludePaths.includes(path)) {
+            rag.excludePaths.push(path);
+          }
+        }
       }
       rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, rag.autoUpdateIntervalMin as number));
       if ('autoUpdateIntervalMs' in rag && !('autoUpdateIntervalMin' in rag)) {

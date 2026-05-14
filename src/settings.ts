@@ -51,6 +51,9 @@ export interface ProviderConfig {
 
 export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
 
+/** 채팅 모델 선택에 표시할 프로바이더 키 (ollama 계열만) */
+export const CHAT_PROVIDER_KEYS: readonly ProviderKey[] = PROVIDER_KEYS;
+
 export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openai: 'OpenAI',
   claude: 'Claude',
@@ -146,6 +149,7 @@ export interface ChatConfig {
   saveFolder: string;
   defaultModel: string;
   systemPrompt?: string;
+  mcpToolExecutionPolicy: 'mentioned-auto' | 'always-manual' | 'always-auto';
   autoSaveEnabled: boolean;
   autoSaveDebounceMs: number;
 }
@@ -198,7 +202,14 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     enabled: false,
   },
   rag: {
-    excludePaths: ['.git', 'node_modules', '.obsidian', 'attachments'],
+    excludePaths: [
+      '.git',
+      'node_modules',
+      '.obsidian',
+      'attachments',
+      'SuperObsidianByAI',
+      'SuperObsidianByAIChats',
+    ],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
     chunkSize: 1000,
     overlap: 100,
@@ -212,8 +223,9 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   mcpPath: '',
   chat: {
     saveFolder: 'SuperObsidianByAI',
-    defaultModel: 'openai:gpt-4o-mini',
+    defaultModel: 'ollama:llama3.1',
     systemPrompt: '',
+    mcpToolExecutionPolicy: 'mentioned-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
   },
@@ -471,7 +483,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       });
 
     const allModels: { value: string; label: string }[] = [];
-    for (const key of PROVIDER_KEYS) {
+    for (const key of CHAT_PROVIDER_KEYS) {
       const conf = this.plugin.settings[key];
       if (!conf.enabled) continue;
       for (const model of conf.models) {
@@ -979,6 +991,21 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
+
+    new Setting(containerEl)
+      .setName(t('mcpToolExecutionPolicy'))
+      .setDesc(t('mcpToolExecutionPolicyDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('mentioned-auto', t('mcpToolExecutionMentionedAuto'))
+          .addOption('always-manual', t('mcpToolExecutionAlwaysManual'))
+          .addOption('always-auto', t('mcpToolExecutionAlwaysAuto'))
+          .setValue(this.plugin.settings.chat.mcpToolExecutionPolicy)
+          .onChange((value) => {
+            this.plugin.settings.chat.mcpToolExecutionPolicy = value as ChatConfig['mcpToolExecutionPolicy'];
+            this.debouncedSave();
+          }),
+      );
 
     const presetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
     const presets: { label: string; prompt: string }[] = [

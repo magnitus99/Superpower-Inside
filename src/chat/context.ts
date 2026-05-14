@@ -2,8 +2,17 @@ import { TFile, TFolder, type App } from 'obsidian';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { ContextAttachment, SourceCitation } from './types';
-import { parseMentions, type MentionResolver } from './mention-parser';
-export { parseMentions, type MentionResolver, type ParsedMention } from './mention-parser';
+import {
+  parseMentions,
+  shouldUseAutoRagForMentions,
+  type MentionResolver,
+} from './mention-parser';
+export {
+  parseMentions,
+  shouldUseAutoRagForMentions,
+  type MentionResolver,
+  type ParsedMention,
+} from './mention-parser';
 
 export interface RagQueryLike {
   query(question: string, topK: number): Promise<QueryResult[]>;
@@ -46,6 +55,11 @@ export async function buildChatContext(
   const citations: SourceCitation[] = [];
   const warnings: string[] = [];
   let remainingChars = maxContextChars;
+  const mentions = parseMentions(
+    question,
+    createAppMentionResolver(options.app, options.mcpRegistry),
+  );
+  const shouldUseAutoRag = shouldUseAutoRagForMentions(mentions);
 
   const appendBlock = (block: ContextBlock): boolean => {
     if (remainingChars <= 0) return false;
@@ -57,7 +71,7 @@ export async function buildChatContext(
     return text.length === block.text.length;
   };
 
-  if (options.ragEngine) {
+  if (options.ragEngine && shouldUseAutoRag) {
     try {
       const results = await options.ragEngine.query(question, ragTopK);
       const sourceIds: string[] = [];
@@ -91,10 +105,6 @@ export async function buildChatContext(
     }
   }
 
-  const mentions = parseMentions(
-    question,
-    createAppMentionResolver(options.app, options.mcpRegistry),
-  );
   for (const mention of mentions) {
     if (mention.type === 'file') {
       await appendFileMention(mention.name, options.app, appendBlock, attachments, citations);
@@ -293,7 +303,11 @@ async function appendServerMention(
       })
       .join('\n');
     const attachedFully = appendBlock({
-      text: `[MCP Server: ${name}]\nAvailable tools:\n${toolList || '(사용 가능한 툴 없음)'}`,
+      text: `[MCP Server: ${name}]
+Available tools:
+${toolList || '(사용 가능한 툴 없음)'}
+
+Instruction: 사용자가 이 서버를 @${name}로 명시했습니다. 질문 해결에 최신 정보, 검색, 외부 데이터가 필요하면 위 도구를 호출하고, 도구 결과를 근거로 최종 답변을 작성하세요. 검색 결과 기반 답변에는 가능한 출처 링크를 포함하세요.`,
     });
     attachments.push({
       id: `mcp:${name}`,
