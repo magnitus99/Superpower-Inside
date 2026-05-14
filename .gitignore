@@ -1,63 +1,7 @@
-# --- Dependencies ---
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-yarn.lock
+# Simulation assets
+sim-*.png
+simulations/
+.playwright-mcp/
 
-# --- Build outputs ---
-# Obsidian 플러그인 빌드 산출물 (esbuild → main.js)
-main.js
-*.js.map
-
-# --- Plugin runtime data ---
-# API 키 및 민감 설정이 저장되는 파일 — 절대 커밋하지 말 것
-data.json
-
-# --- Environment files ---
-.env
-.env.local
-.env.*.local
-
-# --- OS generated files ---
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# --- IDE / Editor ---
-# .vscode/ 제외 — launch.json은 커밋 대상이므로 디렉토리 전체를 ignore하지 않음
-# 필요시 .vscode/settings.json 같은 개인 설정만 별도 ignore
-.idea/
-*.swp
-*.swo
-*~
-
-# --- Logs ---
-*.log
-logs/
-
-# --- Temporary files ---
-tmp/
-temp/
-*.tmp
-
-# --- Obsidian specific ---
-# 테스트 볼트가 저장소 내부에 있을 경우를 대비
-.obsidian/workspace.json
-.obsidian/graph.json
-.obsidian/cache
-
-# --- Test vault ---
-.test-vault/
-
-# --- OMO ---
-.sisyphus/
-
+# Generated test files
+*.bak
