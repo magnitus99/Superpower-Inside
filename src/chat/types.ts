@@ -7,6 +7,8 @@ export interface ToolCallRecord {
   name: string;
   arguments: string;
   result?: string;
+  resultSummary?: string;
+  normalizedResult?: string;
   status: 'running' | 'success' | 'error';
   serverName?: string;
   approved?: boolean;
@@ -46,8 +48,11 @@ export type ChatAction =
   | 'copy';
 
 export interface ToolExecutionPolicy {
-  manualApproval: boolean;
+  mode: 'mentioned-auto' | 'always-manual' | 'always-auto';
+  manualApproval?: boolean;
   allowlist?: string[];
+  trustedMentionedServers?: string[];
+  dangerousToolNamePatterns?: string[];
 }
 
 /** 메시지 메타데이터를 포함한 채팅 메시지 */

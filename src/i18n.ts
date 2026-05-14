@@ -110,6 +110,11 @@ export interface I18nKeys {
   systemPrompt: string;
   systemPromptDesc: string;
   systemPromptPlaceholder: string;
+  mcpToolExecutionPolicy: string;
+  mcpToolExecutionPolicyDesc: string;
+  mcpToolExecutionMentionedAuto: string;
+  mcpToolExecutionAlwaysManual: string;
+  mcpToolExecutionAlwaysAuto: string;
   resetToDefault: string;
   chatClear: string;
   chatScrollToBottom: string;
@@ -128,6 +133,7 @@ export interface I18nKeys {
   timestampJustNow: string;
   timestampMinutesAgo: string;
   timestampHoursAgo: string;
+  timestampDaysAgo: string;
   sessionPromptModified: string;
   mcpToolRunning: string;
   mcpToolSuccess: string;
@@ -164,6 +170,17 @@ export interface I18nKeys {
   chatAutoSaveDelayDesc: string;
   chatNoSavedSessions: string;
   chatUnsavedChanges: string;
+  chatGroupToday: string;
+  chatGroupYesterday: string;
+  chatGroupThisWeek: string;
+  chatGroupThisMonth: string;
+  chatGroupOlder: string;
+  chatSearchPlaceholder: string;
+  chatNoSearchResults: string;
+  chatCurrentSession: string;
+  chatSessionCount: string;
+  chatMessageUnit: string;
+  chatDaysAgo: string;
 
   // MCP PATH
   mcpPathTitle: string;
@@ -347,6 +364,12 @@ const ko: I18nKeys = {
   systemPromptDesc:
     'AI의 역할과 응답 방식을 정의하는 글로벌 시스템 프롬프트입니다. 비워두면 기본 프롬프트가 사용됩니다.',
   systemPromptPlaceholder: '예: 당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다...',
+  mcpToolExecutionPolicy: 'MCP 툴 실행 정책',
+  mcpToolExecutionPolicyDesc:
+    '멘션한 서버의 안전한 툴은 자동 실행하고, 위험하거나 미멘션된 툴은 승인 대기로 둡니다.',
+  mcpToolExecutionMentionedAuto: '멘션 서버 자동 실행',
+  mcpToolExecutionAlwaysManual: '항상 수동 승인',
+  mcpToolExecutionAlwaysAuto: '항상 자동 실행',
   resetToDefault: '기본값으로 초기화',
   chatClear: '대화 지우기',
   chatScrollToBottom: '맨 아래로',
@@ -365,6 +388,7 @@ const ko: I18nKeys = {
   timestampJustNow: '방금',
   timestampMinutesAgo: '{count}분 전',
   timestampHoursAgo: '{count}시간 전',
+  timestampDaysAgo: '{count}일 전',
   sessionPromptModified: '수정됨',
   mcpToolRunning: '툴 실행 중...',
   mcpToolSuccess: '툴 실행 성공',
@@ -401,6 +425,17 @@ const ko: I18nKeys = {
   chatAutoSaveDelayDesc: '마지막 메시지 후 저장까지의 지연 시간',
   chatNoSavedSessions: '저장된 대화가 없습니다',
   chatUnsavedChanges: '저장되지 않은 변경사항이 있습니다',
+  chatGroupToday: '오늘',
+  chatGroupYesterday: '어제',
+  chatGroupThisWeek: '이번 주',
+  chatGroupThisMonth: '이번 달',
+  chatGroupOlder: '이전',
+  chatSearchPlaceholder: '대화 검색...',
+  chatNoSearchResults: '검색 결과가 없습니다',
+  chatCurrentSession: '현재',
+  chatSessionCount: '{count}개 대화',
+  chatMessageUnit: '개 메시지',
+  chatDaysAgo: '{count}일 전',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH 환경변수',
@@ -585,6 +620,12 @@ const en: I18nKeys = {
   systemPromptDesc:
     'Global system prompt that defines AI role and response style. Leave empty to use default.',
   systemPromptPlaceholder: 'e.g., You are an expert assistant helping with Obsidian note-taking...',
+  mcpToolExecutionPolicy: 'MCP tool execution policy',
+  mcpToolExecutionPolicyDesc:
+    'Automatically execute safe tools from mentioned servers, and keep risky or unmentioned tools pending approval.',
+  mcpToolExecutionMentionedAuto: 'Auto-run mentioned servers',
+  mcpToolExecutionAlwaysManual: 'Always require approval',
+  mcpToolExecutionAlwaysAuto: 'Always auto-run',
   resetToDefault: 'Reset to Default',
   chatClear: 'Clear Chat',
   chatScrollToBottom: 'Scroll to Bottom',
@@ -603,6 +644,7 @@ const en: I18nKeys = {
   timestampJustNow: 'just now',
   timestampMinutesAgo: '{count}m ago',
   timestampHoursAgo: '{count}h ago',
+  timestampDaysAgo: '{count}d ago',
   sessionPromptModified: 'modified',
   mcpToolRunning: 'Running tool...',
   mcpToolSuccess: 'Tool executed successfully',
@@ -639,6 +681,17 @@ const en: I18nKeys = {
   chatAutoSaveDelayDesc: 'Delay before saving after last message',
   chatNoSavedSessions: 'No saved sessions',
   chatUnsavedChanges: 'Unsaved changes',
+  chatGroupToday: 'Today',
+  chatGroupYesterday: 'Yesterday',
+  chatGroupThisWeek: 'This Week',
+  chatGroupThisMonth: 'This Month',
+  chatGroupOlder: 'Older',
+  chatSearchPlaceholder: 'Search sessions...',
+  chatNoSearchResults: 'No sessions match your search',
+  chatCurrentSession: 'Current',
+  chatSessionCount: '{count} sessions',
+  chatMessageUnit: ' messages',
+  chatDaysAgo: '{count}d ago',
 
   // MCP PATH
   mcpPathTitle: 'MCP PATH Environment Variable',

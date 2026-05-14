@@ -7,6 +7,7 @@ import {
 } from '../settings';
 import type {
   ChatMessage,
+  LLMProvider,
   StreamChunk,
   ToolCallInfo,
   ToolCallDelta,
@@ -24,6 +25,11 @@ import {
   type ParsedMention,
   type RagQueryLike,
 } from './context';
+import {
+  createToolExecutionPolicy,
+  normalizeToolResult,
+  shouldAutoExecuteToolCall,
+} from './mcp-tools';
 import { t } from '../i18n';
 
 export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
@@ -70,12 +76,8 @@ export class ChatView extends ItemView {
   private mentionStartIndex: number;
   private abortController: AbortController | null;
   private lastUserPrompt: string | null;
-  private toolExecutionPolicy = { manualApproval: true };
 
   private messageEls: Map<string, HTMLElement>;
-
-  /** 툴 호출 결과의 최대 저장 크기 (10KB), 초과 시 요약 저장 */
-  private static readonly MAX_TOOL_RESULT_SIZE = 10_000;
 
   constructor(leaf: WorkspaceLeaf, plugin: PluginLike) {
     super(leaf);
@@ -1141,7 +1143,6 @@ export class ChatView extends ItemView {
         staleApproveBtn.remove();
       }
       if (
-        this.toolExecutionPolicy.manualApproval &&
         toolCall.status === 'running' &&
         toolCall.approved === false &&
         !callRow.querySelector('.super-obsidian-tool-call-approve')
@@ -1749,6 +1750,8 @@ export class ChatView extends ItemView {
               name: tc.name,
               arguments: tc.arguments,
               result: tc.result,
+              resultSummary: tc.resultSummary,
+              normalizedResult: tc.normalizedResult,
               status: tc.status,
               serverName: tc.serverName,
               approved: tc.approved,
@@ -1815,6 +1818,8 @@ export class ChatView extends ItemView {
           name: tc.name,
           arguments: tc.arguments,
           result: tc.result,
+          resultSummary: tc.resultSummary,
+          normalizedResult: tc.normalizedResult,
           status: tc.status,
           serverName: tc.serverName,
           approved: tc.approved,
@@ -1953,29 +1958,7 @@ export class ChatView extends ItemView {
     try {
       const systemPrompt = promptContext.systemPrompt;
       const mentionedServers = this.getMentionedServerNames(text);
-      const toolDefinitions: ToolDefinition[] = [];
-      for (const serverName of mentionedServers) {
-        const client = this.plugin.mcpRegistry?.getClient(serverName);
-        if (!client) continue;
-        try {
-          const tools = await client.listTools();
-          for (const tool of tools) {
-            toolDefinitions.push({
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description ?? '',
-                parameters: (tool.inputSchema as Record<string, unknown>) ?? {
-                  type: 'object',
-                  properties: {},
-                },
-              },
-            });
-          }
-        } catch {
-          // ignore
-        }
-      }
+      const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
@@ -2059,16 +2042,17 @@ export class ChatView extends ItemView {
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        if (this.toolExecutionPolicy.manualApproval) {
-          const approvalToolCalls = toolCalls.map((toolCall) =>
-            toolCall.status === 'running' ? { ...toolCall, approved: false } : toolCall,
-          );
+        toolCalls = await this.prepareToolCallsForExecution(toolCalls, mentionedServers);
+        const pendingApproval = toolCalls.some(
+          (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+        );
+        if (pendingApproval) {
           this.updateMessage(
             assistantId,
             fullText,
             true,
             fullReasoning || undefined,
-            approvalToolCalls,
+            toolCalls,
             {
               providerKey: key,
               providerLabel,
@@ -2078,83 +2062,29 @@ export class ChatView extends ItemView {
               contextAttachments: promptContext.attachments,
             },
           );
-          new Notice('MCP 툴 실행은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
-          return;
+          new Notice('일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
         }
         toolCalls = await this.executeAssistantToolCalls(
           assistantId,
           toolCalls,
-          this.getMentionedServerNames(text),
+          mentionedServers,
           fullReasoning || undefined,
         );
-        const successfulToolCalls = toolCalls.filter(
-          (toolCall) => toolCall.status === 'success' && toolCall.result,
-        );
-        if (successfulToolCalls.length > 0) {
-          fullText = '';
-          fullReasoning = '';
-          const assistantMsg = this.messages.find((m) => m.id === assistantId);
-          const toolCallsPayload = (assistantMsg?.toolCalls ?? []).map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.name,
-              arguments: tc.arguments,
-            },
-          }));
-          const secondMessages: ChatMessage[] = [
-            ...messages,
-            {
-              role: 'assistant',
-              content: assistantMsg?.content ?? '',
-              toolCalls: toolCallsPayload,
-            },
-            ...successfulToolCalls.map((tc) => ({
-              role: 'tool' as const,
-              content: tc.result ?? '',
-              tool_call_id: tc.id,
-              name: tc.name,
-            })),
-          ];
-          // Ollama 등 툴 호출 후속 응답에서도 tools 전달 필요
-          await provider.streamChat(
-            secondMessages,
-            (chunk: StreamChunk) => {
-              if (chunk.content) {
-                fullText += chunk.content;
-              }
-              if (chunk.reasoning) {
-                fullReasoning += chunk.reasoning;
-              }
-              this.updateMessage(
-                assistantId,
-                fullText,
-                chunk.done,
-                fullReasoning || undefined,
-                toolCalls,
-                {
-                  providerKey: key,
-                  providerLabel,
-                  model: modelName,
-                  status: chunk.done ? 'complete' : 'streaming',
-                  citations: promptContext.citations,
-                  contextAttachments: promptContext.attachments,
-                },
-              );
-            },
-            0.7,
-            toolDefinitions,
-            { signal: abortController.signal },
-          );
-          this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
+        await this.streamFinalAnswerAfterTools({
+          provider,
+          messageId: assistantId,
+          baseMessages: messages,
+          toolDefinitions,
+          toolCalls,
+          abortController,
+          meta: {
             providerKey: key,
             providerLabel,
             model: modelName,
-            status: 'complete',
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
-          });
-        }
+          },
+        });
       }
       if (assistantWrapper) {
         assistantWrapper.classList.remove('generating');
@@ -2362,6 +2292,157 @@ export class ChatView extends ItemView {
       .trim();
   }
 
+  private async prepareToolCallsForExecution(
+    toolCalls: ToolCallRecord[],
+    mentionedServerNames: string[],
+  ): Promise<ToolCallRecord[]> {
+    const policy = createToolExecutionPolicy(this.plugin.settings.chat.mcpToolExecutionPolicy);
+    const prepared: ToolCallRecord[] = [];
+    for (const toolCall of toolCalls) {
+      const next = { ...toolCall };
+      if (next.status !== 'running') {
+        prepared.push(next);
+        continue;
+      }
+      if (!next.serverName) {
+        const serverName = await this.findServerForTool(next.name, mentionedServerNames);
+        if (serverName) next.serverName = serverName;
+      }
+      next.approved = shouldAutoExecuteToolCall(next, policy, mentionedServerNames);
+      prepared.push(next);
+    }
+    return prepared;
+  }
+
+  private async collectToolDefinitions(serverNames: string[]): Promise<ToolDefinition[]> {
+    const toolDefinitions: ToolDefinition[] = [];
+    for (const serverName of serverNames) {
+      const client = this.plugin.mcpRegistry?.getClient(serverName);
+      if (!client) continue;
+      try {
+        const tools = await client.listTools();
+        for (const tool of tools) {
+          toolDefinitions.push({
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description ?? '',
+              parameters: (tool.inputSchema as Record<string, unknown>) ?? {
+                type: 'object',
+                properties: {},
+              },
+            },
+          });
+        }
+      } catch {
+        // 연결이 불안정한 서버는 이번 요청에서 제외합니다.
+      }
+    }
+    return toolDefinitions;
+  }
+
+  private async streamFinalAnswerAfterTools(args: {
+    provider: LLMProvider;
+    messageId: string;
+    baseMessages: ChatMessage[];
+    toolDefinitions: ToolDefinition[];
+    toolCalls: ToolCallRecord[];
+    abortController: AbortController;
+    meta: MessageMetaInput;
+  }): Promise<void> {
+    const successfulToolCalls = args.toolCalls.filter(
+      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
+    );
+    if (successfulToolCalls.length === 0) {
+      const failed = args.toolCalls.some((toolCall) => toolCall.status === 'error');
+      if (failed) {
+        const current = this.messages.find((message) => message.id === args.messageId);
+        this.updateMessage(
+          args.messageId,
+          current?.content ?? 'MCP 도구 실행에 실패했습니다.',
+          true,
+          current?.reasoning,
+          args.toolCalls,
+          { ...args.meta, status: 'error', stopReason: 'tool-failed' },
+        );
+      }
+      return;
+    }
+
+    let finalText = '';
+    let finalReasoning = '';
+    const assistantMsg = this.messages.find((message) => message.id === args.messageId);
+    const toolCallsPayload = successfulToolCalls.map((toolCall) => ({
+      id: toolCall.id,
+      type: 'function' as const,
+      function: {
+        name: toolCall.name,
+        arguments: toolCall.arguments,
+      },
+    }));
+    const secondMessages: ChatMessage[] = [
+      ...args.baseMessages,
+      {
+        role: 'assistant',
+        content: assistantMsg?.content ?? '',
+        toolCalls: toolCallsPayload,
+      },
+      ...successfulToolCalls.map((toolCall) => ({
+        role: 'tool' as const,
+        content: toolCall.normalizedResult ?? toolCall.result ?? '',
+        tool_call_id: toolCall.id,
+        name: toolCall.name,
+      })),
+    ];
+
+    await args.provider.streamChat(
+      secondMessages,
+      (chunk: StreamChunk) => {
+        if (chunk.content) finalText += chunk.content;
+        if (chunk.reasoning) finalReasoning += chunk.reasoning;
+        this.updateMessage(
+          args.messageId,
+          finalText,
+          chunk.done,
+          finalReasoning || undefined,
+          args.toolCalls,
+          {
+            ...args.meta,
+            status: chunk.done ? 'complete' : 'streaming',
+          },
+        );
+      },
+      0.7,
+      args.toolDefinitions,
+      { signal: args.abortController.signal },
+    );
+
+    if (!finalText.trim()) {
+      const fallback =
+        'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.';
+      this.updateMessage(
+        args.messageId,
+        fallback,
+        true,
+        finalReasoning || undefined,
+        args.toolCalls,
+        {
+          ...args.meta,
+          status: 'error',
+          errorMessage: fallback,
+          stopReason: 'tool-failed',
+        },
+      );
+      return;
+    }
+
+    this.updateMessage(args.messageId, finalText, true, finalReasoning || undefined, args.toolCalls, {
+      ...args.meta,
+      status: 'complete',
+      stopReason: 'complete',
+    });
+  }
+
   private getMentionedServerNames(text: string): string[] {
     return this.parseMentions(text)
       .filter((mention) => mention.type === 'server')
@@ -2384,7 +2465,7 @@ export class ChatView extends ItemView {
     );
 
     for (const toolCall of updatedToolCalls) {
-      if (this.toolExecutionPolicy.manualApproval && toolCall.approved !== true) {
+      if (toolCall.approved === false) {
         continue;
       }
       const serverName = await this.findServerForTool(toolCall.name, preferredServerNames);
@@ -2427,7 +2508,10 @@ export class ChatView extends ItemView {
           result !== null &&
           'isError' in result &&
           (result as Record<string, unknown>).isError === true;
-        toolCall.result = this.formatToolResult(result);
+        const normalized = normalizeToolResult(result);
+        toolCall.result = normalized.displayText;
+        toolCall.resultSummary = normalized.displayText;
+        toolCall.normalizedResult = normalized.modelText;
         toolCall.status = isErrorResult ? 'error' : 'success';
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
@@ -2473,14 +2557,49 @@ export class ChatView extends ItemView {
       ? 'tool-failed'
       : 'complete';
     const latestMessage = this.messages.find((m) => m.id === messageId);
-    this.updateMessage(
-      messageId,
-      latestMessage?.content ?? message.content,
-      true,
-      latestMessage?.reasoning ?? message.reasoning,
-      updated,
-      { stopReason },
+    const successfulToolCalls = updated.filter(
+      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
     );
+    if (successfulToolCalls.length > 0 && message.providerKey && message.model) {
+      const { createProvider } = await import('../llm/providers');
+      const config = this.plugin.settings[message.providerKey];
+      const provider = createProvider(message.providerKey, config, message.model);
+      const mentionedServers = this.getMentionedServerNames(this.lastUserPrompt ?? '');
+      const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
+      const systemPrompt = promptContext.systemPrompt;
+      const messageIndex = this.messages.findIndex((item) => item.id === messageId);
+      const previousMessages = this.messages
+        .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
+        .map((item) => this.toProviderMessage(item));
+      const baseMessages: ChatMessage[] = [
+        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+        ...previousMessages,
+      ];
+      await this.streamFinalAnswerAfterTools({
+        provider,
+        messageId,
+        baseMessages,
+        toolDefinitions: await this.collectToolDefinitions(mentionedServers),
+        toolCalls: updated,
+        abortController: this.abortController ?? new AbortController(),
+        meta: {
+          providerKey: message.providerKey,
+          providerLabel: message.providerLabel,
+          model: message.model,
+          citations: latestMessage?.citations,
+          contextAttachments: latestMessage?.contextAttachments,
+        },
+      });
+    } else {
+      this.updateMessage(
+        messageId,
+        latestMessage?.content ?? message.content,
+        true,
+        latestMessage?.reasoning ?? message.reasoning,
+        updated,
+        { stopReason },
+      );
+    }
     await this.saveCurrentSession(true);
   }
 
@@ -2848,10 +2967,13 @@ export class ChatView extends ItemView {
 
     try {
       const result = await client.callTool(toolName, args);
-      const formatted = this.formatToolResult(result);
+      const normalized = normalizeToolResult(result);
+      const formatted = normalized.displayText;
       if (messageId) {
         this.updateToolCallInMessage(messageId, toolName, {
           result: formatted,
+          resultSummary: formatted,
+          normalizedResult: normalized.modelText,
           status: 'success',
         });
       } else if (runId) {
@@ -2888,6 +3010,8 @@ export class ChatView extends ItemView {
         name: patch.name ?? toolName,
         arguments: patch.arguments ?? '',
         result: patch.result,
+        resultSummary: patch.resultSummary,
+        normalizedResult: patch.normalizedResult,
         status: patch.status ?? 'running',
       });
     }
@@ -2945,107 +3069,6 @@ export class ChatView extends ItemView {
       `원본: ${rawError}`,
     ];
     return detail.join('\n');
-  }
-
-  private formatToolResult(result: unknown): string {
-    if (result === null) return 'null';
-    if (typeof result === 'string') return this.truncateIfNeeded(result);
-    if (typeof result === 'number' || typeof result === 'boolean') return String(result);
-    if (
-      typeof result === 'object' &&
-      result !== null &&
-      'isError' in result &&
-      (result as Record<string, unknown>).isError === true
-    ) {
-      const r = result as Record<string, unknown>;
-      const content = r.content;
-      if (Array.isArray(content)) {
-        const text = content
-          .filter(
-            (item: unknown): item is Record<string, string> =>
-              typeof item === 'object' && item !== null && 'type' in item && item.type === 'text',
-          )
-          .map((item) => item.text)
-          .join('\n');
-        return `[MCP 도구 오류]\n${this.truncateIfNeeded(text)}`;
-      }
-      return `[MCP 도구 오류]\n${this.truncateIfNeeded(JSON.stringify(result, null, 2))}`;
-    }
-    return this.formatStructuredResult(result);
-  }
-
-  /** 결과 문자열이 MAX_TOOL_RESULT_SIZE를 초과하면 요약으로 대체 */
-  private truncateIfNeeded(text: string): string {
-    if (text.length <= ChatView.MAX_TOOL_RESULT_SIZE) return text;
-    const max = ChatView.MAX_TOOL_RESULT_SIZE;
-    const byteSize = new TextEncoder().encode(text).length;
-    return `[결과가 너무 커서 생략되었습니다 — ${(byteSize / 1024).toFixed(1)} KB]\n\n${text.slice(0, max)}…`;
-  }
-
-  /** 구조화된 결과(검색, API 응답 등)를 요약 압축 */
-  private formatStructuredResult(result: unknown): string {
-    const full = JSON.stringify(result, null, 2);
-    if (full.length <= ChatView.MAX_TOOL_RESULT_SIZE) {
-      return '```json\n' + full + '\n```';
-    }
-
-    // 검색 엔진 응답인 경우 요약
-    const obj = result as Record<string, unknown>;
-    if (obj.organic && Array.isArray(obj.organic)) {
-      return this.summarizeSearchResult(obj);
-    }
-    if (obj.content && Array.isArray(obj.content)) {
-      // content[{type:"text", text:"{\"organic\":[...]}"}] 형태 처리
-      for (const item of obj.content) {
-        if (
-          typeof item === 'object' &&
-          item !== null &&
-          (item as Record<string, unknown>).type === 'text'
-        ) {
-          const inner = (item as Record<string, unknown>).text as string;
-          if (inner && inner.length > 200) {
-            try {
-              const parsed = JSON.parse(inner) as Record<string, unknown>;
-              if (parsed.organic && Array.isArray(parsed.organic)) {
-                return this.summarizeSearchResult(parsed);
-              }
-            } catch {
-              // 파싱 실패 시 truncate
-            }
-          }
-        }
-      }
-    }
-
-    // 일반 객체: 크기 제한 적용
-    const max = ChatView.MAX_TOOL_RESULT_SIZE;
-    const byteSize = new TextEncoder().encode(full).length;
-    return `[결과가 너무 커서 생략되었습니다 — ${(byteSize / 1024).toFixed(1)} KB]\n\n\`\`\`json\n${full.slice(0, max)}…\n\`\`\``;
-  }
-
-  /** 검색 결과를 3개 스니펫 + 총 건수로 요약 */
-  private summarizeSearchResult(obj: Record<string, unknown>): string {
-    const organic = obj.organic as Array<{ title?: string; snippet?: string; link?: string }>;
-    const total = organic.length;
-    const lines: string[] = [`**검색 결과 요약** (총 ${total}건)`];
-
-    const top3 = organic.slice(0, 3);
-    for (let i = 0; i < top3.length; i++) {
-      const item = top3[i];
-      const title = item.title ?? '(제목 없음)';
-      const snippet = (item.snippet ?? '').slice(0, 200);
-      const link = item.link ?? '';
-      lines.push(
-        `${i + 1}. **${title.replace(/\|/g, '\\\\|')}** — ${snippet.replace(/\|/g, '\\\\|').replace(/\n/g, ' ')}`,
-      );
-      if (link) lines.push(`   → ${link}`);
-    }
-
-    if (total > 3) {
-      lines.push(`\n… 외 ${total - 3}건 생략`);
-    }
-
-    return lines.join('\n');
   }
 
   private renderToolBubble(

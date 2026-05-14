@@ -5,12 +5,46 @@ import type { ChatSessionMeta } from './types';
 
 const SESSION_MODAL_STYLE_ID = 'super-obsidian-session-modal-styles';
 
+/** 날짜를 기준으로 세션을 그룹핑하기 위한 키 */
+type DateGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older';
+
+function getDateGroup(dateStr: string): DateGroup {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const weekStart = new Date(today.getTime() - today.getDay() * 86400000);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  if (date >= today) return 'today';
+  if (date >= yesterday) return 'yesterday';
+  if (date >= weekStart) return 'thisWeek';
+  if (date >= monthStart) return 'thisMonth';
+  return 'older';
+}
+
+function getGroupLabel(group: DateGroup): string {
+  switch (group) {
+    case 'today':
+      return t('chatGroupToday');
+    case 'yesterday':
+      return t('chatGroupYesterday');
+    case 'thisWeek':
+      return t('chatGroupThisWeek');
+    case 'thisMonth':
+      return t('chatGroupThisMonth');
+    case 'older':
+      return t('chatGroupOlder');
+  }
+}
+
 export function openSessionHistoryModal(
   containerEl: HTMLElement,
   app: App,
   vault: Vault,
   saveFolder: string,
   onLoadSession: (filePath: string) => void,
+  currentSessionPath?: string | null,
 ): void {
   const activeVault = app.vault;
   void vault;
@@ -18,6 +52,8 @@ export function openSessionHistoryModal(
 
   const overlay = containerEl.createDiv({ cls: 'super-obsidian-session-overlay' });
   const modal = overlay.createDiv({ cls: 'super-obsidian-session-modal' });
+
+  // 제목 표시줄
   const titleBar = modal.createDiv({ cls: 'super-obsidian-session-modal-title' });
   titleBar.createEl('h2', { text: t('chatHistory') });
 
@@ -33,8 +69,31 @@ export function openSessionHistoryModal(
     attr: { type: 'button', 'aria-label': t('cancel') },
   });
 
+  // 검색 입력
+  const searchContainer = modal.createDiv({ cls: 'super-obsidian-session-search-container' });
+  const searchInput = searchContainer.createEl('input', {
+    cls: 'super-obsidian-session-search-input',
+    attr: {
+      type: 'text',
+      placeholder: t('chatSearchPlaceholder'),
+      'aria-label': t('chatSearchPlaceholder'),
+    },
+  });
+  const searchClear = searchContainer.createEl('button', {
+    cls: 'super-obsidian-session-search-clear',
+    text: '×',
+    attr: { type: 'button', 'aria-label': t('cancel') },
+  });
+  searchClear.style.display = 'none';
+
+  // 목록
   const listEl = modal.createDiv({ cls: 'super-obsidian-session-modal-list' });
+  const footerEl = modal.createDiv({ cls: 'super-obsidian-session-footer' });
+  const countEl = footerEl.createSpan({ cls: 'super-obsidian-session-count' });
+
   let deleteConfirmPath: string | null = null;
+  let allMetas: ChatSessionMeta[] = [];
+  let searchQuery = '';
   let isClosed = false;
 
   const close = (): void => {
@@ -45,31 +104,151 @@ export function openSessionHistoryModal(
   const renderLoading = (): void => {
     listEl.empty();
     listEl.createDiv({ cls: 'super-obsidian-session-empty', text: t('mcpRefreshing') });
+    countEl.setText('');
   };
 
-  const renderEmpty = (): void => {
+  const renderEmpty = (isSearch: boolean): void => {
     listEl.empty();
-    listEl.createDiv({ cls: 'super-obsidian-session-empty', text: t('chatNoSavedSessions') });
+    listEl.createDiv({
+      cls: 'super-obsidian-session-empty',
+      text: isSearch ? t('chatNoSearchResults') : t('chatNoSavedSessions'),
+    });
+    countEl.setText('');
   };
 
   const renderError = (): void => {
     listEl.empty();
     listEl.createDiv({ cls: 'super-obsidian-session-empty', text: t('error') });
+    countEl.setText('');
   };
 
-  const loadMetas = async (): Promise<void> => {
-    deleteConfirmPath = null;
-    renderLoading();
-    refreshBtn.disabled = true;
+  const formatRelativeTime = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHour = Math.floor(diffMs / 3600000);
+    const diffDay = Math.floor(diffMs / 86400000);
 
-    try {
-      const metas = await listChatMetasAsync(activeVault, saveFolder);
-      if (isClosed) return;
-      renderMetas(metas);
-    } catch {
-      if (!isClosed) renderError();
-    } finally {
-      if (!isClosed) refreshBtn.disabled = false;
+    if (diffMin < 1) return t('timestampJustNow');
+    if (diffMin < 60) return t('timestampMinutesAgo', { count: diffMin });
+    if (diffHour < 24) return t('timestampHoursAgo', { count: diffHour });
+    if (diffDay < 7) return t('timestampDaysAgo', { count: diffDay });
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(date);
+  };
+
+  const renderMetas = (metas: ChatSessionMeta[]): void => {
+    listEl.empty();
+    deleteConfirmPath = null;
+
+    if (metas.length === 0) {
+      renderEmpty(searchQuery.length > 0);
+      return;
+    }
+
+    countEl.setText(t('chatSessionCount', { count: metas.length }));
+
+    // 날짜별 그룹핑
+    const groups = new Map<DateGroup, ChatSessionMeta[]>();
+    const groupOrder: DateGroup[] = ['today', 'yesterday', 'thisWeek', 'thisMonth', 'older'];
+
+    for (const meta of metas) {
+      const effectiveDate = meta.updated ?? meta.created;
+      const group = getDateGroup(effectiveDate);
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group)!.push(meta);
+    }
+
+    for (const groupKey of groupOrder) {
+      const groupMetas = groups.get(groupKey);
+      if (!groupMetas || groupMetas.length === 0) continue;
+
+      const groupHeader = listEl.createDiv({ cls: 'super-obsidian-session-group-header' });
+      groupHeader.createSpan({
+        cls: 'super-obsidian-session-group-label',
+        text: getGroupLabel(groupKey),
+      });
+      groupHeader.createSpan({
+        cls: 'super-obsidian-session-group-count',
+        text: String(groupMetas.length),
+      });
+
+      for (const meta of groupMetas) {
+        const isCurrentSession = meta.filePath === currentSessionPath;
+        const itemEl = listEl.createDiv({
+          cls: `super-obsidian-session-item${isCurrentSession ? ' is-active' : ''}`,
+        });
+
+        const infoEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-info' });
+        const titleRow = infoEl.createDiv({ cls: 'super-obsidian-session-item-title-row' });
+        titleRow.createSpan({ cls: 'super-obsidian-session-item-title', text: meta.title });
+
+        if (isCurrentSession) {
+          titleRow.createSpan({
+            cls: 'super-obsidian-session-current-badge',
+            text: t('chatCurrentSession'),
+          });
+        }
+
+        if (meta.provider || meta.model) {
+          const metaLine = infoEl.createDiv({ cls: 'super-obsidian-session-item-meta' });
+          const parts: string[] = [];
+          if (meta.provider) parts.push(meta.provider);
+          if (meta.model) parts.push(meta.model);
+          metaLine.createSpan({ text: parts.join(' · ') });
+          metaLine.createSpan({ text: ' · ' });
+          metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
+          metaLine.createSpan({ text: ' · ' });
+          metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
+        } else {
+          const metaLine = infoEl.createDiv({ cls: 'super-obsidian-session-item-meta' });
+          metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
+          metaLine.createSpan({ text: ' · ' });
+          metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
+        }
+
+        if (meta.preview) {
+          infoEl.createDiv({ cls: 'super-obsidian-session-item-preview', text: meta.preview });
+        }
+
+        const actionsEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-actions' });
+        const renameBtn = actionsEl.createEl('button', {
+          text: '📝',
+          attr: { type: 'button', 'aria-label': t('chatRenameSession') },
+        });
+        const deleteBtn = actionsEl.createEl('button', {
+          text: '🗑️',
+          attr: { type: 'button', 'aria-label': t('chatDeleteSession') },
+        });
+
+        itemEl.addEventListener('click', () => {
+          onLoadSession(meta.filePath);
+          close();
+        });
+        renameBtn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          deleteConfirmPath = null;
+          startRename(meta, itemEl);
+        });
+        deleteBtn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (deleteConfirmPath !== meta.filePath) {
+            deleteConfirmPath = meta.filePath;
+            deleteBtn.addClass('is-confirming');
+            deleteBtn.setText(t('chatDeleteConfirm'));
+            return;
+          }
+
+          deleteBtn.disabled = true;
+          void deleteChat(activeVault, meta.filePath).then(loadMetas, () => {
+            deleteBtn.disabled = false;
+            deleteConfirmPath = null;
+          });
+        });
+      }
     }
   };
 
@@ -85,12 +264,16 @@ export function openSessionHistoryModal(
     });
     const editActions = infoEl.createDiv({ cls: 'super-obsidian-session-inline-actions' });
     const saveBtn = editActions.createEl('button', { text: t('save'), attr: { type: 'button' } });
-    const cancelBtn = editActions.createEl('button', { text: t('cancel'), attr: { type: 'button' } });
+    const cancelBtn = editActions.createEl('button', {
+      text: t('cancel'),
+      attr: { type: 'button' },
+    });
 
     const save = async (): Promise<void> => {
       const nextTitle = inputEl.value.trim();
       if (!nextTitle || nextTitle === meta.title) {
-        renderMetas(await listChatMetasAsync(activeVault, saveFolder));
+        const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
+        if (!isClosed) renderMetas(freshMetas);
         return;
       }
       saveBtn.disabled = true;
@@ -108,59 +291,57 @@ export function openSessionHistoryModal(
     inputEl.select();
   };
 
-  const renderMetas = (metas: ChatSessionMeta[]): void => {
-    listEl.empty();
-    if (metas.length === 0) {
-      renderEmpty();
+  const filterAndRender = (): void => {
+    const query = searchQuery.toLowerCase().trim();
+    if (!query) {
+      renderMetas(allMetas);
       return;
     }
+    const filtered = allMetas.filter(
+      (m) =>
+        m.title.toLowerCase().includes(query) ||
+        (m.preview && m.preview.toLowerCase().includes(query)) ||
+        (m.provider && m.provider.toLowerCase().includes(query)) ||
+        (m.model && m.model.toLowerCase().includes(query)),
+    );
+    renderMetas(filtered);
+  };
 
-    for (const meta of metas) {
-      const itemEl = listEl.createDiv({ cls: 'super-obsidian-session-item' });
-      const infoEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-info' });
-      infoEl.createDiv({ cls: 'super-obsidian-session-item-title', text: meta.title });
-      infoEl.createDiv({ cls: 'super-obsidian-session-item-date', text: formatSessionDate(meta.created) });
-      infoEl.createDiv({
-        cls: 'super-obsidian-session-item-count',
-        text: meta.messageCount.toLocaleString(),
-      });
+  const loadMetas = async (): Promise<void> => {
+    deleteConfirmPath = null;
+    renderLoading();
+    refreshBtn.disabled = true;
 
-      const actionsEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-actions' });
-      const renameBtn = actionsEl.createEl('button', {
-        text: '📝',
-        attr: { type: 'button', 'aria-label': t('chatRenameSession') },
-      });
-      const deleteBtn = actionsEl.createEl('button', {
-        text: '🗑️',
-        attr: { type: 'button', 'aria-label': t('chatDeleteSession') },
-      });
-
-      itemEl.addEventListener('click', () => {
-        onLoadSession(meta.filePath);
-        close();
-      });
-      renameBtn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        deleteConfirmPath = null;
-        startRename(meta, itemEl);
-      });
-      deleteBtn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        if (deleteConfirmPath !== meta.filePath) {
-          deleteConfirmPath = meta.filePath;
-          deleteBtn.addClass('is-confirming');
-          deleteBtn.setText(t('chatDeleteConfirm'));
-          return;
-        }
-
-        deleteBtn.disabled = true;
-        void deleteChat(activeVault, meta.filePath).then(loadMetas, () => {
-          deleteBtn.disabled = false;
-          deleteConfirmPath = null;
-        });
-      });
+    try {
+      allMetas = await listChatMetasAsync(activeVault, saveFolder);
+      if (isClosed) return;
+      filterAndRender();
+    } catch {
+      if (!isClosed) renderError();
+    } finally {
+      if (!isClosed) refreshBtn.disabled = false;
     }
   };
+
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value;
+    searchClear.style.display = searchQuery ? 'flex' : 'none';
+    filterAndRender();
+  });
+
+  searchClear.addEventListener('click', () => {
+    searchInput.value = '';
+    searchQuery = '';
+    searchClear.style.display = 'none';
+    searchInput.focus();
+    filterAndRender();
+  });
+
+  searchInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      close();
+    }
+  });
 
   closeBtn.addEventListener('click', close);
   refreshBtn.addEventListener('click', () => void loadMetas());
@@ -168,16 +349,21 @@ export function openSessionHistoryModal(
     if (event.target === overlay) close();
   });
 
-  void loadMetas();
-}
+  // Escape 키 전역 핸들러
+  const handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      close();
+    }
+  };
+  containerEl.ownerDocument.addEventListener('keydown', handleKeyDown);
 
-function formatSessionDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
+  // 정리 시 이벤트 리스너 제거
+  const cleanup = (): void => {
+    containerEl.ownerDocument.removeEventListener('keydown', handleKeyDown);
+  };
+  overlay.addEventListener('remove', cleanup);
+
+  void loadMetas();
 }
 
 function ensureSessionModalStyles(documentRef: Document): void {
@@ -198,8 +384,8 @@ function ensureSessionModalStyles(documentRef: Document): void {
 }
 
 .super-obsidian-session-modal {
-  width: min(560px, 100%);
-  max-height: 70vh;
+  width: min(620px, 100%);
+  max-height: 75vh;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--background-modifier-border);
@@ -232,23 +418,113 @@ function ensureSessionModalStyles(documentRef: Document): void {
   gap: var(--size-2-2);
 }
 
-.super-obsidian-session-modal-list {
-  overflow-y: auto;
-  padding: var(--size-2-3);
+/* 검색 바 */
+.super-obsidian-session-search-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
 }
 
+.super-obsidian-session-search-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.super-obsidian-session-search-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.super-obsidian-session-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.super-obsidian-session-search-clear {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+
+.super-obsidian-session-search-clear:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+/* 목록 */
+.super-obsidian-session-modal-list {
+  overflow-y: auto;
+  padding: 0;
+  flex: 1;
+}
+
+/* 날짜 그룹 헤더 */
+.super-obsidian-session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+  background: var(--background-primary);
+  z-index: 1;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.super-obsidian-session-group-label {
+  font-weight: 700;
+}
+
+.super-obsidian-session-group-count {
+  font-weight: 400;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+/* 세션 항목 */
 .super-obsidian-session-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--size-4-3);
-  padding: var(--size-4-3);
-  border-radius: var(--radius-m);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .super-obsidian-session-item:hover {
   background: var(--background-modifier-hover);
+}
+
+.super-obsidian-session-item.is-active {
+  background: var(--background-modifier-success);
+  border-left: 3px solid var(--interactive-accent);
 }
 
 .super-obsidian-session-item-info {
@@ -256,17 +532,50 @@ function ensureSessionModalStyles(documentRef: Document): void {
   flex: 1;
 }
 
+.super-obsidian-session-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .super-obsidian-session-item-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: var(--font-semibold);
+  color: var(--text-normal);
 }
 
-.super-obsidian-session-item-date,
-.super-obsidian-session-item-count {
+.super-obsidian-session-current-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.super-obsidian-session-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.super-obsidian-session-item-preview {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
 }
 
 .super-obsidian-session-empty {
@@ -277,8 +586,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
 
 .super-obsidian-session-refresh-btn,
 .super-obsidian-session-close-btn,
-.super-obsidian-session-item-actions button,
-.super-obsidian-session-inline-actions button {
+.super-obsidian-session-item-actions button {
   color: var(--text-normal);
 }
 
@@ -290,6 +598,21 @@ function ensureSessionModalStyles(documentRef: Document): void {
 .super-obsidian-session-title-input {
   width: 100%;
   margin-bottom: var(--size-2-2);
+}
+
+/* 하단 카운트 */
+.super-obsidian-session-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.super-obsidian-session-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
 }
 `;
   documentRef.head.appendChild(styleEl);

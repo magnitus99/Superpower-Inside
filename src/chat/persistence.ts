@@ -392,7 +392,7 @@ function formatToolCall(toolCall: ToolCallRecord): string {
   const argsBlock = toolCall.arguments
     ? `\n\n**Arguments**\n\n\`\`\`json\n${toolCall.arguments}\n\`\`\``
     : '';
-  const rawResult = toolCall.result ?? null;
+  const rawResult = toolCall.resultSummary ?? toolCall.result ?? null;
   let resultBlock = null;
   if (rawResult !== null) {
     if (rawResult.length > MAX_RESULT_SIZE) {
