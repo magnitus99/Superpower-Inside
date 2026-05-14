@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseMentions, type MentionResolver } from './mention-parser';
+import {
+  parseMentions,
+  shouldUseAutoRagForMentions,
+  type MentionResolver,
+} from './mention-parser';
 
 function resolver(): MentionResolver {
   const servers = new Set(['browser', 'filesystem']);
@@ -37,5 +41,20 @@ describe('parseMentions', () => {
     expect(parseMentions('@missing @filesystem', resolver())).toEqual([
       { raw: '@filesystem', type: 'server', name: 'filesystem' },
     ]);
+  });
+
+  it('MCP 서버만 멘션한 검색형 질문에서는 자동 RAG를 건너뛴다', () => {
+    expect(shouldUseAutoRagForMentions([{ raw: '@serper', type: 'server', name: 'serper' }])).toBe(
+      false,
+    );
+  });
+
+  it('파일이나 폴더 멘션이 함께 있으면 자동 RAG를 유지한다', () => {
+    expect(
+      shouldUseAutoRagForMentions([
+        { raw: '@serper', type: 'server', name: 'serper' },
+        { raw: '@Notes/today.md', type: 'file', name: 'Notes/today.md' },
+      ]),
+    ).toBe(true);
   });
 });
