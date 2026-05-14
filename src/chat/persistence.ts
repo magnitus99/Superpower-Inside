@@ -1,363 +1,699 @@
 import { TFile, type Vault } from 'obsidian';
-import type { ChatMessage, ToolCallInfo, ToolCallRecordInfo } from '../llm/providers';
-import type { ChatSessionMeta, ChatMessageWithMeta as NewChatMessageWithMeta } from './types';
+import type { ChatMessage } from '../llm/providers';
+import type {
+  ChatMessageWithMeta,
+  ChatSession,
+  ChatSessionMeta,
+  ContextAttachment,
+  SourceCitation,
+  ToolCallRecord,
+} from './types';
 
 export type { ChatMessage } from '../llm/providers';
 
-type ToolCallRecord = ToolCallRecordInfo;
+const MESSAGE_COMMENT_OPEN = '<!-- super-obsidian-message';
+const MESSAGE_COMMENT_CLOSE = '<!-- /super-obsidian-message -->';
 
-// legacy compat: persistence 내부 타입
-interface PersistenceMessageWithMeta extends ChatMessage {
-	id?: string;
-	timestamp?: number;
-	reasoning?: string;
-	toolCalls?: ChatMessage['toolCalls'];
-	model?: string;
+interface MessagePersistMeta {
+  id: string;
+  role: ChatMessage['role'];
+  timestamp: number;
+  createdAt: string;
+  updatedAt: string;
+  providerKey?: string;
+  providerLabel?: string;
+  model?: string;
+  status: ChatMessageWithMeta['status'];
+  errorMessage?: string;
+  toolCalls?: ToolCallRecord[];
+  citations?: SourceCitation[];
+  contextAttachments?: ContextAttachment[];
+  branchOf?: string;
+  stopReason?: ChatMessageWithMeta['stopReason'];
 }
 
-interface PersistenceSession {
-	systemPrompt?: string;
-	title?: string;
-	messages: PersistenceMessageWithMeta[];
-}
-
-function formatDateForFilename(date: Date): string {
-	const pad = (n: number) => String(n).padStart(2, '0');
-	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
-}
-
-function normalizeToolCall(toolCall: ToolCallInfo | ToolCallRecord): ToolCallRecord {
-	if ('function' in toolCall) {
-		return {
-			id: toolCall.id,
-			name: toolCall.function.name,
-			arguments: toolCall.function.arguments,
-			status: 'success',
-		};
-	}
-	return toolCall;
+interface ParsedFrontmatter {
+  body: string;
+  values: Record<string, string>;
+  raw?: string;
 }
 
 export interface SaveChatOptions {
-	filePath?: string;
-	title?: string;
+  filePath?: string;
+  title?: string;
 }
 
 export async function saveChat(
-	vault: Vault,
-	messages: NewChatMessageWithMeta[],
-	folderPath: string,
-	sessionSystemPrompt?: string,
-	options?: SaveChatOptions,
+  vault: Vault,
+  messages: ChatMessageWithMeta[],
+  folderPath: string,
+  sessionSystemPrompt?: string,
+  options?: SaveChatOptions,
 ): Promise<TFile> {
-	const folder = folderPath.replace(/\/$/, '');
-	if (!(await vault.adapter.exists(folder))) {
-		await vault.createFolder(folder);
-	}
+  const folder = folderPath.replace(/\/$/, '');
+  await ensureFolder(vault, folder);
 
-	const fmLines = [`created: ${new Date().toISOString()}`, `messages: ${messages.length}`];
-	if (sessionSystemPrompt && sessionSystemPrompt.trim()) {
-		fmLines.push(`systemPrompt: ${JSON.stringify(sessionSystemPrompt.trim())}`);
-	}
-	const title = options?.title || deriveTitle(messages);
-	if (title) {
-		fmLines.push(`title: ${JSON.stringify(title)}`);
-	}
-	const frontmatter = `---\n${fmLines.join('\n')}\n---\n\n`;
+  const existingFile = options?.filePath ? vault.getAbstractFileByPath(options.filePath) : null;
+  const existingContent = existingFile instanceof TFile ? await vault.cachedRead(existingFile) : '';
+  const existingFrontmatter = parseFrontmatter(existingContent);
+  const now = new Date().toISOString();
+  const created =
+    parseFrontmatterString(existingFrontmatter.values.created) ??
+    messages[0]?.createdAt ??
+    messages[0]?.timestamp.toString() ??
+    now;
+  const updated = now;
+  const title = options?.title || deriveTitle(messages);
+  const providerMessage = [...messages]
+    .reverse()
+    .find((message) => message.providerLabel || message.providerKey || message.model);
+  const sourceCount = messages.reduce((sum, message) => sum + (message.citations?.length ?? 0), 0);
+  const summary = deriveSummary(messages);
 
-	const body = messages
-		.map((m) => {
-			const roleTag =
-				m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : m.role === 'tool' ? 'Tool' : 'Assistant';
-			let section = `## ${roleTag}\n\n${m.content}`;
-			if (m.role === 'assistant') {
-				if (m.reasoning) {
-					section = `## ${roleTag}\n\n### Thinking\n\n${m.reasoning}\n\n### Answer\n\n${m.content}`;
-				}
-				if (m.toolCalls && m.toolCalls.length > 0) {
-					const toolSections = m.toolCalls
-						.map((tc) => {
-							const toolCall = normalizeToolCall(tc);
-							const argsBlock = toolCall.arguments ? `\n\`\`\`json\n${toolCall.arguments}\n\`\`\`` : '';
-							const resultBlock = toolCall.result ? `\n\n**Result:**\n\`\`\`\n${toolCall.result}\n\`\`\`` : '';
-							return `#### Tool: ${toolCall.name} [${toolCall.status}]\n${argsBlock}${resultBlock}`;
-						})
-						.join('\n\n');
-					section = `## ${roleTag}\n\n### Thinking\n\n${m.reasoning ?? '*No thinking recorded*'}\n\n### Tool Calls\n\n${toolSections}\n\n### Answer\n\n${m.content}`;
-				}
-			}
-			return section;
-		})
-		.join('\n\n---\n\n');
+  const fmLines = [
+    `title: ${formatFrontmatterValue(title || '새 채팅')}`,
+    `created: ${formatFrontmatterValue(normalizeDateValue(created))}`,
+    `updated: ${formatFrontmatterValue(updated)}`,
+    `messages: ${messages.length}`,
+    'tags: ["super-obsidian-chat"]',
+    'pinned: false',
+    `sourceCount: ${sourceCount}`,
+  ];
+  if (providerMessage?.providerLabel || providerMessage?.providerKey) {
+    fmLines.push(
+      `provider: ${formatFrontmatterValue(providerMessage.providerLabel ?? providerMessage.providerKey ?? '')}`,
+    );
+  }
+  if (providerMessage?.model) {
+    fmLines.push(`model: ${formatFrontmatterValue(providerMessage.model)}`);
+    fmLines.push(`lastModel: ${formatFrontmatterValue(providerMessage.model)}`);
+  }
+  if (summary) {
+    fmLines.push(`summary: ${formatFrontmatterValue(summary)}`);
+  }
+  if (sessionSystemPrompt && sessionSystemPrompt.trim()) {
+    fmLines.push(`systemPrompt: ${formatFrontmatterValue(sessionSystemPrompt.trim())}`);
+  }
 
-	const content = frontmatter + body;
+  const frontmatter = `---\n${fmLines.join('\n')}\n---\n\n`;
+  const body = [
+    '# Chat Session',
+    '',
+    '## Session Metadata',
+    '',
+    buildMarkdownTable([
+      ['Title', title || '새 채팅'],
+      ['Created', formatDisplayDate(normalizeDateValue(created))],
+      ['Updated', formatDisplayDate(updated)],
+      ['Messages', String(messages.length)],
+      ['Sources', String(sourceCount)],
+      ['Provider', providerMessage?.providerLabel ?? providerMessage?.providerKey ?? '-'],
+      ['Model', providerMessage?.model ?? '-'],
+      ['System Prompt', sessionSystemPrompt?.trim() ? 'Configured' : '-'],
+      ['Summary', summary || '-'],
+    ]),
+    ...(sessionSystemPrompt?.trim()
+      ? ['', '### System Prompt', '', sessionSystemPrompt.trim()]
+      : []),
+    '',
+    '## Messages',
+    '',
+    messages.map((message, index) => formatMessage(message, index + 1)).join('\n\n---\n\n'),
+  ].join('\n');
 
-	if (options?.filePath) {
-		const existingFile = vault.getAbstractFileByPath(options.filePath);
-		if (existingFile instanceof TFile) {
-			await vault.modify(existingFile, content);
-			return existingFile;
-		}
-	}
+  const content = frontmatter + body.trimEnd() + '\n';
 
-	const filename = `${folder}/${formatDateForFilename(new Date())}.md`;
-	return vault.create(filename, content);
+  if (existingFile instanceof TFile) {
+    await vault.modify(existingFile, content);
+    return existingFile;
+  }
+
+  const filename = await buildUniqueFilename(vault, folder, new Date());
+  return vault.create(filename, content);
 }
 
-function deriveTitle(messages: NewChatMessageWithMeta[]): string {
-	const firstUserMsg = messages.find((m) => m.role === 'user');
-	if (!firstUserMsg) return '';
-	const content = firstUserMsg.content.replace(/\n/g, ' ').trim();
-	return content.length > 50 ? content.slice(0, 50) + '…' : content;
-}
+export async function loadChat(vault: Vault, filePath: string): Promise<ChatSession> {
+  const file = vault.getAbstractFileByPath(filePath);
+  if (!(file instanceof TFile) || file.extension !== 'md') {
+    return { messages: [] };
+  }
 
-export async function loadChat(vault: Vault, filePath: string): Promise<PersistenceSession> {
-	const file = vault.getAbstractFileByPath(filePath);
-	if (!file || !('extension' in file)) return { messages: [] };
-	const tfile = file as TFile;
-	if (tfile.extension !== 'md') return { messages: [] };
+  const content = await vault.cachedRead(file);
+  const parsed = parseFrontmatter(content);
+  const messages = parseMarkdownMessages(parsed.body);
+  if (messages.length > 0) {
+    return {
+      messages,
+      systemPrompt: parseFrontmatterString(parsed.values.systemPrompt),
+      title: parseFrontmatterString(parsed.values.title),
+    };
+  }
 
-	const content = await vault.cachedRead(tfile);
-
-	let sessionSystemPrompt: string | undefined;
-	let sessionTitle: string | undefined;
-	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
-	if (fmMatch) {
-		const spMatch = fmMatch[1].match(/^systemPrompt:\s*(.+)$/m);
-		if (spMatch) {
-			try {
-				sessionSystemPrompt = JSON.parse(spMatch[1].trim()) as string;
-			} catch {
-				sessionSystemPrompt = spMatch[1].trim();
-			}
-		}
-		const titleMatch = fmMatch[1].match(/^title:\s*(.+)$/m);
-		if (titleMatch) {
-			try {
-				sessionTitle = JSON.parse(titleMatch[1].trim()) as string;
-			} catch {
-				sessionTitle = titleMatch[1].trim();
-			}
-		}
-	}
-
-	const body = content.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
-	const sections = body.split(/\n---\n?/);
-
-	const messages: PersistenceMessageWithMeta[] = [];
-	for (const section of sections) {
-		const trimmed = section.trim();
-		if (!trimmed) continue;
-		const match = trimmed.match(/^##\s*(User|Assistant|System|Tool)\n\n?([\s\S]*)$/);
-		if (!match) continue;
-
-		const roleMap: Record<string, ChatMessage['role']> = {
-			User: 'user',
-			Assistant: 'assistant',
-			System: 'system',
-			Tool: 'tool',
-		};
-		const role = roleMap[match[1]] ?? 'assistant';
-		const sectionBody = match[2];
-
-		let reasoning: string | undefined;
-		let answerContent = sectionBody;
-		let toolCalls: ToolCallRecord[] | undefined;
-
-		if (role === 'assistant') {
-			const thinkingMatch = sectionBody.match(/^### Thinking\n\n([\s\S]*?)(?=\n### (?:Tool Calls|Answer))/);
-			const toolCallsMatch = sectionBody.match(/\n### Tool Calls\n\n([\s\S]*?)(?=\n### Answer)/);
-			const answerMatch = sectionBody.match(/\n### Answer\n\n([\s\S]*)$/);
-
-			if (thinkingMatch) {
-				reasoning = thinkingMatch[1].trim();
-			}
-			if (toolCallsMatch) {
-				toolCalls = [];
-				const toolBlocks = toolCallsMatch[1].split(/\n#### Tool: /).filter((s) => s.trim());
-				for (const tb of toolBlocks) {
-					const nameMatch = tb.match(/^([^[]+)\s*\[(running|success|error)\]/);
-					const name = nameMatch ? nameMatch[1].trim() : tb.split('\n')[0].trim();
-					const status = nameMatch ? (nameMatch[2] as ToolCallRecord['status']) : 'success';
-					const argsMatch = tb.match(/```json\n([\s\S]*?)```/);
-					const args = argsMatch ? argsMatch[1].trim() : '';
-					const resultMatch = tb.match(/\*\*Result:\*\*\n```\n([\s\S]*?)```/);
-					const result = resultMatch ? resultMatch[1].trim() : undefined;
-					toolCalls.push({
-						id: `tc-${messages.length}-${toolCalls.length}`,
-						name,
-						arguments: args,
-						...(result ? { result } : {}),
-						status,
-					});
-				}
-			}
-			if (answerMatch) {
-				answerContent = answerMatch[1].trim();
-			}
-		}
-
-		messages.push({
-			id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-			role,
-			content: answerContent.trim(),
-			timestamp: Date.now(),
-			...(reasoning ? { reasoning } : {}),
-			...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-		});
-	}
-
-	return { messages, systemPrompt: sessionSystemPrompt, title: sessionTitle };
+  return parseLegacyChat(content);
 }
 
 export function listChats(vault: Vault, folderPath: string): TFile[] {
-	const folder = folderPath.replace(/\/$/, '');
-	return vault.getMarkdownFiles().filter((f) => f.path.startsWith(folder + '/'));
+  const folder = folderPath.replace(/\/$/, '');
+  return vault.getMarkdownFiles().filter((file) => file.path.startsWith(folder + '/'));
 }
 
 export function listChatMetas(vault: Vault, folderPath: string): ChatSessionMeta[] {
-	const files = listChats(vault, folderPath);
-	const metas: ChatSessionMeta[] = [];
-	for (const file of files) {
-		const basename = file.basename;
-		const title = basename;
-		metas.push({
-			filePath: file.path,
-			title,
-			created: file.stat.mtime.toString(),
-			messageCount: 0,
-		});
-	}
-	metas.sort((a, b) => b.created.localeCompare(a.created));
-	return metas;
+  const files = listChats(vault, folderPath);
+  const metas: ChatSessionMeta[] = [];
+  for (const file of files) {
+    metas.push({
+      filePath: file.path,
+      title: file.basename,
+      created: new Date(file.stat.mtime).toISOString(),
+      messageCount: 0,
+    });
+  }
+  metas.sort((a, b) => b.created.localeCompare(a.created));
+  return metas;
 }
 
-export async function listChatMetasAsync(vault: Vault, folderPath: string): Promise<ChatSessionMeta[]> {
-	const files = listChats(vault, folderPath);
-	const metas: ChatSessionMeta[] = [];
+export async function listChatMetasAsync(
+  vault: Vault,
+  folderPath: string,
+): Promise<ChatSessionMeta[]> {
+  const files = listChats(vault, folderPath);
+  const metas: ChatSessionMeta[] = [];
 
-	for (const file of files) {
-		try {
-			const content = await vault.cachedRead(file);
-			const title = extractTitleFromContent(content) || file.basename;
-			const created = extractCreatedFromContent(content) || new Date(file.stat.mtime).toISOString();
-			const messageCount = extractMessageCountFromContent(content) || 0;
+  for (const file of files) {
+    try {
+      const content = await vault.cachedRead(file);
+      const parsed = parseFrontmatter(content);
+      const title = parseFrontmatterString(parsed.values.title) || file.basename;
+      const created =
+        parseFrontmatterString(parsed.values.created) || new Date(file.stat.mtime).toISOString();
+      const updated = parseFrontmatterString(parsed.values.updated);
+      const messageCount =
+        parseInteger(parsed.values.messages) ?? countMarkdownMessages(parsed.body);
+      const provider = parseFrontmatterString(parsed.values.provider);
+      const model = parseFrontmatterString(parsed.values.model);
+      const preview = extractPreview(parsed.body);
 
-			metas.push({
-				filePath: file.path,
-				title,
-				created,
-				messageCount,
-			});
-		} catch {
-			metas.push({
-				filePath: file.path,
-				title: file.basename,
-				created: new Date(file.stat.mtime).toISOString(),
-				messageCount: 0,
-			});
-		}
-	}
+      metas.push({
+        filePath: file.path,
+        title,
+        created: normalizeDateValue(created),
+        updated: updated ? normalizeDateValue(updated) : undefined,
+        messageCount,
+        preview,
+        provider,
+        model,
+      });
+    } catch {
+      metas.push({
+        filePath: file.path,
+        title: file.basename,
+        created: new Date(file.stat.mtime).toISOString(),
+        messageCount: 0,
+      });
+    }
+  }
 
-	metas.sort((a, b) => b.created.localeCompare(a.created));
-	return metas;
+  metas.sort((a, b) => {
+    const dateA = a.updated ?? a.created;
+    const dateB = b.updated ?? b.created;
+    return dateB.localeCompare(dateA);
+  });
+  return metas;
 }
 
-function extractTitleFromContent(content: string): string | undefined {
-	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
-	if (!fmMatch) return undefined;
-	const titleMatch = fmMatch[1].match(/^title:\s*(.+)$/m);
-	if (!titleMatch) return undefined;
-	try {
-		return JSON.parse(titleMatch[1].trim()) as string;
-	} catch {
-		return titleMatch[1].trim();
-	}
-}
+/** 본문에서 첫 번째 사용자 메시지 미리보기를 추출 (최대 120자) */
+function extractPreview(body: string): string | undefined {
+  const userBlockRegex =
+    /###\s+\d+\.\s+User[\s\S]*?-->[\s]*\n([\s\S]*?)(?=\n---\n|###\s+\d+\.\s+(?:Assistant|System|User|Tool)|$)/i;
+  const match = userBlockRegex.exec(body);
+  if (match?.[1]) {
+    const text = match[1]
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n/g, ' ')
+      .trim();
+    return text.length > 120 ? text.slice(0, 120) + '...' : text || undefined;
+  }
 
-function extractCreatedFromContent(content: string): string | undefined {
-	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
-	if (!fmMatch) return undefined;
-	const createdMatch = fmMatch[1].match(/^created:\s*(.+)$/m);
-	return createdMatch ? createdMatch[1].trim() : undefined;
-}
-
-function extractMessageCountFromContent(content: string): number {
-	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
-	if (!fmMatch) return 0;
-	const countMatch = fmMatch[1].match(/^messages:\s*(\d+)$/m);
-	return countMatch ? parseInt(countMatch[1], 10) : 0;
+  const lines = body.split('\n');
+  let inUserSection = false;
+  const previewLines: string[] = [];
+  for (const line of lines) {
+    if (/^###\s+\d+\.\s+User/i.test(line)) {
+      inUserSection = true;
+      continue;
+    }
+    if (inUserSection) {
+      if (/^###\s+\d+\./i.test(line) || line === '---') break;
+      if (line.trim()) previewLines.push(line.trim());
+    }
+  }
+  if (previewLines.length > 0) {
+    const text = previewLines.join(' ');
+    return text.length > 120 ? text.slice(0, 120) + '...' : text;
+  }
+  return undefined;
 }
 
 export async function renameChat(vault: Vault, oldPath: string, newTitle: string): Promise<string> {
-	const file = vault.getAbstractFileByPath(oldPath);
-	if (!(file instanceof TFile)) throw new Error(`파일을 찾을 수 없음: ${oldPath}`);
+  const file = vault.getAbstractFileByPath(oldPath);
+  if (!(file instanceof TFile)) throw new Error(`파일을 찾을 수 없음: ${oldPath}`);
 
-	const content = await vault.cachedRead(file);
-	let updatedContent: string;
+  const content = await vault.cachedRead(file);
+  const parsed = parseFrontmatter(content);
+  let updatedContent: string;
 
-	const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
-	if (fmMatch) {
-		let frontmatter = fmMatch[1];
-		const titleLine = `title: ${JSON.stringify(newTitle)}`;
-		if (/^title:\s*.+$/m.test(frontmatter)) {
-			frontmatter = frontmatter.replace(/^title:\s*.+$/m, titleLine);
-		} else {
-			frontmatter += '\n' + titleLine;
-		}
-		updatedContent = content.replace(/^---\n[\s\S]*?\n---\n\n?/, `---\n${frontmatter}\n---\n\n`);
-	} else {
-		const frontmatter = `---\ncreated: ${new Date().toISOString()}\nmessages: 0\ntitle: ${JSON.stringify(newTitle)}\n---\n\n`;
-		updatedContent = frontmatter + content;
-	}
+  if (parsed.raw !== undefined) {
+    let frontmatter = parsed.raw;
+    const titleLine = `title: ${formatFrontmatterValue(newTitle)}`;
+    if (/^title:\s*.+$/m.test(frontmatter)) {
+      frontmatter = frontmatter.replace(/^title:\s*.+$/m, titleLine);
+    } else {
+      frontmatter += '\n' + titleLine;
+    }
+    updatedContent = content.replace(/^---\n[\s\S]*?\n---\n\n?/, `---\n${frontmatter}\n---\n\n`);
+  } else {
+    const frontmatter = `---\ncreated: ${formatFrontmatterValue(new Date().toISOString())}\nmessages: 0\ntitle: ${formatFrontmatterValue(newTitle)}\n---\n\n`;
+    updatedContent = frontmatter + content;
+  }
 
-	await vault.modify(file, updatedContent);
+  await vault.modify(file, updatedContent);
 
-	const folder = oldPath.substring(0, oldPath.lastIndexOf('/') + 1);
-	const sanitizedName = newTitle.replace(/[\\/:*?"<>|]/g, '_').slice(0, 100);
-	const newPath = `${folder}${sanitizedName}.md`;
+  const folder = oldPath.substring(0, oldPath.lastIndexOf('/') + 1);
+  const sanitizedName = sanitizeFilename(newTitle).slice(0, 100);
+  const newPath = `${folder}${sanitizedName}.md`;
 
-	if (newPath !== oldPath) {
-		await vault.rename(file, newPath);
-		return newPath;
-	}
+  if (newPath !== oldPath) {
+    await vault.rename(file, newPath);
+    return newPath;
+  }
 
-	return oldPath;
+  return oldPath;
 }
 
 export async function deleteChat(vault: Vault, filePath: string): Promise<void> {
-	const file = vault.getAbstractFileByPath(filePath);
-	if (!file) throw new Error(`파일을 찾을 수 없음: ${filePath}`);
-	await vault.delete(file);
+  const file = vault.getAbstractFileByPath(filePath);
+  if (!file) throw new Error(`파일을 찾을 수 없음: ${filePath}`);
+  await vault.delete(file);
 }
 
-export function convertPersistenceSession(session: PersistenceSession): {
-	messages: NewChatMessageWithMeta[];
-	systemPrompt?: string;
-	title?: string;
-} {
-	return {
-		messages: session.messages.map((m) => ({
-			id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-			role: m.role,
-			content: m.content,
-			timestamp: m.timestamp ?? Date.now(),
-			reasoning: m.reasoning,
-			toolCalls: m.toolCalls
-				? m.toolCalls.map((tc) => {
-						if ('function' in tc) {
-							return {
-								id: tc.id ?? '',
-								name: tc.function.name,
-								arguments: tc.function.arguments,
-								status: 'success' as const,
-							};
-						}
-						return { ...tc };
-					})
-				: undefined,
-		})),
-		systemPrompt: session.systemPrompt,
-		title: session.title,
-	};
+function formatMessage(message: ChatMessageWithMeta, index: number): string {
+  const meta: MessagePersistMeta = {
+    id: message.id,
+    role: message.role,
+    timestamp: message.timestamp,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    providerKey: message.providerKey,
+    providerLabel: message.providerLabel,
+    model: message.model,
+    status: message.status,
+    errorMessage: message.errorMessage,
+    toolCalls: message.toolCalls,
+    citations: message.citations,
+    contextAttachments: message.contextAttachments,
+    branchOf: message.branchOf,
+    stopReason: message.stopReason,
+  };
+  const lines = [
+    `${MESSAGE_COMMENT_OPEN}`,
+    JSON.stringify(meta, null, 2),
+    '-->',
+    `### ${index}. ${formatRoleLabel(message.role)}`,
+    '',
+    '#### Metadata',
+    '',
+    buildMarkdownTable([
+      ['Message ID', message.id],
+      ['Role', formatRoleLabel(message.role)],
+      ['Created', formatDisplayDate(message.createdAt)],
+      ['Updated', formatDisplayDate(message.updatedAt)],
+      ['Provider', message.providerLabel ?? message.providerKey ?? '-'],
+      ['Model', message.model ?? '-'],
+      ['Status', message.status],
+      ['Stop Reason', message.stopReason ?? '-'],
+      ['Sources', String(message.citations?.length ?? 0)],
+      ['Error', message.errorMessage ?? '-'],
+    ]),
+  ];
+
+  if (message.role === 'assistant') {
+    if (message.reasoning) {
+      lines.push(
+        '',
+        '#### Reasoning',
+        '',
+        '<!-- super-obsidian-reasoning-start -->',
+        message.reasoning,
+        '<!-- super-obsidian-reasoning-end -->',
+      );
+    }
+    if (message.toolCalls && message.toolCalls.length > 0) {
+      lines.push('', '#### Tool Calls', '');
+      for (const toolCall of message.toolCalls) {
+        lines.push(formatToolCall(toolCall));
+      }
+    }
+    if (message.citations && message.citations.length > 0) {
+      lines.push('', '#### Sources', '');
+      for (const citation of message.citations) {
+        lines.push(formatCitation(citation));
+      }
+    }
+    lines.push('', '#### Answer', '');
+  } else if (message.role === 'tool') {
+    lines.push('', '#### Tool Result', '');
+  } else {
+    lines.push('', '#### Content', '');
+  }
+
+  lines.push(
+    '<!-- super-obsidian-content-start -->',
+    message.content,
+    '<!-- super-obsidian-content-end -->',
+  );
+
+  if (message.errorMessage) {
+    lines.push(
+      '',
+      '#### Error',
+      '',
+      '<!-- super-obsidian-error-start -->',
+      message.errorMessage,
+      '<!-- super-obsidian-error-end -->',
+    );
+  }
+
+  lines.push(MESSAGE_COMMENT_CLOSE);
+  return lines.join('\n');
+}
+
+function formatToolCall(toolCall: ToolCallRecord): string {
+  const MAX_RESULT_SIZE = 10_000;
+  const argsBlock = toolCall.arguments
+    ? `\n\n**Arguments**\n\n\`\`\`json\n${toolCall.arguments}\n\`\`\``
+    : '';
+  const rawResult = toolCall.result ?? null;
+  let resultBlock = null;
+  if (rawResult !== null) {
+    if (rawResult.length > MAX_RESULT_SIZE) {
+      resultBlock = `\n\n**Result** (일부 생략됨)\n\n\`\`\`markdown\n${rawResult.slice(0, MAX_RESULT_SIZE)}…\n\`\`\``;
+    } else {
+      resultBlock = `\n\n**Result**\n\n\`\`\`markdown\n${rawResult}\n\`\`\``;
+    }
+  }
+  const approval = toolCall.approved === false ? ' (승인 대기)' : '';
+  const server = toolCall.serverName ? ` @ ${toolCall.serverName}` : '';
+  return `##### Tool: ${toolCall.name}${server} [${toolCall.status}]${approval}${argsBlock}${resultBlock ?? ''}\n`;
+}
+
+function formatCitation(citation: SourceCitation): string {
+  const location = [
+    citation.filePath,
+    citation.heading ? `# ${citation.heading}` : '',
+    citation.line !== undefined ? `line ${citation.line}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const score = citation.score !== undefined ? ` — score ${citation.score.toFixed(3)}` : '';
+  return `- **${citation.id}** ${location}${score}\n  ${citation.preview.replace(/\n/g, ' ')}`;
+}
+
+function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
+  const messages: ChatMessageWithMeta[] = [];
+  const regex =
+    /<!--\s*super-obsidian-message\s*([\s\S]*?)\s*-->\n?([\s\S]*?)\n?<!--\s*\/super-obsidian-message\s*-->/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(body)) !== null) {
+    const meta = parseMessageMeta(match[1]);
+    if (!meta) continue;
+    const block = match[2];
+    const content = extractNamedBlock(block, 'content');
+    const reasoning = extractNamedBlock(block, 'reasoning');
+    const errorMessage = meta.errorMessage ?? extractNamedBlock(block, 'error') ?? undefined;
+    const createdAt = normalizeDateValue(meta.createdAt);
+    const updatedAt = normalizeDateValue(meta.updatedAt);
+
+    messages.push({
+      id: meta.id,
+      role: meta.role,
+      content,
+      timestamp: meta.timestamp,
+      createdAt,
+      updatedAt,
+      providerKey: meta.providerKey as ChatMessageWithMeta['providerKey'],
+      providerLabel: meta.providerLabel,
+      model: meta.model,
+      status: meta.status,
+      errorMessage,
+      reasoning: reasoning || undefined,
+      toolCalls: meta.toolCalls,
+      citations: meta.citations,
+      contextAttachments: meta.contextAttachments,
+      branchOf: meta.branchOf,
+      stopReason: meta.stopReason,
+    });
+  }
+  return messages;
+}
+
+function parseMessageMeta(raw: string): MessagePersistMeta | null {
+  try {
+    const parsed = JSON.parse(raw.trim()) as Partial<MessagePersistMeta>;
+    if (!parsed.id || !parsed.role) return null;
+    const now = new Date().toISOString();
+    return {
+      id: parsed.id,
+      role: parsed.role,
+      timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : Date.now(),
+      createdAt: parsed.createdAt ?? now,
+      updatedAt: parsed.updatedAt ?? parsed.createdAt ?? now,
+      providerKey: parsed.providerKey,
+      providerLabel: parsed.providerLabel,
+      model: parsed.model,
+      status: parsed.status ?? 'complete',
+      errorMessage: parsed.errorMessage,
+      toolCalls: parsed.toolCalls,
+      citations: parsed.citations,
+      contextAttachments: parsed.contextAttachments,
+      branchOf: parsed.branchOf,
+      stopReason: parsed.stopReason,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseLegacyChat(content: string): ChatSession {
+  const parsed = parseFrontmatter(content);
+  const body = parsed.body;
+  const sections = body.split(/\n---\n?/);
+  const messages: ChatMessageWithMeta[] = [];
+  const now = new Date().toISOString();
+
+  for (const section of sections) {
+    const trimmed = section.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^##\s*(User|Assistant|System|Tool)\n\n?([\s\S]*)$/);
+    if (!match) continue;
+
+    const roleMap: Record<string, ChatMessage['role']> = {
+      User: 'user',
+      Assistant: 'assistant',
+      System: 'system',
+      Tool: 'tool',
+    };
+    const role = roleMap[match[1]] ?? 'assistant';
+    const sectionBody = match[2];
+    let reasoning: string | undefined;
+    let answerContent = sectionBody;
+    let toolCalls: ToolCallRecord[] | undefined;
+
+    if (role === 'assistant') {
+      const thinkingMatch = sectionBody.match(
+        /^### Thinking\n\n([\s\S]*?)(?=\n### (?:Tool Calls|Answer))/,
+      );
+      const toolCallsMatch = sectionBody.match(/\n### Tool Calls\n\n([\s\S]*?)(?=\n### Answer)/);
+      const answerMatch = sectionBody.match(/\n### Answer\n\n([\s\S]*)$/);
+      if (thinkingMatch) reasoning = thinkingMatch[1].trim();
+      if (toolCallsMatch) toolCalls = parseLegacyToolCalls(toolCallsMatch[1], messages.length);
+      if (answerMatch) answerContent = answerMatch[1].trim();
+    }
+
+    messages.push({
+      id: `msg-${Date.now()}-${messages.length}`,
+      role,
+      content: answerContent.trim(),
+      timestamp: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+      status: 'complete',
+      reasoning,
+      toolCalls,
+    });
+  }
+
+  return {
+    messages,
+    systemPrompt: parseFrontmatterString(parsed.values.systemPrompt),
+    title: parseFrontmatterString(parsed.values.title),
+  };
+}
+
+function parseLegacyToolCalls(raw: string, messageIndex: number): ToolCallRecord[] {
+  const toolCalls: ToolCallRecord[] = [];
+  const toolBlocks = raw.split(/\n#### Tool: /).filter((section) => section.trim());
+  for (const toolBlock of toolBlocks) {
+    const nameMatch = toolBlock.match(/^([^[]+)\s*\[(running|success|error)\]/);
+    const name = nameMatch ? nameMatch[1].trim() : toolBlock.split('\n')[0].trim();
+    const status = nameMatch ? (nameMatch[2] as ToolCallRecord['status']) : 'success';
+    const argsMatch = toolBlock.match(/```json\n([\s\S]*?)```/);
+    const resultMatch = toolBlock.match(/\*\*Result:\*\*\n```\n([\s\S]*?)```/);
+    toolCalls.push({
+      id: `tc-${messageIndex}-${toolCalls.length}`,
+      name,
+      arguments: argsMatch ? argsMatch[1].trim() : '',
+      result: resultMatch ? resultMatch[1].trim() : undefined,
+      status,
+    });
+  }
+  return toolCalls;
+}
+
+function parseFrontmatter(content: string): ParsedFrontmatter {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n\n?/);
+  if (!fmMatch) return { body: content, values: {} };
+
+  const values: Record<string, string> = {};
+  for (const line of fmMatch[1].split('\n')) {
+    const match = line.match(/^([^:]+):\s*(.*)$/);
+    if (!match) continue;
+    values[match[1].trim()] = match[2].trim();
+  }
+  return {
+    raw: fmMatch[1],
+    values,
+    body: content.replace(/^---\n[\s\S]*?\n---\n\n?/, ''),
+  };
+}
+
+function parseFrontmatterString(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === 'string' ? parsed : String(parsed);
+  } catch {
+    return value.trim();
+  }
+}
+
+function parseInteger(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function extractNamedBlock(block: string, name: string): string {
+  const regex = new RegExp(
+    `<!--\\s*super-obsidian-${name}-start\\s*-->\\n?([\\s\\S]*?)\\n?<!--\\s*super-obsidian-${name}-end\\s*-->`,
+  );
+  return regex.exec(block)?.[1]?.trim() ?? '';
+}
+
+function countMarkdownMessages(body: string): number {
+  const markerCount = body.match(/<!--\s*super-obsidian-message\s*[\s\S]*?\s*-->/g)?.length;
+  if (markerCount !== undefined) return markerCount;
+  return (body.match(/^##\s*(User|Assistant|System|Tool)$/gm) ?? []).length;
+}
+
+function deriveTitle(messages: ChatMessageWithMeta[]): string {
+  const firstUserMsg = messages.find((message) => message.role === 'user');
+  if (!firstUserMsg) return '';
+  const content = firstUserMsg.content.replace(/\n/g, ' ').trim();
+  return content.length > 50 ? content.slice(0, 50) + '...' : content;
+}
+
+function deriveSummary(messages: ChatMessageWithMeta[]): string {
+  const completedAssistant = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.status === 'complete');
+  const source = completedAssistant ?? messages.find((message) => message.role === 'user');
+  if (!source) return '';
+  const content = source.content.replace(/\s+/g, ' ').trim();
+  return content.length > 160 ? content.slice(0, 157) + '...' : content;
+}
+
+function formatRoleLabel(role: ChatMessage['role']): string {
+  const labels: Record<ChatMessage['role'], string> = {
+    system: 'System',
+    user: 'User',
+    assistant: 'Assistant',
+    tool: 'Tool',
+  };
+  return labels[role];
+}
+
+function buildMarkdownTable(rows: Array<[string, string]>): string {
+  return [
+    '| Field | Value |',
+    '| --- | --- |',
+    ...rows.map(([field, value]) => `| ${escapeTableCell(field)} | ${escapeTableCell(value)} |`),
+  ].join('\n');
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+}
+
+function formatFrontmatterValue(value: string): string {
+  return JSON.stringify(value);
+}
+
+function formatDateForFilename(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
+}
+
+async function buildUniqueFilename(vault: Vault, folder: string, date: Date): Promise<string> {
+  const baseName = formatDateForFilename(date);
+  let candidate = `${folder}/${baseName}.md`;
+  let index = 2;
+  while (await vault.adapter.exists(candidate)) {
+    candidate = `${folder}/${baseName}-${index}.md`;
+    index++;
+  }
+  return candidate;
+}
+
+async function ensureFolder(vault: Vault, folder: string): Promise<void> {
+  if (!folder || (await vault.adapter.exists(folder))) return;
+  const parts = folder.split('/').filter(Boolean);
+  let current = '';
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!(await vault.adapter.exists(current))) {
+      await vault.createFolder(current);
+    }
+  }
+}
+
+function sanitizeFilename(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '_') || 'chat-session';
+}
+
+function normalizeDateValue(value: string): string {
+  const numeric = Number(value);
+  if (!Number.isNaN(numeric) && value.trim() !== '') {
+    return new Date(numeric).toISOString();
+  }
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return date.toISOString();
+  }
+  return value;
+}
+
+function formatDisplayDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
