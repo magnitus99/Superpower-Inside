@@ -1180,16 +1180,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName(t('minScore'))
       .setDesc(t('minScoreDesc'))
-      .addSlider((slider) =>
-        slider
-          .setLimits(0, 1, 0.05)
-          .setValue(this.plugin.settings.rag.minScore)
-          .setDynamicTooltip()
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.minScore))
+          .setPlaceholder('0.5')
           .onChange((value) => {
-            this.plugin.settings.rag.minScore = value;
+            const num = Number(value);
+            if (value.trim() === '') return;
+            if (Number.isNaN(num) || num < 0 || num > 1) return;
+            this.plugin.settings.rag.minScore = num;
             this.debouncedSave();
-          }),
-      );
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '1';
+        text.inputEl.step = '0.05';
+      });
 
     new Setting(section)
       .setName(t('enableBM25'))
@@ -1204,16 +1210,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName(t('bm25Weight'))
       .setDesc(t('bm25WeightDesc'))
-      .addSlider((slider) =>
-        slider
-          .setLimits(0, 1, 0.05)
-          .setValue(this.plugin.settings.rag.bm25Weight)
-          .setDynamicTooltip()
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.bm25Weight))
+          .setPlaceholder('0.3')
           .onChange((value) => {
-            this.plugin.settings.rag.bm25Weight = value;
+            const num = Number(value);
+            if (value.trim() === '') return;
+            if (Number.isNaN(num) || num < 0 || num > 1) return;
+            this.plugin.settings.rag.bm25Weight = num;
             this.debouncedSave();
-          }),
-      );
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '1';
+        text.inputEl.step = '0.05';
+      });
   }
 
   private buildChatTab(containerEl: HTMLElement): void {
@@ -1325,16 +1337,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t('chatAutoSaveDelay'))
       .setDesc(t('chatAutoSaveDelayDesc'))
-      .addSlider((slider) =>
-        slider
-          .setLimits(1000, 10000, 500)
-          .setValue(this.plugin.settings.chat.autoSaveDebounceMs)
-          .setDynamicTooltip()
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.chat.autoSaveDebounceMs))
+          .setPlaceholder('3000')
           .onChange((value) => {
-            this.plugin.settings.chat.autoSaveDebounceMs = value;
+            const num = Number(value);
+            if (value.trim() === '') return;
+            if (Number.isNaN(num) || num < 1000 || num > 10000 || !Number.isInteger(num)) return;
+            this.plugin.settings.chat.autoSaveDebounceMs = num;
             this.debouncedSave();
-          }),
-      );
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '1000';
+        text.inputEl.max = '10000';
+        text.inputEl.step = '500';
+      });
 
     new Setting(containerEl)
       .setName(t('enforceMcpTools'))
