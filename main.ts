@@ -427,8 +427,14 @@ export default class SuperObsidianPlugin extends Plugin {
     let baseUrl: string | undefined;
     let apiKey = '';
     if (config) {
-      baseUrl = config.baseUrl;
       apiKey = config.apiKey;
+    }
+    if (providerKey === 'openai') {
+      baseUrl = 'https://api.openai.com';
+    } else if (providerKey === 'openRouter') {
+      baseUrl = 'https://openrouter.ai/api';
+    } else if (providerKey === 'ollama') {
+      baseUrl = 'http://localhost:11434';
     }
 
     // Create embedding provider

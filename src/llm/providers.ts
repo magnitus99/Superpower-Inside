@@ -1,5 +1,11 @@
 import { requestUrl } from 'obsidian';
-import type { ProviderConfig } from '../settings';
+import type { CustomOpenAIProviderConfig, ProviderConfig } from '../settings';
+
+const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
+const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+const OLLAMA_LOCAL_BASE_URL = 'http://localhost:11434';
+const OLLAMA_CLOUD_BASE_URL = 'https://ollama.com';
+const OPENROUTER_CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -80,8 +86,7 @@ class OpenAICompatibleProvider implements LLMProvider {
 
   constructor(config: ProviderConfig, endpointOverride?: string, modelOverride?: string) {
     this.config = config;
-    this.endpoint =
-      endpointOverride ?? `${config.baseUrl ?? 'https://api.openai.com'}/v1/chat/completions`;
+    this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
   }
 
@@ -253,7 +258,7 @@ class ClaudeProvider implements LLMProvider {
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -298,7 +303,7 @@ class ClaudeProvider implements LLMProvider {
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(`${this.config.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -455,7 +460,7 @@ class OllamaProvider implements LLMProvider {
     temperature = 0.7,
     tools?: ToolDefinition[],
   ): Promise<string> {
-    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? 'http://localhost:11434');
+    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
     console.log(
       '[SuperObsidian] Ollama chat URL:',
@@ -496,7 +501,7 @@ class OllamaProvider implements LLMProvider {
       onChunk({ content: '', done: true });
       return;
     }
-    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? 'http://localhost:11434');
+    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
@@ -580,12 +585,15 @@ function normalizeOllamaBaseUrl(baseUrl: string): string {
   return url.replace(/\/+$/, '');
 }
 
-function normalizeOpenRouterBaseUrl(baseUrl: string): string {
+function normalizeOpenAICompatibleBaseUrl(baseUrl: string): string {
   let url = baseUrl.trim().replace(/\/+$/, '');
-  if (!url.endsWith('/api')) {
-    url = url + '/api';
+  if (url.endsWith('/chat/completions')) {
+    url = url.slice(0, -17);
   }
-  return url;
+  if (!url.endsWith('/v1')) {
+    url = `${url}/v1`;
+  }
+  return url.replace(/\/+$/, '');
 }
 
 /* ---------- Provider Factory ---------- */
@@ -599,17 +607,27 @@ export function createProvider(
 ): LLMProvider {
   switch (key) {
     case 'openai':
-      return new OpenAICompatibleProvider(config, undefined, modelOverride);
+      return new OpenAICompatibleProvider(config, OPENAI_CHAT_COMPLETIONS_URL, modelOverride);
     case 'claude':
       return new ClaudeProvider(config, modelOverride);
     case 'ollama':
+      return new OllamaProvider({ ...config, baseUrl: OLLAMA_LOCAL_BASE_URL }, modelOverride);
     case 'ollamaCloud':
-      return new OllamaProvider(config, modelOverride);
-    case 'openRouter': {
-      const url = normalizeOpenRouterBaseUrl(config.baseUrl ?? 'https://openrouter.ai/api');
-      return new OpenAICompatibleProvider(config, `${url}/v1/chat/completions`, modelOverride);
-    }
+      return new OllamaProvider({ ...config, baseUrl: OLLAMA_CLOUD_BASE_URL }, modelOverride);
+    case 'openRouter':
+      return new OpenAICompatibleProvider(config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride);
     default:
       throw new Error(`Unknown provider: ${String(key)}`);
   }
+}
+
+export function createCustomOpenAIProvider(
+  config: CustomOpenAIProviderConfig,
+  modelOverride?: string,
+): LLMProvider {
+  if (!config.baseUrl?.trim()) {
+    throw new Error('Custom OpenAI-compatible provider requires a base URL.');
+  }
+  const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
+  return new OpenAICompatibleProvider(config, `${baseUrl}/chat/completions`, modelOverride);
 }
