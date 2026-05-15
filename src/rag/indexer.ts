@@ -4,6 +4,7 @@ import type { VectorStore, VectorEntry } from './store';
 import { getMarkdownFilesFiltered, isExcluded, isExcludedExt } from '../utils/vault';
 import type { RAGConfig } from '../settings';
 import { calculateRagStatus } from './status';
+import { JsonFileBM25Index } from './bm25';
 
 export interface Chunk {
   text: string;
@@ -112,6 +113,7 @@ export class VaultIndexer {
     vectorStore: VectorStore,
     embeddingProvider: EmbeddingProvider,
     ragConfig: RAGConfig,
+    private bm25Index?: JsonFileBM25Index,
   ) {
     this.vault = vault;
     this.vectorStore = vectorStore;
@@ -160,6 +162,14 @@ export class VaultIndexer {
 
     await this.vectorStore.removeByFilePath(file.path);
     await this.vectorStore.add(entries);
+
+    if (this.bm25Index) {
+      this.bm25Index.removeDocument(file.path);
+      if (content.trim()) {
+        this.bm25Index.addDocument(file.path, content);
+        await this.bm25Index.persist();
+      }
+    }
   }
 
   async reindexAll(): Promise<number> {

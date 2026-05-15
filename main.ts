@@ -18,6 +18,7 @@ import {
   type EmbeddingProvider,
 } from './src/llm/embedding';
 import { JsonFileVectorStore, type VectorStore } from './src/rag/store';
+import { JsonFileBM25Index } from './src/rag/bm25';
 import {
   VaultIndexer,
   registerModifyEvent,
@@ -301,7 +302,17 @@ export default class SuperObsidianPlugin extends Plugin {
         );
         delete rag.autoUpdateIntervalMs;
       }
+      if (typeof rag.minScore !== 'number') {
+        rag.minScore = 0.5;
+      }
+      if (typeof rag.enableBM25 !== 'boolean') {
+        rag.enableBM25 = true;
+      }
+      if (typeof rag.bm25Weight !== 'number') {
+        rag.bm25Weight = 0.3;
+      }
     }
+
 
     // Migrate old MCP settings to standard format
     const mcpServers = data.mcpServers as unknown[] | undefined;
@@ -439,7 +450,7 @@ export default class SuperObsidianPlugin extends Plugin {
     }
   }
 
-  private initRAG(): void {
+  async initRAG(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
     // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
     // button or "Reindex All" command). Re-initializing RAG with a new provider/model must
@@ -491,8 +502,24 @@ export default class SuperObsidianPlugin extends Plugin {
       '.super-obsidian/vectors.json',
     );
 
+    // BM25 index
+    let bm25Index: JsonFileBM25Index | undefined;
+    if (rag.enableBM25) {
+      bm25Index = new JsonFileBM25Index(
+        this.app.vault.adapter,
+        '.super-obsidian/bm25-index.json',
+      );
+      await bm25Index.load();
+    }
+
     // RAG engine
-    this.ragEngine = new RAGQueryEngine(this.vectorStore, this.embeddingProvider);
+    this.ragEngine = new RAGQueryEngine(
+      this.vectorStore,
+      this.embeddingProvider,
+      bm25Index,
+      rag.bm25Weight,
+      rag.minScore,
+    );
 
     // Indexer
     this.vaultIndexer = new VaultIndexer(
@@ -500,6 +527,7 @@ export default class SuperObsidianPlugin extends Plugin {
       this.vectorStore,
       this.embeddingProvider,
       this.settings.rag,
+      bm25Index,
     );
 
     // Auto-update timer

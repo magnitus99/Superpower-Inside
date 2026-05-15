@@ -100,6 +100,13 @@ export interface I18nKeys {
   vectorStoreTypeDesc: string;
   jsonFile: string;
   indexedDB: string;
+  minScore: string;
+  minScoreDesc: string;
+  enableBM25: string;
+  enableBM25Desc: string;
+  bm25Weight: string;
+  bm25WeightDesc: string;
+  bm25Guidance: string;
 
   // 채팅 탭
   chatTabTitle: string;
@@ -356,6 +363,17 @@ const ko: I18nKeys = {
     'JSON File은 볼트 안의 JSON 파일에 저장되어 Obsidian Sync/Git 등으로 동기화됩니다. IndexedDB는 브라우저 로컬 데이터베이스에 저장되며, 큰 임베딩 데이터에서 더 빠르고 효율적이지만 수동 백업 없이는 동기화되지 않습니다.',
   jsonFile: 'JSON File',
   indexedDB: 'IndexedDB',
+  minScore: '최소 유사도 점수',
+  minScoreDesc:
+    '임베딩 검색 결과 중 이 점수(0~1) 미만은 제외합니다. 낮을수록 더 많은 결과를 포함하지만 품질이 떨어질 수 있습니다.',
+  enableBM25: 'BM25 키워드 검색 활성화',
+  enableBM25Desc:
+    '임베딩 유사도와 BM25 키워드 매칭을 결합한 하이브리드 검색을 사용합니다. 한국어 검색 정확도 향상에 도움이 됩니다.',
+  bm25Weight: 'BM25 가중치',
+  bm25WeightDesc:
+    '0~1 사이. 0에 가까울수록 임베딩 유사도 위주, 1에 가까울수록 키워드 매칭 위주로 검색합니다.',
+  bm25Guidance:
+    '💡 BM25는 키워드 기반 검색으로, 임베딩 유사도만으로는 잡아내기 어려운 한국어 키워드 매칭을 보완합니다. RAG 컨텍스트가 빈번하게 무관한 결과를 반환한다면 BM25를 활성화하고 가중치를 조정해보세요.',
 
   // Chat
   chatTabTitle: 'AI 채팅',
@@ -405,6 +423,7 @@ const ko: I18nKeys = {
   toolCallLabel: '툴 호출',
   answerLabel: '답변',
   thinkingPlaceholder: '생각 중...',
+    '@mention한 MCP 서버가 있음에도 모델이 도구를 호출하지 않고 답변을 생성하면, 자동으로 시스템 프롬프트에 도구 사용을 강제하는 지시를 추가하여 재시도합니다.',
   modelSelector: '모델',
   mcpRefresh: '새로고침',
   mcpRefreshing: '재연결 중...',
@@ -615,6 +634,17 @@ const en: I18nKeys = {
     'JSON File stores in vault JSON, syncable via Obsidian Sync/Git. IndexedDB stores in browser local DB, faster for large embeddings but not auto-synced without manual backup.',
   jsonFile: 'JSON File',
   indexedDB: 'IndexedDB',
+  minScore: 'Minimum Relevance Score',
+  minScoreDesc:
+    'Filter out embedding results below this threshold (0–1). Lower values include more results but may reduce quality.',
+  enableBM25: 'Enable BM25 Keyword Search',
+  enableBM25Desc:
+    'Combine embedding similarity with BM25 keyword matching for hybrid search. Improves Korean text retrieval accuracy.',
+  bm25Weight: 'BM25 Weight',
+  bm25WeightDesc:
+    'Closer to 0 favors embedding similarity, closer to 1 favors keyword matching.',
+  bm25Guidance:
+    '💡 BM25 complements embedding search by adding keyword matching, which helps with Korean text where semantic embeddings alone may miss relevant terms. If RAG frequently returns irrelevant results, enable BM25 and adjust the weight.',
 
   // Chat
   chatTabTitle: 'AI Chat',

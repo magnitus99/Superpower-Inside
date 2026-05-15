@@ -14,6 +14,9 @@ const baseRagConfig: RAGConfig = {
   embeddingModel: 'text-embedding-3-small',
   autoUpdateEnabled: false,
   autoUpdateIntervalMin: 5,
+  minScore: 0.5,
+  enableBM25: false,
+  bm25Weight: 0.3,
 };
 
 describe('calculateRagStatus', () => {

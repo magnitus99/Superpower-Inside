@@ -161,6 +161,9 @@ export interface RAGConfig {
   embeddingModel: string;
   autoUpdateEnabled: boolean;
   autoUpdateIntervalMin: number;
+  minScore: number;
+  enableBM25: boolean;
+  bm25Weight: number;
 }
 
 export interface ChatConfig {
@@ -238,6 +241,9 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
     autoUpdateIntervalMin: 5,
+    minScore: 0.5,
+    enableBM25: true,
+    bm25Weight: 0.3,
   },
   mcpServers: [],
   mcpPath: '',
@@ -260,6 +266,7 @@ export interface PluginLike {
   saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
+  initRAG(): Promise<void>;
   mcpRegistry: MCPRegistry | null;
   mcpConnectionState?: MCPConnectionState;
   mcpLastErrors?: string[];
@@ -595,6 +602,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     this.buildUpdateRequiredDocumentsSection(containerEl);
     this.buildControlsSection(containerEl);
     this.buildIndexingOptionsSection(containerEl);
+    this.buildSearchQualitySection(containerEl);
   }
 
   private buildRagStatusPanel(containerEl: HTMLElement): void {
@@ -1141,6 +1149,52 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
   }
 
+  private buildSearchQualitySection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '검색 품질' });
+
+    const guidanceEl = section.createEl('div');
+    guidanceEl.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85em; padding: 8px 12px; border-left: 3px solid var(--interactive-accent); background: var(--background-secondary); border-radius: 4px; margin: 8px 0;">${t('bm25Guidance')}</p>`;
+
+    new Setting(section)
+      .setName(t('minScore'))
+      .setDesc(t('minScoreDesc'))
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 1, 0.05)
+          .setValue(this.plugin.settings.rag.minScore)
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.rag.minScore = value;
+            this.debouncedSave();
+          }),
+      );
+
+    new Setting(section)
+      .setName(t('enableBM25'))
+      .setDesc(t('enableBM25Desc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.rag.enableBM25).onChange((value) => {
+          this.plugin.settings.rag.enableBM25 = value;
+          void this.plugin.saveSettings().then(() => this.plugin.initRAG());
+        }),
+      );
+
+    new Setting(section)
+      .setName(t('bm25Weight'))
+      .setDesc(t('bm25WeightDesc'))
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 1, 0.05)
+          .setValue(this.plugin.settings.rag.bm25Weight)
+          .setDynamicTooltip()
+          .onChange((value) => {
+            this.plugin.settings.rag.bm25Weight = value;
+            this.debouncedSave();
+          }),
+      );
+  }
+
   private buildChatTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName(t('chatSaveFolder'))
@@ -1260,6 +1314,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             this.debouncedSave();
           }),
       );
+
   }
 
   private buildMCPTab(containerEl: HTMLElement): void {
