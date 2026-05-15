@@ -493,6 +493,16 @@ export class ChatView extends ItemView {
         allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
       }
     }
+    for (const provider of this.plugin.settings.customOpenAIProviders) {
+      if (!provider.enabled) continue;
+      const label = provider.name.trim() || 'Custom OpenAI-Compatible';
+      for (const model of provider.models) {
+        allModels.push({
+          value: `customOpenAI:${provider.id}:${model}`,
+          label: `${label} — ${model}`,
+        });
+      }
+    }
 
     if (allModels.length === 0) {
       const opt = this.modelSelectEl.createEl('option');
@@ -1929,7 +1939,7 @@ export class ChatView extends ItemView {
     if (!text || this.isStreaming) return;
     this.lastUserPrompt = text;
 
-    const { createProvider } = await import('../llm/providers');
+    const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
@@ -1943,20 +1953,41 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const key = parts[0] as ProviderKey;
-    const modelName = parts.slice(1).join(':');
-    const config = this.plugin.settings[key];
-    const providerLabel = PROVIDER_LABELS[key];
+    let key: string;
+    let modelName: string;
+    let providerLabel: string;
+    let provider: LLMProvider;
 
-    if (!config?.enabled) {
-      new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
-      return;
-    }
+    if (parts[0] === 'customOpenAI') {
+      if (parts.length < 3) {
+        new Notice('커스텀 모델 설정 형식이 잘못되었습니다.');
+        return;
+      }
+      const providerId = parts[1];
+      modelName = parts.slice(2).join(':');
+      const customProvider = this.plugin.settings.customOpenAIProviders.find(
+        (item) => item.id === providerId,
+      );
+      if (!customProvider?.enabled) {
+        new Notice('커스텀 Provider가 활성화되지 않았습니다.');
+        return;
+      }
+      key = `customOpenAI:${providerId}`;
+      providerLabel = customProvider.name.trim() || 'Custom OpenAI-Compatible';
+      provider = createCustomOpenAIProvider(customProvider, modelName);
+    } else {
+      const fixedKey = parts[0] as ProviderKey;
+      key = fixedKey;
+      modelName = parts.slice(1).join(':');
+      const config = this.plugin.settings[fixedKey];
+      providerLabel = PROVIDER_LABELS[fixedKey];
 
-    const provider = createProvider(key, config, modelName);
-    if (!provider) {
-      new Notice('Provider 생성에 실패했습니다.');
-      return;
+      if (!config?.enabled) {
+        new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
+        return;
+      }
+
+      provider = createProvider(fixedKey, config, modelName);
     }
 
     this.inputArea!.value = '';
@@ -2507,9 +2538,23 @@ export class ChatView extends ItemView {
       (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
     );
     if (successfulToolCalls.length > 0 && message.providerKey && message.model) {
-      const { createProvider } = await import('../llm/providers');
-      const config = this.plugin.settings[message.providerKey];
-      const provider = createProvider(message.providerKey, config, message.model);
+      const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
+      const provider = message.providerKey.startsWith('customOpenAI:')
+        ? (() => {
+            const providerId = message.providerKey?.split(':')[1] ?? '';
+            const customProvider = this.plugin.settings.customOpenAIProviders.find(
+              (item) => item.id === providerId,
+            );
+            if (!customProvider) {
+              throw new Error('커스텀 Provider를 찾을 수 없습니다.');
+            }
+            return createCustomOpenAIProvider(customProvider, message.model);
+          })()
+        : createProvider(
+            message.providerKey as ProviderKey,
+            this.plugin.settings[message.providerKey as ProviderKey],
+            message.model,
+          );
       const mentionedServers = this.getMentionedServerNames(this.lastUserPrompt ?? '');
       const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
       const systemPrompt = promptContext.systemPrompt;

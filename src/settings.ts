@@ -9,7 +9,6 @@ import {
 } from 'obsidian';
 import { execSync } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
-import { isExcludedExt } from './utils/vault';
 import { validateMcpJson, formatMcpJson } from './utils/mcp-json';
 import type { MCPRegistry } from './mcp/registry';
 import {
@@ -19,6 +18,7 @@ import {
 } from './mcp/connection-state';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
+import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import { type Language, t } from './i18n';
 
 interface StandardMcpServerEntry {
@@ -60,6 +60,11 @@ export interface ProviderConfig {
   baseUrl?: string;
   models: string[];
   enabled: boolean;
+}
+
+export interface CustomOpenAIProviderConfig extends ProviderConfig {
+  id: string;
+  name: string;
 }
 
 export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
@@ -173,6 +178,7 @@ export interface SuperObsidianSettings {
   ollama: ProviderConfig;
   ollamaCloud: ProviderConfig;
   openRouter: ProviderConfig;
+  customOpenAIProviders: CustomOpenAIProviderConfig[];
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
@@ -214,6 +220,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     models: ['openrouter/auto'],
     enabled: false,
   },
+  customOpenAIProviders: [],
   rag: {
     excludePaths: [
       '.git',
@@ -256,12 +263,7 @@ export interface PluginLike {
   mcpRegistry: MCPRegistry | null;
   mcpConnectionState?: MCPConnectionState;
   mcpLastErrors?: string[];
-  eventDrivenRagStats?: {
-    totalFiles: number;
-    indexedFiles: number;
-    pendingFiles: number;
-    totalVectors: number;
-  } | null;
+  eventDrivenRagStats?: RagStatusSummary | null;
 }
 
 // 탭 타입 및 설정
@@ -283,6 +285,10 @@ interface ProviderValidationCache {
     error?: string;
   };
 }
+
+type ProviderSettingsTarget =
+  | { kind: 'fixed'; key: ProviderKey; label: string; config: ProviderConfig }
+  | { kind: 'custom'; key: string; label: string; config: CustomOpenAIProviderConfig };
 
 export class SuperObsidianSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
@@ -507,6 +513,16 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
       }
     }
+    for (const provider of this.plugin.settings.customOpenAIProviders) {
+      if (!provider.enabled) continue;
+      const label = provider.name.trim() || 'Custom OpenAI-Compatible';
+      for (const model of provider.models) {
+        allModels.push({
+          value: `customOpenAI:${provider.id}:${model}`,
+          label: `${label} — ${model}`,
+        });
+      }
+    }
 
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
 
@@ -539,19 +555,91 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
 
   private buildProvidersTab(containerEl: HTMLElement): void {
-    this.buildProviderSettings(containerEl, 'OpenAI', 'openai');
-    this.buildProviderSettings(containerEl, 'Claude (Anthropic)', 'claude');
-    this.buildProviderSettings(containerEl, 'Ollama (Local)', 'ollama');
-    this.buildProviderSettings(containerEl, 'Ollama (Cloud)', 'ollamaCloud');
-    this.buildProviderSettings(containerEl, 'OpenRouter', 'openRouter');
+    this.buildProviderSettings(containerEl, {
+      kind: 'fixed',
+      key: 'openai',
+      label: 'OpenAI',
+      config: this.plugin.settings.openai,
+    });
+    this.buildProviderSettings(containerEl, {
+      kind: 'fixed',
+      key: 'claude',
+      label: 'Claude (Anthropic)',
+      config: this.plugin.settings.claude,
+    });
+    this.buildProviderSettings(containerEl, {
+      kind: 'fixed',
+      key: 'ollama',
+      label: 'Ollama (Local)',
+      config: this.plugin.settings.ollama,
+    });
+    this.buildProviderSettings(containerEl, {
+      kind: 'fixed',
+      key: 'ollamaCloud',
+      label: 'Ollama (Cloud)',
+      config: this.plugin.settings.ollamaCloud,
+    });
+    this.buildProviderSettings(containerEl, {
+      kind: 'fixed',
+      key: 'openRouter',
+      label: 'OpenRouter',
+      config: this.plugin.settings.openRouter,
+    });
+    this.buildCustomOpenAIProvidersSection(containerEl);
   }
 
-  // RAG 탭 4섹션 구조
   private buildRAGTab(containerEl: HTMLElement): void {
+    this.buildRagStatusPanel(containerEl);
     this.buildEmbeddingProviderSection(containerEl);
     this.buildStatsSection(containerEl);
+    this.buildUpdateRequiredDocumentsSection(containerEl);
     this.buildControlsSection(containerEl);
     this.buildIndexingOptionsSection(containerEl);
+  }
+
+  private buildRagStatusPanel(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({
+      cls: 'super-obsidian-rag-section super-obsidian-rag-status-panel',
+    });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: 'RAG 상태' });
+
+    const rag = this.plugin.settings.rag;
+    const providerLabel = EMBEDDING_PROVIDER_LABELS[rag.embeddingProvider];
+    const statusGrid = section.createDiv({ cls: 'super-obsidian-rag-status-grid' });
+    this.createRagStatusItem(statusGrid, '프로바이더', providerLabel);
+    this.createRagStatusItem(statusGrid, '임베딩 모델', rag.embeddingModel || '미설정');
+    this.createRagStatusItem(statusGrid, '저장소', 'JSON File');
+    this.createRagStatusItem(statusGrid, '자동 업데이트', rag.autoUpdateEnabled ? '켜짐' : '꺼짐');
+
+    const warning = this.getRagSetupWarning();
+    if (warning) {
+      section.createDiv({ cls: 'super-obsidian-settings-warning', text: warning });
+    }
+
+    if (rag.vectorStoreType === 'indexeddb') {
+      section.createDiv({
+        cls: 'super-obsidian-settings-warning',
+        text: '현재 런타임은 JSON File 벡터 저장소만 사용합니다. IndexedDB 선택값은 아직 적용되지 않습니다.',
+      });
+    }
+
+    const timestampEl = section.createDiv({
+      cls: 'super-obsidian-rag-status-timestamp',
+      text: '상태 계산 중...',
+    });
+    void this.getRagStatus().then((status) => {
+      timestampEl.setText(
+        status
+          ? `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
+          : 'RAG 인덱서가 초기화되지 않아 상태를 계산할 수 없습니다.',
+      );
+    });
+  }
+
+  private createRagStatusItem(containerEl: HTMLElement, label: string, value: string): void {
+    const item = containerEl.createDiv({ cls: 'super-obsidian-rag-status-item' });
+    item.createDiv({ cls: 'super-obsidian-rag-status-label', text: label });
+    item.createDiv({ cls: 'super-obsidian-rag-status-value', text: value });
   }
 
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
@@ -723,52 +811,21 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
 
   private async renderStats(gridEl: HTMLElement): Promise<void> {
-    const rag = this.plugin.settings.rag;
-    const vault = this.plugin.app.vault;
-
-    if (this.plugin.eventDrivenRagStats) {
-      const cache = this.plugin.eventDrivenRagStats;
-      const stats = [
-        { value: String(cache.totalFiles), label: '전체 파일', desc: '볼트 내 마크다운 파일 수' },
-        { value: String(cache.indexedFiles), label: '인덱싱 완료', desc: '임베딩 처리된 파일 수' },
-        {
-          value: String(cache.pendingFiles),
-          label: '대기 중',
-          desc: '아직 인덱싱되지 않은 파일 수',
-        },
-        { value: String(cache.totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
-      ];
-      for (const stat of stats) {
-        const card = gridEl.createDiv({ cls: 'super-obsidian-stat-card' });
-        card.createDiv({ cls: 'super-obsidian-stat-value', text: stat.value });
-        card.createDiv({ cls: 'super-obsidian-stat-label', text: stat.label });
-        card.createDiv({ cls: 'super-obsidian-stat-desc', text: stat.desc });
-      }
+    const status = await this.getRagStatus();
+    if (!status) {
+      gridEl.setText('RAG 인덱서가 초기화되지 않았습니다.');
       return;
     }
-    const { getMarkdownFilesFiltered } = await import('./utils/vault');
-    const allFiles = getMarkdownFilesFiltered(vault, rag.excludePaths).filter(
-      (f) => !isExcludedExt(f.path, rag.excludeExts),
-    );
-    const totalFiles = allFiles.length;
-
-    let indexedFiles = 0;
-    let totalVectors = 0;
-    const p = this.plugin as unknown as { vectorStore?: VectorStore };
-    if (p.vectorStore) {
-      const indexedPaths = await p.vectorStore.getIndexedFilePaths();
-      indexedFiles = indexedPaths.length;
-      const stats = await p.vectorStore.getStats();
-      totalVectors = stats.totalEntries;
-    }
-
-    const pendingFiles = Math.max(0, totalFiles - indexedFiles);
 
     const stats = [
-      { value: String(totalFiles), label: '전체 파일', desc: '볼트 내 마크다운 파일 수' },
-      { value: String(indexedFiles), label: '인덱싱 완료', desc: '임베딩 처리된 파일 수' },
-      { value: String(pendingFiles), label: '대기 중', desc: '아직 인덱싱되지 않은 파일 수' },
-      { value: String(totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
+      { value: String(status.totalDocuments), label: '전체 문서', desc: '인덱싱 대상 Markdown' },
+      { value: String(status.healthyDocuments), label: '정상', desc: '현재 벡터가 최신인 문서' },
+      {
+        value: String(status.updateRequiredDocuments.length),
+        label: '업데이트 필요',
+        desc: '미인덱싱/수정됨/확인 필요',
+      },
+      { value: String(status.totalVectors), label: '전체 벡터', desc: '저장된 임베딩 벡터 개수' },
     ];
 
     for (const stat of stats) {
@@ -782,10 +839,90 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   refreshStats(): void {
     const ragPanel = this.tabPanels.get('rag');
     if (!ragPanel) return;
-    const grid = ragPanel.querySelector('.super-obsidian-stats-grid');
-    if (!grid || !(grid instanceof HTMLElement)) return;
-    grid.empty();
-    void this.renderStats(grid);
+    ragPanel.empty();
+    this.buildRAGTab(ragPanel);
+  }
+
+  private buildUpdateRequiredDocumentsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '업데이트가 필요한 문서' });
+
+    const listEl = section.createDiv({ cls: 'super-obsidian-rag-update-list' });
+    listEl.setText('문서 상태를 확인하는 중...');
+
+    void this.getRagStatus()
+      .then((status) => {
+        listEl.empty();
+        if (!status) {
+          listEl.setText('RAG 인덱서가 초기화되지 않아 문서 목록을 계산할 수 없습니다.');
+          return;
+        }
+
+        const documents = status.updateRequiredDocuments;
+        if (documents.length === 0) {
+          listEl.createDiv({
+            cls: 'super-obsidian-rag-empty-state',
+            text: '업데이트가 필요한 문서가 없습니다.',
+          });
+          return;
+        }
+
+        listEl.createDiv({
+          cls: 'super-obsidian-rag-update-summary',
+          text: `${documents.length}개 문서에 업데이트가 필요합니다. 아래에는 최대 10개만 표시됩니다.`,
+        });
+
+        for (const document of documents.slice(0, 10)) {
+          this.renderRagUpdateDocument(listEl, document);
+        }
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        listEl.setText(`문서 상태를 불러오지 못했습니다: ${msg}`);
+      });
+  }
+
+  private renderRagUpdateDocument(containerEl: HTMLElement, document: RagDocumentUpdate): void {
+    const row = containerEl.createDiv({ cls: 'super-obsidian-rag-update-row' });
+    row.createSpan({
+      cls: `super-obsidian-rag-update-badge ${document.status}`,
+      text: this.getRagStatusLabel(document.status),
+    });
+    const body = row.createDiv({ cls: 'super-obsidian-rag-update-body' });
+    body.createDiv({ cls: 'super-obsidian-rag-update-path', text: document.path });
+    body.createDiv({ cls: 'super-obsidian-rag-update-reason', text: document.reason });
+  }
+
+  private getRagStatusLabel(status: RagDocumentUpdate['status']): string {
+    if (status === 'missing') return '미인덱싱';
+    if (status === 'stale') return '수정됨';
+    return '확인 필요';
+  }
+
+  private async getRagStatus(): Promise<RagStatusSummary | null> {
+    const p = this.plugin as unknown as { vectorStore?: VectorStore };
+    if (p.vectorStore) {
+      return calculateRagStatus(this.plugin.app.vault, p.vectorStore, this.plugin.settings.rag);
+    }
+    return this.plugin.eventDrivenRagStats ?? null;
+  }
+
+  private getRagSetupWarning(): string | null {
+    const rag = this.plugin.settings.rag;
+    const providerKey = rag.embeddingProvider;
+    if (providerKey !== 'other') {
+      const config = this.plugin.settings[providerKey as ProviderKey];
+      if (!config?.enabled) {
+        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"을 먼저 활성화하세요.`;
+      }
+      if (!config.apiKey.trim()) {
+        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}" API Key를 입력하세요.`;
+      }
+    }
+    if (!rag.embeddingModel.trim()) {
+      return '임베딩 모델을 선택하고 저장하세요.';
+    }
+    return null;
   }
 
   private diagnoseRAGInitFailure(): string {
@@ -823,17 +960,31 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     };
     const hasIndexer = !!p.vaultIndexer;
 
-    controls.createEl('button', { text: '대기 중인 파일 업데이트' }, (btn) => {
+    controls.createEl('button', { text: '필요 문서 업데이트' }, (btn) => {
+      btn.disabled = true;
+      void this.getRagStatus().then((status) => {
+        btn.disabled = !hasIndexer || !status || status.updateRequiredDocuments.length === 0;
+        btn.title =
+          status && status.updateRequiredDocuments.length === 0
+            ? '업데이트가 필요한 문서가 없습니다.'
+            : '';
+      });
       btn.addEventListener('click', () => {
         void (async () => {
           if (!hasIndexer) {
             new Notice('RAG 인덱서가 초기화되지 않았습니다. ' + this.diagnoseRAGInitFailure());
             return;
           }
-          new Notice('대기 중인 파일 인덱싱 시작...');
           try {
+            const status = await this.getRagStatus();
+            if (!status || status.updateRequiredDocuments.length === 0) {
+              new Notice('업데이트가 필요한 문서가 없습니다.');
+              return;
+            }
+            new Notice(`${status.updateRequiredDocuments.length}개 문서 업데이트 시작...`);
             const result = await p.vaultIndexer!.indexPending();
-            new Notice(`${result.indexed}개 파일 인덱싱 완료, ${result.skipped}개 파일 스킵됨`);
+            new Notice(`${result.indexed}개 문서 업데이트 완료, ${result.skipped}개 문서 스킵됨`);
+            this.refreshStats();
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             new Notice(`인덱싱 실패: ${msg}`);
@@ -853,6 +1004,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           try {
             const count = await p.vaultIndexer!.reindexAll();
             new Notice(`${count}개 파일 재인덱싱 완료`);
+            this.refreshStats();
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             new Notice(`재인덱싱 실패: ${msg}`);
@@ -875,6 +1027,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
               await p.embeddingProvider.clearCache();
             }
             new Notice('모든 임베딩 데이터가 초기화되었습니다.');
+            this.refreshStats();
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             new Notice(`초기화 실패: ${msg}`);
@@ -886,7 +1039,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'super-obsidian-rag-section' });
-    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '인덱싱 옵션' });
+    section.createDiv({ cls: 'super-obsidian-rag-section-title', text: '고급 인덱싱 옵션' });
 
     // 자동 업데이트 토글
     new Setting(section)
@@ -971,16 +1124,19 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName('벡터 저장소 유형')
       .setDesc(
-        'JSON File은 볼트 안의 JSON 파일에 저장되어 Obsidian Sync/Git 등으로 동기화됩니다. IndexedDB는 브라우저 로컬 데이터베이스에 저장되며, 큰 임베딩 데이터에서 더 빠르고 효율적이지만 수동 백업 없이는 동기화되지 않습니다.',
+        '현재 런타임은 JSON File만 사용합니다. IndexedDB는 설정값으로 보이지만 아직 실제 저장소로 연결되지 않았습니다.',
       )
       .addDropdown((dropdown) =>
         dropdown
           .addOption('json', 'JSON File')
-          .addOption('indexeddb', 'IndexedDB')
+          .addOption('indexeddb', 'IndexedDB (미지원)')
           .setValue(this.plugin.settings.rag.vectorStoreType)
           .onChange((value) => {
             this.plugin.settings.rag.vectorStoreType = value as 'json' | 'indexeddb';
             this.debouncedSave();
+            if (value === 'indexeddb') {
+              new Notice('현재 IndexedDB 벡터 저장소는 런타임에서 아직 지원되지 않습니다.');
+            }
           }),
       );
   }
@@ -1019,7 +1175,8 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           .addOption('always-auto', t('mcpToolExecutionAlwaysAuto'))
           .setValue(this.plugin.settings.chat.mcpToolExecutionPolicy)
           .onChange((value) => {
-            this.plugin.settings.chat.mcpToolExecutionPolicy = value as ChatConfig['mcpToolExecutionPolicy'];
+            this.plugin.settings.chat.mcpToolExecutionPolicy =
+              value as ChatConfig['mcpToolExecutionPolicy'];
             this.debouncedSave();
           }),
       );
@@ -1423,10 +1580,15 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
   }
 
-  private buildProviderSettings(containerEl: HTMLElement, label: string, key: ProviderKey): void {
-    const config = this.plugin.settings[key];
-    const section = containerEl.createDiv({ cls: 'super-obsidian-settings-section' });
-    section.createDiv({ cls: 'super-obsidian-settings-section-title', text: label });
+  private buildProviderSettings(containerEl: HTMLElement, target: ProviderSettingsTarget): void {
+    const { config, label } = target;
+    const cacheKey = target.key;
+    const section = containerEl.createDiv({
+      cls: 'super-obsidian-settings-section super-obsidian-provider-card',
+    });
+    const titleRow = section.createDiv({ cls: 'super-obsidian-provider-title-row' });
+    titleRow.createDiv({ cls: 'super-obsidian-settings-section-title', text: label });
+    const selectedCountEl = titleRow.createDiv({ cls: 'super-obsidian-provider-selected-count' });
 
     new Setting(section).setName(t('enabled')).addToggle((toggle) =>
       toggle.setValue(config.enabled).onChange((value) => {
@@ -1445,45 +1607,76 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         }),
     );
 
-    new Setting(section).setName(t('baseUrl')).addText((text) =>
-      text
-        .setPlaceholder('https://api...')
-        .setValue(config.baseUrl ?? '')
-        .onChange((value) => {
-          let url = value.trim();
-          if (key === 'ollama' || key === 'ollamaCloud') {
-            url = url.replace(/\/+$/, '');
-            if (url.endsWith('/api')) {
-              url = url.slice(0, -4);
-            }
-            url = url.replace(/\/+$/, '');
-          }
-          config.baseUrl = url || undefined;
-          this.debouncedSave();
-        }),
-    );
+    if (target.kind === 'custom') {
+      new Setting(section).setName('표시 이름').addText((text) =>
+        text
+          .setPlaceholder('예: LM Studio')
+          .setValue(target.config.name)
+          .onChange((value) => {
+            target.config.name = value.trim();
+            this.debouncedSave();
+          }),
+      );
 
+      new Setting(section).setName('OpenAI v1 Base URL').addText((text) =>
+        text
+          .setPlaceholder('예: http://localhost:1234/v1')
+          .setValue(target.config.baseUrl ?? '')
+          .onChange((value) => {
+            target.config.baseUrl = value.trim();
+            this.debouncedSave();
+          }),
+      );
+    }
+
+    const controls = section.createDiv({ cls: 'super-obsidian-provider-model-controls' });
+    const searchInput = controls.createEl('input', {
+      type: 'search',
+      placeholder: '모델 검색...',
+      cls: 'super-obsidian-provider-model-search',
+    });
+    const selectedOnlyLabel = controls.createEl('label', {
+      cls: 'super-obsidian-provider-selected-only',
+    });
+    const selectedOnlyInput = selectedOnlyLabel.createEl('input', { type: 'checkbox' });
+    selectedOnlyLabel.createSpan({ text: '선택됨만 보기' });
     const modelListContainer = section.createDiv({ cls: 'super-obsidian-settings-model-list' });
 
     const statusContainer = section.createDiv({ cls: 'super-obsidian-settings-validation-status' });
+    let filterText = '';
+    let selectedOnly = false;
+    let availableModels = this.getInitialProviderModels(cacheKey, config);
 
-    const renderModelList = (models: string[]) => {
+    const renderModelList = () => {
       modelListContainer.empty();
-      if (models.length === 0) {
+      selectedCountEl.setText(`${config.models.length}개 선택됨`);
+      if (availableModels.length === 0) {
         modelListContainer.setText(t('noModelsFound'));
         return;
       }
 
-      // 모델 알파벳 순 정렬
-      const sortedModels = [...models].sort((a, b) => a.localeCompare(b, 'en'));
+      const normalizedFilter = filterText.trim().toLowerCase();
+      const sortedModels = [...availableModels].sort((a, b) => a.localeCompare(b, 'en'));
+      const visibleModels = sortedModels.filter((model) => {
+        if (selectedOnly && !config.models.includes(model)) return false;
+        if (!normalizedFilter) return true;
+        return model.toLowerCase().includes(normalizedFilter);
+      });
 
-      // 모델 개수 헤더 추가
       const header = modelListContainer.createDiv({
         cls: 'super-obsidian-settings-model-list-header',
       });
-      header.textContent = `${sortedModels.length} models available`;
+      header.textContent = `${visibleModels.length}/${sortedModels.length}개 모델 표시`;
 
-      sortedModels.forEach((model) => {
+      if (visibleModels.length === 0) {
+        modelListContainer.createDiv({
+          cls: 'super-obsidian-provider-empty-models',
+          text: '검색 조건에 맞는 모델이 없습니다.',
+        });
+        return;
+      }
+
+      visibleModels.forEach((model) => {
         const item = modelListContainer.createDiv({ cls: 'super-obsidian-settings-model-item' });
         const checkbox = item.createEl('input', { type: 'checkbox' });
         checkbox.checked = config.models.includes(model);
@@ -1496,56 +1689,183 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             config.models = config.models.filter((m) => m !== model);
           }
           this.debouncedSave();
+          renderModelList();
         });
       });
     };
 
-    // 초기 렌더링: 저장된 모델 + 캐시된 모델 리스트를 합쳐서 항상 보여줌
-    const getInitialModels = () => {
-      const cached = this.validationCache[key];
-      const models = new Set<string>(config.models);
-      if (cached && cached.valid && cached.models.length > 0) {
-        cached.models.forEach((m) => models.add(m));
-      }
-      return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
-    };
-    renderModelList(getInitialModels());
-
-    new Setting(section).setName(t('validateApiKey')).addButton((button) => {
-      button.setButtonText(t('validateApiKey'));
-      button.onClick(async () => {
-        statusContainer.setText('');
-        button.setDisabled(true);
-        const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
-
-        try {
-          const { validateProviderApi } = await import('./llm/validation');
-          const result = await validateProviderApi(key, config);
-          spinner.remove();
-
-          if (result.valid) {
-            statusContainer.setText(`✅ ${t('valid')}! ${result.models.length}${t('modelsFound')}`);
-            renderModelList(result.models);
-            this.validationCache[key] = result;
-          } else {
-            statusContainer.setText(`❌ ${t('invalid')}: ${result.error}`);
-            // 모델 리스트는 그대로 유지, 숨기지 않음
-            this.validationCache[key] = {
-              valid: false,
-              models: this.validationCache[key]?.models ?? [],
-              error: result.error,
-            };
-          }
-        } catch (err) {
-          spinner.remove();
-          const msg = err instanceof Error ? err.message : String(err);
-          statusContainer.setText(`❌ ${t('error')}: ${msg}`);
-          // 모델 리스트는 그대로 유지, 숨기지 않음
-        } finally {
-          button.setDisabled(false);
-        }
-      });
+    searchInput.addEventListener('input', () => {
+      filterText = searchInput.value;
+      renderModelList();
     });
+    selectedOnlyInput.addEventListener('change', () => {
+      selectedOnly = selectedOnlyInput.checked;
+      renderModelList();
+    });
+    renderModelList();
+
+    new Setting(section)
+      .setName('모델 검색')
+      .setDesc('모델/태그 목록만 조회합니다. 토큰 생성 요청을 보내지 않습니다.')
+      .addButton((button) => {
+        button.setButtonText('모델 가져오기');
+        button.onClick(async () => {
+          statusContainer.setText('');
+          button.setDisabled(true);
+          const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
+
+          try {
+            const { fetchProviderModels } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await fetchProviderModels(target.key, config)
+                : await fetchProviderModels('customOpenAI', target.config);
+            spinner.remove();
+
+            if (result.valid) {
+              availableModels = this.mergeModels(config.models, result.models);
+              this.validationCache[cacheKey] = result;
+              statusContainer.setText(`✅ 모델 ${result.models.length}개를 가져왔습니다.`);
+              renderModelList();
+            } else {
+              statusContainer.setText(`❌ 모델 검색 실패: ${result.error}`);
+              this.validationCache[cacheKey] = {
+                valid: false,
+                models: this.validationCache[cacheKey]?.models ?? [],
+                error: result.error,
+              };
+            }
+          } catch (err) {
+            spinner.remove();
+            const msg = err instanceof Error ? err.message : String(err);
+            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
+
+    new Setting(section)
+      .setName('연결 테스트')
+      .setDesc(
+        '선택된 첫 모델로 실제 최소 요청을 보냅니다. 프로바이더에 따라 소액 과금될 수 있습니다.',
+      )
+      .addButton((button) => {
+        button.setButtonText(t('testConnection'));
+        button.onClick(async () => {
+          statusContainer.setText('');
+          const model = config.models[0];
+          if (!model) {
+            statusContainer.setText('❌ 연결 테스트 전에 모델을 하나 이상 선택하세요.');
+            return;
+          }
+          button.setDisabled(true);
+          const spinner = statusContainer.createSpan({ cls: 'super-obsidian-spinner' });
+
+          try {
+            const { testProviderConnection } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await testProviderConnection(target.key, config, model)
+                : await testProviderConnection('customOpenAI', target.config, model);
+            spinner.remove();
+
+            if (result.valid) {
+              statusContainer.setText(`✅ 연결 성공: ${model}`);
+              this.validationCache[cacheKey] = result;
+            } else {
+              statusContainer.setText(`❌ 연결 실패: ${result.error}`);
+              this.validationCache[cacheKey] = {
+                valid: false,
+                models: this.validationCache[cacheKey]?.models ?? [],
+                error: result.error,
+              };
+            }
+          } catch (err) {
+            spinner.remove();
+            const msg = err instanceof Error ? err.message : String(err);
+            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
+  }
+
+  private getInitialProviderModels(cacheKey: string, config: ProviderConfig): string[] {
+    const cached = this.validationCache[cacheKey];
+    const models = new Set<string>(config.models);
+    if (cached && cached.valid && cached.models.length > 0) {
+      cached.models.forEach((m) => models.add(m));
+    }
+    return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
+  }
+
+  private mergeModels(selectedModels: string[], fetchedModels: string[]): string[] {
+    const models = new Set<string>(selectedModels);
+    fetchedModels.forEach((model) => models.add(model));
+    return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
+  }
+
+  private buildCustomOpenAIProvidersSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({
+      cls: 'super-obsidian-settings-section super-obsidian-provider-custom-section',
+    });
+    section.createDiv({
+      cls: 'super-obsidian-settings-section-title',
+      text: 'Custom OpenAI-Compatible',
+    });
+    section.createDiv({
+      cls: 'super-obsidian-provider-help',
+      text: 'LM Studio, vLLM, LiteLLM처럼 OpenAI v1 인터페이스를 제공하는 서버를 등록합니다.',
+    });
+
+    for (const provider of this.plugin.settings.customOpenAIProviders) {
+      this.buildProviderSettings(section, {
+        kind: 'custom',
+        key: `customOpenAI:${provider.id}`,
+        label: provider.name.trim() || 'Custom OpenAI-Compatible',
+        config: provider,
+      });
+      const row = section.createDiv({ cls: 'super-obsidian-provider-custom-actions' });
+      const removeButton = row.createEl('button', { text: '커스텀 프로바이더 삭제' });
+      removeButton.addEventListener('click', () => {
+        this.plugin.settings.customOpenAIProviders =
+          this.plugin.settings.customOpenAIProviders.filter((item) => item.id !== provider.id);
+        this.debouncedSave();
+        section.remove();
+        this.buildCustomOpenAIProvidersSection(containerEl);
+      });
+    }
+
+    const addButton = section.createEl('button', { text: '커스텀 프로바이더 추가' });
+    addButton.addEventListener('click', () => {
+      const id = this.createCustomProviderId();
+      this.plugin.settings.customOpenAIProviders.push({
+        id,
+        name: 'Custom OpenAI-Compatible',
+        apiKey: '',
+        baseUrl: 'http://localhost:1234/v1',
+        models: [],
+        enabled: false,
+      });
+      this.debouncedSave();
+      section.remove();
+      this.buildCustomOpenAIProvidersSection(containerEl);
+    });
+  }
+
+  private createCustomProviderId(): string {
+    const existing = new Set(
+      this.plugin.settings.customOpenAIProviders.map((provider) => provider.id),
+    );
+    let index = this.plugin.settings.customOpenAIProviders.length + 1;
+    let id = `custom-${index}`;
+    while (existing.has(id)) {
+      index += 1;
+      id = `custom-${index}`;
+    }
+    return id;
   }
 
   private renderMCPStatus(containerEl: HTMLElement): void {

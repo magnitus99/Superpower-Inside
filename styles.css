@@ -147,6 +147,65 @@
   }
 }
 
+.super-obsidian-provider-card {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.super-obsidian-provider-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.super-obsidian-provider-selected-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.super-obsidian-provider-model-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.super-obsidian-provider-model-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.super-obsidian-provider-selected-only {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.super-obsidian-provider-empty-models,
+.super-obsidian-provider-help {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 8px 12px;
+}
+
+.super-obsidian-provider-custom-section {
+  margin-top: 20px;
+}
+
+.super-obsidian-provider-custom-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 .super-obsidian-settings-model-list-header {
   padding: 8px 12px;
   background: var(--background-secondary);
@@ -262,6 +321,44 @@
   color: var(--text-normal);
 }
 
+.super-obsidian-rag-status-panel {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+}
+
+.super-obsidian-rag-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.super-obsidian-rag-status-item {
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+
+.super-obsidian-rag-status-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.super-obsidian-rag-status-value {
+  margin-top: 4px;
+  color: var(--text-normal);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.super-obsidian-rag-status-timestamp {
+  margin-top: 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
 /* Stats Grid */
 .super-obsidian-stats-grid {
   display: grid;
@@ -294,6 +391,62 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   margin-top: 2px;
+}
+
+.super-obsidian-rag-update-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.super-obsidian-rag-update-summary,
+.super-obsidian-rag-empty-state {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.super-obsidian-rag-update-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+}
+
+.super-obsidian-rag-update-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  color: var(--text-on-accent);
+  white-space: nowrap;
+}
+
+.super-obsidian-rag-update-badge.missing {
+  background: var(--interactive-accent);
+}
+
+.super-obsidian-rag-update-badge.stale {
+  background: var(--color-orange, var(--text-warning));
+}
+
+.super-obsidian-rag-update-badge.unknown {
+  background: var(--text-faint);
+}
+
+.super-obsidian-rag-update-path {
+  color: var(--text-normal);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.super-obsidian-rag-update-reason {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 
 /* Connection Status */
@@ -543,6 +696,11 @@
   color: var(--text-on-accent);
 }
 
+.super-obsidian-mcp-status-label.connecting {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
 .super-obsidian-mcp-status-label.disconnected {
   background: var(--text-faint);
   color: var(--text-on-accent);
@@ -550,11 +708,6 @@
 
 .super-obsidian-mcp-status-label.error {
   background: var(--background-modifier-error);
-  color: var(--text-on-accent);
-}
-
-.super-obsidian-mcp-status-label.connecting {
-  background: var(--interactive-accent);
   color: var(--text-on-accent);
 }
 

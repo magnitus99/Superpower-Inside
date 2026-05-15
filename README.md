@@ -39,6 +39,7 @@
 | **LLM Provider** | OpenAI / Claude / Ollama / OpenRouter 선택 |
 | **API Key** | 선택한 provider의 API 키 |
 | **Base URL** | 커스텀 엔드포인트 (Ollama 등) |
+| **RAG 상태/업데이트** | 인덱스 상태, 업데이트 필요 문서, 자동 업데이트 간격 |
 | **RAG 제외 경로** | 인덱싱에서 제외할 폴더/파일 패턴 |
 | **MCP 서버** | stdio/SSE transport로 MCP 서버 등록 |
 | **채팅 저장 폴더** | 대화를 저장할 볼트 내 폴더 경로 |
@@ -66,7 +67,9 @@ Command Palette → `Execute AI Directive`
 
 Command Palette → `Reindex Vault for RAG`
 
-파일 변경 시 자동으로 증분 인덱싱됩니다.
+설정 → RAG 탭에서 현재 인덱스 상태와 업데이트가 필요한 문서를 확인할 수 있습니다. `필요 문서 업데이트`는 아직 인덱싱되지 않았거나 마지막 인덱싱 이후 수정된 문서만 처리합니다.
+
+자동 업데이트를 켜면 설정한 간격마다 필요한 문서만 인덱싱합니다. 업데이트할 문서가 없을 때는 별도 알림을 띄우지 않습니다.
 
 ## 개발
 

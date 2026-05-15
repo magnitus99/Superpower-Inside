@@ -32,6 +32,7 @@
 │   ├── rag/
 │   │   ├── indexer.ts        # 마크다운 청킹 + 인덱싱
 │   │   ├── store.ts          # 벡터 저장소 (JSON 파일 기반 + 인메모리)
+│   │   ├── status.ts         # 문서별 RAG 인덱스 상태 계산
 │   │   └── query.ts          # 유사도 검색 (코사인)
 │   ├── chat/
 │   │   ├── view.ts           # 사이드바 채팅 뷰 (ItemView)
@@ -167,6 +168,16 @@ const plugin = app.plugins.plugins['super-obsidian-by-ai'];
 const count = await plugin.vaultIndexer?.indexVault();
 console.log(`Indexed ${count} files`);
 ```
+
+**문서별 RAG 상태 확인:**
+
+`src/rag/status.ts`의 `calculateRagStatus()`가 설정 탭과 자동 업데이트의 공통 기준입니다. 대상 Markdown 파일을 벡터 저장소와 비교해 `healthy`, `missing`, `stale`, `unknown` 상태로 분류합니다.
+
+- `missing`: 해당 파일의 벡터가 없음
+- `stale`: 파일 `mtime/size` 또는 임베딩 프로바이더/모델이 저장된 벡터 메타데이터와 다름
+- `unknown`: 기존 벡터에 `sourceMtime`, `sourceSize`, `embeddingProvider`, `embeddingModel`이 없어 변경 여부를 판정할 수 없음
+
+새 벡터는 `VectorEntry.metadata`에 파일 `mtime/size`와 임베딩 설정을 함께 기록합니다. 레거시 벡터는 삭제하지 않고 RAG 탭에서 “상태 확인 필요”로 표시합니다.
 
 **벡터 저장소 디버깅:**
 ```javascript
@@ -465,6 +476,9 @@ app.workspace.getRightLeaf(false).setViewState({ type: 'super-obsidian-chat' });
 // RAG 강제 재인덱싱
 const plugin = app.plugins.plugins['super-obsidian-by-ai'];
 await plugin.vaultIndexer?.reindexAll();
+
+// 자동 업데이트는 업데이트 필요 문서가 0건이면 Notice 없이 종료됨
+// 수동 `필요 문서 업데이트` 버튼은 0건일 때 비활성화됨
 
 // IndexedDB 초기화
 await Dexie.delete('SuperObsidianEmbeddingCache');

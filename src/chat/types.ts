@@ -1,5 +1,4 @@
 import type { ChatMessage } from '../llm/providers';
-import type { ProviderKey } from '../settings';
 
 /** 기록 중인 툴 호출 상태 */
 export interface ToolCallRecord {
@@ -62,7 +61,7 @@ export interface ChatMessageWithMeta extends ChatMessage {
   timestamp: number;
   createdAt: string;
   updatedAt: string;
-  providerKey?: ProviderKey;
+  providerKey?: string;
   providerLabel?: string;
   model?: string;
   status: ChatMessageStatus;

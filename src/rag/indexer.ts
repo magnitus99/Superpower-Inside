@@ -3,6 +3,7 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
 import { getMarkdownFilesFiltered, isExcluded, isExcludedExt } from '../utils/vault';
 import type { RAGConfig } from '../settings';
+import { calculateRagStatus } from './status';
 
 export interface Chunk {
   text: string;
@@ -134,7 +135,10 @@ export class VaultIndexer {
   async indexFile(file: TFile): Promise<void> {
     const content = await this.vault.cachedRead(file);
     const chunks = chunkMarkdown(content, this.ragConfig.chunkSize);
-    if (chunks.length === 0) return;
+    if (chunks.length === 0) {
+      await this.vectorStore.removeByFilePath(file.path);
+      return;
+    }
 
     const texts = chunks.map((c) => c.text);
     const vectors = await this.embeddingProvider.embedBatch(texts);
@@ -147,9 +151,14 @@ export class VaultIndexer {
         heading: chunk.metadata.heading,
         startLine: chunk.metadata.startLine,
         text: chunk.text,
+        sourceMtime: file.stat.mtime,
+        sourceSize: file.stat.size,
+        embeddingProvider: this.ragConfig.embeddingProvider,
+        embeddingModel: this.ragConfig.embeddingModel,
       },
     }));
 
+    await this.vectorStore.removeByFilePath(file.path);
     await this.vectorStore.add(entries);
   }
 
@@ -158,27 +167,34 @@ export class VaultIndexer {
     return this.indexVault();
   }
 
-  async indexPending(): Promise<{ indexed: number; skipped: number }> {
+  async indexPending(): Promise<{ indexed: number; skipped: number; documents: string[] }> {
     const files = getMarkdownFilesFiltered(this.vault, [...this.ragConfig.excludePaths]).filter(
       (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
     );
-
-    const indexedPaths = await this.vectorStore.getIndexedFilePaths();
-    const indexedSet = new Set(indexedPaths);
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig);
+    const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
 
     let indexed = 0;
     let skipped = 0;
+    const documents: string[] = [];
 
     for (const file of files) {
-      if (indexedSet.has(file.path)) {
+      if (!updatePaths.has(file.path)) {
         skipped++;
         continue;
       }
-      await this.indexFile(file);
+      const targetFile = filesByPath.get(file.path);
+      if (!targetFile) {
+        skipped++;
+        continue;
+      }
+      await this.indexFile(targetFile);
       indexed++;
+      documents.push(file.path);
     }
 
-    return { indexed, skipped };
+    return { indexed, skipped, documents };
   }
 }
 

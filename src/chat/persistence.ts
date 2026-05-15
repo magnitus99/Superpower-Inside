@@ -440,7 +440,7 @@ function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
       timestamp: meta.timestamp,
       createdAt,
       updatedAt,
-      providerKey: meta.providerKey as ChatMessageWithMeta['providerKey'],
+      providerKey: meta.providerKey,
       providerLabel: meta.providerLabel,
       model: meta.model,
       status: meta.status,

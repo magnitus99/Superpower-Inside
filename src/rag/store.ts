@@ -9,6 +9,10 @@ export interface VectorEntry {
     heading?: string;
     startLine: number;
     text: string;
+    sourceMtime?: number;
+    sourceSize?: number;
+    embeddingProvider?: string;
+    embeddingModel?: string;
   };
 }
 
@@ -28,6 +32,7 @@ export interface VectorStore {
   persist(): Promise<void>;
   getStats(): Promise<VectorStoreStats>;
   getIndexedFilePaths(): Promise<string[]>;
+  getEntries(): Promise<VectorEntry[]>;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -128,6 +133,11 @@ export class JsonFileVectorStore implements VectorStore {
     await this.loadIfNeeded();
     return [...new Set(this.entries.map((e) => e.metadata.filePath))];
   }
+
+  async getEntries(): Promise<VectorEntry[]> {
+    await this.loadIfNeeded();
+    return this.entries.map((entry) => ({ ...entry, metadata: { ...entry.metadata } }));
+  }
 }
 
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
@@ -185,5 +195,11 @@ export class MemoryVectorStore implements VectorStore {
 
   getIndexedFilePaths(): Promise<string[]> {
     return Promise.resolve([...new Set(this.entries.map((e) => e.metadata.filePath))]);
+  }
+
+  getEntries(): Promise<VectorEntry[]> {
+    return Promise.resolve(
+      this.entries.map((entry) => ({ ...entry, metadata: { ...entry.metadata } })),
+    );
   }
 }

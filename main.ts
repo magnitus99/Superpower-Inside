@@ -5,7 +5,12 @@ import {
   DEFAULT_SETTINGS,
   SuperObsidianSettingTab,
 } from './src/settings';
-import { createProvider, type ProviderKey, type LLMProvider } from './src/llm/providers';
+import {
+  createCustomOpenAIProvider,
+  createProvider,
+  type ProviderKey,
+  type LLMProvider,
+} from './src/llm/providers';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -19,7 +24,7 @@ import {
   registerDeleteEvent,
   registerRenameEvent,
 } from './src/rag/indexer';
-import { isExcludedExt } from './src/utils/vault';
+import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { executeDirective, parseDirective } from './src/chat/commands';
@@ -52,12 +57,7 @@ export default class SuperObsidianPlugin extends Plugin {
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
-  eventDrivenRagStats: {
-    totalFiles: number;
-    indexedFiles: number;
-    pendingFiles: number;
-    totalVectors: number;
-  } | null = null;
+  eventDrivenRagStats: RagStatusSummary | null = null;
   private statsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   async onload(): Promise<void> {
@@ -214,6 +214,31 @@ export default class SuperObsidianPlugin extends Plugin {
       }
     }
 
+    const customOpenAIProviders = data.customOpenAIProviders;
+    if (Array.isArray(customOpenAIProviders)) {
+      data.customOpenAIProviders = customOpenAIProviders
+        .filter((provider): provider is Record<string, unknown> => {
+          return typeof provider === 'object' && provider !== null && !Array.isArray(provider);
+        })
+        .map((provider, index) => {
+          const id =
+            typeof provider.id === 'string' && provider.id ? provider.id : `custom-${index + 1}`;
+          const name =
+            typeof provider.name === 'string' && provider.name.trim()
+              ? provider.name.trim()
+              : 'Custom OpenAI-Compatible';
+          const apiKey = typeof provider.apiKey === 'string' ? provider.apiKey : '';
+          const baseUrl = typeof provider.baseUrl === 'string' ? provider.baseUrl.trim() : '';
+          const models = Array.isArray(provider.models)
+            ? provider.models.filter((model): model is string => typeof model === 'string')
+            : [];
+          const enabled = typeof provider.enabled === 'boolean' ? provider.enabled : false;
+          return { id, name, apiKey, baseUrl, models, enabled };
+        });
+    } else {
+      data.customOpenAIProviders = [];
+    }
+
     const chat = data.chat;
     if (
       chat &&
@@ -347,6 +372,32 @@ export default class SuperObsidianPlugin extends Plugin {
     const providerKey = parts[0] as ProviderKey;
     const modelName = parts.slice(1).join(':');
 
+    if (parts[0] === 'customOpenAI') {
+      if (parts.length < 3) {
+        this.provider = null;
+        return;
+      }
+      const providerId = parts[1];
+      const customModelName = parts.slice(2).join(':');
+      const customProvider = this.settings.customOpenAIProviders.find(
+        (provider) => provider.id === providerId,
+      );
+      if (
+        !customProvider?.enabled ||
+        !customProvider.models.includes(customModelName) ||
+        !customProvider.baseUrl?.trim()
+      ) {
+        this.provider = null;
+        return;
+      }
+      try {
+        this.provider = createCustomOpenAIProvider(customProvider, customModelName);
+      } catch {
+        this.provider = null;
+      }
+      return;
+    }
+
     const config = this.settings[providerKey];
     if (!config?.enabled || !config.models.includes(modelName)) {
       this.provider = null;
@@ -371,25 +422,11 @@ export default class SuperObsidianPlugin extends Plugin {
   private async refreshStats(): Promise<void> {
     if (!this.vectorStore) return;
     try {
-      const rag = this.settings.rag;
-      const { getMarkdownFilesFiltered } = await import('./src/utils/vault');
-      const allFiles = getMarkdownFilesFiltered(this.app.vault, rag.excludePaths).filter(
-        (f) => !isExcludedExt(f.path, rag.excludeExts),
+      this.eventDrivenRagStats = await calculateRagStatus(
+        this.app.vault,
+        this.vectorStore,
+        this.settings.rag,
       );
-      const totalFiles = allFiles.length;
-
-      const indexedPaths = await this.vectorStore.getIndexedFilePaths();
-      const indexedFiles = indexedPaths.length;
-
-      const stats = await this.vectorStore.getStats();
-      const totalVectors = stats.totalEntries;
-
-      this.eventDrivenRagStats = {
-        totalFiles,
-        indexedFiles,
-        pendingFiles: Math.max(0, totalFiles - indexedFiles),
-        totalVectors,
-      };
 
       const appWithSetting = this.app as unknown as {
         setting?: { activeTab?: { refreshStats?(): void } };
@@ -493,13 +530,18 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   private async autoIndex(): Promise<void> {
-    if (!this.vaultIndexer) return;
-    new Notice(t('autoUpdateIndexingStarted'));
+    if (!this.vaultIndexer || !this.vectorStore) return;
     try {
+      const status = await calculateRagStatus(this.app.vault, this.vectorStore, this.settings.rag);
+      if (status.updateRequiredDocuments.length === 0) {
+        return;
+      }
+      new Notice(t('autoUpdateIndexingStarted'));
       const result = await this.vaultIndexer.indexPending();
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
+      void this.refreshStats();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);

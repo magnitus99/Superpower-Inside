@@ -86,7 +86,7 @@ export async function executeDirective(
     const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
     let result = '';
 
-    const { createProvider } = await import('../llm/providers');
+    const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
 
     const defaultModel = plugin.settings.chat.defaultModel;
     if (!defaultModel) {
@@ -98,13 +98,29 @@ export async function executeDirective(
       throw new Error('기본 모델 설정 형식이 잘못되었습니다.');
     }
 
-    const key = parts[0] as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
-    const modelName = parts.slice(1).join(':');
-    const config = plugin.settings[key];
-    if (!config.enabled) {
-      throw new Error('기본 Provider가 활성화되지 않았습니다.');
+    let provider;
+    if (parts[0] === 'customOpenAI') {
+      if (parts.length < 3) {
+        throw new Error('기본 커스텀 모델 설정 형식이 잘못되었습니다.');
+      }
+      const providerId = parts[1];
+      const modelName = parts.slice(2).join(':');
+      const customProvider = plugin.settings.customOpenAIProviders.find(
+        (item) => item.id === providerId,
+      );
+      if (!customProvider?.enabled) {
+        throw new Error('기본 커스텀 Provider가 활성화되지 않았습니다.');
+      }
+      provider = createCustomOpenAIProvider(customProvider, modelName);
+    } else {
+      const key = parts[0] as 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+      const modelName = parts.slice(1).join(':');
+      const config = plugin.settings[key];
+      if (!config.enabled) {
+        throw new Error('기본 Provider가 활성화되지 않았습니다.');
+      }
+      provider = createProvider(key, config, modelName);
     }
-    const provider = createProvider(key, config, modelName);
 
     await provider.streamChat(
       messages,
