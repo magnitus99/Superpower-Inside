@@ -8,6 +8,7 @@ node_modules/
 main.js
 data.json
 package-lock.json
+.env.test.local
 
 # 개발용 Obsidian 테스트 볼트와 에이전트 작업 상태
 .test-vault/
