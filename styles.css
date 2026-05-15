@@ -2705,3 +2705,21 @@
   padding: 2px 4px;
   outline: none;
 }
+
+.super-obsidian-edit-modal textarea {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  padding: 8px;
+  margin: 8px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.super-obsidian-edit-modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

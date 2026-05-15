@@ -173,6 +173,7 @@ export interface ChatConfig {
   mcpToolExecutionPolicy: 'mentioned-auto' | 'always-manual' | 'always-auto';
   autoSaveEnabled: boolean;
   autoSaveDebounceMs: number;
+  enforceMcpTools: boolean;
 }
 
 export interface SuperObsidianSettings {
@@ -254,6 +255,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
     mcpToolExecutionPolicy: 'mentioned-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
+    enforceMcpTools: true,
   },
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
@@ -1315,6 +1317,15 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName(t('enforceMcpTools'))
+      .setDesc(t('enforceMcpToolsDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.chat.enforceMcpTools).onChange((value) => {
+          this.plugin.settings.chat.enforceMcpTools = value;
+          this.debouncedSave();
+        }),
+      );
   }
 
   private buildMCPTab(containerEl: HTMLElement): void {

@@ -28,6 +28,7 @@ import {
 import { normalizeToolResult } from './mcp-tools';
 import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
 import { t } from '../i18n';
+import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
 export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
@@ -74,6 +75,7 @@ export class ChatView extends ItemView {
   private mentionStartIndex: number;
   private abortController: AbortController | null;
   private lastUserPrompt: string | null;
+  private previousUserQueries: string[];
 
   private messageEls: Map<string, HTMLElement>;
 
@@ -108,6 +110,7 @@ export class ChatView extends ItemView {
     this.mentionStartIndex = -1;
     this.abortController = null;
     this.lastUserPrompt = null;
+    this.previousUserQueries = [];
   }
 
   getViewType(): string {
@@ -1029,7 +1032,7 @@ export class ChatView extends ItemView {
           thinking.open = true;
         } else if (hasReasoning) {
           void this.renderMarkdownBubble(thinkingContent, reasoning ?? '');
-          thinking.open = false;
+          thinking.open = true;
         } else {
           thinkingContent.setText('');
           thinking.open = false;
@@ -1553,13 +1556,17 @@ export class ChatView extends ItemView {
     new Notice(`새 노트로 저장했습니다: ${path}`);
   }
 
-  private async editAndResendUserMessage(msg: ChatMessageWithMeta): Promise<void> {
-    const edited = window.prompt('수정할 메시지', msg.content);
-    if (!edited?.trim()) return;
-    this.inputArea!.value = edited.trim();
-    this.autoResizeInput();
-    this.renderContextPreview(edited.trim());
-    await this.handleSend();
+  private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
+    new EditMessageModal(this.app, msg.content, (edited) => {
+      const index = this.messages.findIndex((m) => m.id === msg.id);
+      if (index >= 0) {
+        this.messages = this.messages.slice(0, index);
+      }
+      this.inputArea!.value = edited;
+      this.autoResizeInput();
+      this.renderContextPreview(edited);
+      void this.handleSend();
+    }).open();
   }
 
   private async regenerateFromAssistant(messageId: string): Promise<void> {
@@ -1938,6 +1945,8 @@ export class ChatView extends ItemView {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
     this.lastUserPrompt = text;
+    this.previousUserQueries.push(text);
+    if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
 
     const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
 
@@ -1993,7 +2002,7 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const promptContext = await this.buildPromptContext(text);
+    const promptContext = await this.buildPromptContext(text, this.previousUserQueries);
     this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
@@ -2086,6 +2095,73 @@ export class ChatView extends ItemView {
       }
 
       let toolCalls = Array.from(toolCallMap.values());
+
+      const hasMentionedServers = mentionedServers.length > 0;
+      const hasToolCalls = toolCalls.length > 0;
+      const hasSubstantiveAnswer = fullText.trim().length > 50;
+      if (
+        hasMentionedServers &&
+        !hasToolCalls &&
+        hasSubstantiveAnswer &&
+        this.plugin.settings.chat.enforceMcpTools
+      ) {
+        const serverNames = mentionedServers.join(', ');
+        new Notice(`🔄 @${serverNames} 도구를 호출하지 않아 재시도합니다...`, 3000);
+
+        const retrySystemPrompt = `${systemPrompt}\n\n[IMPORTANT] You have access to the following MCP server(s): ${serverNames}. You MUST use the available tools to answer the question. Do NOT generate an answer without calling tools. If you need to read files or directories, use the appropriate tools first.`;
+
+        const retryMessages: ChatMessage[] = [
+          { role: 'system', content: retrySystemPrompt },
+          ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
+        ];
+
+        fullText = '';
+        fullReasoning = '';
+        toolCallMap.clear();
+
+        this.updateMessage(assistantId, '', false, undefined, [], {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          status: 'streaming',
+          citations: promptContext.citations,
+          contextAttachments: promptContext.attachments,
+        });
+
+        await provider.streamChat(
+          retryMessages,
+          (chunk: StreamChunk) => {
+            if (chunk.content) fullText += chunk.content;
+            if (chunk.reasoning) fullReasoning += chunk.reasoning;
+            if (chunk.toolCalls) this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+            this.updateMessage(
+              assistantId,
+              fullText,
+              chunk.done,
+              fullReasoning || undefined,
+              Array.from(toolCallMap.values()),
+              {
+                providerKey: key,
+                providerLabel,
+                model: modelName,
+                status: chunk.done ? 'complete' : 'streaming',
+                citations: promptContext.citations,
+                contextAttachments: promptContext.attachments,
+              },
+            );
+          },
+          0.7,
+          toolDefinitions,
+          { signal: abortController.signal },
+        );
+
+        toolCalls = Array.from(toolCallMap.values());
+
+        if (toolCalls.length === 0 && fullText.trim().length > 50) {
+          new Notice(`⚠️ @${serverNames} — 재시도했지만 도구를 호출하지 않았습니다.`, 5000);
+        }
+      }
+
       this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
         providerKey: key,
         providerLabel,
@@ -2124,7 +2200,7 @@ export class ChatView extends ItemView {
           mentionedServers,
           fullReasoning || undefined,
         );
-        await this.streamFinalAnswerAfterTools({
+        await this.runToolResponseLoop({
           provider,
           messageId: assistantId,
           baseMessages: messages,
@@ -2138,6 +2214,9 @@ export class ChatView extends ItemView {
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
           },
+          mentionedServers,
+          initialText: fullText,
+          initialReasoning: fullReasoning,
         });
       }
       if (assistantWrapper) {
@@ -2381,28 +2460,17 @@ export class ChatView extends ItemView {
     toolCalls: ToolCallRecord[];
     abortController: AbortController;
     meta: MessageMetaInput;
-  }): Promise<void> {
+  }): Promise<{ finalText: string; finalReasoning: string; newToolCalls: ToolCallRecord[] }> {
     const successfulToolCalls = args.toolCalls.filter(
       (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
     );
     if (successfulToolCalls.length === 0) {
-      const failed = args.toolCalls.some((toolCall) => toolCall.status === 'error');
-      if (failed) {
-        const current = this.messages.find((message) => message.id === args.messageId);
-        this.updateMessage(
-          args.messageId,
-          current?.content ?? 'MCP 도구 실행에 실패했습니다.',
-          true,
-          current?.reasoning,
-          args.toolCalls,
-          { ...args.meta, status: 'error', stopReason: 'tool-failed' },
-        );
-      }
-      return;
+      return { finalText: '', finalReasoning: '', newToolCalls: [] };
     }
 
     let finalText = '';
     let finalReasoning = '';
+    const newToolCallMap = new Map<number, ToolCallRecord>();
     const assistantMsg = this.messages.find((message) => message.id === args.messageId);
     const toolCallsPayload = successfulToolCalls.map((toolCall) => ({
       id: toolCall.id,
@@ -2427,21 +2495,22 @@ export class ChatView extends ItemView {
       })),
     ];
 
+    const visibleToolCalls = [...args.toolCalls];
     await args.provider.streamChat(
       secondMessages,
       (chunk: StreamChunk) => {
         if (chunk.content) finalText += chunk.content;
         if (chunk.reasoning) finalReasoning += chunk.reasoning;
+        if (chunk.toolCalls) {
+          this.mergeToolCallDeltas(newToolCallMap, chunk.toolCalls);
+        }
         this.updateMessage(
           args.messageId,
           finalText,
-          chunk.done,
+          false,
           finalReasoning || undefined,
-          args.toolCalls,
-          {
-            ...args.meta,
-            status: chunk.done ? 'complete' : 'streaming',
-          },
+          [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
+          { ...args.meta, status: 'streaming' },
         );
       },
       0.7,
@@ -2449,37 +2518,110 @@ export class ChatView extends ItemView {
       { signal: args.abortController.signal },
     );
 
-    if (!finalText.trim()) {
-      const fallback =
-        'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.';
-      this.updateMessage(
-        args.messageId,
-        fallback,
-        true,
-        finalReasoning || undefined,
-        args.toolCalls,
-        {
-          ...args.meta,
-          status: 'error',
-          errorMessage: fallback,
-          stopReason: 'tool-failed',
-        },
-      );
+    return {
+      finalText,
+      finalReasoning,
+      newToolCalls: Array.from(newToolCallMap.values()),
+    };
+  }
+
+  private async runToolResponseLoop(args: {
+    provider: LLMProvider;
+    messageId: string;
+    baseMessages: ChatMessage[];
+    toolDefinitions: ToolDefinition[];
+    toolCalls: ToolCallRecord[];
+    abortController: AbortController;
+    meta: MessageMetaInput;
+    mentionedServers: string[];
+    initialText?: string;
+    initialReasoning?: string;
+  }): Promise<void> {
+    const MAX_ROUNDS = 10;
+    let round = 0;
+    let currentToolCalls = args.toolCalls;
+    let accumulatedText = args.initialText ?? '';
+    let accumulatedReasoning = args.initialReasoning ?? '';
+    const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
+
+    while (round < MAX_ROUNDS) {
+      if (args.abortController.signal.aborted) break;
+      round++;
+
+      const result = await this.streamFinalAnswerAfterTools({
+        provider: args.provider,
+        messageId: args.messageId,
+        baseMessages: args.baseMessages,
+        toolDefinitions: args.toolDefinitions,
+        toolCalls: currentToolCalls,
+        abortController: args.abortController,
+        meta: args.meta,
+      });
+
+      accumulatedText += result.finalText;
+      if (result.finalReasoning) accumulatedReasoning += result.finalReasoning;
+
+      if (result.newToolCalls.length > 0) {
+        allToolCalls.push(...result.newToolCalls);
+        currentToolCalls = await this.executeAssistantToolCalls(
+          args.messageId,
+          result.newToolCalls,
+          args.mentionedServers,
+          accumulatedReasoning || undefined,
+        );
+        allToolCalls.push(...currentToolCalls);
+        this.updateMessage(
+          args.messageId,
+          accumulatedText,
+          false,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          { ...args.meta, status: 'streaming' },
+        );
+        continue;
+      }
+
+      if (!accumulatedText.trim()) {
+        this.updateMessage(
+          args.messageId,
+          'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          { ...args.meta, status: 'error', errorMessage: 'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.', stopReason: 'tool-failed' },
+        );
+      } else {
+        this.updateMessage(
+          args.messageId,
+          accumulatedText,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          { ...args.meta, status: 'complete', stopReason: 'complete' },
+        );
+      }
       return;
     }
 
-    this.updateMessage(
-      args.messageId,
-      finalText,
-      true,
-      finalReasoning || undefined,
-      args.toolCalls,
-      {
-        ...args.meta,
-        status: 'complete',
-        stopReason: 'complete',
-      },
-    );
+    if (args.abortController.signal.aborted) {
+      this.updateMessage(
+        args.messageId,
+        accumulatedText || '취소됨',
+        true,
+        accumulatedReasoning || undefined,
+        allToolCalls,
+        { ...args.meta, status: 'complete', stopReason: 'cancelled' },
+      );
+    } else {
+      this.updateMessage(
+        args.messageId,
+        accumulatedText || '툴 호출이 너무 많이 반복되었습니다.',
+        true,
+        accumulatedReasoning || undefined,
+        allToolCalls,
+        { ...args.meta, status: 'error', stopReason: 'error' },
+      );
+    }
   }
 
   private getMentionedServerNames(text: string): string[] {
@@ -2566,7 +2708,7 @@ export class ChatView extends ItemView {
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...previousMessages,
       ];
-      await this.streamFinalAnswerAfterTools({
+      await this.runToolResponseLoop({
         provider,
         messageId,
         baseMessages,
@@ -2580,6 +2722,7 @@ export class ChatView extends ItemView {
           citations: latestMessage?.citations,
           contextAttachments: latestMessage?.contextAttachments,
         },
+        mentionedServers,
       });
     } else {
       this.updateMessage(
@@ -2594,7 +2737,10 @@ export class ChatView extends ItemView {
     await this.saveCurrentSession(true);
   }
 
-  private async buildPromptContext(lastUserText: string): Promise<ContextBuildResult> {
+  private async buildPromptContext(
+    lastUserText: string,
+    previousQueries?: string[],
+  ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const globalPrompt = this.plugin.settings.chat.systemPrompt?.trim();
     const sessionPrompt = this.sessionSystemPrompt ?? globalPrompt;
@@ -2606,15 +2752,27 @@ export class ChatView extends ItemView {
       if (pluginInfo) parts.push(pluginInfo);
     }
 
+    let ragQuery = lastUserText;
+    if (previousQueries && previousQueries.length >= 2) {
+      const prev = previousQueries[previousQueries.length - 2];
+      const isFollowUp =
+        lastUserText.length < 15 ||
+        /^(어|아|왜|근데|그래서|하여튼|아니|잠시|계속|다시).{0,30}$/.test(lastUserText);
+      if (isFollowUp && prev) {
+        ragQuery = prev;
+      }
+    }
+
     const ragEngine = (
       this.plugin as unknown as {
         ragEngine?: RagQueryLike | null;
       }
     ).ragEngine;
-    const context = await buildChatContext(lastUserText, {
+    const context = await buildChatContext(ragQuery, {
       app: this.app,
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
+      ragMinScore: this.plugin.settings.rag.minScore,
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 

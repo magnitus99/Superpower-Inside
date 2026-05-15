@@ -15,7 +15,7 @@ export {
 } from './mention-parser';
 
 export interface RagQueryLike {
-  query(question: string, topK: number): Promise<QueryResult[]>;
+  query(question: string, topK: number, minScore?: number): Promise<QueryResult[]>;
 }
 
 export interface ContextBuildResult {
@@ -32,6 +32,7 @@ interface BuildContextOptions {
   maxFolderFiles?: number;
   maxContextChars?: number;
   ragTopK?: number;
+  ragMinScore?: number;
 }
 
 interface ContextBlock {
@@ -73,7 +74,7 @@ export async function buildChatContext(
 
   if (options.ragEngine && shouldUseAutoRag) {
     try {
-      const results = await options.ragEngine.query(question, ragTopK);
+      const results = await options.ragEngine.query(question, ragTopK, options.ragMinScore);
       const sourceIds: string[] = [];
       for (const result of results) {
         const citation = createCitation('rag', citations.length + 1, result);
@@ -88,8 +89,10 @@ export async function buildChatContext(
         type: 'rag',
         name: 'auto',
         label: `자동 RAG ${sourceIds.length}개`,
-        status: sourceIds.length > 0 ? 'attached' : 'missing',
-        detail: sourceIds.length > 0 ? undefined : '관련 인덱스 결과가 없습니다.',
+        status: sourceIds.length > 0 ? 'attached' : 'low-relevance',
+        detail: sourceIds.length > 0
+          ? undefined
+          : '유사도 임계치를 충족하는 관련 문서가 없습니다.',
         sourceIds,
       });
     } catch (err) {

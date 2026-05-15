@@ -313,6 +313,13 @@ export default class SuperObsidianPlugin extends Plugin {
       }
     }
 
+    // Migrate enforceMcpTools
+    if (chat && typeof chat === 'object' && !Array.isArray(chat)) {
+      const chatObj = chat as Record<string, unknown>;
+      if (typeof chatObj.enforceMcpTools !== 'boolean') {
+        chatObj.enforceMcpTools = true;
+      }
+    }
 
     // Migrate old MCP settings to standard format
     const mcpServers = data.mcpServers as unknown[] | undefined;

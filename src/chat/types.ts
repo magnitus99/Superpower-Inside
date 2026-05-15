@@ -32,7 +32,7 @@ export interface ContextAttachment {
   type: 'file' | 'folder' | 'rag' | 'mcp-server';
   name: string;
   label: string;
-  status: 'attached' | 'partial' | 'missing' | 'error';
+  status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';
   detail?: string;
   sourceIds?: string[];
 }
@@ -55,7 +55,7 @@ export interface ToolExecutionPolicy {
 }
 
 /** 메시지 메타데이터를 포함한 채팅 메시지 */
-export interface ChatMessageWithMeta extends ChatMessage {
+export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   id: string;
   /** legacy 저장 파일 호환용 타임스탬프 */
   timestamp: number;

@@ -154,6 +154,8 @@ export interface I18nKeys {
   toolCallLabel: string;
   answerLabel: string;
   thinkingPlaceholder: string;
+  enforceMcpTools: string;
+  enforceMcpToolsDesc: string;
   modelSelector: string;
   mcpRefresh: string;
   mcpRefreshing: string;
@@ -423,6 +425,8 @@ const ko: I18nKeys = {
   toolCallLabel: '툴 호출',
   answerLabel: '답변',
   thinkingPlaceholder: '생각 중...',
+  enforceMcpTools: 'MCP 도구 미사용 감지 및 재시도',
+  enforceMcpToolsDesc:
     '@mention한 MCP 서버가 있음에도 모델이 도구를 호출하지 않고 답변을 생성하면, 자동으로 시스템 프롬프트에 도구 사용을 강제하는 지시를 추가하여 재시도합니다.',
   modelSelector: '모델',
   mcpRefresh: '새로고침',
@@ -694,6 +698,9 @@ const en: I18nKeys = {
   toolCallLabel: 'Tool Call',
   answerLabel: 'Answer',
   thinkingPlaceholder: 'Thinking...',
+  enforceMcpTools: 'Detect & Retry on Missing MCP Tool Calls',
+  enforceMcpToolsDesc:
+    'When an @mentioned MCP server is available but the model generates a response without calling any tools, automatically retry with a strengthened system prompt that enforces tool usage.',
   modelSelector: 'Model',
   mcpRefresh: 'Refresh',
   mcpRefreshing: 'Reconnecting...',
