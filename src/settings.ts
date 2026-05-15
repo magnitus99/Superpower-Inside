@@ -1694,6 +1694,20 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             this.debouncedSave();
           }),
       );
+
+      const useRequestUrl = target.config.useRequestUrl ?? true;
+      new Setting(section)
+        .setName('CORS 우회 (requestUrl)')
+        .setDesc(
+          'Obsidian 내부 API로 요청을 보내 CORS 문제를 우회합니다. '
+          + '스트리밍이 비활성화되므로, 서버가 CORS를 지원하면 해제하는 것을 권장합니다.',
+        )
+        .addToggle((toggle) =>
+          toggle.setValue(useRequestUrl).onChange((value) => {
+            target.config.useRequestUrl = value;
+            this.debouncedSave();
+          }),
+        );
     }
 
     const controls = section.createDiv({ cls: 'super-obsidian-provider-model-controls' });
