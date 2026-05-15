@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import type { CustomOpenAIProviderConfig, ProviderConfig } from '../settings';
+import { REASONING_EXTRACTORS, type ReasoningExtractor } from './reasoning';
 
 const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -11,7 +12,7 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   tool_call_id?: string;
-  toolCalls?: Array<ToolCallInfo | ToolCallRecordInfo>;
+  toolCalls?: ToolCallInfo[];
   reasoning?: string;
   name?: string;
 }
@@ -24,15 +25,6 @@ export interface ToolCallInfo {
     name: string;
     arguments: string;
   };
-}
-
-/** UI/저장 계층에서 사용하는 툴 호출 표시 정보 */
-export interface ToolCallRecordInfo {
-  id: string;
-  name: string;
-  arguments: string;
-  result?: string;
-  status: 'running' | 'success' | 'error';
 }
 
 /** StreamChunk에 전달되는 툴 호출 델타 */
@@ -66,6 +58,92 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
 }
 
+/* ---------- Message Normalizers ---------- */
+
+function toolCallToFn(tc: ToolCallInfo): { name: string; arguments: string } {
+  return tc.function;
+}
+
+function parseToolArgs(args: string): unknown {
+  try {
+    return JSON.parse(args);
+  } catch {
+    return args;
+  }
+}
+
+/** OpenAI/OpenRouter/custom 호환: toolCalls → tool_calls(snake_case), content → null */
+export function normalizeForOpenAI(messages: ChatMessage[]): Record<string, unknown>[] {
+  return messages.map((m) => {
+    const msg: Record<string, unknown> = { role: m.role };
+    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+      msg.content = null;
+      msg.tool_calls = m.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: 'function',
+        function: toolCallToFn(tc),
+      }));
+    } else {
+      msg.content = m.content;
+    }
+    if (m.role === 'tool') {
+      msg.tool_call_id = m.tool_call_id;
+      msg.name = m.name;
+    }
+    return msg;
+  });
+}
+
+/** Anthropic Claude: flat role → content block format (tool_use/tool_result) */
+export function normalizeForClaude(
+  messages: ChatMessage[],
+): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+      const content: Record<string, unknown>[] = [];
+      if (m.content) content.push({ type: 'text', text: m.content });
+      for (const tc of m.toolCalls) {
+        content.push({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input: parseToolArgs(tc.function.arguments),
+        });
+      }
+      result.push({ role: 'assistant', content });
+    } else if (m.role === 'tool') {
+      result.push({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content }],
+      });
+    } else {
+      result.push({ role: m.role, content: m.content });
+    }
+  }
+  return result;
+}
+
+/** Ollama: toolCalls → Ollama tool_calls (id/type 제거, arguments 객체 변환) */
+export function normalizeForOllama(messages: ChatMessage[]): Record<string, unknown>[] {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return { role: 'tool', content: m.content, name: m.name ?? 'unknown_tool' };
+    }
+    const normalized: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+      normalized.tool_calls = m.toolCalls.map((tc) => ({
+        function: {
+          name: tc.function.name,
+          arguments: parseToolArgs(tc.function.arguments),
+        },
+      }));
+    }
+    return normalized;
+  });
+}
+
 export interface LLMProvider {
   chat(messages: ChatMessage[], temperature?: number): Promise<string>;
   streamChat(
@@ -83,11 +161,22 @@ class OpenAICompatibleProvider implements LLMProvider {
   protected config: ProviderConfig;
   protected endpoint: string;
   protected modelOverride?: string;
+  protected reasoningExtractor: ReasoningExtractor;
 
-  constructor(config: ProviderConfig, endpointOverride?: string, modelOverride?: string) {
+  constructor(
+    config: ProviderConfig,
+    endpointOverride?: string,
+    modelOverride?: string,
+    reasoningExtractor?: ReasoningExtractor,
+  ) {
     this.config = config;
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
+    this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
+  }
+
+  private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+    return normalizeForOpenAI(messages);
   }
 
   async chat(
@@ -97,9 +186,10 @@ class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<string> {
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages,
-      temperature,
+      messages: this.normalizeMessages(messages),
+      options: { temperature },
       stream: false,
+      think: true,
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
@@ -127,7 +217,7 @@ class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<void> {
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages,
+      messages: this.normalizeMessages(messages),
       temperature,
       stream: true,
     };
@@ -185,7 +275,7 @@ class OpenAICompatibleProvider implements LLMProvider {
           };
           const delta = chunk.choices?.[0]?.delta;
           const content = delta?.content ?? '';
-          const reasoning = delta?.reasoning_content;
+          const reasoning = this.reasoningExtractor.extract(delta ?? {});
           const toolCalls = delta?.tool_calls?.map(
             (tc): ToolCallDelta => ({
               index: tc.index,
@@ -234,6 +324,10 @@ class ClaudeProvider implements LLMProvider {
     this.modelOverride = modelOverride;
   }
 
+  private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+    return normalizeForClaude(messages);
+  }
+
   async chat(
     messages: ChatMessage[],
     temperature = 0.7,
@@ -243,12 +337,7 @@ class ClaudeProvider implements LLMProvider {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       max_tokens: 4096,
       temperature,
-      messages: messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
+      messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
     if (tools && tools.length > 0) {
@@ -288,12 +377,7 @@ class ClaudeProvider implements LLMProvider {
       max_tokens: 4096,
       temperature,
       stream: true,
-      messages: messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
+      messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
     if (tools && tools.length > 0) {
@@ -409,50 +493,8 @@ class OllamaProvider implements LLMProvider {
     return h;
   }
 
-  private normalizeMessagesForOllama(messages: ChatMessage[]): Array<Record<string, unknown>> {
-    return messages.map((m) => {
-      // 툴 결과 메시지: Ollama는 role: "tool" + name 필드를 요구
-      if (m.role === 'tool') {
-        const toolResult: Record<string, unknown> = {
-          role: 'tool',
-          content: m.content,
-          name: m.name ?? 'unknown_tool',
-        };
-        return toolResult;
-      }
-      const normalized: Record<string, unknown> = {
-        role: m.role,
-        content: m.content,
-      };
-      // 어시스턴트 메시지의 tool_calls: Ollama 형식으로 변환
-      // Ollama는 id/type 필드를 사용하지 않고, arguments는 객체여야 함
-      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-        normalized.tool_calls = m.toolCalls.map((tc) => {
-          const fn =
-            'function' in tc
-              ? tc.function
-              : {
-                  name: (tc as { name: string }).name,
-                  arguments: (tc as { arguments: string }).arguments,
-                };
-          let args: unknown = fn.arguments ?? '{}';
-          if (typeof args === 'string') {
-            try {
-              args = JSON.parse(args);
-            } catch {
-              // JSON 파싱 실패 시 원본 문자열 유지
-            }
-          }
-          return {
-            function: {
-              name: fn.name,
-              arguments: args,
-            },
-          };
-        });
-      }
-      return normalized;
-    });
+  private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+    return normalizeForOllama(messages);
   }
 
   async chat(
@@ -470,7 +512,7 @@ class OllamaProvider implements LLMProvider {
     );
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages: this.normalizeMessagesForOllama(messages),
+      messages: this.normalizeMessages(messages),
       options: { temperature },
       stream: false,
     };
@@ -505,58 +547,88 @@ class OllamaProvider implements LLMProvider {
     const targetUrl = `${baseUrl}/api/chat`;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages: this.normalizeMessagesForOllama(messages),
+      messages: this.normalizeMessages(messages),
       options: { temperature },
-      stream: false,
+      stream: true,
+      think: true,
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
     }
-    const res = await requestUrl({
-      url: targetUrl,
+    const res = await fetch(targetUrl, {
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
+      signal: options?.signal,
     });
-    if (res.status >= 400) {
-      throw new Error(`Ollama chat failed: ${res.status} ${res.text}`);
+    if (!res.ok) {
+      throw new Error(`Ollama stream failed: ${res.status} ${await res.text()}`);
     }
-    if (options?.signal?.aborted) {
-      onChunk({ content: '', done: true });
-      return;
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new Error('ReadableStream not available');
     }
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-    const data = res.json as {
-      message?: {
-        content?: string;
-        tool_calls?: Array<{
-          index?: number;
-          function?: { name?: string; arguments?: unknown };
-        }>;
-      };
-      error?: string;
-    };
-    if (data.error) {
-      throw new Error(`Ollama chat failed: ${data.error}`);
-    }
-
-    const content = data.message?.content ?? '';
-    const toolCalls = data.message?.tool_calls?.map(
-      (tc, index): ToolCallDelta => ({
-        index: tc.index ?? index,
-        type: 'function' as const,
-        function: {
-          name: tc.function?.name,
-          arguments: stringifyToolArguments(tc.function?.arguments),
-        },
-      }),
-    );
-    if (content || (toolCalls && toolCalls.length > 0)) {
-      onChunk({
-        content,
-        done: false,
-        ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-      });
+    while (true) {
+      if (options?.signal?.aborted) {
+        onChunk({ content: '', done: true });
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const data = JSON.parse(trimmed) as {
+            message?: {
+              content?: string;
+              thinking?: string;
+              tool_calls?: Array<{
+                index?: number;
+                function?: { name?: string; arguments?: unknown };
+              }>;
+            };
+            done?: boolean;
+            error?: string;
+          };
+          if (data.error) {
+            throw new Error(`Ollama chat failed: ${data.error}`);
+          }
+          const content = data.message?.content ?? '';
+          const thinking = data.message?.thinking;
+          const toolCalls = data.message?.tool_calls?.map(
+            (tc, index): ToolCallDelta => ({
+              index: tc.index ?? index,
+              type: 'function' as const,
+              function: {
+                name: tc.function?.name,
+                arguments: stringifyToolArguments(tc.function?.arguments),
+              },
+            }),
+          );
+          if (content || thinking || (toolCalls && toolCalls.length > 0)) {
+            onChunk({
+              content,
+              done: false,
+              ...(thinking ? { reasoning: thinking } : {}),
+              ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+            });
+          }
+          if (data.done) {
+            onChunk({ content: '', done: true });
+            return;
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
+        }
+      }
     }
     onChunk({ content: '', done: true });
   }
@@ -607,7 +679,9 @@ export function createProvider(
 ): LLMProvider {
   switch (key) {
     case 'openai':
-      return new OpenAICompatibleProvider(config, OPENAI_CHAT_COMPLETIONS_URL, modelOverride);
+      return new OpenAICompatibleProvider(
+        config, OPENAI_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openai,
+      );
     case 'claude':
       return new ClaudeProvider(config, modelOverride);
     case 'ollama':
@@ -615,7 +689,9 @@ export function createProvider(
     case 'ollamaCloud':
       return new OllamaProvider({ ...config, baseUrl: OLLAMA_CLOUD_BASE_URL }, modelOverride);
     case 'openRouter':
-      return new OpenAICompatibleProvider(config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride);
+      return new OpenAICompatibleProvider(
+        config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openRouter,
+      );
     default:
       throw new Error(`Unknown provider: ${String(key)}`);
   }
@@ -629,5 +705,7 @@ export function createCustomOpenAIProvider(
     throw new Error('Custom OpenAI-compatible provider requires a base URL.');
   }
   const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
-  return new OpenAICompatibleProvider(config, `${baseUrl}/chat/completions`, modelOverride);
+  return new OpenAICompatibleProvider(
+    config, `${baseUrl}/chat/completions`, modelOverride, REASONING_EXTRACTORS.openRouter,
+  );
 }
