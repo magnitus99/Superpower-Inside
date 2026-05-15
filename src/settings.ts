@@ -65,6 +65,7 @@ export interface ProviderConfig {
 export interface CustomOpenAIProviderConfig extends ProviderConfig {
   id: string;
   name: string;
+  useRequestUrl?: boolean;
 }
 
 export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
@@ -1914,6 +1915,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         baseUrl: 'http://localhost:1234/v1',
         models: [],
         enabled: false,
+        useRequestUrl: true,
       });
       this.debouncedSave();
       section.remove();

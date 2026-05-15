@@ -162,17 +162,20 @@ class OpenAICompatibleProvider implements LLMProvider {
   protected endpoint: string;
   protected modelOverride?: string;
   protected reasoningExtractor: ReasoningExtractor;
+  protected useRequestUrl: boolean;
 
   constructor(
     config: ProviderConfig,
     endpointOverride?: string,
     modelOverride?: string,
     reasoningExtractor?: ReasoningExtractor,
+    useRequestUrl = false,
   ) {
     this.config = config;
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
     this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
+    this.useRequestUrl = useRequestUrl;
   }
 
   private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
@@ -193,6 +196,21 @@ class OpenAICompatibleProvider implements LLMProvider {
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
+    }
+    if (this.useRequestUrl) {
+      const res = await requestUrl({
+        url: this.endpoint,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (res.status >= 400) {
+        throw new Error(`LLM chat failed: ${res.status} ${res.text}`);
+      }
+      const data = res.json as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      return data.choices?.[0]?.message?.content ?? '';
     }
     const res = await fetch(this.endpoint, {
       method: 'POST',
@@ -224,6 +242,27 @@ class OpenAICompatibleProvider implements LLMProvider {
     if (tools && tools.length > 0) {
       body.tools = tools;
     }
+    if (this.useRequestUrl) {
+      const res = await requestUrl({
+        url: this.endpoint,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (res.status >= 400) {
+        throw new Error(`LLM stream failed: ${res.status} ${res.text}`);
+      }
+      const lines = res.text.split('\n');
+      for (const line of lines) {
+        if (options?.signal?.aborted) {
+          onChunk({ content: '', done: true });
+          return;
+        }
+        if (this.processSSELine(line, onChunk)) return;
+      }
+      onChunk({ content: '', done: true });
+      return;
+    }
     const res = await fetch(this.endpoint, {
       method: 'POST',
       headers: this.buildHeaders(),
@@ -251,52 +290,7 @@ class OpenAICompatibleProvider implements LLMProvider {
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') {
-          onChunk({ content: '', done: true });
-          return;
-        }
-        if (!data) continue;
-        try {
-          const chunk = JSON.parse(data) as {
-            choices?: Array<{
-              delta?: {
-                content?: string;
-                reasoning_content?: string;
-                tool_calls?: Array<{
-                  index: number;
-                  id?: string;
-                  type?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-            }>;
-          };
-          const delta = chunk.choices?.[0]?.delta;
-          const content = delta?.content ?? '';
-          const reasoning = this.reasoningExtractor.extract(delta ?? {});
-          const toolCalls = delta?.tool_calls?.map(
-            (tc): ToolCallDelta => ({
-              index: tc.index,
-              id: tc.id,
-              type: tc.type as 'function' | undefined,
-              function: tc.function
-                ? { name: tc.function.name, arguments: tc.function.arguments }
-                : undefined,
-            }),
-          );
-          if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
-            onChunk({
-              content,
-              done: false,
-              ...(reasoning ? { reasoning } : {}),
-              ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-            });
-          }
-        } catch {
-          // malformed SSE line — skip
-        }
+        if (this.processSSELine(line, onChunk)) return;
       }
     }
     onChunk({ content: '', done: true });
@@ -310,6 +304,56 @@ class OpenAICompatibleProvider implements LLMProvider {
       h.Authorization = `Bearer ${this.config.apiKey}`;
     }
     return h;
+  }
+
+  private processSSELine(
+    line: string,
+    onChunk: (chunk: StreamChunk) => void,
+  ): boolean {
+    if (!line.startsWith('data: ')) return false;
+    const data = line.slice(6).trim();
+    if (data === '[DONE]') return true;
+    if (!data) return false;
+    try {
+      const chunk = JSON.parse(data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            reasoning_content?: string;
+            tool_calls?: Array<{
+              index: number;
+              id?: string;
+              type?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+        }>;
+      };
+      const delta = chunk.choices?.[0]?.delta;
+      const content = delta?.content ?? '';
+      const reasoning = this.reasoningExtractor.extract(delta ?? {});
+      const toolCalls = delta?.tool_calls?.map(
+        (tc): ToolCallDelta => ({
+          index: tc.index,
+          id: tc.id,
+          type: tc.type as 'function' | undefined,
+          function: tc.function
+            ? { name: tc.function.name, arguments: tc.function.arguments }
+            : undefined,
+        }),
+      );
+      if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
+        onChunk({
+          content,
+          done: false,
+          ...(reasoning ? { reasoning } : {}),
+          ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+        });
+      }
+    } catch {
+      // malformed SSE line — skip
+    }
+    return false;
   }
 }
 
@@ -707,5 +751,6 @@ export function createCustomOpenAIProvider(
   const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
   return new OpenAICompatibleProvider(
     config, `${baseUrl}/chat/completions`, modelOverride, REASONING_EXTRACTORS.openRouter,
+    config.useRequestUrl ?? true,
   );
 }
