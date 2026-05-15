@@ -1,4 +1,5 @@
 import { Plugin, Notice } from 'obsidian';
+import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperObsidianSettings,
   type ProviderConfig,
@@ -139,22 +140,35 @@ export default class SuperObsidianPlugin extends Plugin {
       },
     });
 
+    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+
     // 파일 변경 이벤트
     if (this.vaultIndexer) {
-      this.modifyCleanup = registerModifyEvent(this.app.vault, this.vaultIndexer, () => {
-        this.debouncedRefreshStats();
-      });
+      this.modifyCleanup = registerModifyEvent(
+        this.app.vault,
+        this.vaultIndexer,
+        effectiveExcludePaths,
+        () => {
+          this.debouncedRefreshStats();
+        },
+      );
     }
 
     // 파일 삭제/이름 변경 이벤트
     if (this.vaultIndexer && this.vectorStore) {
-      this.deleteCleanup = registerDeleteEvent(this.app.vault, this.vectorStore, () => {
-        this.debouncedRefreshStats();
-      });
+      this.deleteCleanup = registerDeleteEvent(
+        this.app.vault,
+        this.vectorStore,
+        effectiveExcludePaths,
+        () => {
+          this.debouncedRefreshStats();
+        },
+      );
       this.renameCleanup = registerRenameEvent(
         this.app.vault,
         this.vaultIndexer,
         this.vectorStore,
+        effectiveExcludePaths,
         () => {
           this.debouncedRefreshStats();
         },
@@ -286,6 +300,9 @@ export default class SuperObsidianPlugin extends Plugin {
       }
       if (typeof rag.autoUpdateIntervalMin !== 'number') {
         rag.autoUpdateIntervalMin = 5;
+      }
+      if (typeof rag.excludeChatFolder !== 'boolean') {
+        rag.excludeChatFolder = true;
       }
       if (Array.isArray(rag.excludePaths)) {
         for (const path of ['SuperObsidianByAI', 'SuperObsidianByAIChats']) {
@@ -444,6 +461,7 @@ export default class SuperObsidianPlugin extends Plugin {
         this.app.vault,
         this.vectorStore,
         this.settings.rag,
+        this.settings.chat,
       );
 
       const appWithSetting = this.app as unknown as {
@@ -534,6 +552,7 @@ export default class SuperObsidianPlugin extends Plugin {
       this.vectorStore,
       this.embeddingProvider,
       this.settings.rag,
+      this.settings.chat,
       bm25Index,
     );
 
@@ -567,7 +586,12 @@ export default class SuperObsidianPlugin extends Plugin {
   private async autoIndex(): Promise<void> {
     if (!this.vaultIndexer || !this.vectorStore) return;
     try {
-      const status = await calculateRagStatus(this.app.vault, this.vectorStore, this.settings.rag);
+      const status = await calculateRagStatus(
+        this.app.vault,
+        this.vectorStore,
+        this.settings.rag,
+        this.settings.chat,
+      );
       if (status.updateRequiredDocuments.length === 0) {
         return;
       }

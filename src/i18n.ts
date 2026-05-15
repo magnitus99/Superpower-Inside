@@ -91,6 +91,8 @@ export interface I18nKeys {
   autoUpdateIntervalDesc: string;
   intervalMinutes: string;
   excludePaths: string;
+  excludeChatFolder: string;
+  excludeChatFolderDesc: string;
   excludePathsDesc: string;
   excludeExts: string;
   excludeExtsDesc: string;
@@ -358,6 +360,8 @@ const ko: I18nKeys = {
   excludePathsDesc: '인덱싱에서 제외할 폴더 (쉼표로 구분)',
   excludeExts: '제외할 확장자',
   excludeExtsDesc: '인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)',
+  excludeChatFolder: '채팅 저장 폴더 RAG 제외',
+  excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
   chunkSize: '청크 크기',
   chunkSizeDesc: '마크다운 청크당 최대 문자 수 (100~5000)',
   vectorStoreType: '벡터 저장소 유형',
@@ -631,6 +635,8 @@ const en: I18nKeys = {
   excludePathsDesc: 'Folders to exclude from indexing (comma-separated)',
   excludeExts: 'Exclude Extensions',
   excludeExtsDesc: 'File extensions to exclude (comma-separated, no dot)',
+  excludeChatFolder: 'Exclude Chat Folder from RAG',
+  excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
   chunkSize: 'Chunk Size',
   chunkSizeDesc: 'Maximum characters per markdown chunk (100–5000)',
   vectorStoreType: 'Vector Store Type',

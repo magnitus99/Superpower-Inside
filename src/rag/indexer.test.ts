@@ -1,13 +1,14 @@
 import type { TFile, Vault } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { RAGConfig } from '../settings';
+import type { ChatConfig, RAGConfig } from '../settings';
 import { VaultIndexer } from './indexer';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 const ragConfig: RAGConfig = {
   excludePaths: [],
   excludeExts: [],
+  excludeChatFolder: false,
   chunkSize: 1000,
   overlap: 100,
   vectorStoreType: 'json',
@@ -18,6 +19,15 @@ const ragConfig: RAGConfig = {
   minScore: 0.5,
   enableBM25: false,
   bm25Weight: 0.3,
+};
+
+const chatConfig: ChatConfig = {
+  saveFolder: 'SuperObsidianByAI',
+  defaultModel: 'ollama:llama3.1',
+  mcpToolExecutionPolicy: 'mentioned-auto',
+  autoSaveEnabled: true,
+  autoSaveDebounceMs: 3000,
+  enforceMcpTools: true,
 };
 
 describe('VaultIndexer.indexPending', () => {
@@ -38,7 +48,7 @@ describe('VaultIndexer.indexPending', () => {
       createEntry('fresh.md', 1000, 10),
       createEntry('stale.md', 1000, 20),
     ]);
-    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig);
+    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
 
     const result = await indexer.indexPending();
 
@@ -52,7 +62,7 @@ describe('VaultIndexer.indexPending', () => {
     const vault = createVault([file], new Map([['fresh.md', 'fresh content']]));
     const store = new MemoryVectorStore();
     await store.add([createEntry('fresh.md', 1000, 10)]);
-    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig);
+    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
 
     const result = await indexer.indexPending();
 

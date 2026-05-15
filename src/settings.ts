@@ -155,6 +155,7 @@ export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
 export interface RAGConfig {
   excludePaths: string[];
   excludeExts: string[];
+  excludeChatFolder: boolean;
   chunkSize: number;
   overlap: number;
   vectorStoreType: 'json' | 'indexeddb';
@@ -236,6 +237,7 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
       'SuperObsidianByAIChats',
     ],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
+    excludeChatFolder: true,
     chunkSize: 1000,
     overlap: 100,
     vectorStoreType: 'json',
@@ -913,7 +915,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   private async getRagStatus(): Promise<RagStatusSummary | null> {
     const p = this.plugin as unknown as { vectorStore?: VectorStore };
     if (p.vectorStore) {
-      return calculateRagStatus(this.plugin.app.vault, p.vectorStore, this.plugin.settings.rag);
+      return calculateRagStatus(
+        this.plugin.app.vault,
+        p.vectorStore,
+        this.plugin.settings.rag,
+        this.plugin.settings.chat,
+      );
     }
     return this.plugin.eventDrivenRagStats ?? null;
   }
@@ -1094,6 +1101,17 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean);
+          this.debouncedSave();
+        }),
+      );
+
+    // 채팅 저장 폴더 RAG 제외
+    new Setting(section)
+      .setName(t('excludeChatFolder'))
+      .setDesc(t('excludeChatFolderDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.rag.excludeChatFolder).onChange((value) => {
+          this.plugin.settings.rag.excludeChatFolder = value;
           this.debouncedSave();
         }),
       );

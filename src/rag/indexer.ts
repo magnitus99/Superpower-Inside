@@ -1,8 +1,13 @@
 import type { TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
-import { getMarkdownFilesFiltered, isExcluded, isExcludedExt } from '../utils/vault';
-import type { RAGConfig } from '../settings';
+import {
+  getEffectiveExcludePaths,
+  getMarkdownFilesFiltered,
+  isExcluded,
+  isExcludedExt,
+} from '../utils/vault';
+import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 
@@ -107,14 +112,17 @@ export class VaultIndexer {
   private vectorStore: VectorStore;
   private embeddingProvider: EmbeddingProvider;
   private ragConfig: RAGConfig;
+  private chatConfig: ChatConfig;
 
   constructor(
     vault: Vault,
     vectorStore: VectorStore,
     embeddingProvider: EmbeddingProvider,
     ragConfig: RAGConfig,
+    chatConfig: ChatConfig,
     private bm25Index?: JsonFileBM25Index,
   ) {
+    this.chatConfig = chatConfig;
     this.vault = vault;
     this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
@@ -122,7 +130,8 @@ export class VaultIndexer {
   }
 
   async indexVault(): Promise<number> {
-    const files = getMarkdownFilesFiltered(this.vault, [...this.ragConfig.excludePaths]).filter(
+    const effectiveExcludePaths = getEffectiveExcludePaths(this.ragConfig, this.chatConfig);
+    const files = getMarkdownFilesFiltered(this.vault, effectiveExcludePaths).filter(
       (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
     );
 
@@ -178,11 +187,17 @@ export class VaultIndexer {
   }
 
   async indexPending(): Promise<{ indexed: number; skipped: number; documents: string[] }> {
-    const files = getMarkdownFilesFiltered(this.vault, [...this.ragConfig.excludePaths]).filter(
+    const effectiveExcludePaths = getEffectiveExcludePaths(this.ragConfig, this.chatConfig);
+    const files = getMarkdownFilesFiltered(this.vault, effectiveExcludePaths).filter(
       (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
     );
     const filesByPath = new Map(files.map((file) => [file.path, file]));
-    const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig);
+    const status = await calculateRagStatus(
+      this.vault,
+      this.vectorStore,
+      this.ragConfig,
+      this.chatConfig,
+    );
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
 
     let indexed = 0;
@@ -212,13 +227,14 @@ export class VaultIndexer {
 export function registerModifyEvent(
   vault: Vault,
   indexer: VaultIndexer,
+  excludePaths: string[],
   onComplete?: (file: TFile) => void,
 ): () => void {
   const ref = vault.on('modify', async (file) => {
     if (!(file instanceof Object)) return;
     if (!('path' in file)) return;
     const f = file as TFile;
-    if (isExcluded(f.path, []) || isExcludedExt(f.path, [])) return;
+    if (isExcluded(f.path, excludePaths) || isExcludedExt(f.path, [])) return;
     if (!f.path.endsWith('.md')) return;
     await indexer.indexFile(f);
     onComplete?.(f);
@@ -230,12 +246,13 @@ export function registerModifyEvent(
 export function registerDeleteEvent(
   vault: Vault,
   vectorStore: VectorStore,
+  excludePaths: string[],
   onComplete?: (filePath: string) => void,
 ): () => void {
   const ref = vault.on('delete', async (file) => {
     if (!('path' in file)) return;
     const filePath = (file as { path: string }).path;
-    if (isExcluded(filePath, []) || isExcludedExt(filePath, [])) return;
+    if (isExcluded(filePath, excludePaths) || isExcludedExt(filePath, [])) return;
     if (!filePath.endsWith('.md')) return;
     const removed = await vectorStore.removeByFilePath(filePath);
     if (removed > 0) {
@@ -250,13 +267,14 @@ export function registerRenameEvent(
   vault: Vault,
   indexer: VaultIndexer,
   vectorStore: VectorStore,
+  excludePaths: string[],
   onComplete?: (oldPath: string, newPath: string) => void,
 ): () => void {
   const ref = vault.on('rename', async (file, oldPath) => {
     if (!(file instanceof Object) || !('path' in file)) return;
     const f = file as TFile;
     const newPath = f.path;
-    if (isExcluded(newPath, []) || isExcludedExt(newPath, [])) return;
+    if (isExcluded(newPath, excludePaths) || isExcludedExt(newPath, [])) return;
     if (!newPath.endsWith('.md')) return;
     await vectorStore.removeByFilePath(oldPath);
     await indexer.indexFile(f);

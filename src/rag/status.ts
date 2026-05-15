@@ -1,6 +1,6 @@
 import type { TFile, Vault } from 'obsidian';
-import type { RAGConfig } from '../settings';
-import { getMarkdownFilesFiltered, isExcludedExt } from '../utils/vault';
+import type { RAGConfig, ChatConfig } from '../settings';
+import { getEffectiveExcludePaths, getMarkdownFilesFiltered, isExcludedExt } from '../utils/vault';
 import type { VectorEntry, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
@@ -30,9 +30,14 @@ interface FileIndexState {
   reason: string;
 }
 
-export async function getIncludedMarkdownFiles(vault: Vault, ragConfig: RAGConfig): Promise<TFile[]> {
+export async function getIncludedMarkdownFiles(
+  vault: Vault,
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): Promise<TFile[]> {
+  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
   return Promise.resolve(
-    getMarkdownFilesFiltered(vault, ragConfig.excludePaths).filter(
+    getMarkdownFilesFiltered(vault, effectiveExcludePaths).filter(
       (file) => !isExcludedExt(file.path, ragConfig.excludeExts),
     ),
   );
@@ -42,8 +47,9 @@ export async function calculateRagStatus(
   vault: Vault,
   vectorStore: VectorStore,
   ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
 ): Promise<RagStatusSummary> {
-  const includedFiles = await getIncludedMarkdownFiles(vault, ragConfig);
+  const includedFiles = await getIncludedMarkdownFiles(vault, ragConfig, chatConfig);
   const allMarkdownFiles = vault.getMarkdownFiles();
   const entries = await vectorStore.getEntries();
   const entriesByPath = groupEntriesByPath(entries);

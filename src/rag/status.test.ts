@@ -1,12 +1,13 @@
 import type { TFile, Vault } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import type { RAGConfig } from '../settings';
+import type { ChatConfig, RAGConfig } from '../settings';
 import { MemoryVectorStore, type VectorEntry } from './store';
 import { calculateRagStatus } from './status';
 
 const baseRagConfig: RAGConfig = {
   excludePaths: ['excluded'],
   excludeExts: ['canvas'],
+  excludeChatFolder: false,
   chunkSize: 1000,
   overlap: 100,
   vectorStoreType: 'json',
@@ -19,12 +20,21 @@ const baseRagConfig: RAGConfig = {
   bm25Weight: 0.3,
 };
 
+const chatConfig: ChatConfig = {
+  saveFolder: 'SuperObsidianByAI',
+  defaultModel: 'ollama:llama3.1',
+  mcpToolExecutionPolicy: 'mentioned-auto',
+  autoSaveEnabled: true,
+  autoSaveDebounceMs: 3000,
+  enforceMcpTools: true,
+};
+
 describe('calculateRagStatus', () => {
   it('신규 문서를 missing으로 분류한다', async () => {
     const vault = createVault([createFile('note.md', 1000, 10)]);
     const store = new MemoryVectorStore();
 
-    const status = await calculateRagStatus(vault, store, baseRagConfig);
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
     expect(status.missingDocuments).toBe(1);
     expect(status.updateRequiredDocuments).toEqual([
@@ -44,7 +54,7 @@ describe('calculateRagStatus', () => {
       }),
     ]);
 
-    const status = await calculateRagStatus(vault, store, baseRagConfig);
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
     expect(status.staleDocuments).toBe(1);
     expect(status.updateRequiredDocuments[0]).toEqual(
@@ -57,7 +67,7 @@ describe('calculateRagStatus', () => {
     const store = new MemoryVectorStore();
     await store.add([createLegacyEntry('legacy.md')]);
 
-    const status = await calculateRagStatus(vault, store, baseRagConfig);
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
     expect(status.unknownDocuments).toBe(1);
     expect(status.updateRequiredDocuments[0]).toEqual(
@@ -73,10 +83,33 @@ describe('calculateRagStatus', () => {
     ]);
     const store = new MemoryVectorStore();
 
-    const status = await calculateRagStatus(vault, store, baseRagConfig);
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
     expect(status.totalDocuments).toBe(1);
     expect(status.excludedDocuments).toBe(2);
+    expect(status.updateRequiredDocuments.map((document) => document.path)).toEqual(['included.md']);
+  });
+
+  it('채팅 저장 폴더 제외 옵션이 켜져 있으면 저장 폴더명을 기준으로 제외한다', async () => {
+    const vault = createVault([
+      createFile('included.md', 1000, 10),
+      createFile('CustomChats/session.md', 1000, 10),
+    ]);
+    const store = new MemoryVectorStore();
+    const ragConfig: RAGConfig = {
+      ...baseRagConfig,
+      excludePaths: [],
+      excludeChatFolder: true,
+    };
+    const customChatConfig: ChatConfig = {
+      ...chatConfig,
+      saveFolder: 'CustomChats',
+    };
+
+    const status = await calculateRagStatus(vault, store, ragConfig, customChatConfig);
+
+    expect(status.totalDocuments).toBe(1);
+    expect(status.excludedDocuments).toBe(1);
     expect(status.updateRequiredDocuments.map((document) => document.path)).toEqual(['included.md']);
   });
 });

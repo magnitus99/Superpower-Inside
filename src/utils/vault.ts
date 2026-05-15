@@ -1,4 +1,5 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
+import type { RAGConfig, ChatConfig } from '../settings';
 
 /**
  * 볼트에서 마크다운 파일 목록을 가져오되, 제외 패턴을 적용합니다.
@@ -73,4 +74,17 @@ export async function readJsonFromVault(adapter: DataAdapter, path: string): Pro
   } catch {
     return null;
   }
+}
+
+export function getEffectiveExcludePaths(
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): string[] {
+  const paths = [...ragConfig.excludePaths];
+  if (ragConfig.excludeChatFolder && chatConfig.saveFolder) {
+    if (!paths.includes(chatConfig.saveFolder)) {
+      paths.push(chatConfig.saveFolder);
+    }
+  }
+  return paths;
 }
