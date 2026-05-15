@@ -150,6 +150,8 @@ export interface I18nKeys {
   modelSelector: string;
   mcpRefresh: string;
   mcpRefreshing: string;
+  mcpConnecting: string;
+  mcpPartialError: string;
   mcpNoActiveServers: string;
   mcpActiveServers: string;
   quickPresetGeneral: string;
@@ -207,6 +209,7 @@ export interface I18nKeys {
   mcpNoServers: string;
   mcpInitFailed: string;
   mcpStatusConnected: string;
+  mcpStatusConnecting: string;
   mcpStatusDisconnected: string;
   mcpStatusError: string;
   mcpJsonEditor: string;
@@ -405,6 +408,8 @@ const ko: I18nKeys = {
   modelSelector: '모델',
   mcpRefresh: '새로고침',
   mcpRefreshing: '재연결 중...',
+  mcpConnecting: 'MCP 연결 중...',
+  mcpPartialError: '일부 MCP 서버 실패',
   mcpNoActiveServers: '활성 MCP 서버 없음',
   mcpActiveServers: '활성 {count} / 전체 {total}',
   quickPresetGeneral: '일반',
@@ -462,6 +467,7 @@ const ko: I18nKeys = {
   mcpNoServers: '등록된 MCP 서버가 없습니다.',
   mcpInitFailed: 'MCP 서버 "{name}" 연결 실패: {error}',
   mcpStatusConnected: '연결됨',
+  mcpStatusConnecting: '연결 중',
   mcpStatusDisconnected: '연결 안 됨',
   mcpStatusError: '오류',
   mcpJsonEditor: 'JSON 편집기',
@@ -661,6 +667,8 @@ const en: I18nKeys = {
   modelSelector: 'Model',
   mcpRefresh: 'Refresh',
   mcpRefreshing: 'Reconnecting...',
+  mcpConnecting: 'Connecting MCP...',
+  mcpPartialError: 'Some MCP servers failed',
   mcpNoActiveServers: 'No active MCP servers',
   mcpActiveServers: 'Active {count} / Total {total}',
   quickPresetGeneral: 'General',
@@ -719,6 +727,7 @@ const en: I18nKeys = {
   mcpNoServers: 'No MCP servers registered.',
   mcpInitFailed: 'Failed to connect MCP server "{name}": {error}',
   mcpStatusConnected: 'Connected',
+  mcpStatusConnecting: 'Connecting',
   mcpStatusDisconnected: 'Disconnected',
   mcpStatusError: 'Error',
   mcpJsonEditor: 'JSON Editor',

@@ -533,6 +533,10 @@
   background-color: var(--background-modifier-error);
 }
 
+.super-obsidian-mcp-status-dot.connecting {
+  background-color: var(--interactive-accent);
+}
+
 /* Status Labels */
 .super-obsidian-mcp-status-label.connected {
   background: var(--background-modifier-success);
@@ -547,6 +551,19 @@
 .super-obsidian-mcp-status-label.error {
   background: var(--background-modifier-error);
   color: var(--text-on-accent);
+}
+
+.super-obsidian-mcp-status-label.connecting {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.super-obsidian-mcp-status-error-detail {
+  grid-column: 2 / -1;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 /* Transport Badge on Cards */
@@ -1767,6 +1784,10 @@
 
 .super-obsidian-chat-mcp-server-chip.disconnected {
   background: var(--text-faint);
+}
+
+.super-obsidian-chat-mcp-server-chip.connecting {
+  background: var(--interactive-accent);
 }
 
 .super-obsidian-chat-mcp-refresh-btn {

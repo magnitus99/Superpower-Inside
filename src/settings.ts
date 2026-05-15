@@ -1,9 +1,22 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {
+  App,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  type EventRef,
+  type Events,
+} from 'obsidian';
 import { execSync } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { isExcludedExt } from './utils/vault';
 import { validateMcpJson, formatMcpJson } from './utils/mcp-json';
 import type { MCPRegistry } from './mcp/registry';
+import {
+  MCP_STATUS_CHANGE_EVENT,
+  type MCPConnectionState,
+  type MCPServerConnectionStatus,
+} from './mcp/connection-state';
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { type Language, t } from './i18n';
@@ -241,6 +254,8 @@ export interface PluginLike {
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
   mcpRegistry: MCPRegistry | null;
+  mcpConnectionState?: MCPConnectionState;
+  mcpLastErrors?: string[];
   eventDrivenRagStats?: {
     totalFiles: number;
     indexedFiles: number;
@@ -271,6 +286,7 @@ interface ProviderValidationCache {
 
 export class SuperObsidianSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
+  private mcpStatusEventRef: EventRef | null = null;
 
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
@@ -318,6 +334,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
   }
 
   hide(): void {
+    this.unregisterMcpStatusEvent();
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
       this.pendingEmbeddingProvider = null;
       this.pendingEmbeddingModel = null;
@@ -1210,6 +1227,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const statusSection = mcpSection.createDiv({ cls: 'super-obsidian-mcp-status' });
     this.renderMCPStatus(statusSection);
+    this.unregisterMcpStatusEvent();
+    this.mcpStatusEventRef = (this.app.workspace as unknown as Events).on(
+      MCP_STATUS_CHANGE_EVENT,
+      () => {
+        this.renderMCPStatus(statusSection);
+      },
+    );
 
     mcpSection.createDiv({ cls: 'super-obsidian-mcp-section-divider' });
     mcpSection.createEl('h3', {
@@ -1529,6 +1553,8 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const plugin = this.plugin as unknown as {
       mcpRegistry: import('./mcp/registry').MCPRegistry | null;
+      mcpConnectionState?: MCPConnectionState;
+      mcpLastErrors?: string[];
       reconnectMCP?(): Promise<string[]>;
     };
     const registry = plugin.mcpRegistry;
@@ -1580,16 +1606,24 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     });
 
     const countEl = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-count' });
-    const statusText = registry
-      ? `${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
-      : t('mcpTotalActive', { count: connectedCount, total: totalCount });
+    const state = plugin.mcpConnectionState ?? 'idle';
+    const statusText =
+      state === 'connecting'
+        ? `${t('mcpConnecting')} | ${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
+        : state === 'partial-error'
+          ? `${t('mcpPartialError')} | ${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
+          : state === 'error'
+            ? `${t('mcpConnectionFailed')} | ${t('totalLabel')}: ${totalCount}`
+            : registry
+              ? `${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
+              : t('mcpTotalActive', { count: connectedCount, total: totalCount });
     countEl.setText(statusText);
 
     if (totalCount > 0) {
       const list = statusBox.createDiv({ cls: 'super-obsidian-mcp-status-list' });
       for (const server of servers) {
         const item = list.createDiv({ cls: 'super-obsidian-mcp-status-item' });
-        let status: 'connected' | 'disconnected' | 'error' = 'disconnected';
+        let status: MCPServerConnectionStatus = 'disconnected';
 
         if (registry) {
           status = registry.getConnectionStatus(server.name);
@@ -1601,14 +1635,30 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         const labelText =
           status === 'connected'
             ? t('mcpStatusConnected')
-            : status === 'error'
-              ? t('mcpStatusError')
-              : t('mcpStatusDisconnected');
+            : status === 'connecting'
+              ? t('mcpStatusConnecting')
+              : status === 'error'
+                ? t('mcpStatusError')
+                : t('mcpStatusDisconnected');
         item.createSpan({
           text: labelText,
           cls: `super-obsidian-mcp-status-label ${status}`,
         });
+
+        const error = registry?.getLastError(server.name);
+        if (error) {
+          item.createDiv({
+            text: error,
+            cls: 'super-obsidian-mcp-status-error-detail',
+          });
+        }
       }
     }
+  }
+
+  private unregisterMcpStatusEvent(): void {
+    if (!this.mcpStatusEventRef) return;
+    this.app.workspace.offref(this.mcpStatusEventRef);
+    this.mcpStatusEventRef = null;
   }
 }

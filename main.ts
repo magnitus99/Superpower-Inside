@@ -25,7 +25,14 @@ import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { executeDirective, parseDirective } from './src/chat/commands';
 import { MCPClientManager } from './src/mcp/client';
 import { MCPRegistry } from './src/mcp/registry';
+import {
+  MCP_STATUS_CHANGE_EVENT,
+  getMcpConnectionState,
+  type MCPConnectionState,
+} from './src/mcp/connection-state';
 import { setLanguage, t } from './src/i18n';
+
+const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
 export default class SuperObsidianPlugin extends Plugin {
   settings!: SuperObsidianSettings;
@@ -35,6 +42,10 @@ export default class SuperObsidianPlugin extends Plugin {
   ragEngine: RAGQueryEngine | null = null;
   private vaultIndexer: VaultIndexer | null = null;
   mcpRegistry: MCPRegistry | null = null;
+  mcpConnectionState: MCPConnectionState = 'idle';
+  mcpLastErrors: string[] = [];
+  private mcpConnectionRunId = 0;
+  private mcpRetryTimers = new Map<ReturnType<typeof setTimeout>, () => void>();
   private modifyCleanup: (() => void) | null = null;
   private deleteCleanup: (() => void) | null = null;
   private renameCleanup: (() => void) | null = null;
@@ -53,7 +64,16 @@ export default class SuperObsidianPlugin extends Plugin {
     await this.loadSettings();
     this.initProvider();
     this.initRAG();
-    void this.initMCP();
+    void this.initMCP()
+      .then((errors) => {
+        if (errors.length > 0) {
+          new Notice(`MCP 자동 연결 실패: ${errors.length}개 서버를 확인하세요.`, 10000);
+        }
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`MCP 자동 연결 실패: ${msg}`, 10000);
+      });
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
@@ -164,6 +184,8 @@ export default class SuperObsidianPlugin extends Plugin {
     if (this.mcpRegistry) {
       void this.mcpRegistry.disconnectAll();
     }
+    this.mcpConnectionRunId++;
+    this.clearMcpRetryTimers();
   }
 
   async loadSettings(): Promise<void> {
@@ -479,17 +501,18 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   private async initMCP(): Promise<string[]> {
-    const errors = await this.runMcpConnections();
+    const errors = await this.runMcpConnections({ retryFailed: true });
     return errors;
   }
 
   async reconnectMCP(): Promise<string[]> {
-    const errors = await this.runMcpConnections();
+    const errors = await this.runMcpConnections({ retryFailed: false });
     return errors;
   }
 
-  private async runMcpConnections(): Promise<string[]> {
-    const errors: string[] = [];
+  private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
+    const runId = ++this.mcpConnectionRunId;
+    this.clearMcpRetryTimers();
 
     if (this.mcpRegistry) {
       try {
@@ -499,43 +522,156 @@ export default class SuperObsidianPlugin extends Plugin {
       }
     }
     this.mcpRegistry = new MCPRegistry(this.settings.mcpServers);
+    this.setMcpConnectionState('connecting', []);
 
-    const promises = [];
-    for (const server of this.mcpRegistry.getEnabledServers()) {
-      const client = new MCPClientManager();
-      this.mcpRegistry.setClient(server.name, client);
+    let errors = await this.connectMcpServers(this.mcpRegistry.getEnabledServers(), runId);
 
-      const promise = (async () => {
-        try {
-          if (!server.command) {
-            throw new Error('Command is required for stdio transport');
-          }
-
-          const effectivePath = this.settings.mcpPath || process.env.PATH || '';
-          const env: Record<string, string> = {
-            ...(server.env || {}),
-            PATH: server.env?.PATH || effectivePath,
-          };
-
-          await client.connectStdio({
-            name: server.name,
-            command: server.command,
-            args: server.args,
-            env,
-          });
-          this.mcpRegistry!.setConnectionStatus(server.name, 'connected');
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.mcpRegistry!.setConnectionStatus(server.name, 'error');
-          errors.push(`${server.name}: ${msg}`);
+    if (options.retryFailed) {
+      for (const delayMs of MCP_AUTO_RETRY_DELAYS_MS) {
+        if (runId !== this.mcpConnectionRunId || errors.length === 0 || !this.mcpRegistry) {
+          break;
         }
-      })();
 
-      promises.push(promise);
+        const shouldContinue = await this.sleepForMcpRetry(delayMs, runId);
+        if (!shouldContinue || runId !== this.mcpConnectionRunId || !this.mcpRegistry) {
+          break;
+        }
+
+        const failedServers = this.mcpRegistry
+          .getFailedServerNames()
+          .map((name) => this.mcpRegistry?.getServer(name))
+          .filter((server): server is NonNullable<typeof server> => server !== undefined);
+
+        if (failedServers.length === 0) {
+          break;
+        }
+
+        this.setMcpConnectionState('connecting', errors);
+        errors = await this.connectMcpServers(failedServers, runId);
+      }
     }
+
+    this.refreshMcpConnectionState();
+    return errors;
+  }
+
+  private async connectMcpServers(
+    servers: SuperObsidianSettings['mcpServers'],
+    runId: number,
+  ): Promise<string[]> {
+    const registry = this.mcpRegistry;
+    if (!registry) return [];
+
+    const errors: string[] = [];
+    const promises = servers.map(async (server) => {
+      const previousClient = registry.getClient(server.name);
+      if (previousClient) {
+        try {
+          await previousClient.disconnect();
+        } catch {
+          // 이전 연결 정리 실패는 새 연결 시도를 막지 않는다.
+        }
+      }
+
+      const client = new MCPClientManager();
+      registry.setClient(server.name, client);
+      registry.setConnectionStatus(server.name, 'connecting');
+      this.refreshMcpConnectionState();
+
+      try {
+        if (!server.command) {
+          throw new Error('Command is required for stdio transport');
+        }
+
+        const effectivePath = this.settings.mcpPath || process.env.PATH || '';
+        const env: Record<string, string> = {
+          ...(server.env || {}),
+          PATH: server.env?.PATH || effectivePath,
+        };
+
+        await client.connectStdio({
+          name: server.name,
+          command: server.command,
+          args: server.args,
+          env,
+        });
+
+        if (runId !== this.mcpConnectionRunId) {
+          await client.disconnect();
+          return;
+        }
+
+        registry.setConnectionStatus(server.name, 'connected');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (runId !== this.mcpConnectionRunId) return;
+        registry.setConnectionStatus(server.name, 'error', msg);
+        errors.push(`${server.name}: ${msg}`);
+      } finally {
+        if (runId === this.mcpConnectionRunId) {
+          this.refreshMcpConnectionState();
+        }
+      }
+    });
 
     await Promise.all(promises);
     return errors;
+  }
+
+  private setMcpConnectionState(state: MCPConnectionState, errors: string[]): void {
+    this.mcpConnectionState = state;
+    this.mcpLastErrors = errors;
+    this.app.workspace.trigger(MCP_STATUS_CHANGE_EVENT, {
+      state: this.mcpConnectionState,
+      errors: this.mcpLastErrors,
+    });
+  }
+
+  private refreshMcpConnectionState(): void {
+    const registry = this.mcpRegistry;
+    if (!registry) {
+      this.setMcpConnectionState('idle', []);
+      return;
+    }
+
+    const servers = registry.getEnabledServers();
+    const errors = registry
+      .getFailedServerNames()
+      .map((name) => `${name}: ${registry.getLastError(name) ?? 'Unknown error'}`);
+
+    this.setMcpConnectionState(
+      getMcpConnectionState({
+        totalCount: servers.length,
+        connectedCount: registry.getConnectedCount(),
+        failedCount: registry.getErrorCount(),
+        isConnecting: registry.isConnecting(),
+      }),
+      errors,
+    );
+  }
+
+  private sleepForMcpRetry(delayMs: number, runId: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (runId !== this.mcpConnectionRunId) {
+        resolve(false);
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.mcpRetryTimers.delete(timer);
+        resolve(runId === this.mcpConnectionRunId);
+      }, delayMs);
+      this.mcpRetryTimers.set(timer, () => {
+        clearTimeout(timer);
+        this.mcpRetryTimers.delete(timer);
+      });
+    });
+  }
+
+  private clearMcpRetryTimers(): void {
+    for (const [, cancel] of this.mcpRetryTimers) {
+      cancel();
+    }
+    this.mcpRetryTimers.clear();
   }
 
   private async openChatView(): Promise<void> {

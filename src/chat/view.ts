@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile, type Events } from 'obsidian';
 import {
   CHAT_PROVIDER_KEYS,
   PROVIDER_LABELS,
@@ -25,12 +25,10 @@ import {
   type ParsedMention,
   type RagQueryLike,
 } from './context';
-import {
-  createToolExecutionPolicy,
-  normalizeToolResult,
-  shouldAutoExecuteToolCall,
-} from './mcp-tools';
+import { normalizeToolResult } from './mcp-tools';
+import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
 import { t } from '../i18n';
+import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
 export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
 
@@ -145,7 +143,16 @@ export class ChatView extends ItemView {
     this.typingIndicator.innerHTML = `<span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-text">${t('chatTyping')}</span>`;
 
     this.buildInputArea(root);
+    this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
+  }
+
+  private registerMcpStatusEvents(): void {
+    this.registerEvent(
+      (this.app.workspace as unknown as Events).on(MCP_STATUS_CHANGE_EVENT, () => {
+        this.renderMcpStatusBar();
+      }),
+    );
   }
 
   async onClose(): Promise<void> {
@@ -272,11 +279,25 @@ export class ChatView extends ItemView {
     this.mcpStatusBar.empty();
 
     const registry = this.plugin.mcpRegistry;
+    const state = this.plugin.mcpConnectionState ?? 'idle';
+    if (state === 'connecting') {
+      const connectingLabel = this.mcpStatusBar.createSpan({
+        cls: 'super-obsidian-chat-mcp-status-label',
+      });
+      connectingLabel.setText(t('mcpConnecting'));
+      const refreshBtn = this.mcpStatusBar.createEl('button', {
+        cls: 'super-obsidian-chat-mcp-refresh-btn',
+        text: t('mcpRefresh'),
+      });
+      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      return;
+    }
+
     if (!registry || registry.getConnectedCount() === 0) {
       const emptyLabel = this.mcpStatusBar.createSpan({
         cls: 'super-obsidian-chat-mcp-status-label',
       });
-      emptyLabel.setText(t('mcpNoActiveServers'));
+      emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
       const refreshBtn = this.mcpStatusBar.createEl('button', {
         cls: 'super-obsidian-chat-mcp-refresh-btn',
         text: t('mcpRefresh'),
@@ -290,7 +311,11 @@ export class ChatView extends ItemView {
     const totalCount = servers.length;
 
     const summary = this.mcpStatusBar.createSpan({ cls: 'super-obsidian-chat-mcp-status-label' });
-    summary.setText(t('mcpActiveServers', { count: connectedCount, total: totalCount }));
+    summary.setText(
+      state === 'partial-error'
+        ? `${t('mcpPartialError')} · ${t('mcpActiveServers', { count: connectedCount, total: totalCount })}`
+        : t('mcpActiveServers', { count: connectedCount, total: totalCount }),
+    );
 
     for (const server of servers) {
       const status = registry.getConnectionStatus(server.name);
@@ -2042,26 +2067,24 @@ export class ChatView extends ItemView {
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        toolCalls = await this.prepareToolCallsForExecution(toolCalls, mentionedServers);
+        toolCalls = await prepareToolCallsForExecution(
+          toolCalls,
+          this.plugin.mcpRegistry,
+          mentionedServers,
+          this.plugin.settings.chat.mcpToolExecutionPolicy,
+        );
         const pendingApproval = toolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
         );
         if (pendingApproval) {
-          this.updateMessage(
-            assistantId,
-            fullText,
-            true,
-            fullReasoning || undefined,
-            toolCalls,
-            {
-              providerKey: key,
-              providerLabel,
-              model: modelName,
-              status: 'complete',
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
-            },
-          );
+          this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            status: 'complete',
+            citations: promptContext.citations,
+            contextAttachments: promptContext.attachments,
+          });
           new Notice('일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
         }
         toolCalls = await this.executeAssistantToolCalls(
@@ -2292,28 +2315,6 @@ export class ChatView extends ItemView {
       .trim();
   }
 
-  private async prepareToolCallsForExecution(
-    toolCalls: ToolCallRecord[],
-    mentionedServerNames: string[],
-  ): Promise<ToolCallRecord[]> {
-    const policy = createToolExecutionPolicy(this.plugin.settings.chat.mcpToolExecutionPolicy);
-    const prepared: ToolCallRecord[] = [];
-    for (const toolCall of toolCalls) {
-      const next = { ...toolCall };
-      if (next.status !== 'running') {
-        prepared.push(next);
-        continue;
-      }
-      if (!next.serverName) {
-        const serverName = await this.findServerForTool(next.name, mentionedServerNames);
-        if (serverName) next.serverName = serverName;
-      }
-      next.approved = shouldAutoExecuteToolCall(next, policy, mentionedServerNames);
-      prepared.push(next);
-    }
-    return prepared;
-  }
-
   private async collectToolDefinitions(serverNames: string[]): Promise<ToolDefinition[]> {
     const toolDefinitions: ToolDefinition[] = [];
     for (const serverName of serverNames) {
@@ -2436,11 +2437,18 @@ export class ChatView extends ItemView {
       return;
     }
 
-    this.updateMessage(args.messageId, finalText, true, finalReasoning || undefined, args.toolCalls, {
-      ...args.meta,
-      status: 'complete',
-      stopReason: 'complete',
-    });
+    this.updateMessage(
+      args.messageId,
+      finalText,
+      true,
+      finalReasoning || undefined,
+      args.toolCalls,
+      {
+        ...args.meta,
+        status: 'complete',
+        stopReason: 'complete',
+      },
+    );
   }
 
   private getMentionedServerNames(text: string): string[] {
@@ -2455,87 +2463,25 @@ export class ChatView extends ItemView {
     preferredServerNames: string[],
     reasoning?: string,
   ): Promise<ToolCallRecord[]> {
-    const updatedToolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
-    this.updateMessage(
-      messageId,
-      this.messages.find((m) => m.id === messageId)?.content ?? '',
-      false,
-      reasoning,
-      updatedToolCalls,
-    );
-
-    for (const toolCall of updatedToolCalls) {
-      if (toolCall.approved === false) {
-        continue;
-      }
-      const serverName = await this.findServerForTool(toolCall.name, preferredServerNames);
-      if (!serverName) {
-        toolCall.status = 'error';
-        toolCall.result = `연결된 MCP 서버에서 \`${toolCall.name}\` 도구를 찾을 수 없습니다.`;
-        this.updateMessage(
-          messageId,
-          this.messages.find((m) => m.id === messageId)?.content ?? '',
-          false,
-          reasoning,
-          updatedToolCalls,
-        );
-        continue;
-      }
-
-      const registry = this.plugin.mcpRegistry;
-      const client = registry?.getClient(serverName);
-      if (!client) {
-        toolCall.status = 'error';
-        toolCall.result = `MCP 서버 \`${serverName}\`에 연결되어 있지 않습니다.`;
-        this.updateMessage(
-          messageId,
-          this.messages.find((m) => m.id === messageId)?.content ?? '',
-          false,
-          reasoning,
-          updatedToolCalls,
-        );
-        continue;
-      }
-      toolCall.serverName = serverName;
-
-      try {
-        const result = await client.callTool(
-          toolCall.name,
-          this.parseToolArguments(toolCall.arguments),
-        );
-        const isErrorResult =
-          typeof result === 'object' &&
-          result !== null &&
-          'isError' in result &&
-          (result as Record<string, unknown>).isError === true;
-        const normalized = normalizeToolResult(result);
-        toolCall.result = normalized.displayText;
-        toolCall.resultSummary = normalized.displayText;
-        toolCall.normalizedResult = normalized.modelText;
-        toolCall.status = isErrorResult ? 'error' : 'success';
-      } catch (err) {
-        const rawMsg = err instanceof Error ? err.message : String(err);
-        toolCall.result = `[MCP 도구 오류] ${this.normalizeToolError(rawMsg)}`;
-        toolCall.status = 'error';
-      }
-
-      this.updateMessage(
-        messageId,
-        this.messages.find((m) => m.id === messageId)?.content ?? '',
-        false,
-        reasoning,
-        updatedToolCalls,
-      );
+    const message = this.messages.find((m) => m.id === messageId);
+    if (!message) {
+      throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
     }
-
-    this.updateMessage(
-      messageId,
-      this.messages.find((m) => m.id === messageId)?.content ?? '',
-      true,
-      reasoning,
-      updatedToolCalls,
-    );
-    return updatedToolCalls;
+    return executeMcpToolCalls({
+      registry: this.plugin.mcpRegistry,
+      toolCalls,
+      preferredServerNames,
+      onUpdate: (updatedToolCalls) => {
+        const current = this.messages.find((m) => m.id === messageId);
+        if (!current) {
+          throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
+        }
+        const isDone = !updatedToolCalls.some(
+          (toolCall) => toolCall.status === 'running' && toolCall.approved !== false,
+        );
+        this.updateMessage(messageId, current.content, isDone, reasoning, updatedToolCalls);
+      },
+    });
   }
 
   private async approveToolCall(messageId: string, toolCallId: string): Promise<void> {
@@ -2601,55 +2547,6 @@ export class ChatView extends ItemView {
       );
     }
     await this.saveCurrentSession(true);
-  }
-
-  private async findServerForTool(
-    toolName: string,
-    preferredServerNames: string[],
-  ): Promise<string | null> {
-    const registry = this.plugin.mcpRegistry;
-    if (!registry) return null;
-
-    const preferred = preferredServerNames.filter(
-      (serverName) => registry.getConnectionStatus(serverName) === 'connected',
-    );
-    const fallback = registry
-      .getEnabledServers()
-      .map((server) => server.name)
-      .filter(
-        (serverName) =>
-          registry.getConnectionStatus(serverName) === 'connected' &&
-          !preferred.includes(serverName),
-      );
-
-    for (const serverName of [...preferred, ...fallback]) {
-      const client = registry.getClient(serverName);
-      if (!client) continue;
-      try {
-        const tools = await client.listTools();
-        if (tools.some((tool) => tool.name === toolName)) {
-          return serverName;
-        }
-      } catch {
-        // 연결이 불안정한 서버는 다음 후보로 넘어갑니다.
-      }
-    }
-
-    return null;
-  }
-
-  private parseToolArguments(argumentsText: string): Record<string, unknown> {
-    const trimmed = argumentsText.trim();
-    if (!trimmed) return {};
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-      return { input: parsed };
-    } catch {
-      return { input: trimmed };
-    }
   }
 
   private async buildPromptContext(lastUserText: string): Promise<ContextBuildResult> {

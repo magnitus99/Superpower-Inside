@@ -1,10 +1,12 @@
 import type { MCPServerConfig } from '../settings';
 import type { MCPClientManager } from './client';
+import type { MCPServerConnectionStatus } from './connection-state';
 
 export class MCPRegistry {
   private servers: MCPServerConfig[];
   private clients: Map<string, MCPClientManager>;
-  private connectionStatus: Map<string, 'connected' | 'disconnected' | 'error'> = new Map();
+  private connectionStatus: Map<string, MCPServerConnectionStatus> = new Map();
+  private lastErrors: Map<string, string> = new Map();
 
   constructor(initialServers: MCPServerConfig[] = []) {
     this.servers = [...initialServers];
@@ -28,6 +30,7 @@ export class MCPRegistry {
       this.clients.delete(name);
     }
     this.connectionStatus.delete(name);
+    this.lastErrors.delete(name);
   }
 
   getEnabledServers(): MCPServerConfig[] {
@@ -42,12 +45,38 @@ export class MCPRegistry {
     return [...this.servers];
   }
 
-  setConnectionStatus(name: string, status: 'connected' | 'disconnected' | 'error'): void {
+  setConnectionStatus(name: string, status: MCPServerConnectionStatus, error?: string): void {
     this.connectionStatus.set(name, status);
+    if (error) {
+      this.lastErrors.set(name, error);
+    } else if (status !== 'error') {
+      this.lastErrors.delete(name);
+    }
   }
 
-  getConnectionStatus(name: string): 'connected' | 'disconnected' | 'error' {
+  getConnectionStatus(name: string): MCPServerConnectionStatus {
     return this.connectionStatus.get(name) ?? 'disconnected';
+  }
+
+  getLastError(name: string): string | undefined {
+    return this.lastErrors.get(name);
+  }
+
+  getFailedServerNames(): string[] {
+    return this.servers
+      .filter((server) => this.getConnectionStatus(server.name) === 'error')
+      .map((server) => server.name);
+  }
+
+  getErrorCount(): number {
+    return this.getFailedServerNames().length;
+  }
+
+  isConnecting(): boolean {
+    for (const status of this.connectionStatus.values()) {
+      if (status === 'connecting') return true;
+    }
+    return false;
   }
 
   getConnectedCount(): number {
@@ -72,5 +101,6 @@ export class MCPRegistry {
       this.clients.delete(name);
     }
     this.connectionStatus.clear();
+    this.lastErrors.clear();
   }
 }
