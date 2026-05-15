@@ -64,7 +64,7 @@ export default class SuperObsidianPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.initProvider();
-    this.initRAG();
+    void this.initRAG();
     void this.initMCP()
       .then((errors) => {
         if (errors.length > 0) {
@@ -365,7 +365,7 @@ export default class SuperObsidianPlugin extends Plugin {
   async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
     await this.saveData(this.settings);
     this.initProvider();
-    this.initRAG();
+    void this.initRAG();
     const mcpErrors = await this.initMCP();
     return { success: mcpErrors.length === 0, mcpErrors };
   }
