@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile, type Events } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, TFile, type Events } from 'obsidian';
 import {
   CHAT_PROVIDER_KEYS,
   PROVIDER_LABELS,
@@ -29,11 +29,12 @@ import { normalizeToolResult } from './mcp-tools';
 import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
+import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
-export const CHAT_VIEW_TYPE = 'super-obsidian-chat';
+export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 
 interface MessageMetaInput {
   providerKey?: ChatMessageWithMeta['providerKey'];
@@ -125,25 +126,25 @@ export class ChatView extends ItemView {
     await Promise.resolve();
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
-    root.addClass('super-obsidian-chat-container');
+    root.addClass('superpower-inside-chat-container');
     this.container = root;
 
     this.buildHeader(root);
     this.buildMcpStatusBar(root);
 
-    this.messagesArea = root.createDiv({ cls: 'super-obsidian-chat-messages' });
+    this.messagesArea = root.createDiv({ cls: 'superpower-inside-chat-messages' });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
 
-    this.scrollBtn = root.createDiv({ cls: 'super-obsidian-scroll-to-bottom' });
+    this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
     this.scrollBtn.style.display = 'none';
     this.scrollBtn.setText(t('chatScrollToBottom'));
     this.scrollBtn.addEventListener('click', () => this.scrollToBottom());
 
     this.typingIndicator = this.messagesArea.createDiv({
-      cls: 'super-obsidian-typing-indicator',
+      cls: 'superpower-inside-typing-indicator',
     });
     this.typingIndicator.style.display = 'none';
-    this.typingIndicator.innerHTML = `<span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-dot"></span><span class="super-obsidian-typing-text">${t('chatTyping')}</span>`;
+    this.typingIndicator.innerHTML = `<span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-text">${t('chatTyping')}</span>`;
 
     this.buildInputArea(root);
     this.registerMcpStatusEvents();
@@ -189,37 +190,37 @@ export class ChatView extends ItemView {
   }
 
   private buildHeader(container: HTMLElement): void {
-    this.headerEl = container.createDiv({ cls: 'super-obsidian-chat-header' });
+    this.headerEl = container.createDiv({ cls: 'superpower-inside-chat-header' });
 
     const titleSection = this.headerEl.createDiv({
-      cls: 'super-obsidian-chat-header-title-section',
+      cls: 'superpower-inside-chat-header-title-section',
     });
 
     this.sessionTitleEl = titleSection.createSpan({
-      cls: 'super-obsidian-chat-session-title',
+      cls: 'superpower-inside-chat-session-title',
       text: this.session.title || t('chatTabTitle'),
     });
     this.sessionTitleEl.addEventListener('click', () => this.promptRenameSession());
 
-    this.sessionInfoEl = titleSection.createDiv({ cls: 'super-obsidian-chat-session-info' });
+    this.sessionInfoEl = titleSection.createDiv({ cls: 'superpower-inside-chat-session-info' });
     this.updateSessionInfo();
 
-    const actions = this.headerEl.createDiv({ cls: 'super-obsidian-chat-header-actions' });
+    const actions = this.headerEl.createDiv({ cls: 'superpower-inside-chat-header-actions' });
 
     const newChatBtn = actions.createEl('button', {
-      cls: 'super-obsidian-chat-header-btn',
+      cls: 'superpower-inside-chat-header-btn',
       text: t('chatNewSession'),
     });
     newChatBtn.addEventListener('click', () => void this.startNewSession());
 
     const historyBtn = actions.createEl('button', {
-      cls: 'super-obsidian-chat-header-btn',
+      cls: 'superpower-inside-chat-header-btn',
       text: t('chatHistory'),
     });
     historyBtn.addEventListener('click', () => void this.openSessionHistoryModal());
 
     const sysToggle = actions.createEl('button', {
-      cls: 'super-obsidian-chat-header-btn',
+      cls: 'superpower-inside-chat-header-btn',
       text: '⚙️',
       attr: { 'aria-label': t('systemPrompt') },
     });
@@ -241,7 +242,7 @@ export class ChatView extends ItemView {
   private updateSystemPromptBadge(): void {}
 
   private buildMcpStatusBar(container: HTMLElement): void {
-    this.mcpStatusBar = container.createDiv({ cls: 'super-obsidian-chat-mcp-status-bar' });
+    this.mcpStatusBar = container.createDiv({ cls: 'superpower-inside-chat-mcp-status-bar' });
     this.renderMcpStatusBar();
   }
 
@@ -253,11 +254,11 @@ export class ChatView extends ItemView {
     const state = this.plugin.mcpConnectionState ?? 'idle';
     if (state === 'connecting') {
       const connectingLabel = this.mcpStatusBar.createSpan({
-        cls: 'super-obsidian-chat-mcp-status-label',
+        cls: 'superpower-inside-chat-mcp-status-label',
       });
       connectingLabel.setText(t('mcpConnecting'));
       const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'super-obsidian-chat-mcp-refresh-btn',
+        cls: 'superpower-inside-chat-mcp-refresh-btn',
         text: t('mcpRefresh'),
       });
       refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
@@ -266,11 +267,11 @@ export class ChatView extends ItemView {
 
     if (!registry || registry.getConnectedCount() === 0) {
       const emptyLabel = this.mcpStatusBar.createSpan({
-        cls: 'super-obsidian-chat-mcp-status-label',
+        cls: 'superpower-inside-chat-mcp-status-label',
       });
       emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
       const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'super-obsidian-chat-mcp-refresh-btn',
+        cls: 'superpower-inside-chat-mcp-refresh-btn',
         text: t('mcpRefresh'),
       });
       refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
@@ -281,7 +282,7 @@ export class ChatView extends ItemView {
     const connectedCount = registry.getConnectedCount();
     const totalCount = servers.length;
 
-    const summary = this.mcpStatusBar.createSpan({ cls: 'super-obsidian-chat-mcp-status-label' });
+    const summary = this.mcpStatusBar.createSpan({ cls: 'superpower-inside-chat-mcp-status-label' });
     summary.setText(
       state === 'partial-error'
         ? `${t('mcpPartialError')} · ${t('mcpActiveServers', { count: connectedCount, total: totalCount })}`
@@ -292,13 +293,13 @@ export class ChatView extends ItemView {
       const status = registry.getConnectionStatus(server.name);
       if (status !== 'connected') continue;
       const chip = this.mcpStatusBar.createSpan({
-        cls: `super-obsidian-chat-mcp-server-chip ${status}`,
+        cls: `superpower-inside-chat-mcp-server-chip ${status}`,
       });
       chip.setText(server.name);
     }
 
     const refreshBtn = this.mcpStatusBar.createEl('button', {
-      cls: 'super-obsidian-chat-mcp-refresh-btn',
+      cls: 'superpower-inside-chat-mcp-refresh-btn',
       text: t('mcpRefresh'),
     });
     refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
@@ -327,18 +328,18 @@ export class ChatView extends ItemView {
   }
 
   private buildInputArea(container: HTMLElement): void {
-    const wrapper = container.createDiv({ cls: 'super-obsidian-chat-input-wrapper' });
+    const wrapper = container.createDiv({ cls: 'superpower-inside-chat-input-wrapper' });
 
-    const toolbar = wrapper.createDiv({ cls: 'super-obsidian-chat-input-toolbar' });
+    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
 
     this.modelSelectEl = toolbar.createEl('select', {
-      cls: 'super-obsidian-chat-model-select',
+      cls: 'superpower-inside-chat-model-select',
       attr: { 'aria-label': t('modelSelector') },
     });
     this.populateModelSelect();
 
     const modelRefreshBtn = toolbar.createEl('button', {
-      cls: 'super-obsidian-chat-model-refresh-btn',
+      cls: 'superpower-inside-chat-model-refresh-btn',
       attr: { 'aria-label': t('refresh') },
     });
     modelRefreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -350,24 +351,24 @@ export class ChatView extends ItemView {
     });
 
     this.mcpBtn = toolbar.createEl('button', {
-      cls: 'super-obsidian-chat-toolbar-btn',
+      cls: 'superpower-inside-chat-toolbar-btn',
       text: t('toolbarTools'),
     });
     this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
 
     const searchBtn = toolbar.createEl('button', {
-      cls: 'super-obsidian-chat-toolbar-btn',
+      cls: 'superpower-inside-chat-toolbar-btn',
       text: '검색',
       attr: { 'aria-label': '메시지 검색' },
     });
     searchBtn.addEventListener('click', () => this.focusMessageSearch());
 
-    this.contextPreviewEl = wrapper.createDiv({ cls: 'super-obsidian-chat-context-preview' });
+    this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
     this.renderContextPreview('');
 
-    const inputRow = wrapper.createDiv({ cls: 'super-obsidian-chat-input-area' });
+    const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
     this.inputArea = inputRow.createEl('textarea', {
-      cls: 'super-obsidian-chat-input',
+      cls: 'superpower-inside-chat-input',
       attr: { placeholder: '메시지를 입력하세요...', rows: '2' },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
@@ -381,7 +382,7 @@ export class ChatView extends ItemView {
     });
 
     this.sendBtn = inputRow.createEl('button', {
-      cls: 'super-obsidian-chat-send-btn',
+      cls: 'superpower-inside-chat-send-btn',
       text: t('sendButton'),
     });
     this.sendBtn.addEventListener('click', () => {
@@ -405,8 +406,8 @@ export class ChatView extends ItemView {
     const el = this.messageEls.get(match.id);
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.addClass('super-obsidian-chat-search-hit');
-    window.setTimeout(() => el.removeClass('super-obsidian-chat-search-hit'), 1800);
+    el.addClass('superpower-inside-chat-search-hit');
+    window.setTimeout(() => el.removeClass('superpower-inside-chat-search-hit'), 1800);
   }
 
   private renderContextPreview(text: string): void {
@@ -427,7 +428,7 @@ export class ChatView extends ItemView {
     ];
     for (const chip of chips.slice(0, 8)) {
       this.contextPreviewEl.createSpan({
-        cls: `super-obsidian-chat-context-chip ${chip.cls}`,
+        cls: `superpower-inside-chat-context-chip ${chip.cls}`,
         text: chip.label,
       });
     }
@@ -617,7 +618,7 @@ export class ChatView extends ItemView {
     }
 
     if (!this.mentionDropdown) {
-      this.mentionDropdown = this.container.createDiv({ cls: 'super-obsidian-mention-dropdown' });
+      this.mentionDropdown = this.container.createDiv({ cls: 'superpower-inside-mention-dropdown' });
     }
     this.mentionDropdown.empty();
     this.mentionDropdown.style.display = 'block';
@@ -627,43 +628,43 @@ export class ChatView extends ItemView {
     const folderItems = this.mentionItems.filter((i) => i.type === 'folder');
 
     if (serverItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
       group.createDiv({
-        cls: 'super-obsidian-mention-group-label',
+        cls: 'superpower-inside-mention-group-label',
         text: t('mcpMentionServers'),
       });
       for (const item of serverItems) {
-        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-icon', text: '🔌' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '🔌' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
       }
     }
 
     if (folderItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
       group.createDiv({
-        cls: 'super-obsidian-mention-group-label',
+        cls: 'superpower-inside-mention-group-label',
         text: t('mcpMentionFolders'),
       });
       for (const item of folderItems) {
-        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-icon folder', text: '📁' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-icon folder', text: '📁' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
       }
     }
 
     if (fileItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'super-obsidian-mention-group' });
+      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
       group.createDiv({
-        cls: 'super-obsidian-mention-group-label',
+        cls: 'superpower-inside-mention-group-label',
         text: t('mcpMentionFiles'),
       });
       for (const item of fileItems) {
-        const el = group.createDiv({ cls: 'super-obsidian-mention-item' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-icon', text: '📄' });
-        el.createSpan({ cls: 'super-obsidian-mention-item-name', text: item.label });
+        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '📄' });
+        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
       }
     }
@@ -696,7 +697,7 @@ export class ChatView extends ItemView {
 
   private selectMentionItem(index: number): void {
     if (!this.mentionDropdown) return;
-    const items = this.mentionDropdown.querySelectorAll('.super-obsidian-mention-item');
+    const items = this.mentionDropdown.querySelectorAll('.superpower-inside-mention-item');
     if (items.length === 0) return;
 
     let targetIndex = index;
@@ -812,29 +813,29 @@ export class ChatView extends ItemView {
     this.markDirtyAndAutoSave();
 
     const wrapper = this.messagesArea!.createDiv({
-      cls: `super-obsidian-chat-message-wrapper ${role}`,
+      cls: `superpower-inside-chat-message-wrapper ${role}`,
     });
     this.messageEls.set(id, wrapper);
 
-    const avatar = wrapper.createDiv({ cls: 'super-obsidian-chat-avatar' });
+    const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
     avatar.setText(this.getAvatarText(role));
 
-    const bubbleContainer = wrapper.createDiv({ cls: 'super-obsidian-chat-bubble-container' });
+    const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', id);
 
-    const meta = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-meta' });
+    const meta = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-meta' });
     this.renderMessageMeta(meta, msg);
 
     if (role === 'assistant') {
       this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls);
     } else if (role === 'tool') {
       const bubble = bubbleContainer.createDiv({
-        cls: 'super-obsidian-chat-bubble tool',
+        cls: 'superpower-inside-chat-bubble tool',
       });
       this.renderToolBubble(bubble, content, 'running');
     } else {
       const bubble = bubbleContainer.createDiv({
-        cls: `super-obsidian-chat-bubble ${role}`,
+        cls: `superpower-inside-chat-bubble ${role}`,
       });
       void this.renderMarkdownBubble(bubble, content);
     }
@@ -898,13 +899,13 @@ export class ChatView extends ItemView {
     }
 
     if (isTool) {
-      const bubble = wrapper.querySelector('.super-obsidian-chat-bubble.tool');
+      const bubble = wrapper.querySelector('.superpower-inside-chat-bubble.tool');
       if (bubble instanceof HTMLElement) {
         const status = isDone ? 'success' : 'running';
         this.renderToolBubble(bubble, content, status);
       }
     } else {
-      const bubble = wrapper.querySelector('.super-obsidian-chat-bubble');
+      const bubble = wrapper.querySelector('.superpower-inside-chat-bubble');
       if (bubble instanceof HTMLElement) {
         if (!isDone) {
           bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
@@ -929,7 +930,7 @@ export class ChatView extends ItemView {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
 
     const thinking = bubbleContainer.createEl('details', {
-      cls: 'super-obsidian-chat-thinking super-obsidian-chat-reasoning',
+      cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
     thinking.style.display = reasoning || shouldShowStreamingPlaceholders ? '' : 'none';
     if (shouldShowStreamingPlaceholders || (reasoning && reasoning.length > 0)) {
@@ -941,12 +942,12 @@ export class ChatView extends ItemView {
     const thinkingSummary = thinking.createEl('summary');
     thinkingSummary.setText(`💭 ${t('reasoningLabel')}`);
     const thinkingContent = thinking.createDiv({
-      cls: 'super-obsidian-chat-thinking-content super-obsidian-chat-reasoning-content',
+      cls: 'superpower-inside-chat-thinking-content superpower-inside-chat-reasoning-content',
     });
     thinkingContent.setText(reasoning ?? t('thinkingPlaceholder'));
 
     const toolCallsSection = bubbleContainer.createDiv({
-      cls: 'super-obsidian-chat-tool-calls',
+      cls: 'superpower-inside-chat-tool-calls',
     });
     const hasToolCalls = toolCalls && toolCalls.length > 0;
     toolCallsSection.style.display = hasToolCalls || shouldShowStreamingPlaceholders ? '' : 'none';
@@ -956,13 +957,13 @@ export class ChatView extends ItemView {
       shouldShowStreamingPlaceholders && !hasToolCalls,
     );
 
-    const answerLayer = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-answer' });
+    const answerLayer = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-answer' });
     answerLayer.createDiv({
-      cls: 'super-obsidian-chat-answer-label',
+      cls: 'superpower-inside-chat-answer-label',
       text: `💬 ${t('answerLabel')}`,
     });
     const bubble = answerLayer.createDiv({
-      cls: 'super-obsidian-chat-bubble assistant',
+      cls: 'superpower-inside-chat-bubble assistant',
     });
     if (content.trim()) {
       void this.renderMarkdownBubble(bubble, content);
@@ -980,19 +981,19 @@ export class ChatView extends ItemView {
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
   ): void {
-    const bubbleContainer = wrapper.querySelector('.super-obsidian-chat-bubble-container');
+    const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!(bubbleContainer instanceof HTMLElement)) return;
 
-    let thinking = bubbleContainer.querySelector('.super-obsidian-chat-thinking');
+    let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     if (!(thinking instanceof HTMLDetailsElement)) {
       this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls, citations);
-      thinking = bubbleContainer.querySelector('.super-obsidian-chat-thinking');
+      thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
 
     if (thinking instanceof HTMLDetailsElement) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
       thinking.style.display = hasReasoning || !isDone ? '' : 'none';
-      const thinkingContent = thinking.querySelector('.super-obsidian-chat-thinking-content');
+      const thinkingContent = thinking.querySelector('.superpower-inside-chat-thinking-content');
       if (thinkingContent instanceof HTMLElement) {
         if (!isDone) {
           const text = hasReasoning ? reasoning : t('thinkingPlaceholder');
@@ -1010,28 +1011,28 @@ export class ChatView extends ItemView {
       }
     }
 
-    const toolCallsSection = bubbleContainer.querySelector('.super-obsidian-chat-tool-calls');
+    const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
     if (toolCallsSection instanceof HTMLElement) {
       const calls = toolCalls ?? [];
       toolCallsSection.style.display = calls.length > 0 || !isDone ? '' : 'none';
       this.renderToolCallsSection(toolCallsSection, calls, !isDone);
     }
 
-    const bubble = bubbleContainer.querySelector('.super-obsidian-chat-bubble.assistant');
+    const bubble = bubbleContainer.querySelector('.superpower-inside-chat-bubble.assistant');
     if (bubble instanceof HTMLElement) {
-      const meta = bubbleContainer.querySelector('.super-obsidian-chat-meta');
-      const generatingLabel = meta?.querySelector('.super-obsidian-chat-generating-label');
+      const meta = bubbleContainer.querySelector('.superpower-inside-chat-meta');
+      const generatingLabel = meta?.querySelector('.superpower-inside-chat-generating-label');
       if (!isDone) {
         if (
           !content.trim() &&
           !generatingLabel &&
           !bubbleContainer
-            .querySelector('.super-obsidian-chat-thinking-content')
+            .querySelector('.superpower-inside-chat-thinking-content')
             ?.textContent?.trim() &&
           !(toolCalls && toolCalls.length > 0)
         ) {
           const label = document.createElement('span');
-          label.className = 'super-obsidian-chat-generating-label';
+          label.className = 'superpower-inside-chat-generating-label';
           label.textContent = '응답 생성 중...';
           if (meta instanceof HTMLElement) {
             meta.appendChild(label);
@@ -1053,9 +1054,9 @@ export class ChatView extends ItemView {
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
     bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
 
-    const existingCursor = bubble.querySelector('.super-obsidian-chat-streaming-cursor');
+    const existingCursor = bubble.querySelector('.superpower-inside-chat-streaming-cursor');
     if (!existingCursor) {
-      const cursor = bubble.createSpan({ cls: 'super-obsidian-chat-streaming-cursor' });
+      const cursor = bubble.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
       bubble.appendChild(cursor);
     }
 
@@ -1070,7 +1071,7 @@ export class ChatView extends ItemView {
           const txt = this.pendingMarkdownContent;
           if (txt.trim()) {
             void this.renderMarkdownBubble(el, txt);
-            const cursor = el.createSpan({ cls: 'super-obsidian-chat-streaming-cursor' });
+            const cursor = el.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
             el.appendChild(cursor);
           }
         }
@@ -1092,56 +1093,56 @@ export class ChatView extends ItemView {
     toolCalls: ToolCallRecord[],
     showPlaceholder: boolean,
   ): void {
-    const existingLabel = section.querySelector('.super-obsidian-chat-tool-calls-label');
+    const existingLabel = section.querySelector('.superpower-inside-chat-tool-calls-label');
     if (!existingLabel) {
       section.createDiv({
-        cls: 'super-obsidian-chat-tool-calls-label',
+        cls: 'superpower-inside-chat-tool-calls-label',
         text: `🔧 ${t('toolCallLabel')}`,
       });
     }
 
     if (toolCalls.length === 0 && showPlaceholder) {
-      const existingPlaceholder = section.querySelector('.super-obsidian-tool-call.placeholder');
+      const existingPlaceholder = section.querySelector('.superpower-inside-tool-call.placeholder');
       if (!existingPlaceholder) {
-        const row = section.createDiv({ cls: 'super-obsidian-tool-call placeholder' });
-        row.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
-        row.createSpan({ cls: 'super-obsidian-tool-call-name', text: t('mcpToolRunning') });
-        const statusBadge = row.createSpan({ cls: 'super-obsidian-tool-call-status running' });
+        const row = section.createDiv({ cls: 'superpower-inside-tool-call placeholder' });
+        row.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
+        row.createSpan({ cls: 'superpower-inside-tool-call-name', text: t('mcpToolRunning') });
+        const statusBadge = row.createSpan({ cls: 'superpower-inside-tool-call-status running' });
         this.renderRunningDots(statusBadge);
       }
       return;
     }
 
-    section.querySelectorAll('.super-obsidian-tool-call.placeholder').forEach((el) => el.remove());
+    section.querySelectorAll('.superpower-inside-tool-call.placeholder').forEach((el) => el.remove());
 
     for (const toolCall of toolCalls) {
       const rowId = `tool-call-${toolCall.id || toolCall.name}`;
-      let callRow = Array.from(section.querySelectorAll('.super-obsidian-tool-call')).find(
+      let callRow = Array.from(section.querySelectorAll('.superpower-inside-tool-call')).find(
         (el): el is HTMLElement =>
           el instanceof HTMLElement && el.getAttribute('data-tool-call-id') === rowId,
       );
 
       if (!callRow) {
-        callRow = section.createDiv({ cls: 'super-obsidian-tool-call' });
+        callRow = section.createDiv({ cls: 'superpower-inside-tool-call' });
         callRow.setAttribute('data-tool-call-id', rowId);
-        callRow.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
+        callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
         callRow.createSpan({
-          cls: 'super-obsidian-tool-call-name',
+          cls: 'superpower-inside-tool-call-name',
           text: toolCall.name || t('toolCallLabel'),
         });
         const statusBadge = callRow.createSpan({
-          cls: `super-obsidian-tool-call-status ${toolCall.status}`,
+          cls: `superpower-inside-tool-call-status ${toolCall.status}`,
         });
         this.renderToolCallStatus(statusBadge, toolCall.status);
       } else {
-        const statusBadge = callRow.querySelector('.super-obsidian-tool-call-status');
+        const statusBadge = callRow.querySelector('.superpower-inside-tool-call-status');
         if (statusBadge instanceof HTMLElement) {
-          statusBadge.className = `super-obsidian-tool-call-status ${toolCall.status}`;
+          statusBadge.className = `superpower-inside-tool-call-status ${toolCall.status}`;
           this.renderToolCallStatus(statusBadge, toolCall.status);
         }
       }
 
-      const staleApproveBtn = callRow.querySelector('.super-obsidian-tool-call-approve');
+      const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');
       if (
         staleApproveBtn instanceof HTMLElement &&
         (toolCall.status !== 'running' || toolCall.approved !== false)
@@ -1151,28 +1152,28 @@ export class ChatView extends ItemView {
       if (
         toolCall.status === 'running' &&
         toolCall.approved === false &&
-        !callRow.querySelector('.super-obsidian-tool-call-approve')
+        !callRow.querySelector('.superpower-inside-tool-call-approve')
       ) {
         const approveBtn = callRow.createEl('button', {
-          cls: 'super-obsidian-tool-call-approve',
+          cls: 'superpower-inside-tool-call-approve',
           text: '실행 승인',
         });
         approveBtn.addEventListener('click', () => {
           const messageId = section
-            .closest('.super-obsidian-chat-bubble-container')
+            .closest('.superpower-inside-chat-bubble-container')
             ?.getAttribute('data-message-id');
           if (messageId) void this.approveToolCall(messageId, toolCall.id || toolCall.name);
         });
       }
 
       const existingArgs = Array.from(
-        section.querySelectorAll('.super-obsidian-tool-arguments'),
+        section.querySelectorAll('.superpower-inside-tool-arguments'),
       ).find(
         (el): el is HTMLDetailsElement =>
           el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
       );
       const existingResult = Array.from(
-        section.querySelectorAll('.super-obsidian-tool-result-details'),
+        section.querySelectorAll('.superpower-inside-tool-result-details'),
       ).find(
         (el): el is HTMLDetailsElement =>
           el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
@@ -1184,7 +1185,7 @@ export class ChatView extends ItemView {
 
       const argumentPreview = toolCall.arguments.trim();
       if (argumentPreview) {
-        const args = section.createEl('details', { cls: 'super-obsidian-tool-arguments' });
+        const args = section.createEl('details', { cls: 'superpower-inside-tool-arguments' });
         args.setAttribute('data-tool-call-id', rowId);
         args.open = argsOpen;
         args.createEl('summary', { text: t('toolArgs') });
@@ -1193,12 +1194,12 @@ export class ChatView extends ItemView {
 
       if (toolCall.result) {
         const resultDetails = section.createEl('details', {
-          cls: 'super-obsidian-tool-result-details',
+          cls: 'superpower-inside-tool-result-details',
         });
         resultDetails.setAttribute('data-tool-call-id', rowId);
         resultDetails.open = resultOpen;
         resultDetails.createEl('summary', { text: t('toolResult') });
-        const resultArea = resultDetails.createDiv({ cls: 'super-obsidian-tool-result' });
+        const resultArea = resultDetails.createDiv({ cls: 'superpower-inside-tool-result' });
         void this.renderMarkdownBubble(resultArea, toolCall.result);
       }
     }
@@ -1206,19 +1207,19 @@ export class ChatView extends ItemView {
     const currentIds = new Set(
       toolCalls.map((toolCall) => `tool-call-${toolCall.id || toolCall.name}`),
     );
-    section.querySelectorAll('.super-obsidian-tool-call:not(.placeholder)').forEach((el) => {
+    section.querySelectorAll('.superpower-inside-tool-call:not(.placeholder)').forEach((el) => {
       const elId = el.getAttribute('data-tool-call-id');
       if (elId && !currentIds.has(elId)) {
         el.remove();
       }
     });
-    section.querySelectorAll('.super-obsidian-tool-arguments').forEach((el) => {
+    section.querySelectorAll('.superpower-inside-tool-arguments').forEach((el) => {
       const elId = el.getAttribute('data-tool-call-id');
       if (elId && !currentIds.has(elId)) {
         el.remove();
       }
     });
-    section.querySelectorAll('.super-obsidian-tool-result-details').forEach((el) => {
+    section.querySelectorAll('.superpower-inside-tool-result-details').forEach((el) => {
       const elId = el.getAttribute('data-tool-call-id');
       if (elId && !currentIds.has(elId)) {
         el.remove();
@@ -1227,27 +1228,27 @@ export class ChatView extends ItemView {
   }
 
   private renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
-    let section = container.querySelector('.super-obsidian-chat-citations');
+    let section = container.querySelector('.superpower-inside-chat-citations');
     if (citations.length === 0) {
       section?.remove();
       return;
     }
     if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'super-obsidian-chat-citations' });
+      section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
     }
     section.empty();
     section.createDiv({
-      cls: 'super-obsidian-chat-citations-label',
+      cls: 'superpower-inside-chat-citations-label',
       text: `출처 ${citations.length}개`,
     });
 
     for (const citation of citations) {
-      const card = section.createDiv({ cls: 'super-obsidian-chat-citation-card' });
-      const title = card.createDiv({ cls: 'super-obsidian-chat-citation-title' });
+      const card = section.createDiv({ cls: 'superpower-inside-chat-citation-card' });
+      const title = card.createDiv({ cls: 'superpower-inside-chat-citation-title' });
       title.createSpan({ text: citation.filePath });
       if (citation.heading) {
         title.createSpan({
-          cls: 'super-obsidian-chat-citation-heading',
+          cls: 'superpower-inside-chat-citation-heading',
           text: ` # ${citation.heading}`,
         });
       }
@@ -1256,10 +1257,10 @@ export class ChatView extends ItemView {
         citation.score !== undefined ? `score ${citation.score.toFixed(3)}` : '',
       ].filter(Boolean);
       if (metaParts.length > 0) {
-        card.createDiv({ cls: 'super-obsidian-chat-citation-meta', text: metaParts.join(' · ') });
+        card.createDiv({ cls: 'superpower-inside-chat-citation-meta', text: metaParts.join(' · ') });
       }
-      card.createDiv({ cls: 'super-obsidian-chat-citation-preview', text: citation.preview });
-      const actions = card.createDiv({ cls: 'super-obsidian-chat-citation-actions' });
+      card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: citation.preview });
+      const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
       const openBtn = actions.createEl('button', { text: '열기' });
       openBtn.addEventListener('click', () => void this.openCitation(citation));
       const copyBtn = actions.createEl('button', { text: '링크 복사' });
@@ -1273,18 +1274,18 @@ export class ChatView extends ItemView {
     container: HTMLElement,
     attachments: ContextAttachment[],
   ): void {
-    let section = container.querySelector('.super-obsidian-chat-context-attachments');
+    let section = container.querySelector('.superpower-inside-chat-context-attachments');
     if (attachments.length === 0) {
       section?.remove();
       return;
     }
     if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'super-obsidian-chat-context-attachments' });
+      section = container.createDiv({ cls: 'superpower-inside-chat-context-attachments' });
     }
     section.empty();
     for (const attachment of attachments) {
       const chip = section.createSpan({
-        cls: `super-obsidian-chat-context-chip ${attachment.type} ${attachment.status}`,
+        cls: `superpower-inside-chat-context-chip ${attachment.type} ${attachment.status}`,
         text: attachment.label,
       });
       if (attachment.detail) {
@@ -1337,16 +1338,15 @@ export class ChatView extends ItemView {
 
   private renderRunningDots(container: HTMLElement): void {
     container.empty();
-    const dots = container.createSpan({ cls: 'super-obsidian-tool-running-dots' });
+    const dots = container.createSpan({ cls: 'superpower-inside-tool-running-dots' });
     dots.createSpan({});
     dots.createSpan({});
     dots.createSpan({});
   }
 
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
-    bubble.empty();
-    await MarkdownRenderer.renderMarkdown(content, bubble, '', this);
-    this.enhanceCodeBlocks(bubble);
+    await renderMarkdownToElement(bubble, content, '', this);
+    enhanceCodeBlocks(bubble);
     this.stylizeMentions(bubble);
   }
 
@@ -1371,7 +1371,7 @@ export class ChatView extends ItemView {
           fragments.push(document.createTextNode(text.slice(lastIndex, match.index)));
         }
         const span = document.createElement('span');
-        span.addClass('super-obsidian-mention-inline');
+        span.addClass('superpower-inside-mention-inline');
         span.setText(match[1]);
         fragments.push(span);
         lastIndex = regex.lastIndex;
@@ -1386,31 +1386,6 @@ export class ChatView extends ItemView {
         parent.insertBefore(frag, textNode);
       }
       parent.removeChild(textNode);
-    }
-  }
-
-  private enhanceCodeBlocks(container: HTMLElement): void {
-    const pres = container.querySelectorAll('pre');
-    for (const pre of Array.from(pres)) {
-      if (pre.parentElement?.classList.contains('super-obsidian-code-block-wrapper')) {
-        continue;
-      }
-      const wrapper = document.createElement('div');
-      wrapper.addClass('super-obsidian-code-block-wrapper');
-      pre.parentNode!.insertBefore(wrapper, pre);
-      wrapper.appendChild(pre);
-
-      const copyBtn = wrapper.createEl('button', {
-        cls: 'super-obsidian-code-copy-btn',
-        text: t('copyCode'),
-      });
-      copyBtn.addEventListener('click', () => {
-        const code = pre.querySelector('code')?.textContent ?? pre.textContent ?? '';
-        void navigator.clipboard.writeText(code).then(() => {
-          copyBtn.setText(t('copied'));
-          setTimeout(() => copyBtn.setText(t('copyCode')), 1500);
-        });
-      });
     }
   }
 
@@ -1446,19 +1421,19 @@ export class ChatView extends ItemView {
 
   private renderMessageMeta(meta: HTMLElement, msg: ChatMessageWithMeta): void {
     meta.empty();
-    meta.createSpan({ cls: 'super-obsidian-chat-role', text: this.getRoleLabel(msg.role) });
+    meta.createSpan({ cls: 'superpower-inside-chat-role', text: this.getRoleLabel(msg.role) });
     meta.createSpan({
-      cls: 'super-obsidian-chat-timestamp',
+      cls: 'superpower-inside-chat-timestamp',
       text: this.formatExactTimestamp(msg.createdAt),
     });
     if (msg.providerLabel || msg.model) {
       meta.createSpan({
-        cls: 'super-obsidian-chat-model-meta',
+        cls: 'superpower-inside-chat-model-meta',
         text: [msg.providerLabel, msg.model].filter(Boolean).join(' / '),
       });
     }
     const status = meta.createSpan({
-      cls: `super-obsidian-chat-message-status ${msg.status}`,
+      cls: `superpower-inside-chat-message-status ${msg.status}`,
       text: this.getMessageStatusLabel(msg.status),
     });
     if (msg.errorMessage) {
@@ -1467,16 +1442,16 @@ export class ChatView extends ItemView {
   }
 
   private updateMessageMeta(wrapper: HTMLElement, msg: ChatMessageWithMeta): void {
-    const meta = wrapper.querySelector('.super-obsidian-chat-meta');
+    const meta = wrapper.querySelector('.superpower-inside-chat-meta');
     if (meta instanceof HTMLElement) {
       this.renderMessageMeta(meta, msg);
     }
   }
 
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
-    const existing = container.querySelector('.super-obsidian-chat-message-actions');
+    const existing = container.querySelector('.superpower-inside-chat-message-actions');
     existing?.remove();
-    const actions = container.createDiv({ cls: 'super-obsidian-chat-message-actions' });
+    const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
 
     const copyBtn = actions.createEl('button', { text: '복사' });
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
@@ -1513,7 +1488,7 @@ export class ChatView extends ItemView {
   }
 
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
-    const folder = this.plugin.settings.chat.saveFolder || 'SuperObsidianByAIChats';
+    const folder = this.plugin.settings.chat.saveFolder || 'SuperpowerInsideChats';
     const title = this.session.title || 'AI 답변';
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
@@ -1609,7 +1584,7 @@ export class ChatView extends ItemView {
     if (this.messagesArea) {
       const children = Array.from(this.messagesArea.children);
       for (const child of children) {
-        if (!child.hasClass('super-obsidian-typing-indicator')) {
+        if (!child.hasClass('superpower-inside-typing-indicator')) {
           child.remove();
         }
       }
@@ -1649,7 +1624,7 @@ export class ChatView extends ItemView {
     if (this.messagesArea) {
       const children = Array.from(this.messagesArea.children);
       for (const child of children) {
-        if (!child.hasClass('super-obsidian-typing-indicator')) {
+        if (!child.hasClass('superpower-inside-typing-indicator')) {
           child.remove();
         }
       }
@@ -1731,7 +1706,7 @@ export class ChatView extends ItemView {
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
-      console.error('[Super-Obsidian] 채팅 자동 저장 실패:', err);
+      console.error('[Superpower Inside] 채팅 자동 저장 실패:', err);
     }
   }
 
@@ -1789,7 +1764,7 @@ export class ChatView extends ItemView {
     if (!this.messagesArea) return;
     const children = Array.from(this.messagesArea.children);
     for (const child of children) {
-      if (!child.hasClass('super-obsidian-typing-indicator')) {
+      if (!child.hasClass('superpower-inside-typing-indicator')) {
         child.remove();
       }
     }
@@ -1806,16 +1781,16 @@ export class ChatView extends ItemView {
     if (!this.messagesArea) return;
 
     const wrapper = this.messagesArea.createDiv({
-      cls: `super-obsidian-chat-message-wrapper ${msg.role}`,
+      cls: `superpower-inside-chat-message-wrapper ${msg.role}`,
     });
     this.messageEls.set(msg.id, wrapper);
 
-    const avatar = wrapper.createDiv({ cls: 'super-obsidian-chat-avatar' });
+    const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
     avatar.setText(this.getAvatarText(msg.role));
 
-    const bubbleContainer = wrapper.createDiv({ cls: 'super-obsidian-chat-bubble-container' });
+    const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', msg.id);
-    const meta = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-meta' });
+    const meta = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-meta' });
     this.renderMessageMeta(meta, msg);
 
     if (msg.role === 'assistant') {
@@ -1837,10 +1812,10 @@ export class ChatView extends ItemView {
         msg.citations,
       );
     } else if (msg.role === 'tool') {
-      const bubble = bubbleContainer.createDiv({ cls: 'super-obsidian-chat-bubble tool' });
+      const bubble = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-bubble tool' });
       this.renderToolBubble(bubble, msg.content, 'success');
     } else {
-      const bubble = bubbleContainer.createDiv({ cls: `super-obsidian-chat-bubble ${msg.role}` });
+      const bubble = bubbleContainer.createDiv({ cls: `superpower-inside-chat-bubble ${msg.role}` });
       void this.renderMarkdownBubble(bubble, msg.content);
     }
     this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
@@ -1857,7 +1832,7 @@ export class ChatView extends ItemView {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentTitle;
-    input.className = 'super-obsidian-session-rename-input';
+    input.className = 'superpower-inside-session-rename-input';
     input.placeholder = t('chatRenameSession');
 
     const finishRename = (): void => {
@@ -2190,7 +2165,7 @@ export class ChatView extends ItemView {
       if (assistantWrapper) {
         assistantWrapper.classList.remove('generating');
         const generatingLabel = assistantWrapper.querySelector(
-          '.super-obsidian-chat-generating-label',
+          '.superpower-inside-chat-generating-label',
         );
         if (generatingLabel instanceof HTMLElement) {
           generatingLabel.remove();
@@ -2236,7 +2211,7 @@ export class ChatView extends ItemView {
         if (assistantWrapper) {
           assistantWrapper.classList.remove('generating');
           const generatingLabel = assistantWrapper.querySelector(
-            '.super-obsidian-chat-generating-label',
+            '.superpower-inside-chat-generating-label',
           );
           if (generatingLabel instanceof HTMLElement) {
             generatingLabel.remove();
@@ -2760,16 +2735,16 @@ export class ChatView extends ItemView {
     }
 
     const overlay = this.container!.createDiv({
-      cls: 'super-obsidian-mcp-tool-picker-overlay',
+      cls: 'superpower-inside-mcp-tool-picker-overlay',
     });
-    const panel = overlay.createDiv({ cls: 'super-obsidian-mcp-tool-picker' });
+    const panel = overlay.createDiv({ cls: 'superpower-inside-mcp-tool-picker' });
 
     const title = panel.createDiv({
-      cls: 'super-obsidian-mcp-tool-picker-title',
+      cls: 'superpower-inside-mcp-tool-picker-title',
       text: t('selectTool'),
     });
     const closeBtn = title.createEl('button', {
-      cls: 'super-obsidian-mcp-tool-picker-close',
+      cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
     });
     const close = () => overlay.remove();
@@ -2778,7 +2753,7 @@ export class ChatView extends ItemView {
       if (e.target === overlay) close();
     });
 
-    const list = panel.createDiv({ cls: 'super-obsidian-mcp-tool-list' });
+    const list = panel.createDiv({ cls: 'superpower-inside-mcp-tool-list' });
 
     for (const server of registry.getEnabledServers()) {
       const client = registry.getClient(server.name);
@@ -2787,15 +2762,15 @@ export class ChatView extends ItemView {
         const tools = await client.listTools();
         if (tools.length === 0) continue;
         list.createDiv({
-          cls: 'super-obsidian-mcp-tool-server',
+          cls: 'superpower-inside-mcp-tool-server',
           text: server.name,
         });
         for (const tool of tools) {
-          const item = list.createDiv({ cls: 'super-obsidian-mcp-tool-item' });
-          item.createDiv({ cls: 'super-obsidian-mcp-tool-name', text: tool.name });
+          const item = list.createDiv({ cls: 'superpower-inside-mcp-tool-item' });
+          item.createDiv({ cls: 'superpower-inside-mcp-tool-name', text: tool.name });
           if (tool.description) {
             item.createDiv({
-              cls: 'super-obsidian-mcp-tool-desc',
+              cls: 'superpower-inside-mcp-tool-desc',
               text: tool.description,
             });
           }
@@ -2811,7 +2786,7 @@ export class ChatView extends ItemView {
 
     if (list.children.length === 0) {
       list.createDiv({
-        cls: 'super-obsidian-mcp-empty-state-desc',
+        cls: 'superpower-inside-mcp-empty-state-desc',
         text: t('noToolsAvailable'),
       });
     }
@@ -2823,16 +2798,16 @@ export class ChatView extends ItemView {
     inputSchema: Record<string, unknown>,
   ): void {
     const overlay = this.container!.createDiv({
-      cls: 'super-obsidian-mcp-tool-picker-overlay',
+      cls: 'superpower-inside-mcp-tool-picker-overlay',
     });
-    const panel = overlay.createDiv({ cls: 'super-obsidian-mcp-tool-picker' });
+    const panel = overlay.createDiv({ cls: 'superpower-inside-mcp-tool-picker' });
 
     const title = panel.createDiv({
-      cls: 'super-obsidian-mcp-tool-picker-title',
+      cls: 'superpower-inside-mcp-tool-picker-title',
       text: toolName,
     });
     const closeBtn = title.createEl('button', {
-      cls: 'super-obsidian-mcp-tool-picker-close',
+      cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
     });
     const close = () => overlay.remove();
@@ -2841,7 +2816,7 @@ export class ChatView extends ItemView {
       if (e.target === overlay) close();
     });
 
-    const form = panel.createDiv({ cls: 'super-obsidian-mcp-tool-form' });
+    const form = panel.createDiv({ cls: 'superpower-inside-mcp-tool-form' });
     const inputs: {
       key: string;
       el: HTMLInputElement | HTMLTextAreaElement;
@@ -2872,14 +2847,14 @@ export class ChatView extends ItemView {
     const requiredSet = new Set(schema.required ?? []);
 
     for (const [propName, propDef] of Object.entries(properties)) {
-      const row = form.createDiv({ cls: 'super-obsidian-mcp-tool-form-row' });
+      const row = form.createDiv({ cls: 'superpower-inside-mcp-tool-form-row' });
       row.createEl('label', {
-        cls: 'super-obsidian-mcp-tool-form-label',
+        cls: 'superpower-inside-mcp-tool-form-label',
         text: propName,
       });
       if (propDef.description) {
         row.createDiv({
-          cls: 'super-obsidian-mcp-tool-form-desc',
+          cls: 'superpower-inside-mcp-tool-form-desc',
           text: propDef.description,
         });
       }
@@ -2889,21 +2864,21 @@ export class ChatView extends ItemView {
       if (type === 'boolean') {
         inputEl = row.createEl('input', {
           type: 'checkbox',
-          cls: 'super-obsidian-mcp-tool-form-input',
+          cls: 'superpower-inside-mcp-tool-form-input',
         });
       } else if (type === 'number' || type === 'integer') {
         inputEl = row.createEl('input', {
           type: 'number',
-          cls: 'super-obsidian-mcp-tool-form-input',
+          cls: 'superpower-inside-mcp-tool-form-input',
         });
       } else if (type === 'string') {
         inputEl = row.createEl('input', {
           type: 'text',
-          cls: 'super-obsidian-mcp-tool-form-input',
+          cls: 'superpower-inside-mcp-tool-form-input',
         });
       } else {
         inputEl = row.createEl('textarea', {
-          cls: 'super-obsidian-mcp-tool-form-input',
+          cls: 'superpower-inside-mcp-tool-form-input',
           attr: { rows: '3' },
         });
       }
@@ -2919,10 +2894,10 @@ export class ChatView extends ItemView {
     }
 
     const actions = panel.createDiv({
-      cls: 'super-obsidian-mcp-tool-form-actions',
+      cls: 'superpower-inside-mcp-tool-form-actions',
     });
     const execBtn = actions.createEl('button', {
-      cls: 'super-obsidian-chat-send-btn',
+      cls: 'superpower-inside-chat-send-btn',
       text: t('executeTool'),
     });
     execBtn.addEventListener('click', () => {
@@ -3176,18 +3151,18 @@ export class ChatView extends ItemView {
       resultText = content;
     }
 
-    const callRow = bubble.createDiv({ cls: 'super-obsidian-tool-call' });
-    callRow.createSpan({ cls: 'super-obsidian-tool-call-icon', text: '🔧' });
+    const callRow = bubble.createDiv({ cls: 'superpower-inside-tool-call' });
+    callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
     callRow.createSpan({
-      cls: 'super-obsidian-tool-call-name',
+      cls: 'superpower-inside-tool-call-name',
       text: toolName || t('messageTool'),
     });
     const statusBadge = callRow.createSpan({
-      cls: `super-obsidian-tool-call-status ${status}`,
+      cls: `superpower-inside-tool-call-status ${status}`,
     });
     if (status === 'running') {
       statusBadge.setText('');
-      const dots = statusBadge.createSpan({ cls: 'super-obsidian-tool-running-dots' });
+      const dots = statusBadge.createSpan({ cls: 'superpower-inside-tool-running-dots' });
       dots.createSpan({});
       dots.createSpan({});
       dots.createSpan({});
@@ -3197,14 +3172,14 @@ export class ChatView extends ItemView {
       statusBadge.setText('✗');
     }
 
-    const resultArea = bubble.createDiv({ cls: 'super-obsidian-tool-result' });
+    const resultArea = bubble.createDiv({ cls: 'superpower-inside-tool-result' });
     if (resultText && status !== 'running') {
       void this.renderMarkdownBubble(resultArea, resultText);
     }
 
     if (resultText && status !== 'running') {
-      const toggle = bubble.createDiv({ cls: 'super-obsidian-tool-result-toggle collapsed' });
-      toggle.createSpan({ cls: 'super-obsidian-tool-result-toggle-chevron', text: '▾' });
+      const toggle = bubble.createDiv({ cls: 'superpower-inside-tool-result-toggle collapsed' });
+      toggle.createSpan({ cls: 'superpower-inside-tool-result-toggle-chevron', text: '▾' });
       toggle.createSpan({ text: t('toolResult') });
       toggle.addEventListener('click', () => {
         const isCollapsed = resultArea.classList.contains('collapsed');
@@ -3219,13 +3194,4 @@ export class ChatView extends ItemView {
       resultArea.classList.add('collapsed');
     }
   }
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }

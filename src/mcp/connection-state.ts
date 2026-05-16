@@ -1,4 +1,4 @@
-export const MCP_STATUS_CHANGE_EVENT = 'super-obsidian:mcp-status-change';
+export const MCP_STATUS_CHANGE_EVENT = 'superpower-inside:mcp-status-change';
 
 export type MCPServerConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 export type MCPConnectionState = 'idle' | 'connecting' | 'connected' | 'partial-error' | 'error';

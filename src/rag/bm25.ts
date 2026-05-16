@@ -39,7 +39,7 @@ export class JsonFileBM25Index {
   private path: string;
   private loaded: boolean;
 
-  constructor(adapter: DataAdapter, path = '.super-obsidian/bm25-index.json') {
+  constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
     this.adapter = adapter;
     this.path = path;
     this.data = { inverted: {}, docLengths: {}, totalDocs: 0, avgDocLength: 1 };

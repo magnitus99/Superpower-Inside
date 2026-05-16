@@ -1,7 +1,7 @@
 {
-  "name": "super-obsidian-by-ai",
-  "version": "0.1.0",
-  "description": "LLM, RAG, MCP, internet search, and sidebar chat for Obsidian",
+  "name": "superpower-inside",
+  "version": "1.0.0",
+  "description": "Desktop AI copilot for Obsidian with LLM chat, RAG, MCP tools, and source-aware context",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

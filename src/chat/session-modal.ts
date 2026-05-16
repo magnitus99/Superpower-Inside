@@ -3,7 +3,7 @@ import { t } from '../i18n';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
-const SESSION_MODAL_STYLE_ID = 'super-obsidian-session-modal-styles';
+const SESSION_MODAL_STYLE_ID = 'superpower-inside-session-modal-styles';
 
 /** 날짜를 기준으로 세션을 그룹핑하기 위한 키 */
 type DateGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older';
@@ -50,29 +50,29 @@ export function openSessionHistoryModal(
   void vault;
   ensureSessionModalStyles(containerEl.ownerDocument);
 
-  const overlay = containerEl.createDiv({ cls: 'super-obsidian-session-overlay' });
-  const modal = overlay.createDiv({ cls: 'super-obsidian-session-modal' });
+  const overlay = containerEl.createDiv({ cls: 'superpower-inside-session-overlay' });
+  const modal = overlay.createDiv({ cls: 'superpower-inside-session-modal' });
 
   // 제목 표시줄
-  const titleBar = modal.createDiv({ cls: 'super-obsidian-session-modal-title' });
+  const titleBar = modal.createDiv({ cls: 'superpower-inside-session-modal-title' });
   titleBar.createEl('h2', { text: t('chatHistory') });
 
-  const titleActions = titleBar.createDiv({ cls: 'super-obsidian-session-title-actions' });
+  const titleActions = titleBar.createDiv({ cls: 'superpower-inside-session-title-actions' });
   const refreshBtn = titleActions.createEl('button', {
-    cls: 'super-obsidian-session-refresh-btn',
+    cls: 'superpower-inside-session-refresh-btn',
     text: t('refresh'),
     attr: { type: 'button' },
   });
   const closeBtn = titleActions.createEl('button', {
-    cls: 'super-obsidian-session-close-btn',
+    cls: 'superpower-inside-session-close-btn',
     text: '×',
     attr: { type: 'button', 'aria-label': t('cancel') },
   });
 
   // 검색 입력
-  const searchContainer = modal.createDiv({ cls: 'super-obsidian-session-search-container' });
+  const searchContainer = modal.createDiv({ cls: 'superpower-inside-session-search-container' });
   const searchInput = searchContainer.createEl('input', {
-    cls: 'super-obsidian-session-search-input',
+    cls: 'superpower-inside-session-search-input',
     attr: {
       type: 'text',
       placeholder: t('chatSearchPlaceholder'),
@@ -80,16 +80,16 @@ export function openSessionHistoryModal(
     },
   });
   const searchClear = searchContainer.createEl('button', {
-    cls: 'super-obsidian-session-search-clear',
+    cls: 'superpower-inside-session-search-clear',
     text: '×',
     attr: { type: 'button', 'aria-label': t('cancel') },
   });
   searchClear.style.display = 'none';
 
   // 목록
-  const listEl = modal.createDiv({ cls: 'super-obsidian-session-modal-list' });
-  const footerEl = modal.createDiv({ cls: 'super-obsidian-session-footer' });
-  const countEl = footerEl.createSpan({ cls: 'super-obsidian-session-count' });
+  const listEl = modal.createDiv({ cls: 'superpower-inside-session-modal-list' });
+  const footerEl = modal.createDiv({ cls: 'superpower-inside-session-footer' });
+  const countEl = footerEl.createSpan({ cls: 'superpower-inside-session-count' });
 
   let deleteConfirmPath: string | null = null;
   let allMetas: ChatSessionMeta[] = [];
@@ -103,14 +103,14 @@ export function openSessionHistoryModal(
 
   const renderLoading = (): void => {
     listEl.empty();
-    listEl.createDiv({ cls: 'super-obsidian-session-empty', text: t('mcpRefreshing') });
+    listEl.createDiv({ cls: 'superpower-inside-session-empty', text: t('mcpRefreshing') });
     countEl.setText('');
   };
 
   const renderEmpty = (isSearch: boolean): void => {
     listEl.empty();
     listEl.createDiv({
-      cls: 'super-obsidian-session-empty',
+      cls: 'superpower-inside-session-empty',
       text: isSearch ? t('chatNoSearchResults') : t('chatNoSavedSessions'),
     });
     countEl.setText('');
@@ -118,7 +118,7 @@ export function openSessionHistoryModal(
 
   const renderError = (): void => {
     listEl.empty();
-    listEl.createDiv({ cls: 'super-obsidian-session-empty', text: t('error') });
+    listEl.createDiv({ cls: 'superpower-inside-session-empty', text: t('error') });
     countEl.setText('');
   };
 
@@ -166,35 +166,35 @@ export function openSessionHistoryModal(
       const groupMetas = groups.get(groupKey);
       if (!groupMetas || groupMetas.length === 0) continue;
 
-      const groupHeader = listEl.createDiv({ cls: 'super-obsidian-session-group-header' });
+      const groupHeader = listEl.createDiv({ cls: 'superpower-inside-session-group-header' });
       groupHeader.createSpan({
-        cls: 'super-obsidian-session-group-label',
+        cls: 'superpower-inside-session-group-label',
         text: getGroupLabel(groupKey),
       });
       groupHeader.createSpan({
-        cls: 'super-obsidian-session-group-count',
+        cls: 'superpower-inside-session-group-count',
         text: String(groupMetas.length),
       });
 
       for (const meta of groupMetas) {
         const isCurrentSession = meta.filePath === currentSessionPath;
         const itemEl = listEl.createDiv({
-          cls: `super-obsidian-session-item${isCurrentSession ? ' is-active' : ''}`,
+          cls: `superpower-inside-session-item${isCurrentSession ? ' is-active' : ''}`,
         });
 
-        const infoEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-info' });
-        const titleRow = infoEl.createDiv({ cls: 'super-obsidian-session-item-title-row' });
-        titleRow.createSpan({ cls: 'super-obsidian-session-item-title', text: meta.title });
+        const infoEl = itemEl.createDiv({ cls: 'superpower-inside-session-item-info' });
+        const titleRow = infoEl.createDiv({ cls: 'superpower-inside-session-item-title-row' });
+        titleRow.createSpan({ cls: 'superpower-inside-session-item-title', text: meta.title });
 
         if (isCurrentSession) {
           titleRow.createSpan({
-            cls: 'super-obsidian-session-current-badge',
+            cls: 'superpower-inside-session-current-badge',
             text: t('chatCurrentSession'),
           });
         }
 
         if (meta.provider || meta.model) {
-          const metaLine = infoEl.createDiv({ cls: 'super-obsidian-session-item-meta' });
+          const metaLine = infoEl.createDiv({ cls: 'superpower-inside-session-item-meta' });
           const parts: string[] = [];
           if (meta.provider) parts.push(meta.provider);
           if (meta.model) parts.push(meta.model);
@@ -204,17 +204,17 @@ export function openSessionHistoryModal(
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         } else {
-          const metaLine = infoEl.createDiv({ cls: 'super-obsidian-session-item-meta' });
+          const metaLine = infoEl.createDiv({ cls: 'superpower-inside-session-item-meta' });
           metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         }
 
         if (meta.preview) {
-          infoEl.createDiv({ cls: 'super-obsidian-session-item-preview', text: meta.preview });
+          infoEl.createDiv({ cls: 'superpower-inside-session-item-preview', text: meta.preview });
         }
 
-        const actionsEl = itemEl.createDiv({ cls: 'super-obsidian-session-item-actions' });
+        const actionsEl = itemEl.createDiv({ cls: 'superpower-inside-session-item-actions' });
         const renameBtn = actionsEl.createEl('button', {
           text: '📝',
           attr: { type: 'button', 'aria-label': t('chatRenameSession') },
@@ -253,16 +253,16 @@ export function openSessionHistoryModal(
   };
 
   const startRename = (meta: ChatSessionMeta, itemEl: HTMLElement): void => {
-    const infoEl = itemEl.querySelector<HTMLElement>('.super-obsidian-session-item-info');
+    const infoEl = itemEl.querySelector<HTMLElement>('.superpower-inside-session-item-info');
     if (!infoEl) return;
 
     infoEl.empty();
     const inputEl = infoEl.createEl('input', {
-      cls: 'super-obsidian-session-title-input',
+      cls: 'superpower-inside-session-title-input',
       value: meta.title,
       attr: { 'aria-label': t('chatSessionTitle') },
     });
-    const editActions = infoEl.createDiv({ cls: 'super-obsidian-session-inline-actions' });
+    const editActions = infoEl.createDiv({ cls: 'superpower-inside-session-inline-actions' });
     const saveBtn = editActions.createEl('button', { text: t('save'), attr: { type: 'button' } });
     const cancelBtn = editActions.createEl('button', {
       text: t('cancel'),
@@ -372,7 +372,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   const styleEl = documentRef.createElement('style');
   styleEl.id = SESSION_MODAL_STYLE_ID;
   styleEl.textContent = `
-.super-obsidian-session-overlay {
+.superpower-inside-session-overlay {
   position: fixed;
   inset: 0;
   z-index: var(--layer-modal);
@@ -383,7 +383,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   background: rgba(var(--mono-rgb-0), 0.62);
 }
 
-.super-obsidian-session-modal {
+.superpower-inside-session-modal {
   width: min(620px, 100%);
   max-height: 75vh;
   display: flex;
@@ -396,7 +396,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   overflow: hidden;
 }
 
-.super-obsidian-session-modal-title {
+.superpower-inside-session-modal-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -405,21 +405,21 @@ function ensureSessionModalStyles(documentRef: Document): void {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.super-obsidian-session-modal-title h2 {
+.superpower-inside-session-modal-title h2 {
   margin: 0;
   font-size: var(--font-ui-large);
 }
 
-.super-obsidian-session-title-actions,
-.super-obsidian-session-item-actions,
-.super-obsidian-session-inline-actions {
+.superpower-inside-session-title-actions,
+.superpower-inside-session-item-actions,
+.superpower-inside-session-inline-actions {
   display: flex;
   align-items: center;
   gap: var(--size-2-2);
 }
 
 /* 검색 바 */
-.super-obsidian-session-search-container {
+.superpower-inside-session-search-container {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -428,7 +428,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   background: var(--background-secondary);
 }
 
-.super-obsidian-session-search-input {
+.superpower-inside-session-search-input {
   flex: 1;
   padding: 6px 10px;
   border: 1px solid var(--background-modifier-border);
@@ -441,15 +441,15 @@ function ensureSessionModalStyles(documentRef: Document): void {
   transition: border-color 0.15s ease;
 }
 
-.super-obsidian-session-search-input:focus {
+.superpower-inside-session-search-input:focus {
   border-color: var(--interactive-accent);
 }
 
-.super-obsidian-session-search-input::placeholder {
+.superpower-inside-session-search-input::placeholder {
   color: var(--text-faint);
 }
 
-.super-obsidian-session-search-clear {
+.superpower-inside-session-search-clear {
   display: none;
   align-items: center;
   justify-content: center;
@@ -466,20 +466,20 @@ function ensureSessionModalStyles(documentRef: Document): void {
   line-height: 1;
 }
 
-.super-obsidian-session-search-clear:hover {
+.superpower-inside-session-search-clear:hover {
   background: var(--background-modifier-error);
   color: var(--text-on-accent);
 }
 
 /* 목록 */
-.super-obsidian-session-modal-list {
+.superpower-inside-session-modal-list {
   overflow-y: auto;
   padding: 0;
   flex: 1;
 }
 
 /* 날짜 그룹 헤더 */
-.super-obsidian-session-group-header {
+.superpower-inside-session-group-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -496,18 +496,18 @@ function ensureSessionModalStyles(documentRef: Document): void {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.super-obsidian-session-group-label {
+.superpower-inside-session-group-label {
   font-weight: 700;
 }
 
-.super-obsidian-session-group-count {
+.superpower-inside-session-group-count {
   font-weight: 400;
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
 }
 
 /* 세션 항목 */
-.super-obsidian-session-item {
+.superpower-inside-session-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -518,27 +518,27 @@ function ensureSessionModalStyles(documentRef: Document): void {
   transition: background 0.15s ease;
 }
 
-.super-obsidian-session-item:hover {
+.superpower-inside-session-item:hover {
   background: var(--background-modifier-hover);
 }
 
-.super-obsidian-session-item.is-active {
+.superpower-inside-session-item.is-active {
   background: var(--background-modifier-success);
   border-left: 3px solid var(--interactive-accent);
 }
 
-.super-obsidian-session-item-info {
+.superpower-inside-session-item-info {
   min-width: 0;
   flex: 1;
 }
 
-.super-obsidian-session-item-title-row {
+.superpower-inside-session-item-title-row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.super-obsidian-session-item-title {
+.superpower-inside-session-item-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -546,7 +546,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   color: var(--text-normal);
 }
 
-.super-obsidian-session-current-badge {
+.superpower-inside-session-current-badge {
   font-size: 10px;
   font-weight: 700;
   padding: 1px 6px;
@@ -558,7 +558,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   letter-spacing: 0.3px;
 }
 
-.super-obsidian-session-item-meta {
+.superpower-inside-session-item-meta {
   display: flex;
   align-items: center;
   gap: 0;
@@ -568,7 +568,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   flex-wrap: wrap;
 }
 
-.super-obsidian-session-item-preview {
+.superpower-inside-session-item-preview {
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   margin-top: 2px;
@@ -578,30 +578,30 @@ function ensureSessionModalStyles(documentRef: Document): void {
   line-height: 1.4;
 }
 
-.super-obsidian-session-empty {
+.superpower-inside-session-empty {
   padding: var(--size-4-8);
   color: var(--text-muted);
   text-align: center;
 }
 
-.super-obsidian-session-refresh-btn,
-.super-obsidian-session-close-btn,
-.super-obsidian-session-item-actions button {
+.superpower-inside-session-refresh-btn,
+.superpower-inside-session-close-btn,
+.superpower-inside-session-item-actions button {
   color: var(--text-normal);
 }
 
-.super-obsidian-session-item-actions button.is-confirming {
+.superpower-inside-session-item-actions button.is-confirming {
   background: var(--background-modifier-error);
   color: var(--text-on-accent);
 }
 
-.super-obsidian-session-title-input {
+.superpower-inside-session-title-input {
   width: 100%;
   margin-bottom: var(--size-2-2);
 }
 
 /* 하단 카운트 */
-.super-obsidian-session-footer {
+.superpower-inside-session-footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -610,7 +610,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   background: var(--background-secondary);
 }
 
-.super-obsidian-session-count {
+.superpower-inside-session-count {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }

@@ -518,7 +518,7 @@ const ko: I18nKeys = {
   totalLabel: '전체',
 
   // Settings Header
-  settingsTitle: 'Super Obsidian by AI — 설정',
+  settingsTitle: 'Superpower Inside — 설정',
   securityWarning: '경고: API 키는 data.json에 평문으로 저장됩니다. 민감 정보 노출에 주의하세요.',
 
   // Tabs
@@ -794,7 +794,7 @@ const en: I18nKeys = {
   totalLabel: 'Total',
 
   // Settings Header
-  settingsTitle: 'Super Obsidian by AI — Settings',
+  settingsTitle: 'Superpower Inside — Settings',
   securityWarning:
     'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
 

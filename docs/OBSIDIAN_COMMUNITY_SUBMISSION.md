@@ -15,13 +15,13 @@
 
 ```json
 {
-  "id": "super-obsidian-by-ai",
-  "name": "Super Obsidian by AI",
+  "id": "superpower-inside",
+  "name": "Superpower Inside",
   "version": "x.y.z",
   "minAppVersion": "0.15.0",
   "description": "...",
   "author": "...",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }
 ```
 
@@ -31,7 +31,7 @@
 - [ ] 설정 탭이 정상적으로 열림
 - [ ] 기본 명령어가 동작함
 - [ ] 사이드바 뷰가 정상 표시됨
-- [ ] `isDesktopOnly: false`인 경우 모바일에서도 테스트 완료
+- [ ] 데스크톱 Obsidian에서 플러그인 로드, 설정 탭, 채팅 뷰, RAG, MCP 설정 QA 완료
 
 ### 릴리스 검증
 
@@ -50,7 +50,7 @@
 ./scripts/bump-version.fish minor
 
 # GitHub Actions가 자동으로 Release를 생성합니다.
-# https://github.com/magnitus99/Super-Obsidian-by-AI/actions
+# https://github.com/magnitus99/Superpower-Inside/actions
 ```
 
 ### 2단계: 릴리스 확인
@@ -68,16 +68,16 @@ GitHub Releases 페이지에서 다음을 확인:
 
 ```json
 {
-  "id": "super-obsidian-by-ai",
-  "name": "Super Obsidian by AI",
-  "author": "Super Obsidian Team",
-  "description": "LLM, RAG, MCP, internet search, and sidebar chat for Obsidian",
-  "repo": "magnitus99/Super-Obsidian-by-AI",
+  "id": "superpower-inside",
+  "name": "Superpower Inside",
+  "author": "Superpower Inside Team",
+  "description": "Desktop AI copilot for Obsidian with LLM chat, RAG, MCP tools, and source-aware context",
+  "repo": "magnitus99/Superpower-Inside",
   "branch": "main"
 }
 ```
 
-3. PR 제목: `Add super-obsidian-by-ai plugin`
+3. PR 제목: `Add superpower-inside plugin`
 4. PR 본문에 다음 포함:
    - 플러그인 설명 (1-2문장)
    - GitHub repo 링크

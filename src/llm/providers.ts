@@ -145,7 +145,11 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 }
 
 export interface LLMProvider {
-  chat(messages: ChatMessage[], temperature?: number): Promise<string>;
+  chat(
+    messages: ChatMessage[],
+    temperature?: number,
+    tools?: ToolDefinition[],
+  ): Promise<string>;
   streamChat(
     messages: ChatMessage[],
     onChunk: (chunk: StreamChunk) => void,
@@ -187,16 +191,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     temperature = 0.7,
     tools?: ToolDefinition[],
   ): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages: this.normalizeMessages(messages),
-      options: { temperature },
-      stream: false,
-      think: true,
-    };
-    if (tools && tools.length > 0) {
-      body.tools = tools;
-    }
+    const body = this.buildChatBody(messages, temperature, false, tools);
     if (this.useRequestUrl) {
       const res = await requestUrl({
         url: this.endpoint,
@@ -226,6 +221,24 @@ class OpenAICompatibleProvider implements LLMProvider {
     return data.choices?.[0]?.message?.content ?? '';
   }
 
+  private buildChatBody(
+    messages: ChatMessage[],
+    temperature: number,
+    stream: boolean,
+    tools?: ToolDefinition[],
+  ): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: this.modelOverride ?? this.config.models[0] ?? '',
+      messages: this.normalizeMessages(messages),
+      temperature,
+      stream,
+    };
+    if (tools && tools.length > 0) {
+      body.tools = tools;
+    }
+    return body;
+  }
+
   async streamChat(
     messages: ChatMessage[],
     onChunk: (chunk: StreamChunk) => void,
@@ -233,15 +246,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
-    const body: Record<string, unknown> = {
-      model: this.modelOverride ?? this.config.models[0] ?? '',
-      messages: this.normalizeMessages(messages),
-      temperature,
-      stream: true,
-    };
-    if (tools && tools.length > 0) {
-      body.tools = tools;
-    }
+    const body = this.buildChatBody(messages, temperature, true, tools);
     if (this.useRequestUrl) {
       const res = await requestUrl({
         url: this.endpoint,
@@ -549,12 +554,6 @@ class OllamaProvider implements LLMProvider {
   ): Promise<string> {
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
-    console.log(
-      '[SuperObsidian] Ollama chat URL:',
-      targetUrl,
-      'original baseUrl:',
-      this.config.baseUrl,
-    );
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),

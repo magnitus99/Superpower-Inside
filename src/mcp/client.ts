@@ -42,7 +42,7 @@ export class MCPClientManager {
       args: config.args ?? [],
       env: config.env,
     });
-    this.client = new Client({ name: 'super-obsidian', version: '0.1.0' });
+    this.client = new Client({ name: 'superpower-inside', version: '1.0.0' });
     await this.client.connect(this.transport);
   }
 

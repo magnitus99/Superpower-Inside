@@ -1,4 +1,4 @@
-# AGENTS.md — Super-Obsidian-by-AI
+# AGENTS.md — Superpower-Inside
 
 **Generated:** 2026-05-14
 **Commit:** b02790e
@@ -12,8 +12,8 @@
 ```
 .
 ├── main.ts                       # Plugin 진입점(onload/onunload), provider/RAG/MCP 조립 — 533줄
-├── manifest.json                 # Obsidian plugin metadata (id: super-obsidian-by-ai)
-├── styles.css                    # 플러그인 전용 CSS, super-obsidian- 프리픽스 — 2533줄
+├── manifest.json                 # Obsidian plugin metadata (id: superpower-inside)
+├── styles.css                    # 플러그인 전용 CSS, superpower-inside- 프리픽스 — 2533줄
 ├── src/
 │   ├── settings.ts               # 설정 타입 + PluginSettingTab UI — 1590줄
 │   ├── i18n.ts                   # 한국어/영어 다국어 문자열 — 790줄
@@ -42,7 +42,7 @@
 | 임베딩 변경 | `src/llm/embedding.ts` | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼 |
 | LLM/임베딩 연결 테스트 | `src/llm/validation.ts` | 설정 UI의 연결 검증과 연결됨 |
 | RAG 청킹/인덱싱 | `src/rag/indexer.ts` | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트 |
-| RAG 저장소 | `src/rag/store.ts` | `JsonFileVectorStore`는 `.super-obsidian/vectors.json` 사용 |
+| RAG 저장소 | `src/rag/store.ts` | `JsonFileVectorStore`는 `.superpower-inside/vectors.json` 사용 |
 | RAG 질의/컨텍스트 | `src/rag/query.ts` + `src/chat/context.ts` | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감 |
 | 채팅 UI | `src/chat/view.ts` | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨 |
 | 채팅 저장/로드 | `src/chat/persistence.ts` | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원 |
@@ -58,10 +58,10 @@
 
 | Symbol | Type | Location | Role |
 |--------|------|----------|------|
-| `SuperObsidianPlugin` | class | `main.ts` | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
-| `SuperObsidianSettings` | interface | `src/settings.ts` | 전체 설정 스키마 |
+| `SuperpowerInsidePlugin` | class | `main.ts` | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
+| `SuperpowerInsideSettings` | interface | `src/settings.ts` | 전체 설정 스키마 |
 | `DEFAULT_SETTINGS` | const | `src/settings.ts` | Provider/RAG/MCP/Chat 기본값 |
-| `SuperObsidianSettingTab` | class | `src/settings.ts` | 설정 UI와 debounced save |
+| `SuperpowerInsideSettingTab` | class | `src/settings.ts` | 설정 UI와 debounced save |
 | `createProvider` | function | `src/llm/providers.ts` | ProviderKey → LLMProvider 팩토리 |
 | `OpenAICompatibleProvider` | class | `src/llm/providers.ts` | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리 |
 | `ClaudeProvider` | class | `src/llm/providers.ts` | Anthropic Claude Provider |
@@ -85,19 +85,19 @@
 
 | Path | Meaning |
 |------|---------|
-| `.test-vault/.obsidian/plugins/super-obsidian-by-ai` | 저장소 루트로 향하는 심링크. 복사본이 아니어야 `npm run dev` 결과가 즉시 반영됨 |
+| `.test-vault/.obsidian/plugins/superpower-inside` | 저장소 루트로 향하는 심링크. 복사본이 아니어야 `npm run dev` 결과가 즉시 반영됨 |
 | `.test-vault/.obsidian/plugins/hot-reload/` | `pjeby/hot-reload` 클론. `main.js` 변경 시 플러그인 자동 리로드 |
-| `.test-vault/.obsidian/community-plugins.json` | `super-obsidian-by-ai`, `hot-reload` 활성화 상태 |
+| `.test-vault/.obsidian/community-plugins.json` | `superpower-inside`, `hot-reload` 활성화 상태 |
 | `.test-vault/.obsidian/workspace.json` | Obsidian UI 상태. 개인/일시 상태라 커밋 대상 아님 |
-| `.test-vault/.super-obsidian/vectors.json` | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준 |
-| `.test-vault/SuperObsidianByAIChats/` | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용 |
+| `.test-vault/.superpower-inside/vectors.json` | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준 |
+| `.test-vault/SuperpowerInsideChats/` | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용 |
 | `.test-vault/catholic bible/` | RAG 인덱싱 대용량 한국어 Markdown corpus. 약 110개 이상의 장/입문 파일 |
 | `.test-vault/Base.base` | Obsidian Bases 기능 확인용 파일 |
 | `.test-vault/test.md`, `Welcome.md` | 간단한 문서 요약/링크/멘션 QA용 |
 
-`.test-vault/SuperObsidianByAIChats/*.md`는 두 종류의 포맷이 섞여 있다. 2026-05-10 파일들은 이전 저장 포맷에 가깝고, 2026-05-14 파일들은 `tags`, `pinned`, `sourceCount`, `summary`, `contextAttachments`, `citations` 등 최신 메타가 포함된다. `persistence.ts` 수정 시 두 계열을 모두 열 수 있어야 한다.
+`.test-vault/SuperpowerInsideChats/*.md`는 두 종류의 포맷이 섞여 있다. 2026-05-10 파일들은 이전 저장 포맷에 가깝고, 2026-05-14 파일들은 `tags`, `pinned`, `sourceCount`, `summary`, `contextAttachments`, `citations` 등 최신 메타가 포함된다. `persistence.ts` 수정 시 두 계열을 모두 열 수 있어야 한다.
 
-`.test-vault/.super-obsidian/vectors.json`은 실제 임베딩 배열을 포함하므로 크고 민감할 수 있다. RAG 저장소/청킹 변경 QA에는 유용하지만, 일반 코드 변경에서 diff에 올리지 않는다. 재인덱싱 테스트를 하면 이 파일과 채팅 세션 파일이 바뀔 수 있으니 작업 전후 `git status --short`로 범위를 확인한다.
+`.test-vault/.superpower-inside/vectors.json`은 실제 임베딩 배열을 포함하므로 크고 민감할 수 있다. RAG 저장소/청킹 변경 QA에는 유용하지만, 일반 코드 변경에서 diff에 올리지 않는다. 재인덱싱 테스트를 하면 이 파일과 채팅 세션 파일이 바뀔 수 있으니 작업 전후 `git status --short`로 범위를 확인한다.
 
 ## DEVELOPMENT WORKFLOW
 
@@ -133,7 +133,7 @@ npm run build
 - DOM은 Obsidian `createEl`, `createDiv`, `createSpan` 계열을 우선한다. 사용자/모델 출력에 `innerHTML` 직접 할당하지 않는다.
 - 설정 탭의 범위값 입력에는 슬라이더를 사용하지 않는다. 숫자 텍스트 입력(`addText` + `inputEl.type = 'number'`)으로 범위와 step을 지정한다.
 - Provider 추가 시 `PROVIDER_KEYS`, `PROVIDER_LABELS`, `DEFAULT_SETTINGS`, 설정 UI, `createProvider`, validation 경로를 함께 확인한다.
-- RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.super-obsidian/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
+- RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.superpower-inside/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
 - `manifest.json`은 `isDesktopOnly: false`지만 MCP stdio는 데스크톱 전용이다. 모바일 호환성을 깨지 않도록 런타임 분기를 유지한다.
 
 ## ANTI-PATTERNS

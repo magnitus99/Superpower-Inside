@@ -12,7 +12,7 @@ export class EditMessageModal extends Modal {
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.addClass('super-obsidian-edit-modal');
+    contentEl.addClass('superpower-inside-edit-modal');
     contentEl.createEl('h3', { text: '메시지 수정' });
 
     const textarea = contentEl.createEl('textarea', {
@@ -30,7 +30,7 @@ export class EditMessageModal extends Modal {
     });
 
     const btnRow = contentEl.createDiv({
-      cls: 'super-obsidian-edit-modal-buttons',
+      cls: 'superpower-inside-edit-modal-buttons',
     });
 
     const cancelBtn = btnRow.createEl('button', {

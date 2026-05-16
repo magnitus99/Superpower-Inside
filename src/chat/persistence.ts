@@ -11,8 +11,11 @@ import type {
 
 export type { ChatMessage } from '../llm/providers';
 
-const MESSAGE_COMMENT_OPEN = '<!-- super-obsidian-message';
-const MESSAGE_COMMENT_CLOSE = '<!-- /super-obsidian-message -->';
+const MESSAGE_PREFIX = 'superpower-inside';
+const LEGACY_MESSAGE_PREFIX = 'super-obsidian';
+const MESSAGE_COMMENT_OPEN = `<!-- ${MESSAGE_PREFIX}-message`;
+const MESSAGE_COMMENT_CLOSE = `<!-- /${MESSAGE_PREFIX}-message -->`;
+const ENCODED_BLOCK_ATTR = 'encoding="base64"';
 
 interface MessagePersistMeta {
   id: string;
@@ -75,7 +78,7 @@ export async function saveChat(
     `created: ${formatFrontmatterValue(normalizeDateValue(created))}`,
     `updated: ${formatFrontmatterValue(updated)}`,
     `messages: ${messages.length}`,
-    'tags: ["super-obsidian-chat"]',
+    'tags: ["superpower-inside-chat"]',
     'pinned: false',
     `sourceCount: ${sourceCount}`,
   ];
@@ -307,7 +310,6 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     providerLabel: message.providerLabel,
     model: message.model,
     status: message.status,
-    errorMessage: message.errorMessage,
     toolCalls: message.toolCalls,
     citations: message.citations,
     contextAttachments: message.contextAttachments,
@@ -338,14 +340,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
 
   if (message.role === 'assistant') {
     if (message.reasoning) {
-      lines.push(
-        '',
-        '#### Reasoning',
-        '',
-        '<!-- super-obsidian-reasoning-start -->',
-        message.reasoning,
-        '<!-- super-obsidian-reasoning-end -->',
-      );
+      lines.push('', '#### Reasoning', '', ...formatNamedBlock('reasoning', message.reasoning));
     }
     if (message.toolCalls && message.toolCalls.length > 0) {
       lines.push('', '#### Tool Calls', '');
@@ -366,21 +361,10 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     lines.push('', '#### Content', '');
   }
 
-  lines.push(
-    '<!-- super-obsidian-content-start -->',
-    message.content,
-    '<!-- super-obsidian-content-end -->',
-  );
+  lines.push(...formatNamedBlock('content', message.content));
 
   if (message.errorMessage) {
-    lines.push(
-      '',
-      '#### Error',
-      '',
-      '<!-- super-obsidian-error-start -->',
-      message.errorMessage,
-      '<!-- super-obsidian-error-end -->',
-    );
+    lines.push('', '#### Error', '', ...formatNamedBlock('error', message.errorMessage));
   }
 
   lines.push(MESSAGE_COMMENT_CLOSE);
@@ -421,7 +405,7 @@ function formatCitation(citation: SourceCitation): string {
 function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
   const messages: ChatMessageWithMeta[] = [];
   const regex =
-    /<!--\s*super-obsidian-message\s*([\s\S]*?)\s*-->\n?([\s\S]*?)\n?<!--\s*\/super-obsidian-message\s*-->/g;
+    /<!--\s*(?:superpower-inside|super-obsidian)-message\s*([\s\S]*?)\s*-->\n?([\s\S]*?)\n?<!--\s*\/(?:superpower-inside|super-obsidian)-message\s*-->/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(body)) !== null) {
     const meta = parseMessageMeta(match[1]);
@@ -593,14 +577,53 @@ function parseInteger(value: string | undefined): number | undefined {
 }
 
 function extractNamedBlock(block: string, name: string): string {
-  const regex = new RegExp(
-    `<!--\\s*super-obsidian-${name}-start\\s*-->\\n?([\\s\\S]*?)\\n?<!--\\s*super-obsidian-${name}-end\\s*-->`,
-  );
-  return regex.exec(block)?.[1]?.trim() ?? '';
+  const match = [MESSAGE_PREFIX, LEGACY_MESSAGE_PREFIX]
+    .map((prefix) =>
+      new RegExp(
+        `<!--\\s*${prefix}-${name}-start([^>]*)-->\\n?([\\s\\S]*?)\\n?<!--\\s*${prefix}-${name}-end\\s*-->`,
+      ).exec(block),
+    )
+    .find((candidate): candidate is RegExpExecArray => candidate !== null);
+  if (!match) return '';
+  const attrs = match[1] ?? '';
+  const raw = match[2]?.trim() ?? '';
+  if (attrs.includes('encoding="base64"')) {
+    return decodeTextBlock(raw);
+  }
+  return raw;
+}
+
+function formatNamedBlock(name: string, value: string): string[] {
+  return [
+    `<!-- ${MESSAGE_PREFIX}-${name}-start ${ENCODED_BLOCK_ATTR} -->`,
+    encodeTextBlock(value),
+    `<!-- ${MESSAGE_PREFIX}-${name}-end -->`,
+  ];
+}
+
+function encodeTextBlock(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function decodeTextBlock(value: string): string {
+  try {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return '';
+  }
 }
 
 function countMarkdownMessages(body: string): number {
-  const markerCount = body.match(/<!--\s*super-obsidian-message\s*[\s\S]*?\s*-->/g)?.length;
+  const markerCount = body.match(
+    /<!--\s*(?:superpower-inside|super-obsidian)-message\s*[\s\S]*?\s*-->/g,
+  )?.length;
   if (markerCount !== undefined) return markerCount;
   return (body.match(/^##\s*(User|Assistant|System|Tool)$/gm) ?? []).length;
 }

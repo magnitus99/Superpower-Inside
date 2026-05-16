@@ -1,4 +1,5 @@
 import { MarkdownRenderer, Component } from 'obsidian';
+import { t } from '../i18n';
 
 /**
  * Markdown 콘텐츠를 지정한 HTMLElement에 렌더링합니다.
@@ -16,35 +17,31 @@ export async function renderMarkdownToElement(
 
 /**
  * 렌더링된 마크다운 컨테이너 내의 코드 블록을 감싸고 복사 버튼을 추가합니다.
- * 각 <pre><code> 쌍을 .super-obsidian-code-block-wrapper 로 감싸고,
+ * 각 <pre><code> 쌍을 .superpower-inside-code-block-wrapper 로 감싸고,
  * 우측 상단에 복사 버튼을 배치합니다.
  */
 export function enhanceCodeBlocks(container: HTMLElement): void {
   const codeBlocks = container.querySelectorAll('pre > code');
   for (const codeEl of Array.from(codeBlocks)) {
     const preEl = codeEl.parentElement;
-    if (!preEl || preEl.parentElement?.classList.contains('super-obsidian-code-block-wrapper')) {
+    if (!preEl || preEl.parentElement?.classList.contains('superpower-inside-code-block-wrapper')) {
       continue;
     }
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'super-obsidian-code-block-wrapper';
+    wrapper.className = 'superpower-inside-code-block-wrapper';
     preEl.parentNode?.insertBefore(wrapper, preEl);
     wrapper.appendChild(preEl);
 
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'super-obsidian-code-copy-btn';
-    copyBtn.textContent = '복사';
+    const copyBtn = wrapper.createEl('button', {
+      cls: 'superpower-inside-code-copy-btn',
+      text: t('copyCode'),
+    });
     copyBtn.addEventListener('click', () => {
-      const text = codeEl.textContent ?? '';
-      void navigator.clipboard.writeText(text).then(() => {
-        const originalText = copyBtn.textContent;
-        copyBtn.textContent = '복사됨';
-        setTimeout(() => {
-          if (originalText !== null) {
-            copyBtn.textContent = originalText;
-          }
-        }, 1500);
+      const code = codeEl.textContent ?? '';
+      void navigator.clipboard.writeText(code).then(() => {
+        copyBtn.setText(t('copied'));
+        setTimeout(() => copyBtn.setText(t('copyCode')), 1500);
       });
     });
     wrapper.appendChild(copyBtn);
@@ -60,5 +57,6 @@ export function escapeHtml(str: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }

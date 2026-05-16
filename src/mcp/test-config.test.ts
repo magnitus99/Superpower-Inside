@@ -6,7 +6,7 @@ import { loadLiveMcpTestConfig } from './test-config';
 
 describe('loadLiveMcpTestConfig', () => {
   it('data.json을 .env.test.local보다 우선 사용한다', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'super-obsidian-mcp-config-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'superpower-inside-mcp-config-'));
     try {
       writeFileSync(
         path.join(dir, 'data.json'),
@@ -34,7 +34,7 @@ describe('loadLiveMcpTestConfig', () => {
   });
 
   it('data.json이 없으면 .env.test.local의 MCP_TEST_SERVERS_JSON을 사용한다', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'super-obsidian-mcp-config-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'superpower-inside-mcp-config-'));
     try {
       writeFileSync(
         path.join(dir, '.env.test.local'),

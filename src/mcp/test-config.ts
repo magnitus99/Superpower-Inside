@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { MCPServerConfig, ProviderConfig, SuperObsidianSettings } from '../settings';
+import type { MCPServerConfig, ProviderConfig, SuperpowerInsideSettings } from '../settings';
 
 export interface LiveMcpTestConfig {
   source: 'data.json' | '.env.test.local' | 'environment';
   defaultModel: string;
-  providers: Partial<Record<keyof SuperObsidianSettings, ProviderConfig>>;
+  providers: Partial<Record<keyof SuperpowerInsideSettings, ProviderConfig>>;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
 }

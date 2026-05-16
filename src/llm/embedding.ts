@@ -12,7 +12,7 @@ class EmbeddingCacheDB extends Dexie {
   embeddings!: Dexie.Table<EmbeddingRecord, string>;
 
   constructor() {
-    super('SuperObsidianEmbeddingCache');
+    super('SuperpowerInsideEmbeddingCache');
     this.version(1).stores({
       embeddings: 'id, textHash, updated',
     });

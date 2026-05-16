@@ -27,7 +27,7 @@ export function getVectorStoreLabel(type: VectorStoreType): string {
 
 export function getVectorStoreDescription(): string {
   return [
-    'JSON File은 볼트 내부의 .super-obsidian/vectors.json에 저장되어 Obsidian Sync, Git, 파일 백업에 포함하기 쉽지만, 벡터가 커질수록 파일 읽기/쓰기와 동기화 충돌 부담이 커집니다.',
+    'JSON File은 볼트 내부의 .superpower-inside/vectors.json에 저장되어 Obsidian Sync, Git, 파일 백업에 포함하기 쉽지만, 벡터가 커질수록 파일 읽기/쓰기와 동기화 충돌 부담이 커집니다.',
     'IndexedDB는 Obsidian/Electron의 로컬 브라우저 DB에 저장되어 대용량 구조화 데이터와 인덱스 조회에 더 적합하고 볼트 파일을 변경하지 않지만, 장치별 로컬 데이터라 볼트 동기화나 Git 백업에 자동 포함되지 않습니다.',
   ].join(' ');
 }

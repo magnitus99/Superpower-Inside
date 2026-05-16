@@ -1,4 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('obsidian', () => ({
+  App: class {},
+  Notice: class {},
+  Platform: { isDesktopApp: true },
+  Plugin: class {},
+  PluginSettingTab: class {},
+  Setting: class {},
+}));
+
 import {
   buildEmbeddingModelOptions,
   getChatFolderExcludeDescription,
@@ -7,6 +17,7 @@ import {
   getVectorStoreLabel,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
+import { DEFAULT_CHAT_SAVE_FOLDER, normalizeChatSaveFolder } from './settings';
 
 describe('RAG 설정 표시 헬퍼', () => {
   it('선택된 벡터 저장소 라벨을 반환한다', () => {
@@ -67,5 +78,13 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(options.find((option) => option.id === 'legacy-selected')?.label).toContain(
       '현재 선택됨',
     );
+  });
+
+  it('기존 기본 채팅 저장 폴더를 새 기본 폴더로 마이그레이션한다', () => {
+    expect(normalizeChatSaveFolder('SuperObsidianByAI')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
+    expect(normalizeChatSaveFolder('SuperObsidianByAIChats')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
+    expect(normalizeChatSaveFolder('SuperpowerInside')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
+    expect(normalizeChatSaveFolder('CustomChats')).toBe('CustomChats');
+    expect(normalizeChatSaveFolder(undefined)).toBeNull();
   });
 });

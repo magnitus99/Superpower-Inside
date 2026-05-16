@@ -77,7 +77,7 @@ function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Ve
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
 
-  constructor(dbName = 'SuperObsidianVectorStore') {
+  constructor(dbName = 'SuperpowerInsideVectorStore') {
     this.db = new VectorStoreDB(dbName);
   }
 
@@ -144,11 +144,13 @@ export class JsonFileVectorStore implements VectorStore {
   private adapter: DataAdapter;
   private path: string;
   private entries: VectorEntry[];
+  private loaded: boolean;
 
-  constructor(adapter: DataAdapter, path = '.super-obsidian/vectors.json') {
+  constructor(adapter: DataAdapter, path = '.superpower-inside/vectors.json') {
     this.adapter = adapter;
     this.path = path;
     this.entries = [];
+    this.loaded = false;
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
@@ -189,14 +191,18 @@ export class JsonFileVectorStore implements VectorStore {
 
   async persist(): Promise<void> {
     await writeJsonToVault(this.adapter, this.path, this.entries);
+    this.loaded = true;
   }
 
   private async loadIfNeeded(): Promise<void> {
-    if (this.entries.length > 0) return;
+    if (this.loaded) return;
     const data = await readJsonFromVault(this.adapter, this.path);
     if (Array.isArray(data)) {
       this.entries = data as VectorEntry[];
+    } else {
+      this.entries = [];
     }
+    this.loaded = true;
   }
 
   async getStats(): Promise<VectorStoreStats> {

@@ -30,6 +30,9 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Test
+        run: npm run test
+
       - name: Build
         run: npm run build
 
@@ -38,15 +41,21 @@ jobs:
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           MANIFEST_VERSION=$(jq -r '.version' manifest.json)
           PKG_VERSION=$(jq -r '.version' package.json)
+          VERSION_MIN_APP=$(jq -r --arg v "$TAG_VERSION" '.[$v] // empty' versions.json)
           echo "Tag version: $TAG_VERSION"
           echo "Manifest version: $MANIFEST_VERSION"
           echo "Package version: $PKG_VERSION"
+          echo "versions.json minAppVersion: $VERSION_MIN_APP"
           if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
             echo "ERROR: manifest.json version ($MANIFEST_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
           fi
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "ERROR: package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          if [ -z "$VERSION_MIN_APP" ]; then
+            echo "ERROR: versions.json does not contain tag version ($TAG_VERSION)"
             exit 1
           fi
           echo "Version check passed."

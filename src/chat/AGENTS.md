@@ -30,7 +30,7 @@ src/chat/
 | Symbol | Type | Role |
 |--------|------|------|
 | `ChatView` | class | 사이드바 채팅 ItemView. 40+ 필드, 50+ 메서드 |
-| `CHAT_VIEW_TYPE` | const | `'super-obsidian-chat'` 뷰 타입 식별자 |
+| `CHAT_VIEW_TYPE` | const | `'superpower-inside-chat'` 뷰 타입 식별자 |
 | `executeDirective` | function | 에디터 AI 지시어 실행 |
 | `parseDirective` | function | `>AI: ...` 지시어 파싱 |
 | `saveChat` | function | ChatSession → 마크다운 파일 저장 |

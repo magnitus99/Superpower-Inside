@@ -21,7 +21,7 @@ const baseRagConfig: RAGConfig = {
 };
 
 const chatConfig: ChatConfig = {
-  saveFolder: 'SuperObsidianByAIChats',
+  saveFolder: 'SuperpowerInsideChats',
   defaultModel: 'ollama:llama3.1',
   promptLibrary: [],
   mcpToolExecutionPolicy: 'mentioned-auto',

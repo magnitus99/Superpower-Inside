@@ -223,19 +223,31 @@ export class VaultIndexer {
   }
 }
 
+function shouldIndexMarkdownPath(
+  filePath: string,
+  excludePaths: string[],
+  excludeExts: string[],
+): boolean {
+  return (
+    filePath.endsWith('.md') &&
+    !isExcluded(filePath, excludePaths) &&
+    !isExcludedExt(filePath, excludeExts)
+  );
+}
+
 /** 파일 변경 이벤트를 등록하여 자동 재인덱싱합니다. */
 export function registerModifyEvent(
   vault: Vault,
   indexer: VaultIndexer,
   excludePaths: string[],
+  excludeExts: string[],
   onComplete?: (file: TFile) => void,
 ): () => void {
   const ref = vault.on('modify', async (file) => {
     if (!(file instanceof Object)) return;
     if (!('path' in file)) return;
     const f = file as TFile;
-    if (isExcluded(f.path, excludePaths) || isExcludedExt(f.path, [])) return;
-    if (!f.path.endsWith('.md')) return;
+    if (!shouldIndexMarkdownPath(f.path, excludePaths, excludeExts)) return;
     await indexer.indexFile(f);
     onComplete?.(f);
   });
@@ -247,13 +259,13 @@ export function registerDeleteEvent(
   vault: Vault,
   vectorStore: VectorStore,
   excludePaths: string[],
+  excludeExts: string[],
   onComplete?: (filePath: string) => void,
 ): () => void {
   const ref = vault.on('delete', async (file) => {
     if (!('path' in file)) return;
     const filePath = (file as { path: string }).path;
-    if (isExcluded(filePath, excludePaths) || isExcludedExt(filePath, [])) return;
-    if (!filePath.endsWith('.md')) return;
+    if (!shouldIndexMarkdownPath(filePath, excludePaths, excludeExts)) return;
     const removed = await vectorStore.removeByFilePath(filePath);
     if (removed > 0) {
       onComplete?.(filePath);
@@ -268,17 +280,27 @@ export function registerRenameEvent(
   indexer: VaultIndexer,
   vectorStore: VectorStore,
   excludePaths: string[],
+  excludeExts: string[],
   onComplete?: (oldPath: string, newPath: string) => void,
 ): () => void {
   const ref = vault.on('rename', async (file, oldPath) => {
     if (!(file instanceof Object) || !('path' in file)) return;
     const f = file as TFile;
     const newPath = f.path;
-    if (isExcluded(newPath, excludePaths) || isExcludedExt(newPath, [])) return;
-    if (!newPath.endsWith('.md')) return;
-    await vectorStore.removeByFilePath(oldPath);
-    await indexer.indexFile(f);
-    onComplete?.(oldPath, newPath);
+    const oldWasIndexable = shouldIndexMarkdownPath(oldPath, excludePaths, excludeExts);
+    const newIsIndexable = shouldIndexMarkdownPath(newPath, excludePaths, excludeExts);
+    let changed = false;
+    if (oldWasIndexable) {
+      await vectorStore.removeByFilePath(oldPath);
+      changed = true;
+    }
+    if (newIsIndexable) {
+      await indexer.indexFile(f);
+      changed = true;
+    }
+    if (changed) {
+      onComplete?.(oldPath, newPath);
+    }
   });
   return () => vault.offref(ref);
 }

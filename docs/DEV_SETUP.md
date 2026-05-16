@@ -22,7 +22,7 @@ npm run dev                    # 터미널 1: esbuild watch
 이 스크립트가 수행하는 작업:
 
 1. **테스트 볼트 생성** — `repo/.test-vault/` 폴더 생성
-2. **심링크 생성** — `.test-vault/.obsidian/plugins/super-obsidian-by-ai/` → `repo/`
+2. **심링크 생성** — `.test-vault/.obsidian/plugins/superpower-inside/` → `repo/`
 3. **hot-reload 설치** — `pjeby/hot-reload` 클론
 4. **.gitignore 업데이트** — `.test-vault/` 추가
 
@@ -43,12 +43,12 @@ echo "# Dev Test Vault" > ~/Obsidian-Dev-Test-Vault/Welcome.md
 
 ```bash
 # macOS/Linux
-ln -s /path/to/repo /path/to/test-vault/.obsidian/plugins/super-obsidian-by-ai
+ln -s /path/to/repo /path/to/test-vault/.obsidian/plugins/superpower-inside
 
 # Windows (PowerShell, 관리자 권한)
 New-Item -ItemType SymbolicLink `
-  -Path "C:\Users\You\TestVault\.obsidian\plugins\super-obsidian-by-ai" `
-  -Target "C:\Users\You\Super-Obsidian-by-AI"
+  -Path "C:\Users\You\TestVault\.obsidian\plugins\superpower-inside" `
+  -Target "C:\Users\You\Superpower-Inside"
 ```
 
 ### 2.3 hot-reload 설치
@@ -108,7 +108,7 @@ Obsidian 내에서 `Cmd+Option+I` (macOS) 또는 `Ctrl+Shift+I` (Windows/Linux)
 ### 베타 플러그인 추가
 
 1. "Add Beta plugin with frozen version"
-2. Repository: `magnitus99/Super-Obsidian-by-AI`
+2. Repository: `magnitus99/Superpower-Inside`
 3. BRAT이 최신 release를 다운로드하여 설치
 
 ### 업데이트

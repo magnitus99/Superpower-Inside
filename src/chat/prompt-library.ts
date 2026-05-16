@@ -1,4 +1,4 @@
-import type { SuperObsidianSettings } from '../settings';
+import type { SuperpowerInsideSettings } from '../settings';
 import type { ChatMessage } from '../llm/providers';
 import type { VectorEntry } from '../rag/store';
 
@@ -154,7 +154,7 @@ export function normalizePromptLibrary(
   };
 }
 
-export function getActivePromptEntry(settings: SuperObsidianSettings): PromptLibraryEntry {
+export function getActivePromptEntry(settings: SuperpowerInsideSettings): PromptLibraryEntry {
   const normalized = normalizePromptLibrary(
     settings.chat.promptLibrary,
     settings.chat.activePromptId,
@@ -167,7 +167,7 @@ export function getActivePromptEntry(settings: SuperObsidianSettings): PromptLib
 }
 
 export function getEffectiveSystemPrompt(
-  settings: SuperObsidianSettings,
+  settings: SuperpowerInsideSettings,
   sessionSystemPrompt?: string | null,
 ): string {
   const sessionPrompt = sessionSystemPrompt?.trim();

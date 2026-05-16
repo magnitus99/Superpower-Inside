@@ -1,4 +1,4 @@
-# 개발자 가이드 — Super Obsidian by AI
+# 개발자 가이드 — Superpower Inside
 
 > 이 문서는 플러그인을 디버깅하거나 새로운 기능을 추가하려는 개발자를 위한 것입니다.
 
@@ -89,7 +89,7 @@ npm run dev
 | 단계 | 설명 |
 |---|---|
 | 테스트 볼트 생성 | `repo/.test-vault/` 생성 (`.gitignore`에 포함됨) |
-| 심링크 생성 | `.test-vault/.obsidian/plugins/super-obsidian-by-ai/` → `repo/` |
+| 심링크 생성 | `.test-vault/.obsidian/plugins/superpower-inside/` → `repo/` |
 | hot-reload 설치 | `pjeby/hot-reload` 클론 (파일 변경 시 자동 리로드) |
 
 ### 필수 조건
@@ -124,7 +124,7 @@ console.log('SSE buffer:', buffer);  // providers.ts streamChat 내부
 1. `LLMProvider` 인터페이스 구현
 2. `createProvider()` 팩토리에 case 추가
 3. `DEFAULT_SETTINGS`에 기본 config 추가
-4. `SuperObsidianSettingTab.buildProviderSettings()`에 UI 추가
+4. `SuperpowerInsideSettingTab.buildProviderSettings()`에 UI 추가
 
 ---
 
@@ -137,8 +137,8 @@ console.log('SSE buffer:', buffer);  // providers.ts streamChat 내부
 **DevTools 확인:**
 ```javascript
 // IndexedDB 확인
-(await Dexie.exists('SuperObsidianEmbeddingCache'))  // true/false
-(await new Dexie('SuperObsidianEmbeddingCache').table('embeddings').count())  // 캐시 개수
+(await Dexie.exists('SuperpowerInsideEmbeddingCache'))  // true/false
+(await new Dexie('SuperpowerInsideEmbeddingCache').table('embeddings').count())  // 캐시 개수
 ```
 
 **캐시 초기화 (테스트 시):**
@@ -164,7 +164,7 @@ console.log(chunks);  // { text, metadata: { filePath, heading, startLine } }
 **인덱싱 진행 상황 확인:**
 ```javascript
 // VaultIndexer.indexVault()는 async이므로:
-const plugin = app.plugins.plugins['super-obsidian-by-ai'];
+const plugin = app.plugins.plugins['superpower-inside'];
 const count = await plugin.vaultIndexer?.indexVault();
 console.log(`Indexed ${count} files`);
 ```
@@ -181,9 +181,9 @@ console.log(`Indexed ${count} files`);
 
 **벡터 저장소 디버깅:**
 ```javascript
-// JsonFileVectorStore의 persist()는 .super-obsidian/vectors.json에 씀
+// JsonFileVectorStore의 persist()는 .superpower-inside/vectors.json에 씀
 const adapter = app.vault.adapter;
-const raw = await adapter.read('.super-obsidian/vectors.json');
+const raw = await adapter.read('.superpower-inside/vectors.json');
 const vectors = JSON.parse(raw);
 console.log(`Total vectors: ${vectors.length}`);
 ```
@@ -195,18 +195,18 @@ console.log(`Total vectors: ${vectors.length}`);
 **DOM 구조:**
 ```
 .containerEl.children[1]
-  └── .super-obsidian-chat-container
-      ├── .super-obsidian-chat-messages   ← 메시지 버블 추가됨
-      └── .super-obsidian-chat-input-area
-          ├── textarea.super-obsidian-chat-input
-          └── button.super-obsidian-chat-send-btn
+  └── .superpower-inside-chat-container
+      ├── .superpower-inside-chat-messages   ← 메시지 버블 추가됨
+      └── .superpower-inside-chat-input-area
+          ├── textarea.superpower-inside-chat-input
+          └── button.superpower-inside-chat-send-btn
 ```
 
 **메시지 추가 확인:**
 ```javascript
-// DevTools → Elements → .super-obsidian-chat-messages 하위 div 개수 확인
+// DevTools → Elements → .superpower-inside-chat-messages 하위 div 개수 확인
 // 또는 Console:
-document.querySelectorAll('.super-obsidian-chat-message').length
+document.querySelectorAll('.superpower-inside-chat-message').length
 ```
 
 **스트리밍 확인:**
@@ -317,9 +317,9 @@ class NewProvider implements LLMProvider {
 
 **연동:**
 1. `createProvider()`에 case 추가
-2. `settings.ts`의 `SuperObsidianSettings`에 필드 추가
+2. `settings.ts`의 `SuperpowerInsideSettings`에 필드 추가
 3. `DEFAULT_SETTINGS`에 기본값 추가
-4. `SuperObsidianSettingTab.display()`에 UI 추가
+4. `SuperpowerInsideSettingTab.display()`에 UI 추가
 
 ### 5.2 새 RAG 저장소 백엔드 추가
 
@@ -363,11 +363,11 @@ case 'translate':
 
 ```bash
 # 1. 심링크 확인
-ls -la .test-vault/.obsidian/plugins/super-obsidian-by-ai/
+ls -la .test-vault/.obsidian/plugins/superpower-inside/
 # → repo/로 연결되어야 함 (복사된 디렉토리가 아님!)
 
 # 2. main.js 존재 확인
-ls -la .test-vault/.obsidian/plugins/super-obsidian-by-ai/main.js
+ls -la .test-vault/.obsidian/plugins/superpower-inside/main.js
 
 # 3. Safe Mode OFF 확인
 # Obsidian → Settings → Community plugins → Safe Mode toggle
@@ -382,10 +382,10 @@ ls -la .test-vault/.obsidian/plugins/super-obsidian-by-ai/main.js
 # 1. hot-reload 플러그인 활성화 확인
 
 # 2. .hotreload 파일 확인
-touch .test-vault/.obsidian/plugins/super-obsidian-by-ai/.hotreload
+touch .test-vault/.obsidian/plugins/superpower-inside/.hotreload
 
 # 3. 파일 변경 시간 확인
-stat .test-vault/.obsidian/plugins/super-obsidian-by-ai/main.js
+stat .test-vault/.obsidian/plugins/superpower-inside/main.js
 ```
 
 ### VS Code 디버거 연결 실패
@@ -412,9 +412,9 @@ console.log('API response:', res.status, await res.text());
 ### IndexedDB/Dexie 문제
 
 ```javascript
-// DevTools → Application → IndexedDB → SuperObsidianEmbeddingCache 확인
+// DevTools → Application → IndexedDB → SuperpowerInsideEmbeddingCache 확인
 // 또는:
-await Dexie.delete('SuperObsidianEmbeddingCache');  // 전체 삭제
+await Dexie.delete('SuperpowerInsideEmbeddingCache');  // 전체 삭제
 ```
 
 ---
@@ -468,20 +468,20 @@ Object.keys(app.plugins.plugins);
 app.vault.getMarkdownFiles().length;
 
 // 설정 직접 접근 (주의: saveSettings() 호출해야 저장됨)
-app.plugins.plugins['super-obsidian-by-ai'].settings;
+app.plugins.plugins['superpower-inside'].settings;
 
 // 채팅 뷰 강제 열기
-app.workspace.getRightLeaf(false).setViewState({ type: 'super-obsidian-chat' });
+app.workspace.getRightLeaf(false).setViewState({ type: 'superpower-inside-chat' });
 
 // RAG 강제 재인덱싱
-const plugin = app.plugins.plugins['super-obsidian-by-ai'];
+const plugin = app.plugins.plugins['superpower-inside'];
 await plugin.vaultIndexer?.reindexAll();
 
 // 자동 업데이트는 업데이트 필요 문서가 0건이면 Notice 없이 종료됨
 // 수동 `필요 문서 업데이트` 버튼은 0건일 때 비활성화됨
 
 // IndexedDB 초기화
-await Dexie.delete('SuperObsidianEmbeddingCache');
+await Dexie.delete('SuperpowerInsideEmbeddingCache');
 ```
 
 ---

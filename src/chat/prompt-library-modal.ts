@@ -19,7 +19,7 @@ import {
   type PromptLibraryEntry,
 } from './prompt-library';
 
-const PROMPT_MODAL_STYLE_ID = 'super-obsidian-prompt-library-modal-styles';
+const PROMPT_MODAL_STYLE_ID = 'superpower-inside-prompt-library-modal-styles';
 
 interface ModelOption {
   value: string;
@@ -37,19 +37,19 @@ interface OpenPromptLibraryModalOptions {
 export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): void {
   ensurePromptLibraryModalStyles(options.containerEl.ownerDocument);
 
-  const overlay = options.containerEl.createDiv({ cls: 'super-obsidian-prompt-overlay' });
-  const modal = overlay.createDiv({ cls: 'super-obsidian-prompt-modal' });
-  const titleBar = modal.createDiv({ cls: 'super-obsidian-prompt-titlebar' });
+  const overlay = options.containerEl.createDiv({ cls: 'superpower-inside-prompt-overlay' });
+  const modal = overlay.createDiv({ cls: 'superpower-inside-prompt-modal' });
+  const titleBar = modal.createDiv({ cls: 'superpower-inside-prompt-titlebar' });
   titleBar.createEl('h2', { text: '프롬프트 보관함' });
   const closeBtn = titleBar.createEl('button', {
-    cls: 'super-obsidian-prompt-close',
+    cls: 'superpower-inside-prompt-close',
     text: '×',
     attr: { type: 'button', 'aria-label': '닫기' },
   });
 
-  const body = modal.createDiv({ cls: 'super-obsidian-prompt-body' });
-  const listPane = body.createDiv({ cls: 'super-obsidian-prompt-list-pane' });
-  const detailPane = body.createDiv({ cls: 'super-obsidian-prompt-detail-pane' });
+  const body = modal.createDiv({ cls: 'superpower-inside-prompt-body' });
+  const listPane = body.createDiv({ cls: 'superpower-inside-prompt-list-pane' });
+  const detailPane = body.createDiv({ cls: 'superpower-inside-prompt-detail-pane' });
 
   let selectedId =
     options.plugin.settings.chat.activePromptId ??
@@ -223,27 +223,27 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const renderList = (): void => {
     listPane.empty();
-    const actions = listPane.createDiv({ cls: 'super-obsidian-prompt-list-actions' });
+    const actions = listPane.createDiv({ cls: 'superpower-inside-prompt-list-actions' });
     const newBtn = actions.createEl('button', {
-      cls: 'super-obsidian-prompt-secondary-btn',
+      cls: 'superpower-inside-prompt-secondary-btn',
       text: '새 프롬프트',
       attr: { type: 'button' },
     });
     newBtn.addEventListener('click', () => void createNewPrompt());
 
-    const list = listPane.createDiv({ cls: 'super-obsidian-prompt-list' });
+    const list = listPane.createDiv({ cls: 'superpower-inside-prompt-list' });
     for (const entry of options.plugin.settings.chat.promptLibrary) {
       const item = list.createDiv({
-        cls: `super-obsidian-prompt-list-item${entry.id === selectedId ? ' is-active' : ''}`,
+        cls: `superpower-inside-prompt-list-item${entry.id === selectedId ? ' is-active' : ''}`,
       });
       item.addEventListener('click', () => selectEntry(entry.id));
-      item.createDiv({ cls: 'super-obsidian-prompt-list-title', text: entry.title });
+      item.createDiv({ cls: 'superpower-inside-prompt-list-title', text: entry.title });
       item.createDiv({
-        cls: 'super-obsidian-prompt-list-meta',
+        cls: 'superpower-inside-prompt-list-meta',
         text: formatPromptSource(entry),
       });
       if (entry.description) {
-        item.createDiv({ cls: 'super-obsidian-prompt-list-desc', text: entry.description });
+        item.createDiv({ cls: 'superpower-inside-prompt-list-desc', text: entry.description });
       }
     }
   };
@@ -252,36 +252,36 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     detailPane.empty();
     const entry = getSelectedEntry();
     if (!entry) {
-      detailPane.createDiv({ cls: 'super-obsidian-prompt-empty', text: '프롬프트가 없습니다.' });
+      detailPane.createDiv({ cls: 'superpower-inside-prompt-empty', text: '프롬프트가 없습니다.' });
       return;
     }
 
-    const form = detailPane.createDiv({ cls: 'super-obsidian-prompt-form' });
+    const form = detailPane.createDiv({ cls: 'superpower-inside-prompt-form' });
     form.createEl('label', { text: '제목' });
     const titleInput = form.createEl('input', {
-      cls: 'super-obsidian-prompt-input',
+      cls: 'superpower-inside-prompt-input',
       attr: { type: 'text' },
     });
     titleInput.value = entry.title;
 
     form.createEl('label', { text: '설명' });
     const descriptionInput = form.createEl('input', {
-      cls: 'super-obsidian-prompt-input',
+      cls: 'superpower-inside-prompt-input',
       attr: { type: 'text' },
     });
     descriptionInput.value = entry.description ?? '';
 
     form.createEl('label', { text: '시스템 프롬프트' });
     const contentInput = form.createEl('textarea', {
-      cls: 'super-obsidian-prompt-textarea',
+      cls: 'superpower-inside-prompt-textarea',
       text: entry.content,
       attr: { rows: '12' },
     });
     contentInput.value = entry.content;
 
-    const actionRow = form.createDiv({ cls: 'super-obsidian-prompt-actions' });
+    const actionRow = form.createDiv({ cls: 'superpower-inside-prompt-actions' });
     const saveBtn = actionRow.createEl('button', {
-      cls: 'super-obsidian-prompt-primary-btn',
+      cls: 'superpower-inside-prompt-primary-btn',
       text: '저장',
       attr: { type: 'button' },
     });
@@ -290,14 +290,14 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     );
 
     const applyBtn = actionRow.createEl('button', {
-      cls: 'super-obsidian-prompt-secondary-btn',
+      cls: 'superpower-inside-prompt-secondary-btn',
       text: '현재 세션에 적용',
       attr: { type: 'button' },
     });
     applyBtn.addEventListener('click', applySelectedToSession);
 
     const defaultBtn = actionRow.createEl('button', {
-      cls: 'super-obsidian-prompt-secondary-btn',
+      cls: 'superpower-inside-prompt-secondary-btn',
       text: entry.id === options.plugin.settings.chat.activePromptId ? '전역 기본값' : '전역 기본으로 지정',
       attr: { type: 'button' },
     });
@@ -305,7 +305,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     defaultBtn.addEventListener('click', () => void setSelectedAsGlobalDefault());
 
     const deleteBtn = actionRow.createEl('button', {
-      cls: 'super-obsidian-prompt-danger-btn',
+      cls: 'superpower-inside-prompt-danger-btn',
       text: '삭제',
       attr: { type: 'button' },
     });
@@ -316,11 +316,11 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   };
 
   const renderGenerationPanel = (container: HTMLElement): void => {
-    const panel = container.createDiv({ cls: 'super-obsidian-prompt-generation' });
+    const panel = container.createDiv({ cls: 'superpower-inside-prompt-generation' });
     panel.createEl('h3', { text: '임베딩된 볼트 정보로 생성' });
 
     const modelOptions = getModelOptions(options.plugin);
-    const modelSelect = panel.createEl('select', { cls: 'super-obsidian-prompt-input' });
+    const modelSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
     if (modelOptions.length === 0) {
       const opt = modelSelect.createEl('option');
       opt.value = '';
@@ -337,7 +337,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         : modelOptions[0].value;
     }
 
-    const directionSelect = panel.createEl('select', { cls: 'super-obsidian-prompt-input' });
+    const directionSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
     for (const preset of PROMPT_DIRECTION_PRESETS) {
       const opt = directionSelect.createEl('option');
       opt.value = preset.id;
@@ -345,7 +345,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     }
 
     const directionText = panel.createEl('textarea', {
-      cls: 'super-obsidian-prompt-direction',
+      cls: 'superpower-inside-prompt-direction',
       attr: {
         rows: '3',
         placeholder: '응답 태도, 문체, 피해야 할 행동, 노트 연결 방식을 추가로 적으세요.',
@@ -353,7 +353,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     });
 
     const generateBtn = panel.createEl('button', {
-      cls: 'super-obsidian-prompt-primary-btn',
+      cls: 'superpower-inside-prompt-primary-btn',
       text: '볼트 기반 생성',
       attr: { type: 'button' },
     });
@@ -429,7 +429,7 @@ function ensurePromptLibraryModalStyles(doc: Document): void {
   const style = doc.createElement('style');
   style.id = PROMPT_MODAL_STYLE_ID;
   style.textContent = `
-    .super-obsidian-prompt-overlay {
+    .superpower-inside-prompt-overlay {
       position: fixed;
       inset: 0;
       z-index: 1000;
@@ -439,7 +439,7 @@ function ensurePromptLibraryModalStyles(doc: Document): void {
       justify-content: center;
       padding: 32px;
     }
-    .super-obsidian-prompt-modal {
+    .superpower-inside-prompt-modal {
       width: min(1040px, 96vw);
       max-height: 88vh;
       display: flex;
@@ -451,118 +451,118 @@ function ensurePromptLibraryModalStyles(doc: Document): void {
       box-shadow: var(--shadow-l);
       overflow: hidden;
     }
-    .super-obsidian-prompt-titlebar {
+    .superpower-inside-prompt-titlebar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 14px 18px;
       border-bottom: 1px solid var(--background-modifier-border);
     }
-    .super-obsidian-prompt-titlebar h2,
-    .super-obsidian-prompt-generation h3 {
+    .superpower-inside-prompt-titlebar h2,
+    .superpower-inside-prompt-generation h3 {
       margin: 0;
       font-size: var(--font-ui-medium);
       line-height: 1.4;
     }
-    .super-obsidian-prompt-close {
+    .superpower-inside-prompt-close {
       border: 0;
       background: transparent;
       color: var(--text-muted);
       font-size: 22px;
       cursor: pointer;
     }
-    .super-obsidian-prompt-body {
+    .superpower-inside-prompt-body {
       min-height: 0;
       display: grid;
       grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
     }
-    .super-obsidian-prompt-list-pane {
+    .superpower-inside-prompt-list-pane {
       min-height: 0;
       border-right: 1px solid var(--background-modifier-border);
       display: flex;
       flex-direction: column;
     }
-    .super-obsidian-prompt-list-actions,
-    .super-obsidian-prompt-actions {
+    .superpower-inside-prompt-list-actions,
+    .superpower-inside-prompt-actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
       padding: 12px;
     }
-    .super-obsidian-prompt-list {
+    .superpower-inside-prompt-list {
       overflow: auto;
       padding: 0 8px 12px;
     }
-    .super-obsidian-prompt-list-item {
+    .superpower-inside-prompt-list-item {
       padding: 10px;
       border-radius: 8px;
       cursor: pointer;
     }
-    .super-obsidian-prompt-list-item:hover,
-    .super-obsidian-prompt-list-item.is-active {
+    .superpower-inside-prompt-list-item:hover,
+    .superpower-inside-prompt-list-item.is-active {
       background: var(--background-modifier-hover);
     }
-    .super-obsidian-prompt-list-title {
+    .superpower-inside-prompt-list-title {
       font-weight: 600;
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-    .super-obsidian-prompt-list-meta,
-    .super-obsidian-prompt-list-desc {
+    .superpower-inside-prompt-list-meta,
+    .superpower-inside-prompt-list-desc {
       margin-top: 4px;
       color: var(--text-muted);
       font-size: var(--font-ui-smaller);
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-    .super-obsidian-prompt-detail-pane {
+    .superpower-inside-prompt-detail-pane {
       overflow: auto;
       padding: 16px;
     }
-    .super-obsidian-prompt-form {
+    .superpower-inside-prompt-form {
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
-    .super-obsidian-prompt-form label {
+    .superpower-inside-prompt-form label {
       color: var(--text-muted);
       font-size: var(--font-ui-small);
       font-weight: 600;
     }
-    .super-obsidian-prompt-input,
-    .super-obsidian-prompt-textarea,
-    .super-obsidian-prompt-direction {
+    .superpower-inside-prompt-input,
+    .superpower-inside-prompt-textarea,
+    .superpower-inside-prompt-direction {
       width: 100%;
       resize: vertical;
     }
-    .super-obsidian-prompt-textarea {
+    .superpower-inside-prompt-textarea {
       min-height: 260px;
       font-family: var(--font-monospace);
       line-height: 1.45;
     }
-    .super-obsidian-prompt-primary-btn,
-    .super-obsidian-prompt-secondary-btn,
-    .super-obsidian-prompt-danger-btn {
+    .superpower-inside-prompt-primary-btn,
+    .superpower-inside-prompt-secondary-btn,
+    .superpower-inside-prompt-danger-btn {
       border-radius: 6px;
       padding: 6px 10px;
       cursor: pointer;
     }
-    .super-obsidian-prompt-primary-btn {
+    .superpower-inside-prompt-primary-btn {
       background: var(--interactive-accent);
       color: var(--text-on-accent);
       border: 1px solid var(--interactive-accent);
     }
-    .super-obsidian-prompt-secondary-btn {
+    .superpower-inside-prompt-secondary-btn {
       background: var(--background-secondary);
       color: var(--text-normal);
       border: 1px solid var(--background-modifier-border);
     }
-    .super-obsidian-prompt-danger-btn {
+    .superpower-inside-prompt-danger-btn {
       background: var(--background-secondary);
       color: var(--text-error);
       border: 1px solid var(--background-modifier-border);
     }
-    .super-obsidian-prompt-generation {
+    .superpower-inside-prompt-generation {
       margin-top: 16px;
       padding-top: 16px;
       border-top: 1px solid var(--background-modifier-border);
@@ -570,18 +570,18 @@ function ensurePromptLibraryModalStyles(doc: Document): void {
       flex-direction: column;
       gap: 10px;
     }
-    .super-obsidian-prompt-empty {
+    .superpower-inside-prompt-empty {
       color: var(--text-muted);
       padding: 16px;
     }
     @media (max-width: 760px) {
-      .super-obsidian-prompt-overlay {
+      .superpower-inside-prompt-overlay {
         padding: 12px;
       }
-      .super-obsidian-prompt-body {
+      .superpower-inside-prompt-body {
         grid-template-columns: 1fr;
       }
-      .super-obsidian-prompt-list-pane {
+      .superpower-inside-prompt-list-pane {
         max-height: 220px;
         border-right: 0;
         border-bottom: 1px solid var(--background-modifier-border);

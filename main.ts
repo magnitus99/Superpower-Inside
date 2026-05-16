@@ -1,10 +1,11 @@
-import { Plugin, Notice } from 'obsidian';
+import { Plugin, Notice, Platform } from 'obsidian';
 import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
-  type SuperObsidianSettings,
+  type SuperpowerInsideSettings,
   type ProviderConfig,
   DEFAULT_SETTINGS,
-  SuperObsidianSettingTab,
+  normalizeChatSaveFolder,
+  SuperpowerInsideSettingTab,
 } from './src/settings';
 import { shouldShowProviderApiKey } from './src/rag/settings-display';
 import {
@@ -32,19 +33,19 @@ import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { executeDirective, parseDirective } from './src/chat/commands';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
-import { MCPClientManager } from './src/mcp/client';
 import { MCPRegistry } from './src/mcp/registry';
 import {
   MCP_STATUS_CHANGE_EVENT,
   getMcpConnectionState,
   type MCPConnectionState,
 } from './src/mcp/connection-state';
+import { MCP_DESKTOP_ONLY_MESSAGE, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
-export default class SuperObsidianPlugin extends Plugin {
-  settings!: SuperObsidianSettings;
+export default class SuperpowerInsidePlugin extends Plugin {
+  settings!: SuperpowerInsideSettings;
   private provider: LLMProvider | null = null;
   private vectorStore: VectorStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
@@ -67,7 +68,7 @@ export default class SuperObsidianPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.initProvider();
-    void this.initRAG();
+    await this.initRAG();
     void this.initMCP()
       .then((errors) => {
         if (errors.length > 0) {
@@ -142,58 +143,12 @@ export default class SuperObsidianPlugin extends Plugin {
       },
     });
 
-    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
-
-    // 파일 변경 이벤트
-    if (this.vaultIndexer) {
-      this.modifyCleanup = registerModifyEvent(
-        this.app.vault,
-        this.vaultIndexer,
-        effectiveExcludePaths,
-        () => {
-          this.debouncedRefreshStats();
-        },
-      );
-    }
-
-    // 파일 삭제/이름 변경 이벤트
-    if (this.vaultIndexer && this.vectorStore) {
-      this.deleteCleanup = registerDeleteEvent(
-        this.app.vault,
-        this.vectorStore,
-        effectiveExcludePaths,
-        () => {
-          this.debouncedRefreshStats();
-        },
-      );
-      this.renameCleanup = registerRenameEvent(
-        this.app.vault,
-        this.vaultIndexer,
-        this.vectorStore,
-        effectiveExcludePaths,
-        () => {
-          this.debouncedRefreshStats();
-        },
-      );
-    }
-
     // 설정 탭
-    this.addSettingTab(new SuperObsidianSettingTab(this.app, this));
+    this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
   }
 
   onunload(): void {
-    if (this.modifyCleanup) {
-      this.modifyCleanup();
-      this.modifyCleanup = null;
-    }
-    if (this.deleteCleanup) {
-      this.deleteCleanup();
-      this.deleteCleanup = null;
-    }
-    if (this.renameCleanup) {
-      this.renameCleanup();
-      this.renameCleanup = null;
-    }
+    this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
@@ -281,8 +236,9 @@ export default class SuperObsidianPlugin extends Plugin {
     }
     if (chat && typeof chat === 'object' && !Array.isArray(chat)) {
       const chatObj = chat as Record<string, unknown>;
-      if (chatObj.saveFolder === 'SuperObsidianByAI') {
-        chatObj.saveFolder = 'SuperObsidianByAIChats';
+      const normalizedSaveFolder = normalizeChatSaveFolder(chatObj.saveFolder);
+      if (normalizedSaveFolder !== null) {
+        chatObj.saveFolder = normalizedSaveFolder;
       }
       const migratedPromptLibrary = normalizePromptLibrary(
         chatObj.promptLibrary,
@@ -320,7 +276,12 @@ export default class SuperObsidianPlugin extends Plugin {
         rag.excludeChatFolder = true;
       }
       if (Array.isArray(rag.excludePaths)) {
-        for (const path of ['SuperObsidianByAI', 'SuperObsidianByAIChats']) {
+        for (const path of [
+          'SuperpowerInside',
+          'SuperpowerInsideChats',
+          'SuperObsidianByAI',
+          'SuperObsidianByAIChats',
+        ]) {
           if (!rag.excludePaths.includes(path)) {
             rag.excludePaths.push(path);
           }
@@ -390,14 +351,14 @@ export default class SuperObsidianPlugin extends Plugin {
       data.mcpServers = migrated;
     }
 
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperObsidianSettings>);
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperpowerInsideSettings>);
     setLanguage(this.settings.language);
   }
 
   async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
     await this.saveData(this.settings);
     this.initProvider();
-    void this.initRAG();
+    await this.initRAG();
     const mcpErrors = await this.initMCP();
     return { success: mcpErrors.length === 0, mcpErrors };
   }
@@ -507,7 +468,7 @@ export default class SuperObsidianPlugin extends Plugin {
     if (providerKey !== 'other') {
       config = this.settings[providerKey as ProviderKey];
       if (!config?.enabled) {
-        console.warn(`[Super-Obsidian] RAG embedding provider "${providerKey}" is disabled.`);
+        console.warn(`[Superpower Inside] RAG embedding provider "${providerKey}" is disabled.`);
         return;
       }
     }
@@ -540,14 +501,14 @@ export default class SuperObsidianPlugin extends Plugin {
     this.vectorStore =
       rag.vectorStoreType === 'indexeddb'
         ? new IndexedDbVectorStore()
-        : new JsonFileVectorStore(this.app.vault.adapter, '.super-obsidian/vectors.json');
+        : new JsonFileVectorStore(this.app.vault.adapter, '.superpower-inside/vectors.json');
 
     // BM25 index
     let bm25Index: JsonFileBM25Index | undefined;
     if (rag.enableBM25) {
       bm25Index = new JsonFileBM25Index(
         this.app.vault.adapter,
-        '.super-obsidian/bm25-index.json',
+        '.superpower-inside/bm25-index.json',
       );
       await bm25Index.load();
     }
@@ -573,9 +534,11 @@ export default class SuperObsidianPlugin extends Plugin {
 
     // Auto-update timer
     this.setupAutoUpdate();
+    this.registerRAGEvents();
   }
 
   private clearRAG(): void {
+    this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
@@ -584,6 +547,58 @@ export default class SuperObsidianPlugin extends Plugin {
     this.embeddingProvider = null;
     this.ragEngine = null;
     this.vaultIndexer = null;
+  }
+
+  private unregisterRAGEvents(): void {
+    if (this.modifyCleanup) {
+      this.modifyCleanup();
+      this.modifyCleanup = null;
+    }
+    if (this.deleteCleanup) {
+      this.deleteCleanup();
+      this.deleteCleanup = null;
+    }
+    if (this.renameCleanup) {
+      this.renameCleanup();
+      this.renameCleanup = null;
+    }
+  }
+
+  private registerRAGEvents(): void {
+    this.unregisterRAGEvents();
+    if (!this.vaultIndexer) return;
+
+    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+    this.modifyCleanup = registerModifyEvent(
+      this.app.vault,
+      this.vaultIndexer,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+      () => {
+        this.debouncedRefreshStats();
+      },
+    );
+
+    if (!this.vectorStore) return;
+    this.deleteCleanup = registerDeleteEvent(
+      this.app.vault,
+      this.vectorStore,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+      () => {
+        this.debouncedRefreshStats();
+      },
+    );
+    this.renameCleanup = registerRenameEvent(
+      this.app.vault,
+      this.vaultIndexer,
+      this.vectorStore,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+      () => {
+        this.debouncedRefreshStats();
+      },
+    );
   }
 
   setupAutoUpdate(): void {
@@ -646,6 +661,16 @@ export default class SuperObsidianPlugin extends Plugin {
     this.mcpRegistry = new MCPRegistry(this.settings.mcpServers);
     this.setMcpConnectionState('connecting', []);
 
+    if (!isMcpStdioAvailable(Platform)) {
+      const enabledServers = this.mcpRegistry.getEnabledServers();
+      const errors = enabledServers.map((server) => `${server.name}: ${MCP_DESKTOP_ONLY_MESSAGE}`);
+      for (const server of enabledServers) {
+        this.mcpRegistry.setConnectionStatus(server.name, 'error', MCP_DESKTOP_ONLY_MESSAGE);
+      }
+      this.refreshMcpConnectionState();
+      return errors;
+    }
+
     let errors = await this.connectMcpServers(this.mcpRegistry.getEnabledServers(), runId);
 
     if (options.retryFailed) {
@@ -678,11 +703,12 @@ export default class SuperObsidianPlugin extends Plugin {
   }
 
   private async connectMcpServers(
-    servers: SuperObsidianSettings['mcpServers'],
+    servers: SuperpowerInsideSettings['mcpServers'],
     runId: number,
   ): Promise<string[]> {
     const registry = this.mcpRegistry;
     if (!registry) return [];
+    const { MCPClientManager } = await import('./src/mcp/client');
 
     const errors: string[] = [];
     const promises = servers.map(async (server) => {
@@ -705,7 +731,8 @@ export default class SuperObsidianPlugin extends Plugin {
           throw new Error('Command is required for stdio transport');
         }
 
-        const effectivePath = this.settings.mcpPath || process.env.PATH || '';
+        const effectivePath =
+          this.settings.mcpPath || (typeof process !== 'undefined' ? process.env.PATH : '') || '';
         const env: Record<string, string> = {
           ...(server.env || {}),
           PATH: server.env?.PATH || effectivePath,

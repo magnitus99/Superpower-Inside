@@ -14,6 +14,12 @@ if not contains "$BUMP_TYPE" patch minor major
     exit 1
 end
 
+set CURRENT_BRANCH (git branch --show-current)
+if test "$CURRENT_BRANCH" = main
+    echo "ERROR: main 브랜치에서 직접 릴리스 커밋을 만들 수 없습니다. develop 기준 작업 브랜치에서 실행하세요."
+    exit 1
+end
+
 # 현재 버전 읽기
 set CURRENT_VERSION (jq -r '.version' manifest.json)
 echo "현재 버전: $CURRENT_VERSION"
@@ -56,6 +62,22 @@ or begin
     exit 1
 end
 
+# versions.json 업데이트
+set MIN_APP_VERSION (jq -r '.minAppVersion' manifest.json)
+jq --arg v "$NEW_VERSION" --arg min "$MIN_APP_VERSION" '. = {($v): $min}' versions.json > versions.json.tmp
+and mv versions.json.tmp versions.json
+or begin
+    echo "ERROR: versions.json 업데이트 실패"
+    exit 1
+end
+
+# lockfile 업데이트
+npm install --package-lock-only --ignore-scripts
+or begin
+    echo "ERROR: package-lock.json 업데이트 실패"
+    exit 1
+end
+
 # 빌드
 npm run build
 or begin
@@ -64,7 +86,7 @@ or begin
 end
 
 # 커밋
-git add manifest.json package.json main.js
+git add manifest.json package.json package-lock.json versions.json main.js styles.css
 and git commit -m "chore(release): v$NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"
@@ -79,7 +101,7 @@ or begin
 end
 
 # 푸시
-git push origin main
+git push origin "$CURRENT_BRANCH"
 and git push origin "v$NEW_VERSION"
 or begin
     echo "ERROR: git push 실패"
@@ -89,4 +111,4 @@ end
 echo ""
 echo "✅ v$NEW_VERSION 릴리스 완료!"
 echo "GitHub Actions가 자동으로 릴리스를 생성합니다."
-echo "https://github.com/magnitus99/Super-Obsidian-by-AI/actions"
+echo "https://github.com/magnitus99/Superpower-Inside/actions"

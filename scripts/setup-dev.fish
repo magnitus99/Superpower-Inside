@@ -2,7 +2,7 @@
 # Obsidian 플러그인 개발 환경 자동 설정 스크립트
 # 사용법: ./scripts/setup-dev.fish
 
-set PLUGIN_ID "super-obsidian-by-ai"
+set PLUGIN_ID "superpower-inside"
 set REPO_ROOT (realpath (dirname (status -f))/..)
 set OBSIDIAN_CONFIG_DIR "$HOME/Library/Application Support/obsidian"
 set TEST_VAULT_DIR "$REPO_ROOT/.test-vault"
@@ -15,7 +15,7 @@ if test -d "$TEST_VAULT_DIR"
 else
     echo "📁 테스트 볼트 생성 중..."
     mkdir -p "$TEST_VAULT_DIR"
-    echo "# Test Vault\n\nThis vault is for developing the Super Obsidian by AI plugin." > "$TEST_VAULT_DIR/Welcome.md"
+    echo "# Test Vault\n\nThis vault is for developing the Superpower Inside plugin." > "$TEST_VAULT_DIR/Welcome.md"
     echo "✅ 테스트 볼트 생성 완료"
 end
 
@@ -59,7 +59,7 @@ echo "  1. npm run dev        (esbuild watch 시작)"
 echo "  2. ./scripts/launch-obsidian-debug.fish  (Obsidian 디버그 모드 실행)"
 echo "  3. Obsidian에서 테스트 볼트 열기"
 echo "  4. 설정 → 커뮤니티 플러그인 → hot-reload 활성화"
-echo "  5. 설정 → 커뮤니티 플러그인 → Super Obsidian by AI 활성화"
+echo "  5. 설정 → 커뮤니티 플러그인 → Superpower Inside 활성화"
 echo ""
 echo "이제 파일 저장 시 자동으로 빌드 & 리로드됩니다."
 echo "========================================"
