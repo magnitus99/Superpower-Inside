@@ -531,7 +531,8 @@ class OllamaProvider implements LLMProvider {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    if (this.config.apiKey) {
+    const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
+    if (baseUrl !== OLLAMA_LOCAL_BASE_URL && this.config.apiKey) {
       h.Authorization = `Bearer ${this.config.apiKey}`;
     }
     return h;

@@ -4,6 +4,7 @@ import {
   fetchProviderModels,
   normalizeOpenAICompatibleBaseUrl,
   testProviderConnection,
+  validateEmbeddingConnection,
 } from './validation';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
@@ -95,7 +96,7 @@ describe('provider validation', () => {
     );
   });
 
-  it('Ollama 태그 목록을 모델 ID 목록으로 변환한다', async () => {
+  it('Ollama Local 태그 목록에는 저장된 API 키를 붙이지 않는다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       json: { models: [{ name: 'llama3.1' }, { name: 'qwen3' }] },
@@ -108,7 +109,43 @@ describe('provider validation', () => {
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:11434/api/tags',
+        headers: {},
+      }),
+    );
+  });
+
+  it('Ollama Cloud 태그 목록에는 저장된 API 키를 유지한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { models: [{ name: 'llama3.1' }] },
+      text: '',
+    });
+
+    const result = await fetchProviderModels('ollamaCloud', baseConfig);
+
+    expect(result.models).toEqual(['llama3.1']);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'https://ollama.com/api/tags',
         headers: { Authorization: 'Bearer stored-key' },
+      }),
+    );
+  });
+
+  it('Ollama Local 임베딩 연결 테스트에는 저장된 API 키를 붙이지 않는다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { embeddings: [[0.1, 0.2]] },
+      text: '',
+    });
+
+    const result = await validateEmbeddingConnection('ollama', 'nomic-embed-text', baseConfig);
+
+    expect(result.valid).toBe(true);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'http://localhost:11434/api/embed',
+        headers: { 'Content-Type': 'application/json' },
       }),
     );
   });

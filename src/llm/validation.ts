@@ -71,7 +71,7 @@ export async function fetchProviderModels(
   }
   if (key === 'ollama' || key === 'ollamaCloud') {
     const baseUrl = getFixedProviderBaseUrl(key);
-    return fetchOllamaModels(config, baseUrl);
+    return fetchOllamaModels(key === 'ollama' ? { ...config, apiKey: '' } : config, baseUrl);
   }
   if (key === 'openRouter') {
     return fetchOpenRouterModels(config);
@@ -94,7 +94,11 @@ export async function testProviderConnection(
   modelId: string,
 ): Promise<ValidationResult> {
   if (key === 'ollama' || key === 'ollamaCloud') {
-    return testOllamaChat(config, getFixedProviderBaseUrl(key), modelId);
+    return testOllamaChat(
+      key === 'ollama' ? { ...config, apiKey: '' } : config,
+      getFixedProviderBaseUrl(key),
+      modelId,
+    );
   }
   if (key === 'claude') {
     return testClaudeChat(config, modelId);
@@ -401,7 +405,6 @@ export async function validateEmbeddingConnection(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...buildBearerHeaders(config.apiKey),
         },
         body: JSON.stringify({ model: modelId, input: ['test'] }),
       });
