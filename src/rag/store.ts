@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { writeJsonToVault, readJsonFromVault } from '../utils/vault';
 
@@ -35,6 +36,22 @@ export interface VectorStore {
   getEntries(): Promise<VectorEntry[]>;
 }
 
+interface IndexedDbVectorRecord extends VectorEntry {
+  filePath: string;
+  updated: number;
+}
+
+class VectorStoreDB extends Dexie {
+  vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
+
+  constructor(name: string) {
+    super(name);
+    this.version(1).stores({
+      vectors: 'id, filePath, updated',
+    });
+  }
+}
+
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let normA = 0;
@@ -54,6 +71,72 @@ function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Ve
   }));
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK).map((s) => s.entry);
+}
+
+/** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
+export class IndexedDbVectorStore implements VectorStore {
+  private db: VectorStoreDB;
+
+  constructor(dbName = 'SuperObsidianVectorStore') {
+    this.db = new VectorStoreDB(dbName);
+  }
+
+  async add(newEntries: VectorEntry[]): Promise<void> {
+    const now = Date.now();
+    const records = newEntries.map((entry) => ({
+      ...entry,
+      filePath: entry.metadata.filePath,
+      updated: now,
+    }));
+    await this.db.vectors.bulkPut(records);
+  }
+
+  async removeByFilePath(filePath: string): Promise<number> {
+    return this.db.vectors.where('filePath').equals(filePath).delete();
+  }
+
+  async query(vector: number[], topK: number): Promise<VectorEntry[]> {
+    const entries = await this.getEntries();
+    return scoredQuery(entries, vector, topK);
+  }
+
+  async clear(): Promise<void> {
+    await this.db.vectors.clear();
+  }
+
+  async persist(): Promise<void> {
+    // IndexedDB는 각 쓰기 작업이 트랜잭션으로 즉시 반영되므로 별도 flush가 필요 없습니다.
+  }
+
+  async getStats(): Promise<VectorStoreStats> {
+    const records = await this.db.vectors.toArray();
+    const uniqueFiles = new Set(records.map((record) => record.filePath));
+    const lastUpdated = records.reduce<number | null>(
+      (latest, record) => (latest === null ? record.updated : Math.max(latest, record.updated)),
+      null,
+    );
+    return {
+      totalEntries: records.length,
+      totalFiles: uniqueFiles.size,
+      totalVectors: records.length,
+      averageVectorsPerFile: uniqueFiles.size > 0 ? records.length / uniqueFiles.size : 0,
+      lastUpdated,
+    };
+  }
+
+  async getIndexedFilePaths(): Promise<string[]> {
+    const filePaths = await this.db.vectors.orderBy('filePath').uniqueKeys();
+    return filePaths.filter((filePath): filePath is string => typeof filePath === 'string');
+  }
+
+  async getEntries(): Promise<VectorEntry[]> {
+    const records = await this.db.vectors.toArray();
+    return records.map(({ id, vector, metadata }) => ({
+      id,
+      vector: [...vector],
+      metadata: { ...metadata },
+    }));
+  }
 }
 
 /** Vault adapter 기반 JSON 파일 벡터 저장소 */

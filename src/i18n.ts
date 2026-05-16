@@ -366,7 +366,7 @@ const ko: I18nKeys = {
   chunkSizeDesc: '마크다운 청크당 최대 문자 수 (100~5000)',
   vectorStoreType: '벡터 저장소 유형',
   vectorStoreTypeDesc:
-    'JSON File은 볼트 안의 JSON 파일에 저장되어 Obsidian Sync/Git 등으로 동기화됩니다. IndexedDB는 브라우저 로컬 데이터베이스에 저장되며, 큰 임베딩 데이터에서 더 빠르고 효율적이지만 수동 백업 없이는 동기화되지 않습니다.',
+    'JSON File은 볼트 내부 JSON 파일에 저장되어 동기화/백업이 쉽지만 대용량 벡터에서는 파일 쓰기와 충돌 부담이 큽니다. IndexedDB는 로컬 브라우저 DB라 대용량 구조화 데이터에 적합하지만 장치별 로컬 데이터라 자동 동기화되지 않습니다.',
   jsonFile: 'JSON File',
   indexedDB: 'IndexedDB',
   minScore: '최소 유사도 점수',
@@ -641,7 +641,7 @@ const en: I18nKeys = {
   chunkSizeDesc: 'Maximum characters per markdown chunk (100–5000)',
   vectorStoreType: 'Vector Store Type',
   vectorStoreTypeDesc:
-    'JSON File stores in vault JSON, syncable via Obsidian Sync/Git. IndexedDB stores in browser local DB, faster for large embeddings but not auto-synced without manual backup.',
+    'JSON File stores vectors in vault JSON, making sync and backups easy but large vector files can be slow and conflict-prone. IndexedDB stores vectors in the local browser DB, better for large structured data but device-local and not automatically synced.',
   jsonFile: 'JSON File',
   indexedDB: 'IndexedDB',
   minScore: 'Minimum Relevance Score',

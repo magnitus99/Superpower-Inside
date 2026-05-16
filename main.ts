@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   SuperObsidianSettingTab,
 } from './src/settings';
+import { shouldShowProviderApiKey } from './src/rag/settings-display';
 import {
   createCustomOpenAIProvider,
   createProvider,
@@ -18,7 +19,7 @@ import {
   CachedEmbeddingProvider,
   type EmbeddingProvider,
 } from './src/llm/embedding';
-import { JsonFileVectorStore, type VectorStore } from './src/rag/store';
+import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './src/rag/store';
 import { JsonFileBM25Index } from './src/rag/bm25';
 import {
   VaultIndexer,
@@ -104,7 +105,7 @@ export default class SuperObsidianPlugin extends Plugin {
             const config = this.settings[providerKey as ProviderKey];
             if (!config?.enabled) {
               reason += ` Providers 탭에서 "${providerKey}"의 Enabled 토글을 켜주세요.`;
-            } else if (!config.apiKey.trim()) {
+            } else if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
               reason += ` Providers 탭에서 "${providerKey}"의 API Key를 입력하세요.`;
             } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
               reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
@@ -499,7 +500,7 @@ export default class SuperObsidianPlugin extends Plugin {
 
     let baseUrl: string | undefined;
     let apiKey = '';
-    if (config) {
+    if (config && providerKey !== 'other' && shouldShowProviderApiKey(providerKey)) {
       apiKey = config.apiKey;
     }
     if (providerKey === 'openai') {
@@ -522,10 +523,10 @@ export default class SuperObsidianPlugin extends Plugin {
     this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, rag.embeddingModel);
 
     // Vector store
-    this.vectorStore = new JsonFileVectorStore(
-      this.app.vault.adapter,
-      '.super-obsidian/vectors.json',
-    );
+    this.vectorStore =
+      rag.vectorStoreType === 'indexeddb'
+        ? new IndexedDbVectorStore()
+        : new JsonFileVectorStore(this.app.vault.adapter, '.super-obsidian/vectors.json');
 
     // BM25 index
     let bm25Index: JsonFileBM25Index | undefined;

@@ -19,6 +19,14 @@ import {
 import type { VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
+import {
+  buildEmbeddingModelOptions,
+  getChatFolderExcludeDescription,
+  getIndexedDbReindexNotice,
+  getVectorStoreDescription,
+  getVectorStoreLabel,
+  shouldShowProviderApiKey,
+} from './rag/settings-display';
 import { type Language, t } from './i18n';
 
 interface StandardMcpServerEntry {
@@ -558,7 +566,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         });
       })
       .addButton((button) => {
-        button.setIcon('refresh');
+        button.setButtonText('새로고침');
         button.setTooltip(t('refreshModelList'));
         button.onClick(() => {
           this.refreshGeneralTab();
@@ -621,7 +629,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     const statusGrid = section.createDiv({ cls: 'super-obsidian-rag-status-grid' });
     this.createRagStatusItem(statusGrid, '프로바이더', providerLabel);
     this.createRagStatusItem(statusGrid, '임베딩 모델', rag.embeddingModel || '미설정');
-    this.createRagStatusItem(statusGrid, '저장소', 'JSON File');
+    this.createRagStatusItem(statusGrid, '저장소', getVectorStoreLabel(rag.vectorStoreType));
     this.createRagStatusItem(statusGrid, '자동 업데이트', rag.autoUpdateEnabled ? '켜짐' : '꺼짐');
 
     const warning = this.getRagSetupWarning();
@@ -629,10 +637,11 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       section.createDiv({ cls: 'super-obsidian-settings-warning', text: warning });
     }
 
-    if (rag.vectorStoreType === 'indexeddb') {
+    const indexedDbNotice = getIndexedDbReindexNotice(rag.vectorStoreType);
+    if (indexedDbNotice) {
       section.createDiv({
         cls: 'super-obsidian-settings-warning',
-        text: '현재 런타임은 JSON File 벡터 저장소만 사용합니다. IndexedDB 선택값은 아직 적용되지 않습니다.',
+        text: indexedDbNotice,
       });
     }
 
@@ -666,6 +675,12 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
 
     const modelsForProvider = EMBEDDING_MODELS[effectiveProvider];
     const isOther = effectiveProvider === 'other';
+    const providerModels = isOther
+      ? []
+      : this.plugin.settings[effectiveProvider as ProviderKey].models;
+    const modelOptions = isOther
+      ? []
+      : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel);
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
 
     const providerNotice = section.createDiv({ cls: 'super-obsidian-model-description' });
@@ -691,12 +706,17 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         }
         dropdown.setValue(effectiveProvider);
         dropdown.onChange((value) => {
-          this.pendingEmbeddingProvider = value as EmbeddingProviderKey;
-          const newModels = EMBEDDING_MODELS[value as EmbeddingProviderKey];
-          if (newModels.length > 0) {
-            this.pendingEmbeddingModel = newModels[0].id;
-          } else {
+          const nextProvider = value as EmbeddingProviderKey;
+          this.pendingEmbeddingProvider = nextProvider;
+          if (nextProvider === 'other') {
             this.pendingEmbeddingModel = '';
+          } else {
+            const nextModels = buildEmbeddingModelOptions(
+              EMBEDDING_MODELS[nextProvider],
+              this.plugin.settings[nextProvider as ProviderKey].models,
+              '',
+            );
+            this.pendingEmbeddingModel = nextModels[0]?.id ?? '';
           }
           section.remove();
           this.buildEmbeddingProviderSection(containerEl);
@@ -715,13 +735,13 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
               this.pendingEmbeddingModel = value.trim();
             }),
         );
-    } else if (modelsForProvider.length > 0) {
+    } else if (modelOptions.length > 0) {
       new Setting(section)
         .setName(t('embeddingModel'))
         .setDesc('사용할 임베딩 모델을 선택하세요')
         .addDropdown((dropdown) => {
-          for (const model of modelsForProvider) {
-            dropdown.addOption(model.id, `${model.name} (${model.dimensions}차원)`);
+          for (const model of modelOptions) {
+            dropdown.addOption(model.id, model.label);
           }
           dropdown.setValue(effectiveModel);
           dropdown.onChange((value) => {
@@ -731,9 +751,22 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           });
         });
 
-      const selectedModel = modelsForProvider.find((m) => m.id === effectiveModel);
+      const selectedModel = modelOptions.find((m) => m.id === effectiveModel);
       const descEl = section.createDiv({ cls: 'super-obsidian-model-description' });
       descEl.setText(selectedModel?.description ?? '');
+    }
+
+    if (!isOther) {
+      new Setting(section)
+        .setName('모델 목록 새로고침')
+        .setDesc('Providers 탭의 현재 모델 구성을 다시 읽어 임베딩 모델 목록에 반영합니다.')
+        .addButton((button) => {
+          button.setButtonText('새로고침');
+          button.onClick(() => {
+            section.remove();
+            this.buildEmbeddingProviderSection(containerEl);
+          });
+        });
     }
 
     if (isPending) {
@@ -933,7 +966,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       if (!config?.enabled) {
         return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"을 먼저 활성화하세요.`;
       }
-      if (!config.apiKey.trim()) {
+      if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
         return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}" API Key를 입력하세요.`;
       }
     }
@@ -952,7 +985,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       if (!config?.enabled) {
         return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 Enabled 토글을 켜주세요.`;
       }
-      if (!config.apiKey.trim()) {
+      if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
         return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 API Key를 입력하세요.`;
       }
       if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
@@ -1108,7 +1141,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     // 채팅 저장 폴더 RAG 제외
     new Setting(section)
       .setName(t('excludeChatFolder'))
-      .setDesc(t('excludeChatFolderDesc'))
+      .setDesc(getChatFolderExcludeDescription(this.plugin.settings.chat.saveFolder))
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.excludeChatFolder).onChange((value) => {
           this.plugin.settings.rag.excludeChatFolder = value;
@@ -1152,19 +1185,19 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     // 벡터 저장소 유형
     new Setting(section)
       .setName('벡터 저장소 유형')
-      .setDesc(
-        '현재 런타임은 JSON File만 사용합니다. IndexedDB는 설정값으로 보이지만 아직 실제 저장소로 연결되지 않았습니다.',
-      )
+      .setDesc(getVectorStoreDescription())
       .addDropdown((dropdown) =>
         dropdown
           .addOption('json', 'JSON File')
-          .addOption('indexeddb', 'IndexedDB (미지원)')
+          .addOption('indexeddb', 'IndexedDB')
           .setValue(this.plugin.settings.rag.vectorStoreType)
           .onChange((value) => {
             this.plugin.settings.rag.vectorStoreType = value as 'json' | 'indexeddb';
             this.debouncedSave();
             if (value === 'indexeddb') {
-              new Notice('현재 IndexedDB 벡터 저장소는 런타임에서 아직 지원되지 않습니다.');
+              new Notice(
+                'IndexedDB 저장소로 전환했습니다. 기존 JSON 벡터는 자동 복사되지 않으므로 전체 재인덱싱을 실행하세요.',
+              );
             }
           }),
       );
@@ -1700,15 +1733,18 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       }),
     );
 
-    new Setting(section).setName(t('apiKey')).addText((text) =>
-      text
-        .setPlaceholder('sk-...')
-        .setValue(config.apiKey)
-        .onChange((value) => {
-          config.apiKey = value.trim();
-          this.debouncedSave();
-        }),
-    );
+    const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
+    if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
+      new Setting(section).setName(t('apiKey')).addText((text) =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(config.apiKey)
+          .onChange((value) => {
+            config.apiKey = value.trim();
+            this.debouncedSave();
+          }),
+      );
+    }
 
     if (target.kind === 'custom') {
       new Setting(section).setName('표시 이름').addText((text) =>
