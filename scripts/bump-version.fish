@@ -1,5 +1,5 @@
 #!/usr/bin/env fish
-# 버전을 올리고 git 태그를 생성한 뒤 푸시하는 스크립트
+# 버전을 올리고 Obsidian 커뮤니티 제출 규칙에 맞는 git 태그를 생성한 뒤 푸시하는 스크립트
 # 사용법: ./scripts/bump-version.fish [patch|minor|major]
 # 기본값: patch
 
@@ -64,7 +64,7 @@ end
 
 # versions.json 업데이트
 set MIN_APP_VERSION (jq -r '.minAppVersion' manifest.json)
-jq --arg v "$NEW_VERSION" --arg min "$MIN_APP_VERSION" '. = {($v): $min}' versions.json > versions.json.tmp
+jq --arg v "$NEW_VERSION" --arg min "$MIN_APP_VERSION" '. + {($v): $min}' versions.json > versions.json.tmp
 and mv versions.json.tmp versions.json
 or begin
     echo "ERROR: versions.json 업데이트 실패"
@@ -87,14 +87,15 @@ end
 
 # 커밋
 git add manifest.json package.json package-lock.json versions.json main.js styles.css
-and git commit -m "chore(release): v$NEW_VERSION"
+and git commit -m "chore(release): $NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"
     exit 1
 end
 
 # 태그 생성
-git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
+# Obsidian 커뮤니티 제출은 manifest.json version과 완전히 같은 태그명을 요구한다.
+git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
 or begin
     echo "ERROR: git tag 생성 실패"
     exit 1
@@ -102,13 +103,13 @@ end
 
 # 푸시
 git push origin "$CURRENT_BRANCH"
-and git push origin "v$NEW_VERSION"
+and git push origin "$NEW_VERSION"
 or begin
     echo "ERROR: git push 실패"
     exit 1
 end
 
 echo ""
-echo "✅ v$NEW_VERSION 릴리스 완료!"
+echo "✅ $NEW_VERSION 릴리스 완료!"
 echo "GitHub Actions가 자동으로 릴리스를 생성합니다."
 echo "https://github.com/magnitus99/Superpower-Inside/actions"

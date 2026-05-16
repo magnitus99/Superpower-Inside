@@ -29,7 +29,7 @@
 ├── esbuild.config.mjs            # main.ts → main.js 번들, format:cjs, target:es2022
 ├── eslint.config.mjs             # flat config + typescript-eslint/recommended-type-checked
 ├── tsconfig.json                 # strict, noUnused*, noImplicit*, isolatedModules
-└── .github/workflows/release.yml # v*.*.* 태그 릴리스 workflow
+└── .github/workflows/release.yml # GitHub Release workflow
 ```
 
 ## WHERE TO LOOK
@@ -123,6 +123,16 @@ npm run build
 
 현재 `npm run test`는 `vitest run`이며 `src/chat/mention-parser.test.ts`만 확인한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
 
+## VERSIONING AND RELEASES
+
+- 플러그인 버전은 SemVer `x.y.z` 형식을 사용하고, `manifest.json`, `package.json`, `versions.json`을 항상 함께 갱신한다.
+- `versions.json`은 플러그인 버전을 키로, 해당 버전의 최소 Obsidian 버전을 값으로 기록한다. 예: `"1.0.0": "0.15.0"`.
+- Obsidian 커뮤니티 제출/배포는 `manifest.json.version`과 **완전히 같은 이름의 GitHub Release 태그**를 찾는다. `manifest.json.version`이 `1.0.0`이면 태그도 반드시 `1.0.0`이어야 하며, `v1.0.0`만 만들면 커뮤니티 제출 화면에서 릴리스를 찾지 못한다.
+- GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
+- 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
+- `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
+- 기본 브랜치의 `manifest.json`이 커뮤니티 제출 시스템의 기준이다. 릴리스 태그만 만들지 말고, 릴리스 버전 변경을 기본 브랜치에 PR/merge까지 반영한다.
+
 ## CONVENTIONS
 
 - 답변과 코드 주석은 한국어로 작성한다. 변수명/함수명/타입명 등 코드 식별자는 영어를 사용한다.
@@ -134,7 +144,7 @@ npm run build
 - 설정 탭의 범위값 입력에는 슬라이더를 사용하지 않는다. 숫자 텍스트 입력(`addText` + `inputEl.type = 'number'`)으로 범위와 step을 지정한다.
 - Provider 추가 시 `PROVIDER_KEYS`, `PROVIDER_LABELS`, `DEFAULT_SETTINGS`, 설정 UI, `createProvider`, validation 경로를 함께 확인한다.
 - RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.superpower-inside/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
-- `manifest.json`은 `isDesktopOnly: false`지만 MCP stdio는 데스크톱 전용이다. 모바일 호환성을 깨지 않도록 런타임 분기를 유지한다.
+- `manifest.json`은 `isDesktopOnly: true`다. 이 플러그인은 MCP stdio, 로컬 Ollama 등 데스크톱 중심 기능을 전제로 하며 모바일 지원을 목표로 하지 않는다.
 
 ## ANTI-PATTERNS
 
@@ -147,7 +157,7 @@ npm run build
 | 런타임 `.env`/`process.env` 의존 | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸 |
 | 웹 세션/쿠키 기반 크롤링 | Obsidian 보안/배포 정책상 부적합 |
 | `.test-vault` 산출물 무심코 커밋 | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음 |
-| `package-lock.json`을 전제로 한 CI 변경 | `.gitignore`가 lockfile을 제외한다. `npm ci` 사용 시 정책 변경이 먼저 필요 |
+| `package-lock.json` 없이 의존성 변경 | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다 |
 | `src/llm/providers.ts.bak` 유지 | 백업 파일 성격. 정리 작업 시 삭제 후보 |
 
 ## COMMANDS
@@ -164,13 +174,13 @@ npm run format     # Prettier --write src/ main.ts
 ```fish
 ./scripts/setup-dev.fish             # .test-vault 생성, 플러그인 심링크, hot-reload 설치
 ./scripts/launch-obsidian-debug.fish # macOS Obsidian 디버그 실행, remote debugging port 9222
-./scripts/bump-version.fish patch    # manifest/package 버전, build, commit, tag, push
+./scripts/bump-version.fish patch    # manifest/package/versions 버전, build, commit, tag, push
 ```
 
 ## NOTES
 
 - API 키는 Obsidian 플러그인 `data.json`에 평문 저장된다. 공유/동기화/로그 출력 시 항상 민감 정보로 취급한다.
-- `data.json`, `main.js`, `.test-vault/`, `.sisyphus/`, `package-lock.json`은 현재 `.gitignore` 대상이다.
+- `data.json`, `main.js`, `.test-vault/`, `.sisyphus/`는 현재 `.gitignore` 대상이다. `package-lock.json`은 추적 대상이다.
 - `main.ts loadSettings()`는 provider 모델 배열, Ollama URL, chat `defaultModel`, RAG auto-update, MCP stdio 설정 migration을 수행한다.
 - `saveSettings()`는 provider 재초기화, RAG 재초기화, MCP 재연결을 유발한다. 설정 UI 변경은 런타임 부작용까지 확인한다.
 - MCP 설정은 표준 `mcpServers` JSON으로 가져오고 내부 `MCPServerConfig[]`로 변환한다. HTTP/SSE 레거시 서버는 migration에서 제거된다.
