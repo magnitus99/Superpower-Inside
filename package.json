@@ -1,12 +1,13 @@
 {
   "name": "superpower-inside",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Desktop AI copilot with LLM chat, RAG, MCP tools, and source-aware context.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",
+    "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "format": "prettier --write src/ main.ts"
@@ -17,7 +18,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.14",
-    "builtin-modules": "^5.0.0",
     "esbuild": "^0.28.0",
     "eslint": "^9.26.0",
     "fake-indexeddb": "^6.2.5",
