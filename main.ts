@@ -31,6 +31,7 @@ import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { executeDirective, parseDirective } from './src/chat/commands';
+import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPClientManager } from './src/mcp/client';
 import { MCPRegistry } from './src/mcp/registry';
 import {
@@ -277,6 +278,19 @@ export default class SuperObsidianPlugin extends Plugin {
 
     if (chat && typeof chat === 'object' && !Array.isArray(chat) && !('systemPrompt' in chat)) {
       (chat as Record<string, unknown>).systemPrompt = '';
+    }
+    if (chat && typeof chat === 'object' && !Array.isArray(chat)) {
+      const chatObj = chat as Record<string, unknown>;
+      if (chatObj.saveFolder === 'SuperObsidianByAI') {
+        chatObj.saveFolder = 'SuperObsidianByAIChats';
+      }
+      const migratedPromptLibrary = normalizePromptLibrary(
+        chatObj.promptLibrary,
+        chatObj.activePromptId,
+        typeof chatObj.systemPrompt === 'string' ? chatObj.systemPrompt : '',
+      );
+      chatObj.promptLibrary = migratedPromptLibrary.promptLibrary;
+      chatObj.activePromptId = migratedPromptLibrary.activePromptId;
     }
     if (
       chat &&

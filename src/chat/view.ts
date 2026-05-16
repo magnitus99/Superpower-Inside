@@ -27,6 +27,8 @@ import {
 } from './context';
 import { normalizeToolResult } from './mcp-tools';
 import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
+import { openPromptLibraryModal } from './prompt-library-modal';
+import { getEffectiveSystemPrompt } from './prompt-library';
 import { t } from '../i18n';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
@@ -64,7 +66,6 @@ export class ChatView extends ItemView {
   private mcpBtn: HTMLButtonElement | null;
   private typingIndicator: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
-  private sysPromptEditor: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
   private modelSelectEl: HTMLSelectElement | null;
   private contextPreviewEl: HTMLElement | null;
@@ -99,7 +100,6 @@ export class ChatView extends ItemView {
     this.mcpBtn = null;
     this.typingIndicator = null;
     this.scrollBtn = null;
-    this.sysPromptEditor = null;
     this.mcpStatusBar = null;
     this.modelSelectEl = null;
     this.contextPreviewEl = null;
@@ -223,51 +223,19 @@ export class ChatView extends ItemView {
       text: '⚙️',
       attr: { 'aria-label': t('systemPrompt') },
     });
-    sysToggle.addEventListener('click', () => this.toggleSystemPromptEditor());
-
-    this.sysPromptEditor = container.createDiv({ cls: 'super-obsidian-system-prompt-editor' });
-    this.sysPromptEditor.style.display = 'none';
-
-    this.sysPromptEditor.createDiv({
-      cls: 'super-obsidian-system-prompt-editor-label',
-      text: '세션 시스템 프롬프트',
+    sysToggle.addEventListener('click', () => {
+      openPromptLibraryModal({
+        containerEl: container,
+        plugin: this.plugin,
+        currentSessionPrompt: this.sessionSystemPrompt,
+        selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+        onApplyToSession: (prompt) => {
+          this.sessionSystemPrompt = prompt.trim() || null;
+          this.updateSystemPromptBadge();
+          this.markDirtyAndAutoSave();
+        },
+      });
     });
-    const ta = this.sysPromptEditor.createEl('textarea', {
-      cls: 'super-obsidian-chat-input',
-      attr: { rows: '4', placeholder: t('systemPromptPlaceholder') },
-    });
-    const editorActions = this.sysPromptEditor.createDiv({
-      cls: 'super-obsidian-system-prompt-editor-actions',
-    });
-    const applyBtn = editorActions.createEl('button', {
-      cls: 'super-obsidian-chat-send-btn',
-      text: '적용',
-    });
-    applyBtn.addEventListener('click', () => {
-      this.sessionSystemPrompt = ta.value.trim() || null;
-      this.updateSystemPromptBadge();
-      this.sysPromptEditor!.style.display = 'none';
-      new Notice('세션 시스템 프롬프트가 적용되었습니다.');
-    });
-    const cancelBtn = editorActions.createEl('button', {
-      cls: 'super-obsidian-chat-header-btn',
-      text: t('cancel'),
-    });
-    cancelBtn.addEventListener('click', () => {
-      this.sysPromptEditor!.style.display = 'none';
-    });
-  }
-
-  private toggleSystemPromptEditor(): void {
-    if (!this.sysPromptEditor) return;
-    const isVisible = this.sysPromptEditor.style.display !== 'none';
-    this.sysPromptEditor.style.display = isVisible ? 'none' : 'block';
-    if (!isVisible) {
-      const ta = this.sysPromptEditor.querySelector('textarea') as HTMLTextAreaElement;
-      if (ta) {
-        ta.value = this.sessionSystemPrompt ?? this.plugin.settings.chat.systemPrompt ?? '';
-      }
-    }
   }
 
   private updateSystemPromptBadge(): void {}
@@ -1545,7 +1513,7 @@ export class ChatView extends ItemView {
   }
 
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
-    const folder = this.plugin.settings.chat.saveFolder || 'SuperObsidianByAI';
+    const folder = this.plugin.settings.chat.saveFolder || 'SuperObsidianByAIChats';
     const title = this.session.title || 'AI 답변';
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
@@ -2742,9 +2710,8 @@ export class ChatView extends ItemView {
     previousQueries?: string[],
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
-    const globalPrompt = this.plugin.settings.chat.systemPrompt?.trim();
-    const sessionPrompt = this.sessionSystemPrompt ?? globalPrompt;
-    if (sessionPrompt) parts.push(sessionPrompt);
+    const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
+    if (systemPrompt) parts.push(systemPrompt);
 
     if (this.plugin.settings.pluginAwareEnabled) {
       const { formatActivePluginsForPrompt } = await import('../utils/obsidian-compat');

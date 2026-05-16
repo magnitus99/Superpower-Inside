@@ -22,8 +22,9 @@ const ragConfig: RAGConfig = {
 };
 
 const chatConfig: ChatConfig = {
-  saveFolder: 'SuperObsidianByAI',
+  saveFolder: 'SuperObsidianByAIChats',
   defaultModel: 'ollama:llama3.1',
+  promptLibrary: [],
   mcpToolExecutionPolicy: 'mentioned-auto',
   autoSaveEnabled: true,
   autoSaveDebounceMs: 3000,

@@ -27,6 +27,12 @@ import {
   getVectorStoreLabel,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
+import {
+  createDefaultPromptEntry,
+  createPromptEntry,
+  getActivePromptEntry,
+  type PromptLibraryEntry,
+} from './chat/prompt-library';
 import { type Language, t } from './i18n';
 
 interface StandardMcpServerEntry {
@@ -180,6 +186,8 @@ export interface ChatConfig {
   saveFolder: string;
   defaultModel: string;
   systemPrompt?: string;
+  promptLibrary: PromptLibraryEntry[];
+  activePromptId?: string;
   mcpToolExecutionPolicy: 'mentioned-auto' | 'always-manual' | 'always-auto';
   autoSaveEnabled: boolean;
   autoSaveDebounceMs: number;
@@ -260,9 +268,11 @@ export const DEFAULT_SETTINGS: SuperObsidianSettings = {
   mcpServers: [],
   mcpPath: '',
   chat: {
-    saveFolder: 'SuperObsidianByAI',
+    saveFolder: 'SuperObsidianByAIChats',
     defaultModel: 'ollama:llama3.1',
     systemPrompt: '',
+    promptLibrary: [createDefaultPromptEntry()],
+    activePromptId: 'default-obsidian-knowledge-work',
     mcpToolExecutionPolicy: 'mentioned-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
@@ -1276,10 +1286,19 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       .setName(t('systemPrompt'))
       .setDesc(t('systemPromptDesc'))
       .addTextArea((text) => {
+        const activePrompt = getActivePromptEntry(this.plugin.settings);
         text.inputEl.rows = 6;
-        text.setValue(this.plugin.settings.chat.systemPrompt ?? '');
+        text.setValue(activePrompt.content);
         text.setPlaceholder(t('systemPromptPlaceholder'));
         text.onChange((value) => {
+          const active = getActivePromptEntry(this.plugin.settings);
+          const existing = this.plugin.settings.chat.promptLibrary.find(
+            (entry) => entry.id === active.id,
+          );
+          if (existing) {
+            existing.content = value;
+            existing.updatedAt = new Date().toISOString();
+          }
           this.plugin.settings.chat.systemPrompt = value;
           this.debouncedSave();
         });
@@ -1302,26 +1321,36 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
       );
 
     const presetRow = containerEl.createDiv({ cls: 'super-obsidian-chat-presets' });
-    const presets: { label: string; prompt: string }[] = [
+    const presets: { label: string; description: string; prompt: string }[] = [
       {
-        label: t('quickPresetGeneral'),
+        label: '지식 연결',
+        description: '노트 사이의 연결과 링크 후보를 우선 제안합니다.',
         prompt:
-          '당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다. 마크다운 문법을 잘 알고 있으며, 사용자의 질문에 정확하고 간결하게 답변합니다.',
+          '당신은 Obsidian 볼트 기반 지식 연결 보조자입니다. 제공된 Vault Context와 명시적 파일/폴더 멘션을 우선 근거로 삼고, 답변마다 관련 노트명, 연결할 만한 링크 후보, 새로 만들면 좋은 노트 구조를 제안하세요. 근거와 추론을 구분하고, 확실하지 않은 내용은 꾸며내지 마세요.',
       },
       {
-        label: t('quickPresetCodeReview'),
+        label: '출처 기반 답변',
+        description: '볼트 컨텍스트의 출처와 한계를 분명히 드러냅니다.',
         prompt:
-          '당신은 시니어 개발자입니다. 사용자가 제시한 코드를 리뷰하고, 버그, 성능 문제, 가독성 개선점을 찾아 한국어로 설명합니다.',
+          '당신은 Obsidian 볼트의 출처 기반 답변 보조자입니다. Vault Context에 포함된 파일 경로와 헤딩을 우선 확인하고, 근거가 있는 주장과 사용자의 질문에서 추론한 내용을 분리하세요. 관련 컨텍스트가 부족하면 답을 꾸미지 말고 필요한 노트나 추가 질문을 요청하세요.',
       },
       {
-        label: t('quickPresetTranslate'),
+        label: '연구 노트',
+        description: '근거, 쟁점, 후속 질문을 연구 노트 형태로 정리합니다.',
         prompt:
-          '당신은 전문 번역가입니다. 사용자가 요청한 텍스트를 지정한 언어로 자연스럽게 번역합니다. 원문의 뉘앙스와 전문 용어를 최대한 살려주세요.',
+          '당신은 Obsidian 연구 노트 보조자입니다. 사용자의 질문에 답할 때 핵심 주장, 근거, 반론 또는 불확실성, 후속 조사 질문을 구분하세요. 볼트 안 관련 노트와 연결 후보를 제안하고, 연구 노트에 바로 붙일 수 있는 Markdown 구조로 답하세요.',
       },
       {
-        label: t('quickPresetSummarize'),
+        label: '프로젝트 노트',
+        description: '결정 사항, 작업 항목, 리스크를 분명히 나눕니다.',
         prompt:
-          '당신은 요약 전문가입니다. 사용자가 제공한 긴 텍스트나 문서를 핵심만 간결하게 요약합니다. bullet point 형식을 사용하세요.',
+          '당신은 Obsidian 프로젝트 노트 보조자입니다. 답변은 결정 사항, 작업 항목, 리스크, 다음 행동을 중심으로 구성하세요. Vault Context를 근거로 사용하고, 관련 프로젝트 노트 링크 후보와 후속 정리 위치를 제안하세요.',
+      },
+      {
+        label: '글쓰기 초안',
+        description: '볼트의 기존 맥락을 살려 개요와 문단 전개를 돕습니다.',
+        prompt:
+          '당신은 Obsidian 글쓰기 보조자입니다. 볼트의 기존 노트 맥락과 사용자의 의도를 존중해 개요, 문단 전개, 제목 후보, 연결할 노트를 제안하세요. 사용자가 요청하지 않은 단순 요약이나 번역으로 흐르지 말고, 노트로 발전 가능한 초안을 만드세요.',
       },
     ];
     for (const preset of presets) {
@@ -1329,7 +1358,19 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
         text: preset.label,
         cls: 'super-obsidian-mcp-preset-btn',
       });
+      btn.title = preset.description;
       btn.addEventListener('click', () => {
+        const entry = createPromptEntry({
+          title: preset.label,
+          description: preset.description,
+          content: preset.prompt,
+          source: 'user',
+        });
+        this.plugin.settings.chat.promptLibrary = [
+          entry,
+          ...this.plugin.settings.chat.promptLibrary,
+        ];
+        this.plugin.settings.chat.activePromptId = entry.id;
         this.plugin.settings.chat.systemPrompt = preset.prompt;
         this.debouncedSave();
         const chatPanel = this.tabPanels.get('chat');
@@ -1337,7 +1378,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
           chatPanel.empty();
           this.buildChatTab(chatPanel);
         }
-        new Notice(`${preset.label} 프리셋이 적용되었습니다.`);
+        new Notice(`${preset.label} 프리셋이 보관함에 저장되고 전역 기본값으로 적용되었습니다.`);
       });
     }
 
@@ -1348,6 +1389,7 @@ export class SuperObsidianSettingTab extends PluginSettingTab {
     });
     resetBtn.addEventListener('click', () => {
       this.plugin.settings.chat.systemPrompt = '';
+      this.plugin.settings.chat.activePromptId = 'default-obsidian-knowledge-work';
       this.debouncedSave();
       const chatPanel = this.tabPanels.get('chat');
       if (chatPanel) {
