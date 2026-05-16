@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 jobs:
   build:
@@ -34,12 +35,18 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Obsidian review gate
+        run: npm run review -- --tag "$GITHUB_REF_NAME"
+
       - name: Build
         run: npm run build
 
+      - name: Obsidian review gate for release assets
+        run: npm run review -- --tag "$GITHUB_REF_NAME" --built
+
       - name: Verify manifest version matches tag
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="$GITHUB_REF_NAME"
           MANIFEST_VERSION=$(jq -r '.version' manifest.json)
           PKG_VERSION=$(jq -r '.version' package.json)
           VERSION_MIN_APP=$(jq -r --arg v "$TAG_VERSION" '.[$v] // empty' versions.json)
@@ -60,6 +67,14 @@ jobs:
             exit 1
           fi
           echo "Version check passed."
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            manifest.json
+            main.js
+            styles.css
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

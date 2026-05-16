@@ -78,15 +78,51 @@ or begin
     exit 1
 end
 
-# 빌드
+# 릴리스 검증
+npx -y npm@10 ci
+or begin
+    echo "ERROR: npm ci 실패"
+    exit 1
+end
+
+npm run lint
+or begin
+    echo "ERROR: lint 실패"
+    exit 1
+end
+
+npm run typecheck
+or begin
+    echo "ERROR: typecheck 실패"
+    exit 1
+end
+
+npm run test
+or begin
+    echo "ERROR: test 실패"
+    exit 1
+end
+
+npm run review -- --tag "$NEW_VERSION"
+or begin
+    echo "ERROR: Obsidian review gate 실패"
+    exit 1
+end
+
 npm run build
 or begin
     echo "ERROR: 빌드 실패"
     exit 1
 end
 
+npm run review -- --tag "$NEW_VERSION" --built
+or begin
+    echo "ERROR: Obsidian release asset 검증 실패"
+    exit 1
+end
+
 # 커밋
-git add manifest.json package.json package-lock.json versions.json main.js styles.css
+git add manifest.json package.json package-lock.json versions.json main.js styles.css scripts/validate-obsidian-review.mjs .github/workflows/release.yml scripts/bump-version.fish README.md esbuild.config.mjs
 and git commit -m "chore(release): $NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"
