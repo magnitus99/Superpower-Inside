@@ -43,6 +43,10 @@ import {
 } from './utils/rag-exclude-validation';
 import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
 import { type Language, t } from './i18n';
+import {
+  createDefaultContext7McpServer,
+  shouldShowPluginAwareContext7Warning,
+} from './mcp/context7';
 
 interface StandardMcpServerEntry {
   command: string;
@@ -54,7 +58,7 @@ interface StandardMcpConfig {
   mcpServers: Record<string, StandardMcpServerEntry>;
 }
 
-function internalToStandard(servers: MCPServerConfig[]): StandardMcpConfig {
+export function internalToStandard(servers: MCPServerConfig[]): StandardMcpConfig {
   const mcpServers: Record<string, StandardMcpServerEntry> = {};
   for (const s of servers) {
     const entry: StandardMcpServerEntry = { command: s.command };
@@ -63,6 +67,10 @@ function internalToStandard(servers: MCPServerConfig[]): StandardMcpConfig {
     mcpServers[s.name] = entry;
   }
   return { mcpServers };
+}
+
+export function buildMcpJsonEditorValue(servers: MCPServerConfig[]): string {
+  return JSON.stringify(internalToStandard(servers), null, 2);
 }
 
 function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
@@ -274,7 +282,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     enableBM25: true,
     bm25Weight: 0.3,
   },
-  mcpServers: [],
+  mcpServers: [createDefaultContext7McpServer()],
   mcpPath: '',
   chat: {
     saveFolder: DEFAULT_CHAT_SAVE_FOLDER,
@@ -2007,11 +2015,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const lintStatus = mcpSection.createDiv({ cls: 'superpower-inside-mcp-lint-status' });
     lintStatus.setText('');
 
-    const defaultJson = JSON.stringify(
-      internalToStandard(this.plugin.settings.mcpServers),
-      null,
-      2,
-    );
+    const defaultJson = buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
     const jsonTextArea = mcpSection.createEl('textarea', {
       cls: 'superpower-inside-mcp-json-editor',
     });
@@ -2184,6 +2188,23 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         }),
       );
+
+    containerEl.createDiv({
+      cls: 'superpower-inside-settings-help',
+      text: t('pluginAwareGenerationLimitNotice'),
+    });
+
+    if (
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
+        servers: this.plugin.settings.mcpServers,
+      })
+    ) {
+      containerEl.createDiv({
+        cls: 'superpower-inside-settings-warning',
+        text: t('pluginAwareContext7MissingWarning'),
+      });
+    }
   }
 
   private buildProviderSettings(containerEl: HTMLElement, target: ProviderSettingsTarget): void {

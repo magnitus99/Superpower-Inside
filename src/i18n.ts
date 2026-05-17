@@ -17,6 +17,8 @@ export interface I18nKeys {
   noModelsEnabled: string;
   pluginAwareGeneration: string;
   pluginAwareGenerationDesc: string;
+  pluginAwareGenerationLimitNotice: string;
+  pluginAwareContext7MissingWarning: string;
   language: string;
   languageDesc: string;
   langKo: string;
@@ -309,6 +311,10 @@ const ko: I18nKeys = {
   pluginAwareGeneration: '플러그인 인식 생성 활성화',
   pluginAwareGenerationDesc:
     'LLM 프롬프트에 활성 플러그인 목록을 포함하여 호환 문법을 유도합니다. (비공식 API 사용)',
+  pluginAwareGenerationLimitNotice:
+    '현재 이 기능은 활성 플러그인의 이름, 버전, 설명을 프롬프트에 포함하고 Context7 문서 조회를 유도합니다. DataviewJS 같은 플러그인의 data.json 세부 설정, 실행 결과, 볼트별 인덱스 상태까지 읽거나 검증하지는 않습니다.',
+  pluginAwareContext7MissingWarning:
+    'Context7 MCP가 설정되어 있지 않아 플러그인 문서 기반 생성이 작동하지 않습니다. MCP 탭 JSON 편집기에 context7 서버를 추가하세요.',
   language: '언어',
   languageDesc: '플러그인 전체 UI 언어를 선택합니다',
   langKo: '한국어',
@@ -615,6 +621,10 @@ const en: I18nKeys = {
   pluginAwareGeneration: 'Enable Plugin-Aware Generation',
   pluginAwareGenerationDesc:
     'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
+  pluginAwareGenerationLimitNotice:
+    'This feature currently adds active plugin names, versions, and descriptions to the prompt and encourages Context7 documentation lookup. It does not read or validate plugin-specific data.json settings, runtime results, or vault-specific index state such as DataviewJS configuration.',
+  pluginAwareContext7MissingWarning:
+    'Context7 MCP is not configured, so plugin documentation-based generation will not work. Add the context7 server in the MCP tab JSON editor.',
   language: 'Language',
   languageDesc: 'Select the plugin UI language',
   langKo: 'Korean',

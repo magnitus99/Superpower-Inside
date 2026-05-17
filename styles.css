@@ -192,6 +192,12 @@
   margin-bottom: 12px;
 }
 
+.superpower-inside-settings-help {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 12px;
+}
+
 .superpower-inside-settings-section {
   margin-top: 16px;
   padding-top: 12px;

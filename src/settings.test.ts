@@ -17,7 +17,11 @@ import {
   getVectorStoreLabel,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
-import { DEFAULT_SETTINGS, normalizeChatSaveFolder } from './settings';
+import { buildMcpJsonEditorValue, DEFAULT_SETTINGS, normalizeChatSaveFolder } from './settings';
+import {
+  CONTEXT7_MCP_SERVER_NAME,
+  shouldShowPluginAwareContext7Warning,
+} from './mcp/context7';
 
 describe('RAG 설정 표시 헬퍼', () => {
   it('선택된 벡터 저장소 라벨을 반환한다', () => {
@@ -100,5 +104,72 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
+  });
+
+  it('기본 MCP 설정은 Context7 서버를 포함한다', () => {
+    expect(DEFAULT_SETTINGS.mcpServers).toContainEqual({
+      name: CONTEXT7_MCP_SERVER_NAME,
+      command: 'npx',
+      args: ['-y', '@upstash/context7-mcp'],
+    });
+  });
+
+  it('MCP JSON 편집기 초기값은 Context7 기본 서버를 포함한다', () => {
+    const parsed = JSON.parse(buildMcpJsonEditorValue(DEFAULT_SETTINGS.mcpServers)) as {
+      mcpServers: Record<string, { command: string; args?: string[] }>;
+    };
+
+    expect(parsed.mcpServers.context7).toEqual({
+      command: 'npx',
+      args: ['-y', '@upstash/context7-mcp'],
+    });
+  });
+
+  it('사용자가 지정한 Context7 MCP 설정은 JSON 편집기 값에서 보존된다', () => {
+    const parsed = JSON.parse(
+      buildMcpJsonEditorValue([
+        {
+          name: 'context7',
+          command: 'npx',
+          args: ['-y', '@upstash/context7-mcp', '--api-key', 'ctx7-key'],
+          env: { CONTEXT7_API_KEY: 'ctx7-env-key' },
+        },
+      ]),
+    ) as {
+      mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+    };
+
+    expect(parsed.mcpServers.context7?.args).toEqual([
+      '-y',
+      '@upstash/context7-mcp',
+      '--api-key',
+      'ctx7-key',
+    ]);
+    expect(parsed.mcpServers.context7?.env).toEqual({ CONTEXT7_API_KEY: 'ctx7-env-key' });
+  });
+
+  it('명시적으로 빈 MCP 서버 목록을 저장한 경우 JSON 편집기 값도 빈 객체로 유지한다', () => {
+    expect(buildMcpJsonEditorValue([])).toBe(JSON.stringify({ mcpServers: {} }, null, 2));
+  });
+
+  it('플러그인 인식 생성이 켜졌고 Context7가 없을 때만 경고한다', () => {
+    expect(
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: true,
+        servers: [],
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: true,
+        servers: DEFAULT_SETTINGS.mcpServers,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: false,
+        servers: [],
+      }),
+    ).toBe(false);
   });
 });

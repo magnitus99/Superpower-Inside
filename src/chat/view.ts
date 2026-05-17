@@ -29,6 +29,7 @@ import { normalizeToolResult } from './mcp-tools';
 import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
+import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
 import { EditMessageModal } from './edit-modal';
@@ -1965,7 +1966,7 @@ export class ChatView extends ItemView {
 
     try {
       const systemPrompt = promptContext.systemPrompt;
-      const mentionedServers = this.getMentionedServerNames(text);
+      const mentionedServers = this.getEffectiveMcpServerNames(text);
       const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
@@ -2573,6 +2574,14 @@ export class ChatView extends ItemView {
       .map((mention) => mention.name);
   }
 
+  private getEffectiveMcpServerNames(text: string): string[] {
+    return getPluginAwareServerNames({
+      mentionedServerNames: this.getMentionedServerNames(text),
+      pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
+      registry: this.plugin.mcpRegistry,
+    });
+  }
+
   private async executeAssistantToolCalls(
     messageId: string,
     toolCalls: ToolCallRecord[],
@@ -2612,7 +2621,7 @@ export class ChatView extends ItemView {
     const updated = await this.executeAssistantToolCalls(
       messageId,
       toolCalls,
-      this.getMentionedServerNames(this.lastUserPrompt ?? ''),
+      this.getEffectiveMcpServerNames(this.lastUserPrompt ?? ''),
       message.reasoning,
     );
     const stopReason = updated.some((toolCall) => toolCall.status === 'error')
@@ -2640,7 +2649,7 @@ export class ChatView extends ItemView {
             this.plugin.settings[message.providerKey as ProviderKey],
             message.model,
           );
-      const mentionedServers = this.getMentionedServerNames(this.lastUserPrompt ?? '');
+      const mentionedServers = this.getEffectiveMcpServerNames(this.lastUserPrompt ?? '');
       const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
       const systemPrompt = promptContext.systemPrompt;
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
