@@ -16,15 +16,16 @@ import {
   type MCPServerConnectionStatus,
 } from './mcp/connection-state';
 import { isMcpStdioAvailable } from './mcp/platform';
-import type { VectorStore } from './rag/store';
+import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './rag/store';
 import type { VaultIndexer } from './rag/indexer';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import {
   buildEmbeddingModelOptions,
   getChatFolderExcludeDescription,
-  getIndexedDbReindexNotice,
+  getVectorStoreTransferNotice,
   getVectorStoreDescription,
   getVectorStoreLabel,
+  type VectorStoreType,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
 import {
@@ -33,6 +34,14 @@ import {
   getActivePromptEntry,
   type PromptLibraryEntry,
 } from './chat/prompt-library';
+import { openPromptLibraryModal } from './chat/prompt-library-modal';
+import {
+  validateExcludeExtensionInput,
+  validateExcludePathInput,
+  type ExcludeValidationIssue,
+  type ExcludeValidationResult,
+} from './utils/rag-exclude-validation';
+import { countFilesByExtensions } from './utils/vault';
 import { type Language, t } from './i18n';
 
 interface StandardMcpServerEntry {
@@ -195,17 +204,10 @@ export interface ChatConfig {
 }
 
 export const DEFAULT_CHAT_SAVE_FOLDER = 'SuperpowerInsideChats';
-export const LEGACY_CHAT_SAVE_FOLDERS = [
-  'SuperpowerInside',
-  'SuperObsidianByAI',
-  'SuperObsidianByAIChats',
-] as const;
 
 export function normalizeChatSaveFolder(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  return (LEGACY_CHAT_SAVE_FOLDERS as readonly string[]).includes(value)
-    ? DEFAULT_CHAT_SAVE_FOLDER
-    : value;
+  return value;
 }
 
 export interface SuperpowerInsideSettings {
@@ -258,14 +260,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   },
   customOpenAIProviders: [],
   rag: {
-    excludePaths: [
-      '.git',
-      'node_modules',
-      '.obsidian',
-      'attachments',
-      'SuperpowerInside',
-      'SuperpowerInsideChats',
-    ],
+    excludePaths: ['.git', 'node_modules', '.obsidian', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
     excludeChatFolder: true,
     chunkSize: 1000,
@@ -294,7 +289,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   },
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
-  autoSaveDebounceMs: 500,
+  autoSaveDebounceMs: 1000,
   language: 'ko',
 };
 export interface PluginLike {
@@ -357,7 +352,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   debouncedSave(): void {
     if (!this.plugin.settings.autoSaveEnabled) {
-      void this.plugin.saveSettings();
+      void this.saveSettingsWithFeedback();
       return;
     }
 
@@ -368,7 +363,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.saveTimeout = setTimeout(() => {
       this.saveTimeout = null;
       this.pendingSave = false;
-      void this.plugin.saveSettings();
+      void this.saveSettingsWithFeedback();
     }, this.plugin.settings.autoSaveDebounceMs);
   }
 
@@ -379,7 +374,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (this.pendingSave) {
       this.pendingSave = false;
-      void this.plugin.saveSettings();
+      void this.saveSettingsWithFeedback();
+    }
+  }
+
+  private async saveSettingsWithFeedback(): Promise<void> {
+    try {
+      const result = await this.plugin.saveSettings();
+      if (result.success) {
+        new Notice(t('autoSaveSuccessNotice'));
+        return;
+      }
+
+      if (result.mcpErrors && result.mcpErrors.length > 0) {
+        new Notice(t('autoSaveMcpFailedNotice', { count: result.mcpErrors.length }), 7000);
+        return;
+      }
+
+      new Notice(t('autoSaveFailedNotice', { message: t('autoSaveUnknownError') }), 7000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('autoSaveFailedNotice', { message }), 7000);
     }
   }
 
@@ -524,7 +539,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoSaveEnabled).onChange(async (value) => {
           this.plugin.settings.autoSaveEnabled = value;
-          await this.plugin.saveSettings();
+          await this.saveSettingsWithFeedback();
         }),
       );
 
@@ -646,7 +661,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const section = containerEl.createDiv({
       cls: 'superpower-inside-rag-section superpower-inside-rag-status-panel',
     });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: 'RAG 상태' });
+    const header = section.createDiv({ cls: 'superpower-inside-rag-status-header' });
+    header.createDiv({ cls: 'superpower-inside-rag-section-title', text: 'RAG 상태' });
+    const refreshButton = header.createEl('button', {
+      cls: 'superpower-inside-rag-status-refresh-btn',
+      text: '새로고침',
+      attr: { type: 'button' },
+    });
 
     const rag = this.plugin.settings.rag;
     const providerLabel = EMBEDDING_PROVIDER_LABELS[rag.embeddingProvider];
@@ -661,25 +682,35 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       section.createDiv({ cls: 'superpower-inside-settings-warning', text: warning });
     }
 
-    const indexedDbNotice = getIndexedDbReindexNotice(rag.vectorStoreType);
-    if (indexedDbNotice) {
-      section.createDiv({
-        cls: 'superpower-inside-settings-warning',
-        text: indexedDbNotice,
-      });
-    }
+    const vectorStoreTransferWarningEl = section.createDiv();
+    void this.renderVectorStoreTransferWarning(vectorStoreTransferWarningEl, rag.vectorStoreType);
 
     const timestampEl = section.createDiv({
       cls: 'superpower-inside-rag-status-timestamp',
       text: '상태 계산 중...',
     });
-    void this.getRagStatus().then((status) => {
-      timestampEl.setText(
-        status
-          ? `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
-          : 'RAG 인덱서가 초기화되지 않아 상태를 계산할 수 없습니다.',
-      );
+    const refreshStatus = async (): Promise<void> => {
+      timestampEl.setText('상태 계산 중...');
+      refreshButton.disabled = true;
+      try {
+        const status = await this.getRagStatus();
+        timestampEl.setText(
+          status
+            ? `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
+            : 'RAG 인덱서가 초기화되지 않아 상태를 계산할 수 없습니다.',
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        timestampEl.setText(`상태를 불러오지 못했습니다: ${msg}`);
+      } finally {
+        refreshButton.disabled = false;
+      }
+    };
+
+    refreshButton.addEventListener('click', () => {
+      void refreshStatus();
     });
+    void refreshStatus();
   }
 
   private createRagStatusItem(containerEl: HTMLElement, label: string, value: string): void {
@@ -1018,6 +1049,48 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return this.plugin.eventDrivenRagStats ?? null;
   }
 
+  private async renderVectorStoreTransferWarning(
+    containerEl: HTMLElement,
+    selectedType: VectorStoreType,
+  ): Promise<void> {
+    try {
+      const notice = await this.getVectorStoreTransferWarning(selectedType);
+      if (!notice) {
+        containerEl.remove();
+        return;
+      }
+      containerEl.addClass('superpower-inside-settings-warning');
+      containerEl.setText(notice);
+    } catch {
+      containerEl.remove();
+    }
+  }
+
+  private async getVectorStoreTransferWarning(
+    selectedType: VectorStoreType,
+  ): Promise<string | null> {
+    const [jsonVectorCount, indexedDbVectorCount] = await Promise.all([
+      this.getJsonVectorCount(),
+      this.getIndexedDbVectorCount(),
+    ]);
+    return getVectorStoreTransferNotice(selectedType, jsonVectorCount, indexedDbVectorCount);
+  }
+
+  private async getJsonVectorCount(): Promise<number> {
+    const store = new JsonFileVectorStore(
+      this.plugin.app.vault.adapter,
+      '.superpower-inside/vectors.json',
+    );
+    const stats = await store.getStats();
+    return stats.totalVectors;
+  }
+
+  private async getIndexedDbVectorCount(): Promise<number> {
+    const store = new IndexedDbVectorStore();
+    const stats = await store.getStats();
+    return stats.totalVectors;
+  }
+
   private getRagSetupWarning(): string | null {
     const rag = this.plugin.settings.rag;
     const providerKey = rag.embeddingProvider;
@@ -1148,6 +1221,173 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
 
+  private buildExcludeListSetting(input: {
+    containerEl: HTMLElement;
+    name: string;
+    description: string;
+    placeholder: string;
+    values: string[];
+    validate: (value: string, existingValues: readonly string[]) => ExcludeValidationResult;
+    onChange: (values: string[]) => void;
+    countMeta?: {
+      getCounts: () => Record<string, number>;
+      getItemLabel: (count: number) => string;
+      getSummaryLabel: (count: number) => string;
+      refreshLabel: string;
+    };
+  }): void {
+    const setting = new Setting(input.containerEl).setName(input.name).setDesc(input.description);
+    const editor = setting.controlEl.createDiv({ cls: 'superpower-inside-exclude-editor' });
+    const inputRow = editor.createDiv({ cls: 'superpower-inside-exclude-input-row' });
+    const textInput = inputRow.createEl('input', {
+      cls: 'superpower-inside-exclude-input',
+      attr: { type: 'text', placeholder: input.placeholder },
+    });
+    const addButton = inputRow.createEl('button', {
+      cls: 'superpower-inside-exclude-add-btn',
+      text: t('excludeListAdd'),
+      attr: { type: 'button' },
+    });
+    const feedbackEl = editor.createDiv({ cls: 'superpower-inside-exclude-feedback' });
+    const countMetaEl = input.countMeta
+      ? editor.createDiv({ cls: 'superpower-inside-exclude-count-meta' })
+      : null;
+    const listEl = editor.createDiv({ cls: 'superpower-inside-exclude-list' });
+    let itemCounts = input.countMeta?.getCounts() ?? {};
+
+    const getExistingWithoutIndex = (index: number): string[] =>
+      input.values.filter((_, itemIndex) => itemIndex !== index);
+
+    const renderIssues = (
+      container: HTMLElement,
+      issues: readonly ExcludeValidationIssue[],
+    ): void => {
+      container.empty();
+      for (const issue of issues) {
+        container.createDiv({
+          cls: `superpower-inside-exclude-message is-${issue.level}`,
+          text: this.getExcludeIssueText(issue),
+        });
+      }
+    };
+
+    const renderInputValidation = (): ExcludeValidationResult => {
+      const result = input.validate(textInput.value, input.values);
+      renderIssues(feedbackEl, textInput.value.length > 0 ? result.issues : []);
+      addButton.disabled = !result.valid || result.normalized.length === 0;
+      return result;
+    };
+
+    const renderList = (): void => {
+      listEl.empty();
+      if (countMetaEl && input.countMeta) {
+        countMetaEl.empty();
+        const totalCount = input.values.reduce(
+          (sum, value) => sum + (itemCounts[value.trim().toLowerCase()] ?? 0),
+          0,
+        );
+        countMetaEl.createDiv({
+          cls: 'superpower-inside-exclude-count-summary',
+          text: input.countMeta.getSummaryLabel(totalCount),
+        });
+        const countMeta = input.countMeta;
+        const refreshButton = countMetaEl.createEl('button', {
+          cls: 'superpower-inside-exclude-count-refresh-btn',
+          text: countMeta.refreshLabel,
+          attr: { type: 'button' },
+        });
+        refreshButton.addEventListener('click', () => {
+          itemCounts = countMeta.getCounts();
+          renderList();
+        });
+      }
+      if (input.values.length === 0) {
+        listEl.createDiv({
+          cls: 'superpower-inside-exclude-empty',
+          text: t('excludeListEmpty'),
+        });
+        return;
+      }
+
+      input.values.forEach((value, index) => {
+        const item = listEl.createDiv({ cls: 'superpower-inside-exclude-item' });
+        const content = item.createDiv({ cls: 'superpower-inside-exclude-item-content' });
+        const valueRow = content.createDiv({ cls: 'superpower-inside-exclude-value-row' });
+        valueRow.createDiv({ cls: 'superpower-inside-exclude-value', text: value });
+        if (input.countMeta) {
+          const count = itemCounts[value.trim().toLowerCase()] ?? 0;
+          valueRow.createDiv({
+            cls: 'superpower-inside-exclude-count-badge',
+            text: input.countMeta.getItemLabel(count),
+          });
+        }
+        const itemIssues = input.validate(value, getExistingWithoutIndex(index)).issues;
+        if (itemIssues.length > 0) {
+          const itemFeedback = content.createDiv({ cls: 'superpower-inside-exclude-item-feedback' });
+          renderIssues(itemFeedback, itemIssues);
+        }
+        const removeButton = item.createEl('button', {
+          cls: 'superpower-inside-exclude-remove-btn',
+          text: t('excludeListRemove'),
+          attr: { type: 'button' },
+        });
+        removeButton.addEventListener('click', () => {
+          input.values.splice(index, 1);
+          input.onChange([...input.values]);
+          renderInputValidation();
+          renderList();
+        });
+      });
+    };
+
+    const addValue = (): void => {
+      const result = renderInputValidation();
+      if (!result.valid || !result.normalized) return;
+      input.values.push(result.normalized);
+      input.onChange([...input.values]);
+      itemCounts = input.countMeta?.getCounts() ?? itemCounts;
+      textInput.value = '';
+      renderInputValidation();
+      renderList();
+    };
+
+    textInput.addEventListener('input', () => renderInputValidation());
+    textInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      addValue();
+    });
+    addButton.addEventListener('click', addValue);
+
+    renderInputValidation();
+    renderList();
+  }
+
+  private getExcludeIssueText(issue: ExcludeValidationIssue): string {
+    switch (issue.code) {
+      case 'empty':
+        return t('excludeInputEmpty');
+      case 'trimmed':
+        return t('excludeInputTrimmed');
+      case 'duplicate':
+        return t('excludeInputDuplicate');
+      case 'comma':
+        return t('excludeInputComma');
+      case 'path-backslash':
+        return t('excludePathBackslash');
+      case 'path-leading-slash':
+        return t('excludePathLeadingSlash');
+      case 'path-missing':
+        return t('excludePathMissingWarning');
+      case 'extension-leading-dot':
+        return t('excludeExtLeadingDot');
+      case 'extension-invalid':
+        return t('excludeExtInvalid');
+      case 'extension-markdown':
+        return t('excludeExtMarkdownWarning');
+    }
+  }
+
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '고급 인덱싱 옵션' });
@@ -1184,19 +1424,23 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '99';
       });
 
-    // 제외 경로
-    new Setting(section)
-      .setName('제외할 경로')
-      .setDesc('인덱싱에서 제외할 폴더 (쉼표로 구분)')
-      .addText((text) =>
-        text.setValue(this.plugin.settings.rag.excludePaths.join(', ')).onChange((value) => {
-          this.plugin.settings.rag.excludePaths = value
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          this.debouncedSave();
-        }),
-      );
+    this.buildExcludeListSetting({
+      containerEl: section,
+      name: t('excludePaths'),
+      description: t('excludePathsDesc'),
+      placeholder: t('excludePathPlaceholder'),
+      values: this.plugin.settings.rag.excludePaths,
+      validate: (value, existingValues) =>
+        validateExcludePathInput(
+          value,
+          existingValues,
+          (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+        ),
+      onChange: (values) => {
+        this.plugin.settings.rag.excludePaths = values;
+        this.debouncedSave();
+      },
+    });
 
     // 채팅 저장 폴더 RAG 제외
     new Setting(section)
@@ -1209,19 +1453,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
 
-    // 제외 확장자
-    new Setting(section)
-      .setName('제외할 확장자')
-      .setDesc('인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)')
-      .addText((text) =>
-        text.setValue(this.plugin.settings.rag.excludeExts.join(', ')).onChange((value) => {
-          this.plugin.settings.rag.excludeExts = value
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          this.debouncedSave();
-        }),
-      );
+    this.buildExcludeListSetting({
+      containerEl: section,
+      name: t('excludeExts'),
+      description: t('excludeExtsDesc'),
+      placeholder: t('excludeExtPlaceholder'),
+      values: this.plugin.settings.rag.excludeExts,
+      validate: validateExcludeExtensionInput,
+      onChange: (values) => {
+        this.plugin.settings.rag.excludeExts = values;
+        this.debouncedSave();
+      },
+      countMeta: {
+        getCounts: () => countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
+        getItemLabel: (count) => t('excludeExtFileCount').replace('{count}', String(count)),
+        getSummaryLabel: (count) =>
+          t('excludeExtTotalFileCount').replace('{count}', String(count)),
+        refreshLabel: t('refresh'),
+      },
+    });
 
     // 청크 크기
     new Setting(section)
@@ -1252,13 +1502,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .addOption('indexeddb', 'IndexedDB')
           .setValue(this.plugin.settings.rag.vectorStoreType)
           .onChange((value) => {
-            this.plugin.settings.rag.vectorStoreType = value as 'json' | 'indexeddb';
+            const vectorStoreType = value as VectorStoreType;
+            this.plugin.settings.rag.vectorStoreType = vectorStoreType;
             this.debouncedSave();
-            if (value === 'indexeddb') {
-              new Notice(
-                'IndexedDB 저장소로 전환했습니다. 기존 JSON 벡터는 자동 복사되지 않으므로 전체 재인덱싱을 실행하세요.',
-              );
-            }
+            void this.getVectorStoreTransferWarning(vectorStoreType)
+              .then((notice) => {
+                if (notice) new Notice(notice);
+              })
+              .catch(() => undefined);
           }),
       );
   }
@@ -1335,6 +1586,24 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t('systemPrompt'))
       .setDesc(t('systemPromptDesc'))
+      .addButton((button) => {
+        button.setButtonText(t('promptLibraryOpen'));
+        button.onClick(() => {
+          openPromptLibraryModal({
+            containerEl,
+            plugin: this.plugin,
+            currentSessionPrompt: null,
+            selectedModel: this.plugin.settings.chat.defaultModel,
+            onClose: () => {
+              const chatPanel = this.tabPanels.get('chat');
+              if (chatPanel) {
+                chatPanel.empty();
+                this.buildChatTab(chatPanel);
+              }
+            },
+          });
+        });
+      })
       .addTextArea((text) => {
         const activePrompt = getActivePromptEntry(this.plugin.settings);
         text.inputEl.rows = 6;

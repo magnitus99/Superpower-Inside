@@ -43,6 +43,32 @@ export function isExcludedExt(filePath: string, excludeExts: string[]): boolean 
   return excludeExts.map((e) => e.toLowerCase()).includes(ext);
 }
 
+export function countFilesByExtensions(
+  vault: Vault,
+  extensions: readonly string[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const extension of extensions) {
+    const normalized = normalizeExtension(extension);
+    if (normalized) {
+      counts[normalized] = 0;
+    }
+  }
+
+  for (const file of vault.getFiles()) {
+    const extension = normalizeExtension(file.extension);
+    if (extension && Object.hasOwn(counts, extension)) {
+      counts[extension]++;
+    }
+  }
+
+  return counts;
+}
+
+function normalizeExtension(extension: string): string {
+  return extension.trim().replace(/^\./, '').toLowerCase();
+}
+
 /**
  * Vault adapter를 통해 JSON 파일을 씁니다.
  * 상위 디렉토리가 없으면 자동으로 생성합니다.

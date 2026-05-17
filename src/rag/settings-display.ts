@@ -32,9 +32,18 @@ export function getVectorStoreDescription(): string {
   ].join(' ');
 }
 
-export function getIndexedDbReindexNotice(type: VectorStoreType): string | null {
-  if (type !== 'indexeddb') return null;
-  return 'IndexedDB는 기존 JSON 벡터를 자동 복사하지 않습니다. 선택 후 전체 재인덱싱을 실행해야 이 저장소에 벡터가 채워집니다.';
+export function getVectorStoreTransferNotice(
+  selectedType: VectorStoreType,
+  jsonVectorCount: number,
+  indexedDbVectorCount: number,
+): string | null {
+  if (selectedType === 'indexeddb' && indexedDbVectorCount === 0 && jsonVectorCount > 0) {
+    return 'IndexedDB는 기존 JSON 벡터를 자동 복사하지 않습니다. 전체 재인덱싱을 실행하거나 JSON File 저장소로 되돌리세요.';
+  }
+  if (selectedType === 'json' && jsonVectorCount === 0 && indexedDbVectorCount > 0) {
+    return 'JSON File은 기존 IndexedDB 벡터를 자동 복사하지 않습니다. 전체 재인덱싱을 실행하거나 IndexedDB 저장소로 되돌리세요.';
+  }
+  return null;
 }
 
 export function getChatFolderExcludeDescription(saveFolder: string): string {

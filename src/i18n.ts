@@ -6,6 +6,10 @@ export interface I18nKeys {
   autoSaveSettingsDesc: string;
   autoSaveDelay: string;
   autoSaveDelayDesc: string;
+  autoSaveSuccessNotice: string;
+  autoSaveMcpFailedNotice: string;
+  autoSaveFailedNotice: string;
+  autoSaveUnknownError: string;
   delayMs: string;
   defaultModel: string;
   defaultModelDesc: string;
@@ -96,6 +100,23 @@ export interface I18nKeys {
   excludePathsDesc: string;
   excludeExts: string;
   excludeExtsDesc: string;
+  excludeListAdd: string;
+  excludeListRemove: string;
+  excludeListEmpty: string;
+  excludeExtFileCount: string;
+  excludeExtTotalFileCount: string;
+  excludePathPlaceholder: string;
+  excludeExtPlaceholder: string;
+  excludeInputEmpty: string;
+  excludeInputTrimmed: string;
+  excludeInputDuplicate: string;
+  excludeInputComma: string;
+  excludePathBackslash: string;
+  excludePathLeadingSlash: string;
+  excludePathMissingWarning: string;
+  excludeExtLeadingDot: string;
+  excludeExtInvalid: string;
+  excludeExtMarkdownWarning: string;
   chunkSize: string;
   chunkSizeDesc: string;
   vectorStoreType: string;
@@ -119,6 +140,7 @@ export interface I18nKeys {
   systemPrompt: string;
   systemPromptDesc: string;
   systemPromptPlaceholder: string;
+  promptLibraryOpen: string;
   mcpToolExecutionPolicy: string;
   mcpToolExecutionPolicyDesc: string;
   mcpToolExecutionMentionedAuto: string;
@@ -270,6 +292,10 @@ const ko: I18nKeys = {
   autoSaveSettingsDesc: '변경 사항 후 자동으로 설정 저장 (디스크 I/O 감소)',
   autoSaveDelay: '설정 변경 자동 저장 딜레이',
   autoSaveDelayDesc: '설정 값을 변경한 후 자동으로 저장되기까지 대기 시간 (0–5000 ms)',
+  autoSaveSuccessNotice: '설정이 자동 저장되었습니다.',
+  autoSaveMcpFailedNotice: '설정은 저장되었지만 MCP 서버 {count}개 재연결에 실패했습니다.',
+  autoSaveFailedNotice: '설정 자동 저장 실패: {message}',
+  autoSaveUnknownError: '알 수 없는 오류',
   delayMs: 'ms',
   defaultModel: '기본 모델',
   defaultModelDesc: '채팅 및 명령어에 사용할 기본 모델',
@@ -359,9 +385,26 @@ const ko: I18nKeys = {
   autoUpdateIntervalDesc: '자동 인덱싱 간격 (1~99분, 자연수)',
   intervalMinutes: '분',
   excludePaths: '제외할 경로',
-  excludePathsDesc: '인덱싱에서 제외할 폴더 (쉼표로 구분)',
+  excludePathsDesc: '인덱싱에서 제외할 폴더나 경로 패턴을 목록으로 관리합니다.',
   excludeExts: '제외할 확장자',
-  excludeExtsDesc: '인덱싱에서 제외할 파일 확장자 (쉼표로 구분, 점 제외)',
+  excludeExtsDesc: '인덱싱에서 제외할 파일 확장자를 목록으로 관리합니다.',
+  excludeListAdd: '추가',
+  excludeListRemove: '삭제',
+  excludeListEmpty: '등록된 항목이 없습니다.',
+  excludeExtFileCount: '{count}개',
+  excludeExtTotalFileCount: '총 {count}개 파일 제외 대상',
+  excludePathPlaceholder: '예: Archive 또는 **/drafts',
+  excludeExtPlaceholder: '예: pdf 또는 .png',
+  excludeInputEmpty: '값을 입력하세요.',
+  excludeInputTrimmed: '앞뒤 공백은 저장 시 제거됩니다.',
+  excludeInputDuplicate: '이미 목록에 있습니다.',
+  excludeInputComma: '쉼표 대신 항목을 하나씩 추가하세요.',
+  excludePathBackslash: '경로 구분자는 / 를 사용하세요.',
+  excludePathLeadingSlash: '볼트 기준 상대 경로로 입력하세요. 앞의 / 는 제외합니다.',
+  excludePathMissingWarning: '현재 볼트에서 찾을 수 없습니다. 패턴이라면 그대로 저장할 수 있습니다.',
+  excludeExtLeadingDot: '앞의 점은 저장 시 제거됩니다.',
+  excludeExtInvalid: '확장자는 영문/숫자/하이픈/밑줄만 입력하세요.',
+  excludeExtMarkdownWarning: 'md를 제외하면 마크다운 노트가 인덱싱되지 않습니다.',
   excludeChatFolder: '채팅 저장 폴더 RAG 제외',
   excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
   chunkSize: '청크 크기',
@@ -393,6 +436,7 @@ const ko: I18nKeys = {
   systemPromptDesc:
     'AI의 역할과 응답 방식을 정의하는 글로벌 시스템 프롬프트입니다. 비워두면 기본 프롬프트가 사용됩니다.',
   systemPromptPlaceholder: '예: 당신은 Obsidian 노트 작성을 돕는 전문가 어시스턴트입니다...',
+  promptLibraryOpen: '프롬프트 보관함 열기',
   mcpToolExecutionPolicy: 'MCP 툴 실행 정책',
   mcpToolExecutionPolicyDesc:
     '멘션한 서버의 안전한 툴은 자동 실행하고, 위험하거나 미멘션된 툴은 승인 대기로 둡니다.',
@@ -549,6 +593,10 @@ const en: I18nKeys = {
   autoSaveDelay: 'Settings auto-save delay',
   autoSaveDelayDesc:
     'Milliseconds to wait after changing a setting value before auto-saving (0–5000 ms)',
+  autoSaveSuccessNotice: 'Settings auto-saved.',
+  autoSaveMcpFailedNotice: 'Settings were saved, but {count} MCP server reconnects failed.',
+  autoSaveFailedNotice: 'Settings auto-save failed: {message}',
+  autoSaveUnknownError: 'Unknown error',
   delayMs: 'ms',
   defaultModel: 'Default Model',
   defaultModelDesc: 'Default model for chat and commands',
@@ -638,9 +686,27 @@ const en: I18nKeys = {
   autoUpdateIntervalDesc: 'Automatic indexing interval (1–99 minutes, integer)',
   intervalMinutes: 'minutes',
   excludePaths: 'Exclude Paths',
-  excludePathsDesc: 'Folders to exclude from indexing (comma-separated)',
+  excludePathsDesc: 'Manage folders or path patterns excluded from indexing as a list.',
   excludeExts: 'Exclude Extensions',
-  excludeExtsDesc: 'File extensions to exclude (comma-separated, no dot)',
+  excludeExtsDesc: 'Manage file extensions excluded from indexing as a list.',
+  excludeListAdd: 'Add',
+  excludeListRemove: 'Remove',
+  excludeListEmpty: 'No items registered.',
+  excludeExtFileCount: '{count} files',
+  excludeExtTotalFileCount: '{count} files excluded in total',
+  excludePathPlaceholder: 'e.g. Archive or **/drafts',
+  excludeExtPlaceholder: 'e.g. pdf or .png',
+  excludeInputEmpty: 'Enter a value.',
+  excludeInputTrimmed: 'Leading and trailing spaces will be removed.',
+  excludeInputDuplicate: 'This item is already in the list.',
+  excludeInputComma: 'Add one item at a time instead of using commas.',
+  excludePathBackslash: 'Use / as the path separator.',
+  excludePathLeadingSlash: 'Enter a vault-relative path without a leading /.',
+  excludePathMissingWarning:
+    'This path was not found in the current vault. You can still save it if it is a pattern.',
+  excludeExtLeadingDot: 'The leading dot will be removed.',
+  excludeExtInvalid: 'Use only letters, numbers, hyphens, or underscores.',
+  excludeExtMarkdownWarning: 'Excluding md prevents markdown notes from being indexed.',
   excludeChatFolder: 'Exclude Chat Folder from RAG',
   excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
   chunkSize: 'Chunk Size',
@@ -672,6 +738,7 @@ const en: I18nKeys = {
   systemPromptDesc:
     'Global system prompt that defines AI role and response style. Leave empty to use default.',
   systemPromptPlaceholder: 'e.g., You are an expert assistant helping with Obsidian note-taking...',
+  promptLibraryOpen: 'Open Prompt Library',
   mcpToolExecutionPolicy: 'MCP tool execution policy',
   mcpToolExecutionPolicyDesc:
     'Automatically execute safe tools from mentioned servers, and keep risky or unmentioned tools pending approval.',

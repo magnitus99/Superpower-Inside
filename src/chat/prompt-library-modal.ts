@@ -31,7 +31,8 @@ interface OpenPromptLibraryModalOptions {
   plugin: PluginLike;
   currentSessionPrompt: string | null;
   selectedModel: string;
-  onApplyToSession: (prompt: string) => void;
+  onApplyToSession?: (prompt: string) => void;
+  onClose?: () => void;
 }
 
 export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): void {
@@ -57,7 +58,10 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     DEFAULT_OBSIDIAN_PROMPT_ID;
   let isGenerating = false;
 
-  const close = (): void => overlay.remove();
+  const close = (): void => {
+    overlay.remove();
+    options.onClose?.();
+  };
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
@@ -138,7 +142,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const applySelectedToSession = (): void => {
     const entry = getSelectedEntry();
-    if (!entry) return;
+    if (!entry || !options.onApplyToSession) return;
     options.onApplyToSession(entry.content);
     new Notice(`"${entry.title}" 프롬프트를 현재 세션에 적용했습니다.`);
   };
@@ -289,12 +293,14 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       void saveSelectedPrompt(titleInput, descriptionInput, contentInput),
     );
 
-    const applyBtn = actionRow.createEl('button', {
-      cls: 'superpower-inside-prompt-secondary-btn',
-      text: '현재 세션에 적용',
-      attr: { type: 'button' },
-    });
-    applyBtn.addEventListener('click', applySelectedToSession);
+    if (options.onApplyToSession) {
+      const applyBtn = actionRow.createEl('button', {
+        cls: 'superpower-inside-prompt-secondary-btn',
+        text: '현재 세션에 적용',
+        attr: { type: 'button' },
+      });
+      applyBtn.addEventListener('click', applySelectedToSession);
+    }
 
     const defaultBtn = actionRow.createEl('button', {
       cls: 'superpower-inside-prompt-secondary-btn',

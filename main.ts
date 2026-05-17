@@ -276,18 +276,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (typeof rag.excludeChatFolder !== 'boolean') {
         rag.excludeChatFolder = true;
       }
-      if (Array.isArray(rag.excludePaths)) {
-        for (const path of [
-          'SuperpowerInside',
-          'SuperpowerInsideChats',
-          'SuperObsidianByAI',
-          'SuperObsidianByAIChats',
-        ]) {
-          if (!rag.excludePaths.includes(path)) {
-            rag.excludePaths.push(path);
-          }
-        }
-      }
       rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, rag.autoUpdateIntervalMin as number));
       if ('autoUpdateIntervalMs' in rag && !('autoUpdateIntervalMin' in rag)) {
         rag.autoUpdateIntervalMin = Math.max(

@@ -12,12 +12,12 @@ vi.mock('obsidian', () => ({
 import {
   buildEmbeddingModelOptions,
   getChatFolderExcludeDescription,
-  getIndexedDbReindexNotice,
+  getVectorStoreTransferNotice,
   getVectorStoreDescription,
   getVectorStoreLabel,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
-import { DEFAULT_CHAT_SAVE_FOLDER, normalizeChatSaveFolder } from './settings';
+import { DEFAULT_SETTINGS, normalizeChatSaveFolder } from './settings';
 
 describe('RAG 설정 표시 헬퍼', () => {
   it('선택된 벡터 저장소 라벨을 반환한다', () => {
@@ -35,9 +35,12 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(description).toContain('자동 포함되지 않습니다');
   });
 
-  it('IndexedDB 선택 시 재인덱싱 안내를 반환한다', () => {
-    expect(getIndexedDbReindexNotice('json')).toBeNull();
-    expect(getIndexedDbReindexNotice('indexeddb')).toContain('전체 재인덱싱');
+  it('선택한 벡터 저장소가 비어 있고 반대 저장소에 벡터가 있을 때만 전환 안내를 반환한다', () => {
+    expect(getVectorStoreTransferNotice('indexeddb', 10, 0)).toContain('전체 재인덱싱');
+    expect(getVectorStoreTransferNotice('indexeddb', 10, 5)).toBeNull();
+    expect(getVectorStoreTransferNotice('json', 0, 10)).toContain('전체 재인덱싱');
+    expect(getVectorStoreTransferNotice('json', 0, 0)).toBeNull();
+    expect(getVectorStoreTransferNotice('indexeddb', 10, 10)).toBeNull();
   });
 
   it('채팅 저장 폴더 제외 설명에 현재 폴더를 표시한다', () => {
@@ -80,11 +83,22 @@ describe('RAG 설정 표시 헬퍼', () => {
     );
   });
 
-  it('기존 기본 채팅 저장 폴더를 새 기본 폴더로 마이그레이션한다', () => {
-    expect(normalizeChatSaveFolder('SuperObsidianByAI')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
-    expect(normalizeChatSaveFolder('SuperObsidianByAIChats')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
-    expect(normalizeChatSaveFolder('SuperpowerInside')).toBe(DEFAULT_CHAT_SAVE_FOLDER);
+  it('채팅 저장 폴더 값은 레거시 이름이어도 저장된 값을 그대로 보존한다', () => {
+    expect(normalizeChatSaveFolder('SuperObsidianByAI')).toBe('SuperObsidianByAI');
+    expect(normalizeChatSaveFolder('SuperObsidianByAIChats')).toBe('SuperObsidianByAIChats');
+    expect(normalizeChatSaveFolder('SuperpowerInside')).toBe('SuperpowerInside');
     expect(normalizeChatSaveFolder('CustomChats')).toBe('CustomChats');
     expect(normalizeChatSaveFolder(undefined)).toBeNull();
+  });
+
+  it('기본 RAG 제외 경로에는 채팅 저장 폴더명을 하드코딩하지 않는다', () => {
+    expect(DEFAULT_SETTINGS.rag.excludePaths).not.toContain('SuperpowerInsideChats');
+    expect(DEFAULT_SETTINGS.rag.excludePaths).not.toContain('SuperpowerInside');
+    expect(DEFAULT_SETTINGS.rag.excludePaths).not.toContain('SuperObsidianByAI');
+    expect(DEFAULT_SETTINGS.rag.excludePaths).not.toContain('SuperObsidianByAIChats');
+  });
+
+  it('설정 자동 저장 기본 debounce는 1초다', () => {
+    expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
   });
 });
