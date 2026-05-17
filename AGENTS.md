@@ -75,7 +75,6 @@
 | `buildChatContext` | function | `src/chat/context.ts` | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성 |
 | `parseMentions` | function | `src/chat/mention-parser.ts` | `@...` 멘션 파싱과 중복 제거 |
 | `saveChat` / `loadChat` | function | `src/chat/persistence.ts` | 채팅 세션 Markdown 저장/복원 |
-| `executeDirective` | function | `src/chat/commands.ts` | 에디터 `>AI:` 지시어 실행 |
 | `MCPClientManager` | class | `src/mcp/client.ts` | MCP SDK Client + stdio transport |
 | `MCPRegistry` | class | `src/mcp/registry.ts` | MCP 서버 설정/클라이언트/연결 상태 관리 |
 

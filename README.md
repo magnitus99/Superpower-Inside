@@ -11,7 +11,6 @@ This plugin is **desktop-only**. It uses MCP stdio servers, local Ollama support
 - **MCP stdio tools**: connect local Model Context Protocol servers for external tools and workflows.
 - **Search through MCP**: web search is available when you configure a search-capable MCP server.
 - **Source cards**: review and insert citations from retrieved notes and attached context.
-- **AI directives**: run editor commands such as `>AI: summarize this section`.
 
 ## Install
 
@@ -61,16 +60,6 @@ This plugin is **desktop-only**. It uses MCP stdio servers, local Ollama support
 
 - Click the ribbon chat icon.
 - Or run Command Palette → `Open AI Chat`.
-
-### Run an AI directive
-
-Write a directive in the editor:
-
-```markdown
->AI: summarize this paragraph in three bullet points
-```
-
-Then run Command Palette → `Execute AI Directive`.
 
 ### Reindex vault notes
 

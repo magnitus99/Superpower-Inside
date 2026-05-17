@@ -282,8 +282,6 @@ export interface I18nKeys {
   // 명령어
   cmdOpenAiChat: string;
   cmdReindexVault: string;
-  cmdExecuteAiDirective: string;
-  noDirectiveFound: string;
 }
 
 const ko: I18nKeys = {
@@ -582,8 +580,6 @@ const ko: I18nKeys = {
   // Commands
   cmdOpenAiChat: 'AI 채팅 열기',
   cmdReindexVault: '볼트 RAG 재인덱싱',
-  cmdExecuteAiDirective: 'AI 지시어 실행',
-  noDirectiveFound: '현재 줄에서 AI 지시어를 찾을 수 없습니다.',
 };
 
 const en: I18nKeys = {
@@ -886,8 +882,6 @@ const en: I18nKeys = {
   // Commands
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
-  cmdExecuteAiDirective: 'Execute AI Directive',
-  noDirectiveFound: 'No AI directive found on the current line.',
 };
 
 const STRINGS: Record<Language, I18nKeys> = { ko, en };

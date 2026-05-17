@@ -336,19 +336,6 @@ export class NewVectorStore implements VectorStore {
 
 **연동:** `main.ts initRAG()`에서 `JsonFileVectorStore` 대신 사용
 
-### 5.3 새 채팅 명령어 추가
-
-**파일:** `src/chat/commands.ts`
-
-```typescript
-// executeDirective()의 switch에 case 추가
-case 'translate':
-  prompt = `Translate the following to ${directive.args}:\n\n${content}`;
-  break;
-```
-
----
-
 ## 6. 트러블슈팅
 
 ### 빌드 실패

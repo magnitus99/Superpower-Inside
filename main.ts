@@ -31,7 +31,6 @@ import {
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
-import { executeDirective, parseDirective } from './src/chat/commands';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPRegistry } from './src/mcp/registry';
 import {
@@ -127,20 +126,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const msg = err instanceof Error ? err.message : String(err);
           new Notice(`인덱싱 실패: ${msg}`);
         }
-      },
-    });
-
-    this.addCommand({
-      id: 'execute-ai-directive',
-      name: t('cmdExecuteAiDirective'),
-      editorCallback: async (editor) => {
-        const line = editor.getLine(editor.getCursor().line);
-        const directive = parseDirective(line);
-        if (!directive) {
-          new Notice(t('noDirectiveFound'));
-          return;
-        }
-        await executeDirective(editor, this, directive);
       },
     });
 
