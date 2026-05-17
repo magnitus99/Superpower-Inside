@@ -39,6 +39,7 @@ import {
   getMcpConnectionState,
   type MCPConnectionState,
 } from './src/mcp/connection-state';
+import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { MCP_DESKTOP_ONLY_MESSAGE, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 
@@ -752,7 +753,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
         registry.setConnectionStatus(server.name, 'connected');
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        let msg = err instanceof Error ? err.message : String(err);
+        if (shouldAppendMcpPathHint(server.command, msg)) {
+          msg = `${msg}\n${t('mcpPathCommandNotFoundHint').replace('{command}', server.command)}`;
+        }
         if (runId !== this.mcpConnectionRunId) return;
         registry.setConnectionStatus(server.name, 'error', msg);
         errors.push(`${server.name}: ${msg}`);

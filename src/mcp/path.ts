@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+
 const SHELL_CANDIDATES = [
   '/opt/homebrew/bin/fish',
   '/usr/local/bin/fish',
@@ -7,9 +9,7 @@ const SHELL_CANDIDATES = [
   '/bin/sh',
 ] as const;
 
-export async function getDesktopLoginShellPath(): Promise<string> {
-  const { execFileSync } = await import('node:child_process');
-
+export function getDesktopLoginShellPath(): string {
   let shell = typeof process !== 'undefined' ? (process.env.SHELL ?? '') : '';
   if (!shell || !shell.startsWith('/')) {
     shell = '';

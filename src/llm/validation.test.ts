@@ -3,8 +3,10 @@ import type { ProviderConfig } from '../settings';
 import {
   fetchProviderModels,
   normalizeOpenAICompatibleBaseUrl,
-  testProviderConnection,
+  testEmbeddingGeneration,
+  testProviderGeneration,
   validateEmbeddingConnection,
+  validateProviderConnection,
 } from './validation';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
@@ -24,39 +26,48 @@ describe('provider validation', () => {
     requestUrlMock.mockReset();
   });
 
-  it('Anthropic을 제외한 OpenAI 모델 검색에는 저장된 API 키를 사용한다', async () => {
+  it('OpenAI 기본 연결 테스트는 모델 목록만 조회하고 생성 endpoint를 호출하지 않는다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       json: { data: [{ id: 'gpt-4o-mini' }] },
       text: '',
     });
 
-    const result = await fetchProviderModels('openai', baseConfig);
+    const result = await validateProviderConnection('openai', baseConfig);
 
     expect(result.valid).toBe(true);
     expect(result.models).toEqual(['gpt-4o-mini']);
+    expect(requestUrlMock).toHaveBeenCalledTimes(1);
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'https://api.openai.com/v1/models',
+        method: 'GET',
         headers: { Authorization: 'Bearer stored-key' },
+        throw: false,
       }),
     );
   });
 
-  it('Anthropic 모델 검색에는 저장된 API 키를 자동으로 붙이지 않는다', async () => {
+  it('Anthropic 모델 검증에는 저장된 API 키를 x-api-key로 붙인다', async () => {
     requestUrlMock.mockResolvedValueOnce({
-      status: 401,
-      json: {},
-      text: 'missing api key',
+      status: 200,
+      json: { data: [{ id: 'claude-sonnet', display_name: 'Claude Sonnet' }] },
+      text: '',
     });
 
     const result = await fetchProviderModels('claude', baseConfig);
 
-    expect(result.valid).toBe(false);
+    expect(result.valid).toBe(true);
+    expect(result.models).toEqual(['claude-sonnet']);
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'https://api.anthropic.com/v1/models',
-        headers: { 'anthropic-version': '2023-06-01' },
+        method: 'GET',
+        headers: {
+          'x-api-key': 'stored-key',
+          'anthropic-version': '2023-06-01',
+        },
+        throw: false,
       }),
     );
   });
@@ -92,6 +103,7 @@ describe('provider validation', () => {
       expect.objectContaining({
         url: 'https://openrouter.ai/api/v1/models',
         headers: { Authorization: 'Bearer stored-key' },
+        throw: false,
       }),
     );
   });
@@ -110,6 +122,7 @@ describe('provider validation', () => {
       expect.objectContaining({
         url: 'http://localhost:11434/api/tags',
         headers: {},
+        throw: false,
       }),
     );
   });
@@ -128,24 +141,28 @@ describe('provider validation', () => {
       expect.objectContaining({
         url: 'https://ollama.com/api/tags',
         headers: { Authorization: 'Bearer stored-key' },
+        throw: false,
       }),
     );
   });
 
-  it('Ollama Local 임베딩 연결 테스트에는 저장된 API 키를 붙이지 않는다', async () => {
+  it('Ollama Local 임베딩 연결 테스트는 태그 목록만 조회하고 임베딩을 생성하지 않는다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      json: { embeddings: [[0.1, 0.2]] },
+      json: { models: [{ name: 'nomic-embed-text' }] },
       text: '',
     });
 
     const result = await validateEmbeddingConnection('ollama', 'nomic-embed-text', baseConfig);
 
     expect(result.valid).toBe(true);
+    expect(requestUrlMock).toHaveBeenCalledTimes(1);
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: 'http://localhost:11434/api/embed',
-        headers: { 'Content-Type': 'application/json' },
+        url: 'http://localhost:11434/api/tags',
+        method: 'GET',
+        headers: {},
+        throw: false,
       }),
     );
   });
@@ -171,18 +188,19 @@ describe('provider validation', () => {
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:1234/v1/models',
+        throw: false,
       }),
     );
   });
 
-  it('연결 테스트는 모델 검색과 분리되어 chat completions endpoint를 호출한다', async () => {
+  it('최소 생성 테스트만 chat completions endpoint를 호출한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       json: { choices: [{ message: { content: '' } }] },
       text: '',
     });
 
-    const result = await testProviderConnection(
+    const result = await testProviderGeneration(
       'customOpenAI',
       {
         ...baseConfig,
@@ -198,6 +216,70 @@ describe('provider validation', () => {
       expect.objectContaining({
         url: 'http://localhost:1234/v1/chat/completions',
         method: 'POST',
+        throw: false,
+      }),
+    );
+  });
+
+  it('OpenAI 임베딩 연결 테스트는 모델 목록만 조회하고 /embeddings에 input을 보내지 않는다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ id: 'text-embedding-3-small' }, { id: 'gpt-4o-mini' }] },
+      text: '',
+    });
+
+    const result = await validateEmbeddingConnection(
+      'openai',
+      'text-embedding-3-small',
+      baseConfig,
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.models).toEqual(['text-embedding-3-small']);
+    expect(requestUrlMock).toHaveBeenCalledTimes(1);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'https://api.openai.com/v1/models',
+        method: 'GET',
+        throw: false,
+      }),
+    );
+  });
+
+  it('임베딩 생성 테스트만 /embeddings endpoint를 호출한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ embedding: [0.1, 0.2] }] },
+      text: '',
+    });
+
+    const result = await testEmbeddingGeneration('openai', 'text-embedding-3-small', baseConfig);
+
+    expect(result.valid).toBe(true);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'https://api.openai.com/v1/embeddings',
+        method: 'POST',
+        body: JSON.stringify({ input: 'test', model: 'text-embedding-3-small' }),
+        throw: false,
+      }),
+    );
+  });
+
+  it('401 응답은 throw 대신 분류된 오류로 반환한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 401,
+      json: {},
+      text: 'invalid key',
+    });
+
+    const result = await validateProviderConnection('openai', baseConfig);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('API 키가 유효하지 않거나 권한이 없습니다 (401)');
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        throw: false,
       }),
     );
   });

@@ -825,38 +825,74 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
 
     const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
-    new Setting(section).setName('연결 테스트').addButton((button) => {
-      button.setButtonText(t('testConnection'));
-      button.onClick(async () => {
-        statusEl.setText('');
-        button.setDisabled(true);
-        statusEl.setText(t('testing'));
+    const getEmbeddingValidationConfig = (): ProviderConfig =>
+      effectiveProvider === 'other'
+        ? { apiKey: '', models: [], enabled: false }
+        : this.plugin.settings[effectiveProvider as ProviderKey];
 
-        try {
-          const config =
-            effectiveProvider === 'other'
-              ? null
-              : this.plugin.settings[effectiveProvider as ProviderKey];
-          const { validateEmbeddingConnection } = await import('./llm/validation');
-          const result = await validateEmbeddingConnection(
-            effectiveProvider,
-            effectiveModel,
-            config ?? { apiKey: '', models: [], enabled: false },
-          );
+    new Setting(section)
+      .setName('연결 테스트')
+      .setDesc('모델/태그 목록만 조회합니다. 임베딩 생성 요청을 보내지 않습니다.')
+      .addButton((button) => {
+        button.setButtonText(t('testConnection'));
+        button.onClick(async () => {
+          statusEl.setText('');
+          button.setDisabled(true);
+          statusEl.setText(t('testing'));
 
-          if (result.valid) {
-            statusEl.setText(`✅ 연결 성공! ${result.models.length}개 모델 확인됨`);
-          } else {
-            statusEl.setText(`❌ 연결 실패: ${result.error}`);
+          try {
+            const { validateEmbeddingConnection } = await import('./llm/validation');
+            const result = await validateEmbeddingConnection(
+              effectiveProvider,
+              effectiveModel,
+              getEmbeddingValidationConfig(),
+            );
+
+            if (result.valid) {
+              statusEl.setText(`✅ 연결 성공! ${result.models.length}개 모델 확인됨`);
+            } else {
+              statusEl.setText(`❌ 연결 실패: ${result.error}`);
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            statusEl.setText(`❌ 오류: ${msg}`);
+          } finally {
+            button.setDisabled(false);
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          statusEl.setText(`❌ 오류: ${msg}`);
-        } finally {
-          button.setDisabled(false);
-        }
+        });
       });
-    });
+
+    new Setting(section)
+      .setName('임베딩 생성 테스트')
+      .setDesc('선택된 임베딩 모델로 실제 최소 요청을 보냅니다. 프로바이더에 따라 과금될 수 있습니다.')
+      .addButton((button) => {
+        button.setButtonText('임베딩 생성 테스트');
+        button.onClick(async () => {
+          statusEl.setText('');
+          button.setDisabled(true);
+          statusEl.setText(t('testing'));
+
+          try {
+            const { testEmbeddingGeneration } = await import('./llm/validation');
+            const result = await testEmbeddingGeneration(
+              effectiveProvider,
+              effectiveModel,
+              getEmbeddingValidationConfig(),
+            );
+
+            if (result.valid) {
+              statusEl.setText(`✅ 임베딩 생성 성공: ${effectiveModel}`);
+            } else {
+              statusEl.setText(`❌ 임베딩 생성 실패: ${result.error}`);
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            statusEl.setText(`❌ 오류: ${msg}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
   }
 
   private buildStatsSection(containerEl: HTMLElement): void {
@@ -1500,14 +1536,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }
 
           const { getDesktopLoginShellPath } = await import('./mcp/path');
-          const output = await getDesktopLoginShellPath();
+          const output = getDesktopLoginShellPath();
           pathText.value = output;
           this.plugin.settings.mcpPath = output;
           await this.plugin.saveSettings();
           new Notice(t('mcpPathFetchSuccess'));
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          new Notice(`${t('mcpPathFetchError')}: ${msg}`);
+          new Notice(`${t('mcpPathFetchError')}: ${msg}\n${t('mcpPathFetchErrorHelp')}`, 10000);
         } finally {
           fetchBtn.setText(originalText);
           fetchBtn.disabled = false;
@@ -1923,34 +1959,75 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     new Setting(section)
       .setName('연결 테스트')
-      .setDesc(
-        '선택된 첫 모델로 실제 최소 요청을 보냅니다. 프로바이더에 따라 소액 과금될 수 있습니다.',
-      )
+      .setDesc('모델/태그 목록만 조회합니다. 토큰 생성 요청을 보내지 않습니다.')
       .addButton((button) => {
         button.setButtonText(t('testConnection'));
         button.onClick(async () => {
           statusContainer.setText('');
+          button.setDisabled(true);
+          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+
+          try {
+            const { validateProviderConnection } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await validateProviderConnection(target.key, config)
+                : await validateProviderConnection('customOpenAI', target.config);
+            spinner.remove();
+
+            if (result.valid) {
+              availableModels = this.mergeModels(config.models, result.models);
+              statusContainer.setText(`✅ 연결 성공: 모델 ${result.models.length}개 확인됨`);
+              this.validationCache[cacheKey] = result;
+              renderModelList();
+            } else {
+              statusContainer.setText(`❌ 연결 실패: ${result.error}`);
+              this.validationCache[cacheKey] = {
+                valid: false,
+                models: this.validationCache[cacheKey]?.models ?? [],
+                error: result.error,
+              };
+            }
+          } catch (err) {
+            spinner.remove();
+            const msg = err instanceof Error ? err.message : String(err);
+            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
+
+    new Setting(section)
+      .setName('최소 생성 테스트')
+      .setDesc(
+        '선택된 첫 모델로 실제 최소 생성 요청을 보냅니다. 프로바이더에 따라 과금될 수 있습니다.',
+      )
+      .addButton((button) => {
+        button.setButtonText('최소 생성 테스트');
+        button.onClick(async () => {
+          statusContainer.setText('');
           const model = config.models[0];
           if (!model) {
-            statusContainer.setText('❌ 연결 테스트 전에 모델을 하나 이상 선택하세요.');
+            statusContainer.setText('❌ 최소 생성 테스트 전에 모델을 하나 이상 선택하세요.');
             return;
           }
           button.setDisabled(true);
           const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
 
           try {
-            const { testProviderConnection } = await import('./llm/validation');
+            const { testProviderGeneration } = await import('./llm/validation');
             const result =
               target.kind === 'fixed'
-                ? await testProviderConnection(target.key, config, model)
-                : await testProviderConnection('customOpenAI', target.config, model);
+                ? await testProviderGeneration(target.key, config, model)
+                : await testProviderGeneration('customOpenAI', target.config, model);
             spinner.remove();
 
             if (result.valid) {
-              statusContainer.setText(`✅ 연결 성공: ${model}`);
+              statusContainer.setText(`✅ 최소 생성 성공: ${model}`);
               this.validationCache[cacheKey] = result;
             } else {
-              statusContainer.setText(`❌ 연결 실패: ${result.error}`);
+              statusContainer.setText(`❌ 최소 생성 실패: ${result.error}`);
               this.validationCache[cacheKey] = {
                 valid: false,
                 models: this.validationCache[cacheKey]?.models ?? [],

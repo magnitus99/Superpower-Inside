@@ -202,7 +202,9 @@ export interface I18nKeys {
   mcpPathFetching: string;
   mcpPathFetchSuccess: string;
   mcpPathFetchError: string;
+  mcpPathFetchErrorHelp: string;
   mcpPathPlaceholder: string;
+  mcpPathCommandNotFoundHint: string;
 
   // MCP 탭
   mcpCommand: string;
@@ -476,7 +478,11 @@ const ko: I18nKeys = {
   mcpPathFetching: '불러오는 중...',
   mcpPathFetchSuccess: '터미널 PATH 불러오기 완료',
   mcpPathFetchError: '터미널 PATH 불러오기 실패',
+  mcpPathFetchErrorHelp:
+    '자동 조회가 실패하면 터미널의 printenv PATH 값을 직접 입력하거나 MCP command를 절대경로로 설정하세요.',
   mcpPathPlaceholder: '예: /opt/homebrew/bin:/usr/local/bin:/usr/bin',
+  mcpPathCommandNotFoundHint:
+    'MCP PATH에 터미널 PATH를 저장하거나 "{command}"를 절대경로로 설정하세요. macOS에서 Obsidian을 GUI로 실행하면 npx/uvx 같은 명령을 찾지 못할 수 있습니다.',
 
   // MCP
   mcpCommand: '명령어',
@@ -752,7 +758,11 @@ const en: I18nKeys = {
   mcpPathFetching: 'Fetching...',
   mcpPathFetchSuccess: 'Terminal PATH fetched successfully',
   mcpPathFetchError: 'Failed to fetch terminal PATH',
+  mcpPathFetchErrorHelp:
+    'If automatic detection fails, paste the output of printenv PATH manually or use an absolute path for the MCP command.',
   mcpPathPlaceholder: 'e.g., /usr/local/bin:/usr/bin:/bin',
+  mcpPathCommandNotFoundHint:
+    'Save your terminal PATH in MCP PATH or set "{command}" to an absolute path. When Obsidian is launched from the macOS GUI, commands such as npx/uvx may not be visible.',
 
   // MCP
   mcpCommand: 'Command',
