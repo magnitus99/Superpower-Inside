@@ -2,14 +2,38 @@ import type { TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
 import {
-  getEffectiveExcludePaths,
-  getMarkdownFilesFiltered,
-  isExcluded,
+  getRagCandidateFiles,
+  isExcludedPath,
   isExcludedExt,
+  isRagIndexableFile,
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
+
+export class IndexingCancelledError extends Error {
+  constructor() {
+    super('RAG indexing cancelled');
+    this.name = 'IndexingCancelledError';
+  }
+}
+
+export interface IndexingOptions {
+  signal?: AbortSignal;
+}
+
+export function isIndexingCancelledError(error: unknown): boolean {
+  return (
+    error instanceof IndexingCancelledError ||
+    (error instanceof DOMException && error.name === 'AbortError')
+  );
+}
+
+function throwIfIndexingCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new IndexingCancelledError();
+  }
+}
 
 export interface Chunk {
   text: string;
@@ -106,6 +130,58 @@ export function chunkMarkdown(content: string, maxChunkSize: number): Chunk[] {
   return chunks;
 }
 
+/** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
+export function chunkPlainText(content: string, maxChunkSize: number): Chunk[] {
+  const lines = content.split('\n');
+  const chunks: Chunk[] = [];
+  let currentLines: string[] = [];
+  let startLine = 0;
+
+  const flush = (endLine: number): void => {
+    const text = currentLines.join('\n').trim();
+    if (!text) return;
+    chunks.push({
+      text,
+      metadata: {
+        filePath: '',
+        startLine,
+        endLine,
+      },
+    });
+    currentLines = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    currentLines.push(lines[i]);
+    const chunkText = currentLines.join('\n');
+    if (chunkText.length < maxChunkSize) continue;
+
+    const lastBlankLine = currentLines
+      .map((line, index) => ({ line, index }))
+      .filter((item) => item.line.trim() === '')
+      .at(-1)?.index;
+
+    if (lastBlankLine !== undefined && lastBlankLine > 0) {
+      const part = currentLines.slice(0, lastBlankLine + 1);
+      const rest = currentLines.slice(lastBlankLine + 1);
+      currentLines = part;
+      flush(i - rest.length);
+      currentLines = rest;
+      startLine = i - rest.length + 1;
+      continue;
+    }
+
+    flush(i);
+    startLine = i + 1;
+  }
+
+  if (currentLines.length > 0) {
+    flush(lines.length - 1);
+  }
+
+  return chunks;
+}
+
 /** 볼트 인덱서 */
 export class VaultIndexer {
   private vault: Vault;
@@ -129,30 +205,39 @@ export class VaultIndexer {
     this.ragConfig = ragConfig;
   }
 
-  async indexVault(): Promise<number> {
-    const effectiveExcludePaths = getEffectiveExcludePaths(this.ragConfig, this.chatConfig);
-    const files = getMarkdownFilesFiltered(this.vault, effectiveExcludePaths).filter(
-      (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
-    );
+  async indexVault(options: IndexingOptions = {}): Promise<number> {
+    throwIfIndexingCancelled(options.signal);
+    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
+    throwIfIndexingCancelled(options.signal);
 
     let indexed = 0;
     for (const file of files) {
-      await this.indexFile(file);
+      throwIfIndexingCancelled(options.signal);
+      await this.indexFile(file, options);
+      throwIfIndexingCancelled(options.signal);
       indexed++;
     }
     return indexed;
   }
 
-  async indexFile(file: TFile): Promise<void> {
+  async indexFile(file: TFile, options: IndexingOptions = {}): Promise<void> {
+    throwIfIndexingCancelled(options.signal);
     const content = await this.vault.cachedRead(file);
-    const chunks = chunkMarkdown(content, this.ragConfig.chunkSize);
+    throwIfIndexingCancelled(options.signal);
+    const chunks =
+      file.extension.toLowerCase() === 'md'
+        ? chunkMarkdown(content, this.ragConfig.chunkSize)
+        : chunkPlainText(content, this.ragConfig.chunkSize);
+    throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
       await this.vectorStore.removeByFilePath(file.path);
+      throwIfIndexingCancelled(options.signal);
       return;
     }
 
     const texts = chunks.map((c) => c.text);
-    const vectors = await this.embeddingProvider.embedBatch(texts);
+    const vectors = await this.embeddingProvider.embedBatch(texts, { signal: options.signal });
+    throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
       id: `${file.path}::${chunk.metadata.startLine}`,
@@ -170,27 +255,33 @@ export class VaultIndexer {
     }));
 
     await this.vectorStore.removeByFilePath(file.path);
+    throwIfIndexingCancelled(options.signal);
     await this.vectorStore.add(entries);
+    throwIfIndexingCancelled(options.signal);
 
     if (this.bm25Index) {
       this.bm25Index.removeDocument(file.path);
       if (content.trim()) {
         this.bm25Index.addDocument(file.path, content);
         await this.bm25Index.persist();
+        throwIfIndexingCancelled(options.signal);
       }
     }
   }
 
-  async reindexAll(): Promise<number> {
+  async reindexAll(options: IndexingOptions = {}): Promise<number> {
+    throwIfIndexingCancelled(options.signal);
     await this.vectorStore.clear();
-    return this.indexVault();
+    throwIfIndexingCancelled(options.signal);
+    return this.indexVault(options);
   }
 
-  async indexPending(): Promise<{ indexed: number; skipped: number; documents: string[] }> {
-    const effectiveExcludePaths = getEffectiveExcludePaths(this.ragConfig, this.chatConfig);
-    const files = getMarkdownFilesFiltered(this.vault, effectiveExcludePaths).filter(
-      (f) => !isExcludedExt(f.path, this.ragConfig.excludeExts),
-    );
+  async indexPending(
+    options: IndexingOptions = {},
+  ): Promise<{ indexed: number; skipped: number; documents: string[] }> {
+    throwIfIndexingCancelled(options.signal);
+    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
+    throwIfIndexingCancelled(options.signal);
     const filesByPath = new Map(files.map((file) => [file.path, file]));
     const status = await calculateRagStatus(
       this.vault,
@@ -198,6 +289,7 @@ export class VaultIndexer {
       this.ragConfig,
       this.chatConfig,
     );
+    throwIfIndexingCancelled(options.signal);
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
 
     let indexed = 0;
@@ -205,6 +297,7 @@ export class VaultIndexer {
     const documents: string[] = [];
 
     for (const file of files) {
+      throwIfIndexingCancelled(options.signal);
       if (!updatePaths.has(file.path)) {
         skipped++;
         continue;
@@ -214,7 +307,8 @@ export class VaultIndexer {
         skipped++;
         continue;
       }
-      await this.indexFile(targetFile);
+      await this.indexFile(targetFile, options);
+      throwIfIndexingCancelled(options.signal);
       indexed++;
       documents.push(file.path);
     }
@@ -223,15 +317,23 @@ export class VaultIndexer {
   }
 }
 
-function shouldIndexMarkdownPath(
+function shouldConsiderRagPath(
   filePath: string,
   excludePaths: string[],
   excludeExts: string[],
 ): boolean {
+  return !isExcludedPath(filePath, excludePaths) && !isExcludedExt(filePath, excludeExts);
+}
+
+async function shouldIndexRagFile(
+  vault: Vault,
+  file: TFile,
+  excludePaths: string[],
+  excludeExts: string[],
+): Promise<boolean> {
   return (
-    filePath.endsWith('.md') &&
-    !isExcluded(filePath, excludePaths) &&
-    !isExcludedExt(filePath, excludeExts)
+    shouldConsiderRagPath(file.path, excludePaths, excludeExts) &&
+    isRagIndexableFile(vault, file)
   );
 }
 
@@ -247,7 +349,7 @@ export function registerModifyEvent(
     if (!(file instanceof Object)) return;
     if (!('path' in file)) return;
     const f = file as TFile;
-    if (!shouldIndexMarkdownPath(f.path, excludePaths, excludeExts)) return;
+    if (!(await shouldIndexRagFile(vault, f, excludePaths, excludeExts))) return;
     await indexer.indexFile(f);
     onComplete?.(f);
   });
@@ -265,7 +367,7 @@ export function registerDeleteEvent(
   const ref = vault.on('delete', async (file) => {
     if (!('path' in file)) return;
     const filePath = (file as { path: string }).path;
-    if (!shouldIndexMarkdownPath(filePath, excludePaths, excludeExts)) return;
+    if (!shouldConsiderRagPath(filePath, excludePaths, excludeExts)) return;
     const removed = await vectorStore.removeByFilePath(filePath);
     if (removed > 0) {
       onComplete?.(filePath);
@@ -287,12 +389,12 @@ export function registerRenameEvent(
     if (!(file instanceof Object) || !('path' in file)) return;
     const f = file as TFile;
     const newPath = f.path;
-    const oldWasIndexable = shouldIndexMarkdownPath(oldPath, excludePaths, excludeExts);
-    const newIsIndexable = shouldIndexMarkdownPath(newPath, excludePaths, excludeExts);
+    const oldWasIndexable = shouldConsiderRagPath(oldPath, excludePaths, excludeExts);
+    const newIsIndexable = await shouldIndexRagFile(vault, f, excludePaths, excludeExts);
     let changed = false;
     if (oldWasIndexable) {
-      await vectorStore.removeByFilePath(oldPath);
-      changed = true;
+      const removed = await vectorStore.removeByFilePath(oldPath);
+      changed = removed > 0;
     }
     if (newIsIndexable) {
       await indexer.indexFile(f);

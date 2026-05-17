@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { ChatConfig, RAGConfig } from '../settings';
 import {
+  IndexingCancelledError,
   registerDeleteEvent,
   registerModifyEvent,
   registerRenameEvent,
@@ -76,6 +77,60 @@ describe('VaultIndexer.indexPending', () => {
     expect(result.skipped).toBe(1);
     expect(result.documents).toEqual([]);
   });
+
+  it('마크다운 외 텍스트 파일도 인덱싱한다', async () => {
+    const source = createFile('src/main.ts', 1000, 10);
+    const note = createFile('notes.txt', 1000, 10);
+    const vault = createVault(
+      [source, note],
+      new Map([
+        ['src/main.ts', 'const value = 1;'],
+        ['notes.txt', 'plain text'],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
+
+    const count = await indexer.indexVault();
+
+    expect(count).toBe(2);
+    expect(await store.getIndexedFilePaths()).toEqual(['src/main.ts', 'notes.txt']);
+  });
+
+  it('이미 취소된 signal이면 대기 문서를 인덱싱하지 않는다', async () => {
+    const file = createFile('missing.md', 1000, 10);
+    const vault = createVault([file], new Map([['missing.md', 'content']]));
+    const store = new MemoryVectorStore();
+    const provider = createEmbeddingProvider();
+    const indexer = new VaultIndexer(vault, store, provider, ragConfig, chatConfig);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(indexer.indexPending({ signal: controller.signal })).rejects.toBeInstanceOf(
+      IndexingCancelledError,
+    );
+    expect(await store.getIndexedFilePaths()).toEqual([]);
+  });
+
+  it('임베딩 호출 중 취소되면 전용 취소 오류로 전파한다', async () => {
+    const file = createFile('missing.md', 1000, 10);
+    const vault = createVault([file], new Map([['missing.md', 'content']]));
+    const store = new MemoryVectorStore();
+    const controller = new AbortController();
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: () => {
+        controller.abort();
+        return Promise.resolve([[1, 0]]);
+      },
+    };
+    const indexer = new VaultIndexer(vault, store, provider, ragConfig, chatConfig);
+
+    await expect(indexer.indexPending({ signal: controller.signal })).rejects.toBeInstanceOf(
+      IndexingCancelledError,
+    );
+    expect(await store.getIndexedFilePaths()).toEqual([]);
+  });
 });
 
 describe('RAG 자동 업데이트 이벤트 제외 정책', () => {
@@ -85,6 +140,30 @@ describe('RAG 자동 업데이트 이벤트 제외 정책', () => {
     const indexFile = vi.fn(() => Promise.resolve());
     const indexer = { indexFile } as unknown as VaultIndexer;
     registerModifyEvent(vault, indexer, [], ['md']);
+
+    await vault.emitVault('modify', file);
+
+    expect(indexFile).not.toHaveBeenCalled();
+  });
+
+  it('modify 이벤트는 Markdown 외 텍스트 파일을 인덱싱한다', async () => {
+    const file = createFile('src/main.ts', 1000, 10);
+    const vault = createEventVault();
+    const indexFile = vi.fn(() => Promise.resolve());
+    const indexer = { indexFile } as unknown as VaultIndexer;
+    registerModifyEvent(vault, indexer, [], []);
+
+    await vault.emitVault('modify', file);
+
+    expect(indexFile).toHaveBeenCalledWith(file);
+  });
+
+  it('modify 이벤트는 제외 확장자에 포함된 비Markdown 파일을 인덱싱하지 않는다', async () => {
+    const file = createFile('src/main.ts', 1000, 10);
+    const vault = createEventVault();
+    const indexFile = vi.fn(() => Promise.resolve());
+    const indexer = { indexFile } as unknown as VaultIndexer;
+    registerModifyEvent(vault, indexer, [], ['ts']);
 
     await vault.emitVault('modify', file);
 
@@ -142,6 +221,7 @@ function createFile(path: string, mtime: number, size: number): TFile {
 function createVault(files: TFile[], contents: Map<string, string>): Vault {
   return {
     getMarkdownFiles: () => files,
+    getFiles: () => files,
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
   } as unknown as Vault;
 }
@@ -156,6 +236,7 @@ interface EventVault extends Vault {
 function createEventVault(): EventVault {
   const handlers = new Map<VaultEvent, EventHandler[]>();
   const vault = {
+    cachedRead: (file: TFile) => Promise.resolve(`${file.path} content`),
     on: (event: VaultEvent, callback: EventHandler) => {
       handlers.set(event, [...(handlers.get(event) ?? []), callback]);
       return { event, callback };

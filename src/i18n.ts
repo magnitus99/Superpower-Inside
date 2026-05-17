@@ -61,6 +61,13 @@ export interface I18nKeys {
   pendingFilesDesc: string;
   totalVectors: string;
   totalVectorsDesc: string;
+  targetFileTypes: string;
+  targetFileTypesDesc: string;
+  targetFileTypesEmpty: string;
+  excludeRecommendations: string;
+  excludeRecommendationEmpty: string;
+  addExcludeExtension: string;
+  addExcludeExtensionDone: string;
   refresh: string;
   loadStatsFailed: string;
   enableProviderFirst: string;
@@ -340,13 +347,20 @@ const ko: I18nKeys = {
   // RAG Stats
   indexStats: '인덱스 통계',
   totalFiles: '전체 파일',
-  totalFilesDesc: '볼트 내 마크다운 파일 수',
+  totalFilesDesc: '현재 설정 기준 RAG 대상 파일 수',
   indexedFiles: '인덱싱 완료',
   indexedFilesDesc: '임베딩 처리된 파일 수',
   pendingFiles: '대기 중',
   pendingFilesDesc: '아직 인덱싱되지 않은 파일 수',
   totalVectors: '전체 벡터',
   totalVectorsDesc: '저장된 임베딩 벡터 개수',
+  targetFileTypes: '대상 파일 형식',
+  targetFileTypesDesc: '현재 설정 기준으로 RAG 후보인 파일 형식과 파일 수입니다.',
+  targetFileTypesEmpty: '현재 설정 기준으로 RAG 대상 파일이 없습니다.',
+  excludeRecommendations: '제외 추천',
+  excludeRecommendationEmpty: '추가로 제외할 파일 형식 추천이 없습니다.',
+  addExcludeExtension: '제외 확장자에 추가',
+  addExcludeExtensionDone: '제외 확장자에 추가했습니다',
   refresh: '새로고침',
   loadStatsFailed: '통계를 불러올 수 없습니다.',
   enableProviderFirst: 'Providers 탭에서 "{provider}"의 Enabled 토글을 켜주세요.',
@@ -406,7 +420,7 @@ const ko: I18nKeys = {
   excludeChatFolder: '채팅 저장 폴더 RAG 제외',
   excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
   chunkSize: '청크 크기',
-  chunkSizeDesc: '마크다운 청크당 최대 문자 수 (100~5000)',
+  chunkSizeDesc: '문서 청크당 최대 문자 수 (100~5000)',
   vectorStoreType: '벡터 저장소 유형',
   vectorStoreTypeDesc:
     'JSON File은 볼트 내부 JSON 파일에 저장되어 동기화/백업이 쉽지만 대용량 벡터에서는 파일 쓰기와 충돌 부담이 큽니다. IndexedDB는 로컬 브라우저 DB라 대용량 구조화 데이터에 적합하지만 장치별 로컬 데이터라 자동 동기화되지 않습니다.',
@@ -639,13 +653,20 @@ const en: I18nKeys = {
   // RAG Stats
   indexStats: 'Index Statistics',
   totalFiles: 'Total Files',
-  totalFilesDesc: 'Markdown files in vault',
+  totalFilesDesc: 'Files currently eligible for RAG',
   indexedFiles: 'Indexed',
   indexedFilesDesc: 'Files with embeddings',
   pendingFiles: 'Pending',
   pendingFilesDesc: 'Files not yet indexed',
   totalVectors: 'Total Vectors',
   totalVectorsDesc: 'Stored embedding vectors',
+  targetFileTypes: 'Target File Types',
+  targetFileTypesDesc: 'File types and counts currently eligible for RAG.',
+  targetFileTypesEmpty: 'No files are currently eligible for RAG.',
+  excludeRecommendations: 'Exclude Recommendations',
+  excludeRecommendationEmpty: 'No additional file types are recommended for exclusion.',
+  addExcludeExtension: 'Add to excluded extensions',
+  addExcludeExtensionDone: 'Added to excluded extensions',
   refresh: 'Refresh',
   loadStatsFailed: 'Unable to load statistics.',
   enableProviderFirst: 'Please enable "{provider}" in the Providers tab.',
@@ -706,7 +727,7 @@ const en: I18nKeys = {
   excludeChatFolder: 'Exclude Chat Folder from RAG',
   excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
   chunkSize: 'Chunk Size',
-  chunkSizeDesc: 'Maximum characters per markdown chunk (100–5000)',
+  chunkSizeDesc: 'Maximum characters per document chunk (100–5000)',
   vectorStoreType: 'Vector Store Type',
   vectorStoreTypeDesc:
     'JSON File stores vectors in vault JSON, making sync and backups easy but large vector files can be slow and conflict-prone. IndexedDB stores vectors in the local browser DB, better for large structured data but device-local and not automatically synced.',

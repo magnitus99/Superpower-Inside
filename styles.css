@@ -488,6 +488,86 @@
   margin-top: 2px;
 }
 
+.superpower-inside-rag-file-types-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.superpower-inside-rag-file-types-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 4px;
+}
+
+.superpower-inside-rag-file-types {
+  margin-top: 12px;
+}
+
+.superpower-inside-rag-file-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.superpower-inside-rag-file-type-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px;
+  background-color: var(--background-primary-alt);
+}
+
+.superpower-inside-rag-file-type-label {
+  color: var(--text-normal);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-rag-file-type-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 4px;
+}
+
+.superpower-inside-rag-recommendations {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.superpower-inside-rag-recommendations-title {
+  color: var(--text-normal);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.superpower-inside-rag-recommendation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 8px;
+}
+
+.superpower-inside-rag-recommendation-label {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.superpower-inside-rag-recommendation-reason {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 3px;
+}
+
+.superpower-inside-rag-recommendation-add {
+  white-space: nowrap;
+}
+
 .superpower-inside-rag-update-list {
   display: flex;
   flex-direction: column;

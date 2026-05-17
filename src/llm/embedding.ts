@@ -30,8 +30,18 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 export interface EmbeddingProvider {
-  embed(text: string): Promise<number[]>;
-  embedBatch(texts: string[]): Promise<number[][]>;
+  embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
+  embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]>;
+}
+
+export interface EmbeddingOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Embedding request cancelled', 'AbortError');
+  }
 }
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
@@ -49,14 +59,16 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     this.model = model;
   }
 
-  async embed(text: string): Promise<number[]> {
-    const results = await this.embedBatch([text]);
+  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    const results = await this.embedBatch([text], options);
     return results[0];
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    throwIfAborted(options?.signal);
     const res = await fetch(`${this.baseUrl}/v1/embeddings`, {
       method: 'POST',
+      signal: options?.signal,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
@@ -67,6 +79,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         encoding_format: 'float',
       }),
     });
+    throwIfAborted(options?.signal);
     if (!res.ok) {
       throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
     }
@@ -95,12 +108,13 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.apiKey = apiKey;
   }
 
-  async embed(text: string): Promise<number[]> {
-    const results = await this.embedBatch([text]);
+  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    const results = await this.embedBatch([text], options);
     return results[0];
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    throwIfAborted(options?.signal);
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) {
       headers.Authorization = `Bearer ${this.apiKey}`;
@@ -111,6 +125,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       headers,
       body: JSON.stringify({ model: this.model, input: texts }),
     });
+    throwIfAborted(options?.signal);
     if (res.status >= 400) {
       throw new Error(`Ollama embedding failed: ${res.status} ${res.text}`);
     }
@@ -137,27 +152,33 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     return sha256Hex(`${this.modelName}::${text}`);
   }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    throwIfAborted(options?.signal);
     const hash = await this.computeHash(text);
+    throwIfAborted(options?.signal);
     const mem = this.memoryCache.get(hash);
     if (mem) return mem;
 
     const cached = await db.embeddings.where('textHash').equals(hash).first();
+    throwIfAborted(options?.signal);
     if (cached) {
       this.memoryCache.set(hash, cached.vector);
       return cached.vector;
     }
 
-    const vector = await this.inner.embed(text);
+    const vector = await this.inner.embed(text, options);
+    throwIfAborted(options?.signal);
     this.memoryCache.set(hash, vector);
     await db.embeddings.put({ id: hash, textHash: hash, vector, updated: Date.now() });
     return vector;
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    throwIfAborted(options?.signal);
     const hashes: string[] = [];
     for (const t of texts) {
       hashes.push(await this.computeHash(t));
+      throwIfAborted(options?.signal);
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];
     const missingIndices: number[] = [];
@@ -171,6 +192,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         continue;
       }
       const cached = await db.embeddings.where('textHash').equals(hash).first();
+      throwIfAborted(options?.signal);
       if (cached) {
         this.memoryCache.set(hash, cached.vector);
         results[i] = cached.vector;
@@ -181,7 +203,8 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     }
 
     if (missingTexts.length > 0) {
-      const newVectors = await this.inner.embedBatch(missingTexts);
+      const newVectors = await this.inner.embedBatch(missingTexts, options);
+      throwIfAborted(options?.signal);
       const now = Date.now();
       for (let j = 0; j < missingTexts.length; j++) {
         const originalIdx = missingIndices[j];
@@ -190,6 +213,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         results[originalIdx] = vector;
         this.memoryCache.set(hash, vector);
         await db.embeddings.put({ id: hash, textHash: hash, vector, updated: now });
+        throwIfAborted(options?.signal);
       }
     }
 

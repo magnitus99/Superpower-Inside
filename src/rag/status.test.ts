@@ -91,6 +91,25 @@ describe('calculateRagStatus', () => {
     expect(status.updateRequiredDocuments.map((document) => document.path)).toEqual(['included.md']);
   });
 
+  it('마크다운 외 텍스트 파일도 상태 계산 대상에 포함한다', async () => {
+    const vault = createVault([
+      createFile('included.md', 1000, 10),
+      createFile('src/main.ts', 1000, 10),
+      createFile('notes.txt', 1000, 10),
+    ]);
+    const store = new MemoryVectorStore();
+
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
+
+    expect(status.totalDocuments).toBe(3);
+    expect(status.missingDocuments).toBe(3);
+    expect(status.updateRequiredDocuments.map((document) => document.path)).toEqual([
+      'included.md',
+      'notes.txt',
+      'src/main.ts',
+    ]);
+  });
+
   it('채팅 저장 폴더 제외 옵션이 켜져 있으면 저장 폴더명을 기준으로 제외한다', async () => {
     const vault = createVault([
       createFile('included.md', 1000, 10),
@@ -132,6 +151,8 @@ function createFile(path: string, mtime: number, size: number): TFile {
 function createVault(files: TFile[]): Vault {
   return {
     getMarkdownFiles: () => files,
+    getFiles: () => files,
+    cachedRead: (file: TFile) => Promise.resolve(`${file.path} content`),
   } as unknown as Vault;
 }
 

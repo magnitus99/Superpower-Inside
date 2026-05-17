@@ -27,6 +27,7 @@ import {
   registerModifyEvent,
   registerDeleteEvent,
   registerRenameEvent,
+  isIndexingCancelledError,
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
@@ -60,6 +61,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private deleteCleanup: (() => void) | null = null;
   private renameCleanup: (() => void) | null = null;
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  private ragIndexAbortController: AbortController | null = null;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
@@ -118,11 +120,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
           new Notice(reason);
           return;
         }
-        new Notice('볼트 인덱싱 시작...');
+        if (this.isRagIndexing()) return;
         try {
-          const count = await this.vaultIndexer.reindexAll();
-          new Notice(`${count}개 파일 인덱싱 완료`);
+          const status = this.vectorStore
+            ? await calculateRagStatus(
+                this.app.vault,
+                this.vectorStore,
+                this.settings.rag,
+                this.settings.chat,
+              )
+            : null;
+          if (!status || status.totalDocuments === 0) return;
+          new Notice('볼트 인덱싱 시작...');
+          const count = await this.runRagIndexing((signal) =>
+            this.vaultIndexer!.reindexAll({ signal }),
+          );
+          if (count !== null) {
+            new Notice(`${count}개 파일 인덱싱 완료`);
+          }
         } catch (err) {
+          if (isIndexingCancelledError(err)) {
+            new Notice('인덱싱이 중단되었습니다.');
+            return;
+          }
           const msg = err instanceof Error ? err.message : String(err);
           new Notice(`인덱싱 실패: ${msg}`);
         }
@@ -134,6 +154,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   onunload(): void {
+    this.cancelRagIndexing();
     this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
@@ -144,6 +165,40 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
+  }
+
+  isRagIndexing(): boolean {
+    return this.ragIndexAbortController !== null;
+  }
+
+  cancelRagIndexing(): void {
+    this.ragIndexAbortController?.abort();
+  }
+
+  async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
+    if (this.ragIndexAbortController) {
+      return null;
+    }
+    const controller = new AbortController();
+    this.ragIndexAbortController = controller;
+    this.refreshRagSettingsView();
+    try {
+      return await operation(controller.signal);
+    } finally {
+      if (this.ragIndexAbortController === controller) {
+        this.ragIndexAbortController = null;
+      }
+      this.refreshRagSettingsView();
+    }
+  }
+
+  refreshRagSettingsView(): void {
+    const appWithSetting = this.app as unknown as {
+      setting?: { activeTab?: { refreshStats?(): void } };
+    };
+    if (appWithSetting.setting?.activeTab?.refreshStats) {
+      appWithSetting.setting.activeTab.refreshStats();
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -512,6 +567,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private clearRAG(): void {
+    this.cancelRagIndexing();
     this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
@@ -589,6 +645,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async autoIndex(): Promise<void> {
     if (!this.vaultIndexer || !this.vectorStore) return;
+    if (this.isRagIndexing()) return;
     try {
       const status = await calculateRagStatus(
         this.app.vault,
@@ -600,12 +657,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
         return;
       }
       new Notice(t('autoUpdateIndexingStarted'));
-      const result = await this.vaultIndexer.indexPending();
+      const result = await this.runRagIndexing((signal) =>
+        this.vaultIndexer!.indexPending({ signal }),
+      );
+      if (!result) return;
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
       void this.refreshStats();
     } catch (err) {
+      if (isIndexingCancelledError(err)) {
+        new Notice('인덱싱이 중단되었습니다.');
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     }

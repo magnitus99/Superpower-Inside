@@ -1,6 +1,6 @@
 import type { TFile, Vault } from 'obsidian';
 import type { RAGConfig, ChatConfig } from '../settings';
-import { getEffectiveExcludePaths, getMarkdownFilesFiltered, isExcludedExt } from '../utils/vault';
+import { getRagCandidateFiles } from '../utils/vault';
 import type { VectorEntry, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
@@ -30,17 +30,12 @@ interface FileIndexState {
   reason: string;
 }
 
-export async function getIncludedMarkdownFiles(
+export async function getIncludedRagFiles(
   vault: Vault,
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
 ): Promise<TFile[]> {
-  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
-  return Promise.resolve(
-    getMarkdownFilesFiltered(vault, effectiveExcludePaths).filter(
-      (file) => !isExcludedExt(file.path, ragConfig.excludeExts),
-    ),
-  );
+  return getRagCandidateFiles(vault, ragConfig, chatConfig);
 }
 
 export async function calculateRagStatus(
@@ -49,8 +44,8 @@ export async function calculateRagStatus(
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
 ): Promise<RagStatusSummary> {
-  const includedFiles = await getIncludedMarkdownFiles(vault, ragConfig, chatConfig);
-  const allMarkdownFiles = vault.getMarkdownFiles();
+  const includedFiles = await getIncludedRagFiles(vault, ragConfig, chatConfig);
+  const allFiles = vault.getFiles();
   const entries = await vectorStore.getEntries();
   const entriesByPath = groupEntriesByPath(entries);
 
@@ -92,7 +87,7 @@ export async function calculateRagStatus(
     missingDocuments,
     staleDocuments,
     unknownDocuments,
-    excludedDocuments: Math.max(0, allMarkdownFiles.length - includedFiles.length),
+    excludedDocuments: Math.max(0, allFiles.length - includedFiles.length),
     totalVectors: entries.length,
     lastCalculatedAt: Date.now(),
     updateRequiredDocuments,
