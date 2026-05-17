@@ -131,7 +131,9 @@ npm run build
 - GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
 - 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
 - `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
-- 기본 브랜치의 `manifest.json`이 커뮤니티 제출 시스템의 기준이다. 릴리스 태그만 만들지 말고, 릴리스 버전 변경을 기본 브랜치에 PR/merge까지 반영한다.
+- Obsidian 플러그인 스토어 출시와 업데이트는 별도 릴리스 브랜치나 PR 브랜치를 만들지 않고 `main` 브랜치에서 직접 준비한다.
+- 커뮤니티 제출 시스템은 기본 브랜치의 `manifest.json`과 동일 버전 GitHub Release 태그를 기준으로 삼는다. 따라서 릴리스 버전 변경은 `main`에 커밋하고, 버전명과 완전히 같은 태그만 생성해 관리한다.
+- 출시 이력과 업데이트 관리는 브랜치가 아니라 태그로만 추적한다. 예: `1.0.0`, `1.0.1`, `1.1.0`.
 
 ## CONVENTIONS
 
@@ -174,7 +176,7 @@ npm run format     # Prettier --write src/ main.ts
 ```fish
 ./scripts/setup-dev.fish             # .test-vault 생성, 플러그인 심링크, hot-reload 설치
 ./scripts/launch-obsidian-debug.fish # macOS Obsidian 디버그 실행, remote debugging port 9222
-./scripts/bump-version.fish patch    # manifest/package/versions 버전, build, commit, tag, push
+./scripts/bump-version.fish patch    # main에서 manifest/package/versions 버전, build, commit, tag, push
 ```
 
 ## NOTES
