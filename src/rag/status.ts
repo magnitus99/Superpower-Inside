@@ -2,6 +2,7 @@ import type { TFile, Vault } from 'obsidian';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
 import type { VectorEntry, VectorStore } from './store';
+import { createContentHash } from './hash';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
 
@@ -56,7 +57,12 @@ export async function calculateRagStatus(
   let unknownDocuments = 0;
 
   for (const file of includedFiles) {
-    const state = getFileIndexState(file, entriesByPath.get(file.path) ?? [], ragConfig);
+    const state = await getFileIndexState(
+      vault,
+      file,
+      entriesByPath.get(file.path) ?? [],
+      ragConfig,
+    );
     if (state.status === 'healthy') {
       healthyDocuments++;
       continue;
@@ -108,11 +114,12 @@ function groupEntriesByPath(entries: VectorEntry[]): Map<string, VectorEntry[]> 
   return grouped;
 }
 
-function getFileIndexState(
+async function getFileIndexState(
+  vault: Vault,
   file: TFile,
   entries: VectorEntry[],
   ragConfig: RAGConfig,
-): FileIndexState {
+): Promise<FileIndexState> {
   if (entries.length === 0) {
     return { status: 'missing', reason: '아직 인덱싱되지 않았습니다.' };
   }
@@ -121,6 +128,9 @@ function getFileIndexState(
     (entry) =>
       typeof entry.metadata.sourceMtime !== 'number' ||
       typeof entry.metadata.sourceSize !== 'number' ||
+      typeof entry.metadata.contentHash !== 'string' ||
+      typeof entry.metadata.indexedAt !== 'number' ||
+      typeof entry.metadata.endLine !== 'number' ||
       typeof entry.metadata.embeddingProvider !== 'string' ||
       typeof entry.metadata.embeddingModel !== 'string',
   );
@@ -133,10 +143,18 @@ function getFileIndexState(
 
   const hasDifferentSource = entries.some(
     (entry) =>
-      entry.metadata.sourceMtime !== file.stat.mtime || entry.metadata.sourceSize !== file.stat.size,
+      entry.metadata.sourceMtime !== file.stat.mtime ||
+      entry.metadata.sourceSize !== file.stat.size,
   );
   if (hasDifferentSource) {
     return { status: 'stale', reason: '파일이 마지막 인덱싱 이후 수정되었습니다.' };
+  }
+
+  const content = await vault.cachedRead(file);
+  const currentHash = createContentHash(content);
+  const hasDifferentHash = entries.some((entry) => entry.metadata.contentHash !== currentHash);
+  if (hasDifferentHash) {
+    return { status: 'stale', reason: '파일 내용 해시가 마지막 인덱싱 이후 달라졌습니다.' };
   }
 
   const hasDifferentEmbedding = entries.some(

@@ -9,9 +9,12 @@ export interface VectorEntry {
     filePath: string;
     heading?: string;
     startLine: number;
+    endLine?: number;
     text: string;
     sourceMtime?: number;
     sourceSize?: number;
+    contentHash?: string;
+    indexedAt?: number;
     embeddingProvider?: string;
     embeddingModel?: string;
   };

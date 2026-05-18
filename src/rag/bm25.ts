@@ -14,7 +14,7 @@ interface BM25Data {
 
 export function tokenize(text: string): string[] {
   const tokens: string[] = [];
-  const parts = text.split(/[\s,.!?;:()[\]]{}"'「」『』【】《》]+/);
+  const parts = text.split(/[\s,.!?;:()[\]{}"'「」『』【】《》]+/u);
   for (const part of parts) {
     const trimmed = part.trim();
     if (!trimmed) continue;
@@ -107,7 +107,8 @@ export class JsonFileBM25Index {
 
       for (const [docId, tf] of Object.entries(posting)) {
         const docLen = this.data.docLengths[docId] ?? 1;
-        const score = idf * ((tf * (K1 + 1)) / (tf + K1 * (1 - B + B * (docLen / this.data.avgDocLength))));
+        const score =
+          idf * ((tf * (K1 + 1)) / (tf + K1 * (1 - B + B * (docLen / this.data.avgDocLength))));
         scores.set(docId, (scores.get(docId) ?? 0) + score);
       }
     }

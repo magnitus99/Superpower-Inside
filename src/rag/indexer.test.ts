@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { ChatConfig, RAGConfig } from '../settings';
 import {
+  chunkMarkdown,
   IndexingCancelledError,
   registerDeleteEvent,
   registerModifyEvent,
   registerRenameEvent,
   VaultIndexer,
 } from './indexer';
+import { createContentHash } from './hash';
 import { MemoryVectorStore, type VectorEntry, type VectorStore } from './store';
 
 const ragConfig: RAGConfig = {
@@ -38,6 +40,44 @@ const chatConfig: ChatConfig = {
 };
 
 describe('VaultIndexer.indexPending', () => {
+  it('청크 overlap은 다음 청크 앞에 이전 줄 일부를 포함한다', () => {
+    const chunks = chunkMarkdown('첫 줄\n\n두 번째 줄\n\n세 번째 줄', 8, 6);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[1].text).toContain('두 번째 줄');
+  });
+
+  it('인덱싱 메타데이터에 endLine, contentHash, indexedAt과 검색 힌트를 저장한다', async () => {
+    const file = createFile('Notes/Topic.md', 1000, 'content'.length);
+    const vault = createVault([file], new Map([['Notes/Topic.md', '# Heading\ncontent']]));
+    const store = new MemoryVectorStore();
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      createEmbeddingProvider(),
+      ragConfig,
+      chatConfig,
+    );
+
+    await indexer.indexFile(file);
+
+    const entries = await store.getEntries();
+    expect(entries[0].metadata).toEqual(
+      expect.objectContaining({
+        filePath: 'Notes/Topic.md',
+        heading: 'Heading',
+        startLine: 0,
+        endLine: 1,
+        contentHash: createContentHash('# Heading\ncontent'),
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      }),
+    );
+    expect(entries[0].metadata.indexedAt).toEqual(expect.any(Number));
+    expect(entries[0].metadata.text).toContain('File: Notes/Topic.md');
+    expect(entries[0].metadata.text).toContain('Heading: Heading');
+  });
+
   it('missing 문서와 stale 문서만 인덱싱한다', async () => {
     const fresh = createFile('fresh.md', 1000, 10);
     const stale = createFile('stale.md', 2000, 20);
@@ -51,11 +91,14 @@ describe('VaultIndexer.indexPending', () => {
       ]),
     );
     const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('fresh.md', 1000, 10),
-      createEntry('stale.md', 1000, 20),
-    ]);
-    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
+    await store.add([createEntry('fresh.md', 1000, 10), createEntry('stale.md', 1000, 20)]);
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      createEmbeddingProvider(),
+      ragConfig,
+      chatConfig,
+    );
 
     const result = await indexer.indexPending();
 
@@ -69,7 +112,13 @@ describe('VaultIndexer.indexPending', () => {
     const vault = createVault([file], new Map([['fresh.md', 'fresh content']]));
     const store = new MemoryVectorStore();
     await store.add([createEntry('fresh.md', 1000, 10)]);
-    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      createEmbeddingProvider(),
+      ragConfig,
+      chatConfig,
+    );
 
     const result = await indexer.indexPending();
 
@@ -89,7 +138,13 @@ describe('VaultIndexer.indexPending', () => {
       ]),
     );
     const store = new MemoryVectorStore();
-    const indexer = new VaultIndexer(vault, store, createEmbeddingProvider(), ragConfig, chatConfig);
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      createEmbeddingProvider(),
+      ragConfig,
+      chatConfig,
+    );
 
     const count = await indexer.indexVault();
 
@@ -208,7 +263,11 @@ function createFile(path: string, mtime: number, size: number): TFile {
   return {
     path,
     name: path.split('/').pop() ?? path,
-    basename: path.split('/').pop()?.replace(/\.[^.]+$/, '') ?? path,
+    basename:
+      path
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '') ?? path,
     extension: path.split('.').pop() ?? '',
     stat: {
       ctime: mtime,
@@ -259,15 +318,19 @@ function createEmbeddingProvider(): EmbeddingProvider {
 }
 
 function createEntry(path: string, sourceMtime: number, sourceSize: number): VectorEntry {
+  const text = `${path.replace(/\.md$/, '')} content`;
   return {
     id: `${path}::0`,
     vector: [1, 0],
     metadata: {
       filePath: path,
       startLine: 0,
-      text: 'content',
+      endLine: 0,
+      text,
       sourceMtime,
       sourceSize,
+      contentHash: createContentHash(text),
+      indexedAt: 1000,
       embeddingProvider: 'openai',
       embeddingModel: 'text-embedding-3-small',
     },

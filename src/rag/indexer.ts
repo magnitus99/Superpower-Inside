@@ -10,6 +10,7 @@ import {
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
+import { createContentHash } from './hash';
 
 export class IndexingCancelledError extends Error {
   constructor() {
@@ -45,8 +46,38 @@ export interface Chunk {
   };
 }
 
+function applyLineOverlap(chunks: Chunk[], lines: string[], overlapChars: number): Chunk[] {
+  if (overlapChars <= 0 || chunks.length <= 1) return chunks;
+
+  return chunks.map((chunk, index) => {
+    if (index === 0) return chunk;
+    const previous = chunks[index - 1];
+    const overlapLines: string[] = [];
+    let total = 0;
+    for (let line = previous.metadata.endLine; line >= previous.metadata.startLine; line--) {
+      const text = lines[line] ?? '';
+      overlapLines.unshift(text);
+      total += text.length + 1;
+      if (total >= overlapChars) break;
+    }
+    if (overlapLines.length === 0) return chunk;
+    const startLine = Math.max(
+      previous.metadata.startLine,
+      chunk.metadata.startLine - overlapLines.length,
+    );
+    return {
+      ...chunk,
+      text: `${overlapLines.join('\n')}\n${chunk.text}`.trim(),
+      metadata: {
+        ...chunk.metadata,
+        startLine,
+      },
+    };
+  });
+}
+
 /** 마크다운을 헤딩/코드블록/단락을 존중하며 청킹합니다. */
-export function chunkMarkdown(content: string, maxChunkSize: number): Chunk[] {
+export function chunkMarkdown(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
   const lines = content.split('\n');
   const chunks: Chunk[] = [];
   let currentLines: string[] = [];
@@ -127,11 +158,11 @@ export function chunkMarkdown(content: string, maxChunkSize: number): Chunk[] {
     flush(lines.length - 1);
   }
 
-  return chunks;
+  return applyLineOverlap(chunks, lines, overlapChars);
 }
 
 /** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
-export function chunkPlainText(content: string, maxChunkSize: number): Chunk[] {
+export function chunkPlainText(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
   const lines = content.split('\n');
   const chunks: Chunk[] = [];
   let currentLines: string[] = [];
@@ -179,7 +210,15 @@ export function chunkPlainText(content: string, maxChunkSize: number): Chunk[] {
     flush(lines.length - 1);
   }
 
-  return chunks;
+  return applyLineOverlap(chunks, lines, overlapChars);
+}
+
+function buildSearchText(file: TFile, chunk: Chunk): string {
+  const hints = [`File: ${file.path}`, `Title: ${file.basename}`];
+  if (chunk.metadata.heading) {
+    hints.push(`Heading: ${chunk.metadata.heading}`);
+  }
+  return `${hints.join('\n')}\n\n${chunk.text}`;
 }
 
 /** 볼트 인덱서 */
@@ -224,10 +263,12 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const content = await this.vault.cachedRead(file);
     throwIfIndexingCancelled(options.signal);
+    const sourceHash = createContentHash(content);
+    const indexedAt = Date.now();
     const chunks =
       file.extension.toLowerCase() === 'md'
-        ? chunkMarkdown(content, this.ragConfig.chunkSize)
-        : chunkPlainText(content, this.ragConfig.chunkSize);
+        ? chunkMarkdown(content, this.ragConfig.chunkSize, this.ragConfig.overlap)
+        : chunkPlainText(content, this.ragConfig.chunkSize, this.ragConfig.overlap);
     throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
       await this.vectorStore.removeByFilePath(file.path);
@@ -235,7 +276,7 @@ export class VaultIndexer {
       return;
     }
 
-    const texts = chunks.map((c) => c.text);
+    const texts = chunks.map((chunk) => buildSearchText(file, chunk));
     const vectors = await this.embeddingProvider.embedBatch(texts, { signal: options.signal });
     throwIfIndexingCancelled(options.signal);
 
@@ -246,9 +287,12 @@ export class VaultIndexer {
         filePath: file.path,
         heading: chunk.metadata.heading,
         startLine: chunk.metadata.startLine,
-        text: chunk.text,
+        endLine: chunk.metadata.endLine,
+        text: texts[i],
         sourceMtime: file.stat.mtime,
         sourceSize: file.stat.size,
+        contentHash: sourceHash,
+        indexedAt,
         embeddingProvider: this.ragConfig.embeddingProvider,
         embeddingModel: this.ragConfig.embeddingModel,
       },
@@ -332,8 +376,7 @@ async function shouldIndexRagFile(
   excludeExts: string[],
 ): Promise<boolean> {
   return (
-    shouldConsiderRagPath(file.path, excludePaths, excludeExts) &&
-    isRagIndexableFile(vault, file)
+    shouldConsiderRagPath(file.path, excludePaths, excludeExts) && isRagIndexableFile(vault, file)
   );
 }
 
