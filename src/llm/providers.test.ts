@@ -47,6 +47,17 @@ function parseFetchBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unk
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
+function parseRequestUrlBody(): Record<string, unknown> {
+  const call = requestUrlMock.mock.calls[0]?.[0];
+  if (typeof call === 'string' || call === undefined) {
+    throw new Error('requestUrl should be called with RequestUrlParam');
+  }
+  if (typeof call.body !== 'string') {
+    throw new Error('requestUrl body should be a JSON string');
+  }
+  return JSON.parse(call.body) as Record<string, unknown>;
+}
+
 beforeEach(() => {
   requestUrlMock.mockReset();
 });
@@ -248,6 +259,98 @@ describe('OpenAI-compatible chat request body', () => {
     expect(body.stream).toBe(false);
     expect(body.options).toBeUndefined();
     expect(body.think).toBeUndefined();
+  });
+});
+
+describe('Ollama streamChat transport', () => {
+  it('Ollama Cloud 스트리밍은 브라우저 fetch 대신 requestUrl 비스트리밍 요청을 사용한다', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '{"message":{"content":"cloud answer"},"done":true}',
+      json: { message: { content: 'cloud answer' }, done: true },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      'ollamaCloud',
+      { apiKey: 'test-key', enabled: true, models: ['deepseek-v4-pro'] },
+      'deepseek-v4-pro',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.3, [createTool()]);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requestUrlMock).toHaveBeenCalledOnce();
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) {
+      throw new Error('requestUrl should be called with RequestUrlParam');
+    }
+    expect(call.url).toBe('https://ollama.com/api/chat');
+    expect(call.headers).toMatchObject({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer test-key',
+    });
+    const body = parseRequestUrlBody();
+    expect(body).toMatchObject({
+      model: 'deepseek-v4-pro',
+      options: { temperature: 0.3 },
+      stream: false,
+      think: true,
+      tools: [createTool()],
+    });
+    expect(onChunk).toHaveBeenNthCalledWith(1, { content: 'cloud answer', done: false });
+    expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
+  });
+
+  it('Ollama Local 스트리밍은 기존처럼 fetch 기반 NDJSON 스트림을 사용한다', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode('{"message":{"content":"local "},"done":false}\n'),
+              );
+              controller.enqueue(
+                encoder.encode('{"message":{"content":"answer"},"done":true}\n'),
+              );
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
+        ),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createProvider(
+      'ollama',
+      { apiKey: '', enabled: true, models: ['llama3.1'] },
+      'llama3.1',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.5);
+
+    expect(requestUrlMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const url = fetchMock.mock.calls[0]?.[0] as string;
+    expect(url).toBe('http://localhost:11434/api/chat');
+    const body = parseFetchBody(fetchMock);
+    expect(body).toMatchObject({
+      model: 'llama3.1',
+      options: { temperature: 0.5 },
+      stream: true,
+      think: true,
+    });
+    expect(onChunk).toHaveBeenNthCalledWith(1, { content: 'local ', done: false });
+    expect(onChunk).toHaveBeenNthCalledWith(2, { content: 'answer', done: false });
+    expect(onChunk).toHaveBeenNthCalledWith(3, { content: '', done: true });
   });
 });
 

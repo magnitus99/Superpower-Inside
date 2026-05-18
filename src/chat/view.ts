@@ -3248,7 +3248,12 @@ export class ChatView extends ItemView {
       503: '서비스가 일시적으로 사용 불가능합니다.',
     };
 
-    const hint = statusCode !== '???' ? (providerHints[Number(statusCode)] ?? '') : '';
+    const hint =
+      statusCode !== '???'
+        ? (providerHints[Number(statusCode)] ?? '')
+        : rawError.includes('Failed to fetch')
+          ? '브라우저 fetch/CORS 또는 네트워크 차단 가능성이 있습니다. Provider 요청 경로를 확인하세요.'
+          : '';
     const detail = [
       `[${timestamp}] ${providerKey}/${model}`,
       `오류 코드: ${statusCode}`,

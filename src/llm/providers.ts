@@ -526,10 +526,12 @@ class ClaudeProvider implements LLMProvider {
 class OllamaProvider implements LLMProvider {
   private config: ProviderConfig;
   private modelOverride?: string;
+  private useRequestUrlForStreaming: boolean;
 
-  constructor(config: ProviderConfig, modelOverride?: string) {
+  constructor(config: ProviderConfig, modelOverride?: string, useRequestUrlForStreaming = false) {
     this.config = config;
     this.modelOverride = modelOverride;
+    this.useRequestUrlForStreaming = useRequestUrlForStreaming;
   }
 
   private buildHeaders(): Record<string, string> {
@@ -593,11 +595,36 @@ class OllamaProvider implements LLMProvider {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
       options: { temperature },
-      stream: true,
+      stream: !this.useRequestUrlForStreaming,
       think: true,
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
+    }
+    if (this.useRequestUrlForStreaming) {
+      const res = await requestUrl({
+        url: targetUrl,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (res.status >= 400) {
+        throw new Error(`Ollama stream failed: ${res.status} ${res.text}`);
+      }
+      if (options?.signal?.aborted) {
+        onChunk({ content: '', done: true });
+        return;
+      }
+      const data = res.json as OllamaChatResponse;
+      if (data.error) {
+        throw new Error(`Ollama chat failed: ${data.error}`);
+      }
+      const chunk = toOllamaStreamChunk(data);
+      if (chunk) {
+        onChunk(chunk);
+      }
+      onChunk({ content: '', done: true });
+      return;
     }
     const res = await fetch(targetUrl, {
       method: 'POST',
@@ -629,40 +656,13 @@ class OllamaProvider implements LLMProvider {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const data = JSON.parse(trimmed) as {
-            message?: {
-              content?: string;
-              thinking?: string;
-              tool_calls?: Array<{
-                index?: number;
-                function?: { name?: string; arguments?: unknown };
-              }>;
-            };
-            done?: boolean;
-            error?: string;
-          };
+          const data = JSON.parse(trimmed) as OllamaChatResponse;
           if (data.error) {
             throw new Error(`Ollama chat failed: ${data.error}`);
           }
-          const content = data.message?.content ?? '';
-          const thinking = data.message?.thinking;
-          const toolCalls = data.message?.tool_calls?.map(
-            (tc, index): ToolCallDelta => ({
-              index: tc.index ?? index,
-              type: 'function' as const,
-              function: {
-                name: tc.function?.name,
-                arguments: stringifyToolArguments(tc.function?.arguments),
-              },
-            }),
-          );
-          if (content || thinking || (toolCalls && toolCalls.length > 0)) {
-            onChunk({
-              content,
-              done: false,
-              ...(thinking ? { reasoning: thinking } : {}),
-              ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-            });
+          const chunk = toOllamaStreamChunk(data);
+          if (chunk) {
+            onChunk(chunk);
           }
           if (data.done) {
             onChunk({ content: '', done: true });
@@ -676,6 +676,43 @@ class OllamaProvider implements LLMProvider {
     }
     onChunk({ content: '', done: true });
   }
+}
+
+interface OllamaChatResponse {
+  message?: {
+    content?: string;
+    thinking?: string;
+    tool_calls?: Array<{
+      index?: number;
+      function?: { name?: string; arguments?: unknown };
+    }>;
+  };
+  done?: boolean;
+  error?: string;
+}
+
+function toOllamaStreamChunk(data: OllamaChatResponse): StreamChunk | null {
+  const content = data.message?.content ?? '';
+  const thinking = data.message?.thinking;
+  const toolCalls = data.message?.tool_calls?.map(
+    (tc, index): ToolCallDelta => ({
+      index: tc.index ?? index,
+      type: 'function' as const,
+      function: {
+        name: tc.function?.name,
+        arguments: stringifyToolArguments(tc.function?.arguments),
+      },
+    }),
+  );
+  if (!content && !thinking && (!toolCalls || toolCalls.length === 0)) {
+    return null;
+  }
+  return {
+    content,
+    done: false,
+    ...(thinking ? { reasoning: thinking } : {}),
+    ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+  };
 }
 
 function stringifyToolArguments(args: unknown): string {
@@ -731,7 +768,11 @@ export function createProvider(
     case 'ollama':
       return new OllamaProvider({ ...config, baseUrl: OLLAMA_LOCAL_BASE_URL }, modelOverride);
     case 'ollamaCloud':
-      return new OllamaProvider({ ...config, baseUrl: OLLAMA_CLOUD_BASE_URL }, modelOverride);
+      return new OllamaProvider(
+        { ...config, baseUrl: OLLAMA_CLOUD_BASE_URL },
+        modelOverride,
+        true,
+      );
     case 'openRouter':
       return new OpenAICompatibleProvider(
         config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openRouter,
