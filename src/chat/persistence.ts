@@ -6,6 +6,7 @@ import type {
   ChatSessionMeta,
   ContextAttachment,
   SourceCitation,
+  SourceValidationWarning,
   ToolCallRecord,
 } from './types';
 
@@ -30,6 +31,7 @@ interface MessagePersistMeta {
   errorMessage?: string;
   toolCalls?: ToolCallRecord[];
   citations?: SourceCitation[];
+  sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
@@ -312,6 +314,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     status: message.status,
     toolCalls: message.toolCalls,
     citations: message.citations,
+    sourceWarnings: message.sourceWarnings,
     contextAttachments: message.contextAttachments,
     branchOf: message.branchOf,
     stopReason: message.stopReason,
@@ -399,7 +402,9 @@ function formatCitation(citation: SourceCitation): string {
     .filter(Boolean)
     .join(' ');
   const score = citation.score !== undefined ? ` — score ${citation.score.toFixed(3)}` : '';
-  return `- **${citation.id}** ${location}${score}\n  ${citation.preview.replace(/\n/g, ' ')}`;
+  const status = citation.status ? ` — ${citation.status}` : '';
+  const detail = citation.detail ? ` — ${citation.detail}` : '';
+  return `- **${citation.id}** ${location}${score}${status}${detail}\n  ${citation.preview.replace(/\n/g, ' ')}`;
 }
 
 function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
@@ -432,6 +437,7 @@ function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
       reasoning: reasoning || undefined,
       toolCalls: meta.toolCalls,
       citations: meta.citations,
+      sourceWarnings: meta.sourceWarnings,
       contextAttachments: meta.contextAttachments,
       branchOf: meta.branchOf,
       stopReason: meta.stopReason,
@@ -458,6 +464,7 @@ function parseMessageMeta(raw: string): MessagePersistMeta | null {
       errorMessage: parsed.errorMessage,
       toolCalls: parsed.toolCalls,
       citations: parsed.citations,
+      sourceWarnings: parsed.sourceWarnings,
       contextAttachments: parsed.contextAttachments,
       branchOf: parsed.branchOf,
       stopReason: parsed.stopReason,

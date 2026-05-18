@@ -907,7 +907,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     new Setting(section)
       .setName('임베딩 생성 테스트')
-      .setDesc('선택된 임베딩 모델로 실제 최소 요청을 보냅니다. 프로바이더에 따라 과금될 수 있습니다.')
+      .setDesc(
+        '선택된 임베딩 모델로 실제 최소 요청을 보냅니다. 프로바이더에 따라 과금될 수 있습니다.',
+      )
       .addButton((button) => {
         button.setButtonText('임베딩 생성 테스트');
         button.onClick(async () => {
@@ -989,7 +991,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
     const header = section.createDiv({ cls: 'superpower-inside-rag-file-types-header' });
     const titleGroup = header.createDiv();
-    titleGroup.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('targetFileTypes') });
+    titleGroup.createDiv({
+      cls: 'superpower-inside-rag-section-title',
+      text: t('targetFileTypes'),
+    });
     titleGroup.createDiv({
       cls: 'superpower-inside-rag-file-types-desc',
       text: t('targetFileTypesDesc'),
@@ -1053,7 +1058,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     recommendations: { extension: string; label: string; count: number; reason: string }[],
   ): void {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-recommendations' });
-    section.createDiv({ cls: 'superpower-inside-rag-recommendations-title', text: t('excludeRecommendations') });
+    section.createDiv({
+      cls: 'superpower-inside-rag-recommendations-title',
+      text: t('excludeRecommendations'),
+    });
 
     if (recommendations.length === 0) {
       section.createDiv({
@@ -1099,7 +1107,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private buildUpdateRequiredDocumentsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '업데이트가 필요한 문서' });
+    section.createDiv({
+      cls: 'superpower-inside-rag-section-title',
+      text: '업데이트가 필요한 문서',
+    });
 
     const listEl = section.createDiv({ cls: 'superpower-inside-rag-update-list' });
     listEl.setText('문서 상태를 확인하는 중...');
@@ -1473,7 +1484,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }
         const itemIssues = input.validate(value, getExistingWithoutIndex(index)).issues;
         if (itemIssues.length > 0) {
-          const itemFeedback = content.createDiv({ cls: 'superpower-inside-exclude-item-feedback' });
+          const itemFeedback = content.createDiv({
+            cls: 'superpower-inside-exclude-item-feedback',
+          });
           renderIssues(itemFeedback, itemIssues);
         }
         const removeButton = item.createEl('button', {
@@ -1615,10 +1628,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.debouncedSave();
       },
       countMeta: {
-        getCounts: () => countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
+        getCounts: () =>
+          countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
         getItemLabel: (count) => t('excludeExtFileCount').replace('{count}', String(count)),
-        getSummaryLabel: (count) =>
-          t('excludeExtTotalFileCount').replace('{count}', String(count)),
+        getSummaryLabel: (count) => t('excludeExtTotalFileCount').replace('{count}', String(count)),
         refreshLabel: t('refresh'),
       },
     });
@@ -1795,7 +1808,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         label: '지식 연결',
         description: '노트 사이의 연결과 링크 후보를 우선 제안합니다.',
         prompt:
-          '당신은 Obsidian 볼트 기반 지식 연결 보조자입니다. 제공된 Vault Context와 명시적 파일/폴더 멘션을 우선 근거로 삼고, 답변마다 관련 노트명, 연결할 만한 링크 후보, 새로 만들면 좋은 노트 구조를 제안하세요. 근거와 추론을 구분하고, 확실하지 않은 내용은 꾸며내지 마세요.',
+          '당신은 Obsidian 볼트 기반 지식 연결 보조자입니다. 제공된 Vault Context와 명시적 파일/폴더 멘션을 우선 근거로 삼으세요. Vault Context에 없는 문서명은 출처로 쓰지 말고, 연결할 만한 링크 후보와 새 노트 구조는 반드시 "제안"으로 분리하세요. 근거와 추론을 구분하고, 확실하지 않은 내용은 꾸며내지 마세요.',
       },
       {
         label: '출처 기반 답변',
@@ -1807,13 +1820,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         label: '연구 노트',
         description: '근거, 쟁점, 후속 질문을 연구 노트 형태로 정리합니다.',
         prompt:
-          '당신은 Obsidian 연구 노트 보조자입니다. 사용자의 질문에 답할 때 핵심 주장, 근거, 반론 또는 불확실성, 후속 조사 질문을 구분하세요. 볼트 안 관련 노트와 연결 후보를 제안하고, 연구 노트에 바로 붙일 수 있는 Markdown 구조로 답하세요.',
+          '당신은 Obsidian 연구 노트 보조자입니다. 사용자의 질문에 답할 때 핵심 주장, 근거, 반론 또는 불확실성, 후속 조사 질문을 구분하세요. Vault Context에 없는 문서명은 출처로 쓰지 말고, 볼트 안 관련 노트와 연결 후보는 "제안"으로 분리하세요. 연구 노트에 바로 붙일 수 있는 Markdown 구조로 답하세요.',
       },
       {
         label: '프로젝트 노트',
         description: '결정 사항, 작업 항목, 리스크를 분명히 나눕니다.',
         prompt:
-          '당신은 Obsidian 프로젝트 노트 보조자입니다. 답변은 결정 사항, 작업 항목, 리스크, 다음 행동을 중심으로 구성하세요. Vault Context를 근거로 사용하고, 관련 프로젝트 노트 링크 후보와 후속 정리 위치를 제안하세요.',
+          '당신은 Obsidian 프로젝트 노트 보조자입니다. 답변은 결정 사항, 작업 항목, 리스크, 다음 행동을 중심으로 구성하세요. Vault Context를 근거로 사용하고, Vault Context에 없는 문서명은 출처로 쓰지 마세요. 관련 프로젝트 노트 링크 후보와 후속 정리 위치는 "제안"으로 분리하세요.',
       },
       {
         label: '글쓰기 초안',
@@ -2215,7 +2228,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const titleRow = section.createDiv({ cls: 'superpower-inside-provider-title-row' });
     titleRow.createDiv({ cls: 'superpower-inside-settings-section-title', text: label });
-    const selectedCountEl = titleRow.createDiv({ cls: 'superpower-inside-provider-selected-count' });
+    const selectedCountEl = titleRow.createDiv({
+      cls: 'superpower-inside-provider-selected-count',
+    });
 
     new Setting(section).setName(t('enabled')).addToggle((toggle) =>
       toggle.setValue(config.enabled).onChange((value) => {
@@ -2262,8 +2277,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       new Setting(section)
         .setName('CORS 우회 (requestUrl)')
         .setDesc(
-          'Obsidian 내부 API로 요청을 보내 CORS 문제를 우회합니다. '
-          + '스트리밍이 비활성화되므로, 서버가 CORS를 지원하면 해제하는 것을 권장합니다.',
+          'Obsidian 내부 API로 요청을 보내 CORS 문제를 우회합니다. ' +
+            '스트리밍이 비활성화되므로, 서버가 CORS를 지원하면 해제하는 것을 권장합니다.',
         )
         .addToggle((toggle) =>
           toggle.setValue(useRequestUrl).onChange((value) => {
@@ -2286,7 +2301,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     selectedOnlyLabel.createSpan({ text: '선택됨만 보기' });
     const modelListContainer = section.createDiv({ cls: 'superpower-inside-settings-model-list' });
 
-    const statusContainer = section.createDiv({ cls: 'superpower-inside-settings-validation-status' });
+    const statusContainer = section.createDiv({
+      cls: 'superpower-inside-settings-validation-status',
+    });
     let filterText = '';
     let selectedOnly = false;
     let availableModels = this.getInitialProviderModels(cacheKey, config);
@@ -2571,7 +2588,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const statusBox = containerEl.createDiv({ cls: 'superpower-inside-mcp-status-box' });
 
     const headerRow = statusBox.createDiv({ cls: 'superpower-inside-mcp-status-header-row' });
-    headerRow.createDiv({ cls: 'superpower-inside-mcp-status-title', text: t('mcpConnectionHealth') });
+    headerRow.createDiv({
+      cls: 'superpower-inside-mcp-status-title',
+      text: t('mcpConnectionHealth'),
+    });
 
     const actionsRow = headerRow.createDiv({ cls: 'superpower-inside-mcp-status-actions' });
     const refreshBtn = actionsRow.createEl('button', {

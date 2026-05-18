@@ -23,8 +23,20 @@ export interface SourceCitation {
   filePath: string;
   heading?: string;
   line?: number;
+  endLine?: number;
   score?: number;
+  vectorScore?: number;
+  bm25Score?: number;
+  status?: 'candidate' | 'verified' | 'missing' | 'stale' | 'low-relevance';
+  detail?: string;
   preview: string;
+}
+
+export interface SourceValidationWarning {
+  id: string;
+  label: string;
+  detail: string;
+  kind: 'missing-link' | 'unverified-source';
 }
 
 export interface ContextAttachment {
@@ -69,6 +81,7 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   reasoning?: string;
   toolCalls?: ToolCallRecord[];
   citations?: SourceCitation[];
+  sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
   branchOf?: string;
   stopReason?: ChatStopReason;

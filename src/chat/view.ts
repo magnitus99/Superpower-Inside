@@ -13,7 +13,12 @@ import type {
   ToolCallDelta,
   ToolDefinition,
 } from '../llm/providers';
-import type { ChatMessageWithMeta, SessionState, ToolCallRecord } from './types';
+import type {
+  ChatMessageWithMeta,
+  SessionState,
+  SourceValidationWarning,
+  ToolCallRecord,
+} from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
 import { openSessionHistoryModal } from './session-modal';
@@ -30,6 +35,7 @@ import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-ex
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
+import { validateAnswerSources } from './source-validation';
 import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
 import { EditMessageModal } from './edit-modal';
@@ -44,6 +50,7 @@ interface MessageMetaInput {
   status?: ChatMessageWithMeta['status'];
   errorMessage?: string;
   citations?: SourceCitation[];
+  sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
@@ -283,7 +290,9 @@ export class ChatView extends ItemView {
     const connectedCount = registry.getConnectedCount();
     const totalCount = servers.length;
 
-    const summary = this.mcpStatusBar.createSpan({ cls: 'superpower-inside-chat-mcp-status-label' });
+    const summary = this.mcpStatusBar.createSpan({
+      cls: 'superpower-inside-chat-mcp-status-label',
+    });
     summary.setText(
       state === 'partial-error'
         ? `${t('mcpPartialError')} · ${t('mcpActiveServers', { count: connectedCount, total: totalCount })}`
@@ -619,7 +628,9 @@ export class ChatView extends ItemView {
     }
 
     if (!this.mentionDropdown) {
-      this.mentionDropdown = this.container.createDiv({ cls: 'superpower-inside-mention-dropdown' });
+      this.mentionDropdown = this.container.createDiv({
+        cls: 'superpower-inside-mention-dropdown',
+      });
     }
     this.mentionDropdown.empty();
     this.mentionDropdown.style.display = 'block';
@@ -806,6 +817,7 @@ export class ChatView extends ItemView {
       reasoning,
       toolCalls,
       citations: metaInput?.citations,
+      sourceWarnings: metaInput?.sourceWarnings,
       contextAttachments: metaInput?.contextAttachments,
       branchOf: metaInput?.branchOf,
       stopReason: metaInput?.stopReason,
@@ -828,7 +840,14 @@ export class ChatView extends ItemView {
     this.renderMessageMeta(meta, msg);
 
     if (role === 'assistant') {
-      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls);
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        msg.citations,
+        msg.sourceWarnings,
+      );
     } else if (role === 'tool') {
       const bubble = bubbleContainer.createDiv({
         cls: 'superpower-inside-chat-bubble tool',
@@ -871,6 +890,7 @@ export class ChatView extends ItemView {
       message.status = metaInput?.status ?? (isDone ? 'complete' : 'streaming');
       message.errorMessage = metaInput?.errorMessage;
       message.citations = metaInput?.citations ?? message.citations;
+      message.sourceWarnings = metaInput?.sourceWarnings ?? message.sourceWarnings;
       message.contextAttachments = metaInput?.contextAttachments ?? message.contextAttachments;
       message.branchOf = metaInput?.branchOf ?? message.branchOf;
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
@@ -892,6 +912,7 @@ export class ChatView extends ItemView {
         reasoning,
         toolCalls,
         message?.citations,
+        message?.sourceWarnings,
       );
       if (this.autoScroll) {
         this.scrollToBottom();
@@ -927,6 +948,7 @@ export class ChatView extends ItemView {
     reasoning?: string,
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
+    sourceWarnings?: SourceValidationWarning[],
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
 
@@ -972,6 +994,7 @@ export class ChatView extends ItemView {
       bubble.setText(content);
     }
     this.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
   }
 
   private updateAssistantLayers(
@@ -981,13 +1004,21 @@ export class ChatView extends ItemView {
     reasoning?: string,
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
+    sourceWarnings?: SourceValidationWarning[],
   ): void {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!(bubbleContainer instanceof HTMLElement)) return;
 
     let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     if (!(thinking instanceof HTMLDetailsElement)) {
-      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls, citations);
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        citations,
+        sourceWarnings,
+      );
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
 
@@ -1050,6 +1081,7 @@ export class ChatView extends ItemView {
       }
     }
     this.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
   }
 
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
@@ -1114,7 +1146,9 @@ export class ChatView extends ItemView {
       return;
     }
 
-    section.querySelectorAll('.superpower-inside-tool-call.placeholder').forEach((el) => el.remove());
+    section
+      .querySelectorAll('.superpower-inside-tool-call.placeholder')
+      .forEach((el) => el.remove());
 
     for (const toolCall of toolCalls) {
       const rowId = `tool-call-${toolCall.id || toolCall.name}`;
@@ -1238,13 +1272,20 @@ export class ChatView extends ItemView {
       section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
     }
     section.empty();
+    const verifiedCount = citations.filter((citation) => citation.status === 'verified').length;
     section.createDiv({
       cls: 'superpower-inside-chat-citations-label',
-      text: `출처 ${citations.length}개`,
+      text:
+        verifiedCount === citations.length
+          ? `검증된 근거 ${verifiedCount}개`
+          : `검색 근거 ${verifiedCount}/${citations.length}개 검증`,
     });
 
     for (const citation of citations) {
-      const card = section.createDiv({ cls: 'superpower-inside-chat-citation-card' });
+      const status = citation.status ?? 'candidate';
+      const card = section.createDiv({
+        cls: `superpower-inside-chat-citation-card ${status}`,
+      });
       const title = card.createDiv({ cls: 'superpower-inside-chat-citation-title' });
       title.createSpan({ text: citation.filePath });
       if (citation.heading) {
@@ -1255,10 +1296,20 @@ export class ChatView extends ItemView {
       }
       const metaParts = [
         citation.line !== undefined ? `line ${citation.line}` : '',
+        citation.endLine !== undefined ? `end ${citation.endLine}` : '',
         citation.score !== undefined ? `score ${citation.score.toFixed(3)}` : '',
+        citation.vectorScore !== undefined ? `vector ${citation.vectorScore.toFixed(3)}` : '',
+        citation.bm25Score !== undefined ? `bm25 ${citation.bm25Score.toFixed(3)}` : '',
+        `status ${status}`,
       ].filter(Boolean);
       if (metaParts.length > 0) {
-        card.createDiv({ cls: 'superpower-inside-chat-citation-meta', text: metaParts.join(' · ') });
+        card.createDiv({
+          cls: 'superpower-inside-chat-citation-meta',
+          text: metaParts.join(' · '),
+        });
+      }
+      if (citation.detail) {
+        card.createDiv({ cls: 'superpower-inside-chat-citation-warning', text: citation.detail });
       }
       card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: citation.preview });
       const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
@@ -1268,6 +1319,35 @@ export class ChatView extends ItemView {
       copyBtn.addEventListener('click', () => void this.copyCitationLink(citation, copyBtn));
       const insertBtn = actions.createEl('button', { text: '노트에 삽입' });
       insertBtn.addEventListener('click', () => void this.insertCitationIntoActiveNote(citation));
+    }
+  }
+
+  private renderSourceWarningsSection(
+    container: HTMLElement,
+    warnings: SourceValidationWarning[],
+  ): void {
+    let section = container.querySelector('.superpower-inside-chat-source-warnings');
+    if (warnings.length === 0) {
+      section?.remove();
+      return;
+    }
+    if (!(section instanceof HTMLElement)) {
+      section = container.createDiv({ cls: 'superpower-inside-chat-source-warnings' });
+    }
+    section.empty();
+    section.createDiv({
+      cls: 'superpower-inside-chat-source-warnings-label',
+      text: `검증되지 않은 링크/출처 ${warnings.length}개`,
+    });
+    for (const warning of warnings) {
+      const item = section.createDiv({
+        cls: `superpower-inside-chat-source-warning ${warning.kind}`,
+      });
+      item.createSpan({ cls: 'superpower-inside-chat-source-warning-label', text: warning.label });
+      item.createSpan({
+        cls: 'superpower-inside-chat-source-warning-detail',
+        text: warning.detail,
+      });
     }
   }
 
@@ -1308,6 +1388,9 @@ export class ChatView extends ItemView {
     citation: SourceCitation,
     button: HTMLButtonElement,
   ): Promise<void> {
+    if (citation.status && citation.status !== 'verified') {
+      new Notice(`검증되지 않은 검색 후보입니다: ${citation.detail ?? citation.status}`);
+    }
     const heading = citation.heading ? `#${citation.heading}` : '';
     await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
     button.setText(t('copied'));
@@ -1315,6 +1398,10 @@ export class ChatView extends ItemView {
   }
 
   private async insertCitationIntoActiveNote(citation: SourceCitation): Promise<void> {
+    if (citation.status && citation.status !== 'verified') {
+      new Notice(`검증되지 않은 검색 후보입니다: ${citation.detail ?? citation.status}`);
+      return;
+    }
     const active = this.app.workspace.getActiveFile();
     if (!active) {
       new Notice('활성 노트가 없습니다.');
@@ -1473,12 +1560,14 @@ export class ChatView extends ItemView {
   }
 
   private async copyMessage(msg: ChatMessageWithMeta, button: HTMLButtonElement): Promise<void> {
+    this.noticeSourceWarnings(msg);
     await navigator.clipboard.writeText(msg.content);
     button.setText(t('copied'));
     window.setTimeout(() => button.setText('복사'), 1500);
   }
 
   private async insertMessageIntoActiveNote(msg: ChatMessageWithMeta): Promise<void> {
+    this.noticeSourceWarnings(msg);
     const active = this.app.workspace.getActiveFile();
     if (!active) {
       new Notice('활성 노트가 없습니다.');
@@ -1486,6 +1575,11 @@ export class ChatView extends ItemView {
     }
     await this.app.vault.append(active, `\n\n${msg.content}\n`);
     new Notice('활성 노트에 삽입했습니다.');
+  }
+
+  private noticeSourceWarnings(msg: ChatMessageWithMeta): void {
+    if (!msg.sourceWarnings || msg.sourceWarnings.length === 0) return;
+    new Notice(`검증되지 않은 링크/출처 ${msg.sourceWarnings.length}개가 포함되어 있습니다.`, 5000);
   }
 
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
@@ -1744,6 +1838,7 @@ export class ChatView extends ItemView {
             }))
           : undefined,
         citations: m.citations,
+        sourceWarnings: m.sourceWarnings,
         contextAttachments: m.contextAttachments,
         branchOf: m.branchOf,
         stopReason: m.stopReason,
@@ -1811,12 +1906,15 @@ export class ChatView extends ItemView {
           approved: tc.approved,
         })),
         msg.citations,
+        msg.sourceWarnings,
       );
     } else if (msg.role === 'tool') {
       const bubble = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-bubble tool' });
       this.renderToolBubble(bubble, msg.content, 'success');
     } else {
-      const bubble = bubbleContainer.createDiv({ cls: `superpower-inside-chat-bubble ${msg.role}` });
+      const bubble = bubbleContainer.createDiv({
+        cls: `superpower-inside-chat-bubble ${msg.role}`,
+      });
       void this.renderMarkdownBubble(bubble, msg.content);
     }
     this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
@@ -2106,12 +2204,14 @@ export class ChatView extends ItemView {
         }
       }
 
+      const sourceWarnings = this.validateAssistantSources(fullText, promptContext.citations);
       this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
         providerKey: key,
         providerLabel,
         model: modelName,
         status: 'complete',
         citations: promptContext.citations,
+        sourceWarnings,
         contextAttachments: promptContext.attachments,
         stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
       });
@@ -2134,6 +2234,7 @@ export class ChatView extends ItemView {
             model: modelName,
             status: 'complete',
             citations: promptContext.citations,
+            sourceWarnings,
             contextAttachments: promptContext.attachments,
           });
           new Notice('일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
@@ -2532,38 +2633,54 @@ export class ChatView extends ItemView {
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'error', errorMessage: 'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.', stopReason: 'tool-failed' },
+          {
+            ...args.meta,
+            status: 'error',
+            errorMessage:
+              'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
+            stopReason: 'tool-failed',
+          },
         );
       } else {
+        const sourceWarnings = this.validateAssistantSources(
+          accumulatedText,
+          args.meta.citations ?? [],
+        );
         this.updateMessage(
           args.messageId,
           accumulatedText,
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'complete', stopReason: 'complete' },
+          { ...args.meta, sourceWarnings, status: 'complete', stopReason: 'complete' },
         );
       }
       return;
     }
 
     if (args.abortController.signal.aborted) {
+      const sourceWarnings = this.validateAssistantSources(
+        accumulatedText,
+        args.meta.citations ?? [],
+      );
       this.updateMessage(
         args.messageId,
         accumulatedText || '취소됨',
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
-        { ...args.meta, status: 'complete', stopReason: 'cancelled' },
+        { ...args.meta, sourceWarnings, status: 'complete', stopReason: 'cancelled' },
       );
     } else {
+      const content = accumulatedText || '툴 호출이 너무 많이 반복되었습니다.';
+      const sourceWarnings = this.validateAssistantSources(content, args.meta.citations ?? []);
       this.updateMessage(
         args.messageId,
-        accumulatedText || '툴 호출이 너무 많이 반복되었습니다.',
+        content,
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
-        { ...args.meta, status: 'error', stopReason: 'error' },
+        { ...args.meta, sourceWarnings, status: 'error', stopReason: 'error' },
       );
     }
   }
@@ -2579,6 +2696,25 @@ export class ChatView extends ItemView {
       mentionedServerNames: this.getMentionedServerNames(text),
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       registry: this.plugin.mcpRegistry,
+    });
+  }
+
+  private validateAssistantSources(
+    content: string,
+    citations: SourceCitation[],
+  ): SourceValidationWarning[] {
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    return validateAnswerSources(content, citations, {
+      exists: (path: string) => {
+        if (this.app.vault.getAbstractFileByPath(path) instanceof TFile) return true;
+        if (
+          !path.endsWith('.md') &&
+          this.app.vault.getAbstractFileByPath(`${path}.md`) instanceof TFile
+        ) {
+          return true;
+        }
+        return markdownFiles.some((file) => file.basename === path || file.name === path);
+      },
     });
   }
 

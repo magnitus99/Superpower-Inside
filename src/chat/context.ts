@@ -1,12 +1,9 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
+import { createContentHash } from '../rag/hash';
 import type { ContextAttachment, SourceCitation } from './types';
-import {
-  parseMentions,
-  shouldUseAutoRagForMentions,
-  type MentionResolver,
-} from './mention-parser';
+import { parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -43,6 +40,11 @@ interface ContextBlock {
 const DEFAULT_MAX_FOLDER_FILES = 12;
 const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
 const DEFAULT_RAG_TOP_K = 5;
+const VAULT_CONTEXT_RULES = [
+  'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
+  '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
+  '근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
+].join('\n');
 
 export async function buildChatContext(
   question: string,
@@ -76,11 +78,23 @@ export async function buildChatContext(
     try {
       const results = await options.ragEngine.query(question, ragTopK, options.ragMinScore);
       const sourceIds: string[] = [];
+      let rejectedCount = 0;
       for (const result of results) {
-        const citation = createCitation('rag', citations.length + 1, result);
+        const verified = await verifyQueryResult(result, options.app);
+        const citation = createCitation(
+          'rag',
+          citations.length + 1,
+          result,
+          verified.status,
+          verified.detail,
+        );
+        citations.push(citation);
+        if (verified.status !== 'verified') {
+          rejectedCount++;
+          continue;
+        }
         sourceIds.push(citation.id);
         appendBlock({
-          citation,
           text: `[Source ${citation.id}: ${citation.filePath}${citation.heading ? ` # ${citation.heading}` : ''}]\n${result.entry.metadata.text}`,
         });
       }
@@ -90,9 +104,12 @@ export async function buildChatContext(
         name: 'auto',
         label: `자동 RAG ${sourceIds.length}개`,
         status: sourceIds.length > 0 ? 'attached' : 'low-relevance',
-        detail: sourceIds.length > 0
-          ? undefined
-          : '유사도 임계치를 충족하는 관련 문서가 없습니다.',
+        detail:
+          sourceIds.length > 0
+            ? rejectedCount > 0
+              ? `검증 실패 후보 ${rejectedCount}개는 컨텍스트에서 제외했습니다.`
+              : undefined
+            : '유사도 임계치를 충족하는 관련 문서가 없습니다.',
         sourceIds,
       });
     } catch (err) {
@@ -132,7 +149,7 @@ export async function buildChatContext(
   const warningText = warnings.length > 0 ? `\n\n[Context Warnings]\n${warnings.join('\n')}` : '';
   return {
     systemPrompt: contextText
-      ? `[Vault Context]\n${contextText}${warningText}`
+      ? `[Vault Context Rules]\n${VAULT_CONTEXT_RULES}\n\n[Vault Context]\n${contextText}${warningText}`
       : warningText.trim() || null,
     attachments,
     citations,
@@ -149,16 +166,62 @@ export function createAppMentionResolver(app: App, registry?: MCPRegistry | null
   };
 }
 
-function createCitation(prefix: string, index: number, result: QueryResult): SourceCitation {
+function createCitation(
+  prefix: string,
+  index: number,
+  result: QueryResult,
+  status: SourceCitation['status'],
+  detail?: string,
+): SourceCitation {
   const metadata = result.entry.metadata;
   return {
     id: `${prefix}-${index}`,
     filePath: metadata.filePath,
     heading: metadata.heading,
     line: metadata.startLine,
+    endLine: metadata.endLine,
     score: result.score,
+    vectorScore: result.vectorScore,
+    bm25Score: result.bm25Score,
+    status,
+    detail,
     preview: createPreview(metadata.text),
   };
+}
+
+async function verifyQueryResult(
+  result: QueryResult,
+  app: App,
+): Promise<{ status: SourceCitation['status']; detail?: string }> {
+  const metadata = result.entry.metadata;
+  const file = app.vault.getAbstractFileByPath(metadata.filePath);
+  if (!(file instanceof TFile)) {
+    return { status: 'missing', detail: '파일이 vault에 존재하지 않습니다.' };
+  }
+  if (
+    typeof metadata.sourceMtime !== 'number' ||
+    typeof metadata.sourceSize !== 'number' ||
+    typeof metadata.contentHash !== 'string' ||
+    typeof metadata.endLine !== 'number'
+  ) {
+    return { status: 'stale', detail: '이전 형식의 인덱스라 재인덱싱이 필요합니다.' };
+  }
+  if (metadata.sourceMtime !== file.stat.mtime || metadata.sourceSize !== file.stat.size) {
+    return { status: 'stale', detail: '파일이 마지막 인덱싱 이후 변경되었습니다.' };
+  }
+  const content = await app.vault.cachedRead(file);
+  if (createContentHash(content) !== metadata.contentHash) {
+    return { status: 'stale', detail: '파일 내용 해시가 마지막 인덱싱 이후 변경되었습니다.' };
+  }
+  const lineCount = content.split('\n').length;
+  if (
+    metadata.startLine < 0 ||
+    metadata.endLine < metadata.startLine ||
+    metadata.endLine >= lineCount
+  ) {
+    return { status: 'stale', detail: '청크 라인 범위가 현재 파일과 맞지 않습니다.' };
+  }
+  return { status: 'verified' };
 }
 
 async function appendFileMention(
@@ -186,6 +249,7 @@ async function appendFileMention(
     const citation: SourceCitation = {
       id: `file-${citations.length + 1}`,
       filePath: file.path,
+      status: 'verified',
       preview: createPreview(content),
     };
     const attachedFully = appendBlock({
@@ -249,6 +313,7 @@ async function appendFolderMention(
       const citation: SourceCitation = {
         id: `folder-${citations.length + 1}`,
         filePath: file.path,
+        status: 'verified',
         preview: createPreview(content),
       };
       sourceIds.push(citation.id);

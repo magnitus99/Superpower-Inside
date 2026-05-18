@@ -1496,7 +1496,8 @@
 }
 
 .superpower-inside-chat-context-chip.error,
-.superpower-inside-chat-context-chip.missing {
+.superpower-inside-chat-context-chip.missing,
+.superpower-inside-chat-context-chip.low-relevance {
   border-color: var(--text-error);
   color: var(--text-error);
 }
@@ -1519,6 +1520,16 @@
   padding: 8px;
 }
 
+.superpower-inside-chat-citation-card.missing,
+.superpower-inside-chat-citation-card.stale,
+.superpower-inside-chat-citation-card.low-relevance {
+  border-color: var(--text-error);
+}
+
+.superpower-inside-chat-citation-card.candidate {
+  border-color: var(--text-warning);
+}
+
 .superpower-inside-chat-citation-title {
   color: var(--text-normal);
   font-size: 12px;
@@ -1537,11 +1548,50 @@
   margin-top: 4px;
 }
 
+.superpower-inside-chat-citation-warning {
+  color: var(--text-error);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
 .superpower-inside-chat-citation-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+.superpower-inside-chat-source-warnings {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.superpower-inside-chat-source-warnings-label {
+  color: var(--text-error);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.superpower-inside-chat-source-warning {
+  border: 1px solid var(--text-error);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.superpower-inside-chat-source-warning-label {
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.superpower-inside-chat-source-warning-detail {
+  font-size: 11px;
 }
 
 .superpower-inside-chat-search-hit {
@@ -2403,7 +2453,8 @@
   animation: superpower-inside-generating-pulse 1.5s ease-in-out infinite;
 }
 
-.superpower-inside-chat-message-wrapper.assistant.generating .superpower-inside-chat-bubble.assistant {
+.superpower-inside-chat-message-wrapper.assistant.generating
+  .superpower-inside-chat-bubble.assistant {
   box-shadow:
     0 0 0 1px rgba(127, 109, 242, 0.15),
     0 1px 4px rgba(127, 109, 242, 0.08);
