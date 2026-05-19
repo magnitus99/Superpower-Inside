@@ -213,7 +213,7 @@ export function chunkPlainText(content: string, maxChunkSize: number, overlapCha
   return applyLineOverlap(chunks, lines, overlapChars);
 }
 
-function buildSearchText(file: TFile, chunk: Chunk): string {
+export function buildSearchText(file: TFile, chunk: Chunk): string {
   const hints = [`File: ${file.path}`, `Title: ${file.basename}`];
   if (chunk.metadata.heading) {
     hints.push(`Heading: ${chunk.metadata.heading}`);
