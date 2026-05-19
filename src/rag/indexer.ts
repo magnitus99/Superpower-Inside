@@ -46,34 +46,122 @@ export interface Chunk {
   };
 }
 
-function applyLineOverlap(chunks: Chunk[], lines: string[], overlapChars: number): Chunk[] {
+interface TextSegment {
+  text: string;
+  startLine: number;
+  endLine: number;
+}
+
+function splitTextToSegments(text: string, initialLine: number, maxChunkSize: number): TextSegment[] {
+  const maxSize = Math.max(1, Math.floor(maxChunkSize));
+  const lines = text.split('\n');
+  const segments: TextSegment[] = [];
+  let currentLines: string[] = [];
+  let currentStartLine = initialLine;
+  let currentLength = 0;
+
+  const flush = (endLine: number): void => {
+    const segmentText = currentLines.join('\n').trim();
+    if (segmentText) {
+      segments.push({
+        text: segmentText,
+        startLine: currentStartLine,
+        endLine,
+      });
+    }
+    currentLines = [];
+    currentLength = 0;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNumber = initialLine + i;
+
+    if (line.length > maxSize) {
+      flush(lineNumber - 1);
+      for (let offset = 0; offset < line.length; offset += maxSize) {
+        const piece = line.slice(offset, offset + maxSize).trim();
+        if (!piece) continue;
+        segments.push({
+          text: piece,
+          startLine: lineNumber,
+          endLine: lineNumber,
+        });
+      }
+      currentStartLine = lineNumber + 1;
+      continue;
+    }
+
+    const nextLength = currentLines.length === 0 ? line.length : currentLength + 1 + line.length;
+    if (currentLines.length > 0 && nextLength > maxSize) {
+      flush(lineNumber - 1);
+      currentStartLine = lineNumber;
+    }
+
+    currentLines.push(line);
+    currentLength = currentLines.length === 1 ? line.length : currentLength + 1 + line.length;
+  }
+
+  if (currentLines.length > 0) {
+    flush(initialLine + lines.length - 1);
+  }
+
+  return segments;
+}
+
+function enforceChunkSize(chunks: Chunk[], maxChunkSize: number): Chunk[] {
+  return chunks.flatMap((chunk) => {
+    if (chunk.text.length <= maxChunkSize) return [chunk];
+    return splitTextToSegments(chunk.text, chunk.metadata.startLine, maxChunkSize).map((segment) => ({
+      ...chunk,
+      text: segment.text,
+      metadata: {
+        ...chunk.metadata,
+        startLine: segment.startLine,
+        endLine: segment.endLine,
+      },
+    }));
+  });
+}
+
+function getTrailingOverlap(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text.trim();
+
+  const tail = text.slice(-maxChars);
+  const firstNewline = tail.indexOf('\n');
+  if (firstNewline > 0 && firstNewline < tail.length - 1) {
+    return tail.slice(firstNewline + 1).trim();
+  }
+  return tail.trim();
+}
+
+function applyLineOverlap(chunks: Chunk[], overlapChars: number, maxChunkSize: number): Chunk[] {
   if (overlapChars <= 0 || chunks.length <= 1) return chunks;
 
   return chunks.map((chunk, index) => {
     if (index === 0) return chunk;
     const previous = chunks[index - 1];
-    const overlapLines: string[] = [];
-    let total = 0;
-    for (let line = previous.metadata.endLine; line >= previous.metadata.startLine; line--) {
-      const text = lines[line] ?? '';
-      overlapLines.unshift(text);
-      total += text.length + 1;
-      if (total >= overlapChars) break;
-    }
-    if (overlapLines.length === 0) return chunk;
-    const startLine = Math.max(
-      previous.metadata.startLine,
-      chunk.metadata.startLine - overlapLines.length,
-    );
+    const maxOverlapChars = Math.min(overlapChars, maxChunkSize - chunk.text.length - 1);
+    const overlapText = getTrailingOverlap(previous.text, maxOverlapChars);
+    if (!overlapText) return chunk;
+
+    const overlapLineCount = overlapText.split('\n').length;
+    const startLine = Math.max(previous.metadata.startLine, chunk.metadata.startLine - overlapLineCount);
     return {
       ...chunk,
-      text: `${overlapLines.join('\n')}\n${chunk.text}`.trim(),
+      text: `${overlapText}\n${chunk.text}`.trim(),
       metadata: {
         ...chunk.metadata,
         startLine,
       },
     };
   });
+}
+
+function finalizeChunks(chunks: Chunk[], maxChunkSize: number, overlapChars: number): Chunk[] {
+  const sizedChunks = enforceChunkSize(chunks, maxChunkSize);
+  return applyLineOverlap(sizedChunks, overlapChars, maxChunkSize);
 }
 
 /** 마크다운을 헤딩/코드블록/단락을 존중하며 청킹합니다. */
@@ -158,7 +246,7 @@ export function chunkMarkdown(content: string, maxChunkSize: number, overlapChar
     flush(lines.length - 1);
   }
 
-  return applyLineOverlap(chunks, lines, overlapChars);
+  return finalizeChunks(chunks, maxChunkSize, overlapChars);
 }
 
 /** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
@@ -210,7 +298,7 @@ export function chunkPlainText(content: string, maxChunkSize: number, overlapCha
     flush(lines.length - 1);
   }
 
-  return applyLineOverlap(chunks, lines, overlapChars);
+  return finalizeChunks(chunks, maxChunkSize, overlapChars);
 }
 
 export function buildSearchText(file: TFile, chunk: Chunk): string {
@@ -281,7 +369,7 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
-      id: `${file.path}::${chunk.metadata.startLine}`,
+      id: `${file.path}::${chunk.metadata.startLine}::${i}`,
       vector: vectors[i],
       metadata: {
         filePath: file.path,

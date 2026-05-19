@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkMarkdown, buildSearchText } from './indexer';
+import { chunkMarkdown, chunkPlainText, buildSearchText } from './indexer';
 import type { TFile } from 'obsidian';
 
 describe('chunkMarkdown + buildSearchText Ollama context length scenario', () => {
@@ -50,5 +50,41 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
 
     // chunkSize 500 + 메타데이터 오버헤드(최대 ~200자)면 3000자 상한 내에 안전하다
     expect(maxLen).toBeLessThanOrEqual(3000);
+  });
+
+  it('긴 단일 txt 줄도 chunkSize 이하로 하드 분할한다', () => {
+    const chunks = chunkPlainText('x'.repeat(5000), 100);
+
+    expect(chunks.length).toBe(50);
+    expect(chunks.every((chunk) => chunk.text.length <= 100)).toBe(true);
+    expect(chunks.every((chunk) => chunk.metadata.startLine === 0)).toBe(true);
+    expect(chunks.every((chunk) => chunk.metadata.endLine === 0)).toBe(true);
+  });
+
+  it('긴 코드블록과 긴 문단도 최종 Markdown 청크 길이를 chunkSize 이하로 제한한다', () => {
+    const content = [
+      '# Heading',
+      '```',
+      'const value = "' + 'x'.repeat(500) + '";',
+      '```',
+      '',
+      'y'.repeat(450),
+    ].join('\n');
+
+    const chunks = chunkMarkdown(content, 100);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.text.length <= 100)).toBe(true);
+  });
+
+  it('overlap이 chunkSize와 같아도 최종 청크 길이를 키우지 않는다', () => {
+    const content = Array.from({ length: 12 }, (_, index) => `line-${index}-${'x'.repeat(20)}`).join(
+      '\n',
+    );
+
+    const chunks = chunkPlainText(content, 100, 100);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.text.length <= 100)).toBe(true);
   });
 });
