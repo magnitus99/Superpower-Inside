@@ -1,10 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OllamaEmbeddingProvider } from './embedding';
-import { requestUrl, type RequestUrlParam } from 'obsidian';
+import { requestUrl, type RequestUrlParam, type RequestUrlResponse, type RequestUrlResponsePromise } from 'obsidian';
 
 vi.mock('obsidian', () => ({
   requestUrl: vi.fn(),
 }));
+
+/** mock requestUrl이 반환해야 하는 RequestUrlResponsePromise을 생성한다 */
+function mockResponse(data: Partial<RequestUrlResponse> & { status: number; json: any; text: string }): RequestUrlResponsePromise {
+  const full: RequestUrlResponse = {
+    headers: {},
+    arrayBuffer: new TextEncoder().encode(data.text).buffer as ArrayBuffer,
+    ...data,
+  };
+  const promise = Promise.resolve(full);
+  return Object.assign(promise, {
+    arrayBuffer: promise.then(r => r.arrayBuffer),
+    json: promise.then(r => r.json),
+    text: promise.then(r => r.text),
+  }) as RequestUrlResponsePromise;
+}
 
 describe('OllamaEmbeddingProvider', () => {
   it('컨텍스트 길이 초과 400 응답 시 개선된 에러 메시지를 던진다', async () => {
@@ -14,34 +29,22 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     const mocked = vi.mocked(requestUrl);
-    mocked.mockImplementation((request: string | RequestUrlParam): ReturnType<typeof requestUrl> => {
+    mocked.mockImplementation((request: string | RequestUrlParam) => {
       const url = typeof request === 'string' ? request : request.url ?? '';
       if (url.endsWith('/api/embed')) {
-        return Promise.resolve({
-          status: 400,
-          json: {},
-          text: 'bad request',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        return mockResponse({ status: 400, json: {}, text: 'bad request' });
       }
       if (url.endsWith('/api/embeddings')) {
-        return Promise.resolve({
-          status: 400,
-          json: {},
-          text: 'bad request',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        return mockResponse({ status: 400, json: {}, text: 'bad request' });
       }
       if (url.endsWith('/v1/embeddings')) {
-        return Promise.resolve({
+        return mockResponse({
           status: 400,
           json: {},
           text: '{"error":{"message":"the input length exceeds the context length","type":"invalid_request_error","param":null,"code":null}}',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        });
       }
-      return Promise.resolve({
-        status: 500,
-        json: {},
-        text: 'unknown',
-      } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+      return mockResponse({ status: 500, json: {}, text: 'unknown' });
     });
 
     await expect(
@@ -56,34 +59,18 @@ describe('OllamaEmbeddingProvider', () => {
     );
 
     const mocked = vi.mocked(requestUrl);
-    mocked.mockImplementation((request: string | RequestUrlParam): ReturnType<typeof requestUrl> => {
+    mocked.mockImplementation((request: string | RequestUrlParam) => {
       const url = typeof request === 'string' ? request : request.url ?? '';
       if (url.endsWith('/api/embed')) {
-        return Promise.resolve({
-          status: 400,
-          json: {},
-          text: 'some other error',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        return mockResponse({ status: 400, json: {}, text: 'some other error' });
       }
       if (url.endsWith('/api/embeddings')) {
-        return Promise.resolve({
-          status: 400,
-          json: {},
-          text: 'some other error',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        return mockResponse({ status: 400, json: {}, text: 'some other error' });
       }
       if (url.endsWith('/v1/embeddings')) {
-        return Promise.resolve({
-          status: 400,
-          json: {},
-          text: 'some other error',
-        } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+        return mockResponse({ status: 400, json: {}, text: 'some other error' });
       }
-      return Promise.resolve({
-        status: 500,
-        json: {},
-        text: 'unknown',
-      } as unknown as Awaited<ReturnType<typeof requestUrl>>);
+      return mockResponse({ status: 500, json: {}, text: 'unknown' });
     });
 
     await expect(provider.embedBatch(['short'])).rejects.toThrow(
