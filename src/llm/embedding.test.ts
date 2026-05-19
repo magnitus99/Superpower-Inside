@@ -6,19 +6,22 @@ vi.mock('obsidian', () => ({
   requestUrl: vi.fn(),
 }));
 
-/** mock requestUrl이 반환해야 하는 RequestUrlResponsePromise을 생성한다 */
-function mockResponse(data: Partial<RequestUrlResponse> & { status: number; json: any; text: string }): RequestUrlResponsePromise {
+/** Obsidian requestUrl이 반환하는 RequestUrlResponsePromise을 생성한다 */
+function mockResponse(data: { status: number; json: Record<string, unknown>; text: string }): RequestUrlResponsePromise {
+  const jsonPromise = Promise.resolve(data.json);
   const full: RequestUrlResponse = {
+    status: data.status,
     headers: {},
-    arrayBuffer: new TextEncoder().encode(data.text).buffer as ArrayBuffer,
-    ...data,
+    arrayBuffer: new ArrayBuffer(0),
+    json: data.json,
+    text: data.text,
   };
   const promise = Promise.resolve(full);
   return Object.assign(promise, {
     arrayBuffer: promise.then(r => r.arrayBuffer),
-    json: promise.then(r => r.json),
+    json: jsonPromise,
     text: promise.then(r => r.text),
-  }) as RequestUrlResponsePromise;
+  });
 }
 
 describe('OllamaEmbeddingProvider', () => {
