@@ -44,6 +44,43 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return isUnknownArray(value) && value.every((item) => typeof item === 'number');
+}
+
+function extractEmbeddingVector(response: unknown): number[] | null {
+  if (!isRecord(response)) return null;
+
+  const data = response.data;
+  if (isUnknownArray(data)) {
+    const first = data[0];
+    if (isRecord(first) && isNumberArray(first.embedding)) {
+      return first.embedding;
+    }
+  }
+
+  const embeddings = response.embeddings;
+  if (isUnknownArray(embeddings)) {
+    const first = embeddings[0];
+    if (isNumberArray(first)) return first;
+    if (isNumberArray(embeddings)) return embeddings;
+  }
+
+  if (isNumberArray(response.embedding)) {
+    return response.embedding;
+  }
+
+  return null;
+}
+
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private baseUrl: string;
@@ -127,49 +164,66 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       headers.Authorization = `Bearer ${this.apiKey}`;
     }
 
+    const vectors: number[][] = [];
+    for (const text of texts) {
+      vectors.push(await this.embedSingle(text, headers, options));
+      throwIfAborted(options?.signal);
+    }
+    return vectors;
+  }
+
+  private async embedSingle(
+    text: string,
+    headers: Record<string, string>,
+    options?: EmbeddingOptions,
+  ): Promise<number[]> {
     // Ollama native endpoint 시도
     const res = await requestUrl({
       url: `${this.baseUrl}/api/embed`,
       method: 'POST',
       headers,
-      body: JSON.stringify({ model: this.model, input: texts, truncate: true }),
+      body: JSON.stringify({ model: this.model, input: text, truncate: true }),
       throw: false,
     });
     throwIfAborted(options?.signal);
 
     if (res.status < 400) {
-      const data = res.json as { embeddings?: number[][] };
-      if (data.embeddings) {
-        return data.embeddings;
+      const vector = extractEmbeddingVector(res.json);
+      if (vector) {
+        return vector;
       }
       throw new Error('Ollama embedding response missing embeddings');
     }
 
     // 400/404/405 → 여러 대체 endpoint 시도
-    const fallbackUrls = [
-      `${this.baseUrl}/api/embeddings`,
-      `${this.baseUrl}/v1/embeddings`,
+    const fallbackRequests = [
+      {
+        url: `${this.baseUrl}/api/embeddings`,
+        body: JSON.stringify({ model: this.model, prompt: text }),
+      },
+      {
+        url: `${this.baseUrl}/v1/embeddings`,
+        body: JSON.stringify({ model: this.model, input: text }),
+      },
     ];
     let lastError = '';
-    for (const fbUrl of fallbackUrls) {
+    for (const request of fallbackRequests) {
       try {
         const fbRes = await requestUrl({
-          url: fbUrl,
+          url: request.url,
           method: 'POST',
           headers,
-          body: JSON.stringify({ model: this.model, input: texts, truncate: true }),
+          body: request.body,
           throw: false,
         });
         throwIfAborted(options?.signal);
         if (fbRes.status < 400) {
-          const fbData = fbRes.json as {
-            data?: Array<{ embedding: number[] }>;
-            embeddings?: number[][];
-          };
-          if (fbData.data) return fbData.data.map((d) => d.embedding);
-          if (fbData.embeddings) return fbData.embeddings;
+          const vector = extractEmbeddingVector(fbRes.json);
+          if (vector) {
+            return vector;
+          }
         }
-        lastError = `Embedding API ${fbRes.status} (${fbUrl}): ${fbRes.text}`;
+        lastError = `Embedding API ${fbRes.status} (${request.url}): ${fbRes.text}`;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
@@ -178,8 +232,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     const rawError = lastError || res.text;
     const isContextLengthError = /context length|input length exceeds|exceeds the context length/i.test(rawError);
     const message = isContextLengthError
-      ? `Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 설정 > RAG > 청크 크기(chunkSize)를 줄이고 다시 인덱싱해보세요. (원본 오류: ${rawError})`
-      : `Ollama embedding failed for model "${this.model}". Tried /api/embed -> ${res.status}, then ${fallbackUrls.join(', ')}. Last error: ${rawError}`;
+      ? `Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 긴 단일 줄이나 로그 파일은 자동 분할되도록 수정되었으니 플러그인을 다시 빌드한 뒤 RAG 재인덱싱을 실행하세요. 계속 실패하면 해당 파일을 제외하거나 청크 크기(chunkSize)를 더 낮춰보세요. (원본 오류: ${rawError})`
+      : `Ollama embedding failed for model "${this.model}". Tried /api/embed -> ${res.status}, then ${fallbackRequests.map((request) => request.url).join(', ')}. Last error: ${rawError}`;
     throw new Error(message);
   }
 }
