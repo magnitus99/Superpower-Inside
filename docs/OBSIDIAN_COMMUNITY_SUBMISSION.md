@@ -45,7 +45,7 @@
 
 ### 1단계: 릴리스 준비
 
-```bash
+```fish
 # 버전 업 (patch / minor / major)
 ./scripts/bump-version.fish minor
 
@@ -57,7 +57,7 @@
 
 GitHub Releases 페이지에서 다음을 확인:
 
-1. 태그가 `vX.Y.Z` 형식인지
+1. 태그가 `X.Y.Z` 형식인지 확인합니다. 예: `1.0.0`. `v1.0.0`만 만들면 Obsidian 커뮤니티 제출 화면에서 릴리스를 찾지 못할 수 있습니다.
 2. `manifest.json`, `main.js`, `styles.css` 3개 파일이 첨부되어 있는지
 3. Release 노트가 적절한지
 
