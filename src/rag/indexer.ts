@@ -419,7 +419,7 @@ export class VaultIndexer {
       this.vault,
       this.vectorStore,
       this.ragConfig,
-      this.chatConfig,
+      this.chatConfig, options.signal,
     );
     throwIfIndexingCancelled(options.signal);
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));

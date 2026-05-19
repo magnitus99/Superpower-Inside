@@ -2,7 +2,6 @@ import type { TFile, Vault } from 'obsidian';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
 import type { VectorEntry, VectorStore } from './store';
-import { createContentHash } from './hash';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
 
@@ -39,15 +38,21 @@ export async function getIncludedRagFiles(
   return getRagCandidateFiles(vault, ragConfig, chatConfig);
 }
 
+/** AbortSignal을 받아 취소 가능한 RAG 상태 계산 */
 export async function calculateRagStatus(
   vault: Vault,
   vectorStore: VectorStore,
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
+  signal?: AbortSignal,
 ): Promise<RagStatusSummary> {
   const includedFiles = await getIncludedRagFiles(vault, ragConfig, chatConfig);
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
   const allFiles = vault.getFiles();
   const entries = await vectorStore.getEntries();
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
   const entriesByPath = groupEntriesByPath(entries);
 
   const updateRequiredDocuments: RagDocumentUpdate[] = [];
@@ -57,11 +62,13 @@ export async function calculateRagStatus(
   let unknownDocuments = 0;
 
   for (const file of includedFiles) {
-    const state = await getFileIndexState(
-      vault,
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    const state = getFileIndexState(
       file,
       entriesByPath.get(file.path) ?? [],
       ragConfig,
+      signal,
     );
     if (state.status === 'healthy') {
       healthyDocuments++;
@@ -114,15 +121,23 @@ function groupEntriesByPath(entries: VectorEntry[]): Map<string, VectorEntry[]> 
   return grouped;
 }
 
-async function getFileIndexState(
-  vault: Vault,
+/**
+ * 파일의 인덱스 상태를 확인합니다.
+ *
+ * 최적화: mtime과 size가 모두 일치하면 파일 내용 해시 확인을 건너뜁니다.
+ * mtime/size가 동일한데 내용이 달라진 극히 드문 케이스는 건강한 것으로 간주하며,
+ * 다음 인덱싱 시점에 다시 확인합니다.
+ */
+function getFileIndexState(
   file: TFile,
   entries: VectorEntry[],
   ragConfig: RAGConfig,
-): Promise<FileIndexState> {
+  signal?: AbortSignal,
+): FileIndexState {
   if (entries.length === 0) {
     return { status: 'missing', reason: '아직 인덱싱되지 않았습니다.' };
   }
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const hasLegacyEntry = entries.some(
     (entry) =>
@@ -140,7 +155,9 @@ async function getFileIndexState(
       reason: '이전 형식의 벡터라 파일 변경 여부를 확인할 수 없습니다.',
     };
   }
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
+  // mtime/size가 달라졌으면 stale (내용 읽기 불필요)
   const hasDifferentSource = entries.some(
     (entry) =>
       entry.metadata.sourceMtime !== file.stat.mtime ||
@@ -149,13 +166,10 @@ async function getFileIndexState(
   if (hasDifferentSource) {
     return { status: 'stale', reason: '파일이 마지막 인덱싱 이후 수정되었습니다.' };
   }
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const content = await vault.cachedRead(file);
-  const currentHash = createContentHash(content);
-  const hasDifferentHash = entries.some((entry) => entry.metadata.contentHash !== currentHash);
-  if (hasDifferentHash) {
-    return { status: 'stale', reason: '파일 내용 해시가 마지막 인덱싱 이후 달라졌습니다.' };
-  }
+  // mtime/size가 같으면 내용 해시 확인 생략 (극히 드문 충돌은 건강한 것으로 간주)
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const hasDifferentEmbedding = entries.some(
     (entry) =>

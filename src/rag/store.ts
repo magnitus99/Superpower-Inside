@@ -148,12 +148,14 @@ export class JsonFileVectorStore implements VectorStore {
   private path: string;
   private entries: VectorEntry[];
   private loaded: boolean;
+  private loadingPromise: Promise<void> | null = null;
 
   constructor(adapter: DataAdapter, path = '.superpower-inside/vectors.json') {
     this.adapter = adapter;
     this.path = path;
     this.entries = [];
     this.loaded = false;
+    this.loadingPromise = null;
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
@@ -199,13 +201,20 @@ export class JsonFileVectorStore implements VectorStore {
 
   private async loadIfNeeded(): Promise<void> {
     if (this.loaded) return;
-    const data = await readJsonFromVault(this.adapter, this.path);
-    if (Array.isArray(data)) {
-      this.entries = data as VectorEntry[];
-    } else {
-      this.entries = [];
+    if (this.loadingPromise) {
+      await this.loadingPromise;
+      return;
     }
-    this.loaded = true;
+    this.loadingPromise = (async () => {
+      const data = await readJsonFromVault(this.adapter, this.path);
+      if (Array.isArray(data)) {
+        this.entries = data as VectorEntry[];
+      } else {
+        this.entries = [];
+      }
+      this.loaded = true;
+    })();
+    await this.loadingPromise;
   }
 
   async getStats(): Promise<VectorStoreStats> {

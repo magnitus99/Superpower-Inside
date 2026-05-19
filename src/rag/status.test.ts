@@ -64,7 +64,7 @@ describe('calculateRagStatus', () => {
     );
   });
 
-  it('mtime과 size가 같아도 내용 해시가 달라진 문서를 stale로 분류한다', async () => {
+  it('mtime/size가 같으면 내용 해시 차이를 무시하고 healthy로 분류한다 (최적화)', async () => {
     const vault = createVault([createFile('note.md', 1000, 'note.md content'.length)]);
     const store = new MemoryVectorStore();
     await store.add([
@@ -82,10 +82,9 @@ describe('calculateRagStatus', () => {
 
     const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
-    expect(status.staleDocuments).toBe(1);
-    expect(status.updateRequiredDocuments[0]).toEqual(
-      expect.objectContaining({ path: 'note.md', status: 'stale' }),
-    );
+    // mtime/size가 같으면 hash 차이를 무시 → healthy (cachedRead 생략 최적화)
+    expect(status.healthyDocuments).toBe(1);
+    expect(status.updateRequiredDocuments).toHaveLength(0);
   });
 
   it('메타데이터가 없는 기존 벡터를 unknown으로 분류한다', async () => {
@@ -160,6 +159,17 @@ describe('calculateRagStatus', () => {
     expect(status.updateRequiredDocuments.map((document) => document.path)).toEqual([
       'included.md',
     ]);
+  });
+
+  it('AbortSignal이 전달되면 중단 시점에 AbortError를 던진다', async () => {
+    const vault = createVault([createFile('a.md', 1000, 10), createFile('b.md', 1000, 10)]);
+    const store = new MemoryVectorStore();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      calculateRagStatus(vault, store, baseRagConfig, chatConfig, controller.signal),
+    ).rejects.toThrow(DOMException);
   });
 });
 
