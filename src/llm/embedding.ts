@@ -55,7 +55,12 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     model = 'text-embedding-3-small',
   ) {
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl;
+    // trailing slash 제거, /v1 중복 방지
+    let url = baseUrl.trim().replace(/\/+$/, '');
+    if (url.endsWith('/v1')) {
+      url = url.slice(0, -3);
+    }
+    this.baseUrl = url;
     this.model = model;
   }
 
@@ -76,12 +81,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         input: texts,
         model: this.model,
-        encoding_format: 'float',
       }),
     });
     throwIfAborted(options?.signal);
     if (!res.ok) {
-      throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
+      const body = await res.text();
+      throw new Error(
+        `Embedding API ${res.status} (endpoint: ${this.baseUrl}/v1/embeddings, model: ${this.model}): ${body}`,
+      );
     }
     const data = (await res.json()) as {
       data?: Array<{ embedding: number[] }>;
@@ -119,21 +126,61 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     if (this.apiKey) {
       headers.Authorization = `Bearer ${this.apiKey}`;
     }
+
+    // Ollama native endpoint 시도
     const res = await requestUrl({
       url: `${this.baseUrl}/api/embed`,
       method: 'POST',
       headers,
-      body: JSON.stringify({ model: this.model, input: texts }),
+      body: JSON.stringify({ model: this.model, input: texts, truncate: true }),
+      throw: false,
     });
     throwIfAborted(options?.signal);
-    if (res.status >= 400) {
-      throw new Error(`Ollama embedding failed: ${res.status} ${res.text}`);
-    }
-    const data = res.json as { embeddings?: number[][] };
-    if (!data.embeddings) {
+
+    if (res.status < 400) {
+      const data = res.json as { embeddings?: number[][] };
+      if (data.embeddings) {
+        return data.embeddings;
+      }
       throw new Error('Ollama embedding response missing embeddings');
     }
-    return data.embeddings;
+
+    // 400/404/405 → 여러 대체 endpoint 시도
+    const fallbackUrls = [
+      `${this.baseUrl}/api/embeddings`,
+      `${this.baseUrl}/v1/embeddings`,
+    ];
+    let lastError = '';
+    for (const fbUrl of fallbackUrls) {
+      try {
+        const fbRes = await requestUrl({
+          url: fbUrl,
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model: this.model, input: texts, truncate: true }),
+          throw: false,
+        });
+        throwIfAborted(options?.signal);
+        if (fbRes.status < 400) {
+          const fbData = fbRes.json as {
+            data?: Array<{ embedding: number[] }>;
+            embeddings?: number[][];
+          };
+          if (fbData.data) return fbData.data.map((d) => d.embedding);
+          if (fbData.embeddings) return fbData.embeddings;
+        }
+        lastError = `Embedding API ${fbRes.status} (${fbUrl}): ${fbRes.text}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    const rawError = lastError || res.text;
+    const isContextLengthError = /context length|input length exceeds|exceeds the context length/i.test(rawError);
+    const message = isContextLengthError
+      ? `Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 설정 > RAG > 청크 크기(chunkSize)를 줄이고 다시 인덱싱해보세요. (원본 오류: ${rawError})`
+      : `Ollama embedding failed for model "${this.model}". Tried /api/embed -> ${res.status}, then ${fallbackUrls.join(', ')}. Last error: ${rawError}`;
+    throw new Error(message);
   }
 }
 

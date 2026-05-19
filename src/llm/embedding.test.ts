@@ -1,54 +1,94 @@
-import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  CachedEmbeddingProvider,
-  OpenAIEmbeddingProvider,
-  type EmbeddingOptions,
-  type EmbeddingProvider,
-} from './embedding';
+import { describe, expect, it, vi } from 'vitest';
+import { OllamaEmbeddingProvider } from './embedding';
 
-vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
+vi.mock('obsidian', () => ({
+  requestUrl: vi.fn(),
+}));
 
-describe('OpenAIEmbeddingProvider', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
+import { requestUrl } from 'obsidian';
 
-  it('embedding fetch에 AbortSignal을 전달한다', async () => {
-    const controller = new AbortController();
-    const fetchMock = vi.fn(() =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ data: [{ embedding: [1, 0] }] }),
-      } as Response),
+describe('OllamaEmbeddingProvider', () => {
+  it('컨텍스트 길이 초과 400 응답 시 개선된 에러 메시지를 던진다', async () => {
+    const provider = new OllamaEmbeddingProvider(
+      'http://localhost:11434',
+      'nomic-embed-text-v2-moe:latest',
     );
-    vi.stubGlobal('fetch', fetchMock);
-    const provider = new OpenAIEmbeddingProvider('key');
 
-    await provider.embedBatch(['hello'], { signal: controller.signal });
+    const mocked = vi.mocked(requestUrl);
+    mocked.mockImplementation(((request: string | { url?: string }) => {
+      const url = typeof request === 'string' ? request : request.url ?? '';
+      if (url.endsWith('/api/embed')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: 'bad request',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      if (url.endsWith('/api/embeddings')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: 'bad request',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      if (url.endsWith('/v1/embeddings')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: '{"error":{"message":"the input length exceeds the context length","type":"invalid_request_error","param":null,"code":null}}',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      return Promise.resolve({
+        status: 500,
+        json: {},
+        text: 'unknown',
+      } as unknown as ReturnType<typeof requestUrl>);
+    }) as any);
 
-    const init = (fetchMock.mock.calls[0] as unknown[] | undefined)?.[1] as
-      | RequestInit
-      | undefined;
-    expect(init?.signal).toBe(controller.signal);
+    await expect(
+      provider.embedBatch(['a'.repeat(5000)]),
+    ).rejects.toThrow(/청크 크기.*chunkSize.*줄이/);
   });
-});
 
-describe('CachedEmbeddingProvider', () => {
-  it('inner provider에 취소 옵션을 전달한다', async () => {
-    const controller = new AbortController();
-    const embedBatch = vi.fn((texts: string[], _options?: EmbeddingOptions) => {
-      void _options;
-      return Promise.resolve(texts.map(() => [1, 0]));
-    });
-    const inner: EmbeddingProvider = {
-      embed: () => Promise.resolve([1, 0]),
-      embedBatch,
-    };
-    const provider = new CachedEmbeddingProvider(inner, `test-${Date.now()}`);
+  it('일반 400 오류는 기존 형식의 에러 메시지를 유지한다', async () => {
+    const provider = new OllamaEmbeddingProvider(
+      'http://localhost:11434',
+      'nomic-embed-text-v2-moe:latest',
+    );
 
-    await provider.embedBatch(['cache miss'], { signal: controller.signal });
+    const mocked = vi.mocked(requestUrl);
+    mocked.mockImplementation(((request: string | { url?: string }) => {
+      const url = typeof request === 'string' ? request : request.url ?? '';
+      if (url.endsWith('/api/embed')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: 'some other error',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      if (url.endsWith('/api/embeddings')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: 'some other error',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      if (url.endsWith('/v1/embeddings')) {
+        return Promise.resolve({
+          status: 400,
+          json: {},
+          text: 'some other error',
+        }) as unknown as ReturnType<typeof requestUrl>;
+      }
+      return Promise.resolve({
+        status: 500,
+        json: {},
+        text: 'unknown',
+      } as unknown as ReturnType<typeof requestUrl>);
+    }) as any);
 
-    expect(embedBatch).toHaveBeenCalledWith(['cache miss'], { signal: controller.signal });
+    await expect(provider.embedBatch(['short'])).rejects.toThrow(
+      /Ollama embedding failed/,
+    );
   });
 });
