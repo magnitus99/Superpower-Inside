@@ -806,9 +806,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.ragStatusTimestamp = timestampEl;
 
     this.ragStatusRefresh = new RefreshAction({
-      action: async (_signal) => {
+      action: async (signal) => {
         try {
-          const status = await this.getRagStatus();
+          const status = await this.getRagStatus(signal);
           if (status) {
             timestampEl.setText(
               `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`,
@@ -829,7 +829,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       spinnerClass: 'spinning',
     });
     this.ragStatusRefresh.attach(refreshButton);
-    void this.ragStatusRefresh.execute();
+    // 자동 갱신은 백그라운드 타이머에서 처리
+    void this.updateRagStats();
   }
 
   private createRagStatusItem(containerEl: HTMLElement, label: string, value: string): void {
@@ -1359,7 +1360,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return '확인 필요';
   }
 
-  private async getRagStatus(): Promise<RagStatusSummary | null> {
+  private async getRagStatus(signal?: AbortSignal): Promise<RagStatusSummary | null> {
+    // 캐시된 eventDrivenRagStats가 있으면 우선 사용 (백그라운드 타이머가 자동 갱신)
+    if (this.plugin.eventDrivenRagStats) {
+      return this.plugin.eventDrivenRagStats;
+    }
     const p = this.plugin as unknown as { vectorStore?: VectorStore };
     if (p.vectorStore) {
       return calculateRagStatus(
@@ -1367,6 +1372,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         p.vectorStore,
         this.plugin.settings.rag,
         this.plugin.settings.chat,
+        signal,
       );
     }
     return this.plugin.eventDrivenRagStats ?? null;

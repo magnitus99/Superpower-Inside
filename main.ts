@@ -62,6 +62,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private deleteCleanup: (() => void) | null = null;
   private renameCleanup: (() => void) | null = null;
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  private ragStatusTimer: ReturnType<typeof setInterval> | null = null;
   private ragIndexAbortController: AbortController | null = null;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
@@ -162,6 +163,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
     }
+    if (this.ragStatusTimer) {
+      clearInterval(this.ragStatusTimer);
+      this.ragStatusTimer = null;
+    }
     if (this.mcpRegistry) {
       void this.mcpRegistry.disconnectAll();
     }
@@ -209,12 +214,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.settings.chat,
       );
       const summary = this.eventDrivenRagStats;
-      this.refreshBus.emit('rag', {
-        status: 'success',
-        detail: `${summary.healthyDocuments} / ${summary.totalDocuments}`,
-      });
+      if (this.refreshBus) {
+        this.refreshBus.emit('rag', {
+          status: 'success',
+          detail: `${summary.healthyDocuments} / ${summary.totalDocuments}`,
+        });
+      }
     } catch {
-      this.refreshBus.emit('rag', { status: 'error', detail: '통계 계산 실패' });
+      if (this.refreshBus) {
+        this.refreshBus.emit('rag', { status: 'error', detail: '통계 계산 실패' });
+      }
     }
   }
 
@@ -568,6 +577,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // Auto-update timer
     this.setupAutoUpdate();
+    // RAG 상태 자동 갱신 타이머 (30초 간격)
+    this.setupRagStatusTimer();
     this.registerRAGEvents();
   }
 
@@ -577,6 +588,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
+    }
+    if (this.ragStatusTimer) {
+      clearInterval(this.ragStatusTimer);
+      this.ragStatusTimer = null;
     }
     this.vectorStore = null;
     this.embeddingProvider = null;
@@ -634,6 +649,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.debouncedRefreshStats();
       },
     );
+  }
+
+  /** RAG 상태 계산을 30초 간격으로 자동 갱신하고 RefreshBus로 발행 */
+  private setupRagStatusTimer(): void {
+    if (this.ragStatusTimer) {
+      clearInterval(this.ragStatusTimer);
+      this.ragStatusTimer = null;
+    }
+    // 초기 1회 즉시 실행
+    void this.computeAndEmitRagStats();
+    // 30초 간격 갱신
+    this.ragStatusTimer = setInterval(() => {
+      void this.computeAndEmitRagStats();
+    }, 30_000);
   }
 
   setupAutoUpdate(): void {
