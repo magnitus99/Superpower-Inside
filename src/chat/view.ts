@@ -38,6 +38,7 @@ import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
 import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
+import { RefreshAction } from '../utils/refresh-action';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
@@ -86,6 +87,12 @@ export class ChatView extends ItemView {
   private abortController: AbortController | null;
   private lastUserPrompt: string | null;
   private previousUserQueries: string[];
+
+  // RefreshAction 인스턴스
+  private mcpRefreshAction: RefreshAction | null = null;
+  private modelRefreshAction: RefreshAction | null = null;
+  // RefreshBus 구독 해제 함수들
+  private refreshBusUnsubscribers: (() => void)[] = [];
 
   private messageEls: Map<string, HTMLElement>;
 
@@ -157,6 +164,28 @@ export class ChatView extends ItemView {
     this.buildInputArea(root);
     this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
+    this.registerRefreshBusEvents();
+  }
+
+  private registerRefreshBusEvents(): void {
+    const pluginWithBus = this.plugin as unknown as { refreshBus?: { on: (domain: string, handler: (result: { status: string; detail?: string }) => void) => () => void } };
+    if (!pluginWithBus.refreshBus) return;
+
+    this.refreshBusUnsubscribers.push(
+      pluginWithBus.refreshBus.on('mcp', () => {
+        this.renderMcpStatusBar();
+      }),
+    );
+    this.refreshBusUnsubscribers.push(
+      pluginWithBus.refreshBus.on('models', () => {
+        this.populateModelSelect();
+      }),
+    );
+    this.refreshBusUnsubscribers.push(
+      pluginWithBus.refreshBus.on('rag', () => {
+        /* RAG 상태 변경은 채팅 컨텍스트가 다음 질문 시 자동 반영됨 */
+      }),
+    );
   }
 
   private registerMcpStatusEvents(): void {
@@ -172,6 +201,16 @@ export class ChatView extends ItemView {
     this.isStreaming = false;
     this.setLoading(false);
     this.cancelStreamingMarkdownRender();
+    // RefreshAction 정리
+    this.mcpRefreshAction?.detach();
+    this.mcpRefreshAction = null;
+    this.modelRefreshAction?.detach();
+    this.modelRefreshAction = null;
+    // RefreshBus 구독 해제
+    for (const unsub of this.refreshBusUnsubscribers) {
+      unsub();
+    }
+    this.refreshBusUnsubscribers = [];
     await this.saveCurrentSession();
   }
 
@@ -265,11 +304,7 @@ export class ChatView extends ItemView {
         cls: 'superpower-inside-chat-mcp-status-label',
       });
       connectingLabel.setText(t('mcpConnecting'));
-      const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'superpower-inside-chat-mcp-refresh-btn',
-        text: t('mcpRefresh'),
-      });
-      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      this.attachMcpRefreshButton();
       return;
     }
 
@@ -278,11 +313,7 @@ export class ChatView extends ItemView {
         cls: 'superpower-inside-chat-mcp-status-label',
       });
       emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
-      const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'superpower-inside-chat-mcp-refresh-btn',
-        text: t('mcpRefresh'),
-      });
-      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      this.attachMcpRefreshButton();
       return;
     }
 
@@ -308,33 +339,40 @@ export class ChatView extends ItemView {
       chip.setText(server.name);
     }
 
+    this.attachMcpRefreshButton();
+  }
+
+  private attachMcpRefreshButton(): void {
+    if (!this.mcpStatusBar) return;
+    // 이전 버튼 정리
+    const existing = this.mcpStatusBar.querySelector('.superpower-inside-chat-mcp-refresh-btn');
+    if (existing) existing.remove();
+
     const refreshBtn = this.mcpStatusBar.createEl('button', {
       cls: 'superpower-inside-chat-mcp-refresh-btn',
       text: t('mcpRefresh'),
     });
-    refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
-  }
 
-  private async refreshMcpServers(btn: HTMLButtonElement): Promise<void> {
-    if (btn.disabled) return;
-    const originalText = btn.textContent || '';
-    btn.setText(t('mcpRefreshing'));
-    btn.disabled = true;
-    try {
-      const errors = await this.plugin.reconnectMCP();
-      if (errors.length > 0) {
-        new Notice(`MCP 재연결 중 ${errors.length}개 서버 실패`, 5000);
-      } else {
-        new Notice('MCP 서버 재연결 완료');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`MCP 재연결 실패: ${msg}`, 5000);
-    } finally {
-      this.renderMcpStatusBar();
-      btn.setText(originalText);
-      btn.disabled = false;
-    }
+    this.mcpRefreshAction?.detach();
+    this.mcpRefreshAction = new RefreshAction({
+      action: async (_signal) => {
+        const errors = await this.plugin.reconnectMCP();
+        if (errors.length > 0) {
+          new Notice(`MCP 재연결 중 ${errors.length}개 서버 실패`, 5000);
+          return { status: 'partial', detail: `${errors.length}개 실패` };
+        }
+        // RefreshBus로 MCP 이벤트 발행 (설정 탭 동기화)
+        const pluginWithBus = this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string; detail?: string }) => void } };
+        pluginWithBus.refreshBus?.emit('mcp', { status: 'success' });
+        new Notice('MCP 서버 재연결 완료', 3000);
+        return { status: 'success' };
+      },
+      loadingText: t('mcpRefreshing'),
+      spinnerClass: 'spinning',
+      errorNotice: false,
+      successNotice: false,
+    });
+    this.mcpRefreshAction.attach(refreshBtn);
   }
 
   private buildInputArea(container: HTMLElement): void {
@@ -356,9 +394,17 @@ export class ChatView extends ItemView {
       <polyline points="23 4 23 10 17 10"></polyline>
       <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
     </svg>`;
-    modelRefreshBtn.addEventListener('click', () => {
-      this.populateModelSelect();
+    this.modelRefreshAction = new RefreshAction({
+      action: (_signal) => {
+        void _signal;
+        this.populateModelSelect();
+        return Promise.resolve({ status: 'success' } as const);
+      },
+      loadingText: t('refreshing'),
+      spinnerClass: 'spinning',
+      successNotice: false,
     });
+    this.modelRefreshAction.attach(modelRefreshBtn);
 
     this.mcpBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',

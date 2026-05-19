@@ -42,6 +42,7 @@ import {
 import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { MCP_DESKTOP_ONLY_MESSAGE, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
+import { RefreshBus } from './src/utils/refresh-bus';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -66,6 +67,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
   private statsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  refreshBus: RefreshBus = new RefreshBus();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -165,6 +167,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
+    this.refreshBus.destroy();
   }
 
   isRagIndexing(): boolean {
@@ -181,23 +184,37 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     const controller = new AbortController();
     this.ragIndexAbortController = controller;
-    this.refreshRagSettingsView();
+    this.notifyRagStatsRefresh();
     try {
       return await operation(controller.signal);
     } finally {
       if (this.ragIndexAbortController === controller) {
         this.ragIndexAbortController = null;
       }
-      this.refreshRagSettingsView();
+      this.notifyRagStatsRefresh();
     }
   }
 
-  refreshRagSettingsView(): void {
-    const appWithSetting = this.app as unknown as {
-      setting?: { activeTab?: { refreshStats?(): void } };
-    };
-    if (appWithSetting.setting?.activeTab?.refreshStats) {
-      appWithSetting.setting.activeTab.refreshStats();
+  private notifyRagStatsRefresh(): void {
+    void this.computeAndEmitRagStats();
+  }
+
+  private async computeAndEmitRagStats(): Promise<void> {
+    if (!this.vectorStore) return;
+    try {
+      this.eventDrivenRagStats = await calculateRagStatus(
+        this.app.vault,
+        this.vectorStore,
+        this.settings.rag,
+        this.settings.chat,
+      );
+      const summary = this.eventDrivenRagStats;
+      this.refreshBus.emit('rag', {
+        status: 'success',
+        detail: `${summary.healthyDocuments} / ${summary.totalDocuments}`,
+      });
+    } catch {
+      this.refreshBus.emit('rag', { status: 'error', detail: '통계 계산 실패' });
     }
   }
 
@@ -455,30 +472,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       clearTimeout(this.statsDebounceTimer);
     }
     this.statsDebounceTimer = setTimeout(() => {
-      void this.refreshStats();
+      void this.computeAndEmitRagStats();
     }, 500);
   }
 
-  private async refreshStats(): Promise<void> {
-    if (!this.vectorStore) return;
-    try {
-      this.eventDrivenRagStats = await calculateRagStatus(
-        this.app.vault,
-        this.vectorStore,
-        this.settings.rag,
-        this.settings.chat,
-      );
 
-      const appWithSetting = this.app as unknown as {
-        setting?: { activeTab?: { refreshStats?(): void } };
-      };
-      if (appWithSetting.setting?.activeTab?.refreshStats) {
-        appWithSetting.setting.activeTab.refreshStats();
-      }
-    } catch {
-      /* empty */
-    }
-  }
 
   async initRAG(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
@@ -506,13 +504,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
     let apiKey = '';
     if (config && providerKey !== 'other' && shouldShowProviderApiKey(providerKey)) {
       apiKey = config.apiKey;
+      // config에 baseUrl이 설정되어 있으면 우선 사용
+      if (config.baseUrl) {
+        baseUrl = config.baseUrl;
+      }
     }
-    if (providerKey === 'openai') {
-      baseUrl = 'https://api.openai.com';
-    } else if (providerKey === 'openRouter') {
-      baseUrl = 'https://openrouter.ai/api';
-    } else if (providerKey === 'ollama') {
-      baseUrl = 'http://localhost:11434';
+    // config에 baseUrl이 없는 경우에만 providerKey 기본값 사용
+    if (!baseUrl) {
+      if (providerKey === 'openai') {
+        baseUrl = 'https://api.openai.com';
+      } else if (providerKey === 'openRouter') {
+        baseUrl = 'https://openrouter.ai/api';
+      } else if (providerKey === 'ollama') {
+        baseUrl = 'http://localhost:11434';
+      }
     }
 
     // Create embedding provider
@@ -664,7 +669,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
-      void this.refreshStats();
+      void this.computeAndEmitRagStats();
     } catch (err) {
       if (isIndexingCancelledError(err)) {
         new Notice('인덱싱이 중단되었습니다.');

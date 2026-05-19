@@ -14,6 +14,8 @@ export interface I18nKeys {
   defaultModel: string;
   defaultModelDesc: string;
   refreshModelList: string;
+  refreshing: string;
+  refreshComplete: string;
   noModelsEnabled: string;
   pluginAwareGeneration: string;
   pluginAwareGenerationDesc: string;
@@ -128,6 +130,8 @@ export interface I18nKeys {
   excludeExtMarkdownWarning: string;
   chunkSize: string;
   chunkSizeDesc: string;
+  ragChunkSizeOllamaWarning: string;
+  ollamaEmbeddingContextError: string;
   vectorStoreType: string;
   vectorStoreTypeDesc: string;
   jsonFile: string;
@@ -307,6 +311,8 @@ const ko: I18nKeys = {
   defaultModel: '기본 모델',
   defaultModelDesc: '채팅 및 명령어에 사용할 기본 모델',
   refreshModelList: '모델 목록 새로고침',
+  refreshing: '새로고침 중...',
+  refreshComplete: '새로고침 완료',
   noModelsEnabled: '활성화된 모델 없음',
   pluginAwareGeneration: '플러그인 인식 생성 활성화',
   pluginAwareGenerationDesc:
@@ -427,6 +433,8 @@ const ko: I18nKeys = {
   excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
   chunkSize: '청크 크기',
   chunkSizeDesc: '문서 청크당 최대 문자 수 (100~5000)',
+  ragChunkSizeOllamaWarning: 'Ollama 로컬 임베딩 모델 중 일부는 컨텍스트 길이 제한이 작습니다. 400 오류가 발생하면 이 값을 500 이하로 줄여보세요.',
+  ollamaEmbeddingContextError: 'Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 설정 > RAG > 청크 크기(chunkSize)를 줄이고 다시 인덱싱해보세요.',
   vectorStoreType: '벡터 저장소 유형',
   vectorStoreTypeDesc:
     'JSON File은 볼트 내부 JSON 파일에 저장되어 동기화/백업이 쉽지만 대용량 벡터에서는 파일 쓰기와 충돌 부담이 큽니다. IndexedDB는 로컬 브라우저 DB라 대용량 구조화 데이터에 적합하지만 장치별 로컬 데이터라 자동 동기화되지 않습니다.',
@@ -617,6 +625,8 @@ const en: I18nKeys = {
   defaultModel: 'Default Model',
   defaultModelDesc: 'Default model for chat and commands',
   refreshModelList: 'Refresh model list',
+  refreshing: 'Refreshing...',
+  refreshComplete: 'Refresh complete',
   noModelsEnabled: 'No models enabled',
   pluginAwareGeneration: 'Enable Plugin-Aware Generation',
   pluginAwareGenerationDesc:
@@ -738,6 +748,8 @@ const en: I18nKeys = {
   excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
   chunkSize: 'Chunk Size',
   chunkSizeDesc: 'Maximum characters per document chunk (100–5000)',
+  ragChunkSizeOllamaWarning: 'Some Ollama local embedding models have small context limits. If you get a 400 error, try reducing this value to 500 or less.',
+  ollamaEmbeddingContextError: 'The input exceeds the maximum context length of the Ollama embedding model. Go to Settings > RAG > Chunk size and lower it, then reindex.',
   vectorStoreType: 'Vector Store Type',
   vectorStoreTypeDesc:
     'JSON File stores vectors in vault JSON, making sync and backups easy but large vector files can be slow and conflict-prone. IndexedDB stores vectors in the local browser DB, better for large structured data but device-local and not automatically synced.',

@@ -1,5 +1,6 @@
 import type { App, Vault } from 'obsidian';
 import { t } from '../i18n';
+import { RefreshAction } from '../utils/refresh-action';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
@@ -63,6 +64,20 @@ export function openSessionHistoryModal(
     text: t('refresh'),
     attr: { type: 'button' },
   });
+  // RefreshAction으로 세션 목록 새로고침 관리
+  const sessionRefreshAction = new RefreshAction({
+    action: async (_signal) => {
+      void _signal;
+      allMetas = await listChatMetasAsync(activeVault, saveFolder);
+      if (!isClosed) filterAndRender();
+      return { status: 'success' };
+    },
+    loadingText: t('refreshing'),
+    spinnerClass: 'spinning',
+    errorNotice: '세션 목록을 불러오지 못했습니다.',
+    successNotice: false,
+  });
+  sessionRefreshAction.attach(refreshBtn);
   const closeBtn = titleActions.createEl('button', {
     cls: 'superpower-inside-session-close-btn',
     text: '×',
@@ -98,6 +113,7 @@ export function openSessionHistoryModal(
 
   const close = (): void => {
     isClosed = true;
+    sessionRefreshAction.detach();
     overlay.remove();
   };
 
@@ -310,16 +326,12 @@ export function openSessionHistoryModal(
   const loadMetas = async (): Promise<void> => {
     deleteConfirmPath = null;
     renderLoading();
-    refreshBtn.disabled = true;
-
     try {
       allMetas = await listChatMetasAsync(activeVault, saveFolder);
       if (isClosed) return;
       filterAndRender();
     } catch {
       if (!isClosed) renderError();
-    } finally {
-      if (!isClosed) refreshBtn.disabled = false;
     }
   };
 
@@ -344,7 +356,9 @@ export function openSessionHistoryModal(
   });
 
   closeBtn.addEventListener('click', close);
-  refreshBtn.addEventListener('click', () => void loadMetas());
+  // RefreshAction이 attach에서 click 이벤트 처리
+  // 초기 로드는 직접 실행
+  void loadMetas();
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });

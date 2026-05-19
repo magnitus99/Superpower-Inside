@@ -1000,6 +1000,24 @@
   animation: superpower-inside-spin 0.8s linear infinite;
 }
 
+/* 모든 새로고침 버튼 공통 spinning 상태 */
+.superpower-inside-rag-status-refresh-btn.spinning,
+.superpower-inside-mcp-refresh-btn.spinning,
+.superpower-inside-chat-mcp-refresh-btn.spinning,
+.superpower-inside-chat-model-refresh-btn.spinning,
+.superpower-inside-exclude-count-refresh-btn.spinning,
+.superpower-inside-session-refresh-btn.spinning {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.superpower-inside-rag-status-refresh-btn.spinning svg,
+.superpower-inside-chat-mcp-refresh-btn.spinning svg,
+.superpower-inside-chat-model-refresh-btn.spinning svg,
+.superpower-inside-session-refresh-btn.spinning svg {
+  animation: superpower-inside-spin 0.8s linear infinite;
+}
+
 .superpower-inside-mcp-status-header-row {
   display: flex;
   align-items: center;
