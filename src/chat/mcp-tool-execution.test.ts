@@ -78,6 +78,79 @@ describe('MCP 툴 실행 결과 반영', () => {
     });
   });
 
+  it('mentioned-auto는 멘션된 서버의 일반 툴을 사용자 의도로 보고 자동 승인한다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '파일 내용' }] }, ['read_file']),
+      'filesystem',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'read_file', arguments: '{"path":"Notes/test.md"}' })],
+      registry,
+      ['filesystem'],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: true,
+      serverName: 'filesystem',
+    });
+  });
+
+  it('mentioned-auto는 destructive 이름의 툴을 멘션된 서버에서도 승인 대기로 둔다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '삭제됨' }] }, ['delete_file']),
+      'filesystem',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'delete_file', arguments: '{"path":"Notes/test.md"}' })],
+      registry,
+      ['filesystem'],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: false,
+      serverName: 'filesystem',
+    });
+  });
+
+  it('mentioned-auto는 멘션되지 않은 서버의 툴을 자동 승인하지 않는다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '검색 결과' }] }),
+      'serper',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'search', arguments: '{"query":"obsidian"}' })],
+      registry,
+      [],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: false,
+      serverName: 'serper',
+    });
+  });
+
+  it('always-auto는 멘션 여부와 무관하게 non-destructive 툴을 승인한다', async () => {
+    const registry = createRegistry(createClient({ content: [{ type: 'text', text: '검색 결과' }] }));
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'search', arguments: '{"query":"obsidian"}' })],
+      registry,
+      [],
+      'always-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: true,
+      serverName: 'serper',
+    });
+  });
+
   it('MCP가 빈 결과를 반환하면 성공으로 위장하지 않고 오류로 반영한다', async () => {
     const registry = createRegistry(createClient({ content: [] }));
 
@@ -109,12 +182,17 @@ function createToolCall(patch: Partial<ToolCallRecord>): ToolCallRecord {
   };
 }
 
-function createClient(result: unknown) {
+function createClient(result: unknown, extraToolNames: string[] = []) {
   return {
     listTools: vi.fn(() =>
       Promise.resolve([
         { name: 'search', description: '검색', inputSchema: { type: 'object' } },
         { name: 'lookup_docs', description: '문서 검색', inputSchema: { type: 'object' } },
+        ...extraToolNames.map((name) => ({
+          name,
+          description: '추가 테스트 툴',
+          inputSchema: { type: 'object' },
+        })),
       ]),
     ),
     callTool: vi.fn(() => Promise.resolve(result)),
