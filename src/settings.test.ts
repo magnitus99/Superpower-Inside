@@ -22,6 +22,7 @@ import {
   CONTEXT7_MCP_SERVER_NAME,
   shouldShowPluginAwareContext7Warning,
 } from './mcp/context7';
+import { setLanguage, t } from './i18n';
 
 describe('RAG 설정 표시 헬퍼', () => {
   it('선택된 벡터 저장소 라벨을 반환한다', () => {
@@ -171,5 +172,19 @@ describe('RAG 설정 표시 헬퍼', () => {
         servers: [],
       }),
     ).toBe(false);
+  });
+
+  it('MCP 툴 실행 정책 설명은 멘션 서버 신뢰와 결과 전달 범위를 안내한다', () => {
+    setLanguage('ko');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('멘션한 MCP 서버');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('사용 의사');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('최종 답변 생성을 위해 LLM provider로 다시 전달');
+
+    setLanguage('en');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('mentioned MCP server');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('intent to use');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('sent back to the LLM provider');
+
+    setLanguage('ko');
   });
 });
