@@ -1,6 +1,6 @@
 # Superpower Inside
 
-![version](https://img.shields.io/badge/version-1.0.9-blue)
+![version](https://img.shields.io/badge/version-1.0.10-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
