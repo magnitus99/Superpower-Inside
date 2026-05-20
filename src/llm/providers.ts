@@ -719,8 +719,10 @@ function toOllamaStreamChunk(data: OllamaChatResponse): StreamChunk | null {
   if (!content && !thinking && (!toolCalls || toolCalls.length === 0)) {
     return null;
   }
+  // Ollama Cloud에서 content가 비고 thinking만 오는 경우에도 content를 폴백
+  const finalContent = content || thinking || '';
   return {
-    content,
+    content: finalContent,
     done: false,
     ...(thinking ? { reasoning: thinking } : {}),
     ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
