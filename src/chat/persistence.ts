@@ -37,6 +37,7 @@ interface MessagePersistMeta {
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
+  originalContent?: string;
 }
 
 interface ParsedFrontmatter {
@@ -128,6 +129,12 @@ export async function saveChat(
     messages.map((message, index) => formatMessage(message, index + 1)).join('\n\n---\n\n'),
   ].join('\n');
 
+  // 빈 content를 가진 메시지가 있으면 경고
+  for (const message of messages) {
+    if (message.role === 'assistant' && !message.content?.trim() && !message.originalContent?.trim()) {
+      console.warn(`[Superpower Inside] 저장 경고: 메시지 ${message.id}의 content가 비어 있습니다.`);
+    }
+  }
   const content = frontmatter + body.trimEnd() + '\n';
 
   if (existingFile instanceof TFile) {
@@ -367,7 +374,9 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     lines.push('', '#### Content', '');
   }
 
-  lines.push(...formatNamedBlock('content', message.content));
+  // 원본 content 보존: classifyAssistantResponse 등으로 인해 content가 비었을 때 복원
+  const contentToSave = message.content || message.originalContent || '';
+  lines.push(...formatNamedBlock('content', contentToSave));
 
   if (message.errorMessage) {
     lines.push('', '#### Error', '', ...formatNamedBlock('error', message.errorMessage));
@@ -425,10 +434,12 @@ function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
     const createdAt = normalizeDateValue(meta.createdAt);
     const updatedAt = normalizeDateValue(meta.updatedAt);
 
+    // content가 완전히 비어 있으면 reasoning을 폴백으로 사용
+    const finalContent = content.trim() ? content : (reasoning || '');
     messages.push({
       id: meta.id,
       role: meta.role,
-      content,
+      content: finalContent,
       timestamp: meta.timestamp,
       createdAt,
       updatedAt,
@@ -628,7 +639,7 @@ function decodeTextBlock(value: string): string {
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
     return new TextDecoder().decode(bytes);
   } catch {
-    return '';
+    return '[decoding failed]';
   }
 }
 

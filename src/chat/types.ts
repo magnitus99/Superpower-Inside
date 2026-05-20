@@ -99,6 +99,7 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatStopReason;
+  originalContent?: string;
 }
 
 /** 저장된 세션 데이터 (파일에서 로드) */
