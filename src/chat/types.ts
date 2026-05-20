@@ -18,6 +18,19 @@ export type ChatMessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
 
 export type ChatStopReason = 'complete' | 'cancelled' | 'error' | 'tool-failed';
 
+export interface AssistantQuestionChoice {
+  id: string;
+  label: string;
+}
+
+export interface AssistantQuestion {
+  prompt: string;
+  choices: AssistantQuestionChoice[];
+  selectionMode: 'single' | 'multiple';
+  allowFreeText: boolean;
+  source: 'answer' | 'reasoning-leak';
+}
+
 export interface SourceCitation {
   id: string;
   filePath: string;
@@ -83,6 +96,7 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   citations?: SourceCitation[];
   sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
+  assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatStopReason;
 }

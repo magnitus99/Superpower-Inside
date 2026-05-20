@@ -88,6 +88,68 @@ describe('chat persistence', () => {
       status: 'complete',
     });
   });
+
+  it('assistantQuestion 메타를 저장하고 복원한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '',
+        assistantQuestion: {
+          prompt: '해당되는 항목을 모두 선택해 주세요.',
+          choices: [
+            { id: 'choice-1', label: '성능' },
+            { id: 'choice-2', label: '보안' },
+          ],
+          selectionMode: 'multiple',
+          allowFreeText: true,
+          source: 'answer',
+        },
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].assistantQuestion).toEqual(messages[0].assistantQuestion);
+  });
+
+  it('assistantQuestion이 없는 legacy 세션은 undefined로 로드한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '일반 답변',
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].assistantQuestion).toBeUndefined();
+  });
+
+  it('single/freeText/reasoning-leak assistantQuestion 메타를 round-trip 한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '',
+        assistantQuestion: {
+          prompt: '어떤 문서를 기준으로 할까요?',
+          choices: [],
+          selectionMode: 'single',
+          allowFreeText: true,
+          source: 'reasoning-leak',
+        },
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].assistantQuestion).toEqual(messages[0].assistantQuestion);
+  });
 });
 
 interface TestVault extends Vault {

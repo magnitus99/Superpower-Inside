@@ -7,6 +7,7 @@ import type {
   ContextAttachment,
   SourceCitation,
   SourceValidationWarning,
+  AssistantQuestion,
   ToolCallRecord,
 } from './types';
 
@@ -33,6 +34,7 @@ interface MessagePersistMeta {
   citations?: SourceCitation[];
   sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
+  assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
 }
@@ -316,6 +318,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     citations: message.citations,
     sourceWarnings: message.sourceWarnings,
     contextAttachments: message.contextAttachments,
+    assistantQuestion: message.assistantQuestion,
     branchOf: message.branchOf,
     stopReason: message.stopReason,
   };
@@ -439,6 +442,7 @@ function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
       citations: meta.citations,
       sourceWarnings: meta.sourceWarnings,
       contextAttachments: meta.contextAttachments,
+      assistantQuestion: meta.assistantQuestion,
       branchOf: meta.branchOf,
       stopReason: meta.stopReason,
     });
@@ -466,6 +470,7 @@ function parseMessageMeta(raw: string): MessagePersistMeta | null {
       citations: parsed.citations,
       sourceWarnings: parsed.sourceWarnings,
       contextAttachments: parsed.contextAttachments,
+      assistantQuestion: parsed.assistantQuestion,
       branchOf: parsed.branchOf,
       stopReason: parsed.stopReason,
     };

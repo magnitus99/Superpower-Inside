@@ -13,7 +13,9 @@ import type {
   ToolCallDelta,
   ToolDefinition,
 } from '../llm/providers';
+import { normalizeReasoningChunk } from '../llm/reasoning';
 import type {
+  AssistantQuestion,
   ChatMessageWithMeta,
   SessionState,
   SourceValidationWarning,
@@ -36,6 +38,8 @@ import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
+import { classifyAssistantResponse } from './assistant-response-classifier';
+import { formatAssistantQuestionAnswer } from './assistant-question';
 import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
@@ -53,6 +57,7 @@ interface MessageMetaInput {
   citations?: SourceCitation[];
   sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
+  assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
 }
@@ -865,6 +870,7 @@ export class ChatView extends ItemView {
       citations: metaInput?.citations,
       sourceWarnings: metaInput?.sourceWarnings,
       contextAttachments: metaInput?.contextAttachments,
+      assistantQuestion: metaInput?.assistantQuestion,
       branchOf: metaInput?.branchOf,
       stopReason: metaInput?.stopReason,
     };
@@ -893,6 +899,7 @@ export class ChatView extends ItemView {
         toolCalls,
         msg.citations,
         msg.sourceWarnings,
+        msg.assistantQuestion,
       );
     } else if (role === 'tool') {
       const bubble = bubbleContainer.createDiv({
@@ -938,6 +945,7 @@ export class ChatView extends ItemView {
       message.citations = metaInput?.citations ?? message.citations;
       message.sourceWarnings = metaInput?.sourceWarnings ?? message.sourceWarnings;
       message.contextAttachments = metaInput?.contextAttachments ?? message.contextAttachments;
+      message.assistantQuestion = metaInput?.assistantQuestion;
       message.branchOf = metaInput?.branchOf ?? message.branchOf;
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
       if (toolCalls) {
@@ -959,6 +967,7 @@ export class ChatView extends ItemView {
         toolCalls,
         message?.citations,
         message?.sourceWarnings,
+        message?.assistantQuestion,
       );
       if (this.autoScroll) {
         this.scrollToBottom();
@@ -995,6 +1004,7 @@ export class ChatView extends ItemView {
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
     sourceWarnings?: SourceValidationWarning[],
+    assistantQuestion?: AssistantQuestion,
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
 
@@ -1034,7 +1044,9 @@ export class ChatView extends ItemView {
     const bubble = answerLayer.createDiv({
       cls: 'superpower-inside-chat-bubble assistant',
     });
-    if (content.trim()) {
+    if (assistantQuestion) {
+      this.renderAssistantQuestionCard(bubble, assistantQuestion);
+    } else if (content.trim()) {
       void this.renderMarkdownBubble(bubble, content);
     } else {
       bubble.setText(content);
@@ -1051,6 +1063,7 @@ export class ChatView extends ItemView {
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
     sourceWarnings?: SourceValidationWarning[],
+    assistantQuestion?: AssistantQuestion,
   ): void {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!(bubbleContainer instanceof HTMLElement)) return;
@@ -1064,6 +1077,7 @@ export class ChatView extends ItemView {
         toolCalls,
         citations,
         sourceWarnings,
+        assistantQuestion,
       );
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
@@ -1119,7 +1133,11 @@ export class ChatView extends ItemView {
         this.scheduleStreamingMarkdownRender(bubble, content);
       } else {
         this.cancelStreamingMarkdownRender();
-        void this.renderMarkdownBubble(bubble, content);
+        if (assistantQuestion) {
+          this.renderAssistantQuestionCard(bubble, assistantQuestion);
+        } else {
+          void this.renderMarkdownBubble(bubble, content);
+        }
         if (generatingLabel instanceof HTMLElement) {
           generatingLabel.remove();
         }
@@ -1128,6 +1146,85 @@ export class ChatView extends ItemView {
     }
     this.renderCitationsSection(bubbleContainer, citations ?? []);
     this.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+  }
+
+  private renderAssistantQuestionCard(container: HTMLElement, question: AssistantQuestion): void {
+    container.empty();
+    container.addClass('superpower-inside-chat-question-card');
+    const prompt = container.createDiv({
+      cls: 'superpower-inside-chat-question-prompt',
+      text: question.prompt,
+    });
+    prompt.setAttribute(
+      'title',
+      question.source === 'reasoning-leak'
+        ? '모델의 thinking 출력에서 사용자 질문을 감지했습니다.'
+        : '모델이 사용자 선택을 요청했습니다.',
+    );
+
+    const selected = new Set<string>();
+    const choiceControls: HTMLInputElement[] = [];
+
+    if (question.choices.length > 0) {
+      const choices = container.createDiv({ cls: 'superpower-inside-chat-question-choices' });
+      for (const choice of question.choices) {
+        const label = choices.createEl('label', {
+          cls: 'superpower-inside-chat-question-choice',
+        });
+        const input = label.createEl('input');
+        input.type = question.selectionMode === 'multiple' ? 'checkbox' : 'radio';
+        input.name = `assistant-question-${question.prompt}`;
+        input.value = choice.id;
+        choiceControls.push(input);
+        label.createSpan({ text: choice.label });
+        input.addEventListener('change', () => {
+          if (question.selectionMode === 'single') selected.clear();
+          if (input.checked) {
+            selected.add(choice.id);
+          } else {
+            selected.delete(choice.id);
+          }
+        });
+      }
+    }
+
+    let freeTextInput: HTMLTextAreaElement | null = null;
+    if (question.allowFreeText) {
+      freeTextInput = container.createEl('textarea', {
+        cls: 'superpower-inside-chat-question-free-text',
+        attr: { placeholder: '직접 입력' },
+      });
+    }
+
+    const submit = container.createEl('button', {
+      cls: 'superpower-inside-chat-question-submit',
+      text: question.selectionMode === 'multiple' ? '선택 완료' : '답변 보내기',
+    });
+    submit.addEventListener('click', () => {
+      const selectedLabels = question.choices
+        .filter((choice) => selected.has(choice.id))
+        .map((choice) => choice.label);
+      const freeText = freeTextInput?.value.trim() ?? '';
+      if (selectedLabels.length === 0 && !freeText) {
+        new Notice('답변할 항목을 선택하거나 직접 입력하세요.');
+        return;
+      }
+      const answer = formatAssistantQuestionAnswer(question, selectedLabels, freeText);
+      if (!answer) {
+        new Notice('답변할 항목을 선택하거나 직접 입력하세요.');
+        return;
+      }
+      if (this.inputArea) {
+        this.inputArea.value = answer;
+        this.autoResizeInput();
+      }
+      for (const control of choiceControls) {
+        control.disabled = true;
+      }
+      if (freeTextInput) freeTextInput.disabled = true;
+      submit.disabled = true;
+      void this.handleSend();
+    });
   }
 
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
@@ -1953,6 +2050,7 @@ export class ChatView extends ItemView {
         })),
         msg.citations,
         msg.sourceWarnings,
+        msg.assistantQuestion,
       );
     } else if (msg.role === 'tool') {
       const bubble = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-bubble tool' });
@@ -2173,6 +2271,38 @@ export class ChatView extends ItemView {
         { signal: abortController.signal },
       );
       if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+      let normalized = normalizeReasoningChunk({
+        content: fullText,
+        reasoning: fullReasoning || undefined,
+      });
+      fullText = normalized.content;
+      fullReasoning = normalized.reasoning ?? '';
+
+      const firstClassification = classifyAssistantResponse({
+        content: fullText,
+        reasoning: fullReasoning,
+      });
+      if (firstClassification.type === 'question') {
+        this.updateMessage(
+          assistantId,
+          firstClassification.content,
+          true,
+          firstClassification.reasoning || undefined,
+          Array.from(toolCallMap.values()),
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            status: 'complete',
+            citations: promptContext.citations,
+            contextAttachments: promptContext.attachments,
+            assistantQuestion: firstClassification.question,
+            stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
+          },
+        );
+        return;
+      }
+
       const parsedToolCalls = this.parseInlineToolRequests(fullText);
       if (parsedToolCalls.length > 0) {
         fullText = this.stripInlineToolRequests(fullText);
@@ -2242,6 +2372,38 @@ export class ChatView extends ItemView {
           toolDefinitions,
           { signal: abortController.signal },
         );
+
+        normalized = normalizeReasoningChunk({
+          content: fullText,
+          reasoning: fullReasoning || undefined,
+        });
+        fullText = normalized.content;
+        fullReasoning = normalized.reasoning ?? '';
+
+        const retryClassification = classifyAssistantResponse({
+          content: fullText,
+          reasoning: fullReasoning,
+        });
+        if (retryClassification.type === 'question') {
+          this.updateMessage(
+            assistantId,
+            retryClassification.content,
+            true,
+            retryClassification.reasoning || undefined,
+            Array.from(toolCallMap.values()),
+            {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              status: 'complete',
+              citations: promptContext.citations,
+              contextAttachments: promptContext.attachments,
+              assistantQuestion: retryClassification.question,
+              stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
+            },
+          );
+          return;
+        }
 
         toolCalls = Array.from(toolCallMap.values());
 
@@ -2398,7 +2560,13 @@ export class ChatView extends ItemView {
   private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
     const providerMessage: ChatMessage = {
       role: message.role,
-      content: message.content,
+      content:
+        message.content ||
+        (message.assistantQuestion
+          ? `질문: ${message.assistantQuestion.prompt}\n${message.assistantQuestion.choices
+              .map((choice) => `- ${choice.label}`)
+              .join('\n')}`
+          : ''),
       ...(message.reasoning ? { reasoning: message.reasoning } : {}),
     };
     if (message.toolCalls && message.toolCalls.length > 0) {
@@ -2688,6 +2856,32 @@ export class ChatView extends ItemView {
           },
         );
       } else {
+        const normalized = normalizeReasoningChunk({
+          content: accumulatedText,
+          reasoning: accumulatedReasoning || undefined,
+        });
+        accumulatedText = normalized.content;
+        accumulatedReasoning = normalized.reasoning ?? '';
+        const classification = classifyAssistantResponse({
+          content: accumulatedText,
+          reasoning: accumulatedReasoning,
+        });
+        if (classification.type === 'question') {
+          this.updateMessage(
+            args.messageId,
+            classification.content,
+            true,
+            classification.reasoning || undefined,
+            allToolCalls,
+            {
+              ...args.meta,
+              assistantQuestion: classification.question,
+              status: 'complete',
+              stopReason: 'complete',
+            },
+          );
+          return;
+        }
         const sourceWarnings = this.validateAssistantSources(
           accumulatedText,
           args.meta.citations ?? [],

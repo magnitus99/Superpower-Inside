@@ -2922,3 +2922,51 @@
   gap: 8px;
   justify-content: flex-end;
 }
+
+.superpower-inside-chat-question-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.superpower-inside-chat-question-prompt {
+  font-weight: 600;
+  color: var(--text-normal);
+  line-height: 1.5;
+}
+
+.superpower-inside-chat-question-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.superpower-inside-chat-question-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+
+.superpower-inside-chat-question-choice input {
+  margin: 0;
+}
+
+.superpower-inside-chat-question-free-text {
+  min-height: 72px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.superpower-inside-chat-question-submit {
+  align-self: flex-start;
+}

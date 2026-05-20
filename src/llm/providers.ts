@@ -1,6 +1,10 @@
 import { requestUrl } from 'obsidian';
 import type { CustomOpenAIProviderConfig, ProviderConfig } from '../settings';
-import { REASONING_EXTRACTORS, type ReasoningExtractor } from './reasoning';
+import {
+  REASONING_EXTRACTORS,
+  normalizeReasoningChunk,
+  type ReasoningExtractor,
+} from './reasoning';
 
 const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -335,8 +339,12 @@ class OpenAICompatibleProvider implements LLMProvider {
         }>;
       };
       const delta = chunk.choices?.[0]?.delta;
-      const content = delta?.content ?? '';
-      const reasoning = this.reasoningExtractor.extract(delta ?? {});
+      const normalized = normalizeReasoningChunk({
+        content: delta?.content ?? '',
+        reasoning: this.reasoningExtractor.extract(delta ?? {}),
+      });
+      const content = normalized.content;
+      const reasoning = normalized.reasoning;
       const toolCalls = delta?.tool_calls?.map(
         (tc): ToolCallDelta => ({
           index: tc.index,
@@ -692,8 +700,12 @@ interface OllamaChatResponse {
 }
 
 function toOllamaStreamChunk(data: OllamaChatResponse): StreamChunk | null {
-  const content = data.message?.content ?? '';
-  const thinking = data.message?.thinking;
+  const normalized = normalizeReasoningChunk({
+    content: data.message?.content ?? '',
+    reasoning: data.message?.thinking,
+  });
+  const content = normalized.content;
+  const thinking = normalized.reasoning;
   const toolCalls = data.message?.tool_calls?.map(
     (tc, index): ToolCallDelta => ({
       index: tc.index ?? index,

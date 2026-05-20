@@ -58,6 +58,21 @@ function parseRequestUrlBody(): Record<string, unknown> {
   return JSON.parse(call.body) as Record<string, unknown>;
 }
 
+function createStreamResponse(lines: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const line of lines) {
+          controller.enqueue(encoder.encode(`${line}\n`));
+        }
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+  );
+}
+
 beforeEach(() => {
   requestUrlMock.mockReset();
 });
@@ -262,6 +277,95 @@ describe('OpenAI-compatible chat request body', () => {
   });
 });
 
+describe('provider reasoning stream normalization', () => {
+  it('OpenAI 호환 SSE의 reasoning_content와 content 내부 think 태그를 분리한다', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        createStreamResponse([
+          'data: {"choices":[{"delta":{"reasoning_content":"구조화 생각"}}]}',
+          'data: {"choices":[{"delta":{"content":"<think>태그 생각</think>최종"}}]}',
+          'data: [DONE]',
+        ]),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createProvider(
+      'openai',
+      { apiKey: 'test-key', enabled: true, models: ['gpt-test'] },
+      'gpt-test',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk);
+
+    expect(onChunk).toHaveBeenNthCalledWith(1, {
+      content: '',
+      done: false,
+      reasoning: '구조화 생각',
+    });
+    expect(onChunk).toHaveBeenNthCalledWith(2, {
+      content: '최종',
+      done: false,
+      reasoning: '태그 생각',
+    });
+  });
+
+  it('OpenRouter SSE의 reasoning 필드를 reasoning chunk로 분리한다', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        createStreamResponse([
+          'data: {"choices":[{"delta":{"reasoning":"openrouter 생각","content":"답변"}}]}',
+          'data: [DONE]',
+        ]),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createProvider(
+      'openRouter',
+      { apiKey: 'test-key', enabled: true, models: ['openrouter-test'] },
+      'openrouter-test',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk);
+
+    expect(onChunk).toHaveBeenCalledWith({
+      content: '답변',
+      done: false,
+      reasoning: 'openrouter 생각',
+    });
+  });
+
+  it('Claude thinking_delta는 reasoning으로, text_delta는 content로 전달한다', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        createStreamResponse([
+          'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"claude 생각"}}',
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"claude 답변"}}',
+          'data: {"type":"message_stop"}',
+        ]),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createProvider(
+      'claude',
+      { apiKey: 'test-key', enabled: true, models: ['claude-test'] },
+      'claude-test',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk);
+
+    expect(onChunk).toHaveBeenNthCalledWith(1, {
+      content: '',
+      done: false,
+      reasoning: 'claude 생각',
+    });
+    expect(onChunk).toHaveBeenNthCalledWith(2, { content: 'claude 답변', done: false });
+    expect(onChunk).toHaveBeenNthCalledWith(3, { content: '', done: true });
+  });
+});
+
 describe('Ollama streamChat transport', () => {
   it('Ollama Cloud 스트리밍은 브라우저 fetch 대신 requestUrl 비스트리밍 요청을 사용한다', async () => {
     const fetchMock = vi.fn();
@@ -351,6 +455,44 @@ describe('Ollama streamChat transport', () => {
     expect(onChunk).toHaveBeenNthCalledWith(1, { content: 'local ', done: false });
     expect(onChunk).toHaveBeenNthCalledWith(2, { content: 'answer', done: false });
     expect(onChunk).toHaveBeenNthCalledWith(3, { content: '', done: true });
+  });
+
+  it('Ollama thinking 필드와 content 내부 think 태그를 reasoning으로 분리한다', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  '{"message":{"thinking":"ollama 생각","content":"<think>태그 생각</think>답변"},"done":false}\n',
+                ),
+              );
+              controller.enqueue(encoder.encode('{"done":true}\n'));
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createProvider(
+      'ollama',
+      { apiKey: '', enabled: true, models: ['llama3.1'] },
+      'llama3.1',
+    );
+    const onChunk = vi.fn();
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk);
+
+    expect(onChunk).toHaveBeenNthCalledWith(1, {
+      content: '답변',
+      done: false,
+      reasoning: 'ollama 생각\n\n태그 생각',
+    });
+    expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
   });
 });
 
