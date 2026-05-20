@@ -60,6 +60,7 @@ interface MessageMetaInput {
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
+  originalContent?: string;
 }
 
 export class ChatView extends ItemView {
@@ -936,6 +937,9 @@ export class ChatView extends ItemView {
     if (message) {
       message.content = content;
       message.reasoning = reasoning;
+      if (metaInput?.originalContent !== undefined) {
+        message.originalContent = metaInput.originalContent;
+      }
       message.updatedAt = new Date().toISOString();
       message.providerKey = metaInput?.providerKey ?? message.providerKey;
       message.providerLabel = metaInput?.providerLabel ?? message.providerLabel;
@@ -2298,6 +2302,7 @@ export class ChatView extends ItemView {
             contextAttachments: promptContext.attachments,
             assistantQuestion: firstClassification.question,
             stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
+            originalContent: firstClassification.originalContent,
           },
         );
         return;
@@ -2400,6 +2405,7 @@ export class ChatView extends ItemView {
               contextAttachments: promptContext.attachments,
               assistantQuestion: retryClassification.question,
               stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
+              originalContent: retryClassification.originalContent,
             },
           );
           return;

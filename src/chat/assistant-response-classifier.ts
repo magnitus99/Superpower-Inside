@@ -11,6 +11,7 @@ export type AssistantResponseClassification =
       content: string;
       reasoning: string;
       question: AssistantQuestion;
+      originalContent: string;
     };
 
 interface ClassifyInput {
@@ -39,13 +40,13 @@ export function classifyAssistantResponse(
 
   const answerQuestion = detectQuestion(content, 'answer');
   if (answerQuestion) {
-    return { type: 'question', content: '', reasoning, question: answerQuestion };
+    return { type: 'question', content: '', reasoning, question: answerQuestion, originalContent: input.content };
   }
 
   if (!content) {
     const leakedQuestion = detectQuestion(extractLastQuestionBlock(reasoning), 'reasoning-leak');
     if (leakedQuestion) {
-      return { type: 'question', content: '', reasoning, question: leakedQuestion };
+      return { type: 'question', content: '', reasoning, question: leakedQuestion, originalContent: input.content };
     }
   }
 
