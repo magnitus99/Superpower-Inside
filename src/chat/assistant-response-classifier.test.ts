@@ -103,6 +103,38 @@ describe('classifyAssistantResponse', () => {
     ).toBe('answer');
   });
 
+  it('긴 분석 답변 안의 결정 사항과 체크리스트는 질문 카드로 승격하지 않는다', () => {
+    const content = [
+      '# Monithub 데모·홍보·마케팅·브랜딩 전략 검토',
+      '',
+      '## 1. 현황 진단',
+      '',
+      '| 영역 | 현재 상태 |',
+      '| --- | --- |',
+      '| 고객 정의 | 소규모 운영팀 |',
+      '',
+      '## 2. 전략 제안',
+      '',
+      '데모는 단순한 무료 체험이 아니라 Lock-in의 첫 단계여야 합니다.',
+      '고객이 어떤 흐름을 선택해야 하는지 명확히 설명할 필요가 있습니다.',
+      '',
+      '#### 결정 사항',
+      '',
+      '- 데모는 기간 제한 무료 체험이 아닌 기능 제한 무료 플랜으로 설계',
+      '- 데모 사용자가 쌓은 운영 데이터는 유료 전환 시 그대로 유지',
+      '- [ ] 데모 온보딩 플로우 설계',
+      '',
+      '#### 다음 행동',
+      '',
+      '- 데모 → 유료 전환율',
+      '- NPS',
+    ].join('\n');
+
+    const result = classifyAssistantResponse({ content, reasoning: '' });
+
+    expect(result).toEqual({ type: 'answer', content, reasoning: '' });
+  });
+
   it('선택지가 있는 명시 질문은 후속 제안 문구보다 질문 카드 승격을 우선한다', () => {
     const result = classifyAssistantResponse({
       content: '필요하면 다음 중 하나를 선택해 주세요.\n1. 요약만\n2. 테스트까지',

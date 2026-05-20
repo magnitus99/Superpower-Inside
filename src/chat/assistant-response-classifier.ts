@@ -28,6 +28,8 @@ const QUESTION_WORD_PATTERN =
 const MULTIPLE_SELECTION_PATTERN =
   /(여러|복수|해당되는|모두|전부|다중|2개 이상|여러 개|select all|all that apply|choose multiple|multiple)/i;
 const FOLLOW_UP_SUGGESTION_PATTERN = /(원하면|원하시면|필요하면|괜찮다면|추가로).{0,30}(할까요|드릴까요|해드릴까요)\??$/;
+const MAX_ANSWER_QUESTION_PROMPT_CHARS = 800;
+const MAX_ANSWER_QUESTION_CHOICES = 12;
 
 export function classifyAssistantResponse(
   input: ClassifyInput,
@@ -60,6 +62,8 @@ function detectQuestion(
 
   const choices = extractChoices(normalized);
   const prompt = extractPrompt(normalized, choices);
+  if (source === 'answer' && isStructuredAnswer(normalized, prompt, choices)) return null;
+
   const hasQuestionSignal =
     /[?？]\s*$/.test(prompt) ||
     /(주세요|할까요|인가요|일까요|필요합니다|필요해요|확인해 주세요|선택해 주세요)/.test(prompt) ||
@@ -120,4 +124,15 @@ function extractLastQuestionBlock(reasoning: string): string {
 
 function isFollowUpSuggestion(text: string): boolean {
   return text.length > 30 && FOLLOW_UP_SUGGESTION_PATTERN.test(text);
+}
+
+function isStructuredAnswer(text: string, prompt: string, choices: ParsedChoice[]): boolean {
+  if (choices.length > MAX_ANSWER_QUESTION_CHOICES) return true;
+  if (prompt.length > MAX_ANSWER_QUESTION_PROMPT_CHARS) return true;
+  if (/^#{1,6}\s+\S/m.test(text)) return true;
+  if (/^\s*\|.*\|\s*$/m.test(text) && /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/m.test(text)) {
+    return true;
+  }
+  if (/```/.test(text)) return true;
+  return false;
 }
