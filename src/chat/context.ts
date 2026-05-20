@@ -3,6 +3,8 @@ import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import { createContentHash } from '../rag/hash';
 import type { ContextAttachment, SourceCitation } from './types';
+import { createContextBudget, type ContextBlock } from './context-budget';
+import { expandReferencedVaultFiles } from './context-expansion';
 import { parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
 export {
   parseMentions,
@@ -28,17 +30,14 @@ interface BuildContextOptions {
   mcpRegistry?: MCPRegistry | null;
   maxFolderFiles?: number;
   maxContextChars?: number;
+  maxReferenceFiles?: number;
   ragTopK?: number;
   ragMinScore?: number;
 }
 
-interface ContextBlock {
-  text: string;
-  citation?: SourceCitation;
-}
-
 const DEFAULT_MAX_FOLDER_FILES = 12;
 const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
+const DEFAULT_MAX_REFERENCE_FILES = 6;
 const DEFAULT_RAG_TOP_K = 5;
 const VAULT_CONTEXT_RULES = [
   'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
@@ -52,12 +51,12 @@ export async function buildChatContext(
 ): Promise<ContextBuildResult> {
   const maxFolderFiles = options.maxFolderFiles ?? DEFAULT_MAX_FOLDER_FILES;
   const maxContextChars = options.maxContextChars ?? DEFAULT_MAX_CONTEXT_CHARS;
+  const maxReferenceFiles = options.maxReferenceFiles ?? DEFAULT_MAX_REFERENCE_FILES;
   const ragTopK = options.ragTopK ?? DEFAULT_RAG_TOP_K;
-  const blocks: ContextBlock[] = [];
+  const budget = createContextBudget(maxContextChars);
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
   const warnings: string[] = [];
-  let remainingChars = maxContextChars;
   const mentions = parseMentions(
     question,
     createAppMentionResolver(options.app, options.mcpRegistry),
@@ -65,14 +64,42 @@ export async function buildChatContext(
   const shouldUseAutoRag = shouldUseAutoRagForMentions(mentions);
 
   const appendBlock = (block: ContextBlock): boolean => {
-    if (remainingChars <= 0) return false;
-    const text =
-      block.text.length > remainingChars ? block.text.slice(0, remainingChars) : block.text;
-    blocks.push({ ...block, text });
-    remainingChars -= text.length;
     if (block.citation) citations.push(block.citation);
-    return text.length === block.text.length;
+    return budget.append(block);
   };
+
+  for (const mention of mentions.filter((item) => item.type === 'file')) {
+    const fileResult = await appendFileMention(
+      mention.name,
+      options.app,
+      appendBlock,
+      attachments,
+      citations,
+    );
+    if (!fileResult) continue;
+
+    const expansion = await expandReferencedVaultFiles(
+      fileResult.file,
+      fileResult.content,
+      options.app,
+      maxReferenceFiles,
+    );
+    warnings.push(...expansion.warnings);
+    for (const reference of expansion.references) {
+      appendReferenceFile(reference.file, reference.content, appendBlock, attachments, citations);
+    }
+  }
+
+  for (const mention of mentions.filter((item) => item.type === 'folder')) {
+    await appendFolderMention(
+      mention.name,
+      options.app,
+      appendBlock,
+      attachments,
+      citations,
+      maxFolderFiles,
+    );
+  }
 
   if (options.ragEngine && shouldUseAutoRag) {
     try {
@@ -125,24 +152,12 @@ export async function buildChatContext(
     }
   }
 
-  for (const mention of mentions) {
-    if (mention.type === 'file') {
-      await appendFileMention(mention.name, options.app, appendBlock, attachments, citations);
-    } else if (mention.type === 'folder') {
-      await appendFolderMention(
-        mention.name,
-        options.app,
-        appendBlock,
-        attachments,
-        citations,
-        maxFolderFiles,
-      );
-    } else {
-      await appendServerMention(mention.name, options.mcpRegistry, appendBlock, attachments);
-    }
+  for (const mention of mentions.filter((item) => item.type === 'server')) {
+    await appendServerMention(mention.name, options.mcpRegistry, appendBlock, attachments);
   }
 
-  const contextText = blocks
+  const contextText = budget
+    .getBlocks()
     .map((block) => block.text)
     .filter(Boolean)
     .join('\n\n---\n\n');
@@ -230,7 +245,7 @@ async function appendFileMention(
   appendBlock: (block: ContextBlock) => boolean,
   attachments: ContextAttachment[],
   citations: SourceCitation[],
-): Promise<void> {
+): Promise<{ file: TFile; content: string } | null> {
   const file = app.vault.getAbstractFileByPath(path);
   if (!(file instanceof TFile)) {
     attachments.push({
@@ -241,7 +256,7 @@ async function appendFileMention(
       status: 'missing',
       detail: '파일을 찾을 수 없습니다.',
     });
-    return;
+    return null;
   }
 
   try {
@@ -265,6 +280,7 @@ async function appendFileMention(
       detail: attachedFully ? undefined : '컨텍스트 예산 때문에 일부만 첨부했습니다.',
       sourceIds: [citation.id],
     });
+    return { file, content };
   } catch (err) {
     attachments.push({
       id: `file:${path}`,
@@ -274,7 +290,36 @@ async function appendFileMention(
       status: 'error',
       detail: stringifyError(err),
     });
+    return null;
   }
+}
+
+function appendReferenceFile(
+  file: TFile,
+  content: string,
+  appendBlock: (block: ContextBlock) => boolean,
+  attachments: ContextAttachment[],
+  citations: SourceCitation[],
+): void {
+  const citation: SourceCitation = {
+    id: `reference-${citations.length + 1}`,
+    filePath: file.path,
+    status: 'verified',
+    preview: createPreview(content),
+  };
+  const attachedFully = appendBlock({
+    citation,
+    text: `[Reference File: ${file.path}]\n${content}`,
+  });
+  attachments.push({
+    id: `reference:${file.path}`,
+    type: 'reference',
+    name: file.path,
+    label: file.path,
+    status: attachedFully ? 'attached' : 'partial',
+    detail: attachedFully ? undefined : '컨텍스트 예산 때문에 일부만 첨부했습니다.',
+    sourceIds: [citation.id],
+  });
 }
 
 async function appendFolderMention(

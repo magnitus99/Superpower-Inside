@@ -41,7 +41,7 @@ export interface SourceValidationWarning {
 
 export interface ContextAttachment {
   id: string;
-  type: 'file' | 'folder' | 'rag' | 'mcp-server';
+  type: 'file' | 'folder' | 'reference' | 'rag' | 'mcp-server';
   name: string;
   label: string;
   status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';
