@@ -76,3 +76,33 @@ describe('reasoning normalization', () => {
     });
   });
 });
+
+  it('content가 완전히 비어 있어도 normalizeReasoningChunk는 폴백하지 않는다', () => {
+    expect(
+      normalizeReasoningChunk({ content: '<think>전부 생각</think>', reasoning: '' }),
+    ).toEqual({
+      content: '',
+      reasoning: '전부 생각',
+    });
+  });
+
+  it('content에 내용이 있으면 그대로 분리한다', () => {
+    expect(
+      normalizeReasoningChunk({ content: '<think>생각</think>답변', reasoning: '' }),
+    ).toEqual({
+      content: '답변',
+      reasoning: '생각',
+    });
+  });
+
+  it('구조화 reasoning과 태그 reasoning이 모두 있을 때 content는 비어 있고 reasoning은 병합된다', () => {
+    expect(
+      normalizeReasoningChunk({
+        content: '<thinking>오직 생각</thinking>',
+        reasoning: '추가 생각',
+      }),
+    ).toEqual({
+      content: '',
+      reasoning: '추가 생각\n\n오직 생각',
+    });
+  });

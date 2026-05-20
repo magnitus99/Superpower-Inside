@@ -214,3 +214,74 @@ function createMessage(
     ...overrides,
   };
 }
+
+  it('content가 비어 있고 reasoning이 있으면 로드 시 reasoning을 content로 폴백한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '',
+        reasoning: '생각의 과정입니다.',
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].content).toBe('생각의 과정입니다.');
+    expect(loaded.messages[0].reasoning).toBe('생각의 과정입니다.');
+  });
+
+  it('originalContent가 있으면 저장 시 사용하고 로드 시 복원한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '',
+        originalContent: '원본 답변 내용',
+        reasoning: '생각',
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].content).toBe('원본 답변 내용');
+  });
+
+  it('decodeTextBlock 실패 시 [decoding failed]를 반환한다', async () => {
+    const vault = createVault();
+    const badBase64 = '!!!invalid-base64!!!';
+    const meta = {
+      id: 'msg-bad',
+      role: 'assistant',
+      timestamp: Date.now(),
+      createdAt: '2026-05-16T00:00:00.000Z',
+      updatedAt: '2026-05-16T00:00:00.000Z',
+      status: 'complete',
+    };
+    vault.writeFile(
+      'Chats/bad.md',
+      [
+        '---',
+        'title: "Bad"',
+        'messages: 1',
+        '---',
+        '',
+        '<!-- superpower-inside-message',
+        JSON.stringify(meta, null, 2),
+        '-->',
+        '### 1. Assistant',
+        '',
+        '#### Answer',
+        '',
+        '<!-- superpower-inside-content-start encoding="base64" -->',
+        badBase64,
+        '<!-- superpower-inside-content-end -->',
+        '<!-- /superpower-inside-message -->',
+      ].join('\n'),
+    );
+
+    const loaded = await loadChat(vault, 'Chats/bad.md');
+    expect(loaded.messages[0].content).toBe('[decoding failed]');
+  });

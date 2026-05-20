@@ -22,6 +22,7 @@ describe('classifyAssistantResponse', () => {
         allowFreeText: true,
         source: 'answer',
       },
+      originalContent: '어떤 방식으로 진행할까요?\n1. 빠른 요약\n2. 자세한 분석',
     });
   });
 
@@ -184,3 +185,29 @@ describe('classifyAssistantResponse', () => {
     });
   });
 });
+
+  it('질문으로 분류할 때 원본 content를 originalContent로 보존한다', () => {
+    const original = '어떤 방식으로 진행할까요?\n1. 빠른 요약\n2. 자세한 분석';
+    const result = classifyAssistantResponse({
+      content: original,
+      reasoning: '생각 중',
+    });
+
+    expect(result.type).toBe('question');
+    if (result.type !== 'question') throw new Error('질문으로 분류되어야 합니다.');
+    expect(result.originalContent).toBe(original);
+    expect(result.content).toBe('');
+    expect(result.reasoning).toBe('생각 중');
+  });
+
+  it('reasoning leak 질문일 때도 원본 content를 originalContent로 보존한다', () => {
+    const result = classifyAssistantResponse({
+      content: '',
+      reasoning: '사용자에게 물어봐야겠다. 어떤 범위를 분석할까요?\nA) 전체\nB) 변경분만',
+    });
+
+    expect(result.type).toBe('question');
+    if (result.type !== 'question') throw new Error('질문으로 분류되어야 합니다.');
+    expect(result.originalContent).toBe('');
+    expect(result.question.source).toBe('reasoning-leak');
+  });
