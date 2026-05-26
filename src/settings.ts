@@ -19,6 +19,7 @@ import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
 import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './rag/store';
 import { isIndexingCancelledError, type VaultIndexer } from './rag/indexer';
+import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import {
   buildEmbeddingModelOptions,
@@ -198,6 +199,11 @@ export interface RAGConfig {
   minScore: number;
   enableBM25: boolean;
   bm25Weight: number;
+  performanceGuardEnabled: boolean;
+  maxEmbeddingBatchSize: number;
+  indexingYieldMs: number;
+  slowEventLoopThresholdMs: number;
+  slowBatchThresholdMs: number;
 }
 
 export interface ChatConfig {
@@ -274,7 +280,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     excludeChatFolder: true,
     chunkSize: 1000,
     overlap: 100,
-    vectorStoreType: 'json',
+    vectorStoreType: 'indexeddb',
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
@@ -282,6 +288,11 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     minScore: 0.5,
     enableBM25: true,
     bm25Weight: 0.3,
+    performanceGuardEnabled: true,
+    maxEmbeddingBatchSize: 32,
+    indexingYieldMs: 25,
+    slowEventLoopThresholdMs: 150,
+    slowBatchThresholdMs: 3000,
   },
   mcpServers: [createDefaultContext7McpServer()],
   mcpPath: '',
@@ -459,8 +470,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const plugin = this.plugin as unknown as { refreshBus?: { on: (domain: string, handler: (result: { status: string; detail?: string }) => void) => () => void } };
     if (plugin.refreshBus) {
       this.refreshBusUnsubscribers.push(
-        plugin.refreshBus.on('rag', () => {
-          this.updateRagStats();
+        plugin.refreshBus.on('rag', (result) => {
+          this.updateRagStats(result.detail);
         }),
       );
     }
@@ -788,6 +799,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.createRagStatusItem(statusGrid, '임베딩 모델', rag.embeddingModel || '미설정');
     this.createRagStatusItem(statusGrid, '저장소', getVectorStoreLabel(rag.vectorStoreType));
     this.createRagStatusItem(statusGrid, '자동 업데이트', rag.autoUpdateEnabled ? '켜짐' : '꺼짐');
+    this.createRagStatusItem(statusGrid, '인덱싱 상태', this.getIndexingStatusLabel());
 
     const warning = this.getRagSetupWarning();
     if (warning) {
@@ -837,6 +849,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const item = containerEl.createDiv({ cls: 'superpower-inside-rag-status-item' });
     item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
     item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
+  }
+
+  private getIndexingStatusLabel(): string {
+    const plugin = this.plugin as unknown as {
+      ragIndexingStatus?: { running: boolean; phase: string; queuedFiles: number; lastResult?: { indexed: number; vectors: number } | null };
+    };
+    const status = plugin.ragIndexingStatus;
+    if (!status) return this.plugin.isRagIndexing() ? '인덱싱 중' : '대기 중';
+    if (status.running) {
+      return `인덱싱 중: ${status.phase}, 대기 ${status.queuedFiles}개`;
+    }
+    if (status.lastResult) {
+      return `${status.lastResult.indexed}개 문서, ${status.lastResult.vectors}개 벡터`;
+    }
+    return '대기 중';
   }
 
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
@@ -1225,16 +1252,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    * RefreshBus에서 rag 이벤트 수신 시 RAG 상태 패널 일부만 업데이트합니다.
    * (전체 rebuild 대신 statusGrid, timestamp, updateList 등만 갱신)
    */
-  updateRagStats(): void {
+  updateRagStats(indexingDetail?: string): void {
     if (!this.ragStatusGrid || !this.ragStatusTimestamp) return;
 
     void (async () => {
-      this.ragStatusTimestamp!.setText('상태 계산 중...');
+      this.ragStatusTimestamp!.setText(indexingDetail ? `인덱싱 상태: ${indexingDetail}` : '상태 계산 중...');
       try {
         const status = await this.getRagStatus();
         if (status) {
           this.ragStatusTimestamp!.setText(
-            `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`,
+            indexingDetail
+              ? `인덱싱 상태: ${indexingDetail} · 마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
+              : `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`,
           );
         }
         // RAG 통계 섹션도 부분 업데이트
@@ -1470,8 +1499,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       vaultIndexer?: VaultIndexer;
       vectorStore?: VectorStore;
       embeddingProvider?: { clearCache(): Promise<void> };
+      ragIndexingScheduler?: RAGIndexingScheduler;
     };
-    const hasIndexer = !!p.vaultIndexer;
+    const hasIndexer = !!p.vaultIndexer && !!p.ragIndexingScheduler;
     const isIndexing = this.plugin.isRagIndexing();
 
     controls.createEl('button', { text: '필요 문서 업데이트' }, (btn) => {
@@ -1496,12 +1526,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return;
             }
             new Notice(`${status.updateRequiredDocuments.length}개 문서 업데이트 시작...`);
-            const result = await this.plugin.runRagIndexing((signal) =>
-              p.vaultIndexer!.indexPending({ signal }),
-            );
-            if (result) {
-              new Notice(`${result.indexed}개 문서 업데이트 완료, ${result.skipped}개 문서 스킵됨`);
-            }
+            const result = await p.ragIndexingScheduler!.indexPending();
+            new Notice(`${result.indexed}개 문서 업데이트 완료, ${result.skipped}개 문서 스킵됨`);
             this.updateRagStats();
           } catch (err) {
             if (isIndexingCancelledError(err)) {
@@ -1530,12 +1556,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return;
             }
             new Notice('전체 재인덱싱 시작...');
-            const count = await this.plugin.runRagIndexing((signal) =>
-              p.vaultIndexer!.reindexAll({ signal }),
-            );
-            if (count !== null) {
-              new Notice(`${count}개 파일 재인덱싱 완료`);
-            }
+            const result = await p.ragIndexingScheduler!.reindexAll();
+            new Notice(`${result.indexed}개 파일 재인덱싱 완료`);
             this.updateRagStats();
           } catch (err) {
             if (isIndexingCancelledError(err)) {
@@ -1794,6 +1816,84 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.type = 'number';
         text.inputEl.min = '1';
         text.inputEl.max = '99';
+      });
+
+    new Setting(section)
+      .setName('성능 보호')
+      .setDesc('인덱싱 중 Obsidian이 느려지면 배치 크기와 대기 시간을 자동으로 조절합니다.')
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.rag.performanceGuardEnabled).onChange((value) => {
+          this.plugin.settings.rag.performanceGuardEnabled = value;
+          this.debouncedSave();
+        }),
+      );
+
+    new Setting(section)
+      .setName('임베딩 배치 크기')
+      .setDesc('한 번에 임베딩 요청으로 보낼 청크 수입니다. Ollama 로컬 모델은 1을 권장합니다.')
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.maxEmbeddingBatchSize))
+          .setPlaceholder(this.plugin.settings.rag.embeddingProvider === 'ollama' ? '1' : '32')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 1 || num > 128 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.maxEmbeddingBatchSize = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '1';
+        text.inputEl.max = '128';
+      });
+
+    new Setting(section)
+      .setName('배치 사이 대기 시간(ms)')
+      .setDesc('연속 인덱싱 배치 사이에 메인 스레드가 쉴 시간을 둡니다.')
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.indexingYieldMs))
+          .setPlaceholder('25')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 0 || num > 1000 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.indexingYieldMs = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '1000';
+      });
+
+    new Setting(section)
+      .setName('느림 감지 임계값')
+      .setDesc('이벤트 루프 지연(ms)과 배치 처리 시간(ms)을 기준으로 자동 완화를 시작합니다.')
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.slowEventLoopThresholdMs))
+          .setPlaceholder('150')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 16 || num > 5000 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.slowEventLoopThresholdMs = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '16';
+        text.inputEl.max = '5000';
+      })
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.rag.slowBatchThresholdMs))
+          .setPlaceholder('3000')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 100 || num > 60000 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.slowBatchThresholdMs = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '100';
+        text.inputEl.max = '60000';
       });
 
     this.buildExcludeListSetting({

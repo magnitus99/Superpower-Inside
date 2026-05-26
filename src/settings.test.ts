@@ -103,6 +103,15 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.excludePaths).not.toContain('SuperObsidianByAIChats');
   });
 
+  it('신규 설치 기본 벡터 저장소는 IndexedDB이며 성능 보호를 켠다', () => {
+    expect(DEFAULT_SETTINGS.rag.vectorStoreType).toBe('indexeddb');
+    expect(DEFAULT_SETTINGS.rag.performanceGuardEnabled).toBe(true);
+    expect(DEFAULT_SETTINGS.rag.maxEmbeddingBatchSize).toBe(32);
+    expect(DEFAULT_SETTINGS.rag.indexingYieldMs).toBe(25);
+    expect(DEFAULT_SETTINGS.rag.slowEventLoopThresholdMs).toBe(150);
+    expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
+  });
+
   it('설정 자동 저장 기본 debounce는 1초다', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
   });

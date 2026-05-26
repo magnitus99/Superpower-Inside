@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { chunkMarkdown, chunkPlainText, buildSearchText } from './indexer';
-import type { TFile } from 'obsidian';
+import { chunkMarkdown, chunkPlainText, buildSearchText, VaultIndexer } from './indexer';
+import type { TFile, Vault } from 'obsidian';
+import type { ChatConfig, RAGConfig } from '../settings';
+import type { EmbeddingProvider } from '../llm/embedding';
+import { MemoryVectorStore, type VectorEntry } from './store';
 
 describe('chunkMarkdown + buildSearchText Ollama context length scenario', () => {
   it('chunkSize 1000으로 큰 파일을 청킹하면 buildSearchText 결과가 Ollama 안전 문자수(3000자)를 초과할 수 있다', () => {
@@ -88,3 +91,141 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
     expect(chunks.every((chunk) => chunk.text.length <= 100)).toBe(true);
   });
 });
+
+describe('VaultIndexer 배치 인덱싱', () => {
+  it('임베딩 요청을 maxEmbeddingBatchSize 단위로 나눈다', async () => {
+    const file = createFile('note.md', 1000, 1500);
+    const vault = createVault(new Map([[file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')]]));
+    const store = new MemoryVectorStore();
+    const batches: number[] = [];
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        batches.push(texts.length);
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+
+    const result = await indexer.indexFile(file, { maxEmbeddingBatchSize: 2 });
+
+    expect(batches.every((size) => size <= 2)).toBe(true);
+    expect(result.indexed).toBe(1);
+    expect(result.vectors).toBeGreaterThan(1);
+  });
+
+  it('배치 사이에 AbortSignal 취소를 반영한다', async () => {
+    const file = createFile('note.md', 1000, 1500);
+    const vault = createVault(new Map([[file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')]]));
+    const store = new MemoryVectorStore();
+    const controller = new AbortController();
+    let callCount = 0;
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        callCount++;
+        if (callCount === 1) {
+          controller.abort();
+        }
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+
+    await expect(
+      indexer.indexFile(file, { signal: controller.signal, maxEmbeddingBatchSize: 1 }),
+    ).rejects.toThrow();
+    expect(await store.getEntries()).toEqual([]);
+  });
+
+  it('빈 파일은 기존 벡터를 제거한다', async () => {
+    const file = createFile('empty.md', 1000, 0);
+    const vault = createVault(new Map([[file.path, '']]));
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('empty.md')]);
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: () => Promise.resolve([[1, 0]]),
+    };
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+
+    const result = await indexer.indexFile(file);
+
+    expect(result).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
+    expect(await store.getEntries()).toEqual([]);
+  });
+});
+
+function createRagConfig(): RAGConfig {
+  return {
+    excludePaths: [],
+    excludeExts: [],
+    excludeChatFolder: false,
+    chunkSize: 100,
+    overlap: 0,
+    vectorStoreType: 'indexeddb',
+    embeddingProvider: 'openai',
+    embeddingModel: 'text-embedding-3-small',
+    autoUpdateEnabled: false,
+    autoUpdateIntervalMin: 5,
+    minScore: 0.5,
+    enableBM25: false,
+    bm25Weight: 0.3,
+    performanceGuardEnabled: true,
+    maxEmbeddingBatchSize: 32,
+    indexingYieldMs: 25,
+    slowEventLoopThresholdMs: 150,
+    slowBatchThresholdMs: 3000,
+  };
+}
+
+function createChatConfig(): ChatConfig {
+  return {
+    saveFolder: 'Chats',
+    defaultModel: 'openai:gpt-4o-mini',
+    promptLibrary: [],
+    mcpToolExecutionPolicy: 'mentioned-auto',
+    autoSaveEnabled: true,
+    autoSaveDebounceMs: 3000,
+    enforceMcpTools: true,
+  };
+}
+
+function createVault(contents: Map<string, string>): Vault {
+  const files = [...contents.keys()].map((path) => createFile(path, 1000, contents.get(path)?.length ?? 0));
+  return {
+    getFiles: () => files,
+    getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
+    cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
+  } as unknown as Vault;
+}
+
+function createFile(path: string, mtime: number, size: number): TFile {
+  const name = path.split('/').pop() ?? path;
+  return {
+    path,
+    name,
+    basename: name.replace(/\.[^.]+$/, ''),
+    extension: name.includes('.') ? (name.split('.').pop() ?? '') : '',
+    stat: { ctime: mtime, mtime, size },
+  } as unknown as TFile;
+}
+
+function createEntry(path: string): VectorEntry {
+  return {
+    id: `${path}::0`,
+    vector: [1, 0],
+    metadata: {
+      filePath: path,
+      startLine: 0,
+      endLine: 0,
+      text: 'old',
+      sourceMtime: 1,
+      sourceSize: 3,
+      contentHash: 'hash',
+      indexedAt: 1,
+      embeddingProvider: 'openai',
+      embeddingModel: 'text-embedding-3-small',
+    },
+  };
+}

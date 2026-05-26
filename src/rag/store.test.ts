@@ -186,6 +186,7 @@ async function expectVectorStoreContract(store: VectorStore): Promise<void> {
 class TestJsonAdapter {
   private files = new Map<string, string>();
   readCount = 0;
+  writeCount = 0;
 
   setRaw(path: string, value: string): void {
     this.files.set(path, value);
@@ -199,6 +200,7 @@ class TestJsonAdapter {
         return Promise.resolve(this.files.get(path) ?? '');
       },
       write: (path: string, data: string) => {
+        this.writeCount += 1;
         this.files.set(path, data);
         return Promise.resolve();
       },
@@ -206,3 +208,34 @@ class TestJsonAdapter {
     } as unknown as DataAdapter;
   }
 }
+
+describe('VectorStore 파일 단위 교체', () => {
+  it('replaceFileEntries는 대상 파일의 기존 벡터만 교체한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('note.md', 0, [1, 0], 'old-a'),
+      createEntry('note.md', 10, [0.9, 0.1], 'old-b'),
+      createEntry('other.md', 0, [0, 1], 'other'),
+    ]);
+
+    await store.replaceFileEntries('note.md', [createEntry('note.md', 20, [0.5, 0.5], 'new')]);
+
+    expect((await store.getEntries()).map((entry) => entry.id)).toEqual([
+      'other.md::0',
+      'note.md::20',
+    ]);
+  });
+
+  it('JSON 저장소 배치 모드에서는 여러 파일 교체 후 한 번만 persist한다', async () => {
+    const adapter = new TestJsonAdapter();
+    const store = new JsonFileVectorStore(adapter.asDataAdapter(), 'vectors.json');
+
+    await store.withBatch(async () => {
+      await store.replaceFileEntries('a.md', [createEntry('a.md', 0, [1, 0], 'a')]);
+      await store.replaceFileEntries('b.md', [createEntry('b.md', 0, [0, 1], 'b')]);
+    });
+
+    expect(adapter.writeCount).toBe(1);
+    expect((await store.getIndexedFilePaths()).sort()).toEqual(['a.md', 'b.md']);
+  });
+});

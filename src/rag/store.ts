@@ -30,10 +30,12 @@ export interface VectorStoreStats {
 
 export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
+  replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
   removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number): Promise<VectorEntry[]>;
   clear(): Promise<void>;
   persist(): Promise<void>;
+  withBatch<T>(operation: () => Promise<T>): Promise<T>;
   getStats(): Promise<VectorStoreStats>;
   getIndexedFilePaths(): Promise<string[]>;
   getEntries(): Promise<VectorEntry[]>;
@@ -94,6 +96,21 @@ export class IndexedDbVectorStore implements VectorStore {
     await this.db.vectors.bulkPut(records);
   }
 
+  async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
+    const now = Date.now();
+    const records = entries.map((entry) => ({
+      ...entry,
+      filePath: entry.metadata.filePath,
+      updated: now,
+    }));
+    await this.db.transaction('rw', this.db.vectors, async () => {
+      await this.db.vectors.where('filePath').equals(filePath).delete();
+      if (records.length > 0) {
+        await this.db.vectors.bulkPut(records);
+      }
+    });
+  }
+
   async removeByFilePath(filePath: string): Promise<number> {
     return this.db.vectors.where('filePath').equals(filePath).delete();
   }
@@ -109,6 +126,10 @@ export class IndexedDbVectorStore implements VectorStore {
 
   async persist(): Promise<void> {
     // IndexedDB는 각 쓰기 작업이 트랜잭션으로 즉시 반영되므로 별도 flush가 필요 없습니다.
+  }
+
+  async withBatch<T>(operation: () => Promise<T>): Promise<T> {
+    return operation();
   }
 
   async getStats(): Promise<VectorStoreStats> {
@@ -149,6 +170,8 @@ export class JsonFileVectorStore implements VectorStore {
   private entries: VectorEntry[];
   private loaded: boolean;
   private loadingPromise: Promise<void> | null = null;
+  private batchDepth = 0;
+  private batchDirty = false;
 
   constructor(adapter: DataAdapter, path = '.superpower-inside/vectors.json') {
     this.adapter = adapter;
@@ -170,7 +193,14 @@ export class JsonFileVectorStore implements VectorStore {
         seen.add(entry.id);
       }
     }
-    await this.persist();
+    await this.persistIfNeeded();
+  }
+
+  async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
+    await this.loadIfNeeded();
+    this.entries = this.entries.filter((entry) => entry.metadata.filePath !== filePath);
+    this.entries.push(...entries);
+    await this.persistIfNeeded();
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
@@ -179,7 +209,7 @@ export class JsonFileVectorStore implements VectorStore {
     this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
     const removed = before - this.entries.length;
     if (removed > 0) {
-      await this.persist();
+      await this.persistIfNeeded();
     }
     return removed;
   }
@@ -191,12 +221,34 @@ export class JsonFileVectorStore implements VectorStore {
 
   async clear(): Promise<void> {
     this.entries = [];
-    await this.persist();
+    await this.persistIfNeeded();
   }
 
   async persist(): Promise<void> {
     await writeJsonToVault(this.adapter, this.path, this.entries);
     this.loaded = true;
+    this.batchDirty = false;
+  }
+
+  async withBatch<T>(operation: () => Promise<T>): Promise<T> {
+    this.batchDepth++;
+    try {
+      return await operation();
+    } finally {
+      this.batchDepth--;
+      if (this.batchDepth === 0 && this.batchDirty) {
+        await this.persist();
+      }
+    }
+  }
+
+  private async persistIfNeeded(): Promise<void> {
+    if (this.batchDepth > 0) {
+      this.batchDirty = true;
+      this.loaded = true;
+      return;
+    }
+    await this.persist();
   }
 
   private async loadIfNeeded(): Promise<void> {
@@ -263,6 +315,12 @@ export class MemoryVectorStore implements VectorStore {
     await this.persist();
   }
 
+  replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
+    this.entries = this.entries.filter((entry) => entry.metadata.filePath !== filePath);
+    this.entries.push(...entries);
+    return Promise.resolve();
+  }
+
   removeByFilePath(filePath: string): Promise<number> {
     const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
@@ -280,6 +338,10 @@ export class MemoryVectorStore implements VectorStore {
 
   async persist(): Promise<void> {
     // 아무것도 하지 않음
+  }
+
+  async withBatch<T>(operation: () => Promise<T>): Promise<T> {
+    return operation();
   }
 
   getStats(): Promise<VectorStoreStats> {

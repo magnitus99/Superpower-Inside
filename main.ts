@@ -1,4 +1,4 @@
-import { Plugin, Notice, Platform } from 'obsidian';
+import { Plugin, Notice, Platform, type TFile } from 'obsidian';
 import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
@@ -31,6 +31,8 @@ import {
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
+import { PerformanceGuard } from './src/rag/performance-guard';
+import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPRegistry } from './src/mcp/registry';
@@ -53,6 +55,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private embeddingProvider: EmbeddingProvider | null = null;
   ragEngine: RAGQueryEngine | null = null;
   private vaultIndexer: VaultIndexer | null = null;
+  private ragIndexingScheduler: RAGIndexingScheduler | null = null;
+  private ragPerformanceGuard: PerformanceGuard | null = null;
+  ragIndexingStatus: RagIndexingSchedulerStatus | null = null;
   mcpRegistry: MCPRegistry | null = null;
   mcpConnectionState: MCPConnectionState = 'idle';
   mcpLastErrors: string[] = [];
@@ -135,11 +140,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
             : null;
           if (!status || status.totalDocuments === 0) return;
           new Notice('볼트 인덱싱 시작...');
-          const count = await this.runRagIndexing((signal) =>
-            this.vaultIndexer!.reindexAll({ signal }),
-          );
-          if (count !== null) {
-            new Notice(`${count}개 파일 인덱싱 완료`);
+          const result = await this.ragIndexingScheduler?.reindexAll();
+          if (result) {
+            new Notice(`${result.indexed}개 파일 인덱싱 완료`);
           }
         } catch (err) {
           if (isIndexingCancelledError(err)) {
@@ -176,11 +179,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   isRagIndexing(): boolean {
-    return this.ragIndexAbortController !== null;
+    return this.ragIndexAbortController !== null || (this.ragIndexingScheduler?.isRunning() ?? false);
   }
 
   cancelRagIndexing(): void {
     this.ragIndexAbortController?.abort();
+    this.ragIndexingScheduler?.cancel();
   }
 
   async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
@@ -326,38 +330,62 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // Migrate old RAG settings (pre-overhaul)
     const rag = data.rag as Record<string, unknown> | undefined;
-    if (rag && typeof rag === 'object') {
-      if (!('embeddingProvider' in rag)) {
-        rag.embeddingProvider = 'openai';
+    const hasExplicitVectorStoreType =
+      rag && typeof rag === 'object' && Object.hasOwn(rag, 'vectorStoreType');
+    if (!hasExplicitVectorStoreType && (await this.hasExistingJsonVectors())) {
+      data.rag = { ...(rag ?? {}), vectorStoreType: 'json' };
+    }
+    const migratedRag = data.rag as Record<string, unknown> | undefined;
+    if (migratedRag && typeof migratedRag === 'object') {
+      if (!('embeddingProvider' in migratedRag)) {
+        migratedRag.embeddingProvider = 'openai';
       }
-      if (!('embeddingModel' in rag)) {
-        rag.embeddingModel = 'text-embedding-3-small';
+      if (!('embeddingModel' in migratedRag)) {
+        migratedRag.embeddingModel = 'text-embedding-3-small';
       }
-      if (typeof rag.autoUpdateEnabled !== 'boolean') {
-        rag.autoUpdateEnabled = false;
+      if (typeof migratedRag.autoUpdateEnabled !== 'boolean') {
+        migratedRag.autoUpdateEnabled = false;
       }
-      if (typeof rag.autoUpdateIntervalMin !== 'number') {
-        rag.autoUpdateIntervalMin = 5;
+      if (typeof migratedRag.autoUpdateIntervalMin !== 'number') {
+        migratedRag.autoUpdateIntervalMin = 5;
       }
-      if (typeof rag.excludeChatFolder !== 'boolean') {
-        rag.excludeChatFolder = true;
+      if (typeof migratedRag.excludeChatFolder !== 'boolean') {
+        migratedRag.excludeChatFolder = true;
       }
-      rag.autoUpdateIntervalMin = Math.max(1, Math.min(99, rag.autoUpdateIntervalMin as number));
-      if ('autoUpdateIntervalMs' in rag && !('autoUpdateIntervalMin' in rag)) {
-        rag.autoUpdateIntervalMin = Math.max(
+      migratedRag.autoUpdateIntervalMin = Math.max(
+        1,
+        Math.min(99, migratedRag.autoUpdateIntervalMin as number),
+      );
+      if ('autoUpdateIntervalMs' in migratedRag && !('autoUpdateIntervalMin' in migratedRag)) {
+        migratedRag.autoUpdateIntervalMin = Math.max(
           1,
-          Math.min(99, Math.round((rag.autoUpdateIntervalMs as number) / 60000)),
+          Math.min(99, Math.round((migratedRag.autoUpdateIntervalMs as number) / 60000)),
         );
-        delete rag.autoUpdateIntervalMs;
+        delete migratedRag.autoUpdateIntervalMs;
       }
-      if (typeof rag.minScore !== 'number') {
-        rag.minScore = 0.5;
+      if (typeof migratedRag.minScore !== 'number') {
+        migratedRag.minScore = 0.5;
       }
-      if (typeof rag.enableBM25 !== 'boolean') {
-        rag.enableBM25 = true;
+      if (typeof migratedRag.enableBM25 !== 'boolean') {
+        migratedRag.enableBM25 = true;
       }
-      if (typeof rag.bm25Weight !== 'number') {
-        rag.bm25Weight = 0.3;
+      if (typeof migratedRag.bm25Weight !== 'number') {
+        migratedRag.bm25Weight = 0.3;
+      }
+      if (typeof migratedRag.performanceGuardEnabled !== 'boolean') {
+        migratedRag.performanceGuardEnabled = true;
+      }
+      if (typeof migratedRag.maxEmbeddingBatchSize !== 'number') {
+        migratedRag.maxEmbeddingBatchSize = migratedRag.embeddingProvider === 'ollama' ? 1 : 32;
+      }
+      if (typeof migratedRag.indexingYieldMs !== 'number') {
+        migratedRag.indexingYieldMs = 25;
+      }
+      if (typeof migratedRag.slowEventLoopThresholdMs !== 'number') {
+        migratedRag.slowEventLoopThresholdMs = 150;
+      }
+      if (typeof migratedRag.slowBatchThresholdMs !== 'number') {
+        migratedRag.slowBatchThresholdMs = 3000;
       }
     }
 
@@ -407,7 +435,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperpowerInsideSettings>);
+    this.settings.rag = {
+      ...DEFAULT_SETTINGS.rag,
+      ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
+    };
     setLanguage(this.settings.language);
+  }
+
+  private async hasExistingJsonVectors(): Promise<boolean> {
+    const path = '.superpower-inside/vectors.json';
+    try {
+      if (!(await this.app.vault.adapter.exists(path))) return false;
+      const raw = await this.app.vault.adapter.read(path);
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) && parsed.length > 0;
+    } catch {
+      return false;
+    }
   }
 
   async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
@@ -575,11 +619,60 @@ export default class SuperpowerInsidePlugin extends Plugin {
       bm25Index,
     );
 
+    this.ragPerformanceGuard = new PerformanceGuard({
+      enabled: rag.performanceGuardEnabled,
+      initialBatchSize: rag.maxEmbeddingBatchSize,
+      initialYieldMs: rag.indexingYieldMs,
+      slowEventLoopThresholdMs: rag.slowEventLoopThresholdMs,
+      slowBatchThresholdMs: rag.slowBatchThresholdMs,
+    });
+    this.ragIndexingScheduler = new RAGIndexingScheduler({
+      debounceMs: 500,
+      indexFile: (file, options) => this.vaultIndexer!.indexFile(file, options),
+      removeFile: (filePath) => this.vectorStore!.removeByFilePath(filePath),
+      indexPending: (options) => this.vaultIndexer!.indexPending(options),
+      reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
+      createIndexingOptions: (signal) => ({
+        signal,
+        maxEmbeddingBatchSize: this.ragPerformanceGuard?.getBatchSize() ?? rag.maxEmbeddingBatchSize,
+        indexingYieldMs: this.ragPerformanceGuard?.getYieldMs() ?? rag.indexingYieldMs,
+        onBatchComplete: (durationMs) => {
+          this.ragPerformanceGuard?.recordBatchDuration(durationMs);
+          void this.ragPerformanceGuard?.measureEventLoopLag();
+        },
+        getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
+      }),
+      onStatusChange: (status) => {
+        this.ragIndexingStatus = status;
+        this.refreshBus?.emit('rag', {
+          status: status.running ? 'partial' : 'success',
+          detail: this.formatRagIndexingStatus(status),
+        });
+      },
+    });
+
     // Auto-update timer
     this.setupAutoUpdate();
     // RAG 상태 자동 갱신 타이머 (30초 간격)
     this.setupRagStatusTimer();
     this.registerRAGEvents();
+  }
+
+  private formatRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
+    const guardState = status.lastResult?.guardState ?? this.ragPerformanceGuard?.getState() ?? null;
+    if (guardState?.mode === 'paused') {
+      return guardState.reason ?? '일시정지됨';
+    }
+    if (guardState?.mode === 'throttled') {
+      return `${guardState.reason ?? '느림 감지'}: 배치 크기 ${guardState.currentBatchSize}`;
+    }
+    if (status.running) {
+      return `인덱싱 중: ${status.phase}, 대기 파일 ${status.queuedFiles}개`;
+    }
+    if (status.lastResult) {
+      return `${status.lastResult.indexed}개 문서, ${status.lastResult.vectors}개 벡터`;
+    }
+    return '대기 중';
   }
 
   private clearRAG(): void {
@@ -597,6 +690,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.embeddingProvider = null;
     this.ragEngine = null;
     this.vaultIndexer = null;
+    this.ragIndexingScheduler = null;
+    this.ragPerformanceGuard = null;
+    this.ragIndexingStatus = null;
   }
 
   private unregisterRAGEvents(): void {
@@ -616,12 +712,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private registerRAGEvents(): void {
     this.unregisterRAGEvents();
-    if (!this.vaultIndexer) return;
+    if (!this.vaultIndexer || !this.ragIndexingScheduler) return;
 
     const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
     this.modifyCleanup = registerModifyEvent(
       this.app.vault,
-      this.vaultIndexer,
+      {
+        indexFile: (file: TFile) => {
+          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
+          return Promise.resolve();
+        },
+      },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
       () => {
@@ -629,10 +730,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
     );
 
-    if (!this.vectorStore) return;
+    if (!this.vectorStore || !this.ragIndexingScheduler) return;
     this.deleteCleanup = registerDeleteEvent(
       this.app.vault,
-      this.vectorStore,
+      {
+        removeByFilePath: (filePath: string) =>
+          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
+      },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
       () => {
@@ -641,8 +745,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     );
     this.renameCleanup = registerRenameEvent(
       this.app.vault,
-      this.vaultIndexer,
-      this.vectorStore,
+      {
+        indexFile: (file: TFile) => {
+          this.ragIndexingScheduler?.scheduleFile(file, 'rename');
+          return Promise.resolve();
+        },
+      },
+      {
+        removeByFilePath: (filePath: string) =>
+          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
+      },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
       () => {
@@ -678,7 +790,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async autoIndex(): Promise<void> {
-    if (!this.vaultIndexer || !this.vectorStore) return;
+    if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) return;
     if (this.isRagIndexing()) return;
     try {
       const status = await calculateRagStatus(
@@ -691,10 +803,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         return;
       }
       new Notice(t('autoUpdateIndexingStarted'));
-      const result = await this.runRagIndexing((signal) =>
-        this.vaultIndexer!.indexPending({ signal }),
-      );
-      if (!result) return;
+      const result = await this.ragIndexingScheduler.indexPending();
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }

@@ -11,6 +11,7 @@ import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 import { createContentHash } from './hash';
+import type { PerformanceGuardState } from './performance-guard';
 
 export class IndexingCancelledError extends Error {
   constructor() {
@@ -21,6 +22,19 @@ export class IndexingCancelledError extends Error {
 
 export interface IndexingOptions {
   signal?: AbortSignal;
+  maxEmbeddingBatchSize?: number;
+  indexingYieldMs?: number;
+  onBatchComplete?: (durationMs: number) => void;
+  getPerformanceGuardState?: () => PerformanceGuardState | null;
+}
+
+export interface IndexingResult {
+  indexed: number;
+  vectors: number;
+  skipped: number;
+  documents: string[];
+  durationMs: number;
+  guardState?: PerformanceGuardState | null;
 }
 
 export function isIndexingCancelledError(error: unknown): boolean {
@@ -34,6 +48,44 @@ function throwIfIndexingCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new IndexingCancelledError();
   }
+}
+
+function createEmptyIndexingResult(startedAt: number): IndexingResult {
+  return {
+    indexed: 0,
+    vectors: 0,
+    skipped: 0,
+    documents: [],
+    durationMs: performance.now() - startedAt,
+  };
+}
+
+function finishIndexingResult(
+  result: Omit<IndexingResult, 'durationMs' | 'guardState'>,
+  startedAt: number,
+  options: IndexingOptions,
+): IndexingResult {
+  return {
+    ...result,
+    durationMs: performance.now() - startedAt,
+    guardState: options.getPerformanceGuardState?.() ?? null,
+  };
+}
+
+async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(new IndexingCancelledError());
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export interface Chunk {
@@ -332,22 +384,39 @@ export class VaultIndexer {
     this.ragConfig = ragConfig;
   }
 
-  async indexVault(options: IndexingOptions = {}): Promise<number> {
+  async indexVault(options: IndexingOptions = {}): Promise<IndexingResult> {
+    const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
 
-    let indexed = 0;
-    for (const file of files) {
-      throwIfIndexingCancelled(options.signal);
-      await this.indexFile(file, options);
-      throwIfIndexingCancelled(options.signal);
-      indexed++;
-    }
-    return indexed;
+    const result = await this.vectorStore.withBatch(async () => {
+      const batchResult = createEmptyIndexingResult(startedAt);
+      for (const file of files) {
+        throwIfIndexingCancelled(options.signal);
+        const fileResult = await this.indexFile(file, options);
+        throwIfIndexingCancelled(options.signal);
+        batchResult.indexed += fileResult.indexed;
+        batchResult.vectors += fileResult.vectors;
+        batchResult.skipped += fileResult.skipped;
+        batchResult.documents.push(...fileResult.documents);
+      }
+      return batchResult;
+    });
+    return finishIndexingResult(
+      {
+        indexed: result.indexed,
+        vectors: result.vectors,
+        skipped: result.skipped,
+        documents: result.documents,
+      },
+      startedAt,
+      options,
+    );
   }
 
-  async indexFile(file: TFile, options: IndexingOptions = {}): Promise<void> {
+  async indexFile(file: TFile, options: IndexingOptions = {}): Promise<IndexingResult> {
+    const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
     const content = await this.vault.cachedRead(file);
     throwIfIndexingCancelled(options.signal);
@@ -361,11 +430,15 @@ export class VaultIndexer {
     if (chunks.length === 0) {
       await this.vectorStore.removeByFilePath(file.path);
       throwIfIndexingCancelled(options.signal);
-      return;
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
     }
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
-    const vectors = await this.embeddingProvider.embedBatch(texts, { signal: options.signal });
+    const vectors = await this.embedTextsInBatches(texts, options);
     throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
@@ -386,9 +459,7 @@ export class VaultIndexer {
       },
     }));
 
-    await this.vectorStore.removeByFilePath(file.path);
-    throwIfIndexingCancelled(options.signal);
-    await this.vectorStore.add(entries);
+    await this.vectorStore.replaceFileEntries(file.path, entries);
     throwIfIndexingCancelled(options.signal);
 
     if (this.bm25Index) {
@@ -399,18 +470,36 @@ export class VaultIndexer {
         throwIfIndexingCancelled(options.signal);
       }
     }
+
+    return finishIndexingResult(
+      { indexed: 1, vectors: entries.length, skipped: 0, documents: [file.path] },
+      startedAt,
+      options,
+    );
   }
 
-  async reindexAll(options: IndexingOptions = {}): Promise<number> {
+  async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
+    const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    await this.vectorStore.clear();
-    throwIfIndexingCancelled(options.signal);
-    return this.indexVault(options);
+    const result = await this.vectorStore.withBatch(async () => {
+      await this.vectorStore.clear();
+      throwIfIndexingCancelled(options.signal);
+      return this.indexVault(options);
+    });
+    return finishIndexingResult(
+      {
+        indexed: result.indexed,
+        vectors: result.vectors,
+        skipped: result.skipped,
+        documents: result.documents,
+      },
+      startedAt,
+      options,
+    );
   }
 
-  async indexPending(
-    options: IndexingOptions = {},
-  ): Promise<{ indexed: number; skipped: number; documents: string[] }> {
+  async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
+    const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
@@ -424,28 +513,66 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
 
-    let indexed = 0;
-    let skipped = 0;
-    const documents: string[] = [];
+    const result = await this.vectorStore.withBatch(async () => {
+      const batchResult = createEmptyIndexingResult(startedAt);
+      for (const file of files) {
+        throwIfIndexingCancelled(options.signal);
+        if (!updatePaths.has(file.path)) {
+          batchResult.skipped++;
+          continue;
+        }
+        const targetFile = filesByPath.get(file.path);
+        if (!targetFile) {
+          batchResult.skipped++;
+          continue;
+        }
+        const fileResult = await this.indexFile(targetFile, options);
+        throwIfIndexingCancelled(options.signal);
+        batchResult.indexed += fileResult.indexed;
+        batchResult.vectors += fileResult.vectors;
+        batchResult.skipped += fileResult.skipped;
+        batchResult.documents.push(...fileResult.documents);
+      }
+      return batchResult;
+    });
 
-    for (const file of files) {
+    return finishIndexingResult(
+      {
+        indexed: result.indexed,
+        vectors: result.vectors,
+        skipped: result.skipped,
+        documents: result.documents,
+      },
+      startedAt,
+      options,
+    );
+  }
+
+  private async embedTextsInBatches(
+    texts: string[],
+    options: IndexingOptions,
+  ): Promise<number[][]> {
+    const batchSize = Math.max(1, Math.floor(options.maxEmbeddingBatchSize ?? texts.length));
+    const vectors: number[][] = [];
+
+    for (let offset = 0; offset < texts.length; offset += batchSize) {
       throwIfIndexingCancelled(options.signal);
-      if (!updatePaths.has(file.path)) {
-        skipped++;
-        continue;
+      const batch = texts.slice(offset, offset + batchSize);
+      const startedAt = performance.now();
+      const batchVectors = await this.embeddingProvider.embedBatch(batch, { signal: options.signal });
+      const durationMs = performance.now() - startedAt;
+      options.onBatchComplete?.(durationMs);
+      if (options.getPerformanceGuardState?.()?.mode === 'paused') {
+        throw new IndexingCancelledError();
       }
-      const targetFile = filesByPath.get(file.path);
-      if (!targetFile) {
-        skipped++;
-        continue;
-      }
-      await this.indexFile(targetFile, options);
+      vectors.push(...batchVectors);
       throwIfIndexingCancelled(options.signal);
-      indexed++;
-      documents.push(file.path);
+      if (offset + batchSize < texts.length) {
+        await pauseAfterBatch(options.indexingYieldMs ?? 0, options.signal);
+      }
     }
 
-    return { indexed, skipped, documents };
+    return vectors;
   }
 }
 
@@ -471,7 +598,7 @@ async function shouldIndexRagFile(
 /** 파일 변경 이벤트를 등록하여 자동 재인덱싱합니다. */
 export function registerModifyEvent(
   vault: Vault,
-  indexer: VaultIndexer,
+  indexer: { indexFile(file: TFile): Promise<unknown> },
   excludePaths: string[],
   excludeExts: string[],
   onComplete?: (file: TFile) => void,
@@ -490,7 +617,7 @@ export function registerModifyEvent(
 /** 파일 삭제 이벤트를 등록하여 벡터 저장소에서 해당 항목을 제거합니다. */
 export function registerDeleteEvent(
   vault: Vault,
-  vectorStore: VectorStore,
+  vectorStore: Pick<VectorStore, 'removeByFilePath'>,
   excludePaths: string[],
   excludeExts: string[],
   onComplete?: (filePath: string) => void,
@@ -510,8 +637,8 @@ export function registerDeleteEvent(
 /** 파일 이름 변경/이동 이벤트를 등록하여 기존 항목을 제거하고 새 경로로 재인덱싱합니다. */
 export function registerRenameEvent(
   vault: Vault,
-  indexer: VaultIndexer,
-  vectorStore: VectorStore,
+  indexer: { indexFile(file: TFile): Promise<unknown> },
+  vectorStore: Pick<VectorStore, 'removeByFilePath'>,
   excludePaths: string[],
   excludeExts: string[],
   onComplete?: (oldPath: string, newPath: string) => void,

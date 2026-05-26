@@ -22,6 +22,11 @@ const baseRagConfig: RAGConfig = {
   minScore: 0.5,
   enableBM25: true,
   bm25Weight: 0.3,
+  performanceGuardEnabled: true,
+  maxEmbeddingBatchSize: 32,
+  indexingYieldMs: 25,
+  slowEventLoopThresholdMs: 150,
+  slowBatchThresholdMs: 3000,
 };
 
 const baseChatConfig: ChatConfig = {
