@@ -18,15 +18,19 @@ import {
 import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
 import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './rag/store';
-import { isIndexingCancelledError, type VaultIndexer } from './rag/indexer';
+import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from './rag/indexer';
 import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
+import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import {
   buildEmbeddingModelOptions,
+  getRagIndexingControlState,
   getChatFolderExcludeDescription,
   getVectorStoreTransferNotice,
   getVectorStoreDescription,
   getVectorStoreLabel,
+  resolveRagPerformanceSettings,
+  type RagPerformanceTuningMode,
   type VectorStoreType,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
@@ -199,6 +203,7 @@ export interface RAGConfig {
   minScore: number;
   enableBM25: boolean;
   bm25Weight: number;
+  performanceTuningMode: RagPerformanceTuningMode;
   performanceGuardEnabled: boolean;
   maxEmbeddingBatchSize: number;
   indexingYieldMs: number;
@@ -288,6 +293,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     minScore: 0.5,
     enableBM25: true,
     bm25Weight: 0.3,
+    performanceTuningMode: 'auto',
     performanceGuardEnabled: true,
     maxEmbeddingBatchSize: 32,
     indexingYieldMs: 25,
@@ -322,10 +328,15 @@ export interface PluginLike {
   isRagIndexing(): boolean;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
+  resumeRagIndexing(): void;
+  getRagPerformanceGuardState(): PerformanceGuardState | null;
   mcpRegistry: MCPRegistry | null;
   mcpConnectionState?: MCPConnectionState;
   mcpLastErrors?: string[];
   eventDrivenRagStats?: RagStatusSummary | null;
+  nextAutoUpdateAt?: number | null;
+  lastAutoUpdateSkippedReason?: string | null;
+  lastAutoUpdateResult?: IndexingResult | null;
 }
 
 // 탭 타입 및 설정
@@ -376,6 +387,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   // RAG 상태 패널의 DOM 참조 (부분 업데이트용)
   private ragStatusGrid: HTMLElement | null = null;
   private ragStatusTimestamp: HTMLElement | null = null;
+  private ragStatusAction: HTMLElement | null = null;
+  private ragStatusDetails: HTMLElement | null = null;
+  private ragControlsHint: HTMLElement | null = null;
+  private updatePendingButton: HTMLButtonElement | null = null;
+  private reindexAllButton: HTMLButtonElement | null = null;
+  private cancelIndexingButton: HTMLButtonElement | null = null;
+  private resumeIndexingButton: HTMLButtonElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
 
@@ -451,6 +469,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     // DOM 참조 초기화
     this.ragStatusGrid = null;
     this.ragStatusTimestamp = null;
+    this.ragStatusAction = null;
+    this.ragStatusDetails = null;
+    this.ragControlsHint = null;
+    this.updatePendingButton = null;
+    this.reindexAllButton = null;
+    this.cancelIndexingButton = null;
+    this.resumeIndexingButton = null;
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
       this.pendingEmbeddingProvider = null;
       this.pendingEmbeddingModel = null;
@@ -771,13 +796,44 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private buildRAGTab(containerEl: HTMLElement): void {
     this.buildRagStatusPanel(containerEl);
-    this.buildEmbeddingProviderSection(containerEl);
-    this.buildStatsSection(containerEl);
-    this.buildTargetFileTypesSection(containerEl);
-    this.buildUpdateRequiredDocumentsSection(containerEl);
     this.buildControlsSection(containerEl);
-    this.buildIndexingOptionsSection(containerEl);
-    this.buildSearchQualitySection(containerEl);
+    this.buildEmbeddingProviderSection(containerEl);
+    this.buildExcludeOptionsSection(containerEl);
+    this.buildRagAdvancedSection(containerEl);
+  }
+
+  private buildRagAdvancedSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-rag-advanced',
+    });
+    const header = section.createEl('button', {
+      cls: 'superpower-inside-rag-collapsible-header',
+      attr: { type: 'button', 'aria-expanded': 'false' },
+    });
+    const chevron = header.createSpan({
+      cls: 'superpower-inside-rag-collapsible-chevron',
+      text: '▶',
+    });
+    header.createSpan({
+      cls: 'superpower-inside-rag-collapsible-title',
+      text: '고급 설정/진단',
+    });
+
+    const content = section.createDiv({
+      cls: 'superpower-inside-rag-collapsible-content is-collapsed',
+    });
+    this.buildIndexingOptionsSection(content);
+    this.buildSearchQualitySection(content);
+    this.buildStatsSection(content);
+    this.buildTargetFileTypesSection(content);
+    this.buildUpdateRequiredDocumentsSection(content);
+
+    header.addEventListener('click', () => {
+      const isCollapsed = content.hasClass('is-collapsed');
+      content.toggleClass('is-collapsed', !isCollapsed);
+      header.setAttr('aria-expanded', isCollapsed ? 'true' : 'false');
+      chevron.setText(isCollapsed ? '▼' : '▶');
+    });
   }
 
   private buildRagStatusPanel(containerEl: HTMLElement): void {
@@ -793,13 +849,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
 
     const rag = this.plugin.settings.rag;
-    const providerLabel = EMBEDDING_PROVIDER_LABELS[rag.embeddingProvider];
     const statusGrid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
-    this.createRagStatusItem(statusGrid, '프로바이더', providerLabel);
-    this.createRagStatusItem(statusGrid, '임베딩 모델', rag.embeddingModel || '미설정');
-    this.createRagStatusItem(statusGrid, '저장소', getVectorStoreLabel(rag.vectorStoreType));
-    this.createRagStatusItem(statusGrid, '자동 업데이트', rag.autoUpdateEnabled ? '켜짐' : '꺼짐');
-    this.createRagStatusItem(statusGrid, '인덱싱 상태', this.getIndexingStatusLabel());
+    const actionEl = section.createDiv({ cls: 'superpower-inside-rag-status-action' });
+    const detailsEl = section.createDiv({ cls: 'superpower-inside-rag-status-details' });
 
     const warning = this.getRagSetupWarning();
     if (warning) {
@@ -815,6 +867,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     // DOM 참조 저장 (부분 업데이트용)
     this.ragStatusGrid = statusGrid;
+    this.ragStatusAction = actionEl;
+    this.ragStatusDetails = detailsEl;
     this.ragStatusTimestamp = timestampEl;
 
     this.ragStatusRefresh = new RefreshAction({
@@ -1256,16 +1310,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (!this.ragStatusGrid || !this.ragStatusTimestamp) return;
 
     void (async () => {
-      this.ragStatusTimestamp!.setText(indexingDetail ? `인덱싱 상태: ${indexingDetail}` : '상태 계산 중...');
+      this.ragStatusTimestamp!.setText(indexingDetail ? `현재 상태: ${indexingDetail}` : '상태 계산 중...');
       try {
         const status = await this.getRagStatus();
         if (status) {
+          this.renderRagStatusSummary(status, indexingDetail);
           this.ragStatusTimestamp!.setText(
             indexingDetail
-              ? `인덱싱 상태: ${indexingDetail} · 마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
+              ? `현재 상태: ${indexingDetail} · 마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`
               : `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`,
           );
         }
+        this.updateRagControlStates(status ?? null);
         // RAG 통계 섹션도 부분 업데이트
         this.updateRagStatsSection();
         this.updateRagUpdateList();
@@ -1273,6 +1329,97 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.ragStatusTimestamp!.setText('통계를 불러올 수 없습니다.');
       }
     })();
+  }
+
+  private renderRagStatusSummary(status: RagStatusSummary, indexingDetail?: string): void {
+    if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
+    const rag = this.plugin.settings.rag;
+    const guardState = this.plugin.getRagPerformanceGuardState();
+    const updateCount = status.updateRequiredDocuments.length;
+
+    this.ragStatusGrid.empty();
+    this.createRagStatusItem(this.ragStatusGrid, '현재 상태', indexingDetail ?? this.getIndexingStatusLabel());
+    this.createRagStatusItem(this.ragStatusGrid, '필요 작업', this.getRagNextActionLabel(status, guardState));
+    this.createRagStatusItem(this.ragStatusGrid, '업데이트 필요', `${updateCount}개`);
+    this.createRagStatusItem(this.ragStatusGrid, '자동 업데이트', this.getAutoUpdateLabel());
+
+    this.ragStatusAction.empty();
+    this.ragStatusAction.setText(this.getRagActionMessage(status, guardState));
+
+    this.ragStatusDetails.empty();
+    const detailItems = [
+      `임베딩: ${EMBEDDING_PROVIDER_LABELS[rag.embeddingProvider]} / ${rag.embeddingModel || '미설정'}`,
+      `저장소: ${getVectorStoreLabel(rag.vectorStoreType)}`,
+      `성능 보호: ${this.getPerformanceGuardLabel(guardState)}`,
+    ];
+    const autoUpdateDetail = this.getAutoUpdateDetail();
+    if (autoUpdateDetail) detailItems.push(autoUpdateDetail);
+    for (const item of detailItems) {
+      this.ragStatusDetails.createDiv({ cls: 'superpower-inside-rag-status-detail', text: item });
+    }
+  }
+
+  private getRagNextActionLabel(
+    status: RagStatusSummary,
+    guardState: PerformanceGuardState | null,
+  ): string {
+    if (this.plugin.isRagIndexing()) return '진행 중인 인덱싱 확인';
+    if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
+      return `약 ${Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)}초 후 재개`;
+    }
+    if (status.updateRequiredDocuments.length > 0) return '필요 문서 업데이트';
+    if (status.totalDocuments > 0) return '필요 시 전체 재인덱싱';
+    return 'RAG 대상 문서 없음';
+  }
+
+  private getRagActionMessage(
+    status: RagStatusSummary,
+    guardState: PerformanceGuardState | null,
+  ): string {
+    if (this.plugin.isRagIndexing()) {
+      return '인덱싱이 실행 중입니다. 오래 걸리거나 Obsidian이 느려지면 중단할 수 있습니다.';
+    }
+    if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
+      return `성능 보호 때문에 잠시 대기 중입니다. 원인: ${guardState.lastSlowReason ?? guardState.reason ?? '느린 인덱싱 감지'}`;
+    }
+    const updateCount = status.updateRequiredDocuments.length;
+    if (updateCount > 0) return `${updateCount}개 문서가 검색 품질에 반영되지 않았습니다. 필요 문서 업데이트를 실행하세요.`;
+    if (status.totalDocuments > 0) return '현재 인덱스는 최신입니다. 모델이나 저장소를 바꾼 경우에만 전체 재인덱싱이 필요합니다.';
+    return '현재 설정 기준으로 RAG 대상 문서가 없습니다. 제외 경로나 파일 형식을 확인하세요.';
+  }
+
+  private getAutoUpdateLabel(): string {
+    if (!this.plugin.settings.rag.autoUpdateEnabled) return '꺼짐';
+    if (this.plugin.lastAutoUpdateSkippedReason) return `켜짐 · ${this.plugin.lastAutoUpdateSkippedReason}`;
+    return '켜짐';
+  }
+
+  private getAutoUpdateDetail(): string | null {
+    if (!this.plugin.settings.rag.autoUpdateEnabled) return null;
+    const details: string[] = [];
+    if (this.plugin.nextAutoUpdateAt) {
+      details.push(`다음 자동 업데이트: ${new Date(this.plugin.nextAutoUpdateAt).toLocaleString()}`);
+    }
+    if (this.plugin.lastAutoUpdateResult) {
+      details.push(
+        `마지막 자동 업데이트: ${this.plugin.lastAutoUpdateResult.indexed}개 문서, ${this.plugin.lastAutoUpdateResult.vectors}개 벡터`,
+      );
+    }
+    if (this.plugin.lastAutoUpdateSkippedReason) {
+      details.push(`최근 건너뜀: ${this.plugin.lastAutoUpdateSkippedReason}`);
+    }
+    return details.length > 0 ? details.join(' · ') : null;
+  }
+
+  private getPerformanceGuardLabel(guardState: PerformanceGuardState | null): string {
+    if (!guardState) return '상태 없음';
+    if (guardState.mode === 'paused') {
+      return `대기 중 · 약 ${Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)}초 남음`;
+    }
+    if (guardState.mode === 'throttled') {
+      return `속도 조절 중 · 배치 ${guardState.currentBatchSize}, 대기 ${guardState.currentYieldMs}ms`;
+    }
+    return `정상 · 배치 ${guardState.currentBatchSize}, 대기 ${guardState.currentYieldMs}ms`;
   }
 
   /** RAG 통계 섹션을 부분 업데이트합니다. */
@@ -1321,7 +1468,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }
         updateList.createDiv({
           cls: 'superpower-inside-rag-update-summary',
-          text: `${documents.length}개 문서에 업데이트가 필요합니다. 아래에는 최대 10개만 표시됩니다.`,
+          text: this.formatRagUpdateSummary(documents),
         });
         for (const document of documents.slice(0, 10)) {
           this.renderRagUpdateDocument(updateList, document);
@@ -1359,7 +1506,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
         listEl.createDiv({
           cls: 'superpower-inside-rag-update-summary',
-          text: `${documents.length}개 문서에 업데이트가 필요합니다. 아래에는 최대 10개만 표시됩니다.`,
+          text: this.formatRagUpdateSummary(documents),
         });
 
         for (const document of documents.slice(0, 10)) {
@@ -1370,6 +1517,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const msg = err instanceof Error ? err.message : String(err);
         listEl.setText(`문서 상태를 불러오지 못했습니다: ${msg}`);
       });
+  }
+
+  private formatRagUpdateSummary(documents: RagDocumentUpdate[]): string {
+    const missingCount = documents.filter((document) => document.status === 'missing').length;
+    const staleCount = documents.filter((document) => document.status === 'stale').length;
+    const unknownCount = documents.filter((document) => document.status === 'unknown').length;
+    return `${documents.length}개 문서에 업데이트가 필요합니다. 미인덱싱 ${missingCount}개, 수정됨 ${staleCount}개, 확인 필요 ${unknownCount}개. 아래에는 최대 10개만 표시됩니다.`;
   }
 
   private renderRagUpdateDocument(containerEl: HTMLElement, document: RagDocumentUpdate): void {
@@ -1505,14 +1659,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const isIndexing = this.plugin.isRagIndexing();
 
     controls.createEl('button', { text: '필요 문서 업데이트' }, (btn) => {
+      this.updatePendingButton = btn;
       btn.disabled = true;
       void this.getRagStatus().then((status) => {
-        btn.disabled =
-          isIndexing || !hasIndexer || !status || status.updateRequiredDocuments.length === 0;
-        btn.title =
-          status && status.updateRequiredDocuments.length === 0
-            ? '업데이트가 필요한 문서가 없습니다.'
-            : '';
+        this.updateRagControlStates(status);
       });
       btn.addEventListener('click', () => {
         void (async () => {
@@ -1543,6 +1693,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
 
     controls.createEl('button', { text: '전체 재인덱싱' }, (btn) => {
+      this.reindexAllButton = btn;
       btn.disabled = isIndexing || !hasIndexer;
       btn.addEventListener('click', () => {
         void (async () => {
@@ -1573,11 +1724,26 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
 
     controls.createEl('button', { text: '인덱싱 중단' }, (btn) => {
+      this.cancelIndexingButton = btn;
       btn.disabled = !isIndexing;
       btn.addEventListener('click', () => {
         this.plugin.cancelRagIndexing();
         this.updateRagStats();
       });
+    });
+
+    controls.createEl('button', { text: '지금 재개' }, (btn) => {
+      this.resumeIndexingButton = btn;
+      btn.disabled = true;
+      btn.addEventListener('click', () => {
+        this.plugin.resumeRagIndexing();
+        this.updateRagStats();
+      });
+    });
+
+    this.ragControlsHint = section.createDiv({
+      cls: 'superpower-inside-rag-controls-hint',
+      text: '버튼 상태를 확인하는 중...',
     });
 
     controls.createEl('button', { text: '임베딩 데이터 초기화' }, (btn) => {
@@ -1603,6 +1769,40 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         })();
       });
     });
+    void this.getRagStatus().then((status) => this.updateRagControlStates(status));
+  }
+
+  private updateRagControlStates(status: RagStatusSummary | null): void {
+    const p = this.plugin as unknown as {
+      vaultIndexer?: VaultIndexer;
+      ragIndexingScheduler?: RAGIndexingScheduler;
+    };
+    const state = getRagIndexingControlState({
+      hasIndexer: !!p.vaultIndexer && !!p.ragIndexingScheduler,
+      isIndexing: this.plugin.isRagIndexing(),
+      totalDocuments: status?.totalDocuments ?? null,
+      updateRequiredCount: status?.updateRequiredDocuments.length ?? null,
+      guardRemainingPauseMs: this.plugin.getRagPerformanceGuardState()?.remainingPauseMs ?? null,
+    });
+
+    this.applyButtonState(this.updatePendingButton, state.updatePending);
+    this.applyButtonState(this.reindexAllButton, state.reindexAll);
+    this.applyButtonState(this.cancelIndexingButton, state.cancel);
+    this.applyButtonState(this.resumeIndexingButton, state.resume);
+
+    const firstReason = state.updatePending.reason ?? state.reindexAll.reason;
+    if (this.ragControlsHint) {
+      this.ragControlsHint.setText(firstReason ?? '실행할 작업을 선택하세요.');
+    }
+  }
+
+  private applyButtonState(
+    button: HTMLButtonElement | null,
+    state: { disabled: boolean; reason: string | null },
+  ): void {
+    if (!button) return;
+    button.disabled = state.disabled;
+    button.title = state.reason ?? '';
   }
 
   private buildExcludeListSetting(input: {
@@ -1782,6 +1982,59 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
 
+  private buildExcludeOptionsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '인덱싱 제외 대상' });
+
+    this.buildExcludeListSetting({
+      containerEl: section,
+      name: t('excludePaths'),
+      description: t('excludePathsDesc'),
+      placeholder: t('excludePathPlaceholder'),
+      values: this.plugin.settings.rag.excludePaths,
+      validate: (value, existingValues) =>
+        validateExcludePathInput(
+          value,
+          existingValues,
+          (path) => path.includes('*') || this.app.vault.getAbstractFileByPath(path) !== null,
+        ),
+      onChange: (values) => {
+        this.plugin.settings.rag.excludePaths = values;
+        this.debouncedSave();
+      },
+    });
+
+    new Setting(section)
+      .setName(t('excludeChatFolder'))
+      .setDesc(getChatFolderExcludeDescription(this.plugin.settings.chat.saveFolder))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.rag.excludeChatFolder).onChange((value) => {
+          this.plugin.settings.rag.excludeChatFolder = value;
+          this.debouncedSave();
+        }),
+      );
+
+    this.buildExcludeListSetting({
+      containerEl: section,
+      name: t('excludeExts'),
+      description: t('excludeExtsDesc'),
+      placeholder: t('excludeExtPlaceholder'),
+      values: this.plugin.settings.rag.excludeExts,
+      validate: validateExcludeExtensionInput,
+      onChange: (values) => {
+        this.plugin.settings.rag.excludeExts = values;
+        this.debouncedSave();
+      },
+      countMeta: {
+        getCounts: () =>
+          countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
+        getItemLabel: (count) => t('excludeExtFileCount').replace('{count}', String(count)),
+        getSummaryLabel: (count) => t('excludeExtTotalFileCount').replace('{count}', String(count)),
+        refreshLabel: t('refresh'),
+      },
+    });
+  }
+
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '고급 인덱싱 옵션' });
@@ -1818,6 +2071,32 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '99';
       });
 
+    new Setting(section)
+      .setName('성능 튜닝')
+      .setDesc('기본값은 임베딩 프로바이더에 맞춰 자동으로 적용하고, 필요할 때만 직접 조정합니다.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('auto', '자동')
+          .addOption('custom', '수동')
+          .setValue(this.plugin.settings.rag.performanceTuningMode)
+          .onChange((value) => {
+            this.plugin.settings.rag.performanceTuningMode =
+              value === 'custom' ? 'custom' : 'auto';
+            this.debouncedSave();
+            section.remove();
+            this.buildIndexingOptionsSection(containerEl);
+          }),
+      );
+
+    if (this.plugin.settings.rag.performanceTuningMode !== 'custom') {
+      const performanceSettings = resolveRagPerformanceSettings(this.plugin.settings.rag);
+      section.createDiv({
+        cls: 'superpower-inside-rag-performance-summary',
+        text: `자동 적용 중: 배치 ${performanceSettings.maxEmbeddingBatchSize}, 대기 ${performanceSettings.indexingYieldMs}ms, 느림 감지 ${performanceSettings.slowEventLoopThresholdMs}ms/${performanceSettings.slowBatchThresholdMs}ms`,
+      });
+    }
+
+    if (this.plugin.settings.rag.performanceTuningMode === 'custom') {
     new Setting(section)
       .setName('성능 보호')
       .setDesc('인덱싱 중 Obsidian이 느려지면 배치 크기와 대기 시간을 자동으로 조절합니다.')
@@ -1895,55 +2174,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '100';
         text.inputEl.max = '60000';
       });
-
-    this.buildExcludeListSetting({
-      containerEl: section,
-      name: t('excludePaths'),
-      description: t('excludePathsDesc'),
-      placeholder: t('excludePathPlaceholder'),
-      values: this.plugin.settings.rag.excludePaths,
-      validate: (value, existingValues) =>
-        validateExcludePathInput(
-          value,
-          existingValues,
-          (path) => path.includes('*') || this.app.vault.getAbstractFileByPath(path) !== null,
-        ),
-      onChange: (values) => {
-        this.plugin.settings.rag.excludePaths = values;
-        this.debouncedSave();
-      },
-    });
-
-    // 채팅 저장 폴더 RAG 제외
-    new Setting(section)
-      .setName(t('excludeChatFolder'))
-      .setDesc(getChatFolderExcludeDescription(this.plugin.settings.chat.saveFolder))
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.rag.excludeChatFolder).onChange((value) => {
-          this.plugin.settings.rag.excludeChatFolder = value;
-          this.debouncedSave();
-        }),
-      );
-
-    this.buildExcludeListSetting({
-      containerEl: section,
-      name: t('excludeExts'),
-      description: t('excludeExtsDesc'),
-      placeholder: t('excludeExtPlaceholder'),
-      values: this.plugin.settings.rag.excludeExts,
-      validate: validateExcludeExtensionInput,
-      onChange: (values) => {
-        this.plugin.settings.rag.excludeExts = values;
-        this.debouncedSave();
-      },
-      countMeta: {
-        getCounts: () =>
-          countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
-        getItemLabel: (count) => t('excludeExtFileCount').replace('{count}', String(count)),
-        getSummaryLabel: (count) => t('excludeExtTotalFileCount').replace('{count}', String(count)),
-        refreshLabel: t('refresh'),
-      },
-    });
+    }
 
     // 청크 크기
     const chunkSizeSetting = new Setting(section)
@@ -1997,8 +2228,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '검색 품질' });
 
-    const guidanceEl = section.createEl('div');
-    guidanceEl.innerHTML = `<p style="color: var(--text-muted); font-size: 0.85em; padding: 8px 12px; border-left: 3px solid var(--interactive-accent); background: var(--background-secondary); border-radius: 4px; margin: 8px 0;">${t('bm25Guidance')}</p>`;
+    section.createDiv({
+      cls: 'superpower-inside-rag-guidance',
+      text: t('bm25Guidance'),
+    });
 
     new Setting(section)
       .setName(t('minScore'))

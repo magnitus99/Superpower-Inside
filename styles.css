@@ -265,6 +265,51 @@
   color: var(--text-normal);
 }
 
+.superpower-inside-rag-advanced {
+  margin-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-rag-collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+  text-align: left;
+}
+
+.superpower-inside-rag-collapsible-chevron {
+  width: 1.2em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+}
+
+.superpower-inside-rag-collapsible-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+
+.superpower-inside-rag-collapsible-content.is-collapsed {
+  display: none;
+}
+
+.superpower-inside-rag-performance-summary,
+.superpower-inside-rag-guidance {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
 .superpower-inside-exclude-editor {
   width: min(420px, 100%);
 }
@@ -458,6 +503,31 @@
   margin-top: 8px;
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
+}
+
+.superpower-inside-rag-status-action {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  line-height: 1.4;
+}
+
+.superpower-inside-rag-status-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.superpower-inside-rag-status-detail,
+.superpower-inside-rag-controls-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 /* Stats Grid */

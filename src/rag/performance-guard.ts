@@ -13,12 +13,16 @@ export interface PerformanceGuardState {
   currentBatchSize: number;
   currentYieldMs: number;
   reason: string | null;
+  pauseUntilMs: number | null;
+  remainingPauseMs: number | null;
+  lastSlowReason: string | null;
 }
 
 const SLOW_SAMPLE_LIMIT = 3;
 const PAUSE_SAMPLE_LIMIT = 6;
 const RECOVERY_SAMPLE_LIMIT = 3;
 const MAX_YIELD_MS = 500;
+const DEFAULT_PAUSE_MS = 30_000;
 
 export class PerformanceGuard {
   private readonly options: PerformanceGuardOptions;
@@ -30,6 +34,8 @@ export class PerformanceGuard {
   private slowSamples = 0;
   private recoverySamples = 0;
   private reason: string | null = null;
+  private pauseUntilMs: number | null = null;
+  private lastSlowReason: string | null = null;
 
   constructor(options: PerformanceGuardOptions) {
     this.options = options;
@@ -40,20 +46,56 @@ export class PerformanceGuard {
   }
 
   getState(): PerformanceGuardState {
+    this.resumeIfReady();
     return {
       mode: this.mode,
       currentBatchSize: this.currentBatchSize,
       currentYieldMs: this.currentYieldMs,
       reason: this.reason,
+      pauseUntilMs: this.pauseUntilMs,
+      remainingPauseMs: this.getRemainingPauseMs(),
+      lastSlowReason: this.lastSlowReason,
     };
   }
 
   getBatchSize(): number {
+    this.resumeIfReady();
     return this.currentBatchSize;
   }
 
   getYieldMs(): number {
+    this.resumeIfReady();
     return this.currentYieldMs;
+  }
+
+  resume(): PerformanceGuardState {
+    if (this.mode !== 'paused') {
+      return this.getState();
+    }
+    if ((this.pauseUntilMs ?? 0) > Date.now()) {
+      return this.getState();
+    }
+
+    this.mode = 'throttled';
+    this.currentBatchSize = 1;
+    this.currentYieldMs = MAX_YIELD_MS;
+    this.slowSamples = 0;
+    this.recoverySamples = 0;
+    this.pauseUntilMs = null;
+    this.reason = '성능 보호 대기 후 최소 배치로 재개됨';
+    return this.getState();
+  }
+
+  reset(): PerformanceGuardState {
+    this.mode = 'normal';
+    this.currentBatchSize = this.initialBatchSize;
+    this.currentYieldMs = this.initialYieldMs;
+    this.slowSamples = 0;
+    this.recoverySamples = 0;
+    this.reason = null;
+    this.pauseUntilMs = null;
+    this.lastSlowReason = null;
+    return this.getState();
   }
 
   recordEventLoopLag(lagMs: number): PerformanceGuardState {
@@ -119,15 +161,19 @@ export class PerformanceGuard {
     this.mode = 'paused';
     this.currentBatchSize = 1;
     this.currentYieldMs = MAX_YIELD_MS;
-    this.reason = `일시정지됨: ${reason}`;
+    this.pauseUntilMs = Date.now() + DEFAULT_PAUSE_MS;
+    this.lastSlowReason = reason;
+    this.reason = `성능 보호 대기 중: ${reason}`;
   }
 
-  private reset(): void {
-    this.mode = 'normal';
-    this.currentBatchSize = this.initialBatchSize;
-    this.currentYieldMs = this.initialYieldMs;
-    this.slowSamples = 0;
-    this.recoverySamples = 0;
-    this.reason = null;
+  private resumeIfReady(): void {
+    if (this.mode === 'paused' && (this.pauseUntilMs ?? 0) <= Date.now()) {
+      this.resume();
+    }
+  }
+
+  private getRemainingPauseMs(): number | null {
+    if (this.mode !== 'paused' || this.pauseUntilMs === null) return null;
+    return Math.max(0, this.pauseUntilMs - Date.now());
   }
 }

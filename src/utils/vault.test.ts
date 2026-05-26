@@ -22,6 +22,7 @@ const baseRagConfig: RAGConfig = {
   minScore: 0.5,
   enableBM25: true,
   bm25Weight: 0.3,
+  performanceTuningMode: 'auto',
   performanceGuardEnabled: true,
   maxEmbeddingBatchSize: 32,
   indexingYieldMs: 25,

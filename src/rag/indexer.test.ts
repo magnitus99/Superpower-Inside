@@ -171,6 +171,7 @@ function createRagConfig(): RAGConfig {
     minScore: 0.5,
     enableBM25: false,
     bm25Weight: 0.3,
+    performanceTuningMode: 'auto',
     performanceGuardEnabled: true,
     maxEmbeddingBatchSize: 32,
     indexingYieldMs: 25,

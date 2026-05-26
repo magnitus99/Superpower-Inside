@@ -7,7 +7,11 @@ import {
   normalizeChatSaveFolder,
   SuperpowerInsideSettingTab,
 } from './src/settings';
-import { shouldShowProviderApiKey } from './src/rag/settings-display';
+import {
+  normalizeRagPerformanceTuningMode,
+  resolveRagPerformanceSettings,
+  shouldShowProviderApiKey,
+} from './src/rag/settings-display';
 import {
   createCustomOpenAIProvider,
   createProvider,
@@ -28,10 +32,11 @@ import {
   registerDeleteEvent,
   registerRenameEvent,
   isIndexingCancelledError,
+  type IndexingResult,
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
-import { PerformanceGuard } from './src/rag/performance-guard';
+import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
@@ -58,6 +63,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private ragIndexingScheduler: RAGIndexingScheduler | null = null;
   private ragPerformanceGuard: PerformanceGuard | null = null;
   ragIndexingStatus: RagIndexingSchedulerStatus | null = null;
+  nextAutoUpdateAt: number | null = null;
+  lastAutoUpdateSkippedReason: string | null = null;
+  lastAutoUpdateResult: IndexingResult | null = null;
   mcpRegistry: MCPRegistry | null = null;
   mcpConnectionState: MCPConnectionState = 'idle';
   mcpLastErrors: string[] = [];
@@ -185,6 +193,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
   cancelRagIndexing(): void {
     this.ragIndexAbortController?.abort();
     this.ragIndexingScheduler?.cancel();
+  }
+
+  resumeRagIndexing(): void {
+    this.ragPerformanceGuard?.reset();
+    this.ragIndexingScheduler?.cancel();
+    this.refreshBus?.emit('rag', {
+      status: 'success',
+      detail: this.ragIndexingStatus
+        ? this.formatRagIndexingStatus(this.ragIndexingStatus)
+        : '대기 중',
+    });
+  }
+
+  getRagPerformanceGuardState(): PerformanceGuardState | null {
+    return this.ragPerformanceGuard?.getState() ?? null;
   }
 
   async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
@@ -372,6 +395,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (typeof migratedRag.bm25Weight !== 'number') {
         migratedRag.bm25Weight = 0.3;
       }
+      migratedRag.performanceTuningMode = normalizeRagPerformanceTuningMode(
+        migratedRag.performanceTuningMode,
+      );
       if (typeof migratedRag.performanceGuardEnabled !== 'boolean') {
         migratedRag.performanceGuardEnabled = true;
       }
@@ -619,12 +645,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       bm25Index,
     );
 
+    const performanceSettings = resolveRagPerformanceSettings(rag);
     this.ragPerformanceGuard = new PerformanceGuard({
-      enabled: rag.performanceGuardEnabled,
-      initialBatchSize: rag.maxEmbeddingBatchSize,
-      initialYieldMs: rag.indexingYieldMs,
-      slowEventLoopThresholdMs: rag.slowEventLoopThresholdMs,
-      slowBatchThresholdMs: rag.slowBatchThresholdMs,
+      enabled: performanceSettings.enabled,
+      initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
+      initialYieldMs: performanceSettings.indexingYieldMs,
+      slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
+      slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
     });
     this.ragIndexingScheduler = new RAGIndexingScheduler({
       debounceMs: 500,
@@ -634,8 +661,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
       createIndexingOptions: (signal) => ({
         signal,
-        maxEmbeddingBatchSize: this.ragPerformanceGuard?.getBatchSize() ?? rag.maxEmbeddingBatchSize,
-        indexingYieldMs: this.ragPerformanceGuard?.getYieldMs() ?? rag.indexingYieldMs,
+        maxEmbeddingBatchSize:
+          this.ragPerformanceGuard?.getBatchSize() ??
+          performanceSettings.maxEmbeddingBatchSize,
+        indexingYieldMs:
+          this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
         onBatchComplete: (durationMs) => {
           this.ragPerformanceGuard?.recordBatchDuration(durationMs);
           void this.ragPerformanceGuard?.measureEventLoopLag();
@@ -661,18 +691,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private formatRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
     const guardState = status.lastResult?.guardState ?? this.ragPerformanceGuard?.getState() ?? null;
     if (guardState?.mode === 'paused') {
-      return guardState.reason ?? '일시정지됨';
+      return '성능 보호 대기';
     }
     if (guardState?.mode === 'throttled') {
-      return `${guardState.reason ?? '느림 감지'}: 배치 크기 ${guardState.currentBatchSize}`;
+      return '속도 조절 중';
     }
     if (status.running) {
-      return `인덱싱 중: ${status.phase}, 대기 파일 ${status.queuedFiles}개`;
+      return `인덱싱 중: ${this.formatRagIndexingPhase(status.phase)}`;
     }
     if (status.lastResult) {
       return `${status.lastResult.indexed}개 문서, ${status.lastResult.vectors}개 벡터`;
     }
     return '대기 중';
+  }
+
+  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+    if (phase === 'file') return '변경 파일';
+    if (phase === 'pending') return '필요 문서 업데이트';
+    if (phase === 'all') return '전체 재인덱싱';
+    return '대기';
   }
 
   private clearRAG(): void {
@@ -693,6 +730,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.ragIndexingScheduler = null;
     this.ragPerformanceGuard = null;
     this.ragIndexingStatus = null;
+    this.nextAutoUpdateAt = null;
+    this.lastAutoUpdateSkippedReason = null;
+    this.lastAutoUpdateResult = null;
   }
 
   private unregisterRAGEvents(): void {
@@ -782,7 +822,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
     }
+    this.nextAutoUpdateAt = null;
     if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
+      this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
       this.autoUpdateTimer = setInterval(() => {
         void this.autoIndex();
       }, this.settings.rag.autoUpdateIntervalMin * 60000);
@@ -790,8 +832,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async autoIndex(): Promise<void> {
-    if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) return;
-    if (this.isRagIndexing()) return;
+    if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) {
+      this.lastAutoUpdateSkippedReason = 'RAG 인덱서가 초기화되지 않았습니다.';
+      return;
+    }
+    this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
+    if (this.isRagIndexing()) {
+      this.lastAutoUpdateSkippedReason = '인덱싱이 이미 실행 중입니다.';
+      this.refreshBus?.emit('rag', { status: 'partial', detail: '인덱싱 중' });
+      return;
+    }
+    const guardState = this.ragPerformanceGuard?.getState() ?? null;
+    if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
+      this.lastAutoUpdateSkippedReason = `성능 보호 대기 중입니다. 약 ${Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)}초 후 다시 시도합니다.`;
+      this.refreshBus?.emit('rag', { status: 'partial', detail: '성능 보호 대기' });
+      return;
+    }
     try {
       const status = await calculateRagStatus(
         this.app.vault,
@@ -800,20 +856,32 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.settings.chat,
       );
       if (status.updateRequiredDocuments.length === 0) {
+        this.lastAutoUpdateSkippedReason = '업데이트 대상 없음';
+        this.refreshBus?.emit('rag', { status: 'success', detail: '업데이트 대상 없음' });
         return;
       }
       new Notice(t('autoUpdateIndexingStarted'));
       const result = await this.ragIndexingScheduler.indexPending();
+      this.lastAutoUpdateResult = result;
+      this.lastAutoUpdateSkippedReason = null;
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
       void this.computeAndEmitRagStats();
     } catch (err) {
       if (isIndexingCancelledError(err)) {
+        const pausedState = this.ragPerformanceGuard?.getState() ?? null;
+        if (pausedState?.mode === 'paused') {
+          this.lastAutoUpdateSkippedReason = `성능 보호 대기 중입니다. 약 ${Math.ceil((pausedState.remainingPauseMs ?? 0) / 1000)}초 후 다시 시도합니다.`;
+          this.refreshBus?.emit('rag', { status: 'partial', detail: '성능 보호 대기' });
+          return;
+        }
+        this.lastAutoUpdateSkippedReason = '인덱싱이 중단되었습니다.';
         new Notice('인덱싱이 중단되었습니다.');
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
+      this.lastAutoUpdateSkippedReason = msg;
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     }
   }

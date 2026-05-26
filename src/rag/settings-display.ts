@@ -1,4 +1,5 @@
 export type VectorStoreType = 'json' | 'indexeddb';
+export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
   | 'openai'
   | 'claude'
@@ -19,6 +20,77 @@ export interface EmbeddingModelOption {
   label: string;
   description: string;
   source: 'preset' | 'provider' | 'current';
+}
+
+export interface RagIndexingControlStateInput {
+  hasIndexer: boolean;
+  isIndexing: boolean;
+  totalDocuments: number | null;
+  updateRequiredCount: number | null;
+  guardRemainingPauseMs: number | null;
+}
+
+export interface RagIndexingButtonState {
+  disabled: boolean;
+  reason: string | null;
+}
+
+export interface RagIndexingControlState {
+  updatePending: RagIndexingButtonState;
+  reindexAll: RagIndexingButtonState;
+  cancel: RagIndexingButtonState;
+  resume: RagIndexingButtonState;
+}
+
+export interface RagPerformanceConfig {
+  embeddingProvider: string;
+  performanceTuningMode?: RagPerformanceTuningMode;
+  performanceGuardEnabled: boolean;
+  maxEmbeddingBatchSize: number;
+  indexingYieldMs: number;
+  slowEventLoopThresholdMs: number;
+  slowBatchThresholdMs: number;
+}
+
+export interface RagPerformanceSettings {
+  enabled: boolean;
+  maxEmbeddingBatchSize: number;
+  indexingYieldMs: number;
+  slowEventLoopThresholdMs: number;
+  slowBatchThresholdMs: number;
+}
+
+export function resolveRagPerformanceSettings(
+  rag: RagPerformanceConfig,
+): RagPerformanceSettings {
+  if (normalizeRagPerformanceTuningMode(rag.performanceTuningMode) === 'custom') {
+    return {
+      enabled: rag.performanceGuardEnabled,
+      maxEmbeddingBatchSize: clampInteger(rag.maxEmbeddingBatchSize, 1, 128),
+      indexingYieldMs: clampInteger(rag.indexingYieldMs, 0, 1000),
+      slowEventLoopThresholdMs: clampInteger(rag.slowEventLoopThresholdMs, 16, 5000),
+      slowBatchThresholdMs: clampInteger(rag.slowBatchThresholdMs, 100, 60000),
+    };
+  }
+
+  return {
+    enabled: true,
+    maxEmbeddingBatchSize: rag.embeddingProvider === 'ollama' ? 1 : 32,
+    indexingYieldMs: rag.embeddingProvider === 'ollama' ? 50 : 25,
+    slowEventLoopThresholdMs: 150,
+    slowBatchThresholdMs: 3000,
+  };
+}
+
+export function normalizeRagPerformanceTuningMode(
+  value: unknown,
+): RagPerformanceTuningMode {
+  return value === 'custom' ? 'custom' : 'auto';
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 export function getVectorStoreLabel(type: VectorStoreType): string {
@@ -53,6 +125,35 @@ export function getChatFolderExcludeDescription(saveFolder: string): string {
 
 export function shouldShowProviderApiKey(key: ProviderApiKeyVisibilityKey): boolean {
   return key !== 'ollama';
+}
+
+export function getRagIndexingControlState(
+  input: RagIndexingControlStateInput,
+): RagIndexingControlState {
+  const setupReason = input.hasIndexer ? null : 'RAG 인덱서가 초기화되지 않았습니다.';
+  const runningReason = input.isIndexing ? '인덱싱이 이미 실행 중입니다.' : null;
+  const pauseReason =
+    input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
+      ? `성능 보호 대기 중입니다. 약 ${Math.ceil(input.guardRemainingPauseMs / 1000)}초 후 다시 시도할 수 있습니다.`
+      : null;
+  const noUpdatesReason =
+    input.updateRequiredCount === 0 ? '업데이트가 필요한 문서가 없습니다.' : null;
+  const noDocumentsReason = input.totalDocuments === 0 ? 'RAG 대상 문서가 없습니다.' : null;
+
+  return {
+    updatePending: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noUpdatesReason),
+    reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
+    cancel: toButtonState(input.isIndexing ? null : '실행 중인 인덱싱이 없습니다.'),
+    resume: toButtonState(
+      input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
+        ? null
+        : '성능 보호 대기 상태가 아닙니다.',
+    ),
+  };
+}
+
+function toButtonState(reason: string | null): RagIndexingButtonState {
+  return { disabled: reason !== null, reason };
 }
 
 export function buildEmbeddingModelOptions(

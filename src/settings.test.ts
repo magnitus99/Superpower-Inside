@@ -11,10 +11,13 @@ vi.mock('obsidian', () => ({
 
 import {
   buildEmbeddingModelOptions,
+  getRagIndexingControlState,
   getChatFolderExcludeDescription,
   getVectorStoreTransferNotice,
   getVectorStoreDescription,
   getVectorStoreLabel,
+  normalizeRagPerformanceTuningMode,
+  resolveRagPerformanceSettings,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
 import { buildMcpJsonEditorValue, DEFAULT_SETTINGS, normalizeChatSaveFolder } from './settings';
@@ -105,11 +108,118 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('신규 설치 기본 벡터 저장소는 IndexedDB이며 성능 보호를 켠다', () => {
     expect(DEFAULT_SETTINGS.rag.vectorStoreType).toBe('indexeddb');
+    expect(DEFAULT_SETTINGS.rag.performanceTuningMode).toBe('auto');
     expect(DEFAULT_SETTINGS.rag.performanceGuardEnabled).toBe(true);
     expect(DEFAULT_SETTINGS.rag.maxEmbeddingBatchSize).toBe(32);
     expect(DEFAULT_SETTINGS.rag.indexingYieldMs).toBe(25);
     expect(DEFAULT_SETTINGS.rag.slowEventLoopThresholdMs).toBe(150);
     expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
+  });
+
+  it('자동 성능 설정은 Ollama와 그 외 프로바이더에 다른 기본값을 적용한다', () => {
+    expect(resolveRagPerformanceSettings(DEFAULT_SETTINGS.rag)).toEqual({
+      enabled: true,
+      maxEmbeddingBatchSize: 32,
+      indexingYieldMs: 25,
+      slowEventLoopThresholdMs: 150,
+      slowBatchThresholdMs: 3000,
+    });
+
+    expect(
+      resolveRagPerformanceSettings({
+        ...DEFAULT_SETTINGS.rag,
+        embeddingProvider: 'ollama',
+      }),
+    ).toEqual({
+      enabled: true,
+      maxEmbeddingBatchSize: 1,
+      indexingYieldMs: 50,
+      slowEventLoopThresholdMs: 150,
+      slowBatchThresholdMs: 3000,
+    });
+  });
+
+  it('수동 성능 설정은 저장된 override 값을 그대로 사용한다', () => {
+    expect(
+      resolveRagPerformanceSettings({
+        ...DEFAULT_SETTINGS.rag,
+        performanceTuningMode: 'custom',
+        performanceGuardEnabled: false,
+        maxEmbeddingBatchSize: 7,
+        indexingYieldMs: 80,
+        slowEventLoopThresholdMs: 220,
+        slowBatchThresholdMs: 4200,
+      }),
+    ).toEqual({
+      enabled: false,
+      maxEmbeddingBatchSize: 7,
+      indexingYieldMs: 80,
+      slowEventLoopThresholdMs: 220,
+      slowBatchThresholdMs: 4200,
+    });
+  });
+
+  it('저장된 성능 튜닝 모드는 migration에서 auto/custom으로 정규화한다', () => {
+    expect(normalizeRagPerformanceTuningMode('custom')).toBe('custom');
+    expect(normalizeRagPerformanceTuningMode('auto')).toBe('auto');
+    expect(normalizeRagPerformanceTuningMode(undefined)).toBe('auto');
+    expect(normalizeRagPerformanceTuningMode('legacy')).toBe('auto');
+  });
+
+  it('RAG 인덱싱 제어 버튼 비활성 사유를 계산한다', () => {
+    expect(
+      getRagIndexingControlState({
+        hasIndexer: false,
+        isIndexing: false,
+        totalDocuments: 1,
+        updateRequiredCount: 1,
+        guardRemainingPauseMs: null,
+      }).updatePending.reason,
+    ).toContain('초기화되지');
+
+    expect(
+      getRagIndexingControlState({
+        hasIndexer: true,
+        isIndexing: true,
+        totalDocuments: 1,
+        updateRequiredCount: 1,
+        guardRemainingPauseMs: null,
+      }).updatePending.reason,
+    ).toBe('인덱싱이 이미 실행 중입니다.');
+
+    expect(
+      getRagIndexingControlState({
+        hasIndexer: true,
+        isIndexing: false,
+        totalDocuments: 1,
+        updateRequiredCount: 1,
+        guardRemainingPauseMs: 12_400,
+      }).updatePending.reason,
+    ).toBe('성능 보호 대기 중입니다. 약 13초 후 다시 시도할 수 있습니다.');
+
+    expect(
+      getRagIndexingControlState({
+        hasIndexer: true,
+        isIndexing: false,
+        totalDocuments: 1,
+        updateRequiredCount: 0,
+        guardRemainingPauseMs: null,
+      }).updatePending.reason,
+    ).toBe('업데이트가 필요한 문서가 없습니다.');
+  });
+
+  it('전체 재인덱싱은 업데이트 대상이 없어도 전체 문서가 있으면 활성화한다', () => {
+    const state = getRagIndexingControlState({
+      hasIndexer: true,
+      isIndexing: false,
+      totalDocuments: 10,
+      updateRequiredCount: 0,
+      guardRemainingPauseMs: null,
+    });
+
+    expect(state.updatePending.disabled).toBe(true);
+    expect(state.reindexAll.disabled).toBe(false);
+    expect(state.reindexAll.reason).toBeNull();
   });
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {
