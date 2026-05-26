@@ -83,7 +83,7 @@ function extractEmbeddingVector(response: unknown): number[] | null {
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
-  private baseUrl: string;
+  private embeddingsUrl: string;
   private model: string;
 
   constructor(
@@ -92,12 +92,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     model = 'text-embedding-3-small',
   ) {
     this.apiKey = apiKey;
-    // trailing slash 제거, /v1 중복 방지
-    let url = baseUrl.trim().replace(/\/+$/, '');
-    if (url.endsWith('/v1')) {
-      url = url.slice(0, -3);
-    }
-    this.baseUrl = url;
+    this.embeddingsUrl = normalizeOpenAIEmbeddingsUrl(baseUrl);
     this.model = model;
   }
 
@@ -108,26 +103,29 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
     throwIfAborted(options?.signal);
-    const res = await fetch(`${this.baseUrl}/v1/embeddings`, {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey.trim()) {
+      headers.Authorization = `Bearer ${this.apiKey.trim()}`;
+    }
+    const res = await requestUrl({
+      url: this.embeddingsUrl,
       method: 'POST',
-      signal: options?.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
+      headers,
       body: JSON.stringify({
         input: texts,
         model: this.model,
       }),
+      throw: false,
     });
     throwIfAborted(options?.signal);
-    if (!res.ok) {
-      const body = await res.text();
+    if (res.status >= 400) {
       throw new Error(
-        `Embedding API ${res.status} (endpoint: ${this.baseUrl}/v1/embeddings, model: ${this.model}): ${body}`,
+        `Embedding API ${res.status} (endpoint: ${this.embeddingsUrl}, model: ${this.model}): ${res.text}`,
       );
     }
-    const data = (await res.json()) as {
+    const data = res.json as {
       data?: Array<{ embedding: number[] }>;
     };
     if (!data.data) {
@@ -135,6 +133,17 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     }
     return data.data.map((d) => d.embedding);
   }
+}
+
+function normalizeOpenAIEmbeddingsUrl(baseUrl: string): string {
+  let url = baseUrl.trim().replace(/\/+$/, '');
+  if (url.endsWith('/embeddings')) {
+    return url;
+  }
+  if (!url.endsWith('/v1')) {
+    url = `${url}/v1`;
+  }
+  return `${url}/embeddings`;
 }
 
 export class OllamaEmbeddingProvider implements EmbeddingProvider {

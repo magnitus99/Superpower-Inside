@@ -3,7 +3,11 @@ import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
   type ProviderConfig,
+  type CustomOpenAIProviderConfig,
+  type EmbeddingProviderKey,
   DEFAULT_SETTINGS,
+  getCustomOpenAIEmbeddingProviderId,
+  isCustomOpenAIEmbeddingProviderKey,
   normalizeChatSaveFolder,
   SuperpowerInsideSettingTab,
 } from './src/settings';
@@ -50,8 +54,17 @@ import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { MCP_DESKTOP_ONLY_MESSAGE, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
+import {
+  loadLocalSettings,
+  removeLegacyDataJson,
+  saveLocalSettings,
+} from './src/settings-storage';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
@@ -122,15 +135,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const providerKey = rag.embeddingProvider;
           let reason = 'RAG 인덱서가 초기화되지 않았습니다.';
           if (providerKey !== 'other') {
-            const config = this.settings[providerKey as ProviderKey];
+            const config = this.getEmbeddingProviderConfig(providerKey);
+            const providerLabel = this.getEmbeddingProviderLabel(providerKey);
+            const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+              ? 'customOpenAI'
+              : providerKey;
             if (!config?.enabled) {
-              reason += ` Providers 탭에서 "${providerKey}"의 Enabled 토글을 켜주세요.`;
-            } else if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
-              reason += ` Providers 탭에서 "${providerKey}"의 API Key를 입력하세요.`;
+              reason += ` Providers 탭에서 "${providerLabel}"의 Enabled 토글을 켜주세요.`;
+            } else if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+              reason += ` Providers 탭에서 "${providerLabel}"의 API Key를 입력하세요.`;
             } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
               reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
             } else {
-              reason += ` "${providerKey}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
+              reason += ` "${providerLabel}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
             }
           }
           new Notice(reason);
@@ -255,8 +272,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const raw = (await this.loadData()) as Record<string, unknown>;
-    const data = raw == null ? {} : { ...raw };
+    const localRaw = loadLocalSettings(this.app);
+    let migratedFromLegacyData = false;
+    let raw: Record<string, unknown> = {};
+    if (isRecord(localRaw)) {
+      raw = localRaw;
+    } else {
+      const legacyRaw = (await this.loadData()) as unknown;
+      if (isRecord(legacyRaw)) {
+        raw = legacyRaw;
+        migratedFromLegacyData = true;
+      }
+    }
+    const data = { ...raw };
 
     const providerKeys = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
     for (const pk of providerKeys) {
@@ -299,7 +327,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
             ? provider.models.filter((model): model is string => typeof model === 'string')
             : [];
           const enabled = typeof provider.enabled === 'boolean' ? provider.enabled : false;
-          return { id, name, apiKey, baseUrl, models, enabled };
+          const useRequestUrl =
+            typeof provider.useRequestUrl === 'boolean' ? provider.useRequestUrl : true;
+          return { id, name, apiKey, baseUrl, models, enabled, useRequestUrl };
         });
     } else {
       data.customOpenAIProviders = [];
@@ -466,6 +496,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
     };
     setLanguage(this.settings.language);
+    if (migratedFromLegacyData) {
+      saveLocalSettings(this.app, this.settings);
+      await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
+    }
   }
 
   private async hasExistingJsonVectors(): Promise<boolean> {
@@ -481,7 +515,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
-    await this.saveData(this.settings);
+    saveLocalSettings(this.app, this.settings);
+    await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
     this.initProvider();
     await this.initRAG();
     const mcpErrors = await this.initMCP();
@@ -546,6 +581,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
+  private getEmbeddingProviderConfig(
+    providerKey: EmbeddingProviderKey,
+  ): ProviderConfig | CustomOpenAIProviderConfig | null {
+    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
+      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
+      return (
+        this.settings.customOpenAIProviders.find((provider) => provider.id === providerId) ?? null
+      );
+    }
+    if (providerKey === 'other') {
+      return null;
+    }
+    return this.settings[providerKey as ProviderKey];
+  }
+
+  private getEmbeddingProviderLabel(providerKey: EmbeddingProviderKey): string {
+    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
+      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
+      const provider = this.settings.customOpenAIProviders.find((item) => item.id === providerId);
+      return provider?.name.trim() || 'Custom OpenAI-Compatible';
+    }
+    return providerKey;
+  }
+
   private debouncedRefreshStats(): void {
     if (this.statsDebounceTimer) {
       clearTimeout(this.statsDebounceTimer);
@@ -570,9 +629,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const providerKey = rag.embeddingProvider;
 
     // Resolve config for known providers (use provider tab settings)
-    let config: ProviderConfig | null = null;
+    let config: ProviderConfig | CustomOpenAIProviderConfig | null = null;
     if (providerKey !== 'other') {
-      config = this.settings[providerKey as ProviderKey];
+      config = this.getEmbeddingProviderConfig(providerKey);
       if (!config?.enabled) {
         console.warn(`[Superpower Inside] RAG embedding provider "${providerKey}" is disabled.`);
         return;
@@ -581,7 +640,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     let baseUrl: string | undefined;
     let apiKey = '';
-    if (config && providerKey !== 'other' && shouldShowProviderApiKey(providerKey)) {
+    const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+      ? 'customOpenAI'
+      : providerKey;
+    if (config && providerKey !== 'other' && shouldShowProviderApiKey(apiKeyVisibilityKey)) {
       apiKey = config.apiKey;
       // config에 baseUrl이 설정되어 있으면 우선 사용
       if (config.baseUrl) {

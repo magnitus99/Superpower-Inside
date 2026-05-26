@@ -72,7 +72,7 @@ describe('provider validation', () => {
     );
   });
 
-  it('OpenRouter 모델 목록에서 텍스트 출력 모델과 메타데이터를 파싱한다', async () => {
+  it('OpenRouter 모델 목록에서 모든 모델과 메타데이터를 파싱한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       json: {
@@ -88,6 +88,11 @@ describe('provider validation', () => {
             name: 'Image Model',
             architecture: { output_modalities: ['image'] },
           },
+          {
+            id: 'text-embedding-3-small',
+            name: 'Embedding Model',
+            architecture: { output_modalities: ['text'] },
+          },
         ],
       },
       text: '',
@@ -95,9 +100,11 @@ describe('provider validation', () => {
 
     const result = await fetchProviderModels('openRouter', baseConfig);
 
-    expect(result.models).toEqual(['openai/gpt-4o']);
+    expect(result.models).toEqual(['image/model', 'openai/gpt-4o', 'text-embedding-3-small']);
     expect(result.modelDetails).toEqual([
+      { id: 'image/model', name: 'Image Model', contextLength: undefined },
       { id: 'openai/gpt-4o', name: 'GPT-4o', contextLength: 128000 },
+      { id: 'text-embedding-3-small', name: 'Embedding Model', contextLength: undefined },
     ]);
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -235,12 +242,41 @@ describe('provider validation', () => {
     );
 
     expect(result.valid).toBe(true);
-    expect(result.models).toEqual(['text-embedding-3-small']);
+    expect(result.models).toEqual(['gpt-4o-mini', 'text-embedding-3-small']);
     expect(requestUrlMock).toHaveBeenCalledTimes(1);
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'https://api.openai.com/v1/models',
         method: 'GET',
+        throw: false,
+      }),
+    );
+  });
+
+  it('Custom OpenAI-compatible 임베딩 생성 테스트는 custom base URL의 embeddings endpoint를 호출한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ embedding: [0.3, 0.4] }] },
+      text: '',
+    });
+
+    const result = await testEmbeddingGeneration(
+      'customOpenAI:local',
+      'custom-embedding',
+      {
+        ...baseConfig,
+        id: 'local',
+        name: 'Local',
+        baseUrl: 'http://localhost:1234/v1',
+      },
+    );
+
+    expect(result.valid).toBe(true);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'http://localhost:1234/v1/embeddings',
+        method: 'POST',
+        body: JSON.stringify({ input: 'test', model: 'custom-embedding' }),
         throw: false,
       }),
     );

@@ -100,14 +100,98 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(app.vault.offref).toHaveBeenCalledTimes(3);
     expect(app.vault.on).toHaveBeenCalledTimes(6);
   });
+
+  it('설정 로드 시 localStorage 값이 있으면 data.json을 읽지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp({
+      localSettings: {
+        ...DEFAULT_SETTINGS,
+        openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'local-key' },
+      },
+    });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(app.loadLocalStorage).toHaveBeenCalledWith('superpower-inside:settings');
+    expect(plugin.loadData).not.toHaveBeenCalled();
+    expect(plugin.settings.openai.apiKey).toBe('local-key');
+  });
+
+  it('localStorage 설정이 없으면 legacy data.json을 마이그레이션한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp({ legacyDataExists: true });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      manifest: { id: string };
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.loadData = vi.fn(() =>
+      Promise.resolve({
+        openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'legacy-key' },
+      }),
+    );
+
+    await plugin.loadSettings();
+
+    expect(plugin.loadData).toHaveBeenCalledOnce();
+    expect(app.saveLocalStorage).toHaveBeenCalledWith(
+      'superpower-inside:settings',
+      expect.objectContaining({
+        openai: expect.objectContaining({ apiKey: 'legacy-key' }),
+      }),
+    );
+    expect(app.vault.adapter.remove).toHaveBeenCalledWith(
+      '.obsidian/plugins/superpower-inside/data.json',
+    );
+  });
+
+  it('설정 저장 시 saveData 대신 localStorage를 사용한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp();
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      saveData: ReturnType<typeof vi.fn>;
+      initProvider: ReturnType<typeof vi.fn>;
+      initRAG: ReturnType<typeof vi.fn>;
+      initMCP: ReturnType<typeof vi.fn>;
+    };
+    plugin.app = app;
+    plugin.settings = DEFAULT_SETTINGS;
+    plugin.saveData = vi.fn();
+    plugin.initProvider = vi.fn();
+    plugin.initRAG = vi.fn(() => Promise.resolve());
+    plugin.initMCP = vi.fn(() => Promise.resolve([]));
+
+    await plugin.saveSettings();
+
+    expect(plugin.saveData).not.toHaveBeenCalled();
+    expect(app.saveLocalStorage).toHaveBeenCalledWith('superpower-inside:settings', DEFAULT_SETTINGS);
+  });
 });
 
-function createApp() {
+function createApp(options: { localSettings?: unknown; legacyDataExists?: boolean } = {}) {
   const refs: unknown[] = [];
   const vault = {
     adapter: {
-      exists: vi.fn(() => Promise.resolve(false)),
+      exists: vi.fn((path: string) =>
+        Promise.resolve(path.endsWith('/data.json') ? options.legacyDataExists === true : false),
+      ),
       mkdir: vi.fn(() => Promise.resolve()),
+      remove: vi.fn(() => Promise.resolve()),
       read: vi.fn(() => Promise.resolve('')),
       write: vi.fn(() => Promise.resolve()),
     },
@@ -124,7 +208,9 @@ function createApp() {
   };
 
   return {
-    vault,
+    loadLocalStorage: vi.fn(() => options.localSettings ?? null),
+    saveLocalStorage: vi.fn(),
+    vault: { ...vault, configDir: '.obsidian' },
     workspace: {
       trigger: vi.fn(),
     },

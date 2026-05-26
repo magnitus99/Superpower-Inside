@@ -127,7 +127,9 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
-export type EmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
+export type BuiltInEmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
+export type CustomOpenAIEmbeddingProviderKey = `customOpenAI:${string}`;
+export type EmbeddingProviderKey = BuiltInEmbeddingProviderKey | CustomOpenAIEmbeddingProviderKey;
 
 export interface EmbeddingModelInfo {
   id: string;
@@ -136,7 +138,7 @@ export interface EmbeddingModelInfo {
   description: string;
 }
 
-export const EMBEDDING_MODELS: Record<EmbeddingProviderKey, EmbeddingModelInfo[]> = {
+export const EMBEDDING_MODELS: Record<BuiltInEmbeddingProviderKey, EmbeddingModelInfo[]> = {
   openai: [
     {
       id: 'text-embedding-3-small',
@@ -182,12 +184,48 @@ export const EMBEDDING_MODELS: Record<EmbeddingProviderKey, EmbeddingModelInfo[]
   other: [],
 };
 
-export const EMBEDDING_PROVIDER_LABELS: Record<EmbeddingProviderKey, string> = {
+export const EMBEDDING_PROVIDER_LABELS: Record<BuiltInEmbeddingProviderKey, string> = {
   openai: 'OpenAI',
   ollama: 'Ollama (Local)',
   openRouter: 'OpenRouter',
   other: 'Other (Custom)',
 };
+
+export interface EmbeddingProviderOption {
+  value: EmbeddingProviderKey;
+  label: string;
+}
+
+export function isCustomOpenAIEmbeddingProviderKey(
+  providerKey: string,
+): providerKey is CustomOpenAIEmbeddingProviderKey {
+  return providerKey.startsWith('customOpenAI:') && providerKey.length > 'customOpenAI:'.length;
+}
+
+export function getCustomOpenAIEmbeddingProviderId(
+  providerKey: CustomOpenAIEmbeddingProviderKey,
+): string {
+  return providerKey.slice('customOpenAI:'.length);
+}
+
+export function buildEmbeddingProviderOptions(
+  customProviders: readonly CustomOpenAIProviderConfig[],
+): EmbeddingProviderOption[] {
+  const options: EmbeddingProviderOption[] = Object.entries(EMBEDDING_PROVIDER_LABELS).map(
+    ([value, label]) => ({
+      value: value as BuiltInEmbeddingProviderKey,
+      label,
+    }),
+  );
+  for (const provider of customProviders) {
+    if (!provider.enabled || !provider.baseUrl?.trim()) continue;
+    options.push({
+      value: `customOpenAI:${provider.id}`,
+      label: provider.name.trim() || 'Custom OpenAI-Compatible',
+    });
+  }
+  return options;
+}
 
 export interface RAGConfig {
   excludePaths: string[];
@@ -929,11 +967,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const effectiveProvider = this.pendingEmbeddingProvider ?? rag.embeddingProvider;
     const effectiveModel = this.pendingEmbeddingModel ?? rag.embeddingModel;
 
-    const modelsForProvider = EMBEDDING_MODELS[effectiveProvider];
+    const builtInProvider = isCustomOpenAIEmbeddingProviderKey(effectiveProvider)
+      ? null
+      : effectiveProvider;
+    const modelsForProvider = builtInProvider ? EMBEDDING_MODELS[builtInProvider] : [];
     const isOther = effectiveProvider === 'other';
-    const providerModels = isOther
-      ? []
-      : this.plugin.settings[effectiveProvider as ProviderKey].models;
+    const providerModels = isOther ? [] : this.getEmbeddingProviderModels(effectiveProvider);
     const modelOptions = isOther
       ? []
       : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel);
@@ -957,8 +996,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setName(t('embeddingProvider'))
       .setDesc('임베딩에 사용할 프로바이더를 선택하세요')
       .addDropdown((dropdown) => {
-        for (const [key, label] of Object.entries(EMBEDDING_PROVIDER_LABELS)) {
-          dropdown.addOption(key, label);
+        for (const option of buildEmbeddingProviderOptions(
+          this.plugin.settings.customOpenAIProviders,
+        )) {
+          dropdown.addOption(option.value, option.label);
         }
         dropdown.setValue(effectiveProvider);
         dropdown.onChange((value) => {
@@ -967,9 +1008,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           if (nextProvider === 'other') {
             this.pendingEmbeddingModel = '';
           } else {
+            const nextBuiltInProvider = isCustomOpenAIEmbeddingProviderKey(nextProvider)
+              ? null
+              : nextProvider;
             const nextModels = buildEmbeddingModelOptions(
-              EMBEDDING_MODELS[nextProvider],
-              this.plugin.settings[nextProvider as ProviderKey].models,
+              nextBuiltInProvider ? EMBEDDING_MODELS[nextBuiltInProvider] : [],
+              this.getEmbeddingProviderModels(nextProvider),
               '',
             );
             this.pendingEmbeddingModel = nextModels[0]?.id ?? '';
@@ -1065,10 +1109,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
 
     const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
-    const getEmbeddingValidationConfig = (): ProviderConfig =>
+    const getEmbeddingValidationConfig = (): ProviderConfig | CustomOpenAIProviderConfig =>
       effectiveProvider === 'other'
         ? { apiKey: '', models: [], enabled: false }
-        : this.plugin.settings[effectiveProvider as ProviderKey];
+        : this.getEmbeddingProviderConfig(effectiveProvider) ?? {
+            apiKey: '',
+            models: [],
+            enabled: false,
+          };
 
     new Setting(section)
       .setName('연결 테스트')
@@ -1348,7 +1396,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     this.ragStatusDetails.empty();
     const detailItems = [
-      `임베딩: ${EMBEDDING_PROVIDER_LABELS[rag.embeddingProvider]} / ${rag.embeddingModel || '미설정'}`,
+      `임베딩: ${this.getEmbeddingProviderLabel(rag.embeddingProvider)} / ${rag.embeddingModel || '미설정'}`,
       `저장소: ${getVectorStoreLabel(rag.vectorStoreType)}`,
       `성능 보호: ${this.getPerformanceGuardLabel(guardState)}`,
     ];
@@ -1603,16 +1651,51 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return stats.totalVectors;
   }
 
+  private getEmbeddingProviderConfig(
+    providerKey: EmbeddingProviderKey,
+  ): ProviderConfig | CustomOpenAIProviderConfig | null {
+    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
+      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
+      return (
+        this.plugin.settings.customOpenAIProviders.find((provider) => provider.id === providerId) ??
+        null
+      );
+    }
+    if (providerKey === 'other') {
+      return null;
+    }
+    return this.plugin.settings[providerKey];
+  }
+
+  private getEmbeddingProviderModels(providerKey: EmbeddingProviderKey): string[] {
+    return this.getEmbeddingProviderConfig(providerKey)?.models ?? [];
+  }
+
+  private getEmbeddingProviderLabel(providerKey: EmbeddingProviderKey): string {
+    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
+      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
+      const provider = this.plugin.settings.customOpenAIProviders.find(
+        (item) => item.id === providerId,
+      );
+      return provider?.name.trim() || 'Custom OpenAI-Compatible';
+    }
+    return EMBEDDING_PROVIDER_LABELS[providerKey];
+  }
+
   private getRagSetupWarning(): string | null {
     const rag = this.plugin.settings.rag;
     const providerKey = rag.embeddingProvider;
     if (providerKey !== 'other') {
-      const config = this.plugin.settings[providerKey as ProviderKey];
+      const config = this.getEmbeddingProviderConfig(providerKey);
+      const label = this.getEmbeddingProviderLabel(providerKey);
       if (!config?.enabled) {
-        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"을 먼저 활성화하세요.`;
+        return `Providers 탭에서 "${label}"을 먼저 활성화하세요.`;
       }
-      if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
-        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}" API Key를 입력하세요.`;
+      const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+        ? 'customOpenAI'
+        : providerKey;
+      if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+        return `Providers 탭에서 "${label}" API Key를 입력하세요.`;
       }
     }
     if (!rag.embeddingModel.trim()) {
@@ -1626,12 +1709,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const providerKey = rag.embeddingProvider;
 
     if (providerKey !== 'other') {
-      const config = this.plugin.settings[providerKey as ProviderKey];
+      const config = this.getEmbeddingProviderConfig(providerKey);
+      const label = this.getEmbeddingProviderLabel(providerKey);
       if (!config?.enabled) {
-        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 Enabled 토글을 켜주세요.`;
+        return `Providers 탭에서 "${label}"의 Enabled 토글을 켜주세요.`;
       }
-      if (shouldShowProviderApiKey(providerKey) && !config.apiKey.trim()) {
-        return `Providers 탭에서 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"의 API Key를 입력하세요.`;
+      const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+        ? 'customOpenAI'
+        : providerKey;
+      if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+        return `Providers 탭에서 "${label}"의 API Key를 입력하세요.`;
       }
       if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
         return `임베딩 모델이 선택되지 않았습니다. Embedding Provider 섹션에서 모델을 선택하고 "저장" 버튼을 클릭하세요.`;
@@ -1641,7 +1728,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         return `임베딩 모델 ID를 직접 입력하고 "저장" 버튼을 클릭하세요.`;
       }
     }
-    return `프로바이더 "${EMBEDDING_PROVIDER_LABELS[providerKey]}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
+    return `프로바이더 "${this.getEmbeddingProviderLabel(providerKey)}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
   }
 
   private buildControlsSection(containerEl: HTMLElement): void {

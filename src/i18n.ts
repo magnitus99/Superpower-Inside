@@ -595,7 +595,8 @@ const ko: I18nKeys = {
 
   // Settings Header
   settingsTitle: 'Superpower Inside — 설정',
-  securityWarning: '경고: API 키는 data.json에 평문으로 저장됩니다. 민감 정보 노출에 주의하세요.',
+  securityWarning:
+    '경고: 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며 볼트 동기화 대상 data.json에는 새로 저장하지 않습니다. 민감 정보 노출에 주의하세요.',
 
   // Tabs
   tabGeneral: '일반',
@@ -912,7 +913,7 @@ const en: I18nKeys = {
   // Settings Header
   settingsTitle: 'Superpower Inside — Settings',
   securityWarning:
-    'Warning: API keys are stored in plain text in data.json. Be aware of sensitive information exposure.',
+    'Warning: settings and API keys are stored in this device’s Obsidian local storage and are no longer newly saved to synced data.json. Be aware of sensitive information exposure.',
 
   // Tabs
   tabGeneral: 'General',

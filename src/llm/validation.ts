@@ -131,30 +131,6 @@ interface OpenRouterModelRecord extends OpenAIModelRecord {
   };
 }
 
-function isOpenRouterChatModel(model: OpenRouterModelRecord): boolean {
-  const output = model.architecture?.output_modalities ?? [];
-  const modality = model.architecture?.modality ?? '';
-  if (output.length > 0) return output.includes('text');
-  if (modality) return modality.includes('text');
-  return true;
-}
-
-function isChatModelId(id: string): boolean {
-  const normalized = id.toLowerCase();
-  return (
-    !normalized.includes('embedding') &&
-    !normalized.includes('embed') &&
-    !normalized.includes('tts') &&
-    !normalized.includes('dall-e') &&
-    !normalized.includes('whisper')
-  );
-}
-
-function isEmbeddingModelId(id: string): boolean {
-  const normalized = id.toLowerCase();
-  return normalized.includes('embedding') || normalized.includes('embed');
-}
-
 class OpenAICompatibleValidator implements ProviderConnectionValidator {
   constructor(
     private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
@@ -184,8 +160,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
         const data = (res.json as { data?: OpenRouterModelRecord[] }) ?? {};
         const modelDetails =
           data.data
-            ?.filter(isOpenRouterChatModel)
-            .map((model) => ({
+            ?.map((model) => ({
               id: model.id,
               name: model.name,
               contextLength: model.context_length,
@@ -197,8 +172,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
       const data = (res.json as { data?: OpenAIModelRecord[] }) ?? { data: [] };
       const modelDetails =
         data.data
-          ?.filter((model) => isChatModelId(model.id))
-          .map((model) => ({ id: model.id, name: model.name }))
+          ?.map((model) => ({ id: model.id, name: model.name }))
           .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
       return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
     } catch (err) {
@@ -381,7 +355,7 @@ class OllamaValidator implements ProviderConnectionValidator {
 
 class OpenAICompatibleEmbeddingValidator implements EmbeddingConnectionValidator {
   constructor(
-    private readonly config: ProviderConfig,
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
     private readonly baseUrl: string,
   ) {}
 
@@ -401,15 +375,14 @@ class OpenAICompatibleEmbeddingValidator implements EmbeddingConnectionValidator
         };
       }
       const data = (res.json as { data?: OpenAIModelRecord[] }) ?? { data: [] };
-      const embeddingModels =
+      const modelDetails =
         data.data
-          ?.filter((model) => isEmbeddingModelId(model.id))
-          .map((model) => model.id)
-          .sort((a, b) => a.localeCompare(b)) ?? [];
+          ?.map((model) => ({ id: model.id, name: model.name }))
+          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
       return {
         valid: true,
-        models: embeddingModels.length > 0 ? embeddingModels : [modelId],
-        modelDetails: embeddingModels.map((id) => ({ id })),
+        models: modelDetails.length > 0 ? modelDetails.map((model) => model.id) : [modelId],
+        modelDetails,
       };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
@@ -537,7 +510,7 @@ function createProviderValidator(
 
 function createEmbeddingValidator(
   providerKey: EmbeddingProviderKey,
-  config: ProviderConfig,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
 ): EmbeddingConnectionValidator | null {
   if (providerKey === 'other') {
     return new ManualEmbeddingValidator();
@@ -548,6 +521,15 @@ function createEmbeddingValidator(
   if (providerKey === 'openai' || providerKey === 'openRouter') {
     const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
     return new OpenAICompatibleEmbeddingValidator(config, baseUrl);
+  }
+  if (providerKey.startsWith('customOpenAI:')) {
+    if (!config.baseUrl?.trim()) {
+      return null;
+    }
+    return new OpenAICompatibleEmbeddingValidator(
+      config,
+      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+    );
   }
   return null;
 }
@@ -617,7 +599,7 @@ export async function validateProviderApi(
 export async function validateEmbeddingConnection(
   providerKey: EmbeddingProviderKey,
   modelId: string,
-  config: ProviderConfig,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
 ): Promise<ValidationResult> {
   const validator = createEmbeddingValidator(providerKey, config);
   if (!validator) {
@@ -629,7 +611,7 @@ export async function validateEmbeddingConnection(
 export async function testEmbeddingGeneration(
   providerKey: EmbeddingProviderKey,
   modelId: string,
-  config: ProviderConfig,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
 ): Promise<ValidationResult> {
   const validator = createEmbeddingValidator(providerKey, config);
   if (!validator) {

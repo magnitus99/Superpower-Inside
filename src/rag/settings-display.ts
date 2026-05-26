@@ -123,8 +123,8 @@ export function getChatFolderExcludeDescription(saveFolder: string): string {
   return `채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다. 현재 제외 대상: ${folder}`;
 }
 
-export function shouldShowProviderApiKey(key: ProviderApiKeyVisibilityKey): boolean {
-  return key !== 'ollama';
+export function shouldShowProviderApiKey(key: string): boolean {
+  return key !== 'ollama' && key !== 'other';
 }
 
 export function getRagIndexingControlState(

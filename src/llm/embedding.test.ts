@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OllamaEmbeddingProvider } from './embedding';
+import { OllamaEmbeddingProvider, OpenAIEmbeddingProvider } from './embedding';
 import {
   requestUrl,
   type RequestUrlParam,
@@ -133,6 +133,49 @@ describe('OllamaEmbeddingProvider', () => {
 
     await expect(provider.embedBatch(['short'])).rejects.toThrow(
       /Ollama embedding failed/,
+    );
+  });
+});
+
+describe('OpenAIEmbeddingProvider', () => {
+  beforeEach(() => {
+    vi.mocked(requestUrl).mockReset();
+  });
+
+  it('requestUrl로 OpenAI-compatible embeddings endpoint를 호출한다', async () => {
+    vi.mocked(requestUrl).mockImplementationOnce(() =>
+      mockResponse({
+        status: 200,
+        json: { data: [{ embedding: [0.1, 0.2] }, { embedding: [0.3, 0.4] }] },
+        text: '',
+      }),
+    );
+    const provider = new OpenAIEmbeddingProvider(
+      'test-key',
+      'http://localhost:1234/v1/embeddings',
+      'custom-embedding',
+    );
+
+    const vectors = await provider.embedBatch(['first', 'second']);
+
+    expect(vectors).toEqual([
+      [0.1, 0.2],
+      [0.3, 0.4],
+    ]);
+    expect(requestUrl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'http://localhost:1234/v1/embeddings',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-key',
+        },
+        body: JSON.stringify({
+          input: ['first', 'second'],
+          model: 'custom-embedding',
+        }),
+        throw: false,
+      }),
     );
   });
 });

@@ -106,7 +106,7 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 <details>
 <summary><strong>Security and data access</strong></summary>
 
-- API keys are stored in the plugin `data.json` file in plain text by the host app. Do not share or sync that file to untrusted locations.
+- Settings and API keys are stored in this device's Obsidian local storage and are not newly saved to the synced plugin `data.json` file.
 - Chat messages, selected notes, retrieved RAG chunks, tool arguments, and tool results may be sent to the configured LLM, embedding provider, or MCP server.
 - RAG features enumerate Markdown files in the vault to build and refresh the index.
 - Citation actions and copy buttons write text to the system clipboard.
@@ -214,7 +214,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 <details>
 <summary><strong>보안과 데이터 접근</strong></summary>
 
-- API 키는 호스트 앱의 플러그인 `data.json` 파일에 평문으로 저장됩니다. 신뢰하지 않는 위치로 공유하거나 동기화하지 마세요.
+- 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며, 동기화되는 플러그인 `data.json` 파일에는 새로 저장하지 않습니다.
 - 채팅 메시지, 선택된 노트, RAG 청크, 도구 호출 인자와 결과는 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
 - RAG 기능은 인덱스 생성과 갱신을 위해 볼트의 Markdown 파일 목록을 열람합니다.
 - 출처 복사와 메시지 복사 기능은 시스템 클립보드에 텍스트를 씁니다.

@@ -18,7 +18,7 @@
   "id": "superpower-inside",
   "name": "Superpower Inside",
   "version": "x.y.z",
-  "minAppVersion": "0.15.0",
+  "minAppVersion": "1.8.7",
   "description": "...",
   "author": "...",
   "isDesktopOnly": true

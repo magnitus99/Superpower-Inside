@@ -20,7 +20,12 @@ import {
   resolveRagPerformanceSettings,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
-import { buildMcpJsonEditorValue, DEFAULT_SETTINGS, normalizeChatSaveFolder } from './settings';
+import {
+  buildEmbeddingProviderOptions,
+  buildMcpJsonEditorValue,
+  DEFAULT_SETTINGS,
+  normalizeChatSaveFolder,
+} from './settings';
 import {
   CONTEXT7_MCP_SERVER_NAME,
   shouldShowPluginAwareContext7Warning,
@@ -89,6 +94,31 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(options.find((option) => option.id === 'legacy-selected')?.label).toContain(
       '현재 선택됨',
     );
+  });
+
+  it('RAG 임베딩 프로바이더 옵션에는 활성화된 custom OpenAI-compatible provider를 포함한다', () => {
+    const options = buildEmbeddingProviderOptions([
+      {
+        id: 'local',
+        name: 'Local Embeddings',
+        apiKey: '',
+        baseUrl: 'http://localhost:1234/v1',
+        models: ['custom-embedding'],
+        enabled: true,
+        useRequestUrl: true,
+      },
+      {
+        id: 'disabled',
+        name: 'Disabled',
+        apiKey: '',
+        baseUrl: 'http://localhost:5678/v1',
+        models: [],
+        enabled: false,
+      },
+    ]);
+
+    expect(options).toContainEqual({ value: 'customOpenAI:local', label: 'Local Embeddings' });
+    expect(options.some((option) => option.value === 'customOpenAI:disabled')).toBe(false);
   });
 
   it('채팅 저장 폴더 값은 레거시 이름이어도 저장된 값을 그대로 보존한다', () => {
