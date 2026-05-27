@@ -2,6 +2,8 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
 import { JsonFileBM25Index, tokenize } from './bm25';
 
+const QUERY_SCORE_YIELD_INTERVAL = 512;
+
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let normA = 0;
@@ -60,40 +62,48 @@ export class RAGQueryEngine {
     }
     const maxBm25 = Math.max(...bm25Scores.values(), 1);
     const bm25FilePaths = new Set(bm25Scores.keys());
-    const allEntries = bm25FilePaths.size > 0 ? await this.vectorStore.getEntries() : [];
+    const bm25Entries =
+      bm25FilePaths.size > 0
+        ? await this.vectorStore.getEntriesByFilePaths([...bm25FilePaths])
+        : [];
     const entriesById = new Map<string, VectorEntry>();
     for (const entry of vectorEntries) {
       entriesById.set(entry.id, entry);
     }
-    for (const entry of allEntries) {
+    for (const entry of bm25Entries) {
       if (bm25FilePaths.has(entry.metadata.filePath)) {
         entriesById.set(entry.id, entry);
       }
     }
     const queryTokens = [...new Set(tokenize(question))];
 
-    const scored = [...entriesById.values()]
-      .map((e) => {
-        const cosineScore = cosineSimilarity(qVector, e.vector);
-        const bm25 = (bm25Scores.get(e.metadata.filePath) ?? 0) / maxBm25;
-        const combined = this.bm25Index?.isReady
-          ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
-          : cosineScore;
-        return {
-          entry: e,
-          score: combined,
-          vectorScore: cosineScore,
-          bm25Score: bm25,
-          combinedScore: combined,
-          sourcePath: e.metadata.filePath,
-          chunkRange: {
-            startLine: e.metadata.startLine,
-            endLine: e.metadata.endLine,
-          },
-          keywordMatches: countKeywordMatches(queryTokens, e.metadata.text),
-        };
-      })
-      .sort((a, b) => b.score - a.score);
+    const scored: QueryResult[] = [];
+    const entries = [...entriesById.values()];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
+      const cosineScore = cosineSimilarity(qVector, entry.vector);
+      const bm25 = (bm25Scores.get(entry.metadata.filePath) ?? 0) / maxBm25;
+      const combined = this.bm25Index?.isReady
+        ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
+        : cosineScore;
+      scored.push({
+        entry,
+        score: combined,
+        vectorScore: cosineScore,
+        bm25Score: bm25,
+        combinedScore: combined,
+        sourcePath: entry.metadata.filePath,
+        chunkRange: {
+          startLine: entry.metadata.startLine,
+          endLine: entry.metadata.endLine,
+        },
+        keywordMatches: countKeywordMatches(queryTokens, entry.metadata.text),
+      });
+      if (index > 0 && index % QUERY_SCORE_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+    }
+    scored.sort((a, b) => b.score - a.score);
 
     const bestScore = scored[0]?.score ?? 0;
     const relativeThreshold = Math.max(threshold, bestScore - 0.18);
@@ -128,4 +138,10 @@ function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boole
   if (!hasBm25) return true;
   if (result.bm25Score > 0 && result.keywordMatches > 0) return true;
   return result.vectorScore >= Math.max(0.62, threshold + 0.08);
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }

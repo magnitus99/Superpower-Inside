@@ -62,6 +62,48 @@ describe('IndexedDbVectorStore', () => {
     expect(await store.getIndexedFilePaths()).toEqual(['note.md', 'other.md']);
   });
 
+  it('파일 단위 인덱스 메타를 증분 갱신한다', async () => {
+    const store = createStore();
+    await store.replaceFileEntries('note.md', [
+      createEntry('note.md', 0, [1, 0], 'a'),
+      createEntry('note.md', 10, [0.9, 0.1], 'b'),
+    ]);
+
+    expect(await store.getFileIndexRecords()).toEqual([
+      expect.objectContaining({
+        filePath: 'note.md',
+        sourceMtime: 1000,
+        sourceSize: 1,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        vectorCount: 2,
+      }),
+    ]);
+
+    await store.replaceFileEntries('note.md', [createEntry('note.md', 20, [0, 1], 'new')]);
+
+    expect(await store.getFileIndexRecords()).toEqual([
+      expect.objectContaining({
+        filePath: 'note.md',
+        sourceSize: 3,
+        vectorCount: 1,
+      }),
+    ]);
+  });
+
+  it('파일 경로 목록으로 필요한 entries만 조회한다', async () => {
+    const store = createStore();
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0, 1], 'b'),
+      createEntry('c.md', 0, [0.5, 0.5], 'c'),
+    ]);
+
+    const entries = await store.getEntriesByFilePaths(['b.md', 'c.md']);
+
+    expect(entries.map((entry) => entry.metadata.filePath).sort()).toEqual(['b.md', 'c.md']);
+  });
+
   it('cosine similarity 순서로 query 결과를 반환한다', async () => {
     const store = createStore();
     await store.add([
@@ -150,9 +192,12 @@ function createEntry(
     metadata: {
       filePath,
       startLine,
+      endLine: startLine,
       text,
       sourceMtime: 1000,
       sourceSize: text.length,
+      contentHash: text,
+      indexedAt: 1000,
       embeddingProvider: 'openai',
       embeddingModel: 'text-embedding-3-small',
     },

@@ -51,6 +51,25 @@ describe('RAGQueryEngine', () => {
 
     expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['best.md']);
   });
+
+  it('BM25 후보 병합 시 전체 벡터를 읽지 않고 해당 파일 entries만 가져온다', async () => {
+    const store = new PathLookupStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
+      createEntry('keyword.md', [0.2, 0.98], 'specialterm 정확한 키워드 문서'),
+    ]);
+    const bm25 = await createBm25([
+      ['keyword.md', 'specialterm 정확한 키워드 문서'],
+      ['semantic.md', '일반 문서 내용'],
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), bm25, 0.8, 0.2);
+
+    const results = await engine.query('specialterm', 1);
+
+    expect(results[0]?.entry.metadata.filePath).toBe('keyword.md');
+    expect(store.getEntriesCalls).toBe(0);
+    expect(store.requestedPaths).toEqual([['keyword.md']]);
+  });
 });
 
 function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
@@ -97,4 +116,20 @@ function createAdapter(): DataAdapter {
     write: () => Promise.resolve(),
     mkdir: () => Promise.resolve(),
   } as unknown as DataAdapter;
+}
+
+class PathLookupStore extends MemoryVectorStore {
+  getEntriesCalls = 0;
+  requestedPaths: string[][] = [];
+
+  override getEntries(): Promise<VectorEntry[]> {
+    this.getEntriesCalls++;
+    return super.getEntries();
+  }
+
+  override async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
+    this.requestedPaths.push([...filePaths].sort());
+    const allowed = new Set(filePaths);
+    return (await super.getEntries()).filter((entry) => allowed.has(entry.metadata.filePath));
+  }
 }

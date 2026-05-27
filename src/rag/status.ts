@@ -1,7 +1,7 @@
 import type { TFile, Vault } from 'obsidian';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
-import type { VectorEntry, VectorStore } from './store';
+import type { FileIndexRecord, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
 
@@ -50,10 +50,10 @@ export async function calculateRagStatus(
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const allFiles = vault.getFiles();
-  const entries = await vectorStore.getEntries();
+  const fileIndexRecords = await vectorStore.getFileIndexRecords();
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const entriesByPath = groupEntriesByPath(entries);
+  const recordsByPath = new Map(fileIndexRecords.map((record) => [record.filePath, record]));
 
   const updateRequiredDocuments: RagDocumentUpdate[] = [];
   let healthyDocuments = 0;
@@ -66,7 +66,7 @@ export async function calculateRagStatus(
 
     const state = getFileIndexState(
       file,
-      entriesByPath.get(file.path) ?? [],
+      recordsByPath.get(file.path) ?? null,
       ragConfig,
       signal,
     );
@@ -101,24 +101,10 @@ export async function calculateRagStatus(
     staleDocuments,
     unknownDocuments,
     excludedDocuments: Math.max(0, allFiles.length - includedFiles.length),
-    totalVectors: entries.length,
+    totalVectors: fileIndexRecords.reduce((total, record) => total + record.vectorCount, 0),
     lastCalculatedAt: Date.now(),
     updateRequiredDocuments,
   };
-}
-
-function groupEntriesByPath(entries: VectorEntry[]): Map<string, VectorEntry[]> {
-  const grouped = new Map<string, VectorEntry[]>();
-  for (const entry of entries) {
-    const path = entry.metadata.filePath;
-    const existing = grouped.get(path);
-    if (existing) {
-      existing.push(entry);
-    } else {
-      grouped.set(path, [entry]);
-    }
-  }
-  return grouped;
 }
 
 /**
@@ -130,26 +116,24 @@ function groupEntriesByPath(entries: VectorEntry[]): Map<string, VectorEntry[]> 
  */
 function getFileIndexState(
   file: TFile,
-  entries: VectorEntry[],
+  record: FileIndexRecord | null,
   ragConfig: RAGConfig,
   signal?: AbortSignal,
 ): FileIndexState {
-  if (entries.length === 0) {
+  if (!record || record.vectorCount === 0) {
     return { status: 'missing', reason: '아직 인덱싱되지 않았습니다.' };
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const hasLegacyEntry = entries.some(
-    (entry) =>
-      typeof entry.metadata.sourceMtime !== 'number' ||
-      typeof entry.metadata.sourceSize !== 'number' ||
-      typeof entry.metadata.contentHash !== 'string' ||
-      typeof entry.metadata.indexedAt !== 'number' ||
-      typeof entry.metadata.endLine !== 'number' ||
-      typeof entry.metadata.embeddingProvider !== 'string' ||
-      typeof entry.metadata.embeddingModel !== 'string',
-  );
-  if (hasLegacyEntry) {
+  const isLegacyRecord =
+    record.hasCompleteMetadata !== true ||
+    typeof record.sourceMtime !== 'number' ||
+    typeof record.sourceSize !== 'number' ||
+    typeof record.contentHash !== 'string' ||
+    typeof record.indexedAt !== 'number' ||
+    typeof record.embeddingProvider !== 'string' ||
+    typeof record.embeddingModel !== 'string';
+  if (isLegacyRecord) {
     return {
       status: 'unknown',
       reason: '이전 형식의 벡터라 파일 변경 여부를 확인할 수 없습니다.',
@@ -158,12 +142,7 @@ function getFileIndexState(
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   // mtime/size가 달라졌으면 stale (내용 읽기 불필요)
-  const hasDifferentSource = entries.some(
-    (entry) =>
-      entry.metadata.sourceMtime !== file.stat.mtime ||
-      entry.metadata.sourceSize !== file.stat.size,
-  );
-  if (hasDifferentSource) {
+  if (record.sourceMtime !== file.stat.mtime || record.sourceSize !== file.stat.size) {
     return { status: 'stale', reason: '파일이 마지막 인덱싱 이후 수정되었습니다.' };
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -171,12 +150,10 @@ function getFileIndexState(
   // mtime/size가 같으면 내용 해시 확인 생략 (극히 드문 충돌은 건강한 것으로 간주)
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const hasDifferentEmbedding = entries.some(
-    (entry) =>
-      entry.metadata.embeddingProvider !== ragConfig.embeddingProvider ||
-      entry.metadata.embeddingModel !== ragConfig.embeddingModel,
-  );
-  if (hasDifferentEmbedding) {
+  if (
+    record.embeddingProvider !== ragConfig.embeddingProvider ||
+    record.embeddingModel !== ragConfig.embeddingModel
+  ) {
     return { status: 'stale', reason: '현재 임베딩 설정과 저장된 벡터 설정이 다릅니다.' };
   }
 

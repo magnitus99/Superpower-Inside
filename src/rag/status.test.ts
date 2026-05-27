@@ -1,7 +1,7 @@
 import type { TFile, Vault } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import type { ChatConfig, RAGConfig } from '../settings';
-import { MemoryVectorStore, type VectorEntry } from './store';
+import { MemoryVectorStore, type FileIndexRecord, type VectorEntry } from './store';
 import { calculateRagStatus } from './status';
 import { createContentHash } from './hash';
 
@@ -177,6 +177,30 @@ describe('calculateRagStatus', () => {
       calculateRagStatus(vault, store, baseRagConfig, chatConfig, controller.signal),
     ).rejects.toThrow(DOMException);
   });
+
+  it('파일 메타 조회를 지원하는 저장소에서는 전체 벡터를 읽지 않는다', async () => {
+    const vault = createVault([createFile('note.md', 1000, 10)]);
+    const store = new MetadataOnlyStore([
+      {
+        filePath: 'note.md',
+        sourceMtime: 1000,
+        sourceSize: 10,
+        contentHash: createContentHash('note.md content'),
+        indexedAt: 1000,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        hasCompleteMetadata: true,
+        vectorCount: 2,
+        updated: 1000,
+      },
+    ]);
+
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
+
+    expect(status.healthyDocuments).toBe(1);
+    expect(status.totalVectors).toBe(2);
+    expect(store.getEntriesCalls).toBe(0);
+  });
 });
 
 function createFile(path: string, mtime: number, size: number): TFile {
@@ -238,4 +262,21 @@ function createLegacyEntry(path: string): VectorEntry {
       text: 'content',
     },
   };
+}
+
+class MetadataOnlyStore extends MemoryVectorStore {
+  getEntriesCalls = 0;
+
+  constructor(private readonly records: FileIndexRecord[]) {
+    super();
+  }
+
+  override getEntries(): Promise<VectorEntry[]> {
+    this.getEntriesCalls++;
+    return Promise.resolve([]);
+  }
+
+  override getFileIndexRecords(): Promise<FileIndexRecord[]> {
+    return Promise.resolve(this.records);
+  }
 }

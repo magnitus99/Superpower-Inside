@@ -20,6 +20,19 @@ export interface VectorEntry {
   };
 }
 
+export interface FileIndexRecord {
+  filePath: string;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  hasCompleteMetadata?: boolean;
+  vectorCount: number;
+  updated: number;
+}
+
 export interface VectorStoreStats {
   totalEntries: number;
   totalFiles: number;
@@ -38,6 +51,8 @@ export interface VectorStore {
   withBatch<T>(operation: () => Promise<T>): Promise<T>;
   getStats(): Promise<VectorStoreStats>;
   getIndexedFilePaths(): Promise<string[]>;
+  getFileIndexRecords(): Promise<FileIndexRecord[]>;
+  getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]>;
   getEntries(): Promise<VectorEntry[]>;
 }
 
@@ -48,11 +63,16 @@ interface IndexedDbVectorRecord extends VectorEntry {
 
 class VectorStoreDB extends Dexie {
   vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
+  fileIndex!: Dexie.Table<FileIndexRecord, string>;
 
   constructor(name: string) {
     super(name);
     this.version(1).stores({
       vectors: 'id, filePath, updated',
+    });
+    this.version(2).stores({
+      vectors: 'id, filePath, updated',
+      fileIndex: 'filePath, updated',
     });
   }
 }
@@ -69,11 +89,20 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): VectorEntry[] {
-  const scored = entries.map((e) => ({
-    entry: e,
-    score: cosineSimilarity(vector, e.vector),
-  }));
+const QUERY_YIELD_INTERVAL = 512;
+
+async function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Promise<VectorEntry[]> {
+  const scored: Array<{ entry: VectorEntry; score: number }> = [];
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    scored.push({
+      entry,
+      score: cosineSimilarity(vector, entry.vector),
+    });
+    if (index > 0 && index % QUERY_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+    }
+  }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK).map((s) => s.entry);
 }
@@ -81,6 +110,7 @@ function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Ve
 /** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
+  private entriesCache: VectorEntry[] | null = null;
 
   constructor(dbName = 'SuperpowerInsideVectorStore') {
     this.db = new VectorStoreDB(dbName);
@@ -94,6 +124,8 @@ export class IndexedDbVectorStore implements VectorStore {
       updated: now,
     }));
     await this.db.vectors.bulkPut(records);
+    await this.upsertFileIndexRecords(groupEntriesByFilePath(newEntries), now);
+    this.entriesCache = null;
   }
 
   async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
@@ -109,19 +141,39 @@ export class IndexedDbVectorStore implements VectorStore {
         await this.db.vectors.bulkPut(records);
       }
     });
+    if (entries.length > 0) {
+      await this.db.fileIndex.put(createFileIndexRecord(filePath, entries, now));
+    } else {
+      await this.db.fileIndex.delete(filePath);
+    }
+    if (this.entriesCache) {
+      this.entriesCache = [
+        ...this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath),
+        ...copyEntries(entries),
+      ];
+    }
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
-    return this.db.vectors.where('filePath').equals(filePath).delete();
+    const removed = await this.db.vectors.where('filePath').equals(filePath).delete();
+    await this.db.fileIndex.delete(filePath);
+    if (this.entriesCache) {
+      this.entriesCache = this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath);
+    }
+    return removed;
   }
 
   async query(vector: number[], topK: number): Promise<VectorEntry[]> {
-    const entries = await this.getEntries();
+    const entries = await this.getCachedEntries();
     return scoredQuery(entries, vector, topK);
   }
 
   async clear(): Promise<void> {
-    await this.db.vectors.clear();
+    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+      await this.db.vectors.clear();
+      await this.db.fileIndex.clear();
+    });
+    this.entriesCache = [];
   }
 
   async persist(): Promise<void> {
@@ -133,33 +185,86 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async getStats(): Promise<VectorStoreStats> {
-    const records = await this.db.vectors.toArray();
-    const uniqueFiles = new Set(records.map((record) => record.filePath));
+    const records = await this.getFileIndexRecords();
+    const totalVectors = records.reduce((total, record) => total + record.vectorCount, 0);
     const lastUpdated = records.reduce<number | null>(
       (latest, record) => (latest === null ? record.updated : Math.max(latest, record.updated)),
       null,
     );
     return {
-      totalEntries: records.length,
-      totalFiles: uniqueFiles.size,
-      totalVectors: records.length,
-      averageVectorsPerFile: uniqueFiles.size > 0 ? records.length / uniqueFiles.size : 0,
+      totalEntries: totalVectors,
+      totalFiles: records.length,
+      totalVectors,
+      averageVectorsPerFile: records.length > 0 ? totalVectors / records.length : 0,
       lastUpdated,
     };
   }
 
   async getIndexedFilePaths(): Promise<string[]> {
-    const filePaths = await this.db.vectors.orderBy('filePath').uniqueKeys();
-    return filePaths.filter((filePath): filePath is string => typeof filePath === 'string');
+    return (await this.getFileIndexRecords()).map((record) => record.filePath).sort();
   }
 
-  async getEntries(): Promise<VectorEntry[]> {
-    const records = await this.db.vectors.toArray();
+  async getFileIndexRecords(): Promise<FileIndexRecord[]> {
+    const records = await this.db.fileIndex.toArray();
+    const vectorCount = await this.db.vectors.count();
+    if (records.length > 0 || vectorCount === 0) {
+      return records;
+    }
+    await this.rebuildFileIndexFromVectors();
+    return this.db.fileIndex.toArray();
+  }
+
+  async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
+    const uniquePaths = [...new Set(filePaths)];
+    if (uniquePaths.length === 0) return [];
+    const records = await this.db.vectors.where('filePath').anyOf(uniquePaths).toArray();
     return records.map(({ id, vector, metadata }) => ({
       id,
       vector: [...vector],
       metadata: { ...metadata },
     }));
+  }
+
+  async getEntries(): Promise<VectorEntry[]> {
+    return copyEntries(await this.getCachedEntries());
+  }
+
+  private async getCachedEntries(): Promise<VectorEntry[]> {
+    if (this.entriesCache) return this.entriesCache;
+    const records = await this.db.vectors.toArray();
+    this.entriesCache = records.map(({ id, vector, metadata }) => ({
+      id,
+      vector: [...vector],
+      metadata: { ...metadata },
+    }));
+    return this.entriesCache;
+  }
+
+  private async upsertFileIndexRecords(
+    entriesByPath: Map<string, VectorEntry[]>,
+    updated: number,
+  ): Promise<void> {
+    const records = [...entriesByPath.entries()].map(([filePath, entries]) =>
+      createFileIndexRecord(filePath, entries, updated),
+    );
+    if (records.length > 0) {
+      await this.db.fileIndex.bulkPut(records);
+    }
+  }
+
+  private async rebuildFileIndexFromVectors(): Promise<void> {
+    const records = await this.db.vectors.toArray();
+    const grouped = groupEntriesByFilePath(records);
+    const fileRecords = [...grouped.entries()].map(([filePath, entries]) =>
+      createFileIndexRecord(
+        filePath,
+        entries,
+        entries.reduce((latest, entry) => Math.max(latest, entry.updated), 0),
+      ),
+    );
+    if (fileRecords.length > 0) {
+      await this.db.fileIndex.bulkPut(fileRecords);
+    }
   }
 }
 
@@ -216,7 +321,7 @@ export class JsonFileVectorStore implements VectorStore {
 
   async query(vector: number[], topK: number): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    return Promise.resolve(scoredQuery(this.entries, vector, topK));
+    return scoredQuery(this.entries, vector, topK);
   }
 
   async clear(): Promise<void> {
@@ -287,9 +392,20 @@ export class JsonFileVectorStore implements VectorStore {
     return [...new Set(this.entries.map((e) => e.metadata.filePath))];
   }
 
+  async getFileIndexRecords(): Promise<FileIndexRecord[]> {
+    await this.loadIfNeeded();
+    return createFileIndexRecordsFromEntries(this.entries, Date.now());
+  }
+
+  async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
+    await this.loadIfNeeded();
+    const allowed = new Set(filePaths);
+    return copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath)));
+  }
+
   async getEntries(): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    return this.entries.map((entry) => ({ ...entry, metadata: { ...entry.metadata } }));
+    return copyEntries(this.entries);
   }
 }
 
@@ -328,7 +444,7 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async query(vector: number[], topK: number): Promise<VectorEntry[]> {
-    return Promise.resolve(scoredQuery(this.entries, vector, topK));
+    return scoredQuery(this.entries, vector, topK);
   }
 
   async clear(): Promise<void> {
@@ -360,9 +476,83 @@ export class MemoryVectorStore implements VectorStore {
     return Promise.resolve([...new Set(this.entries.map((e) => e.metadata.filePath))]);
   }
 
-  getEntries(): Promise<VectorEntry[]> {
-    return Promise.resolve(
-      this.entries.map((entry) => ({ ...entry, metadata: { ...entry.metadata } })),
-    );
+  getFileIndexRecords(): Promise<FileIndexRecord[]> {
+    return Promise.resolve(createFileIndexRecordsFromEntries(this.entries, Date.now()));
   }
+
+  getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
+    const allowed = new Set(filePaths);
+    return Promise.resolve(copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath))));
+  }
+
+  getEntries(): Promise<VectorEntry[]> {
+    return Promise.resolve(copyEntries(this.entries));
+  }
+}
+
+function groupEntriesByFilePath<T extends VectorEntry>(entries: readonly T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const entry of entries) {
+    const path = entry.metadata.filePath;
+    const existing = grouped.get(path);
+    if (existing) {
+      existing.push(entry);
+    } else {
+      grouped.set(path, [entry]);
+    }
+  }
+  return grouped;
+}
+
+function createFileIndexRecordsFromEntries(
+  entries: readonly VectorEntry[],
+  updated: number,
+): FileIndexRecord[] {
+  return [...groupEntriesByFilePath(entries).entries()].map(([filePath, fileEntries]) =>
+    createFileIndexRecord(filePath, fileEntries, updated),
+  );
+}
+
+function createFileIndexRecord(
+  filePath: string,
+  entries: readonly VectorEntry[],
+  updated: number,
+): FileIndexRecord {
+  const first = entries[0];
+  const hasCompleteMetadata = entries.every(
+    (entry) =>
+      typeof entry.metadata.sourceMtime === 'number' &&
+      typeof entry.metadata.sourceSize === 'number' &&
+      typeof entry.metadata.contentHash === 'string' &&
+      typeof entry.metadata.indexedAt === 'number' &&
+      typeof entry.metadata.endLine === 'number' &&
+      typeof entry.metadata.embeddingProvider === 'string' &&
+      typeof entry.metadata.embeddingModel === 'string',
+  );
+  return {
+    filePath,
+    sourceMtime: hasCompleteMetadata ? first?.metadata.sourceMtime : undefined,
+    sourceSize: hasCompleteMetadata ? first?.metadata.sourceSize : undefined,
+    contentHash: hasCompleteMetadata ? first?.metadata.contentHash : undefined,
+    indexedAt: hasCompleteMetadata ? first?.metadata.indexedAt : undefined,
+    embeddingProvider: hasCompleteMetadata ? first?.metadata.embeddingProvider : undefined,
+    embeddingModel: hasCompleteMetadata ? first?.metadata.embeddingModel : undefined,
+    hasCompleteMetadata,
+    vectorCount: entries.length,
+    updated,
+  };
+}
+
+function copyEntries(entries: readonly VectorEntry[]): VectorEntry[] {
+  return entries.map((entry) => ({
+    id: entry.id,
+    vector: [...entry.vector],
+    metadata: { ...entry.metadata },
+  }));
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
