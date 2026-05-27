@@ -278,6 +278,7 @@ export interface SuperpowerInsideSettings {
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
+  mcpIncludeWslPath: boolean;
   chat: ChatConfig;
   pluginAwareEnabled: boolean;
   autoSaveEnabled: boolean;
@@ -340,6 +341,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   },
   mcpServers: [createDefaultContext7McpServer()],
   mcpPath: '',
+  mcpIncludeWslPath: false,
   chat: {
     saveFolder: DEFAULT_CHAT_SAVE_FOLDER,
     defaultModel: 'ollama:llama3.1',
@@ -2581,6 +2583,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const pathDesc = pathContent.createDiv({ cls: 'setting-item-description' });
     pathDesc.setText(t('mcpPathDesc'));
 
+    if (Platform.isWin) {
+      new Setting(pathContent)
+        .setName(t('mcpIncludeWslPath'))
+        .setDesc(t('mcpIncludeWslPathDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue(this.plugin.settings.mcpIncludeWslPath).onChange((value) => {
+            this.plugin.settings.mcpIncludeWslPath = value;
+            this.debouncedSave();
+          }),
+        );
+    }
+
     const pathRow = pathContent.createDiv({ cls: 'superpower-inside-mcp-path-row' });
 
     const pathText = pathRow.createEl('textarea', {
@@ -2604,7 +2618,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }
 
           const { getDesktopLoginShellPath } = await import('./mcp/path');
-          const output = getDesktopLoginShellPath();
+          const output = getDesktopLoginShellPath({
+            platform: Platform,
+            includeWslPath: this.plugin.settings.mcpIncludeWslPath,
+          });
           pathText.value = output;
           this.plugin.settings.mcpPath = output;
           await this.plugin.saveSettings();

@@ -125,6 +125,25 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.openai.apiKey).toBe('local-key');
   });
 
+  it('기존 설정 로드 시 WSL PATH 조회 옵션 기본값을 보강한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const oldSettings = { ...DEFAULT_SETTINGS };
+    delete (oldSettings as Partial<typeof DEFAULT_SETTINGS>).mcpIncludeWslPath;
+    const app = createApp({ localSettings: oldSettings });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.mcpIncludeWslPath).toBe(false);
+  });
+
   it('localStorage 설정이 없으면 legacy data.json을 마이그레이션한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');

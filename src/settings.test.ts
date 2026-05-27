@@ -257,6 +257,7 @@ describe('RAG 설정 표시 헬퍼', () => {
   });
 
   it('기본 MCP 설정은 Context7 서버를 포함한다', () => {
+    expect(DEFAULT_SETTINGS.mcpIncludeWslPath).toBe(false);
     expect(DEFAULT_SETTINGS.mcpServers).toContainEqual({
       name: CONTEXT7_MCP_SERVER_NAME,
       command: 'npx',

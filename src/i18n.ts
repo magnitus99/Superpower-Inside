@@ -240,6 +240,8 @@ export interface I18nKeys {
   mcpPathFetchErrorHelp: string;
   mcpPathPlaceholder: string;
   mcpPathCommandNotFoundHint: string;
+  mcpIncludeWslPath: string;
+  mcpIncludeWslPathDesc: string;
 
   // MCP 탭
   mcpCommand: string;
@@ -553,6 +555,9 @@ const ko: I18nKeys = {
   mcpPathPlaceholder: '예: /opt/homebrew/bin:/usr/local/bin:/usr/bin',
   mcpPathCommandNotFoundHint:
     'MCP PATH에 터미널 PATH를 저장하거나 "{command}"를 절대경로로 설정하세요. macOS에서 Obsidian을 GUI로 실행하면 npx/uvx 같은 명령을 찾지 못할 수 있습니다.',
+  mcpIncludeWslPath: 'WSL PATH도 함께 조회',
+  mcpIncludeWslPathDesc:
+    'Windows에서 PATH를 불러올 때 WSL의 PATH도 추가로 조회합니다. WSL 내부 Linux 실행 파일은 Windows에서 직접 실행되지 않으므로 WSL 기반 MCP 서버는 command를 wsl.exe로 설정하세요.',
 
   // MCP
   mcpCommand: '명령어',
@@ -870,6 +875,9 @@ const en: I18nKeys = {
   mcpPathPlaceholder: 'e.g., /usr/local/bin:/usr/bin:/bin',
   mcpPathCommandNotFoundHint:
     'Save your terminal PATH in MCP PATH or set "{command}" to an absolute path. When Obsidian is launched from the macOS GUI, commands such as npx/uvx may not be visible.',
+  mcpIncludeWslPath: 'Also fetch WSL PATH',
+  mcpIncludeWslPathDesc:
+    'On Windows, also query PATH from WSL when fetching PATH. Linux executables inside WSL cannot be run directly from Windows, so WSL-based MCP servers should use wsl.exe as the command.',
 
   // MCP
   mcpCommand: 'Command',

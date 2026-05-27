@@ -453,6 +453,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
     }
 
+    if (typeof data.mcpIncludeWslPath !== 'boolean') {
+      data.mcpIncludeWslPath = false;
+    }
+
     // Migrate old MCP settings to standard format
     const mcpServers = data.mcpServers as unknown[] | undefined;
     if (Array.isArray(mcpServers)) {
