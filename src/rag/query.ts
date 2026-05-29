@@ -1,6 +1,20 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
 import { JsonFileBM25Index, tokenize } from './bm25';
+import {
+  GraphRagCandidateProvider,
+  type GraphRagQueryEngine,
+} from '../graph/query-engine';
+import {
+  BM25CandidateProvider,
+  ExactVectorCandidateProvider,
+  IvfVectorCandidateProvider,
+  RagRetrievalPipeline,
+  StructuralGraphCandidateProvider,
+  type CandidateProvider,
+  type RetrievalProviderDiagnostic,
+  type StructuralMetadataContext,
+} from './retrieval-pipeline';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 
@@ -30,12 +44,24 @@ export interface QueryResult {
   keywordMatches: number;
 }
 
+export interface RAGQueryEngineOptions {
+  annEnabled?: boolean;
+  annClusterCount?: number;
+  annProbeCount?: number;
+  annMinEntryCount?: number;
+  structuralGraphEnabled?: boolean;
+  structuralMetadataContext?: StructuralMetadataContext;
+  graphRagEnabled?: boolean;
+  graphRagQueryEngine?: GraphRagQueryEngine;
+}
+
 export class RAGQueryEngine {
-  private vectorStore: VectorStore;
   private embeddingProvider: EmbeddingProvider;
   private bm25Index: JsonFileBM25Index | undefined;
   private bm25Weight: number;
   private minScore: number;
+  private retrievalPipeline: RagRetrievalPipeline;
+  private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
 
   constructor(
     vectorStore: VectorStore,
@@ -43,49 +69,55 @@ export class RAGQueryEngine {
     bm25Index?: JsonFileBM25Index,
     bm25Weight = 0.3,
     minScore = 0.5,
+    options: RAGQueryEngineOptions = {},
   ) {
-    this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
     this.bm25Index = bm25Index;
     this.bm25Weight = bm25Weight;
     this.minScore = minScore;
+    const providers: CandidateProvider[] = [
+      options.annEnabled === true
+        ? new IvfVectorCandidateProvider(vectorStore, {
+            minEntryCount: options.annMinEntryCount ?? 500,
+            clusterCount: options.annClusterCount ?? 0,
+            probeCount: options.annProbeCount ?? 4,
+          })
+        : new ExactVectorCandidateProvider(vectorStore),
+    ];
+    if (bm25Index) {
+      providers.push(new BM25CandidateProvider(vectorStore, bm25Index));
+    }
+    if (options.structuralGraphEnabled === true && options.structuralMetadataContext) {
+      providers.push(new StructuralGraphCandidateProvider(vectorStore, options.structuralMetadataContext));
+    }
+    if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
+      providers.push(new GraphRagCandidateProvider(options.graphRagQueryEngine));
+    }
+    this.retrievalPipeline = new RagRetrievalPipeline(providers);
   }
 
   async query(question: string, topK = 5, minScore?: number): Promise<QueryResult[]> {
     const threshold = minScore ?? this.minScore;
     const qVector = await this.embeddingProvider.embed(question);
-    const vectorEntries = await this.vectorStore.query(qVector, topK * 8);
-
-    let bm25Scores = new Map<string, number>();
-    if (this.bm25Index?.isReady) {
-      bm25Scores = this.bm25Index.search(question);
-    }
-    const maxBm25 = Math.max(...bm25Scores.values(), 1);
-    const bm25FilePaths = new Set(bm25Scores.keys());
-    const bm25Entries =
-      bm25FilePaths.size > 0
-        ? await this.vectorStore.getEntriesByFilePaths([...bm25FilePaths])
-        : [];
-    const entriesById = new Map<string, VectorEntry>();
-    for (const entry of vectorEntries) {
-      entriesById.set(entry.id, entry);
-    }
-    for (const entry of bm25Entries) {
-      if (bm25FilePaths.has(entry.metadata.filePath)) {
-        entriesById.set(entry.id, entry);
-      }
-    }
+    const retrieval = await this.retrievalPipeline.retrieve({
+      question,
+      queryVector: qVector,
+      candidateLimit: topK * 8,
+    });
+    this.lastRetrievalDiagnostics = retrieval.diagnostics;
     const queryTokens = [...new Set(tokenize(question))];
 
     const scored: QueryResult[] = [];
-    const entries = [...entriesById.values()];
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index];
+    for (let index = 0; index < retrieval.candidates.length; index++) {
+      const candidate = retrieval.candidates[index];
+      const entry = candidate.entry;
       const cosineScore = cosineSimilarity(qVector, entry.vector);
-      const bm25 = (bm25Scores.get(entry.metadata.filePath) ?? 0) / maxBm25;
-      const combined = this.bm25Index?.isReady
+      const bm25 = candidate.sourceScores.bm25 ?? 0;
+      const retrievalScore = getRetrievalSourceBoost(candidate.sourceScores);
+      const combinedBase = this.bm25Index?.isReady
         ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
         : cosineScore;
+      const combined = Math.max(combinedBase, retrievalScore);
       scored.push({
         entry,
         score: combined,
@@ -113,6 +145,10 @@ export class RAGQueryEngine {
       .slice(0, topK);
   }
 
+  getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
+    return [...this.lastRetrievalDiagnostics];
+  }
+
   async queryWithContext(question: string, topK = 5): Promise<string> {
     const results = await this.query(question, topK);
     if (results.length === 0) {
@@ -138,6 +174,18 @@ function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boole
   if (!hasBm25) return true;
   if (result.bm25Score > 0 && result.keywordMatches > 0) return true;
   return result.vectorScore >= Math.max(0.62, threshold + 0.08);
+}
+
+function getRetrievalSourceBoost(
+  sourceScores: Partial<Record<string, number>>,
+): number {
+  const graphScore = Math.max(
+    sourceScores['graph-local'] ?? 0,
+    sourceScores['graph-global'] ?? 0,
+    sourceScores.evidence ?? 0,
+  );
+  if (graphScore > 0) return Math.max(0.68, graphScore);
+  return Math.max(sourceScores.structural ?? 0, sourceScores.ann ?? 0);
 }
 
 function yieldToEventLoop(): Promise<void> {

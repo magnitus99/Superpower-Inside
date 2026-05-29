@@ -1,6 +1,14 @@
-import type { DataAdapter } from 'obsidian';
+import type { DataAdapter, TFile } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
+import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { GraphRagQueryEngine } from '../graph/query-engine';
+import {
+  InMemoryKnowledgeGraphStore,
+  type GraphEntityRecord,
+  type GraphEvidenceRecord,
+  type GraphRelationRecord,
+} from '../graph/store';
 import { JsonFileBM25Index } from './bm25';
 import { RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
@@ -70,6 +78,88 @@ describe('RAGQueryEngine', () => {
     expect(store.getEntriesCalls).toBe(0);
     expect(store.requestedPaths).toEqual([['keyword.md']]);
   });
+
+  it('ANN이 활성화되면 RAGQueryEngine은 ANN provider diagnostic을 기록한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add(
+      Array.from({ length: 12 }, (_, index) =>
+        createEntry(`entry-${index}.md`, index === 0 ? [1, 0] : [0, 1], '문서'),
+      ),
+    );
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      annEnabled: true,
+      annClusterCount: 2,
+      annProbeCount: 1,
+      annMinEntryCount: 10,
+    });
+
+    await engine.query('질문', 1);
+
+    expect(engine.getLastRetrievalDiagnostics()).toEqual([
+      expect.objectContaining({
+        providerId: 'ivf-vector',
+        source: 'ann',
+        status: 'ok',
+      }),
+    ]);
+  });
+
+  it('구조 그래프가 활성화되면 RAGQueryEngine은 structural provider diagnostic을 기록한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('seed.md', [1, 0], 'seed text'),
+      createEntry('linked.md', [0, 1], 'linked text'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({
+        resolvedLinks: {
+          'seed.md': { 'linked.md': 1 },
+        },
+      }),
+    });
+
+    await engine.query('질문', 2);
+
+    expect(engine.getLastRetrievalDiagnostics()).toEqual([
+      expect.objectContaining({
+        providerId: 'exact-vector',
+        source: 'vector',
+        status: 'ok',
+      }),
+      expect.objectContaining({
+        providerId: 'structural-graph',
+        source: 'structural',
+        status: 'ok',
+      }),
+    ]);
+  });
+
+  it('GraphRAG가 활성화되면 graph 후보가 낮은 vector score라도 최종 결과에 참여한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
+      createEntry('graph.md', [0, 1], 'Paul and Barnabas traveled together.'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence(createEvidence());
+    await graphStore.upsertEntity(createGraphEntity('Paul'));
+    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
+    await graphStore.addRelation(createGraphRelation());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      graphRagEnabled: true,
+      graphRagQueryEngine: graphEngine,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual([
+      expect.objectContaining({ providerId: 'exact-vector' }),
+      expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),
+    ]);
+  });
 });
 
 function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
@@ -132,4 +222,70 @@ class PathLookupStore extends MemoryVectorStore {
     const allowed = new Set(filePaths);
     return (await super.getEntries()).filter((entry) => allowed.has(entry.metadata.filePath));
   }
+}
+
+function createEvidence(): GraphEvidenceRecord {
+  return {
+    id: 'evidence::graph',
+    filePath: 'graph.md',
+    entryId: 'graph.md::0',
+    startLine: 0,
+    endLine: 0,
+    quote: 'Paul and Barnabas traveled together.',
+    contentHash: 'hash',
+    extractionModelKey: 'openai:gpt-4o-mini',
+    updatedAt: 1,
+  };
+}
+
+function createGraphEntity(name: string): GraphEntityRecord {
+  return {
+    id: `entity::general::person::${name.toLowerCase()}`,
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    typeId: 'person',
+    canonicalName: name,
+    aliases: [],
+    description: '',
+    properties: {},
+    confidence: 0.9,
+    evidenceIds: ['evidence::graph'],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createGraphRelation(): GraphRelationRecord {
+  return {
+    id: 'relation::graph',
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    relationTypeId: 'collaborated_with',
+    sourceEntityId: 'entity::general::person::paul',
+    targetEntityId: 'entity::general::person::barnabas',
+    description: 'Paul and Barnabas traveled together.',
+    properties: {},
+    confidence: 0.9,
+    evidenceIds: ['evidence::graph'],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createMetadataContext(input: { resolvedLinks?: Record<string, Record<string, number>> }) {
+  const files = new Map<string, TFile>();
+  const getFile = (path: string): TFile => {
+    const existing = files.get(path);
+    if (existing) return existing;
+    const file = { path } as TFile;
+    files.set(path, file);
+    return file;
+  };
+
+  return {
+    resolvedLinks: input.resolvedLinks ?? {},
+    getFileByPath: (path: string) => getFile(path),
+    getFileCache: () => null,
+    getFirstLinkpathDest: (linkpath: string) => getFile(linkpath),
+  };
 }
