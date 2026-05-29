@@ -60,6 +60,45 @@ export interface RagPerformanceSettings {
   slowBatchThresholdMs: number;
 }
 
+export interface GraphRagStatusLabelInput {
+  enabled: boolean;
+  hasGraphIndex: boolean;
+  isRunning: boolean;
+  isStale: boolean;
+  partialFailureCount: number;
+  schemaError?: boolean;
+}
+
+export interface GraphRagControlStateInput {
+  enabled: boolean;
+  hasProvider: boolean;
+  hasModel: boolean;
+  isRunning: boolean;
+  totalCandidateFiles: number;
+  failedFileCount: number;
+}
+
+export interface GraphRagControlState {
+  start: RagIndexingButtonState;
+  cancel: RagIndexingButtonState;
+  resume: RagIndexingButtonState;
+}
+
+export interface GraphRagIndexingCostInput {
+  totalCandidateFiles: number;
+  maxFilesPerRun: number;
+  averageChunksPerFile: number;
+  averageTokensPerChunk: number;
+  providerKind: 'local' | 'remote';
+}
+
+export interface GraphRagIndexingCostEstimate {
+  estimatedFiles: number;
+  estimatedCalls: number;
+  estimatedInputTokens: number;
+  costLabel: string;
+}
+
 export function resolveRagPerformanceSettings(
   rag: RagPerformanceConfig,
 ): RagPerformanceSettings {
@@ -124,7 +163,11 @@ export function getChatFolderExcludeDescription(saveFolder: string): string {
 }
 
 export function shouldShowProviderApiKey(key: string): boolean {
-  return key !== 'ollama' && key !== 'other';
+  return key !== 'ollama';
+}
+
+export function shouldRequireProviderApiKey(key: string): boolean {
+  return shouldShowProviderApiKey(key) && key !== 'customOpenAI';
 }
 
 export function getRagIndexingControlState(
@@ -149,6 +192,115 @@ export function getRagIndexingControlState(
         ? null
         : '성능 보호 대기 상태가 아닙니다.',
     ),
+  };
+}
+
+export function getGraphRagStatusLabel(input: GraphRagStatusLabelInput): string {
+  if (!input.enabled) return '비활성';
+  if (input.schemaError === true) return 'schema-error';
+  if (input.isRunning) return 'building';
+  if (!input.hasGraphIndex) return 'not-built';
+  if (input.isStale) return 'stale';
+  if (input.partialFailureCount > 0) return 'partial';
+  return 'ready';
+}
+
+export interface GraphRagStatusPresentation {
+  label: string;
+  description: string;
+  tone: "neutral" | "success" | "warning" | "danger";
+}
+
+export function getGraphRagStatusPresentation(
+  state: string,
+): GraphRagStatusPresentation {
+  switch (state) {
+    case "disabled":
+      return {
+        label: "비활성",
+        description: "GraphRAG 기능이 꺼져 있습니다.",
+        tone: "neutral",
+      };
+    case "not-built":
+      return {
+        label: "미생성",
+        description: "GraphRAG 인덱스가 아직 생성되지 않았습니다. 시작 버튼으로 생성하세요.",
+        tone: "neutral",
+      };
+    case "building":
+      return {
+        label: "생성 중",
+        description: "지식 그래프를 추출하고 있습니다. 완료까지 기다려 주세요.",
+        tone: "neutral",
+      };
+    case "ready":
+      return {
+        label: "준비됨",
+        description: "GraphRAG가 최신 상태입니다. 질문 시 지식 그래프를 활용합니다.",
+        tone: "success",
+      };
+    case "stale":
+      return {
+        label: "동기화 필요",
+        description: "일부 파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.",
+        tone: "warning",
+      };
+    case "partial":
+      return {
+        label: "부분 완료",
+        description: "일부 파일 추출에 실패했습니다. 실패한 파일만 다시 시도할 수 있습니다.",
+        tone: "warning",
+      };
+    case "schema-error":
+      return {
+        label: "설정 오류",
+        description: "온톨로지 스키마에 오류가 있습니다. 설정을 확인하세요.",
+        tone: "danger",
+      };
+    default:
+      return { label: state, description: "", tone: "neutral" };
+  }
+}
+
+
+export function getGraphRagControlState(
+  input: GraphRagControlStateInput,
+): GraphRagControlState {
+  const disabledReason = input.enabled ? null : 'GraphRAG가 비활성 상태입니다.';
+  const providerReason = input.hasProvider ? null : 'LLM provider가 초기화되지 않았습니다.';
+  const modelReason = input.hasModel ? null : 'GraphRAG 추출 모델을 선택하세요.';
+  const runningReason = input.isRunning ? 'GraphRAG 인덱싱이 이미 실행 중입니다.' : null;
+  const noFilesReason =
+    input.totalCandidateFiles > 0 ? null : 'GraphRAG 인덱싱 대상 파일이 없습니다.';
+
+  return {
+    start: toButtonState(
+      disabledReason ?? providerReason ?? modelReason ?? runningReason ?? noFilesReason,
+    ),
+    cancel: toButtonState(input.isRunning ? null : '실행 중인 GraphRAG 인덱싱이 없습니다.'),
+    resume: toButtonState(
+      disabledReason ??
+        providerReason ??
+        modelReason ??
+        runningReason ??
+        (input.failedFileCount > 0 ? null : '이어 실행할 실패 파일이 없습니다.'),
+    ),
+  };
+}
+
+export function estimateGraphRagIndexingCost(
+  input: GraphRagIndexingCostInput,
+): GraphRagIndexingCostEstimate {
+  const estimatedFiles = clampInteger(input.maxFilesPerRun, 1, 100000);
+  const cappedFiles = Math.min(input.totalCandidateFiles, estimatedFiles);
+  const chunksPerFile = clampInteger(input.averageChunksPerFile, 1, 100000);
+  const tokensPerChunk = clampInteger(input.averageTokensPerChunk, 1, 100000);
+  const estimatedCalls = cappedFiles * chunksPerFile;
+  return {
+    estimatedFiles: cappedFiles,
+    estimatedCalls,
+    estimatedInputTokens: estimatedCalls * tokensPerChunk,
+    costLabel: input.providerKind === 'local' ? '로컬 실행' : '원격 LLM 본문 전송 발생',
   };
 }
 

@@ -17,6 +17,17 @@ const baseRagConfig: RAGConfig = {
   autoUpdateEnabled: false,
   autoUpdateIntervalMin: 5,
   minScore: 0.5,
+  annEnabled: true,
+  annClusterCount: 0,
+  annProbeCount: 4,
+  structuralGraphEnabled: true,
+  ontologyEnabled: true,
+  ontologyAutoMergeThreshold: 0.88,
+  ontologyPendingMergeThreshold: 0.72,
+  graphRagEnabled: false,
+  graphRagModel: '',
+  graphRagMaxFilesPerRun: 50,
+  graphRagQueryMode: 'auto',
   enableBM25: false,
   bm25Weight: 0.3,
   performanceTuningMode: 'auto',
@@ -25,6 +36,8 @@ const baseRagConfig: RAGConfig = {
   indexingYieldMs: 25,
   slowEventLoopThresholdMs: 150,
   slowBatchThresholdMs: 3000,
+  graphRagAutoSyncEnabled: false,
+  graphRagAutoSyncIntervalMin: 30,
 };
 
 const chatConfig: ChatConfig = {

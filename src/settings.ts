@@ -5,6 +5,7 @@ import {
   PluginSettingTab,
   Platform,
   Setting,
+  setIcon,
   type EventRef,
   type Events,
 } from 'obsidian';
@@ -22,6 +23,7 @@ import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from
 import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
 import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
+import type { GraphRagIndexingResult } from './graph/indexing-runner';
 import {
   buildEmbeddingModelOptions,
   getRagIndexingControlState,
@@ -33,6 +35,10 @@ import {
   type RagPerformanceTuningMode,
   type VectorStoreType,
   shouldShowProviderApiKey,
+  getGraphRagStatusPresentation,
+  getGraphRagStatusLabel,
+  getGraphRagControlState,
+  estimateGraphRagIndexingCost,
 } from './rag/settings-display';
 import {
   createDefaultPromptEntry,
@@ -247,6 +253,19 @@ export interface RAGConfig {
   indexingYieldMs: number;
   slowEventLoopThresholdMs: number;
   slowBatchThresholdMs: number;
+  structuralGraphEnabled: boolean;
+  graphRagEnabled: boolean;
+  graphRagModel: string;
+  graphRagMaxFilesPerRun: number;
+  graphRagQueryMode: 'auto' | 'local' | 'global' | 'hybrid';
+  graphRagAutoSyncEnabled: boolean;
+  graphRagAutoSyncIntervalMin: number;
+  ontologyAutoMergeThreshold: number;
+  ontologyPendingMergeThreshold: number;
+  ontologyEnabled: boolean;
+  annEnabled: boolean;
+  annClusterCount: number;
+  annProbeCount: number;
 }
 
 export interface ChatConfig {
@@ -338,6 +357,19 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     indexingYieldMs: 25,
     slowEventLoopThresholdMs: 150,
     slowBatchThresholdMs: 3000,
+    structuralGraphEnabled: true,
+    graphRagEnabled: false,
+    graphRagModel: '',
+    graphRagMaxFilesPerRun: 50,
+    graphRagQueryMode: 'auto',
+    graphRagAutoSyncEnabled: false,
+    graphRagAutoSyncIntervalMin: 30,
+    ontologyEnabled: true,
+    ontologyAutoMergeThreshold: 0.85,
+    ontologyPendingMergeThreshold: 0.7,
+    annEnabled: true,
+    annClusterCount: 0,
+    annProbeCount: 4,
   },
   mcpServers: [createDefaultContext7McpServer()],
   mcpPath: '',
@@ -361,9 +393,17 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
 export interface PluginLike {
   app: App;
   settings: SuperpowerInsideSettings;
+  graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
   saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
+  isGraphRagIndexing(): boolean;
+  cancelGraphRagIndexing(): void;
+  runGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
+  resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
+  syncStaleGraphRag(): Promise<GraphRagIndexingResult | null>;
+  hasGraphRagRunner(): boolean;
+  eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   isRagIndexing(): boolean;
   cancelRagIndexing(): void;
@@ -373,7 +413,6 @@ export interface PluginLike {
   mcpRegistry: MCPRegistry | null;
   mcpConnectionState?: MCPConnectionState;
   mcpLastErrors?: string[];
-  eventDrivenRagStats?: RagStatusSummary | null;
   nextAutoUpdateAt?: number | null;
   lastAutoUpdateSkippedReason?: string | null;
   lastAutoUpdateResult?: IndexingResult | null;
@@ -406,6 +445,7 @@ type ProviderSettingsTarget =
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
+  private graphRagModelRefresh: RefreshAction | null = null;
 
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
@@ -434,6 +474,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private reindexAllButton: HTMLButtonElement | null = null;
   private cancelIndexingButton: HTMLButtonElement | null = null;
   private resumeIndexingButton: HTMLButtonElement | null = null;
+  // GraphRAG 상태 패널의 DOM 참조 (부분 업데이트용)
+  private graphRagSummaryBanner: HTMLElement | null = null;
+  private graphRagStatusGrid: HTMLElement | null = null;
+  private graphRagActionsGroup: HTMLElement | null = null;
+  private graphRagSectionContainer: HTMLElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
 
@@ -537,6 +582,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshBusUnsubscribers.push(
         plugin.refreshBus.on('rag', (result) => {
           this.updateRagStats(result.detail);
+          this.updateGraphRagStats();
         }),
       );
     }
@@ -840,6 +886,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.buildEmbeddingProviderSection(containerEl);
     this.buildExcludeOptionsSection(containerEl);
     this.buildRagAdvancedSection(containerEl);
+    this.buildGraphRagOperationsSection(containerEl);
   }
 
   private buildRagAdvancedSection(containerEl: HTMLElement): void {
@@ -943,6 +990,424 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const item = containerEl.createDiv({ cls: 'superpower-inside-rag-status-item' });
     item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
     item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
+  }
+
+  private createRagStatusItemWithDesc(
+    containerEl: HTMLElement,
+    label: string,
+    value: string,
+    description: string,
+    tone: 'neutral' | 'success' | 'warning' | 'danger' = 'neutral',
+  ): void {
+    const item = containerEl.createDiv({ cls: 'superpower-inside-rag-status-item' });
+    item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
+    const valueEl = item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
+    if (tone !== 'neutral') {
+      valueEl.addClass(`is-${tone}`);
+    }
+    if (description) {
+      item.createDiv({ cls: 'superpower-inside-rag-status-description', text: description });
+    }
+  }
+
+  private buildGraphRagOperationsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    this.graphRagSectionContainer = section;
+    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: 'GraphRAG 운영' });
+
+    const rag = this.plugin.settings.rag;
+    const graphState = this.plugin.graphRagStatus;
+    const statusLabel =
+      graphState?.state ??
+      getGraphRagStatusLabel({
+        enabled: rag.graphRagEnabled,
+        hasGraphIndex: false,
+        isRunning: this.plugin.isGraphRagIndexing(),
+        isStale: false,
+        partialFailureCount: 0,
+      });
+    const presentation = getGraphRagStatusPresentation(statusLabel);
+
+    const cost = estimateGraphRagIndexingCost({
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+      averageChunksPerFile: 3,
+      averageTokensPerChunk: 900,
+      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:') ? 'local' : 'remote',
+    });
+
+    const controls = getGraphRagControlState({
+      enabled: rag.graphRagEnabled,
+      hasProvider: this.plugin.hasGraphRagRunner(),
+      hasModel: rag.graphRagModel.trim().length > 0,
+      isRunning: this.plugin.isGraphRagIndexing(),
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+      failedFileCount: graphState?.failedFileCount ?? 0,
+    });
+
+    // 요약 배너
+    const total = graphState?.totalCandidateFiles ?? 0;
+    const done = graphState?.graphEvidenceCount ?? 0;
+    const failed = graphState?.failedFileCount ?? 0;
+    const stale = graphState?.staleFileCount ?? 0;
+    const summaryText = total > 0
+      ? `전체 ${total}개 파일 중 ${done}개 처리 완료${failed > 0 ? `, ${failed}개 실패` : ''}${stale > 0 ? `, ${stale}개 동기화 필요` : ''}`
+      : 'RAG 인덱싱 대상 파일이 없습니다.';
+    const banner = section.createDiv({ cls: 'superpower-inside-rag-graph-summary-banner' });
+    this.graphRagSummaryBanner = banner;
+    banner.setText(summaryText);
+
+    // 상태 그리드
+    const grid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
+    this.graphRagStatusGrid = grid;
+    this.createRagStatusItemWithDesc(grid, '상태', presentation.label, presentation.description, presentation.tone);
+    this.createRagStatusItem(grid, '전체 파일', String(total));
+    this.createRagStatusItem(grid, '처리 완료', String(done));
+    this.createRagStatusItemWithDesc(grid, '실패 파일', String(failed), failed > 0 ? '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.' : '실패한 파일이 없습니다.');
+    this.createRagStatusItemWithDesc(grid, '동기화 필요', String(stale), stale > 0 ? '파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.' : '모든 파일이 최신 상태입니다.', stale > 0 ? 'warning' : 'success');
+    this.createRagStatusItem(grid, '비용/전송', cost.costLabel);
+
+    // 접이식 비용 상세
+    const costToggle = section.createDiv({
+      cls: 'superpower-inside-rag-graph-cost-toggle',
+      text: 'ℹ️ 예상 비용 상세 보기',
+    });
+    const costDetail = section.createDiv({
+      cls: 'superpower-inside-rag-graph-cost-detail is-collapsed',
+    });
+    costToggle.addEventListener('click', () => {
+      const isCollapsed = costDetail.hasClass('is-collapsed');
+      costDetail.toggleClass('is-collapsed', !isCollapsed);
+      costToggle.setText(isCollapsed ? 'ℹ️ 예상 비용 상세 숨기기' : 'ℹ️ 예상 비용 상세 보기');
+    });
+    this.createRagStatusItem(costDetail, '예상 파일', String(cost.estimatedFiles));
+    this.createRagStatusItem(costDetail, '예상 호출', String(cost.estimatedCalls));
+    this.createRagStatusItem(costDetail, '예상 입력 토큰', String(cost.estimatedInputTokens));
+    this.createRagStatusItem(costDetail, 'Pending merge', String(graphState?.pendingMergeCount ?? 0));
+    section.appendChild(costToggle);
+    section.appendChild(costDetail);
+
+    // 기본 설정
+    new Setting(section)
+      .setName('GraphRAG 활성화')
+      .setDesc('장시간 LLM 추출 인덱싱을 명시적으로 허용합니다. 기본 RAG 검색은 이 설정과 별개로 유지됩니다.')
+      .addToggle((toggle) =>
+        toggle.setValue(rag.graphRagEnabled).onChange((value) => {
+          this.plugin.settings.rag.graphRagEnabled = value;
+          this.display();
+          this.debouncedSave();
+        }),
+      );
+
+    const renderGraphRagModelOptions = (selectEl: HTMLSelectElement): void => {
+      const modelOptions = buildChatModelOptions(this.plugin.settings, {
+        currentModel: this.plugin.settings.rag.graphRagModel,
+        includeEmpty: true,
+        emptyLabel: '모델 선택 안 함',
+      });
+      selectEl.empty();
+      for (const option of modelOptions) {
+        const opt = selectEl.createEl('option');
+        opt.value = option.value;
+        opt.text = option.label;
+      }
+      const selectedModel = this.plugin.settings.rag.graphRagModel.trim();
+      selectEl.value = modelOptions.some((option) => option.value === selectedModel)
+        ? selectedModel
+        : '';
+    };
+    let graphRagModelSelectEl: HTMLSelectElement | null = null;
+
+    new Setting(section)
+      .setName('GraphRAG 모델')
+      .setDesc('entity/relation/claim 추출에 사용할 모델입니다. 비워두면 실행 버튼이 비활성화됩니다.')
+      .addDropdown((dropdown) => {
+        graphRagModelSelectEl = dropdown.selectEl;
+        renderGraphRagModelOptions(dropdown.selectEl);
+        dropdown.onChange((value) => {
+          this.plugin.settings.rag.graphRagModel = value.trim();
+          this.debouncedSave();
+        });
+      })
+      .addButton((button) => {
+        button.setButtonText('새로고침');
+        button.setTooltip(t('refreshModelList'));
+        this.graphRagModelRefresh?.detach();
+        this.graphRagModelRefresh = new RefreshAction({
+          action: (_signal) => {
+            void _signal;
+            if (graphRagModelSelectEl) {
+              renderGraphRagModelOptions(graphRagModelSelectEl);
+            }
+            return Promise.resolve({ status: 'success' } as const);
+          },
+          loadingText: '새로고침 중...',
+          spinnerClass: 'spinning',
+          successNotice: false,
+        });
+        this.graphRagModelRefresh.attach(button.buttonEl);
+      });
+
+    new Setting(section)
+      .setName('한 번에 처리할 최대 파일 수')
+      .setDesc('GraphRAG 추출은 비용이 크므로 run limit을 둡니다.')
+      .addText((text) => {
+        text
+          .setValue(String(rag.graphRagMaxFilesPerRun))
+          .setPlaceholder('50')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 1 || num > 10000 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.graphRagMaxFilesPerRun = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '1';
+        text.inputEl.max = '10000';
+      });
+
+    new Setting(section)
+      .setName('GraphRAG query mode')
+      .setDesc('질문 유형별 graph 검색 방식을 선택합니다.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('auto', 'Auto')
+          .addOption('local', 'Local')
+          .addOption('global', 'Global')
+          .addOption('hybrid', 'Hybrid')
+          .setValue(rag.graphRagQueryMode)
+          .onChange((value) => {
+            this.plugin.settings.rag.graphRagQueryMode =
+              value === 'local' || value === 'global' || value === 'hybrid' ? value : 'auto';
+            this.debouncedSave();
+          }),
+      );
+
+    new Setting(section)
+      .setName('Merge threshold')
+      .setDesc('자동 merge와 pending merge 기준입니다.')
+      .addText((text) => {
+        text.setValue(String(rag.ontologyAutoMergeThreshold)).onChange((value) => {
+          const num = Number(value);
+          if (Number.isNaN(num) || num < 0 || num > 1) return;
+          this.plugin.settings.rag.ontologyAutoMergeThreshold = num;
+          this.debouncedSave();
+        });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '1';
+        text.inputEl.step = '0.01';
+      })
+      .addText((text) => {
+        text.setValue(String(rag.ontologyPendingMergeThreshold)).onChange((value) => {
+          const num = Number(value);
+          if (Number.isNaN(num) || num < 0 || num > 1) return;
+          this.plugin.settings.rag.ontologyPendingMergeThreshold = num;
+          this.debouncedSave();
+        });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '1';
+        text.inputEl.step = '0.01';
+      });
+
+    // 자동 동기화 설정
+    new Setting(section)
+      .setName('자동 동기화')
+      .setDesc('파일 변경 시 stale 파일을 자동으로 동기화합니다. LLM API 비용이 발생할 수 있습니다.')
+      .addToggle((toggle) =>
+        toggle.setValue(rag.graphRagAutoSyncEnabled).onChange((value) => {
+          this.plugin.settings.rag.graphRagAutoSyncEnabled = value;
+          this.debouncedSave();
+        }),
+      );
+
+    new Setting(section)
+      .setName('자동 동기화 간격(분)')
+      .setDesc('파일 변경 후 자동 동기화까지 대기하는 최소 시간입니다.')
+      .addText((text) => {
+        text
+          .setValue(String(rag.graphRagAutoSyncIntervalMin))
+          .setPlaceholder('30')
+          .onChange((value) => {
+            const num = Number.parseInt(value, 10);
+            if (Number.isNaN(num) || num < 1 || num > 1440 || !Number.isInteger(num)) return;
+            this.plugin.settings.rag.graphRagAutoSyncIntervalMin = num;
+            this.debouncedSave();
+          });
+        text.inputEl.type = 'number';
+        text.inputEl.min = '1';
+        text.inputEl.max = '1440';
+      });
+
+    // 실행 버튼 그룹
+    const actions = section.createDiv({ cls: 'superpower-inside-rag-controls-group is-primary' });
+    this.graphRagActionsGroup = actions;
+    this.createGraphRagActionButton(actions, '시작', 'play', controls.start, async () => {
+      if (!this.confirmGraphRagRemoteRun(cost)) return;
+      const result = await this.plugin.runGraphRagIndexing();
+      this.showGraphRagResult(result);
+      this.display();
+    });
+    this.createGraphRagActionButton(actions, '취소', 'square', controls.cancel, () => {
+      this.plugin.cancelGraphRagIndexing();
+      new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
+      this.display();
+    });
+    this.createGraphRagActionButton(actions, '이어서 실행', 'skip-forward', controls.resume, async () => {
+      if (!this.confirmGraphRagRemoteRun(cost)) return;
+      const result = await this.plugin.resumeGraphRagIndexing();
+      this.showGraphRagResult(result);
+      this.display();
+    });
+    // 동기화만 실행 버튼
+    const syncButtonState = getGraphRagControlState({
+      enabled: rag.graphRagEnabled && (graphState?.staleFileCount ?? 0) > 0,
+      hasProvider: this.plugin.hasGraphRagRunner(),
+      hasModel: rag.graphRagModel.trim().length > 0,
+      isRunning: this.plugin.isGraphRagIndexing(),
+      totalCandidateFiles: graphState?.staleFileCount ?? 0,
+      failedFileCount: 0,
+    }).start;
+    this.createGraphRagActionButton(actions, '동기화만 실행', 'refresh-cw', syncButtonState, async () => {
+      if (!this.confirmGraphRagRemoteRun(cost)) return;
+      const result = await this.plugin.syncStaleGraphRag();
+      this.showGraphRagResult(result);
+      this.display();
+    });
+  }
+
+  /** GraphRAG 대시보드를 부분 업데이트합니다. */
+  updateGraphRagStats(): void {
+    if (!this.graphRagSectionContainer) return;
+    const graphState = this.plugin.graphRagStatus;
+    const rag = this.plugin.settings.rag;
+
+    const statusLabel =
+      graphState?.state ??
+      getGraphRagStatusLabel({
+        enabled: rag.graphRagEnabled,
+        hasGraphIndex: false,
+        isRunning: this.plugin.isGraphRagIndexing(),
+        isStale: false,
+        partialFailureCount: 0,
+      });
+    const presentation = getGraphRagStatusPresentation(statusLabel);
+
+    const cost = estimateGraphRagIndexingCost({
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+      averageChunksPerFile: 3,
+      averageTokensPerChunk: 900,
+      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:') ? 'local' : 'remote',
+    });
+
+    const controls = getGraphRagControlState({
+      enabled: rag.graphRagEnabled,
+      hasProvider: this.plugin.hasGraphRagRunner(),
+      hasModel: rag.graphRagModel.trim().length > 0,
+      isRunning: this.plugin.isGraphRagIndexing(),
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+      failedFileCount: graphState?.failedFileCount ?? 0,
+    });
+
+    const total = graphState?.totalCandidateFiles ?? 0;
+    const done = graphState?.graphEvidenceCount ?? 0;
+    const failed = graphState?.failedFileCount ?? 0;
+    const stale = graphState?.staleFileCount ?? 0;
+
+    if (this.graphRagSummaryBanner) {
+      const summaryText =
+        total > 0
+          ? `전체 ${total}개 파일 중 ${done}개 처리 완료${failed > 0 ? `, ${failed}개 실패` : ''}${stale > 0 ? `, ${stale}개 동기화 필요` : ''}`
+          : 'RAG 인덱싱 대상 파일이 없습니다.';
+      this.graphRagSummaryBanner.setText(summaryText);
+    }
+
+    if (this.graphRagStatusGrid) {
+      this.graphRagStatusGrid.empty();
+      this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '상태', presentation.label, presentation.description, presentation.tone);
+      this.createRagStatusItem(this.graphRagStatusGrid, '전체 파일', String(total));
+      this.createRagStatusItem(this.graphRagStatusGrid, '처리 완료', String(done));
+      this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '실패 파일', String(failed), failed > 0 ? '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.' : '실패한 파일이 없습니다.');
+      this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '동기화 필요', String(stale), stale > 0 ? '파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.' : '모든 파일이 최신 상태입니다.', stale > 0 ? 'warning' : 'success');
+      this.createRagStatusItem(this.graphRagStatusGrid, '비용/전송', cost.costLabel);
+    }
+
+    if (this.graphRagActionsGroup) {
+      this.graphRagActionsGroup.empty();
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '시작', 'play', controls.start, async () => {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.runGraphRagIndexing();
+        this.showGraphRagResult(result);
+        this.display();
+      });
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '취소', 'square', controls.cancel, () => {
+        this.plugin.cancelGraphRagIndexing();
+        new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
+        this.display();
+      });
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '이어서 실행', 'skip-forward', controls.resume, async () => {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.resumeGraphRagIndexing();
+        this.showGraphRagResult(result);
+        this.display();
+      });
+      const syncButtonState = getGraphRagControlState({
+        enabled: rag.graphRagEnabled && stale > 0,
+        hasProvider: this.plugin.hasGraphRagRunner(),
+        hasModel: rag.graphRagModel.trim().length > 0,
+        isRunning: this.plugin.isGraphRagIndexing(),
+        totalCandidateFiles: stale,
+        failedFileCount: 0,
+      }).start;
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '동기화만 실행', 'refresh-cw', syncButtonState, async () => {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.syncStaleGraphRag();
+        this.showGraphRagResult(result);
+        this.display();
+      });
+    }
+  }
+
+  private createGraphRagActionButton(
+    containerEl: HTMLElement,
+    label: string,
+    iconName: string,
+    state: { disabled: boolean; reason: string | null },
+    onClick: () => void | Promise<void>,
+  ): void {
+    const button = containerEl.createEl('button', { attr: { type: 'button' } });
+    setIcon(button, iconName);
+    button.createSpan({ text: label });
+    button.disabled = state.disabled;
+    button.title = state.reason ?? '';
+    button.addEventListener('click', () => {
+      void onClick();
+    });
+  }
+
+  private confirmGraphRagRemoteRun(cost: { costLabel: string }): boolean {
+    if (cost.costLabel !== '원격 LLM 본문 전송 발생') return true;
+    return confirm('원격 LLM 모델을 사용합니다. API 비용이 발생할 수 있습니다. 계속하시겠습니까?');
+  }
+
+  private showGraphRagResult(result: GraphRagIndexingResult | null): void {
+    if (!result) {
+      new Notice('GraphRAG 실행 결과를 가져올 수 없습니다.');
+      return;
+    }
+    if (result.cancelled) {
+      new Notice('GraphRAG 인덱싱이 취소되었습니다.');
+      return;
+    }
+    new Notice(
+      `GraphRAG 완료: ${result.processedFiles}개 처리, ${result.skippedFiles}개 스킵, ${result.failedFiles}개 실패`,
+    );
   }
 
   private getIndexingStatusLabel(): string {
@@ -3338,4 +3803,49 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.app.workspace.offref(this.mcpStatusEventRef);
     this.mcpStatusEventRef = null;
   }
+}
+
+export interface ChatModelOption {
+  value: string;
+  label: string;
+}
+
+export function buildChatModelOptions(
+  settings: SuperpowerInsideSettings,
+  options: {
+    currentModel: string;
+    includeEmpty?: boolean;
+    emptyLabel?: string;
+  },
+): ChatModelOption[] {
+  const result: ChatModelOption[] = [];
+  if (options.includeEmpty) {
+    result.push({ value: '', label: options.emptyLabel ?? '모델 선택 안 함' });
+  }
+  const providers = [
+    { key: 'openai', prefix: 'openai', config: settings.openai },
+    { key: 'claude', prefix: 'claude', config: settings.claude },
+    { key: 'ollama', prefix: 'ollama', config: settings.ollama },
+    { key: 'ollamaCloud', prefix: 'ollamaCloud', config: settings.ollamaCloud },
+    { key: 'openRouter', prefix: 'openRouter', config: settings.openRouter },
+  ] as const;
+  for (const { prefix, config } of providers) {
+    if (!config.enabled) continue;
+    for (const model of config.models) {
+      const value = `${prefix}:${model}`;
+      result.push({ value, label: `${prefix}: ${model}` });
+    }
+  }
+  for (const provider of settings.customOpenAIProviders) {
+    if (!provider.enabled) continue;
+    for (const model of provider.models) {
+      const value = `customOpenAI:${provider.id}:${model}`;
+      result.push({ value, label: `custom: ${provider.id}: ${model}` });
+    }
+  }
+  const current = options.currentModel.trim();
+  if (current && !result.some((o) => o.value === current)) {
+    result.push({ value: current, label: `${current} (현재 선택됨)` });
+  }
+  return result;
 }

@@ -144,6 +144,48 @@ export interface I18nKeys {
   bm25WeightDesc: string;
   bm25Guidance: string;
 
+  // RAG 상태 대시보드
+  ragStatusTotalDocs: string;
+  ragStatusHealthy: string;
+  ragStatusUpdateRequired: string;
+  ragStatusTotalVectors: string;
+  ragStatusCurrentState: string;
+  ragStatusAutoUpdate: string;
+
+  // RAG 배너
+  ragBannerNeedsUpdate: string;
+  ragBannerIndexing: string;
+  ragBannerLatest: string;
+  ragBannerNoDocs: string;
+  ragBannerPaused: string;
+
+  // RAG 버튼
+  btnUpdatePending: string;
+  btnReindexAll: string;
+  btnCancelIndexing: string;
+  btnResumeIndexing: string;
+  btnResetEmbeddings: string;
+
+  // RAG 필터
+  filterAll: string;
+  filterMissing: string;
+  filterStale: string;
+  filterUnknown: string;
+  loadMore: string;
+  loadAll: string;
+
+  // RAG 배치
+  batchAddExclude: string;
+  selectAll: string;
+  deselectAll: string;
+
+  // 연결 배지
+  connectionConnected: string;
+  connectionTesting: string;
+
+  // 진행률
+  progressLabel: string;
+
   // 채팅 탭
   chatTabTitle: string;
   toolbarTools: string;
@@ -289,6 +331,17 @@ export interface I18nKeys {
   // 탭
   tabGeneral: string;
   tabProviders: string;
+  // Providers tab common actions
+  collapseAll: string;
+  expandAll: string;
+  modelCountBadge: string;
+  noProviderEnabledBanner: string;
+  providerConnectionSection: string;
+  providerModelsSection: string;
+  providerActionsSection: string;
+  selectedOnly: string;
+  fetchModels: string;
+  testGeneration: string;
   tabRag: string;
   tabChat: string;
   tabMcp: string;
@@ -454,6 +507,48 @@ const ko: I18nKeys = {
   bm25Guidance:
     '💡 BM25는 키워드 기반 검색으로, 임베딩 유사도만으로는 잡아내기 어려운 한국어 키워드 매칭을 보완합니다. RAG 컨텍스트가 빈번하게 무관한 결과를 반환한다면 BM25를 활성화하고 가중치를 조정해보세요.',
 
+  // RAG 상태 대시보드
+  ragStatusTotalDocs: '전체 문서',
+  ragStatusHealthy: '정상',
+  ragStatusUpdateRequired: '업데이트 필요',
+  ragStatusTotalVectors: '전체 벡터',
+  ragStatusCurrentState: '현재 상태',
+  ragStatusAutoUpdate: '자동 업데이트',
+
+  // RAG 배너
+  ragBannerNeedsUpdate: '업데이트가 필요한 문서가 있습니다. RAG 검색 품질을 위해 필요 문서 업데이트를 실행하세요.',
+  ragBannerIndexing: '인덱싱이 실행 중입니다. 오래 걸리거나 Obsidian이 느려지면 중단할 수 있습니다.',
+  ragBannerLatest: '현재 인덱스는 최신입니다. 모델이나 저장소를 바꾼 경우에만 전체 재인덱싱이 필요합니다.',
+  ragBannerNoDocs: '현재 설정 기준으로 RAG 대상 문서가 없습니다. 제외 경로나 파일 형식을 확인하세요.',
+  ragBannerPaused: '성능 보호 때문에 잠시 대기 중입니다. 원인: {reason}',
+
+  // RAG 버튼
+  btnUpdatePending: '필요 문서 업데이트',
+  btnReindexAll: '전체 재인덱싱',
+  btnCancelIndexing: '인덱싱 중단',
+  btnResumeIndexing: '지금 재개',
+  btnResetEmbeddings: '임베딩 데이터 초기화',
+
+  // RAG 필터
+  filterAll: '전체',
+  filterMissing: '미인덱싱',
+  filterStale: '수정됨',
+  filterUnknown: '확인 필요',
+  loadMore: '10개 더 보기',
+  loadAll: '모두 펼치기',
+
+  // RAG 배치
+  batchAddExclude: '선택 항목 제외 목록에 추가',
+  selectAll: '전체 선택',
+  deselectAll: '선택 해제',
+
+  // 연결 배지
+  connectionConnected: '연결됨 ({count}개 모델)',
+  connectionTesting: '테스트 중...',
+
+  // 진행률
+  progressLabel: '진행률',
+
   // Chat
   chatTabTitle: 'AI 채팅',
   toolbarTools: '🔧 도구',
@@ -606,6 +701,17 @@ const ko: I18nKeys = {
   // Tabs
   tabGeneral: '일반',
   tabProviders: '프로바이더',
+  // Providers tab common actions
+  collapseAll: '모두 접기',
+  expandAll: '모두 펼치기',
+  modelCountBadge: '개 모델',
+  noProviderEnabledBanner: '채팅에 사용할 프로바이더를 하나 이상 활성화하고 모델을 선택하세요.',
+  providerConnectionSection: '연결 설정',
+  providerModelsSection: '모델 선택',
+  providerActionsSection: '테스트 및 동작',
+  selectedOnly: '선택됨만 보기',
+  fetchModels: '모델 검색',
+  testGeneration: '최소 생성 테스트',
   tabRag: 'RAG',
   tabChat: '채팅',
   tabMcp: 'MCP',
@@ -773,6 +879,48 @@ const en: I18nKeys = {
   bm25Guidance:
     '💡 BM25 complements embedding search by adding keyword matching, which helps with Korean text where semantic embeddings alone may miss relevant terms. If RAG frequently returns irrelevant results, enable BM25 and adjust the weight.',
 
+  // RAG Dashboard
+  ragStatusTotalDocs: 'Total Documents',
+  ragStatusHealthy: 'Healthy',
+  ragStatusUpdateRequired: 'Update Required',
+  ragStatusTotalVectors: 'Total Vectors',
+  ragStatusCurrentState: 'Current State',
+  ragStatusAutoUpdate: 'Auto Update',
+
+  // RAG Banner
+  ragBannerNeedsUpdate: 'Documents need updating. Run "Update Pending" for better RAG search quality.',
+  ragBannerIndexing: 'Indexing is running. You can cancel if Obsidian becomes slow.',
+  ragBannerLatest: 'Index is up to date. Full reindex is only needed if model or storage was changed.',
+  ragBannerNoDocs: 'No RAG-eligible documents found. Check exclusion paths or file types.',
+  ragBannerPaused: 'Paused for performance protection. Reason: {reason}',
+
+  // RAG Buttons
+  btnUpdatePending: 'Update Pending',
+  btnReindexAll: 'Reindex All',
+  btnCancelIndexing: 'Cancel Indexing',
+  btnResumeIndexing: 'Resume Now',
+  btnResetEmbeddings: 'Reset Embedding Data',
+
+  // RAG Filter
+  filterAll: 'All',
+  filterMissing: 'Missing',
+  filterStale: 'Stale',
+  filterUnknown: 'Unknown',
+  loadMore: 'Load 10 More',
+  loadAll: 'Load All',
+
+  // RAG Batch
+  batchAddExclude: 'Add Selected to Exclusions',
+  selectAll: 'Select All',
+  deselectAll: 'Deselect All',
+
+  // Connection Badge
+  connectionConnected: 'Connected ({count} models)',
+  connectionTesting: 'Testing...',
+
+  // Progress
+  progressLabel: 'Progress',
+
   // Chat
   chatTabTitle: 'AI Chat',
   toolbarTools: '🔧 Tools',
@@ -926,6 +1074,17 @@ const en: I18nKeys = {
   // Tabs
   tabGeneral: 'General',
   tabProviders: 'Providers',
+  // Providers tab common actions
+  collapseAll: 'Collapse All',
+  expandAll: 'Expand All',
+  modelCountBadge: ' models',
+  noProviderEnabledBanner: 'Enable at least one provider and select models to use in chat.',
+  providerConnectionSection: 'Connection',
+  providerModelsSection: 'Model Selection',
+  providerActionsSection: 'Test & Actions',
+  selectedOnly: 'Selected only',
+  fetchModels: 'Fetch Models',
+  testGeneration: 'Test Generation',
   tabRag: 'RAG',
   tabChat: 'Chat',
   tabMcp: 'MCP',
