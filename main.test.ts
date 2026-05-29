@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => {
@@ -142,6 +143,33 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     await plugin.loadSettings();
 
     expect(plugin.settings.mcpIncludeWslPath).toBe(false);
+  });
+
+  it('설정 로드 시 레거시 other 임베딩 프로바이더를 기본 OpenAI 임베딩으로 정규화한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp({
+      localSettings: {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          embeddingProvider: 'other',
+          embeddingModel: 'legacy-custom-embedding',
+        },
+      },
+    });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.rag.embeddingProvider).toBe('openai');
+    expect(plugin.settings.rag.embeddingModel).toBe('text-embedding-3-small');
   });
 
   it('localStorage 설정이 없으면 legacy data.json을 마이그레이션한다', async () => {

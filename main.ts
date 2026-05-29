@@ -1,4 +1,4 @@
-import { Plugin, Notice, Platform, type TFile } from 'obsidian';
+import { Plugin, Notice, Platform, TFile } from 'obsidian';
 import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
@@ -14,7 +14,9 @@ import {
 import {
   normalizeRagPerformanceTuningMode,
   resolveRagPerformanceSettings,
+  shouldRequireProviderApiKey,
   shouldShowProviderApiKey,
+  getGraphRagStatusPresentation,
 } from './src/rag/settings-display';
 import {
   createCustomOpenAIProvider,
@@ -40,6 +42,11 @@ import {
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
+import { GraphRagIndexingRunner, type GraphRagIndexingResult } from './src/graph/indexing-runner';
+import { GraphRagQueryEngine } from './src/graph/query-engine';
+import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
+import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
+import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/schema';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
@@ -70,8 +77,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
   private provider: LLMProvider | null = null;
   private vectorStore: VectorStore | null = null;
+  private knowledgeGraphStore: KnowledgeGraphStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
   ragEngine: RAGQueryEngine | null = null;
+  graphRagStatus: GraphRagStatusSummary | null = null;
+  private graphRagIndexingRunner: GraphRagIndexingRunner | null = null;
+  private graphRagAbortController: AbortController | null = null;
   private vaultIndexer: VaultIndexer | null = null;
   private ragIndexingScheduler: RAGIndexingScheduler | null = null;
   private ragPerformanceGuard: PerformanceGuard | null = null;
@@ -134,21 +145,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const rag = this.settings.rag;
           const providerKey = rag.embeddingProvider;
           let reason = 'RAG 인덱서가 초기화되지 않았습니다.';
-          if (providerKey !== 'other') {
-            const config = this.getEmbeddingProviderConfig(providerKey);
-            const providerLabel = this.getEmbeddingProviderLabel(providerKey);
-            const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-              ? 'customOpenAI'
-              : providerKey;
-            if (!config?.enabled) {
-              reason += ` Providers 탭에서 "${providerLabel}"의 Enabled 토글을 켜주세요.`;
-            } else if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
-              reason += ` Providers 탭에서 "${providerLabel}"의 API Key를 입력하세요.`;
-            } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
-              reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
-            } else {
-              reason += ` "${providerLabel}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
-            }
+          const config = this.getEmbeddingProviderConfig(providerKey);
+          const providerLabel = this.getEmbeddingProviderLabel(providerKey);
+          const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+            ? 'customOpenAI'
+            : providerKey;
+          if (!config?.enabled) {
+            reason += ` Providers 탭에서 "${providerLabel}"의 Enabled 토글을 켜주세요.`;
+          } else if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+            reason += ` Providers 탭에서 "${providerLabel}"의 API Key를 입력하세요.`;
+          } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+            reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
+          } else {
+            reason += ` "${providerLabel}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
           }
           new Notice(reason);
           return;
@@ -186,6 +195,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   onunload(): void {
     this.cancelRagIndexing();
+    this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
@@ -210,6 +220,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
   cancelRagIndexing(): void {
     this.ragIndexAbortController?.abort();
     this.ragIndexingScheduler?.cancel();
+  }
+
+  isGraphRagIndexing(): boolean {
+    return this.graphRagAbortController !== null || (this.graphRagIndexingRunner?.isRunning() ?? false);
+  }
+
+  cancelGraphRagIndexing(): void {
+    this.graphRagAbortController?.abort();
+  }
+
+  async runGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
+    return this.runGraphRagOperation(false);
+  }
+
+  async resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
+    return this.runGraphRagOperation(true);
+  }
+
+  hasGraphRagRunner(): boolean {
+    return this.graphRagIndexingRunner !== null;
   }
 
   resumeRagIndexing(): void {
@@ -246,6 +276,56 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private notifyRagStatsRefresh(): void {
     void this.computeAndEmitRagStats();
+    void this.computeAndEmitGraphRagStatus();
+  }
+
+  private async runGraphRagOperation(resumeFailed: boolean): Promise<GraphRagIndexingResult | null> {
+    if (this.graphRagAbortController || !this.graphRagIndexingRunner) {
+      return null;
+    }
+    const controller = new AbortController();
+    this.graphRagAbortController = controller;
+    await this.computeAndEmitGraphRagStatus();
+    try {
+      const result = resumeFailed
+        ? await this.graphRagIndexingRunner.resumeFailed({ signal: controller.signal })
+        : await this.graphRagIndexingRunner.run({ signal: controller.signal });
+      await this.computeAndEmitGraphRagStatus();
+      return result;
+    } finally {
+      if (this.graphRagAbortController === controller) {
+        this.graphRagAbortController = null;
+      }
+      await this.computeAndEmitGraphRagStatus();
+    }
+  }
+
+  async syncStaleGraphRag(): Promise<GraphRagIndexingResult | null> {
+    if (!this.graphRagIndexingRunner || this.graphRagAbortController) {
+      return null;
+    }
+    if (!this.graphRagStatus?.staleFileCount) {
+      return null;
+    }
+    const controller = new AbortController();
+    this.graphRagAbortController = controller;
+    await this.computeAndEmitGraphRagStatus();
+    try {
+      const result = await this.graphRagIndexingRunner.run({
+        signal: controller.signal,
+        onlyStaleFiles: true,
+        staleFilePaths: this.graphRagStatus.staleFilePaths,
+      });
+      await this.computeAndEmitGraphRagStatus();
+      const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
+      new Notice(`GraphRAG ${presentation.label}: ${presentation.description}`);
+      return result;
+    } finally {
+      if (this.graphRagAbortController === controller) {
+        this.graphRagAbortController = null;
+      }
+      await this.computeAndEmitGraphRagStatus();
+    }
   }
 
   private async computeAndEmitRagStats(): Promise<void> {
@@ -396,6 +476,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (!('embeddingModel' in migratedRag)) {
         migratedRag.embeddingModel = 'text-embedding-3-small';
       }
+      const embeddingProvider = migratedRag.embeddingProvider;
+      const isKnownEmbeddingProvider =
+        embeddingProvider === 'openai' ||
+        embeddingProvider === 'ollama' ||
+        embeddingProvider === 'openRouter' ||
+        (typeof embeddingProvider === 'string' &&
+          isCustomOpenAIEmbeddingProviderKey(embeddingProvider));
+      if (!isKnownEmbeddingProvider) {
+        migratedRag.embeddingProvider = DEFAULT_SETTINGS.rag.embeddingProvider;
+        migratedRag.embeddingModel = DEFAULT_SETTINGS.rag.embeddingModel;
+      }
       if (typeof migratedRag.autoUpdateEnabled !== 'boolean') {
         migratedRag.autoUpdateEnabled = false;
       }
@@ -418,6 +509,45 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
       if (typeof migratedRag.minScore !== 'number') {
         migratedRag.minScore = 0.5;
+      }
+      if (typeof migratedRag.annEnabled !== 'boolean') {
+        migratedRag.annEnabled = true;
+      }
+      if (typeof migratedRag.annClusterCount !== 'number') {
+        migratedRag.annClusterCount = 0;
+      }
+      if (typeof migratedRag.annProbeCount !== 'number') {
+        migratedRag.annProbeCount = 4;
+      }
+      if (typeof migratedRag.structuralGraphEnabled !== 'boolean') {
+        migratedRag.structuralGraphEnabled = true;
+      }
+      if (typeof migratedRag.ontologyEnabled !== 'boolean') {
+        migratedRag.ontologyEnabled = true;
+      }
+      if (typeof migratedRag.ontologyAutoMergeThreshold !== 'number') {
+        migratedRag.ontologyAutoMergeThreshold = 0.88;
+      }
+      if (typeof migratedRag.ontologyPendingMergeThreshold !== 'number') {
+        migratedRag.ontologyPendingMergeThreshold = 0.72;
+      }
+      if (typeof migratedRag.graphRagEnabled !== 'boolean') {
+        migratedRag.graphRagEnabled = false;
+      }
+      if (typeof migratedRag.graphRagModel !== 'string') {
+        migratedRag.graphRagModel = '';
+      }
+      if (typeof migratedRag.graphRagMaxFilesPerRun !== 'number') {
+        migratedRag.graphRagMaxFilesPerRun = 50;
+      }
+      if (!['auto', 'local', 'global', 'hybrid'].includes(String(migratedRag.graphRagQueryMode))) {
+        migratedRag.graphRagQueryMode = 'auto';
+      }
+      if (typeof migratedRag.graphRagAutoSyncEnabled !== 'boolean') {
+        migratedRag.graphRagAutoSyncEnabled = false;
+      }
+      if (typeof migratedRag.graphRagAutoSyncIntervalMin !== 'number') {
+        migratedRag.graphRagAutoSyncIntervalMin = 30;
       }
       if (typeof migratedRag.enableBM25 !== 'boolean') {
         migratedRag.enableBM25 = true;
@@ -533,6 +663,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.provider;
   }
 
+  get llmProvider(): LLMProvider | null {
+    return this.provider;
+  }
+
   private initProvider(): void {
     const defaultModel = this.settings.chat.defaultModel;
     if (!defaultModel) {
@@ -585,6 +719,45 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
+  private createProviderForModel(modelKey: string): LLMProvider | null {
+    const normalizedModelKey = modelKey.trim();
+    if (!normalizedModelKey) return null;
+    const parts = normalizedModelKey.split(':');
+    if (parts.length < 2) return null;
+    if (parts[0] === 'customOpenAI') {
+      if (parts.length < 3) return null;
+      const providerId = parts[1];
+      const modelName = parts.slice(2).join(':');
+      const customProvider = this.settings.customOpenAIProviders.find(
+        (provider) => provider.id === providerId,
+      );
+      if (
+        !customProvider?.enabled ||
+        !customProvider.models.includes(modelName) ||
+        !customProvider.baseUrl?.trim()
+      ) {
+        return null;
+      }
+      try {
+        return createCustomOpenAIProvider(customProvider, modelName);
+      } catch {
+        return null;
+      }
+    }
+    const providerKey = parts[0] as ProviderKey;
+    const modelName = parts.slice(1).join(':');
+    if (!['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'].includes(providerKey)) {
+      return null;
+    }
+    const config = this.settings[providerKey];
+    if (!config?.enabled || !config.models.includes(modelName)) return null;
+    try {
+      return createProvider(providerKey, config, modelName);
+    } catch {
+      return null;
+    }
+  }
+
   private getEmbeddingProviderConfig(
     providerKey: EmbeddingProviderKey,
   ): ProviderConfig | CustomOpenAIProviderConfig | null {
@@ -593,9 +766,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return (
         this.settings.customOpenAIProviders.find((provider) => provider.id === providerId) ?? null
       );
-    }
-    if (providerKey === 'other') {
-      return null;
     }
     return this.settings[providerKey as ProviderKey];
   }
@@ -615,7 +785,24 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     this.statsDebounceTimer = setTimeout(() => {
       void this.computeAndEmitRagStats();
+      void this.maybeAutoSyncGraphRag();
     }, 500);
+  }
+
+  private async maybeAutoSyncGraphRag(): Promise<void> {
+    const rag = this.settings.rag;
+    if (!rag.graphRagEnabled || !rag.graphRagAutoSyncEnabled) return;
+    if (this.isGraphRagIndexing()) return;
+    await this.computeAndEmitGraphRagStatus();
+    if (this.graphRagStatus?.state === 'stale') {
+      new Notice('GraphRAG 자동 동기화 시작...');
+      const result = await this.syncStaleGraphRag();
+      if (result) {
+        new Notice(
+          `GraphRAG 자동 동기화 완료: ${result.processedFiles}개 처리, ${result.failedFiles}개 실패`,
+        );
+      }
+    }
   }
 
 
@@ -632,14 +819,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const rag = this.settings.rag;
     const providerKey = rag.embeddingProvider;
 
-    // Resolve config for known providers (use provider tab settings)
-    let config: ProviderConfig | CustomOpenAIProviderConfig | null = null;
-    if (providerKey !== 'other') {
-      config = this.getEmbeddingProviderConfig(providerKey);
-      if (!config?.enabled) {
-        console.warn(`[Superpower Inside] RAG embedding provider "${providerKey}" is disabled.`);
-        return;
-      }
+    const config = this.getEmbeddingProviderConfig(providerKey);
+    if (!config?.enabled) {
+      console.warn(`[Superpower Inside] RAG embedding provider "${providerKey}" is disabled.`);
+      return;
     }
 
     let baseUrl: string | undefined;
@@ -647,14 +830,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
       ? 'customOpenAI'
       : providerKey;
-    if (config && providerKey !== 'other' && shouldShowProviderApiKey(apiKeyVisibilityKey)) {
+    if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
       apiKey = config.apiKey;
-      // config에 baseUrl이 설정되어 있으면 우선 사용
       if (config.baseUrl) {
         baseUrl = config.baseUrl;
       }
     }
-    // config에 baseUrl이 없는 경우에만 providerKey 기본값 사용
     if (!baseUrl) {
       if (providerKey === 'openai') {
         baseUrl = 'https://api.openai.com';
@@ -670,7 +851,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (providerKey === 'ollama') {
       rawProvider = new OllamaEmbeddingProvider(baseUrl, rag.embeddingModel, apiKey);
     } else {
-      // openai, openRouter, other all use OpenAI-compatible endpoint
       rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel);
     }
 
@@ -681,6 +861,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
       rag.vectorStoreType === 'indexeddb'
         ? new IndexedDbVectorStore()
         : new JsonFileVectorStore(this.app.vault.adapter, '.superpower-inside/vectors.json');
+    this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(this.createIndexedDbName('KnowledgeGraph'));
+    await this.computeAndEmitGraphRagStatus();
 
     // BM25 index
     let bm25Index: JsonFileBM25Index | undefined;
@@ -691,6 +873,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
       );
       await bm25Index.load();
     }
+    const structuralMetadataContext = this.app.metadataCache
+      ? {
+          resolvedLinks: this.app.metadataCache.resolvedLinks,
+          getFileByPath: (path: string) => {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            return file instanceof TFile ? file : null;
+          },
+          getFileCache: (file: TFile) => this.app.metadataCache.getFileCache(file),
+          getFirstLinkpathDest: (linkpath: string, sourcePath: string) =>
+            this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath),
+        }
+      : undefined;
+
+    const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+    const graphRagEnabledForQuery =
+      rag.graphRagEnabled &&
+      (this.graphRagStatus?.state === 'ready' || this.graphRagStatus?.state === 'partial');
+    const graphRagQueryEngine =
+      graphRagEnabledForQuery && this.knowledgeGraphStore
+        ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
+            queryMode: rag.graphRagQueryMode,
+          })
+        : undefined;
 
     // RAG engine
     this.ragEngine = new RAGQueryEngine(
@@ -699,6 +904,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
       bm25Index,
       rag.bm25Weight,
       rag.minScore,
+      {
+        annEnabled: rag.annEnabled,
+        annClusterCount: rag.annClusterCount,
+        annProbeCount: rag.annProbeCount,
+        structuralGraphEnabled: rag.structuralGraphEnabled,
+        structuralMetadataContext,
+        graphRagEnabled: graphRagEnabledForQuery,
+        graphRagQueryEngine,
+      },
     );
 
     // Indexer
@@ -710,6 +924,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.settings.chat,
       bm25Index,
     );
+
+    const graphProvider =
+      rag.graphRagEnabled && rag.graphRagModel.trim()
+        ? this.createProviderForModel(rag.graphRagModel)
+        : null;
+    this.graphRagIndexingRunner =
+      graphProvider && this.knowledgeGraphStore
+        ? new GraphRagIndexingRunner({
+            vectorStore: this.vectorStore,
+            graphStore: this.knowledgeGraphStore,
+            provider: graphProvider,
+            ontologySchema,
+            extractionModelKey: rag.graphRagModel,
+            maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+            entityResolverOptions: {
+              autoMergeThreshold: rag.ontologyAutoMergeThreshold,
+              pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
+            },
+          })
+        : null;
+    await this.computeAndEmitGraphRagStatus();
 
     const performanceSettings = resolveRagPerformanceSettings(rag);
     this.ragPerformanceGuard = new PerformanceGuard({
@@ -780,6 +1015,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private clearRAG(): void {
     this.cancelRagIndexing();
+    this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
@@ -790,8 +1026,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.ragStatusTimer = null;
     }
     this.vectorStore = null;
+    this.knowledgeGraphStore = null;
     this.embeddingProvider = null;
     this.ragEngine = null;
+    this.graphRagIndexingRunner = null;
+    this.graphRagStatus = null;
     this.vaultIndexer = null;
     this.ragIndexingScheduler = null;
     this.ragPerformanceGuard = null;
@@ -877,10 +1116,40 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     // 초기 1회 즉시 실행
     void this.computeAndEmitRagStats();
+    void this.computeAndEmitGraphRagStatus();
     // 30초 간격 갱신
     this.ragStatusTimer = setInterval(() => {
       void this.computeAndEmitRagStats();
+      void this.computeAndEmitGraphRagStatus();
     }, 30_000);
+  }
+
+  private async computeAndEmitGraphRagStatus(): Promise<void> {
+    if (!this.vectorStore || !this.knowledgeGraphStore) {
+      this.graphRagStatus = null;
+      return;
+    }
+    const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+    const schemaErrors = validateOntologySchema(ontologySchema);
+    this.graphRagStatus = await calculateGraphRagStatus({
+      ragConfig: this.settings.rag,
+      graphStore: this.knowledgeGraphStore,
+      vectorStore: this.vectorStore,
+      isRunning: this.isGraphRagIndexing(),
+      schemaErrors,
+    });
+    const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
+    this.refreshBus?.emit('rag', {
+      status: this.graphRagStatus.state === 'ready' ? 'success' : 'partial',
+      detail: `GraphRAG ${presentation.label}: ${presentation.description}`,
+    });
+  }
+
+  private createIndexedDbName(kind: string): string {
+    const vault = this.app.vault as { getName?: () => string };
+    const vaultName = vault.getName ? vault.getName() : 'default-vault';
+    const pluginId = this.manifest?.id ?? 'superpower-inside';
+    return `${pluginId}:${vaultName}:${kind}`.replace(/[^a-zA-Z0-9:_-]/g, '_');
   }
 
   setupAutoUpdate(): void {
