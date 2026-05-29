@@ -460,24 +460,6 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
   }
 }
 
-class ManualEmbeddingValidator implements EmbeddingConnectionValidator {
-  validateConnection(modelId: string): Promise<ValidationResult> {
-    return Promise.resolve({
-      valid: true,
-      models: [modelId],
-      error: 'Custom endpoint — manual validation only',
-    });
-  }
-
-  testEmbedding(): Promise<ValidationResult> {
-    return Promise.resolve({
-      valid: false,
-      models: [],
-      error: 'Custom endpoint는 자동 임베딩 생성 테스트를 지원하지 않습니다.',
-    });
-  }
-}
-
 function createProviderValidator(
   key: ProviderValidationKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
@@ -512,9 +494,6 @@ function createEmbeddingValidator(
   providerKey: EmbeddingProviderKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): EmbeddingConnectionValidator | null {
-  if (providerKey === 'other') {
-    return new ManualEmbeddingValidator();
-  }
   if (providerKey === 'ollama') {
     return new OllamaEmbeddingValidator(config);
   }
