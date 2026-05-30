@@ -23,7 +23,7 @@ import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from
 import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
 import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
-import type { GraphRagIndexingResult } from './graph/indexing-runner';
+import type { GraphRagCommunityBuildResult, GraphRagIndexingResult } from './graph/indexing-runner';
 import {
   buildEmbeddingModelOptions,
   getRagIndexingControlState,
@@ -394,7 +394,10 @@ export interface PluginLike {
   app: App;
   settings: SuperpowerInsideSettings;
   graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
-  saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }>;
+  knowledgeGraphStore: import('./graph/store').KnowledgeGraphStore | null;
+  vectorStore: import('./rag/store').VectorStore | null;
+  saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{ success: boolean; mcpErrors?: string[] }>;
+  saveSettingsLight(): Promise<void>;
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
   isGraphRagIndexing(): boolean;
@@ -402,7 +405,9 @@ export interface PluginLike {
   runGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
   resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
   syncStaleGraphRag(): Promise<GraphRagIndexingResult | null>;
+  buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null>;
   hasGraphRagRunner(): boolean;
+  openGraphRagView(): void;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   isRagIndexing(): boolean;
@@ -416,6 +421,7 @@ export interface PluginLike {
   nextAutoUpdateAt?: number | null;
   lastAutoUpdateSkippedReason?: string | null;
   lastAutoUpdateResult?: IndexingResult | null;
+  refreshBus: import('./utils/refresh-bus').RefreshBus;
 }
 
 // 탭 타입 및 설정
@@ -445,7 +451,6 @@ type ProviderSettingsTarget =
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
-  private graphRagModelRefresh: RefreshAction | null = null;
 
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
@@ -458,12 +463,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
   private pendingEmbeddingModel: string | null = null;
+  private isRebuildingEmbeddingSection = false;
 
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
-  private ragStatusRefresh: RefreshAction | null = null;
   private mcpStatusRefresh: RefreshAction | null = null;
-  private modelListRefresh: RefreshAction | null = null;
-  private excludeCountRefresh: RefreshAction | null = null;
+  private excludeCountRenderer: (() => void) | null = null;
   // RAG 상태 패널의 DOM 참조 (부분 업데이트용)
   private ragStatusGrid: HTMLElement | null = null;
   private ragStatusTimestamp: HTMLElement | null = null;
@@ -479,6 +483,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private graphRagStatusGrid: HTMLElement | null = null;
   private graphRagActionsGroup: HTMLElement | null = null;
   private graphRagSectionContainer: HTMLElement | null = null;
+  private graphRagProgressBanner: HTMLElement | null = null;
+  private graphRagModelSelectEl: HTMLSelectElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
 
@@ -517,18 +523,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private async saveSettingsWithFeedback(): Promise<void> {
     try {
-      const result = await this.plugin.saveSettings();
-      if (result.success) {
-        new Notice(t('autoSaveSuccessNotice'));
-        return;
-      }
-
-      if (result.mcpErrors && result.mcpErrors.length > 0) {
-        new Notice(t('autoSaveMcpFailedNotice', { count: result.mcpErrors.length }), 7000);
-        return;
-      }
-
-      new Notice(t('autoSaveFailedNotice', { message: t('autoSaveUnknownError') }), 7000);
+      await this.plugin.saveSettingsLight();
+      new Notice(t('autoSaveSuccessNotice'));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(t('autoSaveFailedNotice', { message }), 7000);
@@ -538,14 +534,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   hide(): void {
     this.unregisterMcpStatusEvent();
     // RefreshAction 인스턴스 정리
-    this.ragStatusRefresh?.detach();
-    this.ragStatusRefresh = null;
     this.mcpStatusRefresh?.detach();
     this.mcpStatusRefresh = null;
-    this.modelListRefresh?.detach();
-    this.modelListRefresh = null;
-    this.excludeCountRefresh?.detach();
-    this.excludeCountRefresh = null;
+    this.excludeCountRenderer = null;
     // RefreshBus 구독 해제
     for (const unsub of this.refreshBusUnsubscribers) {
       unsub();
@@ -576,13 +567,35 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // RefreshBus 구독: RAG 이벤트 수신 시 부분 업데이트
-    const plugin = this.plugin as unknown as { refreshBus?: { on: (domain: string, handler: (result: { status: string; detail?: string }) => void) => () => void } };
-    if (plugin.refreshBus) {
+    // RefreshBus 구독: 이벤트 수신 시 부분 업데이트
+    const bus = this.plugin.refreshBus;
+    if (bus) {
       this.refreshBusUnsubscribers.push(
-        plugin.refreshBus.on('rag', (result) => {
+        bus.on('rag', (result) => {
           this.updateRagStats(result.detail);
           this.updateGraphRagStats();
+          this.refreshStatsGrid();
+          this.refreshFileTypeSummary();
+        }),
+      );
+      this.refreshBusUnsubscribers.push(
+        bus.on('graph-progress', () => {
+          this.updateGraphRagStats();
+        }),
+      );
+      this.refreshBusUnsubscribers.push(
+        bus.on('models', () => {
+          this.refreshRagTab();
+        }),
+      );
+      this.refreshBusUnsubscribers.push(
+        bus.on('mcp', () => {
+          this.refreshMcpStatusSection();
+        }),
+      );
+      this.refreshBusUnsubscribers.push(
+        bus.on('exclude-counts', () => {
+          this.excludeCountRenderer?.();
         }),
       );
     }
@@ -666,6 +679,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     if (tabId === 'general') {
       this.refreshGeneralTab();
+    } else if (tabId === 'rag') {
+      this.refreshRagTab();
     }
   }
 
@@ -729,6 +744,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     pluginWithBus.refreshBus?.emit('models', { status: 'success' });
   }
 
+  private refreshRagTab(): void {
+    const ragPanel = this.tabPanels.get('rag');
+    if (!ragPanel) return;
+
+    if (this.graphRagModelSelectEl) {
+      const modelOptions = buildChatModelOptions(this.plugin.settings, {
+        currentModel: this.plugin.settings.rag.graphRagModel,
+        includeEmpty: true,
+        emptyLabel: '모델 선택 안 함',
+      });
+      this.graphRagModelSelectEl.empty();
+      for (const option of modelOptions) {
+        const opt = this.graphRagModelSelectEl.createEl('option');
+        opt.value = option.value;
+        opt.text = option.label;
+      }
+      const selectedModel = this.plugin.settings.rag.graphRagModel.trim();
+      this.graphRagModelSelectEl.value = modelOptions.some((option) => option.value === selectedModel)
+        ? selectedModel
+        : '';
+    }
+  }
+
   private buildGeneralTab(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName(t('language'))
@@ -763,7 +801,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoSaveEnabled).onChange(async (value) => {
           this.plugin.settings.autoSaveEnabled = value;
-          await this.saveSettingsWithFeedback();
+          await this.plugin.saveSettingsLight();
         }),
       );
 
@@ -827,22 +865,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.plugin.settings.chat.defaultModel = value;
           this.debouncedSave();
         });
-      })
-      .addButton((button) => {
-        button.setButtonText('새로고침');
-        button.setTooltip(t('refreshModelList'));
-        // RefreshAction을 버튼에 연결
-        this.modelListRefresh = new RefreshAction({
-          action: (_signal) => {
-            void _signal;
-            this.repopulateDefaultModelDropdown();
-            return Promise.resolve({ status: 'success' } as const);
-          },
-          loadingText: '새로고침 중...',
-          spinnerClass: 'spinning',
-          successNotice: false,
-        });
-        this.modelListRefresh.attach(button.buttonEl);
       });
   }
 
@@ -929,11 +951,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const header = section.createDiv({ cls: 'superpower-inside-rag-status-header' });
     header.createDiv({ cls: 'superpower-inside-rag-section-title', text: 'RAG 상태' });
-    const refreshButton = header.createEl('button', {
-      cls: 'superpower-inside-rag-status-refresh-btn',
-      text: '새로고침',
-      attr: { type: 'button' },
-    });
 
     const rag = this.plugin.settings.rag;
     const statusGrid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
@@ -958,31 +975,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.ragStatusDetails = detailsEl;
     this.ragStatusTimestamp = timestampEl;
 
-    this.ragStatusRefresh = new RefreshAction({
-      action: async (signal) => {
-        try {
-          const status = await this.getRagStatus(signal);
-          if (status) {
-            timestampEl.setText(
-              `마지막 상태 계산: ${new Date(status.lastCalculatedAt).toLocaleString()}`,
-            );
-            return { status: 'success' };
-          }
-          timestampEl.setText(
-            'RAG 인덱서가 초기화되지 않아 상태를 계산할 수 없습니다.',
-          );
-          return { status: 'error', detail: '인덱서 미초기화' };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          timestampEl.setText(`상태를 불러오지 못했습니다: ${msg}`);
-          return { status: 'error', detail: msg };
-        }
-      },
-      loadingText: '새로고침 중...',
-      spinnerClass: 'spinning',
-    });
-    this.ragStatusRefresh.attach(refreshButton);
-    // 자동 갱신은 백그라운드 타이머에서 처리
+    // 자동 갱신은 백그라운드 타이머/이벤트에서 처리
     void this.updateRagStats();
   }
 
@@ -1047,6 +1040,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       failedFileCount: graphState?.failedFileCount ?? 0,
     });
 
+    // 진행 중 배너 (기본 숨김)
+    const progressBanner = section.createDiv({ cls: 'superpower-inside-rag-graph-progress-banner' });
+    progressBanner.style.display = 'none';
+    progressBanner.createDiv({ cls: 'superpower-inside-spinner' });
+    const progressText = progressBanner.createSpan({ text: '' });
+    progressText.id = 'superpower-inside-graph-progress-text';
+    this.graphRagProgressBanner = progressBanner;
+
     // 요약 배너
     const total = graphState?.totalCandidateFiles ?? 0;
     const done = graphState?.graphEvidenceCount ?? 0;
@@ -1068,6 +1069,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.createRagStatusItemWithDesc(grid, '실패 파일', String(failed), failed > 0 ? '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.' : '실패한 파일이 없습니다.');
     this.createRagStatusItemWithDesc(grid, '동기화 필요', String(stale), stale > 0 ? '파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.' : '모든 파일이 최신 상태입니다.', stale > 0 ? 'warning' : 'success');
     this.createRagStatusItem(grid, '비용/전송', cost.costLabel);
+
+    const runnerRef = (this.plugin as unknown as { graphRagIndexingRunner?: { getLastCommunityResult(): { communityCount: number; modularity: number } | null } | null }).graphRagIndexingRunner;
+    const lastCommunity = runnerRef?.getLastCommunityResult();
+    if (lastCommunity) {
+      this.createRagStatusItemWithDesc(grid, '커뮤니티', String(lastCommunity.communityCount), `modularity ${lastCommunity.modularity.toFixed(3)}`);
+    }
 
     // 접이식 비용 상세
     const costToggle = section.createDiv({
@@ -1118,36 +1125,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         ? selectedModel
         : '';
     };
-    let graphRagModelSelectEl: HTMLSelectElement | null = null;
-
     new Setting(section)
       .setName('GraphRAG 모델')
       .setDesc('entity/relation/claim 추출에 사용할 모델입니다. 비워두면 실행 버튼이 비활성화됩니다.')
       .addDropdown((dropdown) => {
-        graphRagModelSelectEl = dropdown.selectEl;
+        this.graphRagModelSelectEl = dropdown.selectEl;
         renderGraphRagModelOptions(dropdown.selectEl);
         dropdown.onChange((value) => {
           this.plugin.settings.rag.graphRagModel = value.trim();
           this.debouncedSave();
         });
-      })
-      .addButton((button) => {
-        button.setButtonText('새로고침');
-        button.setTooltip(t('refreshModelList'));
-        this.graphRagModelRefresh?.detach();
-        this.graphRagModelRefresh = new RefreshAction({
-          action: (_signal) => {
-            void _signal;
-            if (graphRagModelSelectEl) {
-              renderGraphRagModelOptions(graphRagModelSelectEl);
-            }
-            return Promise.resolve({ status: 'success' } as const);
-          },
-          loadingText: '새로고침 중...',
-          spinnerClass: 'spinning',
-          successNotice: false,
-        });
-        this.graphRagModelRefresh.attach(button.buttonEl);
       });
 
     new Setting(section)
@@ -1249,18 +1236,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       if (!this.confirmGraphRagRemoteRun(cost)) return;
       const result = await this.plugin.runGraphRagIndexing();
       this.showGraphRagResult(result);
-      this.display();
+      this.updateGraphRagStats();
     });
     this.createGraphRagActionButton(actions, '취소', 'square', controls.cancel, () => {
       this.plugin.cancelGraphRagIndexing();
       new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
-      this.display();
+      this.updateGraphRagStats();
     });
     this.createGraphRagActionButton(actions, '이어서 실행', 'skip-forward', controls.resume, async () => {
       if (!this.confirmGraphRagRemoteRun(cost)) return;
       const result = await this.plugin.resumeGraphRagIndexing();
       this.showGraphRagResult(result);
-      this.display();
+      this.updateGraphRagStats();
     });
     // 동기화만 실행 버튼
     const syncButtonState = getGraphRagControlState({
@@ -1275,13 +1262,56 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       if (!this.confirmGraphRagRemoteRun(cost)) return;
       const result = await this.plugin.syncStaleGraphRag();
       this.showGraphRagResult(result);
-      this.display();
+      this.updateGraphRagStats();
+    });
+    const communityButtonState = {
+      disabled: !rag.graphRagEnabled || !this.plugin.hasGraphRagRunner() || !rag.graphRagModel.trim() || this.plugin.isGraphRagIndexing(),
+      reason: !rag.graphRagEnabled ? 'GraphRAG가 비활성화되어 있습니다.'
+        : !this.plugin.hasGraphRagRunner() ? 'GraphRAG Runner가 없습니다.'
+          : !rag.graphRagModel.trim() ? 'GraphRAG 모델이 설정되지 않았습니다.'
+            : this.plugin.isGraphRagIndexing() ? '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.'
+              : null,
+    };
+    this.createGraphRagActionButton(actions, '커뮤니티 빌드', 'git-fork', communityButtonState, async () => {
+      if (!this.confirmGraphRagRemoteRun(cost)) return;
+      const result = await this.plugin.buildGraphRagCommunities();
+      if (result) {
+        new Notice(`커뮤니티 빌드 완료: ${result.communityCount}개 커뮤니티, modularity ${result.modularity.toFixed(3)} (${(result.durationMs / 1000).toFixed(1)}초)`);
+      }
+      this.updateGraphRagStats();
+    });
+    const hasData = done > 0;
+    const detailButtonState = { disabled: !hasData, reason: hasData ? null : '추출된 데이터가 없습니다.' };
+    this.createGraphRagActionButton(actions, '상세 보기', 'search', detailButtonState, () => {
+      this.plugin.openGraphRagView();
     });
   }
 
   /** GraphRAG 대시보드를 부분 업데이트합니다. */
   updateGraphRagStats(): void {
     if (!this.graphRagSectionContainer) return;
+
+    // 진행 중 배너 업데이트
+    if (this.graphRagProgressBanner) {
+      const progressText = this.graphRagProgressBanner.querySelector('#superpower-inside-graph-progress-text');
+      if (this.plugin.isGraphRagIndexing()) {
+        // runner의 progress 접근
+        const runner = (this.plugin as unknown as { graphRagIndexingRunner?: { getProgress(): { processedFiles: number; failedFiles: number; selectedFiles: number; currentFile: string | null } } | null }).graphRagIndexingRunner;
+        if (runner) {
+          const progress = runner.getProgress();
+          const done = progress.processedFiles + progress.failedFiles;
+          const pct = progress.selectedFiles > 0 ? Math.round((done / progress.selectedFiles) * 100) : 0;
+          const fileInfo = progress.currentFile ? ` (${progress.currentFile.split('/').pop() ?? progress.currentFile})` : '';
+          if (progressText) {
+            progressText.setText(`${done}/${progress.selectedFiles} 파일 처리 중${fileInfo} — ${pct}%`);
+          }
+          this.graphRagProgressBanner.style.display = '';
+        }
+      } else {
+        this.graphRagProgressBanner.style.display = 'none';
+      }
+    }
+
     const graphState = this.plugin.graphRagStatus;
     const rag = this.plugin.settings.rag;
 
@@ -1336,26 +1366,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '실패 파일', String(failed), failed > 0 ? '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.' : '실패한 파일이 없습니다.');
       this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '동기화 필요', String(stale), stale > 0 ? '파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.' : '모든 파일이 최신 상태입니다.', stale > 0 ? 'warning' : 'success');
       this.createRagStatusItem(this.graphRagStatusGrid, '비용/전송', cost.costLabel);
+      const runnerInfo = (this.plugin as unknown as { graphRagIndexingRunner?: { getLastCommunityResult(): { communityCount: number; modularity: number } | null } | null }).graphRagIndexingRunner;
+      const lastCommunity = runnerInfo?.getLastCommunityResult();
+      if (lastCommunity) {
+        this.createRagStatusItemWithDesc(this.graphRagStatusGrid, '커뮤니티', String(lastCommunity.communityCount), `modularity ${lastCommunity.modularity.toFixed(3)}`);
+      }
     }
-
     if (this.graphRagActionsGroup) {
       this.graphRagActionsGroup.empty();
       this.createGraphRagActionButton(this.graphRagActionsGroup, '시작', 'play', controls.start, async () => {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.runGraphRagIndexing();
         this.showGraphRagResult(result);
-        this.display();
+        this.updateGraphRagStats();
       });
       this.createGraphRagActionButton(this.graphRagActionsGroup, '취소', 'square', controls.cancel, () => {
         this.plugin.cancelGraphRagIndexing();
         new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
-        this.display();
+        this.updateGraphRagStats();
       });
       this.createGraphRagActionButton(this.graphRagActionsGroup, '이어서 실행', 'skip-forward', controls.resume, async () => {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.resumeGraphRagIndexing();
         this.showGraphRagResult(result);
-        this.display();
+        this.updateGraphRagStats();
       });
       const syncButtonState = getGraphRagControlState({
         enabled: rag.graphRagEnabled && stale > 0,
@@ -1369,7 +1403,28 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.syncStaleGraphRag();
         this.showGraphRagResult(result);
-        this.display();
+        this.updateGraphRagStats();
+      });
+      const communityButtonState = {
+        disabled: !rag.graphRagEnabled || !this.plugin.hasGraphRagRunner() || !rag.graphRagModel.trim() || this.plugin.isGraphRagIndexing(),
+        reason: !rag.graphRagEnabled ? 'GraphRAG가 비활성화되어 있습니다.'
+          : !this.plugin.hasGraphRagRunner() ? 'GraphRAG Runner가 없습니다.'
+            : !rag.graphRagModel.trim() ? 'GraphRAG 모델이 설정되지 않았습니다.'
+              : this.plugin.isGraphRagIndexing() ? '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.'
+                : null,
+      };
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '커뮤니티 빌드', 'git-fork', communityButtonState, async () => {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.buildGraphRagCommunities();
+        if (result) {
+          new Notice(`커뮤니티 빌드 완료: ${result.communityCount}개 커뮤니티, modularity ${result.modularity.toFixed(3)} (${(result.durationMs / 1000).toFixed(1)}초)`);
+        }
+        this.updateGraphRagStats();
+      });
+      const hasDetailData = done > 0;
+      const detailState = { disabled: !hasDetailData, reason: hasDetailData ? null : '추출된 데이터가 없습니다.' };
+      this.createGraphRagActionButton(this.graphRagActionsGroup, '상세 보기', 'search', detailState, () => {
+        this.plugin.openGraphRagView();
       });
     }
   }
@@ -1410,6 +1465,49 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
   }
 
+  /** RefreshBus 'rag' 이벤트 수신 시 인덱스 통계 그리드를 갱신합니다. */
+  private refreshStatsGrid(): void {
+    const ragTab = this.tabPanels.get('rag');
+    if (!ragTab) return;
+    const grid = ragTab.querySelector<HTMLElement>('.superpower-inside-stats-grid');
+    if (!grid) return;
+    void this.renderStats(grid);
+  }
+
+  /** RefreshBus 'rag' 이벤트 수신 시 파일 형식 요약을 갱신합니다. */
+  private refreshFileTypeSummary(): void {
+    const ragTab = this.tabPanels.get('rag');
+    if (!ragTab) return;
+    const contentEl = ragTab.querySelector<HTMLElement>('.superpower-inside-rag-file-types');
+    if (!contentEl) return;
+    void (async () => {
+      contentEl.empty();
+      contentEl.setText('파일 형식을 계산하는 중...');
+      try {
+        const summary = await getRagFileTypeSummary(
+          this.app.vault,
+          this.plugin.settings.rag,
+          this.plugin.settings.chat,
+        );
+        contentEl.empty();
+        this.renderTargetFileTypeCounts(contentEl, summary.targetTypes);
+        this.renderExcludeRecommendations(contentEl, summary.excludeRecommendations);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        contentEl.setText(`파일 형식을 불러오지 못했습니다: ${msg}`);
+      }
+    })();
+  }
+
+  /** RefreshBus 'mcp' 이벤트 수신 시 MCP 상태 섹션을 갱신합니다. */
+  private refreshMcpStatusSection(): void {
+    const mcpTab = this.tabPanels.get('mcp');
+    if (!mcpTab) return;
+    const statusSection = mcpTab.querySelector<HTMLElement>('.superpower-inside-mcp-status');
+    if (!statusSection) return;
+    this.renderMCPStatus(statusSection);
+  }
+
   private getIndexingStatusLabel(): string {
     const plugin = this.plugin as unknown as {
       ragIndexingStatus?: { running: boolean; phase: string; queuedFiles: number; lastResult?: { indexed: number; vectors: number } | null };
@@ -1426,7 +1524,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    const ANCHOR_CLS = 'si-embedding-anchor';
+    const WARNING_CLS = 'si-embedding-warning';
+    const MODEL_DESC_CLS = 'si-embedding-model-desc';
+
+    // Phase 1: anchor-based position preservation — stay between Controls and Exclude
+    const existingAnchor = containerEl.querySelector(
+      `:scope > .${ANCHOR_CLS}`,
+    );
+
+    let section: HTMLElement;
+    if (existingAnchor) {
+      section = createDiv({ cls: 'superpower-inside-rag-section' });
+      const oldSection = existingAnchor.previousElementSibling;
+      if (oldSection?.classList.contains('superpower-inside-rag-section')) {
+        oldSection.remove();
+      }
+      existingAnchor.replaceWith(section);
+    } else {
+      section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    }
+
+    // Place new anchor after section for future rebuilds
+    const newAnchor = createDiv({ cls: ANCHOR_CLS });
+    section.after(newAnchor);
+
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: '임베딩 프로바이더' });
 
     const rag = this.plugin.settings.rag;
@@ -1451,7 +1573,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
 
     if (isPending) {
-      const warningEl = section.createDiv({ cls: 'superpower-inside-settings-warning' });
+      const warningEl = section.createDiv({ cls: `${WARNING_CLS} superpower-inside-settings-warning` });
       warningEl.setText(
         '⚠️ 임베딩 프로바이더/모델 변경은 자동으로 저장되지 않습니다. "저장" 버튼을 클릭해야 적용됩니다. 변경 시 기존 임베딩 데이터가 삭제되지 않습니다. 새 모델을 모든 데이터에 적용하려면 "전체 재인덱싱"을 실행하세요.',
       );
@@ -1470,6 +1592,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }
         dropdown.setValue(effectiveProvider);
         dropdown.onChange((value) => {
+          if (this.isRebuildingEmbeddingSection) return;
           const nextProvider = value as EmbeddingProviderKey;
           this.pendingEmbeddingProvider = nextProvider;
           if (nextProvider === 'other') {
@@ -1485,8 +1608,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             );
             this.pendingEmbeddingModel = nextModels[0]?.id ?? '';
           }
-          section.remove();
-          this.buildEmbeddingProviderSection(containerEl);
+          this.isRebuildingEmbeddingSection = true;
+          try {
+            this.buildEmbeddingProviderSection(containerEl);
+          } finally {
+            this.isRebuildingEmbeddingSection = false;
+          }
         });
       });
 
@@ -1499,6 +1626,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             .setValue(effectiveModel)
             .setPlaceholder('예: my-custom-model')
             .onChange((value) => {
+              if (this.isRebuildingEmbeddingSection) return;
               this.pendingEmbeddingModel = value.trim();
             }),
         );
@@ -1512,36 +1640,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }
           dropdown.setValue(effectiveModel);
           dropdown.onChange((value) => {
+            if (this.isRebuildingEmbeddingSection) return;
             this.pendingEmbeddingModel = value;
-            section.remove();
-            this.buildEmbeddingProviderSection(containerEl);
+            // Partial update: model description only
+            const descEl = section.querySelector(`.${MODEL_DESC_CLS}`);
+            const selectedModel = modelOptions.find((m) => m.id === value);
+            if (descEl) {
+              descEl.setText(selectedModel?.description ?? '');
+            }
+            // Show pending UI if not already visible
+            if (!section.querySelector(`.${WARNING_CLS}`)) {
+              this.isRebuildingEmbeddingSection = true;
+              try {
+                this.buildEmbeddingProviderSection(containerEl);
+              } finally {
+                this.isRebuildingEmbeddingSection = false;
+              }
+            }
           });
         });
 
       const selectedModel = modelOptions.find((m) => m.id === effectiveModel);
-      const descEl = section.createDiv({ cls: 'superpower-inside-model-description' });
+      const descEl = section.createDiv({
+        cls: `superpower-inside-model-description ${MODEL_DESC_CLS}`,
+      });
       descEl.setText(selectedModel?.description ?? '');
-    }
-
-    if (!isOther) {
-      new Setting(section)
-        .setName('모델 목록 새로고침')
-        .setDesc('Providers 탭의 현재 모델 구성을 다시 읽어 임베딩 모델 목록에 반영합니다.')
-        .addButton((button) => {
-          button.setButtonText('새로고침');
-          const embRefresh = new RefreshAction({
-            action: (_signal) => {
-              void _signal;
-              section.remove();
-              this.buildEmbeddingProviderSection(containerEl);
-              return Promise.resolve({ status: 'success' } as const);
-            },
-            loadingText: '새로고침 중...',
-            spinnerClass: 'spinning',
-            successNotice: false,
-          });
-          embRefresh.attach(button.buttonEl);
-        });
     }
 
     if (isPending) {
@@ -1551,27 +1674,50 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const saveBtn = btnRow.createEl('button', { text: '저장' });
       saveBtn.addEventListener('click', () => {
         void (async () => {
-          if (this.pendingEmbeddingProvider !== null) {
-            rag.embeddingProvider = this.pendingEmbeddingProvider;
+          if (this.isRebuildingEmbeddingSection) return;
+          saveBtn.disabled = true;
+          saveBtn.setText('저장 중...');
+          try {
+            if (this.pendingEmbeddingProvider !== null) {
+              rag.embeddingProvider = this.pendingEmbeddingProvider;
+            }
+            if (this.pendingEmbeddingModel !== null) {
+              rag.embeddingModel = this.pendingEmbeddingModel;
+            }
+            this.pendingEmbeddingProvider = null;
+            this.pendingEmbeddingModel = null;
+            await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+            new Notice('임베딩 설정이 저장되었습니다.');
+          } catch (err) {
+            new Notice(
+              `임베딩 설정 저장 실패: ${err instanceof Error ? err.message : String(err)}`,
+              6000,
+            );
+          } finally {
+            saveBtn.disabled = false;
+            saveBtn.setText('저장');
+            this.isRebuildingEmbeddingSection = true;
+            try {
+              this.buildEmbeddingProviderSection(containerEl);
+            } finally {
+              this.isRebuildingEmbeddingSection = false;
+            }
           }
-          if (this.pendingEmbeddingModel !== null) {
-            rag.embeddingModel = this.pendingEmbeddingModel;
-          }
-          this.pendingEmbeddingProvider = null;
-          this.pendingEmbeddingModel = null;
-          await this.plugin.saveSettings();
-          new Notice('임베딩 설정이 저장되었습니다.');
-          section.remove();
-          this.buildEmbeddingProviderSection(containerEl);
         })();
       });
 
       const cancelBtn = btnRow.createEl('button', { text: '취소' });
       cancelBtn.addEventListener('click', () => {
+        if (this.isRebuildingEmbeddingSection) return;
         this.pendingEmbeddingProvider = null;
         this.pendingEmbeddingModel = null;
-        section.remove();
-        this.buildEmbeddingProviderSection(containerEl);
+        this.isRebuildingEmbeddingSection = true;
+        try {
+          this.buildEmbeddingProviderSection(containerEl);
+          new Notice('임베딩 설정 변경이 취소되었습니다.');
+        } finally {
+          this.isRebuildingEmbeddingSection = false;
+        }
       });
     }
 
@@ -1662,25 +1808,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderStats(grid).catch(() => {
       grid.setText('통계를 불러올 수 없습니다.');
     });
-
-    // 새로고침 버튼
-    new Setting(section).setName('').addButton((btn) => {
-      btn.setButtonText('새로고침');
-      const statsRefresh = new RefreshAction({
-        action: async (_signal) => {
-          grid.empty();
-          await this.renderStats(grid);
-          return { status: 'success' };
-        },
-        loadingText: '새로고침 중...',
-        spinnerClass: 'spinning',
-        successNotice: false,
-      });
-      statsRefresh.attach(btn.buttonEl);
-    });
   }
 
   private async renderStats(gridEl: HTMLElement): Promise<void> {
+    gridEl.empty();
     const status = await this.getRagStatus();
     if (!status) {
       gridEl.setText('RAG 인덱서가 초기화되지 않았습니다.');
@@ -1718,17 +1849,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       cls: 'superpower-inside-rag-file-types-desc',
       text: t('targetFileTypesDesc'),
     });
-    const refreshButton = header.createEl('button', {
-      cls: 'superpower-inside-rag-status-refresh-btn',
-      text: t('refresh'),
-      attr: { type: 'button' },
-    });
     const contentEl = section.createDiv({ cls: 'superpower-inside-rag-file-types' });
 
-    const render = async (): Promise<void> => {
-      contentEl.empty();
+    void (async () => {
       contentEl.setText('파일 형식을 계산하는 중...');
-      refreshButton.disabled = true;
       try {
         const summary = await getRagFileTypeSummary(
           this.app.vault,
@@ -1741,15 +1865,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         contentEl.setText(`파일 형식을 불러오지 못했습니다: ${msg}`);
-      } finally {
-        refreshButton.disabled = false;
       }
-    };
-
-    refreshButton.addEventListener('click', () => {
-      void render();
-    });
-    void render();
+    })();
   }
 
   private renderTargetFileTypeCounts(
@@ -2429,23 +2546,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           text: input.countMeta.getSummaryLabel(totalCount),
         });
         const countMeta = input.countMeta;
-        const refreshButton = countMetaEl.createEl('button', {
-          cls: 'superpower-inside-exclude-count-refresh-btn',
-          text: countMeta.refreshLabel,
-          attr: { type: 'button' },
-        });
-        this.excludeCountRefresh = new RefreshAction({
-          action: (_signal) => {
-            void _signal;
-            itemCounts = countMeta.getCounts();
-            renderList();
-            return Promise.resolve({ status: 'success' } as const);
-          },
-          loadingText: '새로고침 중...',
-          spinnerClass: 'spinning',
-          successNotice: false,
-        });
-        this.excludeCountRefresh.attach(refreshButton);
+        this.excludeCountRenderer = () => {
+          itemCounts = countMeta.getCounts();
+          renderList();
+        };
       }
       if (input.values.length === 0) {
         listEl.createDiv({
@@ -2600,7 +2704,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.autoUpdateEnabled).onChange(async (value) => {
           this.plugin.settings.rag.autoUpdateEnabled = value;
-          await this.plugin.saveSettings();
+          await this.plugin.saveSettingsLight();
           this.plugin.setupAutoUpdate();
         }),
       );
@@ -2813,7 +2917,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.enableBM25).onChange((value) => {
           this.plugin.settings.rag.enableBM25 = value;
-          void this.plugin.saveSettings().then(() => this.plugin.initRAG());
+          void this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
         }),
       );
 
@@ -3089,7 +3193,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           });
           pathText.value = output;
           this.plugin.settings.mcpPath = output;
-          await this.plugin.saveSettings();
+          await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
           new Notice(t('mcpPathFetchSuccess'));
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -3105,7 +3209,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     saveBtn.addEventListener('click', () => {
       void (async () => {
         this.plugin.settings.mcpPath = pathText.value.trim();
-        await this.plugin.saveSettings();
+        await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
         new Notice(t('mcpJsonSaved'));
       })();
     });
@@ -3182,7 +3286,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             autoSaveTimeout = null;
             this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
             void (async () => {
-              const saveResult = await this.plugin.saveSettings();
+              const saveResult = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
               if (saveResult.success) {
                 lintStatus.setText('✅ ' + t('mcpJsonSaved'));
               } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
@@ -3227,7 +3331,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const result = validateMcpJson(jsonTextArea.value);
         if (result.valid) {
           this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
-          const saveResult = await this.plugin.saveSettings();
+          const saveResult = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
 
           if (saveResult.success) {
             lintStatus.setText('✅ ' + t('mcpJsonSaved'));
@@ -3714,7 +3818,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const actionsRow = headerRow.createDiv({ cls: 'superpower-inside-mcp-status-actions' });
     const refreshBtn = actionsRow.createEl('button', {
       cls: 'superpower-inside-mcp-refresh-btn',
-      attr: { 'aria-label': '연결 상태 새로고침' },
+      attr: { 'aria-label': 'MCP 재연결' },
     });
     refreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <polyline points="23 4 23 10 17 10"></polyline>
@@ -3742,7 +3846,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       },
       loadingText: '재연결 중...',
       spinnerClass: 'spinning',
-      successNotice: '연결 상태가 새로고침되었습니다.',
+      successNotice: 'MCP 연결 상태가 갱신되었습니다.',
       errorNotice: false,
     });
     this.mcpStatusRefresh.attach(refreshBtn);
