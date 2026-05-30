@@ -42,7 +42,7 @@ import {
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
-import { GraphRagIndexingRunner, type GraphRagIndexingResult } from './src/graph/indexing-runner';
+import { GraphRagIndexingRunner, type GraphRagCommunityBuildResult, type GraphRagIndexingResult } from './src/graph/indexing-runner';
 import { GraphRagQueryEngine } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
@@ -50,6 +50,7 @@ import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
+import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPRegistry } from './src/mcp/registry';
 import {
@@ -76,8 +77,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
   private provider: LLMProvider | null = null;
-  private vectorStore: VectorStore | null = null;
-  private knowledgeGraphStore: KnowledgeGraphStore | null = null;
+  vectorStore: VectorStore | null = null;
+  knowledgeGraphStore: KnowledgeGraphStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
   ragEngine: RAGQueryEngine | null = null;
   graphRagStatus: GraphRagStatusSummary | null = null;
@@ -126,8 +127,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
 
     // 리본 아이콘
+    this.registerView(GRAPH_RAG_VIEW_TYPE, (leaf) => new GraphRagView(leaf, this));
     this.addRibbonIcon('message-circle', t('cmdOpenAiChat'), () => {
       void this.openChatView();
+    });
+
+    this.addRibbonIcon('git-branch', t('cmdOpenGraphRagView'), () => {
+      void this.openGraphRagView();
     });
 
     // 명령어
@@ -189,6 +195,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
     });
 
+
+    this.addCommand({
+      id: 'open-graph-rag-view',
+      name: t('cmdOpenGraphRagView'),
+      callback: () => this.openGraphRagView(),
+    });
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
   }
@@ -197,6 +209,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
+    if (this.statsDebounceTimer) {
+      clearTimeout(this.statsDebounceTimer);
+      this.statsDebounceTimer = null;
+    }
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
@@ -206,7 +222,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.ragStatusTimer = null;
     }
     if (this.mcpRegistry) {
-      void this.mcpRegistry.disconnectAll();
+      const disconnectPromise = this.mcpRegistry.disconnectAll();
+      const timeoutPromise = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('MCP disconnect timeout')), 3000),
+      );
+      void Promise.race([disconnectPromise, timeoutPromise]).catch(() => {
+        // MCP 연결 정리 타임아웃 — 강제 종료
+      });
     }
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
@@ -328,6 +350,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
+  async buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null> {
+    if (!this.graphRagIndexingRunner) return null;
+    const result = await this.graphRagIndexingRunner.buildCommunities();
+    await this.computeAndEmitGraphRagStatus();
+    return result;
+  }
+
+  private async cleanupGraphRagForDeletedFiles(filePaths: string[]): Promise<void> {
+    if (!this.knowledgeGraphStore) return;
+    await Promise.all([
+      this.knowledgeGraphStore.removeEvidenceByFilePaths(filePaths),
+      this.knowledgeGraphStore.removeRejectedFactsByFilePaths(filePaths),
+    ]);
+  }
+
   private async computeAndEmitRagStats(): Promise<void> {
     if (!this.vectorStore) return;
     try {
@@ -343,6 +380,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           status: 'success',
           detail: `${summary.healthyDocuments} / ${summary.totalDocuments}`,
         });
+        this.refreshBus.emit('exclude-counts', { status: 'success' });
       }
     } catch {
       if (this.refreshBus) {
@@ -648,13 +686,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  async saveSettings(): Promise<{ success: boolean; mcpErrors?: string[] }> {
+  async saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{ success: boolean; mcpErrors?: string[] }> {
+    const reinitRag = options?.reinitRag ?? true;
+    const reinitMcp = options?.reinitMcp ?? true;
     saveLocalSettings(this.app, this.settings);
     await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
     this.initProvider();
-    await this.initRAG();
-    const mcpErrors = await this.initMCP();
+    if (reinitRag) {
+      await this.initRAG();
+    }
+    const mcpErrors: string[] = [];
+    if (reinitMcp) {
+      const errs = await this.initMCP();
+      mcpErrors.push(...errs);
+    }
     return { success: mcpErrors.length === 0, mcpErrors };
+  }
+
+  async saveSettingsLight(): Promise<void> {
+    saveLocalSettings(this.app, this.settings);
+    await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
+    this.initProvider();
   }
 
   getActiveProvider(): LLMProvider | null {
@@ -930,17 +982,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
         ? this.createProviderForModel(rag.graphRagModel)
         : null;
     this.graphRagIndexingRunner =
-      graphProvider && this.knowledgeGraphStore
+      graphProvider && this.knowledgeGraphStore && this.embeddingProvider
         ? new GraphRagIndexingRunner({
             vectorStore: this.vectorStore,
             graphStore: this.knowledgeGraphStore,
             provider: graphProvider,
+            embeddingProvider: this.embeddingProvider,
             ontologySchema,
             extractionModelKey: rag.graphRagModel,
             maxFilesPerRun: rag.graphRagMaxFilesPerRun,
             entityResolverOptions: {
               autoMergeThreshold: rag.ontologyAutoMergeThreshold,
               pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
+            },
+            onProgress: (progress) => {
+              this.refreshBus.emit('graph-progress', {
+                status: 'partial',
+                detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
+                progress,
+              });
             },
           })
         : null;
@@ -1017,6 +1077,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
+    if (this.statsDebounceTimer) {
+      clearTimeout(this.statsDebounceTimer);
+      this.statsDebounceTimer = null;
+    }
     if (this.autoUpdateTimer) {
       clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
@@ -1084,8 +1148,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
-      () => {
+      (filePath) => {
         this.debouncedRefreshStats();
+        if (this.knowledgeGraphStore) {
+          void this.cleanupGraphRagForDeletedFiles([filePath]);
+        }
       },
     );
     this.renameCleanup = registerRenameEvent(
@@ -1416,5 +1483,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
     return Promise.resolve();
+  }
+
+  openGraphRagView(): void {
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    void leaf.setViewState({ type: GRAPH_RAG_VIEW_TYPE, active: true });
+    void this.app.workspace.revealLeaf(leaf);
   }
 }
