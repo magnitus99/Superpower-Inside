@@ -43,6 +43,7 @@ export interface SourceCitation {
   status?: 'candidate' | 'verified' | 'missing' | 'stale' | 'low-relevance';
   detail?: string;
   preview: string;
+  graphType?: 'entity' | 'relation' | 'community';
 }
 
 export interface SourceValidationWarning {
@@ -54,7 +55,7 @@ export interface SourceValidationWarning {
 
 export interface ContextAttachment {
   id: string;
-  type: 'file' | 'folder' | 'reference' | 'rag' | 'mcp-server';
+  type: 'file' | 'folder' | 'reference' | 'rag' | 'graph-rag' | 'mcp-server';
   name: string;
   label: string;
   status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';

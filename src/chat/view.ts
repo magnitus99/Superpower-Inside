@@ -96,7 +96,6 @@ export class ChatView extends ItemView {
 
   // RefreshAction 인스턴스
   private mcpRefreshAction: RefreshAction | null = null;
-  private modelRefreshAction: RefreshAction | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
 
@@ -210,8 +209,6 @@ export class ChatView extends ItemView {
     // RefreshAction 정리
     this.mcpRefreshAction?.detach();
     this.mcpRefreshAction = null;
-    this.modelRefreshAction?.detach();
-    this.modelRefreshAction = null;
     // RefreshBus 구독 해제
     for (const unsub of this.refreshBusUnsubscribers) {
       unsub();
@@ -356,7 +353,7 @@ export class ChatView extends ItemView {
 
     const refreshBtn = this.mcpStatusBar.createEl('button', {
       cls: 'superpower-inside-chat-mcp-refresh-btn',
-      text: t('mcpRefresh'),
+      text: t('mcpReconnect'),
     });
 
     this.mcpRefreshAction?.detach();
@@ -391,26 +388,6 @@ export class ChatView extends ItemView {
       attr: { 'aria-label': t('modelSelector') },
     });
     this.populateModelSelect();
-
-    const modelRefreshBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-model-refresh-btn',
-      attr: { 'aria-label': t('refresh') },
-    });
-    modelRefreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="23 4 23 10 17 10"></polyline>
-      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-    </svg>`;
-    this.modelRefreshAction = new RefreshAction({
-      action: (_signal) => {
-        void _signal;
-        this.populateModelSelect();
-        return Promise.resolve({ status: 'success' } as const);
-      },
-      loadingText: t('refreshing'),
-      spinnerClass: 'spinning',
-      successNotice: false,
-    });
-    this.modelRefreshAction.attach(modelRefreshBtn);
 
     this.mcpBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',
@@ -1945,6 +1922,8 @@ export class ChatView extends ItemView {
       );
       this.session.filePath = file.path;
       this.session.isDirty = false;
+      (this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string }) => void } })
+        .refreshBus?.emit('sessions', { status: 'success' });
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
@@ -2121,6 +2100,7 @@ export class ChatView extends ItemView {
     this.isStreaming = false;
     this.setLoading(false);
     await this.saveCurrentSession(true);
+    const pluginWithBus = this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string }) => void } };
     openSessionHistoryModal(
       this.container!,
       this.app,
@@ -2128,6 +2108,7 @@ export class ChatView extends ItemView {
       this.plugin.settings.chat.saveFolder,
       (filePath: string) => void this.loadSession(filePath),
       this.session.filePath,
+      pluginWithBus.refreshBus,
     );
   }
 
@@ -3105,6 +3086,7 @@ export class ChatView extends ItemView {
       app: this.app,
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
+      knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);

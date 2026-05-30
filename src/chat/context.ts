@@ -1,11 +1,12 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
+import type { KnowledgeGraphStore, GraphEntityRecord } from '../graph/store';
 import { createContentHash } from '../rag/hash';
 import type { ContextAttachment, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
 import { expandReferencedVaultFiles } from './context-expansion';
-import { parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
+import { type ParsedMention, parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -28,6 +29,7 @@ interface BuildContextOptions {
   app: App;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
+  knowledgeGraphStore?: KnowledgeGraphStore | null;
   maxFolderFiles?: number;
   maxContextChars?: number;
   maxReferenceFiles?: number;
@@ -57,10 +59,8 @@ export async function buildChatContext(
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
   const warnings: string[] = [];
-  const mentions = parseMentions(
-    question,
-    createAppMentionResolver(options.app, options.mcpRegistry),
-  );
+  const resolver = createAppMentionResolver(options.app, options.mcpRegistry, options.knowledgeGraphStore);
+  const mentions = parseMentions(question, resolver);
   const shouldUseAutoRag = shouldUseAutoRagForMentions(mentions);
 
   const appendBlock = (block: ContextBlock): boolean => {
@@ -152,6 +152,17 @@ export async function buildChatContext(
     }
   }
 
+  const entityMentions = mentions.filter((item) => item.type === 'entity');
+  if (entityMentions.length > 0 && options.knowledgeGraphStore) {
+    await appendGraphEntityContext(
+      entityMentions,
+      options.knowledgeGraphStore,
+      appendBlock,
+      attachments,
+      citations,
+    );
+  }
+
   for (const mention of mentions.filter((item) => item.type === 'server')) {
     await appendServerMention(mention.name, options.mcpRegistry, appendBlock, attachments);
   }
@@ -172,12 +183,30 @@ export async function buildChatContext(
   };
 }
 
-export function createAppMentionResolver(app: App, registry?: MCPRegistry | null): MentionResolver {
+export function createAppMentionResolver(
+  app: App,
+  registry?: MCPRegistry | null,
+  knowledgeGraphStore?: KnowledgeGraphStore | null,
+): MentionResolver {
+  let entityNames = new Set<string>();
+  if (knowledgeGraphStore) {
+    void knowledgeGraphStore.getEntities().then((entities) => {
+      const names = new Set<string>();
+      for (const entity of entities) {
+        names.add(entity.canonicalName.toLowerCase());
+        for (const alias of entity.aliases) {
+          names.add(alias.toLowerCase());
+        }
+      }
+      entityNames = names;
+    });
+  }
   return {
     isServer: (name: string) =>
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,
     isFolder: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFolder,
+    isEntity: (name: string) => entityNames.has(name.toLowerCase()),
   };
 }
 
@@ -440,6 +469,99 @@ Instruction: 사용자가 이 서버를 @${name}로 명시했습니다. 질문 �
       detail: stringifyError(err),
     });
   }
+}
+
+async function appendGraphEntityContext(
+  entityMentions: ParsedMention[],
+  graphStore: KnowledgeGraphStore,
+  appendBlock: (block: ContextBlock) => boolean,
+  attachments: ContextAttachment[],
+  citations: SourceCitation[],
+): Promise<void> {
+  const [entities, relations] = await Promise.all([
+    graphStore.getEntities(),
+    graphStore.getRelations(),
+  ]);
+
+  const mentionedNames = new Set(entityMentions.map((m) => m.name.toLowerCase()));
+  const matchedEntities = entities.filter(
+    (e) =>
+      mentionedNames.has(e.canonicalName.toLowerCase()) ||
+      e.aliases.some((a) => mentionedNames.has(a.toLowerCase())),
+  );
+
+  if (matchedEntities.length === 0) {
+    attachments.push({
+      id: 'graph-rag:auto',
+      type: 'graph-rag',
+      name: 'auto',
+      label: 'GraphRAG 엔티티',
+      status: 'missing',
+      detail: '멘션된 엔티티를 지식 그래프에서 찾을 수 없습니다.',
+    });
+    return;
+  }
+
+  const matchedIds = new Set(matchedEntities.map((e) => e.id));
+  const matchedRelations = relations.filter(
+    (r) => matchedIds.has(r.sourceEntityId) || matchedIds.has(r.targetEntityId),
+  );
+
+  const lines: string[] = [];
+  lines.push('[Graph Knowledge Context]');
+  lines.push('');
+  lines.push('## Matched Entities');
+  for (const entity of matchedEntities.slice(0, 10)) {
+    const aliases = entity.aliases.length > 0 ? ` (aka ${entity.aliases.join(', ')})` : '';
+    lines.push(`- [${entity.typeId}] ${entity.canonicalName}${aliases}`);
+    if (entity.description) {
+      lines.push(`  ${entity.description.slice(0, 200)}`);
+    }
+  }
+
+  if (matchedRelations.length > 0) {
+    lines.push('');
+    lines.push('## Related Relations');
+    const entityById = new Map(entities.map((e) => [e.id, e]));
+    for (const rel of matchedRelations.slice(0, 15)) {
+      const src = entityById.get(rel.sourceEntityId)?.canonicalName ?? rel.sourceEntityId;
+      const tgt = entityById.get(rel.targetEntityId)?.canonicalName ?? rel.targetEntityId;
+      lines.push(`- ${src} → [${rel.relationTypeId}] → ${tgt}`);
+      if (rel.description) {
+        lines.push(`  ${rel.description.slice(0, 150)}`);
+      }
+    }
+  }
+
+  const graphText = lines.join('\n');
+  appendBlock({ text: graphText });
+
+  const entityCitation = createGraphCitation(matchedEntities, citations.length + 1);
+  citations.push(entityCitation);
+
+  attachments.push({
+    id: 'graph-rag:auto',
+    type: 'graph-rag',
+    name: 'auto',
+    label: `GraphRAG ${matchedEntities.length}개 엔티티`,
+    status: 'attached',
+    detail: `${matchedRelations.length}개 관계 정보가 함께 첨부되었습니다.`,
+    sourceIds: [entityCitation.id],
+  });
+}
+
+function createGraphCitation(
+  entities: GraphEntityRecord[],
+  index: number,
+): SourceCitation {
+  const names = entities.map((e) => e.canonicalName).join(', ');
+  return {
+    id: `graph-${index}`,
+    filePath: `graph://entities`,
+    status: 'verified',
+    preview: `Graph entities: ${names.slice(0, 220)}`,
+    graphType: 'entity',
+  };
 }
 
 function createPreview(text: string): string {
