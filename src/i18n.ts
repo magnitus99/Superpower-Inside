@@ -237,6 +237,7 @@ export interface I18nKeys {
   enforceMcpToolsDesc: string;
   modelSelector: string;
   mcpRefresh: string;
+  mcpReconnect: string;
   mcpRefreshing: string;
   mcpConnecting: string;
   mcpPartialError: string;
@@ -350,6 +351,13 @@ export interface I18nKeys {
   // 명령어
   cmdOpenAiChat: string;
   cmdReindexVault: string;
+  cmdOpenGraphRagView: string;
+  graphRagViewTabTitle: string;
+  graphRagViewTabEntities: string;
+  graphRagViewTabRelations: string;
+  graphRagViewTabEvidence: string;
+  graphRagViewEmpty: string;
+  graphRagViewSearchPlaceholder: string;
 }
 
 const ko: I18nKeys = {
@@ -603,6 +611,7 @@ const ko: I18nKeys = {
     '@mention한 MCP 서버가 있음에도 모델이 도구를 호출하지 않고 답변을 생성하면, 자동으로 시스템 프롬프트에 도구 사용을 강제하는 지시를 추가하여 재시도합니다.',
   modelSelector: '모델',
   mcpRefresh: '새로고침',
+  mcpReconnect: '재연결',
   mcpRefreshing: '재연결 중...',
   mcpConnecting: 'MCP 연결 중...',
   mcpPartialError: '일부 MCP 서버 실패',
@@ -720,6 +729,13 @@ const ko: I18nKeys = {
   // Commands
   cmdOpenAiChat: 'AI 채팅 열기',
   cmdReindexVault: '볼트 RAG 재인덱싱',
+  cmdOpenGraphRagView: 'GraphRAG 탐색기 열기',
+  graphRagViewTabTitle: 'GraphRAG 탐색기',
+  graphRagViewTabEntities: '엔티티',
+  graphRagViewTabRelations: '관계',
+  graphRagViewTabEvidence: '증거',
+  graphRagViewEmpty: '추출된 데이터가 없습니다. GraphRAG 인덱싱을 먼저 실행하세요.',
+  graphRagViewSearchPlaceholder: '검색...',
 };
 
 const en: I18nKeys = {
@@ -975,6 +991,7 @@ const en: I18nKeys = {
     'When an @mentioned MCP server is available but the model generates a response without calling any tools, automatically retry with a strengthened system prompt that enforces tool usage.',
   modelSelector: 'Model',
   mcpRefresh: 'Refresh',
+  mcpReconnect: 'Reconnect',
   mcpRefreshing: 'Reconnecting...',
   mcpConnecting: 'Connecting MCP...',
   mcpPartialError: 'Some MCP servers failed',
@@ -1093,6 +1110,13 @@ const en: I18nKeys = {
   // Commands
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
+  cmdOpenGraphRagView: 'Open GraphRAG Explorer',
+  graphRagViewTabTitle: 'GraphRAG Explorer',
+  graphRagViewTabEntities: 'Entities',
+  graphRagViewTabRelations: 'Relations',
+  graphRagViewTabEvidence: 'Evidence',
+  graphRagViewEmpty: 'No extracted data. Run GraphRAG indexing first.',
+  graphRagViewSearchPlaceholder: 'Search...',
 };
 
 const STRINGS: Record<Language, I18nKeys> = { ko, en };
