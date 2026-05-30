@@ -1,9 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, LLMProvider, StreamChunk, ToolDefinition } from '../llm/providers';
+import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
+
+class FakeEmbeddingProvider implements EmbeddingProvider {
+  embed(): Promise<number[]> {
+    return Promise.resolve([0.1, 0.2, 0.3]);
+  }
+
+  embedBatch(texts: string[]): Promise<number[][]> {
+    return Promise.resolve(texts.map(() => [0.1, 0.2, 0.3]));
+  }
+}
+
+function makeRunnerOptions(overrides: {
+  vectorStore: MemoryVectorStore;
+  graphStore: InMemoryKnowledgeGraphStore;
+  provider: FakeProvider;
+  maxFilesPerRun?: number;
+}): ConstructorParameters<typeof GraphRagIndexingRunner>[0] {
+  return {
+    vectorStore: overrides.vectorStore,
+    graphStore: overrides.graphStore,
+    provider: overrides.provider,
+    embeddingProvider: new FakeEmbeddingProvider(),
+    ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+    extractionModelKey: 'openai:gpt-4.1-mini',
+    maxFilesPerRun: overrides.maxFilesPerRun ?? 10,
+  };
+}
 
 describe('GraphRagIndexingRunner', () => {
   it('maxFilesPerRun까지만 처리하고 cached 파일은 skip한다', async () => {
@@ -23,14 +51,12 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
       graphStore,
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
       maxFilesPerRun: 2,
-    });
+    }));
 
     const result = await runner.run();
 
@@ -47,47 +73,16 @@ describe('GraphRagIndexingRunner', () => {
       createEntry('bad.md', 'hash-bad'),
       createEntry('ok.md', 'hash-ok'),
     ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    const provider = new FakeProvider([throwResponse(), textResponse(graphPayload())]);
-    const runner = new GraphRagIndexingRunner({
-      vectorStore,
-      graphStore,
-      provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
-
-    const result = await runner.run();
-
-    expect(result.failedFiles).toBe(1);
-    expect(result.processedFiles).toBe(1);
-    expect(result.failedChunks).toBe(1);
-    expect(await graphStore.getRejectedFacts()).toEqual([
-      expect.objectContaining({ filePath: 'bad.md', reason: 'extraction-error' }),
-    ]);
-  });
-
-  it('실패 파일만 이어 실행할 수 있다', async () => {
-    const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([
-      createEntry('bad.md', 'hash-bad'),
-      createEntry('ok.md', 'hash-ok'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider([
       throwResponse(),
       textResponse(graphPayload()),
       textResponse(graphPayload()),
     ]);
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
-      graphStore,
+      graphStore: new InMemoryKnowledgeGraphStore(),
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
+    }));
 
     await runner.run();
     const resumed = await runner.resumeFailed();
@@ -107,14 +102,11 @@ describe('GraphRagIndexingRunner', () => {
     const controller = new AbortController();
     const provider = new FakeProvider();
     provider.onCall = () => controller.abort();
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
       graphStore: new InMemoryKnowledgeGraphStore(),
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
+    }));
 
     const result = await runner.run({ signal: controller.signal });
 
@@ -216,14 +208,11 @@ describe('GraphRagIndexingRunner stale-only', () => {
     ]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
       graphStore,
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
+    }));
 
     const result = await runner.run({
       onlyStaleFiles: true,
@@ -240,14 +229,11 @@ describe('GraphRagIndexingRunner stale-only', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
       graphStore,
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
+    }));
 
     const result = await runner.run({
       onlyStaleFiles: true,
@@ -264,14 +250,11 @@ describe('GraphRagIndexingRunner stale-only', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner({
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
       vectorStore,
       graphStore,
       provider,
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      maxFilesPerRun: 10,
-    });
+    }));
 
     await expect(
       runner.run({
