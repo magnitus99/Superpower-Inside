@@ -68,7 +68,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   });
 
   const saveSettings = async (): Promise<boolean> => {
-    const result = await options.plugin.saveSettings();
+    const result = await options.plugin.saveSettings({ reinitRag: false, reinitMcp: false });
     if (!result.success && result.mcpErrors && result.mcpErrors.length > 0) {
       new Notice(`설정 저장 후 MCP 재연결 중 ${result.mcpErrors.length}개 서버 실패`, 5000);
     }

@@ -1,6 +1,5 @@
 import type { App, Vault } from 'obsidian';
 import { t } from '../i18n';
-import { RefreshAction } from '../utils/refresh-action';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
@@ -46,6 +45,7 @@ export function openSessionHistoryModal(
   saveFolder: string,
   onLoadSession: (filePath: string) => void,
   currentSessionPath?: string | null,
+  sessionsEventBus?: { emit: (domain: string, result: { status: string }) => void; on?: (domain: string, handler: (...args: unknown[]) => void) => () => void },
 ): void {
   const activeVault = app.vault;
   void vault;
@@ -59,25 +59,6 @@ export function openSessionHistoryModal(
   titleBar.createEl('h2', { text: t('chatHistory') });
 
   const titleActions = titleBar.createDiv({ cls: 'superpower-inside-session-title-actions' });
-  const refreshBtn = titleActions.createEl('button', {
-    cls: 'superpower-inside-session-refresh-btn',
-    text: t('refresh'),
-    attr: { type: 'button' },
-  });
-  // RefreshAction으로 세션 목록 새로고침 관리
-  const sessionRefreshAction = new RefreshAction({
-    action: async (_signal) => {
-      void _signal;
-      allMetas = await listChatMetasAsync(activeVault, saveFolder);
-      if (!isClosed) filterAndRender();
-      return { status: 'success' };
-    },
-    loadingText: t('refreshing'),
-    spinnerClass: 'spinning',
-    errorNotice: '세션 목록을 불러오지 못했습니다.',
-    successNotice: false,
-  });
-  sessionRefreshAction.attach(refreshBtn);
   const closeBtn = titleActions.createEl('button', {
     cls: 'superpower-inside-session-close-btn',
     text: '×',
@@ -113,7 +94,6 @@ export function openSessionHistoryModal(
 
   const close = (): void => {
     isClosed = true;
-    sessionRefreshAction.detach();
     overlay.remove();
   };
 
@@ -259,7 +239,10 @@ export function openSessionHistoryModal(
           }
 
           deleteBtn.disabled = true;
-          void deleteChat(activeVault, meta.filePath).then(loadMetas, () => {
+          void deleteChat(activeVault, meta.filePath).then(() => {
+            sessionsEventBus?.emit('sessions', { status: 'success' });
+            void loadMetas();
+          }, () => {
             deleteBtn.disabled = false;
             deleteConfirmPath = null;
           });
@@ -356,9 +339,17 @@ export function openSessionHistoryModal(
   });
 
   closeBtn.addEventListener('click', close);
-  // RefreshAction이 attach에서 click 이벤트 처리
-  // 초기 로드는 직접 실행
+  // 초기 로드
   void loadMetas();
+
+  // sessions 이벤트 수신 시 자동 갱신
+  if (sessionsEventBus?.on) {
+    const unsub = sessionsEventBus.on('sessions', () => {
+      if (!isClosed) void loadMetas();
+    });
+    overlay.addEventListener('remove', unsub);
+  }
+
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });
@@ -376,8 +367,6 @@ export function openSessionHistoryModal(
     containerEl.ownerDocument.removeEventListener('keydown', handleKeyDown);
   };
   overlay.addEventListener('remove', cleanup);
-
-  void loadMetas();
 }
 
 function ensureSessionModalStyles(documentRef: Document): void {
