@@ -392,14 +392,18 @@ export class VaultIndexer {
 
     const result = await this.vectorStore.withBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
+        const file = files[i];
         const fileResult = await this.indexFile(file, options);
         throwIfIndexingCancelled(options.signal);
         batchResult.indexed += fileResult.indexed;
         batchResult.vectors += fileResult.vectors;
         batchResult.skipped += fileResult.skipped;
         batchResult.documents.push(...fileResult.documents);
+        if (i > 0 && i % 5 === 0) {
+          await pauseAfterBatch(0, options.signal).catch(() => {});
+        }
       }
       return batchResult;
     });
@@ -515,8 +519,9 @@ export class VaultIndexer {
 
     const result = await this.vectorStore.withBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
+        const file = files[i];
         if (!updatePaths.has(file.path)) {
           batchResult.skipped++;
           continue;
@@ -532,6 +537,9 @@ export class VaultIndexer {
         batchResult.vectors += fileResult.vectors;
         batchResult.skipped += fileResult.skipped;
         batchResult.documents.push(...fileResult.documents);
+        if (i > 0 && i % 5 === 0) {
+          await pauseAfterBatch(0, options.signal).catch(() => {});
+        }
       }
       return batchResult;
     });

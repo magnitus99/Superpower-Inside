@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import Dexie from 'dexie';
+import { createContentHash } from '../rag/hash';
 
 export interface EmbeddingRecord {
   id: string;
@@ -20,14 +21,6 @@ class EmbeddingCacheDB extends Dexie {
 }
 
 const db = new EmbeddingCacheDB();
-
-async function sha256Hex(input: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const buf = await crypto.subtle.digest('SHA-256', data);
-  const arr = Array.from(new Uint8Array(buf));
-  return arr.map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 export interface EmbeddingProvider {
   embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
@@ -247,24 +240,43 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+const MAX_MEMORY_CACHE_SIZE = 5000;
+
 export class CachedEmbeddingProvider implements EmbeddingProvider {
   private inner: EmbeddingProvider;
   private memoryCache: Map<string, number[]>;
   private modelName: string;
+  private cacheKeys: string[];
 
   constructor(inner: EmbeddingProvider, modelName: string) {
     this.inner = inner;
     this.memoryCache = new Map();
+    this.cacheKeys = [];
     this.modelName = modelName;
   }
 
-  private async computeHash(text: string): Promise<string> {
-    return sha256Hex(`${this.modelName}::${text}`);
+  private setCache(hash: string, vector: number[]): void {
+    if (this.memoryCache.has(hash)) {
+      this.memoryCache.set(hash, vector);
+      return;
+    }
+    if (this.cacheKeys.length >= MAX_MEMORY_CACHE_SIZE) {
+      const oldest = this.cacheKeys.shift();
+      if (oldest !== undefined) {
+        this.memoryCache.delete(oldest);
+      }
+    }
+    this.memoryCache.set(hash, vector);
+    this.cacheKeys.push(hash);
+  }
+
+  private computeHash(text: string): string {
+    return createContentHash(`${this.modelName}::${text}`);
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
     throwIfAborted(options?.signal);
-    const hash = await this.computeHash(text);
+    const hash = this.computeHash(text);
     throwIfAborted(options?.signal);
     const mem = this.memoryCache.get(hash);
     if (mem) return mem;
@@ -272,13 +284,13 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     const cached = await db.embeddings.where('textHash').equals(hash).first();
     throwIfAborted(options?.signal);
     if (cached) {
-      this.memoryCache.set(hash, cached.vector);
+      this.setCache(hash, cached.vector);
       return cached.vector;
     }
 
     const vector = await this.inner.embed(text, options);
     throwIfAborted(options?.signal);
-    this.memoryCache.set(hash, vector);
+    this.setCache(hash, vector);
     await db.embeddings.put({ id: hash, textHash: hash, vector, updated: Date.now() });
     return vector;
   }
@@ -287,13 +299,15 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     throwIfAborted(options?.signal);
     const hashes: string[] = [];
     for (const t of texts) {
-      hashes.push(await this.computeHash(t));
+      hashes.push(this.computeHash(t));
       throwIfAborted(options?.signal);
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];
     const missingIndices: number[] = [];
     const missingTexts: string[] = [];
 
+    const cachedRecords = await db.embeddings.bulkGet(hashes);
+    throwIfAborted(options?.signal);
     for (let i = 0; i < texts.length; i++) {
       const hash = hashes[i];
       const mem = this.memoryCache.get(hash);
@@ -301,10 +315,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         results[i] = mem;
         continue;
       }
-      const cached = await db.embeddings.where('textHash').equals(hash).first();
-      throwIfAborted(options?.signal);
+      const cached = cachedRecords.find((r) => r?.textHash === hash);
       if (cached) {
-        this.memoryCache.set(hash, cached.vector);
+        this.setCache(hash, cached.vector);
         results[i] = cached.vector;
         continue;
       }
@@ -316,15 +329,17 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       const newVectors = await this.inner.embedBatch(missingTexts, options);
       throwIfAborted(options?.signal);
       const now = Date.now();
+      const bulkRecords: Array<{ id: string; textHash: string; vector: number[]; updated: number }> = [];
       for (let j = 0; j < missingTexts.length; j++) {
         const originalIdx = missingIndices[j];
         const vector = newVectors[j];
         const hash = hashes[originalIdx];
         results[originalIdx] = vector;
-        this.memoryCache.set(hash, vector);
-        await db.embeddings.put({ id: hash, textHash: hash, vector, updated: now });
-        throwIfAborted(options?.signal);
+        this.setCache(hash, vector);
+        bulkRecords.push({ id: hash, textHash: hash, vector, updated: now });
       }
+      await db.embeddings.bulkPut(bulkRecords);
+      throwIfAborted(options?.signal);
     }
 
     return results as number[][];

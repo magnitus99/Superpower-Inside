@@ -103,11 +103,11 @@ export interface KnowledgeGraphStore {
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean>;
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void>;
   getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]>;
-  getEntities(): Promise<GraphEntityRecord[]>;
-  getRelations(): Promise<GraphRelationRecord[]>;
-  getClaims(): Promise<GraphClaimRecord[]>;
-  getEvidence(): Promise<GraphEvidenceRecord[]>;
-  getCommunities(): Promise<GraphCommunityRecord[]>;
+  getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
+  getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
+  getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]>;
+  getEvidence(limit?: number, offset?: number): Promise<GraphEvidenceRecord[]>;
+  getCommunities(limit?: number, offset?: number): Promise<GraphCommunityRecord[]>;
   addEvidence(record: GraphEvidenceRecord): Promise<void>;
   upsertEntity(record: GraphEntityRecord): Promise<void>;
   addPendingEntityMerge(record: PendingEntityMergeRecord): Promise<void>;
@@ -117,6 +117,9 @@ export interface KnowledgeGraphStore {
   addRejectedFact(record: GraphRejectedFactRecord): Promise<void>;
   getRejectedFacts(): Promise<GraphRejectedFactRecord[]>;
   getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]>;
+  removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number>;
+  removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
+  removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
 }
 
 class KnowledgeGraphDB extends Dexie {
@@ -204,24 +207,39 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     await this.db.graphRejectedFacts.put({ ...record });
   }
 
-  async getEvidence(): Promise<GraphEvidenceRecord[]> {
-    return (await this.db.graphEvidence.toArray()).map((record) => ({ ...record }));
+  async getEvidence(limit?: number, offset?: number): Promise<GraphEvidenceRecord[]> {
+    let collection = this.db.graphEvidence.toCollection();
+    if (offset !== undefined) collection = collection.offset(offset);
+    if (limit !== undefined) collection = collection.limit(limit);
+    return (await collection.toArray()).map((record) => ({ ...record }));
   }
 
-  async getEntities(): Promise<GraphEntityRecord[]> {
-    return (await this.db.graphEntities.toArray()).map(copyEntity);
+  async getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]> {
+    let collection = this.db.graphEntities.toCollection();
+    if (offset !== undefined) collection = collection.offset(offset);
+    if (limit !== undefined) collection = collection.limit(limit);
+    return (await collection.toArray()).map(copyEntity);
   }
 
-  async getRelations(): Promise<GraphRelationRecord[]> {
-    return (await this.db.graphRelations.toArray()).map(copyRelation);
+  async getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]> {
+    let collection = this.db.graphRelations.toCollection();
+    if (offset !== undefined) collection = collection.offset(offset);
+    if (limit !== undefined) collection = collection.limit(limit);
+    return (await collection.toArray()).map(copyRelation);
   }
 
-  async getClaims(): Promise<GraphClaimRecord[]> {
-    return (await this.db.graphClaims.toArray()).map(copyClaim);
+  async getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]> {
+    let collection = this.db.graphClaims.toCollection();
+    if (offset !== undefined) collection = collection.offset(offset);
+    if (limit !== undefined) collection = collection.limit(limit);
+    return (await collection.toArray()).map(copyClaim);
   }
 
-  async getCommunities(): Promise<GraphCommunityRecord[]> {
-    return (await this.db.graphCommunities.toArray()).map(copyCommunity);
+  async getCommunities(limit?: number, offset?: number): Promise<GraphCommunityRecord[]> {
+    let collection = this.db.graphCommunities.toCollection();
+    if (offset !== undefined) collection = collection.offset(offset);
+    if (limit !== undefined) collection = collection.limit(limit);
+    return (await collection.toArray()).map(copyCommunity);
   }
 
   async getRejectedFacts(): Promise<GraphRejectedFactRecord[]> {
@@ -230,6 +248,33 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]> {
     return (await this.db.graphPendingEntityMerges.toArray()).map((record) => ({ ...record }));
+  }
+
+  async removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
+    const pathSet = new Set(filePaths);
+    const evidence = await this.db.graphEvidence.toArray();
+    const toDelete = evidence.filter((e) => pathSet.has(e.filePath));
+    if (toDelete.length === 0) return 0;
+    await this.db.graphEvidence.bulkDelete(toDelete.map((e) => e.id));
+    return toDelete.length;
+  }
+
+  async removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number> {
+    const idSet = new Set(entryIds);
+    const cache = await this.db.graphExtractionCache.toArray();
+    const toDelete = cache.filter((c) => idSet.has(c.entryId));
+    if (toDelete.length === 0) return 0;
+    await this.db.graphExtractionCache.bulkDelete(toDelete.map((c) => c.entryId));
+    return toDelete.length;
+  }
+
+  async removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number> {
+    const pathSet = new Set(filePaths);
+    const facts = await this.db.graphRejectedFacts.toArray();
+    const toDelete = facts.filter((f) => pathSet.has(f.filePath));
+    if (toDelete.length === 0) return 0;
+    await this.db.graphRejectedFacts.bulkDelete(toDelete.map((f) => f.id));
+    return toDelete.length;
   }
 }
 
@@ -298,24 +343,39 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     return Promise.resolve();
   }
 
-  getEvidence(): Promise<GraphEvidenceRecord[]> {
-    return Promise.resolve([...this.evidence.values()]);
+  getEvidence(limit?: number, offset?: number): Promise<GraphEvidenceRecord[]> {
+    const all = [...this.evidence.values()];
+    return Promise.resolve(
+      all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
   }
 
-  getEntities(): Promise<GraphEntityRecord[]> {
-    return Promise.resolve([...this.entities.values()].map(copyEntity));
+  getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]> {
+    const all = [...this.entities.values()].map(copyEntity);
+    return Promise.resolve(
+      all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
   }
 
-  getRelations(): Promise<GraphRelationRecord[]> {
-    return Promise.resolve([...this.relations.values()].map(copyRelation));
+  getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]> {
+    const all = [...this.relations.values()].map(copyRelation);
+    return Promise.resolve(
+      all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
   }
 
-  getClaims(): Promise<GraphClaimRecord[]> {
-    return Promise.resolve([...this.claims.values()].map(copyClaim));
+  getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]> {
+    const all = [...this.claims.values()].map(copyClaim);
+    return Promise.resolve(
+      all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
   }
 
-  getCommunities(): Promise<GraphCommunityRecord[]> {
-    return Promise.resolve([...this.communities.values()].map(copyCommunity));
+  getCommunities(limit?: number, offset?: number): Promise<GraphCommunityRecord[]> {
+    const all = [...this.communities.values()].map(copyCommunity);
+    return Promise.resolve(
+      all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
   }
 
   getRejectedFacts(): Promise<GraphRejectedFactRecord[]> {
@@ -324,6 +384,39 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]> {
     return Promise.resolve([...this.pendingEntityMerges.values()]);
+  }
+
+  removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
+    const pathSet = new Set(filePaths);
+    let count = 0;
+    for (const [id, evidence] of this.evidence) {
+      if (pathSet.has(evidence.filePath)) {
+        this.evidence.delete(id);
+        count++;
+      }
+    }
+    return Promise.resolve(count);
+  }
+
+  removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number> {
+    const idSet = new Set(entryIds);
+    let count = 0;
+    for (const id of idSet) {
+      if (this.extractionCache.delete(id)) count++;
+    }
+    return Promise.resolve(count);
+  }
+
+  removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number> {
+    const pathSet = new Set(filePaths);
+    let count = 0;
+    for (const [id, fact] of this.rejectedFacts) {
+      if (pathSet.has(fact.filePath)) {
+        this.rejectedFacts.delete(id);
+        count++;
+      }
+    }
+    return Promise.resolve(count);
   }
 }
 

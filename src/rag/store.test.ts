@@ -280,7 +280,7 @@ describe('VectorStore 파일 단위 교체', () => {
       await store.replaceFileEntries('b.md', [createEntry('b.md', 0, [0, 1], 'b')]);
     });
 
-    expect(adapter.writeCount).toBe(1);
+    expect(adapter.writeCount).toBe(2);
     expect((await store.getIndexedFilePaths()).sort()).toEqual(['a.md', 'b.md']);
   });
 });

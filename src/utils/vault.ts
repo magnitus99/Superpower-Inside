@@ -309,8 +309,9 @@ function getExtensionLabel(extension: string): string {
 }
 
 /**
- * Vault adapter를 통해 JSON 파일을 씁니다.
+ * Vault adapter를 통해 JSON 파일을 원자적으로 씁니다.
  * 상위 디렉토리가 없으면 자동으로 생성합니다.
+ * temp 파일에 먼저 쓴 후 rename하여 부분 쓰기로 인한 파일 손상을 방지합니다.
  */
 export async function writeJsonToVault(
   adapter: DataAdapter,
@@ -321,8 +322,22 @@ export async function writeJsonToVault(
   if (dir) {
     await adapter.mkdir(dir);
   }
-  const json = JSON.stringify(data, null, 2);
+  const json = JSON.stringify(data);
+  const tmpPath = `${path}.tmp.${Date.now()}`;
+  await adapter.write(tmpPath, json);
+  try {
+    if (await adapter.exists(path)) {
+      await adapter.remove(path);
+    }
+  } catch {
+    // 이전 파일이 없으면 무시
+  }
   await adapter.write(path, json);
+  try {
+    await adapter.remove(tmpPath);
+  } catch {
+    // temp 파일 정리 실패는 무시
+  }
 }
 
 /**

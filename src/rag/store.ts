@@ -89,7 +89,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-const QUERY_YIELD_INTERVAL = 512;
+const QUERY_YIELD_INTERVAL = 256;
 
 async function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Promise<VectorEntry[]> {
   const scored: Array<{ entry: VectorEntry; score: number }> = [];
