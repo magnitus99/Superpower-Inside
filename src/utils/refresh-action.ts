@@ -7,6 +7,7 @@ export type RefreshState = 'idle' | 'loading' | 'success' | 'error';
 
 /** 액션 실행 결과 */
 export interface RefreshResult {
+  progress?: import('../graph/indexing-runner').GraphRagIndexingProgress;
   status: 'success' | 'partial' | 'error';
   detail?: string;
 }

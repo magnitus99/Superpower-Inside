@@ -1,9 +1,15 @@
 import type { RefreshResult } from './refresh-action';
+import type { GraphRagIndexingProgress } from '../graph/indexing-runner';
 
 // ── 타입 ────────────────────────────────────────────────────────────
 
 /** 새로고침 이벤트를 발행할 수 있는 도메인 */
-export type RefreshDomain = 'rag' | 'mcp' | 'models' | 'sessions' | 'exclude-counts';
+export type RefreshDomain = 'rag' | 'mcp' | 'models' | 'sessions' | 'exclude-counts' | 'graph-progress';
+
+/** graph-progress 도메인 전용 페이로드 */
+export interface GraphProgressResult extends RefreshResult {
+  progress?: GraphRagIndexingProgress;
+}
 
 /** RefreshBus에서 사용하는 이벤트 핸들러 */
 export type RefreshHandler = (result: RefreshResult) => void;
