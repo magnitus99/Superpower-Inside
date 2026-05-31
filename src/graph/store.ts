@@ -99,6 +99,17 @@ export interface PendingEntityMergeRecord {
   updatedAt: number;
 }
 
+export interface GraphPruneResult {
+  evidence: number;
+  entities: number;
+  relations: number;
+  claims: number;
+  communities: number;
+  extractionCache: number;
+  rejectedFacts: number;
+  pendingEntityMerges: number;
+}
+
 export interface KnowledgeGraphStore {
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean>;
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void>;
@@ -120,6 +131,11 @@ export interface KnowledgeGraphStore {
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number>;
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
+  pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult>;
+  replaceCommunities(
+    ontologySchemaId: string,
+    records: readonly GraphCommunityRecord[],
+  ): Promise<void>;
 }
 
 class KnowledgeGraphDB extends Dexie {
@@ -203,6 +219,24 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     await this.db.graphCommunities.put(copyCommunity(record));
   }
 
+  async replaceCommunities(
+    ontologySchemaId: string,
+    records: readonly GraphCommunityRecord[],
+  ): Promise<void> {
+    await this.db.transaction('rw', this.db.graphCommunities, async () => {
+      const existing = await this.db.graphCommunities
+        .where('ontologySchemaId')
+        .equals(ontologySchemaId)
+        .toArray();
+      if (existing.length > 0) {
+        await this.db.graphCommunities.bulkDelete(existing.map((record) => record.id));
+      }
+      if (records.length > 0) {
+        await this.db.graphCommunities.bulkPut(records.map(copyCommunity));
+      }
+    });
+  }
+
   async addRejectedFact(record: GraphRejectedFactRecord): Promise<void> {
     await this.db.graphRejectedFacts.put({ ...record });
   }
@@ -276,6 +310,71 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     await this.db.graphRejectedFacts.bulkDelete(toDelete.map((f) => f.id));
     return toDelete.length;
   }
+
+  async pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult> {
+    if (filePaths.length === 0) return emptyPruneResult();
+
+    return this.db.transaction(
+      'rw',
+      [
+        this.db.graphEvidence,
+        this.db.graphEntities,
+        this.db.graphRelations,
+        this.db.graphClaims,
+        this.db.graphCommunities,
+        this.db.graphRejectedFacts,
+        this.db.graphExtractionCache,
+        this.db.graphPendingEntityMerges,
+      ],
+      async () => {
+        const snapshot = createPrunedGraphSnapshot(filePaths, {
+          evidence: await this.db.graphEvidence.toArray(),
+          entities: await this.db.graphEntities.toArray(),
+          relations: await this.db.graphRelations.toArray(),
+          claims: await this.db.graphClaims.toArray(),
+          communities: await this.db.graphCommunities.toArray(),
+          rejectedFacts: await this.db.graphRejectedFacts.toArray(),
+          extractionCache: await this.db.graphExtractionCache.toArray(),
+          pendingEntityMerges: await this.db.graphPendingEntityMerges.toArray(),
+        });
+
+        if (snapshot.deletedEvidenceIds.length > 0) {
+          await this.db.graphEvidence.bulkDelete(snapshot.deletedEvidenceIds);
+        }
+        if (snapshot.deletedEntityIds.length > 0) {
+          await this.db.graphEntities.bulkDelete(snapshot.deletedEntityIds);
+        }
+        if (snapshot.updatedEntities.length > 0) {
+          await this.db.graphEntities.bulkPut(snapshot.updatedEntities.map(copyEntity));
+        }
+        if (snapshot.deletedRelationIds.length > 0) {
+          await this.db.graphRelations.bulkDelete(snapshot.deletedRelationIds);
+        }
+        if (snapshot.updatedRelations.length > 0) {
+          await this.db.graphRelations.bulkPut(snapshot.updatedRelations.map(copyRelation));
+        }
+        if (snapshot.deletedClaimIds.length > 0) {
+          await this.db.graphClaims.bulkDelete(snapshot.deletedClaimIds);
+        }
+        if (snapshot.updatedClaims.length > 0) {
+          await this.db.graphClaims.bulkPut(snapshot.updatedClaims.map(copyClaim));
+        }
+        if (snapshot.deletedCommunityIds.length > 0) {
+          await this.db.graphCommunities.bulkDelete(snapshot.deletedCommunityIds);
+        }
+        if (snapshot.deletedRejectedFactIds.length > 0) {
+          await this.db.graphRejectedFacts.bulkDelete(snapshot.deletedRejectedFactIds);
+        }
+        if (snapshot.deletedExtractionCacheEntryIds.length > 0) {
+          await this.db.graphExtractionCache.bulkDelete(snapshot.deletedExtractionCacheEntryIds);
+        }
+        if (snapshot.deletedPendingMergeIds.length > 0) {
+          await this.db.graphPendingEntityMerges.bulkDelete(snapshot.deletedPendingMergeIds);
+        }
+        return snapshot.result;
+      },
+    );
+  }
 }
 
 export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
@@ -335,6 +434,21 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   addCommunity(record: GraphCommunityRecord): Promise<void> {
     this.communities.set(record.id, copyCommunity(record));
+    return Promise.resolve();
+  }
+
+  replaceCommunities(
+    ontologySchemaId: string,
+    records: readonly GraphCommunityRecord[],
+  ): Promise<void> {
+    for (const [id, community] of this.communities) {
+      if (community.ontologySchemaId === ontologySchemaId) {
+        this.communities.delete(id);
+      }
+    }
+    for (const record of records) {
+      this.communities.set(record.id, copyCommunity(record));
+    }
     return Promise.resolve();
   }
 
@@ -418,6 +532,208 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     }
     return Promise.resolve(count);
   }
+
+  pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult> {
+    if (filePaths.length === 0) return Promise.resolve(emptyPruneResult());
+    const snapshot = createPrunedGraphSnapshot(filePaths, {
+      evidence: [...this.evidence.values()],
+      entities: [...this.entities.values()],
+      relations: [...this.relations.values()],
+      claims: [...this.claims.values()],
+      communities: [...this.communities.values()],
+      rejectedFacts: [...this.rejectedFacts.values()],
+      extractionCache: [...this.extractionCache.values()],
+      pendingEntityMerges: [...this.pendingEntityMerges.values()],
+    });
+
+    for (const id of snapshot.deletedEvidenceIds) this.evidence.delete(id);
+    for (const id of snapshot.deletedEntityIds) this.entities.delete(id);
+    for (const record of snapshot.updatedEntities) this.entities.set(record.id, copyEntity(record));
+    for (const id of snapshot.deletedRelationIds) this.relations.delete(id);
+    for (const record of snapshot.updatedRelations) this.relations.set(record.id, copyRelation(record));
+    for (const id of snapshot.deletedClaimIds) this.claims.delete(id);
+    for (const record of snapshot.updatedClaims) this.claims.set(record.id, copyClaim(record));
+    for (const id of snapshot.deletedCommunityIds) this.communities.delete(id);
+    for (const id of snapshot.deletedRejectedFactIds) this.rejectedFacts.delete(id);
+    for (const id of snapshot.deletedExtractionCacheEntryIds) this.extractionCache.delete(id);
+    for (const id of snapshot.deletedPendingMergeIds) this.pendingEntityMerges.delete(id);
+
+    return Promise.resolve(snapshot.result);
+  }
+}
+
+interface GraphStoreSnapshot {
+  evidence: GraphEvidenceRecord[];
+  entities: GraphEntityRecord[];
+  relations: GraphRelationRecord[];
+  claims: GraphClaimRecord[];
+  communities: GraphCommunityRecord[];
+  rejectedFacts: GraphRejectedFactRecord[];
+  extractionCache: GraphExtractionCacheRecord[];
+  pendingEntityMerges: PendingEntityMergeRecord[];
+}
+
+interface PrunedGraphSnapshot {
+  result: GraphPruneResult;
+  deletedEvidenceIds: string[];
+  deletedEntityIds: string[];
+  updatedEntities: GraphEntityRecord[];
+  deletedRelationIds: string[];
+  updatedRelations: GraphRelationRecord[];
+  deletedClaimIds: string[];
+  updatedClaims: GraphClaimRecord[];
+  deletedCommunityIds: string[];
+  deletedRejectedFactIds: string[];
+  deletedExtractionCacheEntryIds: string[];
+  deletedPendingMergeIds: string[];
+}
+
+function createPrunedGraphSnapshot(
+  filePaths: readonly string[],
+  snapshot: GraphStoreSnapshot,
+): PrunedGraphSnapshot {
+  const pathSet = new Set(filePaths);
+  const removedEvidence = snapshot.evidence.filter((record) => pathSet.has(record.filePath));
+  const removedEvidenceIds = new Set(removedEvidence.map((record) => record.id));
+  const removedEntryIds = new Set(removedEvidence.map((record) => record.entryId));
+  const affectedSchemaIds = new Set<string>();
+
+  const deletedEntityIds: string[] = [];
+  const updatedEntities: GraphEntityRecord[] = [];
+  for (const entity of snapshot.entities) {
+    const evidenceIds = withoutRemovedEvidence(entity.evidenceIds, removedEvidenceIds);
+    if (evidenceIds.length !== entity.evidenceIds.length) {
+      affectedSchemaIds.add(entity.ontologySchemaId);
+      if (evidenceIds.length === 0) {
+        deletedEntityIds.push(entity.id);
+      } else {
+        updatedEntities.push({ ...copyEntity(entity), evidenceIds });
+      }
+    }
+  }
+  const deletedEntityIdSet = new Set(deletedEntityIds);
+
+  const deletedRelationIds: string[] = [];
+  const updatedRelations: GraphRelationRecord[] = [];
+  for (const relation of snapshot.relations) {
+    const evidenceIds = withoutRemovedEvidence(relation.evidenceIds, removedEvidenceIds);
+    const hasDeletedEndpoint =
+      deletedEntityIdSet.has(relation.sourceEntityId) ||
+      deletedEntityIdSet.has(relation.targetEntityId);
+    if (evidenceIds.length !== relation.evidenceIds.length || hasDeletedEndpoint) {
+      affectedSchemaIds.add(relation.ontologySchemaId);
+      if (evidenceIds.length === 0 || hasDeletedEndpoint) {
+        deletedRelationIds.push(relation.id);
+      } else {
+        updatedRelations.push({ ...copyRelation(relation), evidenceIds });
+      }
+    }
+  }
+  const deletedRelationIdSet = new Set(deletedRelationIds);
+
+  const deletedClaimIds: string[] = [];
+  const updatedClaims: GraphClaimRecord[] = [];
+  for (const claim of snapshot.claims) {
+    const evidenceIds = withoutRemovedEvidence(claim.evidenceIds, removedEvidenceIds);
+    const entityIds = claim.entityIds.filter((id) => !deletedEntityIdSet.has(id));
+    const relationIds = claim.relationIds.filter((id) => !deletedRelationIdSet.has(id));
+    const changed =
+      evidenceIds.length !== claim.evidenceIds.length ||
+      entityIds.length !== claim.entityIds.length ||
+      relationIds.length !== claim.relationIds.length;
+    if (!changed) continue;
+    if (evidenceIds.length === 0) {
+      deletedClaimIds.push(claim.id);
+    } else {
+      updatedClaims.push({ ...copyClaim(claim), entityIds, relationIds, evidenceIds });
+    }
+  }
+  const deletedClaimIdSet = new Set(deletedClaimIds);
+
+  const deletedCommunityIds = snapshot.communities
+    .filter(
+      (community) =>
+        affectedSchemaIds.has(community.ontologySchemaId) ||
+        community.entityIds.some((id) => deletedEntityIdSet.has(id)) ||
+        community.relationIds.some((id) => deletedRelationIdSet.has(id)) ||
+        community.claimIds.some((id) => deletedClaimIdSet.has(id)),
+    )
+    .map((community) => community.id);
+
+  const deletedRejectedFactIds = snapshot.rejectedFacts
+    .filter((record) => pathSet.has(record.filePath))
+    .map((record) => {
+      removedEntryIds.add(record.entryId);
+      return record.id;
+    });
+
+  const deletedExtractionCacheEntryIds = snapshot.extractionCache
+    .filter((record) => shouldRemoveCacheRecord(record, pathSet, removedEntryIds))
+    .map((record) => record.entryId);
+
+  const deletedPendingMergeIds = snapshot.pendingEntityMerges
+    .filter(
+      (record) =>
+        deletedEntityIdSet.has(record.existingEntityId) ||
+        deletedEntityIdSet.has(record.candidateEntityId),
+    )
+    .map((record) => record.id);
+
+  return {
+    result: {
+      evidence: removedEvidence.length,
+      entities: deletedEntityIds.length,
+      relations: deletedRelationIds.length,
+      claims: deletedClaimIds.length,
+      communities: deletedCommunityIds.length,
+      extractionCache: deletedExtractionCacheEntryIds.length,
+      rejectedFacts: deletedRejectedFactIds.length,
+      pendingEntityMerges: deletedPendingMergeIds.length,
+    },
+    deletedEvidenceIds: [...removedEvidenceIds],
+    deletedEntityIds,
+    updatedEntities,
+    deletedRelationIds,
+    updatedRelations,
+    deletedClaimIds,
+    updatedClaims,
+    deletedCommunityIds,
+    deletedRejectedFactIds,
+    deletedExtractionCacheEntryIds,
+    deletedPendingMergeIds,
+  };
+}
+
+function withoutRemovedEvidence(
+  evidenceIds: readonly string[],
+  removedEvidenceIds: ReadonlySet<string>,
+): string[] {
+  return evidenceIds.filter((id) => !removedEvidenceIds.has(id));
+}
+
+function shouldRemoveCacheRecord(
+  record: GraphExtractionCacheRecord,
+  pathSet: ReadonlySet<string>,
+  removedEntryIds: ReadonlySet<string>,
+): boolean {
+  if (removedEntryIds.has(record.entryId)) return true;
+  for (const path of pathSet) {
+    if (record.entryId === path || record.entryId.startsWith(`${path}::`)) return true;
+  }
+  return false;
+}
+
+function emptyPruneResult(): GraphPruneResult {
+  return {
+    evidence: 0,
+    entities: 0,
+    relations: 0,
+    claims: 0,
+    communities: 0,
+    extractionCache: 0,
+    rejectedFacts: 0,
+    pendingEntityMerges: 0,
+  };
 }
 
 function mergeEntity(existing: GraphEntityRecord, next: GraphEntityRecord): GraphEntityRecord {

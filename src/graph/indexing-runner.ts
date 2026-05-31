@@ -140,7 +140,16 @@ export class GraphRagIndexingRunner {
       const edges = buildEdges(entities, relations);
       const { communities, communityIds, modularity } = detectCommunities(edges);
 
-      if (communityIds.length === 0 || signal?.aborted) {
+      if (signal?.aborted) {
+        return {
+          communityCount: 0,
+          entityCount: entities.length,
+          modularity: 0,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+      if (communityIds.length === 0) {
+        await this.graphStore.replaceCommunities(this.ontologySchema.id, []);
         return {
           communityCount: 0,
           entityCount: entities.length,
@@ -155,9 +164,7 @@ export class GraphRagIndexingRunner {
         signal,
       );
 
-      for (const record of records) {
-        await this.graphStore.addCommunity(record);
-      }
+      await this.graphStore.replaceCommunities(this.ontologySchema.id, records);
 
       const result: GraphRagCommunityBuildResult = {
         communityCount: records.length,
@@ -266,30 +273,52 @@ export class GraphRagIndexingRunner {
   }> {
     const CONCURRENCY_LIMIT = 5;
     const result = { processedChunks: 0, skippedChunks: 0, failedChunks: 0, cancelled: false };
+    const preparedEntries: Array<{ entry: VectorEntry; contentHash: string; cached: boolean }> = [];
 
-    for (let i = 0; i < entries.length; i += CONCURRENCY_LIMIT) {
+    if (entries.length === 0) {
+      await this.graphStore.pruneByFilePaths([filePath]);
+      return result;
+    }
+
+    for (const entry of entries) {
+      if (signal?.aborted) {
+        result.cancelled = true;
+        return result;
+      }
+      const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
+      const cacheKey = {
+        entryId: entry.id,
+        contentHash,
+        extractionModelKey: this.extractionModelKey,
+        ontologySchemaId: this.ontologySchema.id,
+        ontologyVersion: this.ontologySchema.version,
+      };
+      if (await this.graphStore.isExtractionCached(cacheKey)) {
+        preparedEntries.push({ entry, contentHash, cached: true });
+      } else {
+        preparedEntries.push({ entry, contentHash, cached: false });
+      }
+    }
+
+    if (preparedEntries.every((item) => item.cached)) {
+      result.skippedChunks = preparedEntries.length;
+      return result;
+    }
+
+    await this.graphStore.pruneByFilePaths([filePath]);
+
+    for (let i = 0; i < preparedEntries.length; i += CONCURRENCY_LIMIT) {
       if (signal?.aborted) {
         result.cancelled = true;
         break;
       }
-      const batch = entries.slice(i, i + CONCURRENCY_LIMIT);
+      const batch = preparedEntries.slice(i, i + CONCURRENCY_LIMIT);
       const batchResults = await Promise.all(
-        batch.map(async (entry): Promise<{ skipped: boolean; processed: boolean; failed: boolean }> => {
+        batch.map(async ({ entry, contentHash }): Promise<{ processed: boolean; failed: boolean }> => {
           if (signal?.aborted) {
-            return { skipped: false, processed: false, failed: false };
+            return { processed: false, failed: false };
           }
-          const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
-          const cacheKey = {
-            entryId: entry.id,
-            contentHash,
-            extractionModelKey: this.extractionModelKey,
-            ontologySchemaId: this.ontologySchema.id,
-            ontologyVersion: this.ontologySchema.version,
-          };
           try {
-            if (await this.graphStore.isExtractionCached(cacheKey)) {
-              return { skipped: true, processed: false, failed: false };
-            }
             await this.indexer.extractChunk({
               chunkText: entry.metadata.text,
               filePath,
@@ -300,16 +329,15 @@ export class GraphRagIndexingRunner {
               extractionModelKey: this.extractionModelKey,
               ontologySchema: this.ontologySchema,
             });
-            return { skipped: false, processed: true, failed: false };
+            return { processed: true, failed: false };
           } catch (error) {
             await this.graphStore.addRejectedFact(createChunkFailureRecord(filePath, entry, error));
-            return { skipped: false, processed: false, failed: true };
+            return { processed: false, failed: true };
           }
         }),
       );
 
       for (const r of batchResults) {
-        if (r.skipped) result.skippedChunks += 1;
         if (r.processed) result.processedChunks += 1;
         if (r.failed) result.failedChunks += 1;
       }

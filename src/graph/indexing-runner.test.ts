@@ -114,6 +114,246 @@ describe('GraphRagIndexingRunner', () => {
     expect(result.processedFiles).toBe(1);
     expect(result.selectedFiles).toBe(2);
   });
+
+  it('stale 파일 재추출 전에 기존 graph fact를 pruning한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('note.md', 'hash-new')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-old',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      endLine: 2,
+      quote: 'old text',
+      contentHash: 'hash-old',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.upsertEntity({
+      id: 'entity::default::person::old-paul',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      typeId: 'person',
+      canonicalName: 'Old Paul',
+      aliases: [],
+      description: 'old',
+      properties: {},
+      confidence: 0.9,
+      evidenceIds: ['ev-old'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-old',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider([
+      textResponse(graphPayload('Fresh Paul')),
+    ]);
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
+
+    expect(result.processedFiles).toBe(1);
+    expect((await graphStore.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Fresh Paul',
+    ]);
+    expect((await graphStore.getEvidence()).map((evidence) => evidence.contentHash)).toEqual([
+      'hash-new',
+    ]);
+  });
+
+  it('모든 chunk가 cache hit이면 기존 graph fact를 pruning하지 않는다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('note.md', 'hash-same')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-existing',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      endLine: 2,
+      quote: 'cached text',
+      contentHash: 'hash-same',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.upsertEntity({
+      id: 'entity::default::person::cached-paul',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      typeId: 'person',
+      canonicalName: 'Cached Paul',
+      aliases: [],
+      description: 'cached',
+      properties: {},
+      confidence: 0.9,
+      evidenceIds: ['ev-existing'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-same',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
+
+    expect(result.skippedFiles).toBe(1);
+    expect(provider.calls).toBe(0);
+    expect((await graphStore.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Cached Paul',
+    ]);
+  });
+
+  it('일부 chunk만 cache miss여도 파일의 현재 chunk 전체를 재추출한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('note.md', 'hash-a', 0),
+      createEntry('note.md', 'hash-b', 1),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-cached',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      endLine: 2,
+      quote: 'cached text',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider([
+      textResponse(graphPayload('Fresh Cached Chunk')),
+      textResponse(graphPayload('Fresh Miss Chunk')),
+    ]);
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
+
+    expect(result.processedChunks).toBe(2);
+    expect(result.skippedChunks).toBe(0);
+    expect(provider.calls).toBe(2);
+    expect((await graphStore.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Fresh Cached Chunk',
+      'Fresh Miss Chunk',
+    ]);
+  });
+
+  it('stale path에 vector entry가 없으면 추출 없이 orphan graph fact만 pruning한다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-deleted',
+      filePath: 'deleted.md',
+      entryId: 'deleted.md::0',
+      startLine: 1,
+      endLine: 2,
+      quote: 'deleted text',
+      contentHash: 'hash-deleted',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.upsertEntity({
+      id: 'entity::default::person::deleted-paul',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      typeId: 'person',
+      canonicalName: 'Deleted Paul',
+      aliases: [],
+      description: 'deleted',
+      properties: {},
+      confidence: 0.9,
+      evidenceIds: ['ev-deleted'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'deleted.md::0',
+      contentHash: 'hash-deleted',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore: new MemoryVectorStore(),
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['deleted.md'] });
+
+    expect(result.skippedFiles).toBe(1);
+    expect(provider.calls).toBe(0);
+    expect(await graphStore.getEvidence()).toEqual([]);
+    expect(await graphStore.getEntities()).toEqual([]);
+    await expect(graphStore.isExtractionCached({
+      entryId: 'deleted.md::0',
+      contentHash: 'hash-deleted',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+    })).resolves.toBe(false);
+  });
+
+  it('community rebuild 결과가 0개이면 기존 community를 비운다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addCommunity({
+      id: 'community::default::old',
+      ontologySchemaId: 'default',
+      title: 'Old',
+      entityIds: ['entity-old'],
+      relationIds: [],
+      claimIds: [],
+      summary: 'old summary',
+      summaryVector: [1, 0],
+      level: 0,
+      updatedAt: 1000,
+    });
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore: new MemoryVectorStore(),
+      graphStore,
+      provider: new FakeProvider(),
+    }));
+
+    const result = await runner.buildCommunities();
+
+    expect(result.communityCount).toBe(0);
+    expect(await graphStore.getCommunities()).toEqual([]);
+  });
 });
 
 class FakeProvider implements LLMProvider {
@@ -156,9 +396,9 @@ function throwResponse(): ProviderResponse {
   return { kind: 'throw' };
 }
 
-function createEntry(filePath: string, contentHash: string): VectorEntry {
+function createEntry(filePath: string, contentHash: string, index = 0): VectorEntry {
   return {
-    id: `${filePath}::0`,
+    id: `${filePath}::${index}`,
     vector: [1, 0],
     metadata: {
       filePath,
@@ -175,11 +415,11 @@ function createEntry(filePath: string, contentHash: string): VectorEntry {
   };
 }
 
-function graphPayload(): string {
+function graphPayload(entityName = 'Paul'): string {
   return JSON.stringify({
     entities: [
       {
-        name: 'Paul',
+        name: entityName,
         typeId: 'person',
         description: 'apostle',
         confidence: 0.9,
@@ -188,9 +428,9 @@ function graphPayload(): string {
     relations: [],
     claims: [
       {
-        text: 'Paul is mentioned.',
+        text: `${entityName} is mentioned.`,
         claimTypeId: 'factual_claim',
-        entityNames: ['Paul'],
+        entityNames: [entityName],
         confidence: 0.8,
       },
     ],

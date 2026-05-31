@@ -103,6 +103,39 @@ describe('calculateGraphRagStatus', () => {
     expect(status.staleFileCount).toBe(0);
   });
 
+  it('graph evidence의 파일이 vector store에 없으면 stale로 반환한다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-orphan',
+      filePath: 'deleted.md',
+      entryId: 'deleted.md::0',
+      startLine: 1,
+      quote: 'deleted text',
+      contentHash: 'hash-old',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'deleted.md::0',
+      contentHash: 'hash-old',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+
+    const status = await calculateGraphRagStatus({
+      ragConfig: baseRagConfig,
+      graphStore,
+      vectorStore: new MemoryVectorStore(),
+      isRunning: false,
+      schemaErrors: [],
+    });
+
+    expect(status.state).toBe('stale');
+    expect(status.staleFilePaths).toEqual(['deleted.md']);
+  });
+
   it('모델이나 contentHash가 바뀌면 stale을 반환한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-new')]);

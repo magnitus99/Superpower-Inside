@@ -359,10 +359,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async cleanupGraphRagForDeletedFiles(filePaths: string[]): Promise<void> {
     if (!this.knowledgeGraphStore) return;
-    await Promise.all([
-      this.knowledgeGraphStore.removeEvidenceByFilePaths(filePaths),
-      this.knowledgeGraphStore.removeRejectedFactsByFilePaths(filePaths),
-    ]);
+    await this.knowledgeGraphStore.pruneByFilePaths(filePaths);
   }
 
   private async computeAndEmitRagStats(): Promise<void> {
@@ -1169,8 +1166,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
-      () => {
+      (oldPath) => {
         this.debouncedRefreshStats();
+        if (this.knowledgeGraphStore) {
+          void this.cleanupGraphRagForDeletedFiles([oldPath]);
+        }
       },
     );
   }

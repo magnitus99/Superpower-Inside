@@ -70,7 +70,13 @@ export async function calculateGraphRagStatus(
   const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
   const cacheByEntryId = new Map(cacheRecords.map((record) => [record.entryId, record]));
   const entries = await input.vectorStore.getEntries();
+  const vectorFilePaths = new Set(entries.map((entry) => entry.metadata.filePath));
   const staleFiles = new Set<string>();
+  for (const record of evidence) {
+    if (!vectorFilePaths.has(record.filePath)) {
+      staleFiles.add(record.filePath);
+    }
+  }
   for (const entry of entries) {
     const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
     const cache = cacheByEntryId.get(entry.id);

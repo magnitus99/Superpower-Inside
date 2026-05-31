@@ -28,6 +28,14 @@ describe('KnowledgeGraphStore contract', () => {
   it('IndexedDbKnowledgeGraphStore가 공통 저장소 계약을 만족한다', async () => {
     await expectKnowledgeGraphStoreContract(createIndexedDbStore());
   });
+
+  it('InMemoryKnowledgeGraphStore가 파일 단위 graph pruning 계약을 만족한다', async () => {
+    await expectGraphPruningContract(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 파일 단위 graph pruning 계약을 만족한다', async () => {
+    await expectGraphPruningContract(createIndexedDbStore());
+  });
 });
 
 describe('IndexedDbKnowledgeGraphStore', () => {
@@ -163,7 +171,80 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
   ).resolves.toBe(true);
 }
 
-function createEvidence(): GraphEvidenceRecord {
+async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<void> {
+  await store.addEvidence(createEvidence({ id: 'ev-old', filePath: 'old.md', entryId: 'old.md::0' }));
+  await store.addEvidence(createEvidence({ id: 'ev-keep', filePath: 'keep.md', entryId: 'keep.md::0' }));
+  await store.upsertEntity(createEntity({ id: 'entity-old', evidenceIds: ['ev-old'] }));
+  await store.upsertEntity(createEntity({ id: 'entity-shared', evidenceIds: ['ev-old', 'ev-keep'] }));
+  await store.upsertEntity(createEntity({ id: 'entity-keep', evidenceIds: ['ev-keep'] }));
+  await store.addRelation(createRelation({ id: 'rel-old', sourceEntityId: 'entity-old', targetEntityId: 'entity-shared', evidenceIds: ['ev-old'] }));
+  await store.addRelation(createRelation({ id: 'rel-shared', sourceEntityId: 'entity-shared', targetEntityId: 'entity-keep', evidenceIds: ['ev-old', 'ev-keep'] }));
+  await store.addClaim(createClaim({ id: 'claim-old', entityIds: ['entity-old'], relationIds: ['rel-old'], evidenceIds: ['ev-old'] }));
+  await store.addClaim(createClaim({ id: 'claim-shared', entityIds: ['entity-old', 'entity-shared', 'entity-keep'], relationIds: ['rel-old', 'rel-shared'], evidenceIds: ['ev-old', 'ev-keep'] }));
+  await store.addCommunity(createCommunity({ id: 'community-old', entityIds: ['entity-old'], relationIds: ['rel-old'], claimIds: ['claim-old'] }));
+  await store.addCommunity(createCommunity({ id: 'community-other-schema', ontologySchemaId: 'other' }));
+  await store.addRejectedFact({ id: 'reject-old', filePath: 'old.md', entryId: 'old.md::0', reason: 'schema', rawFact: {}, updatedAt: 1000 });
+  await store.addRejectedFact({ id: 'reject-keep', filePath: 'keep.md', entryId: 'keep.md::0', reason: 'schema', rawFact: {}, updatedAt: 1000 });
+  await store.addPendingEntityMerge({
+    id: 'merge-old',
+    ontologySchemaId: 'default',
+    existingEntityId: 'entity-old',
+    candidateEntityId: 'entity-keep',
+    mergeScore: 0.8,
+    reason: 'similar alias',
+    updatedAt: 1000,
+  });
+  await store.markExtractionCached({ entryId: 'old.md::0', contentHash: 'hash-old', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: 1000 });
+  await store.markExtractionCached({ entryId: 'keep.md::0', contentHash: 'hash-keep', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: 1000 });
+
+  const result = await store.pruneByFilePaths(['old.md']);
+
+  expect(result).toEqual(expect.objectContaining({
+    evidence: 1,
+    entities: 1,
+    relations: 1,
+    claims: 1,
+    communities: 1,
+    extractionCache: 1,
+    rejectedFacts: 1,
+    pendingEntityMerges: 1,
+  }));
+  expect((await store.getEvidence()).map((record) => record.id)).toEqual(['ev-keep']);
+  expect(sortPairs((await store.getEntities()).map((record) => [record.id, record.evidenceIds]))).toEqual([
+    ['entity-keep', ['ev-keep']],
+    ['entity-shared', ['ev-keep']],
+  ]);
+  expect(sortPairs((await store.getRelations()).map((record) => [record.id, record.evidenceIds]))).toEqual([
+    ['rel-shared', ['ev-keep']],
+  ]);
+  expect(await store.getClaims()).toEqual([
+    expect.objectContaining({
+      id: 'claim-shared',
+      entityIds: ['entity-shared', 'entity-keep'],
+      relationIds: ['rel-shared'],
+      evidenceIds: ['ev-keep'],
+    }),
+  ]);
+  expect((await store.getCommunities()).map((record) => record.id)).toEqual(['community-other-schema']);
+  expect((await store.getRejectedFacts()).map((record) => record.id)).toEqual(['reject-keep']);
+  await expect(store.isExtractionCached({ entryId: 'old.md::0', contentHash: 'hash-old', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1 })).resolves.toBe(false);
+  await expect(store.isExtractionCached({ entryId: 'keep.md::0', contentHash: 'hash-keep', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1 })).resolves.toBe(true);
+  expect(await store.getPendingEntityMerges()).toEqual([]);
+
+  await store.replaceCommunities('default', [createCommunity({ id: 'community-new' })]);
+  expect((await store.getCommunities()).map((record) => record.id).sort()).toEqual([
+    'community-new',
+    'community-other-schema',
+  ]);
+  await store.replaceCommunities('default', []);
+  expect((await store.getCommunities()).map((record) => record.id)).toEqual(['community-other-schema']);
+}
+
+function sortPairs<T>(pairs: Array<[string, T]>): Array<[string, T]> {
+  return [...pairs].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function createEvidence(overrides: Partial<GraphEvidenceRecord> = {}): GraphEvidenceRecord {
   return {
     id: 'ev-1',
     filePath: 'note.md',
@@ -174,6 +255,7 @@ function createEvidence(): GraphEvidenceRecord {
     contentHash: 'hash-a',
     extractionModelKey: 'openai:gpt-4.1-mini',
     updatedAt: 1000,
+    ...overrides,
   };
 }
 
@@ -195,7 +277,7 @@ function createEntity(overrides: Partial<GraphEntityRecord> = {}): GraphEntityRe
   };
 }
 
-function createRelation(): GraphRelationRecord {
+function createRelation(overrides: Partial<GraphRelationRecord> = {}): GraphRelationRecord {
   return {
     id: 'rel-1',
     ontologySchemaId: 'default',
@@ -209,10 +291,11 @@ function createRelation(): GraphRelationRecord {
     evidenceIds: ['ev-1'],
     createdAt: 1000,
     updatedAt: 1000,
+    ...overrides,
   };
 }
 
-function createClaim(): GraphClaimRecord {
+function createClaim(overrides: Partial<GraphClaimRecord> = {}): GraphClaimRecord {
   return {
     id: 'claim-1',
     claimTypeId: 'fact',
@@ -223,10 +306,11 @@ function createClaim(): GraphClaimRecord {
     confidence: 0.7,
     evidenceIds: ['ev-1'],
     updatedAt: 1000,
+    ...overrides,
   };
 }
 
-function createCommunity(): GraphCommunityRecord {
+function createCommunity(overrides: Partial<GraphCommunityRecord> = {}): GraphCommunityRecord {
   return {
     id: 'community-1',
     ontologySchemaId: 'default',
@@ -238,6 +322,7 @@ function createCommunity(): GraphCommunityRecord {
     summaryVector: [1, 0],
     level: 0,
     updatedAt: 1000,
+    ...overrides,
   };
 }
 
