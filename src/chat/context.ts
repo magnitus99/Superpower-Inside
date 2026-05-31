@@ -41,6 +41,7 @@ const DEFAULT_MAX_FOLDER_FILES = 12;
 const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
 const DEFAULT_MAX_REFERENCE_FILES = 6;
 const DEFAULT_RAG_TOP_K = 5;
+const GRAPH_COMMUNITY_SOURCE_PREFIX = 'graph://community/';
 const VAULT_CONTEXT_RULES = [
   'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
   '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
@@ -107,13 +108,16 @@ export async function buildChatContext(
       const sourceIds: string[] = [];
       let rejectedCount = 0;
       for (const result of results) {
-        const verified = await verifyQueryResult(result, options.app);
+        const verified = isGraphVirtualSource(result.entry.metadata.filePath)
+          ? verifyGraphQueryResult(result)
+          : await verifyQueryResult(result, options.app);
         const citation = createCitation(
           'rag',
           citations.length + 1,
           result,
           verified.status,
           verified.detail,
+          verified.graphType,
         );
         citations.push(citation);
         if (verified.status !== 'verified') {
@@ -216,6 +220,7 @@ function createCitation(
   result: QueryResult,
   status: SourceCitation['status'],
   detail?: string,
+  graphType?: SourceCitation['graphType'],
 ): SourceCitation {
   const metadata = result.entry.metadata;
   return {
@@ -230,13 +235,14 @@ function createCitation(
     status,
     detail,
     preview: createPreview(metadata.text),
+    graphType,
   };
 }
 
 async function verifyQueryResult(
   result: QueryResult,
   app: App,
-): Promise<{ status: SourceCitation['status']; detail?: string }> {
+): Promise<QueryResultVerification> {
   const metadata = result.entry.metadata;
   const file = app.vault.getAbstractFileByPath(metadata.filePath);
   if (!(file instanceof TFile)) {
@@ -266,6 +272,23 @@ async function verifyQueryResult(
     return { status: 'stale', detail: '청크 라인 범위가 현재 파일과 맞지 않습니다.' };
   }
   return { status: 'verified' };
+}
+
+interface QueryResultVerification {
+  status: SourceCitation['status'];
+  detail?: string;
+  graphType?: SourceCitation['graphType'];
+}
+
+function isGraphVirtualSource(filePath: string): boolean {
+  return filePath.startsWith(GRAPH_COMMUNITY_SOURCE_PREFIX);
+}
+
+function verifyGraphQueryResult(result: QueryResult): QueryResultVerification {
+  if (result.entry.metadata.filePath.startsWith(GRAPH_COMMUNITY_SOURCE_PREFIX)) {
+    return { status: 'verified', graphType: 'community' };
+  }
+  return { status: 'missing', detail: '지원하지 않는 GraphRAG 출처입니다.' };
 }
 
 async function appendFileMention(

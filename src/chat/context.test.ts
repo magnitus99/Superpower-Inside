@@ -58,6 +58,33 @@ describe('buildChatContext RAG 출처 검증', () => {
       expect.objectContaining({ filePath: 'note.md', status: 'verified' }),
     );
   });
+
+  it('GraphRAG community 후보는 vault 파일이 없어도 Vault Context에 포함한다', async () => {
+    const app = createApp(new Map());
+    const ragEngine = createRagEngine([
+      createResult(
+        'graph://community/community::mission',
+        'Paul and Barnabas missionary conflict',
+        'graph-hash',
+      ),
+    ]);
+
+    const context = await buildChatContext('반복되는 핵심 주제는?', { app, ragEngine });
+
+    expect(context.systemPrompt).toContain('[Vault Context Rules]');
+    expect(context.systemPrompt).toContain('[Source rag-1: graph://community/community::mission]');
+    expect(context.systemPrompt).toContain('Paul and Barnabas missionary conflict');
+    expect(context.citations[0]).toEqual(
+      expect.objectContaining({
+        filePath: 'graph://community/community::mission',
+        status: 'verified',
+        graphType: 'community',
+      }),
+    );
+    expect(context.attachments[0]).toEqual(
+      expect.objectContaining({ type: 'rag', status: 'attached', sourceIds: ['rag-1'] }),
+    );
+  });
 });
 
 describe('buildChatContext 참조 문서 확장', () => {
