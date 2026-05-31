@@ -90,14 +90,18 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: var(--background-primary);
+  margin-bottom: 12px;
+  transition: box-shadow 0.15s ease;
 }
 
 .superpower-inside-provider-title-row {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 4px;
+  min-width: 0;
 }
 
 .superpower-inside-provider-selected-count {
@@ -255,7 +259,7 @@
 /* ── RAG Dashboard & Semantic Status ── */
 .superpower-inside-rag-status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
 }
 
@@ -368,7 +372,8 @@
 .superpower-inside-rag-controls {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -450,9 +455,14 @@
 
 /* ── Exclude Recommendation Batch ── */
 .superpower-inside-rag-recommendation-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-top: 8px;
 }
 .superpower-inside-rag-recommendation-checkbox {
   margin-top: 2px;
@@ -471,6 +481,10 @@
 /* ── Container query responsive ── */
 .superpower-inside-rag-status-panel {
   container-type: inline-size;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
 }
 
 @container (max-width: 320px) {
@@ -678,13 +692,6 @@
   font-size: var(--font-ui-smaller);
 }
 
-.superpower-inside-rag-status-panel {
-  padding: 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: var(--background-primary-alt);
-}
-
 .superpower-inside-rag-status-header {
   display: flex;
   align-items: center;
@@ -714,31 +721,6 @@
 .superpower-inside-rag-status-refresh-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.superpower-inside-rag-status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
-}
-
-.superpower-inside-rag-status-item {
-  padding: 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-primary);
-}
-
-.superpower-inside-rag-status-label {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-muted);
-}
-
-.superpower-inside-rag-status-value {
-  margin-top: 4px;
-  color: var(--text-normal);
-  font-weight: 600;
-  overflow-wrap: anywhere;
 }
 
 .superpower-inside-rag-status-timestamp {
@@ -860,17 +842,6 @@
   margin-bottom: 8px;
 }
 
-.superpower-inside-rag-recommendation-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  gap: 10px;
-  align-items: center;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 10px;
-  margin-top: 8px;
-}
-
 .superpower-inside-rag-recommendation-label {
   color: var(--text-normal);
   font-weight: 600;
@@ -958,14 +929,6 @@
   border-radius: 6px;
   border-left: 4px solid var(--interactive-accent);
   margin: 8px 0;
-}
-
-/* RAG Controls */
-.superpower-inside-rag-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
 }
 
 .superpower-inside-rag-controls button {
@@ -3309,12 +3272,6 @@
   margin-bottom: 12px;
 }
 
-/* Accordion card */
-.superpower-inside-provider-card {
-  margin-bottom: 12px;
-  transition: box-shadow 0.15s ease;
-}
-
 .superpower-inside-provider-card.is-collapsed .superpower-inside-provider-body {
   display: none;
 }
@@ -3363,16 +3320,6 @@
 
 .superpower-inside-provider-status-dot.disabled {
   background: var(--text-faint);
-}
-
-/* Title + meta row */
-.superpower-inside-provider-title-row {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
 }
 
 .superpower-inside-provider-title-text {
