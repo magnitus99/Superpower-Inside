@@ -367,7 +367,7 @@ export class GraphRagView extends ItemView {
         item.addEventListener('click', () => {
           const file = this.app.vault.getAbstractFileByPath(ev.filePath);
           if (file instanceof TFile) {
-            this.app.workspace.openLinkText(ev.filePath, '', true);
+            void this.app.workspace.openLinkText(ev.filePath, '', true);
           }
         });
         const lineInfo = ev.endLine ? `L${ev.startLine}-${ev.endLine}` : `L${ev.startLine}`;
@@ -445,7 +445,7 @@ export class GraphRagView extends ItemView {
   private renderEvidence(): void {
     if (!this.bodyEl) return;
     const query = this.searchQuery.toLowerCase().trim();
-    let filtered = query
+    const filtered = query
       ? this.allEvidence.filter((e) => e.filePath.toLowerCase().includes(query) || e.quote.toLowerCase().includes(query))
       : this.allEvidence;
 
@@ -475,7 +475,7 @@ export class GraphRagView extends ItemView {
         item.addEventListener('click', () => {
           const file = this.app.vault.getAbstractFileByPath(ev.filePath);
           if (file instanceof TFile) {
-            this.app.workspace.openLinkText(ev.filePath, '', true);
+            void this.app.workspace.openLinkText(ev.filePath, '', true);
           }
         });
         const lineInfo = ev.endLine ? `L${ev.startLine}-${ev.endLine}` : `L${ev.startLine}`;
@@ -495,7 +495,7 @@ export class GraphRagView extends ItemView {
     }
 
     const query = this.searchQuery.toLowerCase().trim();
-    let filtered = query
+    const filtered = query
       ? this.allCommunities.filter((c) => c.title.toLowerCase().includes(query) || c.summary.toLowerCase().includes(query))
       : this.allCommunities;
 
@@ -526,7 +526,7 @@ export class GraphRagView extends ItemView {
   private renderRejected(): void {
     if (!this.bodyEl) return;
     const query = this.searchQuery.toLowerCase().trim();
-    let filtered = query
+    const filtered = query
       ? this.allRejectedFacts.filter((r) => r.filePath.toLowerCase().includes(query) || r.reason.toLowerCase().includes(query))
       : this.allRejectedFacts;
 
@@ -561,7 +561,7 @@ export class GraphRagView extends ItemView {
           e.stopPropagation();
           retryBtn.setText('처리 중...');
           retryBtn.setAttr('disabled', 'true');
-          this.plugin.runGraphRagIndexing();
+          void this.plugin.runGraphRagIndexing();
         });
       }
       if (hasMore) break;

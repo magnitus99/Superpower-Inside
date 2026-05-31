@@ -155,7 +155,9 @@ export class GraphRagIndexingRunner {
         signal,
       );
 
-      await this.summarizer.storeCommunities(records);
+      for (const record of records) {
+        await this.graphStore.addCommunity(record);
+      }
 
       const result: GraphRagCommunityBuildResult = {
         communityCount: records.length,
