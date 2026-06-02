@@ -100,7 +100,6 @@ export class GraphExtractionIndexer {
     const payload = parseExtractedGraphPayload(rawResponse);
     if (!payload) {
       await this.reject(input, 'invalid-json', rawResponse);
-      await this.store.markExtractionCached({ ...cacheKey, updatedAt: Date.now() });
       return;
     }
 

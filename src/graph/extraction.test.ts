@@ -145,6 +145,25 @@ describe('GraphExtractionIndexer', () => {
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
   });
 
+  it('JSON 파싱 실패 chunk는 캐시하지 않아 같은 chunk를 다시 추출할 수 있다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = createProviderSequence([
+      'not-json',
+      JSON.stringify({
+        entities: [{ name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.8 }],
+        relations: [],
+        claims: [],
+      }),
+    ]);
+    const indexer = new GraphExtractionIndexer({ provider, store });
+
+    await indexer.extractChunk(createInput('Paul appears.'));
+    await indexer.extractChunk(createInput('Paul appears.'));
+
+    expect(provider.calls).toBe(2);
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+  });
+
   it('fenced JSON과 앞뒤 설명이 섞여도 유효 fact는 저장하고 invalid fact만 reject한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({

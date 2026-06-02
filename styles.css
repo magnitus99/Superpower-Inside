@@ -4056,8 +4056,32 @@
 
 .superpower-inside-graph-view-item-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
+}
+
+.superpower-inside-graph-view-rejected-details {
+  margin-top: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.superpower-inside-graph-view-rejected-details summary {
+  cursor: pointer;
+}
+
+.superpower-inside-graph-view-rejected-raw {
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .superpower-inside-graph-view-filter-bar {

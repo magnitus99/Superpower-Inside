@@ -1,7 +1,8 @@
-import { ItemView, TFile, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
 import type SuperpowerInsidePlugin from '../../main';
 import type { GraphEntityRecord, GraphRelationRecord, GraphCommunityRecord, GraphEvidenceRecord, GraphRejectedFactRecord } from './store';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
 
 export const GRAPH_RAG_VIEW_TYPE = 'superpower-inside-graph-rag';
 
@@ -552,10 +553,29 @@ export class GraphRagView extends ItemView {
       for (const fact of facts) {
         if (shown >= this.renderedItemLimit) { hasMore = true; break; }
         shown++;
+        const presentation = getRejectedFactPresentation(fact);
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.createSpan({ cls: 'superpower-inside-graph-view-item-date', text: new Date(fact.updatedAt).toLocaleString() });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(fact.reason, 300) });
+        item.createDiv({ cls: 'superpower-inside-graph-view-item-name', text: `${presentation.errorCode} · ${presentation.title}` });
+        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: presentation.description });
+        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: `원본 응답: ${presentation.rawPreview}` });
+        const details = item.createEl('details', { cls: 'superpower-inside-graph-view-rejected-details' });
+        details.createEl('summary', { text: '상세 보기' });
+        details.createEl('pre', {
+          cls: 'superpower-inside-graph-view-rejected-raw',
+          text: presentation.rawText,
+        });
         const actions = item.createDiv({ cls: 'superpower-inside-graph-view-item-actions' });
+        const copyDetailBtn = actions.createEl('button', { text: '상세 복사' });
+        copyDetailBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          void this.copyRejectedFactDetail(fact);
+        });
+        const copyRawBtn = actions.createEl('button', { text: '응답 복사' });
+        copyRawBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          void this.copyText(presentation.rawText, 'GraphRAG 원본 응답을 복사했습니다.');
+        });
         const retryBtn = actions.createEl('button', { cls: 'mod-cta', text: '다시 시도' });
         retryBtn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -567,6 +587,20 @@ export class GraphRagView extends ItemView {
       if (hasMore) break;
     }
     this.addLoadMoreButton(filtered.length, shown);
+  }
+
+  private async copyRejectedFactDetail(fact: GraphRejectedFactRecord): Promise<void> {
+    await this.copyText(buildRejectedFactCopyText(fact), 'GraphRAG 오류 상세 정보를 복사했습니다.');
+  }
+
+  private async copyText(text: string, successMessage: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice(successMessage, 3000);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      new Notice(`복사 실패: ${msg}`, 5000);
+    }
   }
 
   private navigateToEntity(entity: GraphEntityRecord | null): void {
