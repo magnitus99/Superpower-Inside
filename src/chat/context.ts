@@ -1,6 +1,7 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
+import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import type { KnowledgeGraphStore, GraphEntityRecord } from '../graph/store';
 import { createContentHash } from '../rag/hash';
 import type { ContextAttachment, SourceCitation } from './types';
@@ -16,6 +17,7 @@ export {
 
 export interface RagQueryLike {
   query(question: string, topK: number, minScore?: number): Promise<QueryResult[]>;
+  getLastRetrievalDiagnostics?(): RetrievalProviderDiagnostic[];
 }
 
 export interface ContextBuildResult {
@@ -129,6 +131,9 @@ export async function buildChatContext(
           text: `[Source ${citation.id}: ${citation.filePath}${citation.heading ? ` # ${citation.heading}` : ''}]\n${result.entry.metadata.text}`,
         });
       }
+      const diagnosticsText = formatRetrievalDiagnostics(
+        options.ragEngine.getLastRetrievalDiagnostics?.() ?? [],
+      );
       attachments.push({
         id: 'rag:auto',
         type: 'rag',
@@ -137,9 +142,12 @@ export async function buildChatContext(
         status: sourceIds.length > 0 ? 'attached' : 'low-relevance',
         detail:
           sourceIds.length > 0
-            ? rejectedCount > 0
-              ? `검증 실패 후보 ${rejectedCount}개는 컨텍스트에서 제외했습니다.`
-              : undefined
+            ? combineAttachmentDetails([
+                rejectedCount > 0
+                  ? `검증 실패 후보 ${rejectedCount}개는 컨텍스트에서 제외했습니다.`
+                  : null,
+                diagnosticsText,
+              ])
             : '유사도 임계치를 충족하는 관련 문서가 없습니다.',
         sourceIds,
       });
@@ -237,6 +245,19 @@ function createCitation(
     preview: createPreview(metadata.text),
     graphType,
   };
+}
+
+function formatRetrievalDiagnostics(diagnostics: readonly RetrievalProviderDiagnostic[]): string | null {
+  if (diagnostics.length === 0) return null;
+  const summary = diagnostics
+    .map((diagnostic) => `${diagnostic.providerId} ${diagnostic.status} ${diagnostic.candidateCount}개`)
+    .join(', ');
+  return `검색 진단: ${summary}`;
+}
+
+function combineAttachmentDetails(details: readonly (string | null | undefined)[]): string | undefined {
+  const text = details.filter((detail): detail is string => Boolean(detail)).join(' ');
+  return text || undefined;
 }
 
 async function verifyQueryResult(
