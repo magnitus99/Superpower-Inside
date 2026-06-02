@@ -608,6 +608,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       );
     }
 
+    containerEl.addClass('superpower-inside-settings-root');
+
     // 헤더
     containerEl.createEl('h2', { text: t('settingsTitle') });
 
@@ -629,7 +631,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
 
     // 탭 콘텐츠 패널
-    const tabContentContainer = containerEl.createDiv();
+    const tabContentContainer = containerEl.createDiv({
+      cls: 'superpower-inside-settings-tab-panels',
+    });
     TABS.forEach((tab) => {
       const panel = tabContentContainer.createDiv({
         cls: 'superpower-inside-settings-tab-content',
@@ -770,6 +774,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
 
+  private createSettingsPanel(
+    containerEl: HTMLElement,
+    titleText: string,
+    options: { description?: string; meta?: string; className?: string } = {},
+  ): HTMLElement {
+    const panel = containerEl.createDiv({
+      cls: `superpower-inside-settings-panel${options.className ? ` ${options.className}` : ''}`,
+    });
+    const header = panel.createDiv({ cls: 'superpower-inside-settings-panel-header' });
+    const titleGroup = header.createDiv({ cls: 'superpower-inside-settings-panel-title-group' });
+    titleGroup.createDiv({ cls: 'superpower-inside-settings-panel-title', text: titleText });
+    if (options.description) {
+      titleGroup.createDiv({
+        cls: 'superpower-inside-settings-panel-desc',
+        text: options.description,
+      });
+    }
+    if (options.meta) {
+      header.createDiv({ cls: 'superpower-inside-settings-panel-meta', text: options.meta });
+    }
+    return panel;
+  }
+
   private buildGeneralTab(containerEl: HTMLElement): void {
     containerEl.empty();
 
@@ -807,8 +834,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderOverviewCompactMetrics(matrix, '지식 인덱스', [snapshot.rag, snapshot.graphRag]);
     this.renderOverviewCompactMetrics(matrix, '채팅', [snapshot.chat]);
 
-    const basics = containerEl.createDiv({ cls: 'superpower-inside-overview-basics' });
-    basics.createDiv({ cls: 'superpower-inside-overview-section-title', text: '기본 설정' });
+    const basics = this.createSettingsPanel(containerEl, '기본 설정', {
+      description: '언어, 설정 저장 방식, 기본 채팅 모델을 조정합니다.',
+      className: 'superpower-inside-overview-basics',
+    });
 
     new Setting(basics)
       .setName(t('language'))
@@ -1030,6 +1059,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildProvidersTab(containerEl: HTMLElement): void {
+    this.createSettingsPanel(containerEl, '프로바이더', {
+      description:
+        '채팅과 명령어 실행에 사용할 LLM provider를 관리합니다. 활성화, 모델 선택, 연결 검증을 provider별로 확인합니다.',
+      meta: `${CHAT_PROVIDER_KEYS.length + this.plugin.settings.customOpenAIProviders.length}개 구성`,
+      className: 'superpower-inside-settings-intro-panel',
+    });
+
     this.buildProviderSettings(containerEl, {
       kind: 'fixed',
       key: 'openai',
@@ -3104,7 +3140,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildChatTab(containerEl: HTMLElement): void {
-    new Setting(containerEl)
+    const storagePanel = this.createSettingsPanel(containerEl, '저장', {
+      description: '채팅 세션 저장 위치와 자동 저장 방식을 관리합니다.',
+    });
+    const promptPanel = this.createSettingsPanel(containerEl, '시스템 프롬프트', {
+      description: '전역 기본 프롬프트와 빠른 프리셋을 관리합니다.',
+    });
+    const toolPanel = this.createSettingsPanel(containerEl, 'MCP 도구 실행', {
+      description: '멘션한 MCP 서버와 도구 호출 재시도 정책을 조정합니다.',
+    });
+
+    new Setting(storagePanel)
       .setName(t('chatSaveFolder'))
       .setDesc(t('chatSaveFolderDesc'))
       .addText((text) =>
@@ -3114,7 +3160,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(promptPanel)
       .setName(t('systemPrompt'))
       .setDesc(t('systemPromptDesc'))
       .addButton((button) => {
@@ -3154,7 +3200,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    new Setting(toolPanel)
       .setName(t('mcpToolExecutionPolicy'))
       .setDesc(t('mcpToolExecutionPolicyDesc'))
       .addDropdown((dropdown) =>
@@ -3170,7 +3216,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
 
-    const presetRow = containerEl.createDiv({ cls: 'superpower-inside-chat-presets' });
+    const presetRow = promptPanel.createDiv({ cls: 'superpower-inside-chat-presets' });
     const presets: { label: string; description: string; prompt: string }[] = [
       {
         label: '지식 연결',
@@ -3232,7 +3278,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
 
-    const resetRow = containerEl.createDiv({ cls: 'superpower-inside-chat-presets' });
+    const resetRow = promptPanel.createDiv({ cls: 'superpower-inside-chat-presets' });
     const resetBtn = resetRow.createEl('button', {
       text: t('resetToDefault'),
       cls: 'superpower-inside-mcp-preset-btn',
@@ -3249,7 +3295,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       new Notice('시스템 프롬프트가 초기화되었습니다.');
     });
 
-    new Setting(containerEl)
+    new Setting(storagePanel)
       .setName(t('chatAutoSave'))
       .setDesc(t('chatAutoSaveDesc'))
       .addToggle((toggle) =>
@@ -3259,7 +3305,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(storagePanel)
       .setName(t('chatAutoSaveDelay'))
       .setDesc(t('chatAutoSaveDelayDesc'))
       .addText((text) => {
@@ -3279,7 +3325,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.step = '500';
       });
 
-    new Setting(containerEl)
+    new Setting(toolPanel)
       .setName(t('enforceMcpTools'))
       .setDesc(t('enforceMcpToolsDesc'))
       .addToggle((toggle) =>
@@ -3292,9 +3338,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private buildMCPTab(containerEl: HTMLElement): void {
     containerEl.empty();
-    const mcpSection = containerEl.createDiv();
+    const mcpSection = containerEl.createDiv({ cls: 'superpower-inside-mcp-tab' });
+    const statusPanel = this.createSettingsPanel(mcpSection, '연결 상태', {
+      description: '활성 MCP 서버의 연결 상태를 확인하고 재연결합니다.',
+    });
+    const pathPanel = this.createSettingsPanel(mcpSection, t('mcpPathTitle'), {
+      description: t('mcpPathDesc'),
+    });
+    const editorPanel = this.createSettingsPanel(mcpSection, t('mcpJsonEditor'), {
+      description: '표준 mcpServers JSON으로 서버를 편집합니다. 유효한 JSON은 자동 저장됩니다.',
+    });
 
-    const pathHeader = mcpSection.createEl('div', {
+    const pathHeader = pathPanel.createEl('div', {
       cls: 'superpower-inside-mcp-collapsible-header',
     });
     const pathChevron = pathHeader.createEl('span', {
@@ -3306,12 +3361,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       text: t('mcpPathTitle'),
     });
 
-    const pathContent = mcpSection.createDiv({
+    const pathContent = pathPanel.createDiv({
       cls: 'superpower-inside-mcp-collapsible-content',
     });
-
-    const pathDesc = pathContent.createDiv({ cls: 'setting-item-description' });
-    pathDesc.setText(t('mcpPathDesc'));
 
     if (Platform.isWin) {
       new Setting(pathContent)
@@ -3390,9 +3442,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     pathContent.style.display = 'none';
 
-    mcpSection.createDiv({ cls: 'superpower-inside-mcp-section-divider' });
-
-    const statusSection = mcpSection.createDiv({ cls: 'superpower-inside-mcp-status' });
+    const statusSection = statusPanel.createDiv({ cls: 'superpower-inside-mcp-status' });
     this.renderMCPStatus(statusSection);
     this.unregisterMcpStatusEvent();
     this.mcpStatusEventRef = (this.app.workspace as unknown as Events).on(
@@ -3402,17 +3452,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       },
     );
 
-    mcpSection.createDiv({ cls: 'superpower-inside-mcp-section-divider' });
-    mcpSection.createEl('h3', {
-      text: t('mcpJsonEditor'),
-      cls: 'superpower-inside-mcp-section-title',
-    });
-
-    const lintStatus = mcpSection.createDiv({ cls: 'superpower-inside-mcp-lint-status' });
+    const lintStatus = editorPanel.createDiv({ cls: 'superpower-inside-mcp-lint-status' });
     lintStatus.setText('');
 
     const defaultJson = buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
-    const jsonTextArea = mcpSection.createEl('textarea', {
+    const jsonTextArea = editorPanel.createEl('textarea', {
       cls: 'superpower-inside-mcp-json-editor',
     });
     jsonTextArea.value = defaultJson;
@@ -3487,7 +3531,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
     });
 
-    new Setting(mcpSection).addButton((btn) =>
+    new Setting(editorPanel).addButton((btn) =>
       btn.setButtonText(t('save')).onClick(async () => {
         const result = validateMcpJson(jsonTextArea.value);
         if (result.valid) {
@@ -3575,7 +3619,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildAdvancedTab(containerEl: HTMLElement): void {
-    new Setting(containerEl)
+    const pluginAwarePanel = this.createSettingsPanel(containerEl, '플러그인 인식 생성', {
+      description:
+        '활성 플러그인 정보를 LLM 프롬프트에 포함해 Obsidian 문법 호환성을 높입니다.',
+    });
+
+    new Setting(pluginAwarePanel)
       .setName(t('pluginAwareGeneration'))
       .setDesc(t('pluginAwareGenerationDesc'))
       .addToggle((toggle) =>
@@ -3585,7 +3634,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
 
-    containerEl.createDiv({
+    pluginAwarePanel.createDiv({
       cls: 'superpower-inside-settings-help',
       text: t('pluginAwareGenerationLimitNotice'),
     });
@@ -3596,7 +3645,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         servers: this.plugin.settings.mcpServers,
       })
     ) {
-      containerEl.createDiv({
+      pluginAwarePanel.createDiv({
         cls: 'superpower-inside-settings-warning',
         text: t('pluginAwareContext7MissingWarning'),
       });
@@ -3607,7 +3656,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const { config, label } = target;
     const cacheKey = target.key;
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-settings-section superpower-inside-provider-card',
+      cls: 'superpower-inside-settings-panel superpower-inside-provider-card',
     });
     const titleRow = section.createDiv({ cls: 'superpower-inside-provider-title-row' });
     titleRow.createDiv({ cls: 'superpower-inside-settings-section-title', text: label });
@@ -3894,7 +3943,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private buildCustomOpenAIProvidersSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-settings-section superpower-inside-provider-custom-section',
+      cls: 'superpower-inside-settings-panel superpower-inside-provider-custom-section',
     });
     section.createDiv({
       cls: 'superpower-inside-settings-section-title',

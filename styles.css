@@ -190,10 +190,27 @@
 }
 
 /* Settings Tab */
+.superpower-inside-settings-root {
+  max-width: 860px;
+  margin: 0 auto;
+  padding-bottom: 24px;
+}
+
+.superpower-inside-settings-root h2 {
+  margin: 0 0 10px;
+  font-size: var(--font-ui-large);
+  line-height: 1.35;
+}
+
 .superpower-inside-settings-warning {
   color: var(--text-warning);
   font-size: var(--font-ui-smaller);
-  margin-bottom: 12px;
+  line-height: 1.45;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(var(--color-orange-rgb), 0.35);
+  border-radius: 8px;
+  background: rgba(var(--color-orange-rgb), 0.08);
 }
 
 .superpower-inside-settings-help {
@@ -252,13 +269,92 @@
 }
 
 .superpower-inside-settings-tab-content.is-active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superpower-inside-settings-tab-panels {
+  min-width: 0;
+}
+
+.superpower-inside-settings-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.superpower-inside-settings-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.superpower-inside-settings-panel-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.superpower-inside-settings-panel-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.superpower-inside-settings-panel-desc,
+.superpower-inside-settings-panel-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-settings-panel-meta {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.superpower-inside-settings-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.superpower-inside-settings-action-row,
+.superpower-inside-settings-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.superpower-inside-settings-editor {
+  width: 100%;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  resize: vertical;
 }
 
 .superpower-inside-overview {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .superpower-inside-overview-header,
@@ -293,8 +389,8 @@
 
 .superpower-inside-overview-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
 }
 
 .superpower-inside-overview-metric,
@@ -311,9 +407,9 @@
     'label status'
     'value value'
     'detail detail';
-  gap: 2px 6px;
-  min-height: 82px;
-  padding: 8px;
+  gap: 5px 8px;
+  min-height: 104px;
+  padding: 11px;
   text-align: left;
   color: var(--text-normal);
   cursor: pointer;
@@ -352,13 +448,15 @@
 
 .superpower-inside-overview-metric-detail {
   grid-area: detail;
+  display: -webkit-box;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   line-height: 1.35;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .superpower-inside-overview-metric.is-success,
@@ -380,12 +478,12 @@
 
 .superpower-inside-overview-matrix {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .superpower-inside-overview-panel {
-  padding: 8px;
+  padding: 11px;
   min-width: 0;
 }
 
@@ -407,20 +505,29 @@
 .superpower-inside-overview-status-row,
 .superpower-inside-overview-action-row {
   display: grid;
-  grid-template-columns: minmax(72px, 1fr) auto auto;
-  gap: 4px 8px;
+  grid-template-columns: minmax(130px, 1fr) auto;
+  grid-template-areas:
+    'name badge'
+    'value value'
+    'detail detail';
+  gap: 5px 8px;
   align-items: center;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--background-secondary);
   color: var(--text-normal);
+  box-shadow: none;
+  font-family: inherit;
+  height: auto;
   min-width: 0;
-  padding: 5px 7px;
+  padding: 8px 9px;
   text-align: left;
+  width: 100%;
 }
 
 .superpower-inside-overview-status-name,
 .superpower-inside-overview-action-label {
+  grid-area: name;
   font-size: var(--font-ui-small);
   font-weight: 600;
   min-width: 0;
@@ -436,15 +543,17 @@
   font-size: var(--font-ui-smaller);
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .superpower-inside-overview-status-value {
-  justify-self: end;
+  grid-area: value;
+  justify-self: start;
 }
 
 .superpower-inside-overview-status-badge {
+  grid-area: badge;
   border-radius: 999px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
@@ -455,17 +564,24 @@
 }
 
 .superpower-inside-overview-status-detail {
-  grid-column: 1 / -1;
+  grid-area: detail;
 }
 
 .superpower-inside-overview-action-row {
-  grid-template-columns: minmax(96px, 0.8fr) minmax(120px, 1.2fr) auto;
+  grid-template-columns: minmax(150px, 1fr) auto;
+}
+
+.superpower-inside-overview-action-detail {
+  grid-area: value;
+}
+
+.superpower-inside-overview-inline-btn {
+  grid-area: badge;
+  justify-self: end;
 }
 
 .superpower-inside-overview-basics {
-  border-top: 1px solid var(--background-modifier-border);
-  margin-top: 12px;
-  padding-top: 10px;
+  margin-top: 0;
 }
 
 .superpower-inside-overview-basics .setting-item {
@@ -487,6 +603,12 @@
   .superpower-inside-overview-action-detail,
   .superpower-inside-overview-status-detail {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .superpower-inside-overview-matrix {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1629,7 +1751,7 @@
   font-weight: 700;
   font-size: var(--font-ui-medium);
   color: var(--text-normal);
-  letter-spacing: -0.2px;
+  letter-spacing: 0;
 }
 
 .superpower-inside-chat-header-actions {
@@ -3996,4 +4118,173 @@
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+
+/* Settings redesign final alignment */
+.superpower-inside-provider-card {
+  margin: 0;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.superpower-inside-provider-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.superpower-inside-provider-selected-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.superpower-inside-provider-model-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 8px;
+}
+
+.superpower-inside-settings-model-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-settings-model-item {
+  min-height: 30px;
+  padding: 6px 9px;
+}
+
+.superpower-inside-provider-custom-section {
+  margin: 0;
+}
+
+.superpower-inside-rag-section,
+.superpower-inside-rag-advanced {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.superpower-inside-rag-section-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: 10px;
+}
+
+.superpower-inside-rag-status-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.superpower-inside-rag-status-item {
+  padding: 11px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-rag-status-value {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-rag-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.superpower-inside-rag-controls button {
+  border-radius: 6px;
+}
+
+.superpower-inside-settings-panel textarea {
+  width: 100%;
+}
+
+.superpower-inside-chat-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0 0;
+}
+
+.superpower-inside-mcp-preset-btn {
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-mcp-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superpower-inside-mcp-status {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.superpower-inside-mcp-status-item {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+}
+
+.superpower-inside-mcp-status-error-detail {
+  grid-column: 2 / -1;
+}
+
+.superpower-inside-mcp-json-editor {
+  min-height: 260px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-mcp-collapsible-header {
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.superpower-inside-mcp-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.superpower-inside-mcp-path-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .superpower-inside-provider-model-controls,
+  .superpower-inside-mcp-path-row {
+    grid-template-columns: 1fr;
+  }
+
+  .superpower-inside-mcp-path-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
 }
