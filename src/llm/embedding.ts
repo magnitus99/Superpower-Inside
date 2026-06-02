@@ -1,6 +1,8 @@
 import { requestUrl } from 'obsidian';
 import Dexie from 'dexie';
 import { createContentHash } from '../rag/hash';
+import { assertValidEmbeddingBatch } from './embedding-validation';
+export { assertValidEmbeddingBatch } from './embedding-validation';
 
 export interface EmbeddingRecord {
   id: string;
@@ -124,7 +126,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (!data.data) {
       throw new Error('Embedding response missing data');
     }
-    return data.data.map((d) => d.embedding);
+    const vectors = data.data.map((d) => d.embedding);
+    assertValidEmbeddingBatch(vectors, texts.length, 'OpenAI embedding batch');
+    return vectors;
   }
 }
 
@@ -171,6 +175,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       vectors.push(await this.embedSingle(text, headers, options));
       throwIfAborted(options?.signal);
     }
+    assertValidEmbeddingBatch(vectors, texts.length, 'Ollama embedding batch');
     return vectors;
   }
 

@@ -139,6 +139,42 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(await store.getEntries()).toEqual([]);
   });
 
+  it('임베딩 batch 결과 개수가 입력 개수와 다르면 벡터를 저장하지 않는다', async () => {
+    const file = createFile('note.md', 1000, 120);
+    const vault = createVault(new Map([[file.path, ['first chunk', '', 'second chunk'].join('\n')]]));
+    const store = new MemoryVectorStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: () => Promise.resolve([[1, 0]]),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), chunkSize: 20 },
+      createChatConfig(),
+    );
+
+    await expect(indexer.indexFile(file, { maxEmbeddingBatchSize: 10 })).rejects.toThrow(
+      /Embedding batch result count mismatch/,
+    );
+    expect(await store.getEntries()).toEqual([]);
+  });
+
+  it('임베딩 vector가 유한한 숫자 배열이 아니면 벡터를 저장하지 않는다', async () => {
+    const file = createFile('note.md', 1000, 80);
+    const vault = createVault(new Map([[file.path, '문서 내용']]));
+    const store = new MemoryVectorStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: () => Promise.resolve([[Number.NaN, 0]]),
+    };
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+
+    await expect(indexer.indexFile(file)).rejects.toThrow(/Invalid embedding vector/);
+    expect(await store.getEntries()).toEqual([]);
+  });
+
   it('빈 파일은 기존 벡터를 제거한다', async () => {
     const file = createFile('empty.md', 1000, 0);
     const vault = createVault(new Map([[file.path, '']]));

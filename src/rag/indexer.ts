@@ -1,5 +1,6 @@
 import type { TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
+import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
 import type { VectorStore, VectorEntry } from './store';
 import {
   getRagCandidateFiles,
@@ -578,12 +579,19 @@ export class VaultIndexer {
   ): Promise<number[][]> {
     const batchSize = Math.max(1, Math.floor(options.maxEmbeddingBatchSize ?? texts.length));
     const vectors: number[][] = [];
+    let expectedDimension: number | undefined;
 
     for (let offset = 0; offset < texts.length; offset += batchSize) {
       throwIfIndexingCancelled(options.signal);
       const batch = texts.slice(offset, offset + batchSize);
       const startedAt = performance.now();
       const batchVectors = await this.embeddingProvider.embedBatch(batch, { signal: options.signal });
+      expectedDimension = assertValidEmbeddingBatch(
+        batchVectors,
+        batch.length,
+        'Embedding batch',
+        expectedDimension,
+      );
       const durationMs = performance.now() - startedAt;
       options.onBatchComplete?.(durationMs);
       if (options.getPerformanceGuardState?.()?.mode === 'paused') {
