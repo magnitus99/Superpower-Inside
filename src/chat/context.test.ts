@@ -59,6 +59,34 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
+  it('RAG provider diagnostic 요약을 attachment detail에 표시한다', async () => {
+    const file = createFile('note.md', '현재 내용', 1000);
+    const app = createApp(new Map([['note.md', file]]));
+    const ragEngine = {
+      query: () => Promise.resolve([createResult('note.md', '현재 내용', createContentHash('현재 내용'))]),
+      getLastRetrievalDiagnostics: () => [
+        { providerId: 'exact-vector', source: 'vector', status: 'ok', durationMs: 12, candidateCount: 5 },
+        { providerId: 'bm25', source: 'bm25', status: 'timeout', durationMs: 80, candidateCount: 0 },
+      ],
+    } satisfies RagQueryLike & {
+      getLastRetrievalDiagnostics: () => Array<{
+        providerId: string;
+        source: string;
+        status: string;
+        durationMs: number;
+        candidateCount: number;
+      }>;
+    };
+
+    const context = await buildChatContext('질문', { app, ragEngine });
+
+    expect(context.attachments[0]).toEqual(
+      expect.objectContaining({
+        detail: '검색 진단: exact-vector ok 5개, bm25 timeout 0개',
+      }),
+    );
+  });
+
   it('GraphRAG community 후보는 vault 파일이 없어도 Vault Context에 포함한다', async () => {
     const app = createApp(new Map());
     const ragEngine = createRagEngine([

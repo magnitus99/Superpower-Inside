@@ -35,7 +35,7 @@ export interface CandidateProvider {
   id: string;
   source: RetrievalCandidateSource;
   deadlineMs: number;
-  getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]>;
+  getCandidates(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]>;
 }
 
 export type RetrievalProviderStatus = 'ok' | 'timeout' | 'error';
@@ -63,8 +63,11 @@ export class ExactVectorCandidateProvider implements CandidateProvider {
     readonly deadlineMs = 300,
   ) {}
 
-  async getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const entries = await this.vectorStore.query(request.queryVector, request.candidateLimit);
+  async getCandidates(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    const entries = await this.vectorStore.query(request.queryVector, request.candidateLimit, signal);
     return entries.map((entry) => ({
       entry,
       source: this.source,
@@ -91,7 +94,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
   readonly id = 'ivf-vector';
   readonly source = 'ann';
   private index: IvfVectorIndex | null = null;
-  private indexedEntryCount = 0;
+  private indexedFingerprint = '';
   private state: IvfVectorCandidateProviderState = {
     mode: 'empty',
     entryCount: 0,
@@ -107,8 +110,13 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     readonly deadlineMs = 300,
   ) {}
 
-  async getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+  async getCandidates(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    throwIfAborted(signal);
     const entries = await this.vectorStore.getEntries();
+    throwIfAborted(signal);
     if (entries.length < this.options.minEntryCount) {
       this.state = {
         mode: entries.length === 0 ? 'empty' : 'exact',
@@ -118,14 +126,18 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
         lastBuiltAt: this.state.lastBuiltAt,
         lastQueriedAt: Date.now(),
       };
-      const exactEntries = await this.vectorStore.query(request.queryVector, request.candidateLimit);
+      const exactEntries = await this.vectorStore.query(
+        request.queryVector,
+        request.candidateLimit,
+        signal,
+      );
       return exactEntries.map((entry) => ({
         entry,
         source: 'vector',
       }));
     }
 
-    const index = this.getOrBuildIndex(entries);
+    const index = this.getOrBuildIndex(entries, signal);
     this.state = {
       ...this.state,
       mode: 'ann',
@@ -134,7 +146,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
       probeCount: Math.max(1, Math.min(this.options.probeCount, index.clusterCount)),
       lastQueriedAt: Date.now(),
     };
-    return index.query(request.queryVector, request.candidateLimit, this.options.probeCount).map(
+    return index.query(request.queryVector, request.candidateLimit, this.options.probeCount, signal).map(
       ({ entry, score }) => ({
         entry,
         source: this.source,
@@ -144,12 +156,13 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     );
   }
 
-  private getOrBuildIndex(entries: readonly VectorEntry[]): IvfVectorIndex {
-    if (this.index && this.indexedEntryCount === entries.length) {
+  private getOrBuildIndex(entries: readonly VectorEntry[], signal?: AbortSignal): IvfVectorIndex {
+    const fingerprint = createEntriesFingerprint(entries);
+    if (this.index && this.indexedFingerprint === fingerprint) {
       return this.index;
     }
-    this.index = IvfVectorIndex.build(entries, this.options.clusterCount);
-    this.indexedEntryCount = entries.length;
+    this.index = IvfVectorIndex.build(entries, this.options.clusterCount, signal);
+    this.indexedFingerprint = fingerprint;
     this.state = {
       ...this.state,
       entryCount: entries.length,
@@ -174,25 +187,47 @@ export class BM25CandidateProvider implements CandidateProvider {
     readonly deadlineMs = 80,
   ) {}
 
-  async getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+  async getCandidates(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    throwIfAborted(signal);
     if (!this.bm25Index.isReady) return [];
 
     const scores = this.bm25Index.search(request.question);
     if (scores.size === 0) return [];
 
-    const filePaths = [...scores.keys()];
-    const maxScore = Math.max(...scores.values(), 1);
-    const entries = await this.vectorStore.getEntriesByFilePaths(filePaths);
-    const allowedPaths = new Set(filePaths);
+    const docIds = [...scores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, request.candidateLimit * 4)
+      .map(([docId]) => docId);
+    const maxScore = Math.max(...docIds.map((docId) => scores.get(docId) ?? 0), 1);
+    const entriesById = new Map(
+      (await this.vectorStore.getEntriesByIds(docIds)).map((entry) => [entry.id, entry]),
+    );
+    throwIfAborted(signal);
+    const foundEntries = docIds
+      .map((docId) => entriesById.get(docId))
+      .filter((entry): entry is VectorEntry => entry !== undefined);
+    const missingSources = docIds
+      .filter((docId) => !entriesById.has(docId))
+      .map((docId) => this.bm25Index.getDocumentSource(docId) ?? docId);
+    const fallbackEntries =
+      missingSources.length > 0
+        ? await this.vectorStore.getEntriesByFilePaths([...new Set(missingSources)])
+        : [];
+    throwIfAborted(signal);
 
-    return entries
-      .filter((entry) => allowedPaths.has(entry.metadata.filePath))
+    return [...foundEntries, ...fallbackEntries]
+      .filter((entry) => scores.has(entry.id) || scores.has(entry.metadata.filePath))
       .map((entry) => ({
         entry,
-        source: this.source,
-        sourceScore: (scores.get(entry.metadata.filePath) ?? 0) / maxScore,
+        source: 'bm25' as const,
+        sourceScore:
+          (scores.get(entry.id) ?? scores.get(entry.metadata.filePath) ?? 0) / maxScore,
         reason: 'keyword-match',
-      }));
+      }))
+      .slice(0, request.candidateLimit);
   }
 }
 
@@ -214,11 +249,16 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     readonly deadlineMs = 30,
   ) {}
 
-  async getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+  async getCandidates(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
     const seedEntries = await this.vectorStore.query(
       request.queryVector,
       Math.max(1, Math.min(this.seedLimit, request.candidateLimit)),
+      signal,
     );
+    throwIfAborted(signal);
     if (seedEntries.length === 0) return [];
 
     const seedIds = new Set(seedEntries.map((entry) => entry.id));
@@ -229,6 +269,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
 
     const linkedEntries =
       targetPaths.size > 0 ? await this.vectorStore.getEntriesByFilePaths([...targetPaths]) : [];
+    throwIfAborted(signal);
     const headingEntries = await this.getHeadingNeighborEntries(seedEntries);
     const candidatesById = new Map<string, RetrievalCandidate>();
 
@@ -345,9 +386,11 @@ export class RagRetrievalPipeline {
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
     try {
+      const abortController = new AbortController();
       const candidates = await withProviderDeadline(
-        provider.getCandidates(request),
+        provider.getCandidates(request, abortController.signal),
         provider.deadlineMs,
+        abortController,
       );
       return {
         candidates,
@@ -455,16 +498,21 @@ class IvfVectorIndex {
     return this.centroids.length;
   }
 
-  static build(entries: readonly VectorEntry[], requestedClusterCount: number): IvfVectorIndex {
+  static build(
+    entries: readonly VectorEntry[],
+    requestedClusterCount: number,
+    signal?: AbortSignal,
+  ): IvfVectorIndex {
     if (entries.length === 0) return new IvfVectorIndex([], []);
 
     const clusterCount = resolveClusterCount(entries.length, requestedClusterCount);
     let centroids = createInitialCentroids(entries, clusterCount);
-    let clusters = assignClusters(entries, centroids);
+    let clusters = assignClusters(entries, centroids, signal);
 
     for (let iteration = 0; iteration < 4; iteration++) {
+      throwIfAborted(signal);
       centroids = recomputeCentroids(clusters, centroids);
-      clusters = assignClusters(entries, centroids);
+      clusters = assignClusters(entries, centroids, signal);
     }
 
     return new IvfVectorIndex(centroids, clusters);
@@ -474,6 +522,7 @@ class IvfVectorIndex {
     vector: readonly number[],
     topK: number,
     probeCount: number,
+    signal?: AbortSignal,
   ): Array<{ entry: VectorEntry; score: number }> {
     if (this.centroids.length === 0) return [];
 
@@ -487,6 +536,7 @@ class IvfVectorIndex {
       .map((candidate) => candidate.index);
 
     const candidates = centroidIndexes.flatMap((index) => this.clusters[index] ?? []);
+    throwIfAborted(signal);
     return candidates
       .map((entry) => ({
         entry,
@@ -516,9 +566,11 @@ function createInitialCentroids(entries: readonly VectorEntry[], clusterCount: n
 function assignClusters(
   entries: readonly VectorEntry[],
   centroids: readonly (readonly number[])[],
+  signal?: AbortSignal,
 ): VectorEntry[][] {
   const clusters = Array.from({ length: centroids.length }, () => [] as VectorEntry[]);
   for (const entry of entries) {
+    throwIfAborted(signal);
     let bestIndex = 0;
     let bestScore = Number.NEGATIVE_INFINITY;
     for (let index = 0; index < centroids.length; index++) {
@@ -566,12 +618,19 @@ function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
-function withProviderDeadline<T>(operation: Promise<T>, deadlineMs: number): Promise<T> {
+function withProviderDeadline<T>(
+  operation: Promise<T>,
+  deadlineMs: number,
+  abortController: AbortController,
+): Promise<T> {
   if (deadlineMs <= 0) return operation;
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new ProviderTimeoutError()), deadlineMs);
+    timeoutId = setTimeout(() => {
+      abortController.abort();
+      reject(new ProviderTimeoutError());
+    }, deadlineMs);
   });
 
   return Promise.race([operation, timeout]).finally(() => {
@@ -582,6 +641,22 @@ function withProviderDeadline<T>(operation: Promise<T>, deadlineMs: number): Pro
 class ProviderTimeoutError extends Error {
   constructor() {
     super('retrieval provider timed out');
+  }
+}
+
+function createEntriesFingerprint(entries: readonly VectorEntry[]): string {
+  return entries
+    .map((entry) => {
+      const contentHash = entry.metadata.contentHash ?? '';
+      const indexedAt = entry.metadata.indexedAt ?? 0;
+      return `${entry.id}:${contentHash}:${indexedAt}:${entry.vector.length}`;
+    })
+    .join('|');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
   }
 }
 

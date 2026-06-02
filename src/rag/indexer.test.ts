@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { chunkMarkdown, chunkPlainText, buildSearchText, VaultIndexer } from './indexer';
-import type { TFile, Vault } from 'obsidian';
+import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
+import { JsonFileBM25Index } from './bm25';
 
 describe('chunkMarkdown + buildSearchText Ollama context length scenario', () => {
   it('chunkSize 1000으로 큰 파일을 청킹하면 buildSearchText 결과가 Ollama 안전 문자수(3000자)를 초과할 수 있다', () => {
@@ -154,6 +155,64 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(result).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
     expect(await store.getEntries()).toEqual([]);
   });
+
+  it('BM25 인덱스는 청크 ID로 갱신하고 파일 삭제 시 함께 제거한다', async () => {
+    const file = createFile('note.md', 1000, 120);
+    const vault = createVault(new Map([[file.path, ['specialterm 첫 청크', '', '다른 내용'].join('\n')]]));
+    const store = new MemoryVectorStore();
+    const bm25 = new JsonFileBM25Index(createAdapter());
+    await bm25.load();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const ragConfig = { ...createRagConfig(), chunkSize: 40, enableBM25: true };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      ragConfig,
+      createChatConfig(),
+      bm25,
+    );
+
+    await indexer.indexFile(file);
+
+    const indexedIds = [...bm25.search('specialterm').keys()];
+    expect(indexedIds.length).toBeGreaterThan(0);
+    expect(indexedIds.every((id) => id.startsWith('note.md::'))).toBe(true);
+    expect(indexedIds).not.toContain('note.md');
+
+    await indexer.removeFile('note.md');
+
+    expect([...bm25.search('specialterm').keys()]).toEqual([]);
+  });
+
+  it('전체 재인덱싱 전에 BM25에 남은 stale 문서를 제거한다', async () => {
+    const file = createFile('current.md', 1000, 80);
+    const vault = createVault(new Map([[file.path, '현재 문서 내용']]));
+    const store = new MemoryVectorStore();
+    const bm25 = new JsonFileBM25Index(createAdapter());
+    await bm25.load();
+    bm25.addDocument('deleted.md::0', 'staleterm 오래된 문서', 'deleted.md');
+    await bm25.persist();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), enableBM25: true },
+      createChatConfig(),
+      bm25,
+    );
+
+    await indexer.reindexAll();
+
+    expect([...bm25.search('staleterm').keys()]).toEqual([]);
+  });
 });
 
 function createRagConfig(): RAGConfig {
@@ -212,6 +271,19 @@ function createVault(contents: Map<string, string>): Vault {
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
   } as unknown as Vault;
+}
+
+function createAdapter(): DataAdapter {
+  const files = new Map<string, string>();
+  return {
+    exists: (path: string) => Promise.resolve(files.has(path)),
+    read: (path: string) => Promise.resolve(files.get(path) ?? ''),
+    write: (path: string, data: string) => {
+      files.set(path, data);
+      return Promise.resolve();
+    },
+    mkdir: () => Promise.resolve(),
+  } as unknown as DataAdapter;
 }
 
 function createFile(path: string, mtime: number, size: number): TFile {

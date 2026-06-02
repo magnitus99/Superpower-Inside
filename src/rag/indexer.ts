@@ -433,6 +433,10 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
       await this.vectorStore.removeByFilePath(file.path);
+      if (this.bm25Index) {
+        this.bm25Index.removeDocumentsBySource(file.path);
+        await this.bm25Index.persist();
+      }
       throwIfIndexingCancelled(options.signal);
       return finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -467,12 +471,12 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
 
     if (this.bm25Index) {
-      this.bm25Index.removeDocument(file.path);
-      if (content.trim()) {
-        this.bm25Index.addDocument(file.path, content);
-        await this.bm25Index.persist();
-        throwIfIndexingCancelled(options.signal);
+      this.bm25Index.removeDocumentsBySource(file.path);
+      for (const entry of entries) {
+        this.bm25Index.addDocument(entry.id, entry.metadata.text, file.path);
       }
+      await this.bm25Index.persist();
+      throwIfIndexingCancelled(options.signal);
     }
 
     return finishIndexingResult(
@@ -487,6 +491,9 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const result = await this.vectorStore.withBatch(async () => {
       await this.vectorStore.clear();
+      if (this.bm25Index) {
+        await this.bm25Index.clear();
+      }
       throwIfIndexingCancelled(options.signal);
       return this.indexVault(options);
     });
@@ -500,6 +507,15 @@ export class VaultIndexer {
       startedAt,
       options,
     );
+  }
+
+  async removeFile(filePath: string): Promise<number> {
+    const removed = await this.vectorStore.removeByFilePath(filePath);
+    if (this.bm25Index) {
+      this.bm25Index.removeDocumentsBySource(filePath);
+      await this.bm25Index.persist();
+    }
+    return removed;
   }
 
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
