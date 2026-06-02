@@ -242,17 +242,21 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
 const MAX_MEMORY_CACHE_SIZE = 5000;
 
+export function createEmbeddingCacheNamespace(providerKey: string, modelName: string): string {
+  return `${providerKey.trim()}::${modelName.trim()}`;
+}
+
 export class CachedEmbeddingProvider implements EmbeddingProvider {
   private inner: EmbeddingProvider;
   private memoryCache: Map<string, number[]>;
-  private modelName: string;
+  private cacheNamespace: string;
   private cacheKeys: string[];
 
-  constructor(inner: EmbeddingProvider, modelName: string) {
+  constructor(inner: EmbeddingProvider, cacheNamespace: string) {
     this.inner = inner;
     this.memoryCache = new Map();
     this.cacheKeys = [];
-    this.modelName = modelName;
+    this.cacheNamespace = cacheNamespace;
   }
 
   private setCache(hash: string, vector: number[]): void {
@@ -271,7 +275,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   }
 
   private computeHash(text: string): string {
-    return createContentHash(`${this.modelName}::${text}`);
+    return createContentHash(`${this.cacheNamespace}::${text}`);
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {

@@ -57,6 +57,8 @@ export interface QueryResult {
   bm25Score: number;
   combinedScore: number;
   retrievalSources?: string[];
+  sourceEvidenceScore?: number;
+  bestEvidenceRank?: number;
   sourcePath: string;
   chunkRange: {
     startLine: number;
@@ -152,6 +154,8 @@ export class RAGQueryEngine {
         continue;
       }
       const bm25 = candidate.sourceScores.bm25 ?? 0;
+      const sourceEvidenceScore = getSourceEvidenceScore(candidate.sourceScores);
+      const bestEvidenceRank = getBestEvidenceRank(candidate.sourceRanks);
       const combinedBase = this.bm25Index?.isReady
         ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
         : cosineScore;
@@ -168,6 +172,8 @@ export class RAGQueryEngine {
         bm25Score: bm25,
         combinedScore: combined,
         retrievalSources: [...candidate.sources],
+        sourceEvidenceScore,
+        bestEvidenceRank,
         sourcePath: entry.metadata.filePath,
         chunkRange: {
           startLine: entry.metadata.startLine,
@@ -393,11 +399,19 @@ function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boole
   if (!Number.isFinite(result.combinedScore) || !Number.isFinite(result.vectorScore)) {
     return false;
   }
+  if (hasStrongGraphOrStructuralEvidence(result)) return true;
   if (result.combinedScore < threshold) return false;
   if (hasGraphOrStructuralEvidence(result)) return true;
   if (!hasBm25) return result.vectorScore >= Math.max(0.62, threshold);
   if (result.bm25Score > 0 && result.keywordMatches > 0) return true;
   return result.vectorScore >= Math.max(0.62, threshold + 0.08);
+}
+
+function hasStrongGraphOrStructuralEvidence(result: QueryResult): boolean {
+  if (!hasGraphOrStructuralEvidence(result)) return false;
+  const evidenceScore = result.sourceEvidenceScore ?? 0;
+  const rank = result.bestEvidenceRank ?? Number.POSITIVE_INFINITY;
+  return evidenceScore >= 0.7 || rank <= 2;
 }
 
 function hasGraphOrStructuralEvidence(result: QueryResult): boolean {
@@ -450,6 +464,26 @@ function getRetrievalSourcePrior(
     typeof sourceScores.structural === 'number' ? Math.min(0.18, sourceScores.structural * 0.12) : 0;
   const annPrior = typeof sourceScores.ann === 'number' ? Math.min(0.08, sourceScores.ann * 0.05) : 0;
   return Math.max(graphPrior, structuralPrior, annPrior);
+}
+
+function getSourceEvidenceScore(sourceScores: Partial<Record<string, number>>): number {
+  return Math.max(
+    sourceScores['graph-local'] ?? 0,
+    sourceScores['graph-global'] ?? 0,
+    sourceScores.evidence ?? 0,
+    sourceScores.structural ?? 0,
+  );
+}
+
+function getBestEvidenceRank(sourceRanks: Partial<Record<string, number>>): number | undefined {
+  const ranks = [
+    sourceRanks['graph-local'],
+    sourceRanks['graph-global'],
+    sourceRanks.evidence,
+    sourceRanks.structural,
+  ].filter((rank): rank is number => typeof rank === 'number' && rank >= 1);
+  if (ranks.length === 0) return undefined;
+  return Math.min(...ranks);
 }
 
 function selectDiverseResults(results: QueryResult[], topK: number): QueryResult[] {

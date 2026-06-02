@@ -76,6 +76,7 @@ export class GraphExtractionIndexer {
     this.entityResolver = new EntityResolver(options.store, {
       autoMergeThreshold: options.entityResolverOptions?.autoMergeThreshold ?? 0.88,
       pendingMergeThreshold: options.entityResolverOptions?.pendingMergeThreshold ?? 0.72,
+      embeddingProvider: options.entityResolverOptions?.embeddingProvider,
     });
   }
 

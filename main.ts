@@ -28,6 +28,7 @@ import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
   CachedEmbeddingProvider,
+  createEmbeddingCacheNamespace,
   type EmbeddingProvider,
 } from './src/llm/embedding';
 import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './src/rag/store';
@@ -903,7 +904,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel);
     }
 
-    this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, rag.embeddingModel);
+    this.embeddingProvider = new CachedEmbeddingProvider(
+      rawProvider,
+      createEmbeddingCacheNamespace(providerKey, rag.embeddingModel),
+    );
 
     // Vector store
     this.vectorStore =

@@ -197,6 +197,39 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
+  it('GraphRAG 근거 점수가 높으면 기본 threshold에서도 낮은 vector 후보를 유지한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
+      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence(createEvidence());
+    await graphStore.upsertEntity(createGraphEntity('Paul'));
+    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
+    await graphStore.addRelation(createGraphRelation());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3);
+
+    const graphEnabledEngine = new RAGQueryEngine(
+      store,
+      createEmbeddingProvider([1, 0]),
+      undefined,
+      0.3,
+      0.5,
+      {
+        graphRagEnabled: true,
+        graphRagQueryEngine: graphEngine,
+      },
+    );
+
+    const withoutGraph = await engine.query('Paul과 Barnabas 관계', 2);
+    const withGraph = await graphEnabledEngine.query('Paul과 Barnabas 관계', 2);
+
+    expect(withoutGraph.map((result) => result.entry.metadata.filePath)).not.toContain('graph.md');
+    expect(withGraph.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
+  });
+
   it('GraphRAG 점수 후보가 직접 semantic 후보를 부당하게 앞지르지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
+import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
@@ -194,6 +195,57 @@ describe('GraphExtractionIndexer', () => {
     expect(entities.map((entity) => entity.canonicalName)).toEqual(['Paul']);
     expect(entities[0]?.evidenceIds).toHaveLength(2);
   });
+
+  it('추출 경로에서도 임베딩 유사도를 entity resolver에 전달한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProviderSequence([
+        JSON.stringify({
+          entities: [
+            {
+              name: 'Grace',
+              typeId: 'concept',
+              description: 'divine favor and mercy',
+              confidence: 0.9,
+            },
+          ],
+          relations: [],
+          claims: [],
+        }),
+        JSON.stringify({
+          entities: [
+            {
+              name: 'Divine Mercy',
+              typeId: 'concept',
+              description: 'divine favor and mercy',
+              confidence: 0.8,
+            },
+          ],
+          relations: [],
+          claims: [],
+        }),
+      ]),
+      store,
+      entityResolverOptions: {
+        autoMergeThreshold: 0.92,
+        pendingMergeThreshold: 0.72,
+        embeddingProvider: createEmbeddingProvider(),
+      },
+    });
+
+    await indexer.extractChunk(createInput('Grace appears.', 'note.md::1::0'));
+    await indexer.extractChunk({
+      ...createInput('Divine Mercy appears.', 'note.md::2::0'),
+      contentHash: 'hash-2',
+    });
+
+    expect(await store.getPendingEntityMerges()).toEqual([
+      expect.objectContaining({
+        existingEntityId: 'entity::default::concept::grace',
+        candidateEntityId: 'entity::default::concept::divine-mercy',
+      }),
+    ]);
+  });
 });
 
 function createInput(
@@ -229,4 +281,15 @@ function createProviderSequence(responses: string[]): LLMProvider & { calls: num
     },
     streamChat: () => Promise.resolve(),
   };
+}
+
+function createEmbeddingProvider(): EmbeddingProvider {
+  return {
+    embed: (text: string) => Promise.resolve(createEmbeddingVector(text)),
+    embedBatch: (texts: string[]) => Promise.resolve(texts.map(createEmbeddingVector)),
+  };
+}
+
+function createEmbeddingVector(text: string): number[] {
+  return text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1];
 }

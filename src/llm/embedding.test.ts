@@ -1,5 +1,12 @@
+import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OllamaEmbeddingProvider, OpenAIEmbeddingProvider } from './embedding';
+import {
+  CachedEmbeddingProvider,
+  OllamaEmbeddingProvider,
+  OpenAIEmbeddingProvider,
+  createEmbeddingCacheNamespace,
+  type EmbeddingProvider,
+} from './embedding';
 import {
   requestUrl,
   type RequestUrlParam,
@@ -179,3 +186,32 @@ describe('OpenAIEmbeddingProvider', () => {
     );
   });
 });
+
+describe('CachedEmbeddingProvider', () => {
+  it('provider와 model을 함께 cache namespace에 포함한다', () => {
+    expect(createEmbeddingCacheNamespace('openai', 'shared-model')).toBe(
+      'openai::shared-model',
+    );
+    expect(createEmbeddingCacheNamespace('ollama', 'shared-model')).toBe(
+      'ollama::shared-model',
+    );
+  });
+
+  it('같은 텍스트라도 cache namespace가 다르면 서로 다른 벡터를 저장한다', async () => {
+    const first = new CachedEmbeddingProvider(createStaticEmbeddingProvider([1, 0]), 'openai::model');
+    const second = new CachedEmbeddingProvider(createStaticEmbeddingProvider([0, 1]), 'ollama::model');
+    await first.clearCache();
+
+    await expect(first.embed('same text')).resolves.toEqual([1, 0]);
+    await expect(second.embed('same text')).resolves.toEqual([0, 1]);
+
+    await second.clearCache();
+  });
+});
+
+function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {
+  return {
+    embed: () => Promise.resolve(vector),
+    embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => vector)),
+  };
+}
