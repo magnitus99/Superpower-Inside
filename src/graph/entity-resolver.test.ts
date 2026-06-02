@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { EntityResolver, normalizeEntityName } from './entity-resolver';
 import { InMemoryKnowledgeGraphStore, type GraphEntityRecord } from './store';
@@ -74,12 +75,87 @@ describe('EntityResolver', () => {
       }),
     ]);
   });
+
+  it('alias 부분 일치와 설명 토큰으로 중복 가능성이 높은 entity를 pending merge로 남긴다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity({
+      canonicalName: 'Paul',
+      aliases: ['Saul'],
+      description: 'Apostle missionary',
+    }));
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.88,
+      pendingMergeThreshold: 0.5,
+    });
+
+    const result = await resolver.resolve({
+      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      typeId: 'person',
+      canonicalName: 'Saul of Tarsus',
+      aliases: [],
+      description: 'Apostle Paul missionary',
+    });
+
+    expect(result.status).toBe('pending-merge');
+    expect(result.matchedEntityId).toBe('entity::default::person::paul');
+  });
+
+  it('공통 evidence가 있으면 이름 순서가 다른 entity를 더 강한 병합 후보로 본다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity({
+      canonicalName: 'Paul the Apostle',
+      evidenceIds: ['evidence::acts'],
+    }));
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.88,
+      pendingMergeThreshold: 0.72,
+    });
+
+    const result = await resolver.resolve({
+      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      typeId: 'person',
+      canonicalName: 'Apostle Paul',
+      aliases: [],
+      description: '',
+      evidenceIds: ['evidence::acts'],
+    });
+
+    expect(result.status).toBe('pending-merge');
+    expect(result.mergeScore).toBeGreaterThanOrEqual(0.72);
+  });
+
+  it('선택적 임베딩 유사도가 높으면 의미상 가까운 entity를 pending merge로 남긴다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity({
+      canonicalName: 'Grace',
+      typeId: 'concept',
+      description: 'divine favor and mercy',
+    }));
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.92,
+      pendingMergeThreshold: 0.72,
+      embeddingProvider: createEmbeddingProvider(),
+    });
+
+    const result = await resolver.resolve({
+      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      typeId: 'concept',
+      canonicalName: 'Divine Mercy',
+      aliases: [],
+      description: 'divine favor and mercy',
+    });
+
+    expect(result.status).toBe('pending-merge');
+    expect(result.matchedEntityId).toBe('entity::default::concept::grace');
+  });
 });
 
 function createEntity(input: {
   canonicalName: string;
   typeId?: string;
   aliases?: string[];
+  description?: string;
+  evidenceIds?: string[];
 }): GraphEntityRecord {
   const typeId = input.typeId ?? 'person';
   return {
@@ -89,11 +165,19 @@ function createEntity(input: {
     typeId,
     canonicalName: input.canonicalName,
     aliases: input.aliases ?? [],
-    description: '',
+    description: input.description ?? '',
     properties: {},
     confidence: 0.8,
-    evidenceIds: [],
+    evidenceIds: input.evidenceIds ?? [],
     createdAt: 1,
     updatedAt: 1,
+  };
+}
+
+function createEmbeddingProvider(): EmbeddingProvider {
+  return {
+    embed: (text: string) => Promise.resolve(text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1]),
+    embedBatch: (texts: string[]) =>
+      Promise.resolve(texts.map((text) => (text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1]))),
   };
 }

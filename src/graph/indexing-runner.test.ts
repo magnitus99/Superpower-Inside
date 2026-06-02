@@ -115,6 +115,42 @@ describe('GraphRagIndexingRunner', () => {
     expect(result.selectedFiles).toBe(2);
   });
 
+  it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('a.md', 'hash-a'),
+      createEntry('b.md', 'hash-b'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addCommunity({
+      id: 'community::default::old',
+      ontologySchemaId: 'default',
+      title: 'Old',
+      entityIds: ['entity-old'],
+      relationIds: [],
+      claimIds: [],
+      summary: 'old summary',
+      summaryVector: [1, 0],
+      level: 0,
+      updatedAt: 1000,
+    });
+    const controller = new AbortController();
+    const provider = new FakeProvider();
+    provider.onCall = () => controller.abort();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run({ signal: controller.signal });
+
+    expect(result.cancelled).toBe(true);
+    expect(await graphStore.getCommunities()).toEqual([
+      expect.objectContaining({ id: 'community::default::old' }),
+    ]);
+  });
+
   it('stale 파일 재추출 전에 기존 graph fact를 pruning한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-new')]);

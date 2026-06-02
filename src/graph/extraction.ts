@@ -126,6 +126,7 @@ export class GraphExtractionIndexer {
         canonicalName: entity.name,
         aliases: entity.aliases ?? [],
         description: entity.description ?? '',
+        evidenceIds: [evidence.id],
       });
       const record = createEntityRecord(input, evidence.id, entity, resolution.entityId, now);
       entitiesByName.set(normalizeName(entity.name), record);

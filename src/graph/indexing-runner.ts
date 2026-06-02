@@ -90,7 +90,11 @@ export class GraphRagIndexingRunner {
     this.indexer = new GraphExtractionIndexer({
       provider: options.provider,
       store: options.graphStore,
-      entityResolverOptions: options.entityResolverOptions,
+      entityResolverOptions: {
+        autoMergeThreshold: options.entityResolverOptions?.autoMergeThreshold ?? 0.88,
+        pendingMergeThreshold: options.entityResolverOptions?.pendingMergeThreshold ?? 0.72,
+        embeddingProvider: options.embeddingProvider,
+      },
     });
     this.summarizer = new CommunitySummarizer({
       provider: options.provider,
@@ -163,6 +167,14 @@ export class GraphRagIndexingRunner {
         communityIds,
         signal,
       );
+      if (signal?.aborted) {
+        return {
+          communityCount: 0,
+          entityCount: entities.length,
+          modularity: 0,
+          durationMs: Date.now() - startedAt,
+        };
+      }
 
       await this.graphStore.replaceCommunities(this.ontologySchema.id, records);
 
