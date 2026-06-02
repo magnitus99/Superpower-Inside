@@ -59,6 +59,13 @@ import {
   createDefaultContext7McpServer,
   shouldShowPluginAwareContext7Warning,
 } from './mcp/context7';
+import {
+  buildSettingsOverviewSnapshot,
+  type SettingsOverviewAttentionItem,
+  type SettingsOverviewMetric,
+  type SettingsOverviewRuntimeState,
+  type SettingsOverviewStatusRow,
+} from './settings-overview';
 
 interface StandardMcpServerEntry {
   command: string;
@@ -464,6 +471,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
   private pendingEmbeddingModel: string | null = null;
   private isRebuildingEmbeddingSection = false;
+  private defaultModelDropdownEl: HTMLSelectElement | null = null;
 
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
@@ -690,12 +698,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   /** General 탭의 기본 모델 dropdown만 다시 채웁니다 (full rebuild 대신). */
   private repopulateDefaultModelDropdown(): void {
-    const generalPanel = this.tabPanels.get('general');
-    if (!generalPanel) return;
-
-    const dropdown = generalPanel.querySelector<HTMLSelectElement>(
-      '.setting-item:has(.setting-item-name:has-text("기본 모델")) select, .setting-item:has(.setting-item-name:has-text("Default Model")) select',
-    );
+    const dropdown = this.defaultModelDropdownEl;
     if (!dropdown) return;
 
     const allModels: { value: string; label: string }[] = [];
@@ -768,7 +771,46 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildGeneralTab(containerEl: HTMLElement): void {
-    new Setting(containerEl)
+    containerEl.empty();
+
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: this.plugin.settings,
+      runtime: this.buildOverviewRuntimeState(),
+    });
+
+    const dashboard = containerEl.createDiv({ cls: 'superpower-inside-overview' });
+    const header = dashboard.createDiv({ cls: 'superpower-inside-overview-header' });
+    const title = header.createDiv({ cls: 'superpower-inside-overview-title' });
+    title.createEl('h3', { text: 'Overview' });
+    title.createDiv({
+      cls: 'superpower-inside-overview-subtitle',
+      text: '핵심 상태, 주의 필요 항목, 자주 쓰는 설정을 한 화면에서 확인합니다.',
+    });
+
+    const refreshBtn = header.createEl('button', {
+      cls: 'superpower-inside-overview-refresh',
+      attr: { type: 'button' },
+      text: '상태 새로고침',
+    });
+    refreshBtn.addEventListener('click', () => {
+      this.updateRagStats();
+      this.updateGraphRagStats();
+      this.buildGeneralTab(containerEl);
+    });
+
+    this.renderOverviewMetrics(dashboard, snapshot.metrics);
+    this.renderOverviewAttention(dashboard, snapshot.attentionItems);
+
+    const matrix = dashboard.createDiv({ cls: 'superpower-inside-overview-matrix' });
+    this.renderOverviewSection(matrix, '프로바이더', snapshot.providerRows);
+    this.renderOverviewSection(matrix, 'MCP 서버', snapshot.mcpRows);
+    this.renderOverviewCompactMetrics(matrix, '지식 인덱스', [snapshot.rag, snapshot.graphRag]);
+    this.renderOverviewCompactMetrics(matrix, '채팅', [snapshot.chat]);
+
+    const basics = containerEl.createDiv({ cls: 'superpower-inside-overview-basics' });
+    basics.createDiv({ cls: 'superpower-inside-overview-section-title', text: '기본 설정' });
+
+    new Setting(basics)
       .setName(t('language'))
       .setDesc(t('languageDesc'))
       .addDropdown((dropdown) => {
@@ -795,7 +837,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    new Setting(basics)
       .setName(t('autoSaveSettings'))
       .setDesc(t('autoSaveSettingsDesc'))
       .addToggle((toggle) =>
@@ -805,7 +847,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
+    new Setting(basics)
       .setName(t('autoSaveDelay'))
       .setDesc(t('autoSaveDelayDesc'))
       .addText((text) => {
@@ -847,10 +889,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
 
-    new Setting(containerEl)
+    new Setting(basics)
       .setName(t('defaultModel'))
       .setDesc(t('defaultModelDesc'))
       .addDropdown((dropdown) => {
+        this.defaultModelDropdownEl = dropdown.selectEl;
         if (allModels.length === 0) {
           dropdown.addOption('', t('noModelsEnabled'));
           dropdown.setDisabled(true);
@@ -866,6 +909,124 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
+  }
+
+  private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {
+    const registry = this.plugin.mcpRegistry;
+    return {
+      ragStatus: this.plugin.eventDrivenRagStats,
+      graphRagStatus: this.plugin.graphRagStatus,
+      mcpConnectionState: this.plugin.mcpConnectionState ?? 'idle',
+      mcpServers: this.plugin.settings.mcpServers.map((server) => ({
+        name: server.name,
+        status: registry?.getConnectionStatus(server.name) ?? 'disconnected',
+        error: registry?.getLastError(server.name),
+      })),
+      isRagIndexing: this.plugin.isRagIndexing(),
+      isGraphRagIndexing: this.plugin.isGraphRagIndexing(),
+      hasGraphRagRunner: this.plugin.hasGraphRagRunner(),
+    };
+  }
+
+  private renderOverviewMetrics(
+    containerEl: HTMLElement,
+    metrics: readonly SettingsOverviewMetric[],
+  ): void {
+    const grid = containerEl.createDiv({ cls: 'superpower-inside-overview-metrics' });
+    for (const metric of metrics) {
+      const item = grid.createEl('button', {
+        cls: `superpower-inside-overview-metric is-${metric.tone}`,
+        attr: { type: 'button' },
+      });
+      item.addEventListener('click', () => this.switchTab(metric.target));
+      item.createDiv({ cls: 'superpower-inside-overview-metric-label', text: metric.label });
+      item.createDiv({ cls: 'superpower-inside-overview-metric-value', text: metric.value });
+      item.createDiv({ cls: 'superpower-inside-overview-metric-status', text: metric.statusLabel });
+      item.createDiv({ cls: 'superpower-inside-overview-metric-detail', text: metric.detail });
+    }
+  }
+
+  private renderOverviewAttention(
+    containerEl: HTMLElement,
+    items: readonly SettingsOverviewAttentionItem[],
+  ): void {
+    const section = containerEl.createDiv({ cls: 'superpower-inside-overview-panel' });
+    const header = section.createDiv({ cls: 'superpower-inside-overview-panel-header' });
+    header.createDiv({ cls: 'superpower-inside-overview-section-title', text: '주의 필요' });
+    header.createDiv({
+      cls: 'superpower-inside-overview-section-meta',
+      text: items.length === 0 ? '현재 바로잡을 항목 없음' : `${items.length}개 항목`,
+    });
+
+    if (items.length === 0) {
+      section.createDiv({
+        cls: 'superpower-inside-overview-empty',
+        text: 'Provider, RAG, MCP 핵심 상태에 즉시 조치가 필요한 항목이 없습니다.',
+      });
+      return;
+    }
+
+    const list = section.createDiv({ cls: 'superpower-inside-overview-action-list' });
+    for (const item of items) {
+      const row = list.createDiv({ cls: `superpower-inside-overview-action-row is-${item.tone}` });
+      row.createDiv({ cls: 'superpower-inside-overview-action-label', text: item.label });
+      row.createDiv({ cls: 'superpower-inside-overview-action-detail', text: item.detail });
+      const btn = row.createEl('button', {
+        cls: 'superpower-inside-overview-inline-btn',
+        attr: { type: 'button' },
+        text: item.actionLabel,
+      });
+      btn.addEventListener('click', () => this.switchTab(item.target));
+    }
+  }
+
+  private renderOverviewSection(
+    containerEl: HTMLElement,
+    titleText: string,
+    rows: readonly SettingsOverviewStatusRow[],
+  ): void {
+    const section = containerEl.createDiv({ cls: 'superpower-inside-overview-panel' });
+    const header = section.createDiv({ cls: 'superpower-inside-overview-panel-header' });
+    header.createDiv({ cls: 'superpower-inside-overview-section-title', text: titleText });
+    header.createDiv({
+      cls: 'superpower-inside-overview-section-meta',
+      text: rows.length === 0 ? '0개' : `${rows.length}개`,
+    });
+
+    if (rows.length === 0) {
+      section.createDiv({ cls: 'superpower-inside-overview-empty', text: '표시할 항목이 없습니다.' });
+      return;
+    }
+
+    const list = section.createDiv({ cls: 'superpower-inside-overview-status-list' });
+    for (const row of rows) {
+      const item = list.createEl('button', {
+        cls: `superpower-inside-overview-status-row is-${row.tone}`,
+        attr: { type: 'button' },
+      });
+      item.addEventListener('click', () => this.switchTab(row.target));
+      item.createDiv({ cls: 'superpower-inside-overview-status-name', text: row.label });
+      item.createDiv({ cls: 'superpower-inside-overview-status-value', text: row.value });
+      item.createDiv({ cls: 'superpower-inside-overview-status-badge', text: row.statusLabel });
+      item.createDiv({ cls: 'superpower-inside-overview-status-detail', text: row.detail });
+    }
+  }
+
+  private renderOverviewCompactMetrics(
+    containerEl: HTMLElement,
+    titleText: string,
+    metrics: readonly SettingsOverviewMetric[],
+  ): void {
+    const rows = metrics.map((metric) => ({
+      id: metric.id,
+      label: metric.label,
+      value: metric.value,
+      statusLabel: metric.statusLabel,
+      detail: metric.detail,
+      tone: metric.tone,
+      target: metric.target,
+    }));
+    this.renderOverviewSection(containerEl, titleText, rows);
   }
 
   private buildProvidersTab(containerEl: HTMLElement): void {

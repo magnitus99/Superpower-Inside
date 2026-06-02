@@ -708,7 +708,7 @@ const ko: I18nKeys = {
     '경고: 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 저장소에 저장됩니다. 볼트 동기화 대상 data.json에는 새로 저장하지 않지만, 같은 기기에 접근할 수 있는 사용자나 로컬 백업에는 노출될 수 있습니다.',
 
   // Tabs
-  tabGeneral: '일반',
+  tabGeneral: 'Overview',
   tabProviders: '프로바이더',
   // Providers tab common actions
   collapseAll: '모두 접기',
@@ -1089,7 +1089,7 @@ const en: I18nKeys = {
     'Warning: settings and API keys are stored unencrypted in this device’s Obsidian local storage. They are no longer newly saved to synced data.json, but may still be exposed to users with access to this device or local backups.',
 
   // Tabs
-  tabGeneral: 'General',
+  tabGeneral: 'Overview',
   tabProviders: 'Providers',
   // Providers tab common actions
   collapseAll: 'Collapse All',
