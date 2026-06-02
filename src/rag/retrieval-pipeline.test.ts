@@ -56,6 +56,35 @@ describe('RagRetrievalPipeline', () => {
     expect(signals[0]?.aborted).toBe(true);
   });
 
+  it('provider별 후보 순위를 병합 결과에 보존한다', async () => {
+    const shared = createEntry('shared.md', [1, 0], '공통 후보');
+    const vectorProvider: CandidateProvider = {
+      id: 'vector-test',
+      source: 'vector',
+      deadlineMs: 300,
+      getCandidates: () =>
+        Promise.resolve([
+          { entry: createEntry('first.md', [1, 0], '1순위 후보'), source: 'vector' },
+          { entry: shared, source: 'vector' },
+        ]),
+    };
+    const bm25Provider: CandidateProvider = {
+      id: 'bm25-test',
+      source: 'bm25',
+      deadlineMs: 300,
+      getCandidates: () => Promise.resolve([{ entry: shared, source: 'bm25' }]),
+    };
+    const pipeline = new RagRetrievalPipeline([vectorProvider, bm25Provider]);
+
+    const result = await pipeline.retrieve(createRequest([1, 0], 5));
+
+    const sharedCandidate = result.candidates.find((candidate) => candidate.entry.id === shared.id);
+    expect(sharedCandidate?.sourceRanks).toEqual({
+      vector: 2,
+      bm25: 1,
+    });
+  });
+
   it('IvfVectorCandidateProvider는 작은 저장소에서 exact vector source를 유지한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

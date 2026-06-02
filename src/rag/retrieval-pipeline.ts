@@ -21,6 +21,7 @@ export interface RetrievalCandidate {
   entry: VectorEntry;
   source: RetrievalCandidateSource;
   sourceScore?: number;
+  rank?: number;
   reason?: string;
 }
 
@@ -28,6 +29,7 @@ export interface MergedRetrievalCandidate {
   entry: VectorEntry;
   sources: RetrievalCandidateSource[];
   sourceScores: Partial<Record<RetrievalCandidateSource, number>>;
+  sourceRanks: Partial<Record<RetrievalCandidateSource, number>>;
   reasons: string[];
 }
 
@@ -392,14 +394,18 @@ export class RagRetrievalPipeline {
         provider.deadlineMs,
         abortController,
       );
+      const rankedCandidates = candidates.map((candidate, index) => ({
+        ...candidate,
+        rank: candidate.rank ?? index + 1,
+      }));
       return {
-        candidates,
+        candidates: rankedCandidates,
         diagnostic: {
           providerId: provider.id,
           source: provider.source,
           status: 'ok',
           durationMs: Date.now() - startedAt,
-          candidateCount: candidates.length,
+          candidateCount: rankedCandidates.length,
         },
       };
     } catch (error) {
@@ -468,6 +474,12 @@ function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetri
       if (typeof candidate.sourceScore === 'number') {
         existing.sourceScores[candidate.source] = candidate.sourceScore;
       }
+      if (typeof candidate.rank === 'number') {
+        existing.sourceRanks[candidate.source] = Math.min(
+          existing.sourceRanks[candidate.source] ?? candidate.rank,
+          candidate.rank,
+        );
+      }
       if (candidate.reason && !existing.reasons.includes(candidate.reason)) {
         existing.reasons.push(candidate.reason);
       }
@@ -481,6 +493,8 @@ function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetri
         typeof candidate.sourceScore === 'number'
           ? { [candidate.source]: candidate.sourceScore }
           : {},
+      sourceRanks:
+        typeof candidate.rank === 'number' ? { [candidate.source]: candidate.rank } : {},
       reasons: candidate.reason ? [candidate.reason] : [],
     });
   }

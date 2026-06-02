@@ -160,6 +160,61 @@ describe('RAGQueryEngine', () => {
       expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),
     ]);
   });
+
+  it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('seed.md', [0.8, 0.6], 'seed text'),
+      createEntry('linked.md', [0, 1], 'linked text'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({
+        resolvedLinks: {
+          'seed.md': { 'linked.md': 1 },
+        },
+      }),
+    });
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'seed.md',
+      'linked.md',
+    ]);
+  });
+
+  it('MMR 다양성 선택으로 같은 파일의 유사 청크가 topK를 독점하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('same.md', [1, 0], '같은 파일 첫 청크', 1),
+      createEntry('same.md', [0.999, 0.001], '같은 파일 둘째 청크', 10),
+      createEntry('other.md', [0.96, 0.28], '다른 파일 관련 청크', 1),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'same.md',
+      'other.md',
+    ]);
+  });
+
+  it('벡터 차원이 맞지 않는 오래된 후보는 NaN 점수 없이 제외한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('stale.md', [1], '오래된 차원 벡터'),
+      createEntry('fresh.md', [0.9, 0.1], '현재 차원 벡터'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['fresh.md']);
+    expect(results.every((result) => Number.isFinite(result.score))).toBe(true);
+    expect(results.every((result) => Number.isFinite(result.vectorScore))).toBe(true);
+  });
 });
 
 function createEmbeddingProvider(vector: number[]): EmbeddingProvider {

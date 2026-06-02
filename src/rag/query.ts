@@ -17,8 +17,16 @@ import {
 } from './retrieval-pipeline';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
+const RRF_K = 60;
+const VECTOR_SCORE_WEIGHT = 0.35;
+const RRF_SCORE_WEIGHT = 0.55;
+const SOURCE_PRIOR_WEIGHT = 0.1;
+const MMR_RELEVANCE_WEIGHT = 0.72;
+const SAME_FILE_DIVERSITY_PENALTY = 0.12;
+const SAME_HEADING_DIVERSITY_PENALTY = 0.06;
 
-function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilarity(a: number[], b: number[]): number | null {
+  if (a.length === 0 || a.length !== b.length) return null;
   let dot = 0;
   let normA = 0;
   let normB = 0;
@@ -27,7 +35,8 @@ function cosineSimilarity(a: number[], b: number[]): number {
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+  if (normA === 0 || normB === 0) return null;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 export interface QueryResult {
@@ -36,6 +45,7 @@ export interface QueryResult {
   vectorScore: number;
   bm25Score: number;
   combinedScore: number;
+  retrievalSources?: string[];
   sourcePath: string;
   chunkRange: {
     startLine: number;
@@ -112,18 +122,26 @@ export class RAGQueryEngine {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
       const cosineScore = cosineSimilarity(qVector, entry.vector);
+      if (cosineScore === null) {
+        continue;
+      }
       const bm25 = candidate.sourceScores.bm25 ?? 0;
-      const retrievalScore = getRetrievalSourceBoost(candidate.sourceScores);
       const combinedBase = this.bm25Index?.isReady
         ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
         : cosineScore;
-      const combined = Math.max(combinedBase, retrievalScore);
+      const rrfScore = calculateRrfScore(candidate.sourceRanks, this.bm25Weight);
+      const sourcePrior = getRetrievalSourcePrior(candidate.sourceScores);
+      const combined =
+        VECTOR_SCORE_WEIGHT * combinedBase +
+        RRF_SCORE_WEIGHT * rrfScore +
+        SOURCE_PRIOR_WEIGHT * sourcePrior;
       scored.push({
         entry,
         score: combined,
         vectorScore: cosineScore,
         bm25Score: bm25,
         combinedScore: combined,
+        retrievalSources: [...candidate.sources],
         sourcePath: entry.metadata.filePath,
         chunkRange: {
           startLine: entry.metadata.startLine,
@@ -140,9 +158,13 @@ export class RAGQueryEngine {
     const bestScore = scored[0]?.score ?? 0;
     const relativeThreshold = Math.max(threshold, bestScore - 0.18);
 
-    return scored
-      .filter((r) => isRelevantResult(r, relativeThreshold, this.bm25Index?.isReady ?? false))
-      .slice(0, topK);
+    const relevantResults = scored.filter((r) => {
+      const sourceAwareThreshold = hasGraphOrStructuralEvidence(r)
+        ? Math.max(threshold, bestScore - 0.45)
+        : relativeThreshold;
+      return isRelevantResult(r, sourceAwareThreshold, this.bm25Index?.isReady ?? false);
+    });
+    return selectDiverseResults(relevantResults, topK);
   }
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
@@ -170,13 +192,54 @@ function countKeywordMatches(queryTokens: string[], text: string): number {
 }
 
 function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boolean): boolean {
+  if (!Number.isFinite(result.combinedScore) || !Number.isFinite(result.vectorScore)) {
+    return false;
+  }
   if (result.combinedScore < threshold) return false;
-  if (!hasBm25) return true;
+  if (hasGraphOrStructuralEvidence(result)) return true;
+  if (!hasBm25) return result.vectorScore >= Math.max(0.62, threshold);
   if (result.bm25Score > 0 && result.keywordMatches > 0) return true;
   return result.vectorScore >= Math.max(0.62, threshold + 0.08);
 }
 
-function getRetrievalSourceBoost(
+function hasGraphOrStructuralEvidence(result: QueryResult): boolean {
+  const sources = result.retrievalSources ?? [];
+  return sources.some(
+    (source) =>
+      source === 'structural' ||
+      source === 'graph-local' ||
+      source === 'graph-global' ||
+      source === 'evidence',
+  );
+}
+
+function calculateRrfScore(
+  sourceRanks: Partial<Record<string, number>>,
+  bm25Weight: number,
+): number {
+  let weightedScore = 0;
+  let totalWeight = 0;
+
+  for (const [source, rank] of Object.entries(sourceRanks)) {
+    if (typeof rank !== 'number' || rank < 1) continue;
+    const weight = getRrfSourceWeight(source, bm25Weight);
+    weightedScore += weight * (1 / (RRF_K + rank));
+    totalWeight += weight * (1 / (RRF_K + 1));
+  }
+
+  if (totalWeight === 0) return 0;
+  return weightedScore / totalWeight;
+}
+
+function getRrfSourceWeight(source: string, bm25Weight: number): number {
+  if (source === 'bm25') return Math.max(0.05, bm25Weight);
+  if (source === 'vector' || source === 'ann') return Math.max(0.05, 1 - bm25Weight);
+  if (source === 'graph-local' || source === 'graph-global' || source === 'evidence') return 0.2;
+  if (source === 'structural') return 0.12;
+  return 0.05;
+}
+
+function getRetrievalSourcePrior(
   sourceScores: Partial<Record<string, number>>,
 ): number {
   const graphScore = Math.max(
@@ -184,8 +247,59 @@ function getRetrievalSourceBoost(
     sourceScores['graph-global'] ?? 0,
     sourceScores.evidence ?? 0,
   );
-  if (graphScore > 0) return Math.max(0.68, graphScore);
-  return Math.max(sourceScores.structural ?? 0, sourceScores.ann ?? 0);
+  const graphPrior = graphScore > 0 ? Math.min(0.35, 0.12 + graphScore * 0.2) : 0;
+  const structuralPrior =
+    typeof sourceScores.structural === 'number' ? Math.min(0.18, sourceScores.structural * 0.12) : 0;
+  const annPrior = typeof sourceScores.ann === 'number' ? Math.min(0.08, sourceScores.ann * 0.05) : 0;
+  return Math.max(graphPrior, structuralPrior, annPrior);
+}
+
+function selectDiverseResults(results: QueryResult[], topK: number): QueryResult[] {
+  if (topK <= 0 || results.length <= topK) return results.slice(0, topK);
+
+  const selected: QueryResult[] = [];
+  const remaining = [...results];
+
+  while (selected.length < topK && remaining.length > 0) {
+    let bestIndex = 0;
+    let bestSelectionScore = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < remaining.length; index++) {
+      const candidate = remaining[index];
+      const diversityPenalty = calculateDiversityPenalty(candidate, selected);
+      const maxSimilarity = selected.reduce(
+        (max, selectedResult) =>
+          Math.max(max, cosineSimilarity(candidate.entry.vector, selectedResult.entry.vector) ?? 0),
+        0,
+      );
+      const selectionScore =
+        MMR_RELEVANCE_WEIGHT * candidate.score -
+        (1 - MMR_RELEVANCE_WEIGHT) * maxSimilarity -
+        diversityPenalty;
+      if (selectionScore > bestSelectionScore) {
+        bestSelectionScore = selectionScore;
+        bestIndex = index;
+      }
+    }
+    const [next] = remaining.splice(bestIndex, 1);
+    selected.push(next);
+  }
+
+  return selected;
+}
+
+function calculateDiversityPenalty(candidate: QueryResult, selected: readonly QueryResult[]): number {
+  let penalty = 0;
+  for (const selectedResult of selected) {
+    if (candidate.sourcePath !== selectedResult.sourcePath) continue;
+    penalty = Math.max(penalty, SAME_FILE_DIVERSITY_PENALTY);
+    if (
+      candidate.entry.metadata.heading &&
+      candidate.entry.metadata.heading === selectedResult.entry.metadata.heading
+    ) {
+      penalty = Math.max(penalty, SAME_FILE_DIVERSITY_PENALTY + SAME_HEADING_DIVERSITY_PENALTY);
+    }
+  }
+  return penalty;
 }
 
 function yieldToEventLoop(): Promise<void> {
