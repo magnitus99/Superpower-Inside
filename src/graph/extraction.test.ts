@@ -145,6 +145,35 @@ describe('GraphExtractionIndexer', () => {
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
   });
 
+  it('fenced JSON과 앞뒤 설명이 섞여도 유효 fact는 저장하고 invalid fact만 reject한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider([
+        '아래 결과입니다.',
+        '```json',
+        JSON.stringify({
+          entities: [
+            { name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.9 },
+            { name: 'Mystery', typeId: 'unknown-type', description: 'Invalid', confidence: 0.9 },
+          ],
+          relations: [],
+          claims: [],
+        }),
+        '```',
+      ].join('\n')),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('Paul appears.'));
+
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+    expect(await store.getRejectedFacts()).toEqual([
+      expect.objectContaining({
+        reason: 'unknown-entity-type',
+      }),
+    ]);
+  });
+
   it('content hash, model, ontology version이 같으면 같은 chunk를 재추출하지 않는다', async () => {
     const provider = createProvider(
       JSON.stringify({

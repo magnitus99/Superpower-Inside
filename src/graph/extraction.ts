@@ -192,8 +192,10 @@ export class GraphExtractionIndexer {
 }
 
 function parseExtractedGraphPayload(rawResponse: string): ExtractedGraphPayload | null {
+  const jsonText = extractJsonObject(rawResponse);
+  if (!jsonText) return null;
   try {
-    const parsed = JSON.parse(rawResponse) as Partial<ExtractedGraphPayload>;
+    const parsed = JSON.parse(jsonText) as Partial<ExtractedGraphPayload>;
     if (!Array.isArray(parsed.entities) || !Array.isArray(parsed.relations) || !Array.isArray(parsed.claims)) {
       return null;
     }
@@ -205,6 +207,23 @@ function parseExtractedGraphPayload(rawResponse: string): ExtractedGraphPayload 
   } catch {
     return null;
   }
+}
+
+function extractJsonObject(rawResponse: string): string | null {
+  const trimmed = rawResponse.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return trimmed;
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1]?.trim();
+  if (fenced?.startsWith('{') && fenced.endsWith('}')) {
+    return fenced;
+  }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  return trimmed.slice(start, end + 1);
 }
 
 function buildExtractionSystemPrompt(schema: OntologySchema): string {
@@ -328,20 +347,35 @@ function isKnownClaimType(schema: OntologySchema, typeId: string): boolean {
 }
 
 function isExtractedEntity(value: unknown): value is ExtractedEntity {
-  return isRecord(value) && typeof value.name === 'string' && typeof value.typeId === 'string';
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    value.name.trim().length > 0 &&
+    typeof value.typeId === 'string' &&
+    value.typeId.trim().length > 0
+  );
 }
 
 function isExtractedRelation(value: unknown): value is ExtractedRelation {
   return (
     isRecord(value) &&
     typeof value.source === 'string' &&
+    value.source.trim().length > 0 &&
     typeof value.target === 'string' &&
-    typeof value.relationTypeId === 'string'
+    value.target.trim().length > 0 &&
+    typeof value.relationTypeId === 'string' &&
+    value.relationTypeId.trim().length > 0
   );
 }
 
 function isExtractedClaim(value: unknown): value is ExtractedClaim {
-  return isRecord(value) && typeof value.text === 'string' && typeof value.claimTypeId === 'string';
+  return (
+    isRecord(value) &&
+    typeof value.text === 'string' &&
+    value.text.trim().length > 0 &&
+    typeof value.claimTypeId === 'string' &&
+    value.claimTypeId.trim().length > 0
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
