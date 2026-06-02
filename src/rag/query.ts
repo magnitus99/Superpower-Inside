@@ -27,6 +27,8 @@ const SAME_FILE_DIVERSITY_PENALTY = 0.12;
 const SAME_HEADING_DIVERSITY_PENALTY = 0.06;
 const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
 const DEFAULT_RERANK_TIMEOUT_MS = 2500;
+const STRONG_EVIDENCE_SCORE_FLOOR = 0.58;
+const STRONG_EVIDENCE_SCORE_CAP = 0.88;
 
 export interface RAGResultReranker {
   rerank(
@@ -161,10 +163,14 @@ export class RAGQueryEngine {
         : cosineScore;
       const rrfScore = calculateRrfScore(candidate.sourceRanks, this.bm25Weight);
       const sourcePrior = getRetrievalSourcePrior(candidate.sourceScores);
-      const combined =
-        VECTOR_SCORE_WEIGHT * combinedBase +
-        RRF_SCORE_WEIGHT * rrfScore +
-        SOURCE_PRIOR_WEIGHT * sourcePrior;
+      const combined = calculateHybridScore({
+        combinedBase,
+        rrfScore,
+        sourcePrior,
+        sourceEvidenceScore,
+        bestEvidenceRank,
+        retrievalSources: candidate.sources,
+      });
       scored.push({
         entry,
         score: combined,
@@ -407,15 +413,46 @@ function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boole
   return result.vectorScore >= Math.max(0.62, threshold + 0.08);
 }
 
+interface HybridScoreInput {
+  combinedBase: number;
+  rrfScore: number;
+  sourcePrior: number;
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+  retrievalSources: readonly string[];
+}
+
+function calculateHybridScore(input: HybridScoreInput): number {
+  const baseScore =
+    VECTOR_SCORE_WEIGHT * input.combinedBase +
+    RRF_SCORE_WEIGHT * input.rrfScore +
+    SOURCE_PRIOR_WEIGHT * input.sourcePrior;
+  if (!hasGraphEvidenceSource(input.retrievalSources)) {
+    return baseScore;
+  }
+  if (!isStrongEvidence(input.sourceEvidenceScore, input.bestEvidenceRank)) {
+    return baseScore;
+  }
+
+  const evidenceScore = Math.max(0, Math.min(1, input.sourceEvidenceScore));
+  const evidenceAwareScore =
+    STRONG_EVIDENCE_SCORE_FLOOR + evidenceScore * 0.25 + input.rrfScore * 0.08;
+  return Math.max(baseScore, Math.min(STRONG_EVIDENCE_SCORE_CAP, evidenceAwareScore));
+}
+
 function hasStrongGraphOrStructuralEvidence(result: QueryResult): boolean {
   if (!hasGraphOrStructuralEvidence(result)) return false;
   const evidenceScore = result.sourceEvidenceScore ?? 0;
   const rank = result.bestEvidenceRank ?? Number.POSITIVE_INFINITY;
-  return evidenceScore >= 0.7 || rank <= 2;
+  return isStrongEvidence(evidenceScore, rank);
 }
 
 function hasGraphOrStructuralEvidence(result: QueryResult): boolean {
   const sources = result.retrievalSources ?? [];
+  return hasGraphOrStructuralSource(sources);
+}
+
+function hasGraphOrStructuralSource(sources: readonly string[]): boolean {
   return sources.some(
     (source) =>
       source === 'structural' ||
@@ -423,6 +460,19 @@ function hasGraphOrStructuralEvidence(result: QueryResult): boolean {
       source === 'graph-global' ||
       source === 'evidence',
   );
+}
+
+function hasGraphEvidenceSource(sources: readonly string[]): boolean {
+  return sources.some(
+    (source) =>
+      source === 'graph-local' ||
+      source === 'graph-global' ||
+      source === 'evidence',
+  );
+}
+
+function isStrongEvidence(evidenceScore: number, rank?: number): boolean {
+  return evidenceScore >= 0.7 || (rank ?? Number.POSITIVE_INFINITY) <= 2;
 }
 
 function calculateRrfScore(

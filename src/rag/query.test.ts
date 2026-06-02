@@ -255,6 +255,33 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
+  it('강한 GraphRAG 근거는 약한 semantic 후보보다 우선하되 직접 semantic 후보는 넘지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('direct.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
+      createEntry('weak-semantic.md', [0.9, 0.436], 'Paul과 Barnabas 이름만 언급하는 약한 문서'),
+      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence(createEvidence());
+    await graphStore.upsertEntity(createGraphEntity('Paul'));
+    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
+    await graphStore.addRelation(createGraphRelation());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      graphRagEnabled: true,
+      graphRagQueryEngine: graphEngine,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 3);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'direct.md',
+      'graph.md',
+      'weak-semantic.md',
+    ]);
+  });
+
   it('현재 embedding model과 맞지 않는 stale 후보가 retrieval pool을 독점하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const freshEntry = createEntry('fresh.md', [0.9, 0.1], '현재 모델 벡터');
