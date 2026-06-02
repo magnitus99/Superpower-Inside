@@ -69,11 +69,39 @@ export async function calculateGraphRagStatus(
 
   const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
   const cacheByEntryId = new Map(cacheRecords.map((record) => [record.entryId, record]));
-  const entries = await input.vectorStore.getEntries();
-  const vectorFilePaths = new Set(entries.map((entry) => entry.metadata.filePath));
+  const fileIndexRecords = await input.vectorStore.getFileIndexRecords();
+  const vectorFilePaths = new Set(fileIndexRecords.map((record) => record.filePath));
   const staleFiles = new Set<string>();
   for (const record of evidence) {
     if (!vectorFilePaths.has(record.filePath)) {
+      staleFiles.add(record.filePath);
+    }
+  }
+
+  const relevantEntryIds = [
+    ...new Set([...evidence.map((record) => record.entryId), ...cacheRecords.map((record) => record.entryId)]),
+  ];
+  const entries = await input.vectorStore.getEntriesByIds(relevantEntryIds);
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const freshCacheCountByFilePath = new Map<string, number>();
+
+  for (const record of cacheRecords) {
+    const entry = entriesById.get(record.entryId);
+    if (!entry) {
+      staleFiles.add(getFilePathForMissingEntry(record.entryId, evidence));
+    }
+  }
+  for (const record of evidence) {
+    const entry = entriesById.get(record.entryId);
+    if (!entry) {
+      staleFiles.add(record.filePath);
+      continue;
+    }
+    const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
+    if (
+      record.contentHash !== contentHash ||
+      record.extractionModelKey !== input.ragConfig.graphRagModel
+    ) {
       staleFiles.add(record.filePath);
     }
   }
@@ -87,6 +115,17 @@ export async function calculateGraphRagStatus(
       cache.ontologyVersion !== ontologySchema.version
     ) {
       staleFiles.add(entry.metadata.filePath);
+      continue;
+    }
+    freshCacheCountByFilePath.set(
+      entry.metadata.filePath,
+      (freshCacheCountByFilePath.get(entry.metadata.filePath) ?? 0) + 1,
+    );
+  }
+  for (const record of fileIndexRecords) {
+    const freshCacheCount = freshCacheCountByFilePath.get(record.filePath) ?? 0;
+    if (freshCacheCount < record.vectorCount) {
+      staleFiles.add(record.filePath);
     }
   }
 
@@ -132,4 +171,11 @@ function emptyStatus(
 
 function countUnique(values: readonly string[]): number {
   return new Set(values).size;
+}
+
+function getFilePathForMissingEntry(
+  entryId: string,
+  evidence: readonly { entryId: string; filePath: string }[],
+): string {
+  return evidence.find((record) => record.entryId === entryId)?.filePath ?? entryId.split('::')[0] ?? entryId;
 }

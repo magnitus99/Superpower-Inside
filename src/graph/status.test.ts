@@ -304,4 +304,100 @@ describe('calculateGraphRagStatus', () => {
     expect(status.state).toBe('stale');
     expect(status.staleFilePaths).toContain('a.md');
   });
+
+  it('cache/evidence 기반 상태 계산은 전체 vector entries를 읽지 않는다', async () => {
+    const vectorStore = new StatusLookupVectorStore();
+    await vectorStore.add([createEntry('note.md', 'hash-a')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-1',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      quote: 'text',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+
+    const status = await calculateGraphRagStatus({
+      ragConfig: baseRagConfig,
+      graphStore,
+      vectorStore,
+      isRunning: false,
+      schemaErrors: [],
+    });
+
+    expect(status.state).toBe('ready');
+    expect(vectorStore.getEntriesCalls).toBe(0);
+    expect(vectorStore.requestedIds).toEqual([['note.md::0']]);
+  });
+
+  it('같은 파일의 일부 vector entry만 cache/evidence에 있으면 stale을 반환한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('note.md', 'hash-a'),
+      {
+        ...createEntry('note.md', 'hash-b'),
+        id: 'note.md::1',
+        metadata: {
+          ...createEntry('note.md', 'hash-b').metadata,
+          text: 'second chunk',
+        },
+      },
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-1',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      quote: 'text',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+
+    const status = await calculateGraphRagStatus({
+      ragConfig: baseRagConfig,
+      graphStore,
+      vectorStore,
+      isRunning: false,
+      schemaErrors: [],
+    });
+
+    expect(status.state).toBe('stale');
+    expect(status.staleFilePaths).toEqual(['note.md']);
+  });
 });
+
+class StatusLookupVectorStore extends MemoryVectorStore {
+  getEntriesCalls = 0;
+  requestedIds: string[][] = [];
+
+  override getEntries(): Promise<never> {
+    this.getEntriesCalls++;
+    return Promise.reject(new Error('전체 벡터 조회는 사용하지 않아야 합니다.'));
+  }
+
+  override async getEntriesByIds(ids: readonly string[]) {
+    this.requestedIds.push([...ids].sort());
+    return super.getEntriesByIds(ids);
+  }
+}
