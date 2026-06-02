@@ -78,7 +78,8 @@ class VectorStoreDB extends Dexie {
   }
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilarity(a: number[], b: number[]): number | null {
+  if (a.length === 0 || a.length !== b.length) return null;
   let dot = 0;
   let normA = 0;
   let normB = 0;
@@ -87,7 +88,8 @@ function cosineSimilarity(a: number[], b: number[]): number {
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+  if (normA === 0 || normB === 0) return null;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 const QUERY_YIELD_INTERVAL = 256;
@@ -108,9 +110,11 @@ async function scoredQuery(
   for (let index = 0; index < entries.length; index++) {
     throwIfAborted(signal);
     const entry = entries[index];
+    const score = cosineSimilarity(vector, entry.vector);
+    if (score === null) continue;
     scored.push({
       entry,
-      score: cosineSimilarity(vector, entry.vector),
+      score,
     });
     if (index > 0 && index % QUERY_YIELD_INTERVAL === 0) {
       await yieldToEventLoop();

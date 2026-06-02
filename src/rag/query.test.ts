@@ -14,6 +14,42 @@ import { RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 describe('RAGQueryEngine', () => {
+  it('재랭커가 직접 근거로 더 적합한 낮은 점수 후보를 topK 앞으로 올린다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
+      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      reranker: {
+        rerank: () => Promise.resolve(['direct.md::0', 'semantic.md::0']),
+      },
+      rerankCandidateLimit: 20,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 1);
+
+    expect(results[0]?.entry.metadata.filePath).toBe('direct.md');
+  });
+
+  it('재랭커가 실패하면 기존 점수 정렬로 fallback한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
+      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      reranker: {
+        rerank: () => Promise.reject(new Error('rerank failed')),
+      },
+      rerankCandidateLimit: 20,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 1);
+
+    expect(results[0]?.entry.metadata.filePath).toBe('semantic.md');
+  });
+
   it('벡터 상위 후보 밖의 BM25 전용 후보도 최종 후보에 포함한다', async () => {
     const store = new MemoryVectorStore();
     const entries = Array.from({ length: 12 }, (_, index) =>
@@ -159,6 +195,50 @@ describe('RAGQueryEngine', () => {
       expect.objectContaining({ providerId: 'exact-vector' }),
       expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),
     ]);
+  });
+
+  it('GraphRAG 점수 후보가 직접 semantic 후보를 부당하게 앞지르지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
+      createEntry('graph.md', [0.2, 0.98], 'Paul and Barnabas traveled together.'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence(createEvidence());
+    await graphStore.upsertEntity(createGraphEntity('Paul'));
+    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
+    await graphStore.addRelation(createGraphRelation());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      graphRagEnabled: true,
+      graphRagQueryEngine: graphEngine,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'semantic.md',
+      'graph.md',
+    ]);
+  });
+
+  it('현재 embedding model과 맞지 않는 stale 후보가 retrieval pool을 독점하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    const freshEntry = createEntry('fresh.md', [0.9, 0.1], '현재 모델 벡터');
+    freshEntry.metadata.embeddingModel = 'text-embedding-3-large';
+    await store.add([
+      ...Array.from({ length: 20 }, (_, index) =>
+        createEntry(`stale-${index}.md`, [1, 0], '오래된 모델 벡터'),
+      ),
+      freshEntry,
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      embeddingModel: 'text-embedding-3-large',
+    });
+
+    const results = await engine.query('질문', 1);
+
+    expect(results[0]?.entry.metadata.filePath).toBe('fresh.md');
   });
 
   it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {

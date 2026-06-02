@@ -1,4 +1,5 @@
 import type { EmbeddingProvider } from '../llm/embedding';
+import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
 import { JsonFileBM25Index, tokenize } from './bm25';
 import {
@@ -24,6 +25,16 @@ const SOURCE_PRIOR_WEIGHT = 0.1;
 const MMR_RELEVANCE_WEIGHT = 0.72;
 const SAME_FILE_DIVERSITY_PENALTY = 0.12;
 const SAME_HEADING_DIVERSITY_PENALTY = 0.06;
+const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
+const DEFAULT_RERANK_TIMEOUT_MS = 2500;
+
+export interface RAGResultReranker {
+  rerank(
+    question: string,
+    results: readonly QueryResult[],
+    signal?: AbortSignal,
+  ): Promise<readonly string[]>;
+}
 
 function cosineSimilarity(a: number[], b: number[]): number | null {
   if (a.length === 0 || a.length !== b.length) return null;
@@ -63,6 +74,9 @@ export interface RAGQueryEngineOptions {
   structuralMetadataContext?: StructuralMetadataContext;
   graphRagEnabled?: boolean;
   graphRagQueryEngine?: GraphRagQueryEngine;
+  reranker?: RAGResultReranker;
+  rerankCandidateLimit?: number;
+  embeddingModel?: string;
 }
 
 export class RAGQueryEngine {
@@ -71,6 +85,9 @@ export class RAGQueryEngine {
   private bm25Weight: number;
   private minScore: number;
   private retrievalPipeline: RagRetrievalPipeline;
+  private reranker: RAGResultReranker | undefined;
+  private rerankCandidateLimit: number;
+  private embeddingModel: string | undefined;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
 
   constructor(
@@ -85,6 +102,12 @@ export class RAGQueryEngine {
     this.bm25Index = bm25Index;
     this.bm25Weight = bm25Weight;
     this.minScore = minScore;
+    this.reranker = options.reranker;
+    this.embeddingModel = options.embeddingModel;
+    this.rerankCandidateLimit = Math.max(
+      1,
+      Math.floor(options.rerankCandidateLimit ?? DEFAULT_RERANK_CANDIDATE_LIMIT),
+    );
     const providers: CandidateProvider[] = [
       options.annEnabled === true
         ? new IvfVectorCandidateProvider(vectorStore, {
@@ -113,6 +136,9 @@ export class RAGQueryEngine {
       question,
       queryVector: qVector,
       candidateLimit: topK * 8,
+      isEntryCompatible: this.embeddingModel
+        ? (entry) => this.isEntryCompatible(entry, qVector)
+        : undefined,
     });
     this.lastRetrievalDiagnostics = retrieval.diagnostics;
     const queryTokens = [...new Set(tokenize(question))];
@@ -164,11 +190,31 @@ export class RAGQueryEngine {
         : relativeThreshold;
       return isRelevantResult(r, sourceAwareThreshold, this.bm25Index?.isReady ?? false);
     });
+    if (this.reranker && relevantResults.length > 1) {
+      const diversePool = selectDiverseResults(
+        relevantResults,
+        Math.min(relevantResults.length, Math.max(topK, this.rerankCandidateLimit)),
+      );
+      const rerankedResults = await this.rerankResults(question, diversePool);
+      return rerankedResults.slice(0, topK);
+    }
     return selectDiverseResults(relevantResults, topK);
   }
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
     return [...this.lastRetrievalDiagnostics];
+  }
+
+  private isEntryCompatible(entry: VectorEntry, queryVector: readonly number[]): boolean {
+    if (entry.vector.length !== queryVector.length) return false;
+    if (
+      this.embeddingModel &&
+      entry.metadata.embeddingModel &&
+      entry.metadata.embeddingModel !== this.embeddingModel
+    ) {
+      return false;
+    }
+    return true;
   }
 
   async queryWithContext(question: string, topK = 5): Promise<string> {
@@ -183,12 +229,164 @@ export class RAGQueryEngine {
       )
       .join('\n\n---\n\n');
   }
+
+  private async rerankResults(
+    question: string,
+    results: readonly QueryResult[],
+  ): Promise<QueryResult[]> {
+    if (!this.reranker || results.length <= 1) return [...results];
+
+    const candidates = results.slice(0, this.rerankCandidateLimit);
+    try {
+      const rankedIds = await this.reranker.rerank(question, candidates);
+      return applyRerankOrder(results, rankedIds);
+    } catch {
+      return [...results];
+    }
+  }
+}
+
+export class LLMRAGResultReranker implements RAGResultReranker {
+  constructor(
+    private readonly provider: LLMProvider,
+    private readonly timeoutMs = DEFAULT_RERANK_TIMEOUT_MS,
+  ) {}
+
+  async rerank(
+    question: string,
+    results: readonly QueryResult[],
+    signal?: AbortSignal,
+  ): Promise<readonly string[]> {
+    if (results.length === 0) return [];
+    const response = await withTimeout(
+      this.provider.chat(buildRerankMessages(question, results), 0),
+      this.timeoutMs,
+      signal,
+    );
+    return parseRerankResponse(response, new Set(results.map((result) => result.entry.id)));
+  }
 }
 
 function countKeywordMatches(queryTokens: string[], text: string): number {
   if (queryTokens.length === 0) return 0;
   const haystack = text.toLowerCase();
   return queryTokens.filter((token) => haystack.includes(token.toLowerCase())).length;
+}
+
+function applyRerankOrder(
+  results: readonly QueryResult[],
+  rankedIds: readonly string[],
+): QueryResult[] {
+  if (rankedIds.length === 0) return [...results];
+
+  const byId = new Map(results.map((result) => [result.entry.id, result]));
+  const seen = new Set<string>();
+  const ordered: QueryResult[] = [];
+
+  for (const id of rankedIds) {
+    const result = byId.get(id);
+    if (!result || seen.has(id)) continue;
+    ordered.push(result);
+    seen.add(id);
+  }
+
+  if (ordered.length === 0) return [...results];
+  for (const result of results) {
+    if (!seen.has(result.entry.id)) ordered.push(result);
+  }
+  return ordered;
+}
+
+function buildRerankMessages(question: string, results: readonly QueryResult[]) {
+  const candidates = results.map((result, index) => ({
+    id: result.entry.id,
+    index,
+    sourcePath: result.sourcePath,
+    heading: result.entry.metadata.heading ?? '',
+    text: truncateForRerank(result.entry.metadata.text, 700),
+  }));
+
+  return [
+    {
+      role: 'system' as const,
+      content:
+        'You rerank retrieval candidates for an Obsidian RAG answer. Return JSON only: {"rankedIds":["candidate-id"]}. Rank candidates by direct usefulness as answer evidence. Do not invent ids.',
+    },
+    {
+      role: 'user' as const,
+      content: JSON.stringify({ question, candidates }),
+    },
+  ];
+}
+
+function parseRerankResponse(response: string, allowedIds: ReadonlySet<string>): string[] {
+  const parsed = parseJsonObject(response);
+  const rankedIds = Array.isArray(parsed?.rankedIds) ? parsed.rankedIds : [];
+  return rankedIds.filter((id): id is string => typeof id === 'string' && allowedIds.has(id));
+}
+
+function parseJsonObject(response: string): Record<string, unknown> | null {
+  const trimmed = response.trim();
+  const jsonText =
+    trimmed.startsWith('{') && trimmed.endsWith('}')
+      ? trimmed
+      : trimmed.match(/\{[\s\S]*\}/u)?.[0];
+  if (!jsonText) return null;
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function truncateForRerank(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trim()}...`;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (timeoutMs <= 0 && !signal) return promise;
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => {
+      if (timeoutId) clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(new Error('RAG reranking cancelled'));
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error('RAG reranking timed out'));
+      }, timeoutMs);
+    }
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
 
 function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boolean): boolean {

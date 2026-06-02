@@ -15,6 +15,7 @@ export interface RagRetrievalRequest {
   question: string;
   queryVector: number[];
   candidateLimit: number;
+  isEntryCompatible?: (entry: VectorEntry) => boolean;
 }
 
 export interface RetrievalCandidate {
@@ -69,7 +70,14 @@ export class ExactVectorCandidateProvider implements CandidateProvider {
     request: RagRetrievalRequest,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
-    const entries = await this.vectorStore.query(request.queryVector, request.candidateLimit, signal);
+    const entries = request.isEntryCompatible
+      ? scoreVectorEntries(
+          (await this.vectorStore.getEntries()).filter(request.isEntryCompatible),
+          request.queryVector,
+          request.candidateLimit,
+          signal,
+        ).map((result) => result.entry)
+      : await this.vectorStore.query(request.queryVector, request.candidateLimit, signal);
     return entries.map((entry) => ({
       entry,
       source: this.source,
@@ -117,7 +125,9 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfAborted(signal);
-    const entries = await this.vectorStore.getEntries();
+    const entries = (await this.vectorStore.getEntries()).filter((entry) =>
+      request.isEntryCompatible?.(entry) ?? true,
+    );
     throwIfAborted(signal);
     if (entries.length < this.options.minEntryCount) {
       this.state = {
@@ -128,14 +138,16 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
         lastBuiltAt: this.state.lastBuiltAt,
         lastQueriedAt: Date.now(),
       };
-      const exactEntries = await this.vectorStore.query(
+      const exactEntries = scoreVectorEntries(
+        entries,
         request.queryVector,
         request.candidateLimit,
         signal,
       );
-      return exactEntries.map((entry) => ({
+      return exactEntries.map(({ entry, score }) => ({
         entry,
         source: 'vector',
+        sourceScore: score,
       }));
     }
 
@@ -210,7 +222,9 @@ export class BM25CandidateProvider implements CandidateProvider {
     throwIfAborted(signal);
     const foundEntries = docIds
       .map((docId) => entriesById.get(docId))
-      .filter((entry): entry is VectorEntry => entry !== undefined);
+      .filter((entry): entry is VectorEntry =>
+        entry !== undefined && (request.isEntryCompatible?.(entry) ?? true),
+      );
     const missingSources = docIds
       .filter((docId) => !entriesById.has(docId))
       .map((docId) => this.bm25Index.getDocumentSource(docId) ?? docId);
@@ -221,6 +235,7 @@ export class BM25CandidateProvider implements CandidateProvider {
     throwIfAborted(signal);
 
     return [...foundEntries, ...fallbackEntries]
+      .filter((entry) => request.isEntryCompatible?.(entry) ?? true)
       .filter((entry) => scores.has(entry.id) || scores.has(entry.metadata.filePath))
       .map((entry) => ({
         entry,
@@ -255,11 +270,15 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     request: RagRetrievalRequest,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
-    const seedEntries = await this.vectorStore.query(
-      request.queryVector,
-      Math.max(1, Math.min(this.seedLimit, request.candidateLimit)),
-      signal,
-    );
+    const seedLimit = Math.max(1, Math.min(this.seedLimit, request.candidateLimit));
+    const seedEntries = request.isEntryCompatible
+      ? scoreVectorEntries(
+          (await this.vectorStore.getEntries()).filter(request.isEntryCompatible),
+          request.queryVector,
+          seedLimit,
+          signal,
+        ).map((result) => result.entry)
+      : await this.vectorStore.query(request.queryVector, seedLimit, signal);
     throwIfAborted(signal);
     if (seedEntries.length === 0) return [];
 
@@ -276,6 +295,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     const candidatesById = new Map<string, RetrievalCandidate>();
 
     for (const entry of [...linkedEntries, ...headingEntries]) {
+      if (!(request.isEntryCompatible?.(entry) ?? true)) continue;
       if (seedIds.has(entry.id)) continue;
       candidatesById.set(entry.id, {
         entry,
@@ -446,6 +466,22 @@ function isLineInRange(line: number, startLine: number, endLine?: number): boole
   return line >= startLine && (typeof endLine !== 'number' || line <= endLine);
 }
 
+function scoreVectorEntries(
+  entries: readonly VectorEntry[],
+  vector: readonly number[],
+  topK: number,
+  signal?: AbortSignal,
+): Array<{ entry: VectorEntry; score: number }> {
+  const scored: Array<{ entry: VectorEntry; score: number }> = [];
+  for (const entry of entries) {
+    throwIfAborted(signal);
+    const score = cosineSimilarity(vector, entry.vector);
+    if (score === null) continue;
+    scored.push({ entry, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, topK);
+}
+
 export function calculateRecallAtK(
   exactIds: readonly string[],
   approximateIds: readonly string[],
@@ -545,19 +581,14 @@ class IvfVectorIndex {
         index,
         score: cosineSimilarity(vector, centroid),
       }))
+      .filter((candidate): candidate is { index: number; score: number } => candidate.score !== null)
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(1, Math.min(probeCount, this.centroids.length)))
       .map((candidate) => candidate.index);
 
     const candidates = centroidIndexes.flatMap((index) => this.clusters[index] ?? []);
     throwIfAborted(signal);
-    return candidates
-      .map((entry) => ({
-        entry,
-        score: cosineSimilarity(vector, entry.vector),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+    return scoreVectorEntries(candidates, vector, topK, signal);
   }
 }
 
@@ -589,6 +620,7 @@ function assignClusters(
     let bestScore = Number.NEGATIVE_INFINITY;
     for (let index = 0; index < centroids.length; index++) {
       const score = cosineSimilarity(entry.vector, centroids[index]);
+      if (score === null) continue;
       if (score > bestScore) {
         bestIndex = index;
         bestScore = score;
@@ -617,19 +649,20 @@ function recomputeCentroids(
   });
 }
 
-function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+function cosineSimilarity(a: readonly number[], b: readonly number[]): number | null {
+  if (a.length === 0 || a.length !== b.length) return null;
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  const dimensions = Math.min(a.length, b.length);
-  for (let i = 0; i < dimensions; i++) {
+  for (let i = 0; i < a.length; i++) {
     const aValue = a[i] ?? 0;
     const bValue = b[i] ?? 0;
     dot += aValue * bValue;
     normA += aValue * aValue;
     normB += bValue * bValue;
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+  if (normA === 0 || normB === 0) return null;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 function withProviderDeadline<T>(

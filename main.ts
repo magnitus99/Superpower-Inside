@@ -41,9 +41,9 @@ import {
   type IndexingResult,
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
-import { RAGQueryEngine } from './src/rag/query';
+import { LLMRAGResultReranker, RAGQueryEngine } from './src/rag/query';
 import { GraphRagIndexingRunner, type GraphRagCommunityBuildResult, type GraphRagIndexingResult } from './src/graph/indexing-runner';
-import { GraphRagQueryEngine } from './src/graph/query-engine';
+import { GraphRagQueryEngine, LLMGraphQueryPlanner } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
 import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/schema';
@@ -936,6 +936,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       : undefined;
 
     const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+    const graphProvider =
+      rag.graphRagEnabled && rag.graphRagModel.trim()
+        ? this.createProviderForModel(rag.graphRagModel)
+        : null;
     const graphRagEnabledForQuery =
       rag.graphRagEnabled &&
       (this.graphRagStatus?.state === 'ready' || this.graphRagStatus?.state === 'partial');
@@ -943,6 +947,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       graphRagEnabledForQuery && this.knowledgeGraphStore
         ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
             queryMode: rag.graphRagQueryMode,
+            queryPlanner: graphProvider ? new LLMGraphQueryPlanner(graphProvider) : undefined,
           })
         : undefined;
 
@@ -961,6 +966,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         structuralMetadataContext,
         graphRagEnabled: graphRagEnabledForQuery,
         graphRagQueryEngine,
+        reranker: graphProvider ? new LLMRAGResultReranker(graphProvider) : undefined,
+        embeddingModel: rag.embeddingModel,
       },
     );
 
@@ -974,10 +981,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       bm25Index,
     );
 
-    const graphProvider =
-      rag.graphRagEnabled && rag.graphRagModel.trim()
-        ? this.createProviderForModel(rag.graphRagModel)
-        : null;
     this.graphRagIndexingRunner =
       graphProvider && this.knowledgeGraphStore && this.embeddingProvider
         ? new GraphRagIndexingRunner({
