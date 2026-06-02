@@ -164,6 +164,46 @@ describe('GraphExtractionIndexer', () => {
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
   });
 
+  it('JSON은 유효하지만 GraphRAG schema shape가 틀린 응답은 별도 reason으로 reject한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider([
+        '```json',
+        JSON.stringify({
+          entities: [
+            { id: 'Base', type: 'work', name: 'Base' },
+            { id: '표', type: 'concept', name: '표' },
+          ],
+          relations: [{ source: '표', target: 'Base', type: 'part_of' }],
+          claims: [
+            {
+              subject: 'Base',
+              object: '표',
+              claim: "The work titled 'Base' contains a table view named '표'.",
+              type: 'factual_claim',
+            },
+          ],
+        }, null, 2),
+        '```',
+      ].join('\n')),
+      store,
+    });
+
+    await indexer.extractChunk({
+      ...createInput('Base.base content', 'Base.base::0::0'),
+      filePath: 'Base.base',
+    });
+
+    expect(await store.getRejectedFacts()).toEqual([
+      expect.objectContaining({
+        reason: 'schema-shape-mismatch',
+        filePath: 'Base.base',
+        entryId: 'Base.base::0::0',
+      }),
+    ]);
+    expect(await store.getEntities()).toEqual([]);
+  });
+
   it('fenced JSON과 앞뒤 설명이 섞여도 유효 fact는 저장하고 invalid fact만 reject한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({

@@ -205,6 +205,7 @@ export class GraphRagIndexingRunner {
 
     this.running = true;
     const startedAt = Date.now();
+    await this.pruneUnsupportedGraphFiles();
     const candidateFilePaths = await this.getCandidateFilePaths(options);
     const selectedFilePaths = candidateFilePaths.slice(0, this.maxFilesPerRun);
     const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length);
@@ -261,16 +262,16 @@ export class GraphRagIndexingRunner {
 
   private async getCandidateFilePaths(options: GraphRagRunOptions): Promise<string[]> {
     if (options.onlyFailedFiles === true) {
-      return [...this.failedFilePaths].sort();
+      return filterGraphRagFilePaths([...this.failedFilePaths]).sort();
     }
     if (options.onlyStaleFiles === true && options.staleFilePaths) {
-      return [...options.staleFilePaths].sort();
+      return filterGraphRagFilePaths([...options.staleFilePaths]).sort();
     }
     const records = await this.vectorStore.getFileIndexRecords();
     if (records.length > 0) {
-      return records.map((record) => record.filePath).sort();
+      return filterGraphRagFilePaths(records.map((record) => record.filePath)).sort();
     }
-    return this.vectorStore.getIndexedFilePaths();
+    return filterGraphRagFilePaths(await this.vectorStore.getIndexedFilePaths());
   }
 
   private async processFile(
@@ -356,6 +357,22 @@ export class GraphRagIndexingRunner {
     }
     return result;
   }
+
+  private async pruneUnsupportedGraphFiles(): Promise<void> {
+    const [evidence, rejectedFacts] = await Promise.all([
+      this.graphStore.getEvidence(),
+      this.graphStore.getRejectedFacts(),
+    ]);
+    const unsupportedFilePaths = new Set<string>();
+    for (const record of evidence) {
+      if (!isGraphRagFilePath(record.filePath)) unsupportedFilePaths.add(record.filePath);
+    }
+    for (const record of rejectedFacts) {
+      if (!isGraphRagFilePath(record.filePath)) unsupportedFilePaths.add(record.filePath);
+    }
+    if (unsupportedFilePaths.size === 0) return;
+    await this.graphStore.pruneByFilePaths([...unsupportedFilePaths]);
+  }
 }
 
 function createEmptyResult(
@@ -392,4 +409,12 @@ function createChunkFailureRecord(
     rawFact: message,
     updatedAt: Date.now(),
   };
+}
+
+function filterGraphRagFilePaths(filePaths: readonly string[]): string[] {
+  return filePaths.filter(isGraphRagFilePath);
+}
+
+function isGraphRagFilePath(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith('.md');
 }

@@ -26,6 +26,12 @@ const REASON_PRESENTATIONS: Record<string, ReasonPresentation> = {
     title: '알 수 없는 엔티티 타입',
     description: '모델이 현재 ontology schema에 없는 entity typeId를 반환했습니다.',
   },
+  'schema-shape-mismatch': {
+    errorCode: 'SPI-GRAPH-SCHEMA-SHAPE-001',
+    title: 'JSON 구조가 GraphRAG 추출 스키마와 다름',
+    description:
+      '응답은 JSON으로 파싱됐지만 entities.name/typeId, relations.relationTypeId, claims.text/claimTypeId 같은 필수 필드 구조를 따르지 않았습니다.',
+  },
   'unknown-relation-entity': {
     errorCode: 'SPI-GRAPH-SCHEMA-RELATION-001',
     title: '관계의 엔티티를 찾을 수 없음',

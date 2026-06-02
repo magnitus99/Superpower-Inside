@@ -65,6 +65,10 @@ interface ExtractedClaim {
   confidence?: number;
 }
 
+type GraphPayloadParseResult =
+  | { ok: true; payload: ExtractedGraphPayload }
+  | { ok: false; reason: 'invalid-json' | 'schema-shape-mismatch'; rawFact: unknown };
+
 export class GraphExtractionIndexer {
   private provider: LLMProvider;
   private store: KnowledgeGraphStore;
@@ -97,13 +101,13 @@ export class GraphExtractionIndexer {
       { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
       { role: 'user', content: buildExtractionUserPrompt(input) },
     ], 0);
-    const payload = parseExtractedGraphPayload(rawResponse);
-    if (!payload) {
-      await this.reject(input, 'invalid-json', rawResponse);
+    const parsed = parseExtractedGraphPayload(rawResponse);
+    if (!parsed.ok) {
+      await this.reject(input, parsed.reason, parsed.rawFact);
       return;
     }
 
-    await this.storeAcceptedFacts(input, evidence, payload);
+    await this.storeAcceptedFacts(input, evidence, parsed.payload);
     await this.store.markExtractionCached({ ...cacheKey, updatedAt: Date.now() });
   }
 
@@ -190,21 +194,32 @@ export class GraphExtractionIndexer {
   }
 }
 
-function parseExtractedGraphPayload(rawResponse: string): ExtractedGraphPayload | null {
+function parseExtractedGraphPayload(rawResponse: string): GraphPayloadParseResult {
   const jsonText = extractJsonObject(rawResponse);
-  if (!jsonText) return null;
+  if (!jsonText) return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
   try {
     const parsed = JSON.parse(jsonText) as Partial<ExtractedGraphPayload>;
     if (!Array.isArray(parsed.entities) || !Array.isArray(parsed.relations) || !Array.isArray(parsed.claims)) {
-      return null;
+      return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
+    }
+    const entities = parsed.entities.filter(isExtractedEntity);
+    const relations = parsed.relations.filter(isExtractedRelation);
+    const claims = parsed.claims.filter(isExtractedClaim);
+    const rawFactCount = parsed.entities.length + parsed.relations.length + parsed.claims.length;
+    const validFactCount = entities.length + relations.length + claims.length;
+    if (rawFactCount > 0 && validFactCount === 0) {
+      return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
     }
     return {
-      entities: parsed.entities.filter(isExtractedEntity),
-      relations: parsed.relations.filter(isExtractedRelation),
-      claims: parsed.claims.filter(isExtractedClaim),
+      ok: true,
+      payload: {
+        entities,
+        relations,
+        claims,
+      },
     };
   } catch {
-    return null;
+    return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
   }
 }
 

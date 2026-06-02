@@ -33,6 +33,23 @@ describe('GraphRAG rejected fact diagnostics', () => {
     expect(copyText).toContain('entryId: bible/test.md::1::0');
     expect(copyText).toContain('"provider": "openrouter"');
   });
+
+  it('schema shape 불일치는 JSON 파싱 오류와 다른 코드로 표시한다', () => {
+    const fact = createRejectedFact({
+      reason: 'schema-shape-mismatch',
+      rawFact: {
+        entities: [{ id: 'Base', type: 'work', name: 'Base' }],
+        relations: [{ source: 'Base', target: '표', type: 'part_of' }],
+        claims: [{ subject: 'Base', claim: 'Base contains 표.', type: 'factual_claim' }],
+      },
+    });
+
+    const presentation = getRejectedFactPresentation(fact);
+
+    expect(presentation.errorCode).toBe('SPI-GRAPH-SCHEMA-SHAPE-001');
+    expect(presentation.title).toBe('JSON 구조가 GraphRAG 추출 스키마와 다름');
+    expect(presentation.description).toContain('relations.relationTypeId');
+  });
 });
 
 function createRejectedFact(

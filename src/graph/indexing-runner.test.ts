@@ -67,6 +67,54 @@ describe('GraphRagIndexingRunner', () => {
     expect(provider.calls).toBe(1);
   });
 
+  it('GraphRAG 추출 후보에서 Markdown이 아닌 vector entry는 제외한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('Base.base', 'hash-base'),
+      createEntry('note.md', 'hash-note'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    const result = await runner.run();
+
+    expect(result.totalCandidateFiles).toBe(1);
+    expect(result.processedFiles).toBe(1);
+    expect(provider.calls).toBe(1);
+    expect((await graphStore.getEvidence()).map((evidence) => evidence.filePath)).toEqual([
+      'note.md',
+    ]);
+  });
+
+  it('기존 non-Markdown GraphRAG rejected fact는 다음 실행에서 정리한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('note.md', 'hash-note')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addRejectedFact({
+      id: 'reject-base',
+      filePath: 'Base.base',
+      entryId: 'Base.base::0::0',
+      reason: 'invalid-json',
+      rawFact: 'old',
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+    }));
+
+    await runner.run();
+
+    expect(await graphStore.getRejectedFacts()).toEqual([]);
+  });
+
   it('chunk 실패는 rejected fact로 기록하고 다음 파일을 계속 처리한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
