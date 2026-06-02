@@ -50,6 +50,7 @@ import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/gr
 import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/schema';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
+import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
@@ -103,6 +104,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
   private ragStatusTimer: ReturnType<typeof setInterval> | null = null;
   private ragIndexAbortController: AbortController | null = null;
+  private graphRagProviderAttached = false;
+  private ragRuntimeRebuildInProgress = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
@@ -954,6 +957,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
             queryPlanner: graphProvider ? new LLMGraphQueryPlanner(graphProvider) : undefined,
           })
         : undefined;
+    this.graphRagProviderAttached = graphRagQueryEngine !== undefined;
 
     // RAG engine
     this.ragEngine = new RAGQueryEngine(
@@ -1099,6 +1103,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.ragEngine = null;
     this.graphRagIndexingRunner = null;
     this.graphRagStatus = null;
+    this.graphRagProviderAttached = false;
     this.vaultIndexer = null;
     this.ragIndexingScheduler = null;
     this.ragPerformanceGuard = null;
@@ -1205,18 +1210,38 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
     const schemaErrors = validateOntologySchema(ontologySchema);
-    this.graphRagStatus = await calculateGraphRagStatus({
+    const previousStatus = this.graphRagStatus;
+    const nextStatus = await calculateGraphRagStatus({
       ragConfig: this.settings.rag,
       graphStore: this.knowledgeGraphStore,
       vectorStore: this.vectorStore,
       isRunning: this.isGraphRagIndexing(),
       schemaErrors,
     });
+    this.graphRagStatus = nextStatus;
     const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
     this.refreshBus?.emit('rag', {
       status: this.graphRagStatus.state === 'ready' ? 'success' : 'partial',
       detail: `GraphRAG ${presentation.label}: ${presentation.description}`,
     });
+    if (
+      this.ragEngine &&
+      !this.ragRuntimeRebuildInProgress &&
+      shouldRebuildRagRuntimeForGraphStatus({
+        graphRagEnabled: this.settings.rag.graphRagEnabled,
+        graphRagModel: this.settings.rag.graphRagModel,
+        previousStatus,
+        nextStatus,
+        graphProviderAttached: this.graphRagProviderAttached,
+      })
+    ) {
+      this.ragRuntimeRebuildInProgress = true;
+      try {
+        await this.initRAG();
+      } finally {
+        this.ragRuntimeRebuildInProgress = false;
+      }
+    }
   }
 
   private createIndexedDbName(kind: string): string {
