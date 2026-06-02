@@ -1,4 +1,5 @@
 import type { OntologySchema } from '../ontology/schema';
+import type { LLMProvider } from '../llm/providers';
 import type {
   CandidateProvider,
   RagRetrievalRequest,
@@ -26,16 +27,36 @@ export type GraphQueryType =
 
 export interface GraphQueryPlan {
   type: GraphQueryType;
+  queryMode: GraphRagQueryMode | 'none';
+  traversalDepth: number;
+  evidenceFirst: boolean;
+  entityHints: string[];
 }
 
 export type GraphRagQueryMode = 'auto' | 'local' | 'global' | 'hybrid';
 
 export interface GraphRagQueryEngineOptions {
   queryMode?: GraphRagQueryMode;
+  queryPlanner?: GraphQueryPlanner;
+}
+
+export interface GraphQueryPlanner {
+  plan(question: string, ontologySchema: OntologySchema): Promise<GraphQueryPlan>;
+}
+
+interface EntityMatch {
+  entity: GraphEntityRecord;
+  score: number;
+}
+
+interface EvidenceScore {
+  evidenceId: string;
+  score: number;
 }
 
 export class GraphRagQueryEngine {
   private readonly queryMode: GraphRagQueryMode;
+  private readonly queryPlanner: GraphQueryPlanner | undefined;
 
   constructor(
     private readonly graphStore: KnowledgeGraphStore,
@@ -44,73 +65,122 @@ export class GraphRagQueryEngine {
     options: GraphRagQueryEngineOptions = {},
   ) {
     this.queryMode = options.queryMode ?? 'auto';
+    this.queryPlanner = options.queryPlanner;
   }
 
   async query(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+    const plan =
+      this.queryMode === 'global' ? undefined : await this.planQuery(request.question);
     if (this.queryMode === 'local') {
-      return this.queryLocal(request);
+      return this.queryLocal(request, plan);
     }
     if (this.queryMode === 'global') {
       return this.queryGlobal(request);
     }
     if (this.queryMode === 'hybrid') {
       return mergeCandidates(
-        await this.queryLocal(request),
+        await this.queryLocal(request, plan),
         await this.queryGlobal(request),
         request.candidateLimit,
       );
     }
 
-    const plan = planGraphQuery(request.question);
-    if (plan.type === 'thematic') {
-      return this.queryGlobal(request);
-    }
-    if (plan.type === 'source-seeking') {
-      return this.queryEvidenceFirst(request);
-    }
-    if (plan.type === 'ordinary-rag') {
+    const autoPlan = plan ?? planGraphQuery(request.question);
+    if (autoPlan.queryMode === 'none') {
       return [];
     }
-    return this.queryLocal(request);
+    if (autoPlan.queryMode === 'hybrid') {
+      return mergeCandidates(
+        await this.queryLocal(request, autoPlan),
+        await this.queryGlobal(request),
+        request.candidateLimit,
+      );
+    }
+    if (autoPlan.queryMode === 'global') {
+      return this.queryGlobal(request);
+    }
+    if (autoPlan.evidenceFirst) {
+      return this.queryEvidenceFirst(request, autoPlan);
+    }
+    return this.queryLocal(request, autoPlan);
   }
 
-  private async queryLocal(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const entities = await this.graphStore.getEntities();
-    const mentionedEntities = findMentionedEntities(request.question, entities, this.ontologySchema.id);
-    if (mentionedEntities.length === 0) return [];
+  private async planQuery(question: string): Promise<GraphQueryPlan> {
+    if (!this.queryPlanner) return planGraphQuery(question);
+    try {
+      return await this.queryPlanner.plan(question, this.ontologySchema);
+    } catch {
+      return planGraphQuery(question);
+    }
+  }
 
-    const mentionedIds = new Set(mentionedEntities.map((entity) => entity.id));
-    const relations = (await this.graphStore.getRelations()).filter(
-      (relation) => mentionedIds.has(relation.sourceEntityId) || mentionedIds.has(relation.targetEntityId),
+  private async queryLocal(
+    request: RagRetrievalRequest,
+    plan?: GraphQueryPlan,
+  ): Promise<RetrievalCandidate[]> {
+    const entities = await this.graphStore.getEntities();
+    const mentionedMatches = findMentionedEntityMatches(
+      request.question,
+      entities,
+      this.ontologySchema.id,
+      plan?.entityHints ?? [],
     );
-    const claims = (await this.graphStore.getClaims()).filter((claim) =>
-      claim.entityIds.some((entityId) => mentionedIds.has(entityId)),
-    );
-    const evidenceIds = collectEvidenceIds([
-      ...mentionedEntities,
-      ...relations,
-      ...claims,
+    if (mentionedMatches.length === 0) return [];
+
+    const [relations, claims] = await Promise.all([
+      this.graphStore.getRelations(),
+      this.graphStore.getClaims(),
     ]);
-    return this.evidenceIdsToCandidates(evidenceIds, 'graph-local', 'local-entity-neighborhood', request.candidateLimit);
+    const evidenceScores = collectLocalEvidenceScores(
+      mentionedMatches,
+      relations.filter((relation) => relation.ontologySchemaId === this.ontologySchema.id),
+      claims,
+      plan?.traversalDepth ?? 1,
+    );
+    return this.evidenceScoresToCandidates(
+      evidenceScores,
+      'graph-local',
+      'local-entity-neighborhood',
+      request.candidateLimit,
+      request.isEntryCompatible,
+    );
   }
 
-  private async queryEvidenceFirst(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+  private async queryEvidenceFirst(
+    request: RagRetrievalRequest,
+    plan?: GraphQueryPlan,
+  ): Promise<RetrievalCandidate[]> {
     const entities = await this.graphStore.getEntities();
-    const mentionedEntities = findMentionedEntities(request.question, entities, this.ontologySchema.id);
-    const mentionedIds = new Set(mentionedEntities.map((entity) => entity.id));
+    const mentionedMatches = findMentionedEntityMatches(
+      request.question,
+      entities,
+      this.ontologySchema.id,
+      plan?.entityHints ?? [],
+    );
+    const mentionedIds = new Set(mentionedMatches.map((match) => match.entity.id));
     const claims = await this.graphStore.getClaims();
     const relations = await this.graphStore.getRelations();
-    const evidenceIds =
+    const evidenceScores =
       mentionedIds.size > 0
-        ? collectEvidenceIds([
-            ...claims.filter((claim) => claim.entityIds.some((entityId) => mentionedIds.has(entityId))),
-            ...relations.filter(
-              (relation) =>
-                mentionedIds.has(relation.sourceEntityId) || mentionedIds.has(relation.targetEntityId),
-            ),
-          ])
-        : collectEvidenceIds(claims);
-    return this.evidenceIdsToCandidates(evidenceIds, 'evidence', 'evidence-first', request.candidateLimit);
+        ? collectLocalEvidenceScores(
+            mentionedMatches,
+            relations.filter((relation) => relation.ontologySchemaId === this.ontologySchema.id),
+            claims,
+            1,
+          )
+        : claims.flatMap((claim) =>
+            claim.evidenceIds.map((evidenceId) => ({
+              evidenceId,
+              score: clampScore(claim.confidence * 0.75),
+            })),
+          );
+    return this.evidenceScoresToCandidates(
+      evidenceScores,
+      'evidence',
+      'evidence-first',
+      request.candidateLimit,
+      request.isEntryCompatible,
+    );
   }
 
   private async queryGlobal(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
@@ -120,6 +190,10 @@ export class GraphRagQueryEngine {
         community,
         score: cosineSimilarity(request.queryVector, community.summaryVector),
       }))
+      .filter(
+        (candidate): candidate is { community: GraphCommunityRecord; score: number } =>
+          candidate.score !== null,
+      )
       .sort((a, b) => b.score - a.score)
       .slice(0, request.candidateLimit);
 
@@ -131,34 +205,146 @@ export class GraphRagQueryEngine {
     }));
   }
 
-  private async evidenceIdsToCandidates(
-    evidenceIds: readonly string[],
+  private async evidenceScoresToCandidates(
+    evidenceScores: readonly EvidenceScore[],
     source: RetrievalCandidateSource,
     reason: string,
     candidateLimit: number,
+    isEntryCompatible?: (entry: VectorEntry) => boolean,
   ): Promise<RetrievalCandidate[]> {
     const evidenceById = new Map((await this.graphStore.getEvidence()).map((evidence) => [evidence.id, evidence]));
-    const evidenceRecords = evidenceIds
+    const scoreByEvidenceId = mergeEvidenceScores(evidenceScores);
+    const evidenceRecords = [...scoreByEvidenceId.keys()]
       .map((evidenceId) => evidenceById.get(evidenceId))
-      .filter((evidence): evidence is GraphEvidenceRecord => evidence !== undefined);
+      .filter((evidence): evidence is GraphEvidenceRecord => evidence !== undefined)
+      .sort(
+        (a, b) =>
+          (scoreByEvidenceId.get(b.id) ?? 0) - (scoreByEvidenceId.get(a.id) ?? 0),
+      );
     if (evidenceRecords.length === 0) return [];
 
-    const entryIds = new Set(evidenceRecords.map((evidence) => evidence.entryId));
     const paths = [...new Set(evidenceRecords.map((evidence) => evidence.filePath))];
     const entriesById = new Map(
       (await this.vectorStore.getEntriesByFilePaths(paths)).map((entry) => [entry.id, entry]),
     );
-    return [...entryIds]
-      .map((entryId) => entriesById.get(entryId))
-      .filter((entry): entry is VectorEntry => entry !== undefined)
+    return evidenceRecords
+      .map((evidence) => ({
+        evidence,
+        entry: entriesById.get(evidence.entryId),
+      }))
+      .filter((item): item is { evidence: GraphEvidenceRecord; entry: VectorEntry } =>
+        item.entry !== undefined && (isEntryCompatible?.(item.entry) ?? true),
+      )
+      .filter((item, index, items) =>
+        items.findIndex((candidate) => candidate.entry.id === item.entry.id) === index,
+      )
       .slice(0, candidateLimit)
-      .map((entry) => ({
+      .map(({ evidence, entry }) => ({
         entry,
         source,
-        sourceScore: 1,
+        sourceScore: scoreByEvidenceId.get(evidence.id) ?? 0,
         reason,
       }));
   }
+}
+
+function collectLocalEvidenceScores(
+  mentionedMatches: readonly EntityMatch[],
+  relations: readonly GraphRelationRecord[],
+  claims: readonly GraphClaimRecord[],
+  traversalDepth: number,
+): EvidenceScore[] {
+  const maxDepth = Math.max(0, Math.floor(traversalDepth));
+  const entityScores = new Map<string, number>();
+  const entityDistances = new Map<string, number>();
+  let frontier = new Set<string>();
+  const evidenceScores: EvidenceScore[] = [];
+
+  for (const match of mentionedMatches) {
+    const entityScore = clampScore(match.score * match.entity.confidence);
+    entityScores.set(match.entity.id, Math.max(entityScores.get(match.entity.id) ?? 0, entityScore));
+    entityDistances.set(match.entity.id, 0);
+    frontier.add(match.entity.id);
+    for (const evidenceId of match.entity.evidenceIds) {
+      evidenceScores.push({
+        evidenceId,
+        score: clampScore(0.55 + entityScore * 0.35),
+      });
+    }
+  }
+
+  addClaimEvidenceScores(claims, entityScores, entityDistances, evidenceScores);
+
+  for (let depth = 1; depth <= maxDepth && frontier.size > 0; depth++) {
+    const nextFrontier = new Set<string>();
+    for (const relation of relations) {
+      const sourceScore = entityScores.get(relation.sourceEntityId) ?? 0;
+      const targetScore = entityScores.get(relation.targetEntityId) ?? 0;
+      const touchesFrontier =
+        frontier.has(relation.sourceEntityId) || frontier.has(relation.targetEntityId);
+      if (!touchesFrontier || (sourceScore === 0 && targetScore === 0)) continue;
+
+      const bestEndpointScore = Math.max(sourceScore, targetScore);
+      const distanceFactor = 1 / (1 + (depth - 1) * 0.45);
+      const relationScore = clampScore(
+        bestEndpointScore * relation.confidence * distanceFactor,
+      );
+      for (const evidenceId of relation.evidenceIds) {
+        evidenceScores.push({ evidenceId, score: relationScore });
+      }
+
+      for (const entityId of [relation.sourceEntityId, relation.targetEntityId]) {
+        if (entityScores.has(entityId)) continue;
+        entityScores.set(entityId, clampScore(relationScore * 0.82));
+        entityDistances.set(entityId, depth);
+        nextFrontier.add(entityId);
+      }
+    }
+    frontier = nextFrontier;
+    addClaimEvidenceScores(claims, entityScores, entityDistances, evidenceScores);
+  }
+
+  return evidenceScores.sort((a, b) => b.score - a.score);
+}
+
+function addClaimEvidenceScores(
+  claims: readonly GraphClaimRecord[],
+  entityScores: ReadonlyMap<string, number>,
+  entityDistances: ReadonlyMap<string, number>,
+  evidenceScores: EvidenceScore[],
+): void {
+  for (const claim of claims) {
+    const matchedEntityScores = claim.entityIds
+      .map((entityId) => ({
+        score: entityScores.get(entityId) ?? 0,
+        distance: entityDistances.get(entityId) ?? 0,
+      }))
+      .filter((match) => match.score > 0);
+    if (matchedEntityScores.length === 0) continue;
+
+    const best = matchedEntityScores.reduce((currentBest, match) =>
+      match.score > currentBest.score ? match : currentBest,
+    );
+    const distanceFactor = 1 / (1 + best.distance * 0.35);
+    const claimScore = clampScore(best.score * claim.confidence * distanceFactor);
+    for (const evidenceId of claim.evidenceIds) {
+      evidenceScores.push({ evidenceId, score: claimScore });
+    }
+  }
+}
+
+function mergeEvidenceScores(scores: readonly EvidenceScore[]): Map<string, number> {
+  const merged = new Map<string, number>();
+  for (const score of scores) {
+    if (!score.evidenceId) continue;
+    merged.set(score.evidenceId, Math.max(merged.get(score.evidenceId) ?? 0, score.score));
+  }
+  return merged;
+}
+
+function clampScore(score: number): number {
+  if (!Number.isFinite(score)) return 0;
+  return Math.max(0, Math.min(1, score));
 }
 
 function mergeCandidates(
@@ -191,53 +377,231 @@ export class GraphRagCandidateProvider implements CandidateProvider {
   }
 }
 
+export class LLMGraphQueryPlanner implements GraphQueryPlanner {
+  constructor(
+    private readonly provider: LLMProvider,
+    private readonly timeoutMs = 2000,
+  ) {}
+
+  async plan(question: string, ontologySchema: OntologySchema): Promise<GraphQueryPlan> {
+    const response = await withTimeout(
+      this.provider.chat(
+        [
+          {
+            role: 'system',
+            content:
+              'Plan a GraphRAG query. Return JSON only with type, queryMode, traversalDepth, evidenceFirst, entityHints. queryMode must be local, global, hybrid, or none.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              question,
+              ontologyEntityTypes: ontologySchema.entityTypes.map((type) => type.id),
+              ontologyRelationTypes: ontologySchema.relationTypes.map((type) => type.id),
+            }),
+          },
+        ],
+        0,
+      ),
+      this.timeoutMs,
+    );
+    return normalizeGraphQueryPlan(parsePlannerResponse(response) ?? planGraphQuery(question));
+  }
+}
+
 export function planGraphQuery(question: string): GraphQueryPlan {
   const normalized = question.toLowerCase();
   if (/(근거|출처|어디|source|evidence)/iu.test(normalized)) {
-    return { type: 'source-seeking' };
+    return createGraphQueryPlan('source-seeking', {
+      queryMode: 'local',
+      evidenceFirst: true,
+      traversalDepth: 1,
+      entityHints: extractEntityHints(question),
+    });
   }
   if (/(반복|핵심 주제|전체|주제|theme|thematic|community)/iu.test(normalized)) {
-    return { type: 'thematic' };
+    return createGraphQueryPlan('thematic', {
+      queryMode: 'global',
+      traversalDepth: 1,
+      entityHints: extractEntityHints(question),
+    });
   }
   if (/(관계|관련|연결|대립|협력|relation|related)/iu.test(normalized)) {
-    return { type: 'relational' };
+    return createGraphQueryPlan('relational', {
+      queryMode: 'local',
+      traversalDepth: 2,
+      entityHints: extractEntityHints(question),
+    });
   }
   if (/(차이|비교|compare|difference)/iu.test(normalized)) {
-    return { type: 'comparative' };
+    return createGraphQueryPlan('comparative', {
+      queryMode: 'hybrid',
+      traversalDepth: 2,
+      entityHints: extractEntityHints(question),
+    });
   }
   if (/(누구|무엇|어떤|who|what)/iu.test(normalized)) {
-    return { type: 'factual' };
+    return createGraphQueryPlan('factual', {
+      queryMode: 'local',
+      traversalDepth: 1,
+      entityHints: extractEntityHints(question),
+    });
   }
-  return { type: 'ordinary-rag' };
-}
-
-function findMentionedEntities(
-  question: string,
-  entities: readonly GraphEntityRecord[],
-  ontologySchemaId: string,
-): GraphEntityRecord[] {
-  const normalizedQuestion = normalizeEntityName(question);
-  return entities.filter((entity) => {
-    if (entity.ontologySchemaId !== ontologySchemaId) return false;
-    const names = [entity.canonicalName, ...entity.aliases].map(normalizeEntityName);
-    return names.some((name) => normalizedQuestion.includes(name));
+  return createGraphQueryPlan('ordinary-rag', {
+    queryMode: 'none',
+    traversalDepth: 0,
+    entityHints: extractEntityHints(question),
   });
 }
 
-function collectEvidenceIds(
-  records: ReadonlyArray<
-    Pick<GraphEntityRecord, 'evidenceIds'> |
-    Pick<GraphRelationRecord, 'evidenceIds'> |
-    Pick<GraphClaimRecord, 'evidenceIds'>
-  >,
-): string[] {
-  const ids = new Set<string>();
-  for (const record of records) {
-    for (const evidenceId of record.evidenceIds) {
-      ids.add(evidenceId);
+function findMentionedEntityMatches(
+  question: string,
+  entities: readonly GraphEntityRecord[],
+  ontologySchemaId: string,
+  entityHints: readonly string[],
+): EntityMatch[] {
+  const normalizedQuestion = normalizeEntityName(question);
+  const normalizedHints = new Set(
+    entityHints.map(normalizeEntityName).filter((hint) => hint.length > 0),
+  );
+  const matches: EntityMatch[] = [];
+
+  for (const entity of entities) {
+    if (entity.ontologySchemaId !== ontologySchemaId) continue;
+    const names = [entity.canonicalName, ...entity.aliases]
+      .map(normalizeEntityName)
+      .filter((name) => name.length > 0);
+    let bestScore = 0;
+    for (const name of names) {
+      if (normalizedHints.has(name)) {
+        bestScore = Math.max(bestScore, 1);
+      }
+      if (isSafeMention(normalizedQuestion, name)) {
+        bestScore = Math.max(bestScore, name === normalizeEntityName(entity.canonicalName) ? 0.94 : 0.88);
+      }
+    }
+    if (bestScore > 0) {
+      matches.push({ entity, score: bestScore });
     }
   }
-  return [...ids];
+
+  return matches.sort((a, b) => b.score - a.score);
+}
+
+function isSafeMention(normalizedText: string, normalizedName: string): boolean {
+  if (!normalizedName) return false;
+  if (normalizedName.length < 2) {
+    return normalizedText.split(' ').includes(normalizedName);
+  }
+
+  const escaped = escapeRegExp(normalizedName);
+  const koreanParticlePattern = '(?:은|는|이|가|을|를|과|와|의|에|에서|로|으로|에게|께|도|만|부터|까지)';
+  const pattern = new RegExp(
+    `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}]|${koreanParticlePattern})`,
+    'u',
+  );
+  return pattern.test(normalizedText);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function createGraphQueryPlan(
+  type: GraphQueryType,
+  input: Partial<Omit<GraphQueryPlan, 'type'>>,
+): GraphQueryPlan {
+  return {
+    type,
+    queryMode: input.queryMode ?? 'local',
+    traversalDepth: Math.max(0, Math.floor(input.traversalDepth ?? 1)),
+    evidenceFirst: input.evidenceFirst ?? false,
+    entityHints: input.entityHints ?? [],
+  };
+}
+
+function normalizeGraphQueryPlan(input: GraphQueryPlan): GraphQueryPlan {
+  const queryMode = isGraphQueryExecutionMode(input.queryMode) ? input.queryMode : 'local';
+  const type = isGraphQueryType(input.type) ? input.type : 'ordinary-rag';
+  return createGraphQueryPlan(type, {
+    queryMode,
+    traversalDepth: input.traversalDepth,
+    evidenceFirst: input.evidenceFirst,
+    entityHints: input.entityHints.filter((hint) => hint.trim().length > 0),
+  });
+}
+
+function parsePlannerResponse(response: string): GraphQueryPlan | null {
+  const parsed = parseJsonObject(response);
+  if (!parsed) return null;
+  return {
+    type: typeof parsed.type === 'string' && isGraphQueryType(parsed.type) ? parsed.type : 'ordinary-rag',
+    queryMode:
+      typeof parsed.queryMode === 'string' && isGraphQueryExecutionMode(parsed.queryMode)
+        ? parsed.queryMode
+        : 'local',
+    traversalDepth: typeof parsed.traversalDepth === 'number' ? parsed.traversalDepth : 1,
+    evidenceFirst: parsed.evidenceFirst === true,
+    entityHints: Array.isArray(parsed.entityHints)
+      ? parsed.entityHints.filter((hint): hint is string => typeof hint === 'string')
+      : [],
+  };
+}
+
+function parseJsonObject(response: string): Record<string, unknown> | null {
+  const trimmed = response.trim();
+  const jsonText =
+    trimmed.startsWith('{') && trimmed.endsWith('}')
+      ? trimmed
+      : trimmed.match(/\{[\s\S]*\}/u)?.[0];
+  if (!jsonText) return null;
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isGraphQueryType(value: string): value is GraphQueryType {
+  return [
+    'factual',
+    'relational',
+    'thematic',
+    'comparative',
+    'source-seeking',
+    'ordinary-rag',
+  ].includes(value);
+}
+
+function isGraphQueryExecutionMode(value: string): value is GraphRagQueryMode | 'none' {
+  return ['local', 'global', 'hybrid', 'none'].includes(value);
+}
+
+function extractEntityHints(question: string): string[] {
+  const hints = new Set<string>();
+  const latinNames = question.match(/\b[A-Z][A-Za-z0-9_-]*(?:\s+[A-Z][A-Za-z0-9_-]*)*\b/gu) ?? [];
+  for (const name of latinNames) {
+    if (!isQuestionKeyword(name)) hints.add(name.trim());
+  }
+  return [...hints];
+}
+
+function isQuestionKeyword(value: string): boolean {
+  return /^(who|what|where|source|evidence|theme|community|compare|difference)$/iu.test(value);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  if (timeoutMs <= 0) return promise;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('GraphRAG query planning timed out')), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
 }
 
 function communityToVectorEntry(community: GraphCommunityRecord): VectorEntry {
@@ -254,17 +618,18 @@ function communityToVectorEntry(community: GraphCommunityRecord): VectorEntry {
   };
 }
 
-function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+function cosineSimilarity(a: readonly number[], b: readonly number[]): number | null {
+  if (a.length === 0 || a.length !== b.length) return null;
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  const dimensions = Math.min(a.length, b.length);
-  for (let i = 0; i < dimensions; i++) {
+  for (let i = 0; i < a.length; i++) {
     const aValue = a[i] ?? 0;
     const bValue = b[i] ?? 0;
     dot += aValue * bValue;
     normA += aValue * aValue;
     normB += bValue * bValue;
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
+  if (normA === 0 || normB === 0) return null;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }

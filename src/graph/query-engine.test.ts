@@ -116,6 +116,129 @@ describe('GraphRagQueryEngine', () => {
       expect.arrayContaining(['graph-local', 'graph-global']),
     );
   });
+
+  it('auto mode의 comparative 질문은 local evidence와 global summary를 함께 반환한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+
+    const candidates = await engine.query({
+      question: 'Paul과 Barnabas의 차이를 비교해줘',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates.map((candidate) => candidate.source)).toEqual(
+      expect.arrayContaining(['graph-local', 'graph-global']),
+    );
+  });
+
+  it('한국어 alias와 planner entity hint로 local evidence 후보를 찾는다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixture();
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+      queryPlanner: {
+        plan: () =>
+          Promise.resolve({
+            type: 'relational',
+            queryMode: 'local',
+            traversalDepth: 1,
+            evidenceFirst: false,
+            entityHints: ['바울', '바나바'],
+          }),
+      },
+    });
+
+    const candidates = await engine.query({
+      question: '바울과 바나바는 어떤 관계야?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates[0]?.entry.metadata.filePath).toBe('Acts.md');
+    expect(candidates[0]?.sourceScore).toBeGreaterThan(0.7);
+  });
+
+  it('짧은 이름은 단어 경계 없이 부분 문자열로 오탐하지 않는다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    await graphStore.addEvidence({
+      id: 'evidence::short',
+      filePath: 'short.md',
+      entryId: 'short.md::0',
+      startLine: 0,
+      endLine: 0,
+      quote: 'A is mentioned.',
+      contentHash: 'hash',
+      extractionModelKey: 'model',
+      updatedAt: 1,
+    });
+    await graphStore.upsertEntity(createEntity('A', [], ['evidence::short']));
+    await vectorStore.add([createVectorEntry('short.md::0', 'short.md')]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+
+    const candidates = await engine.query({
+      question: 'Apostle에 대해 알려줘',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates).toEqual([]);
+  });
+
+  it('traversalDepth 2이면 직접 언급 엔티티의 이웃 relation evidence까지 반환한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixture();
+    const secondEvidence: GraphEvidenceRecord = {
+      id: 'evidence::mark',
+      filePath: 'Mark.md',
+      entryId: 'Mark.md::0',
+      startLine: 0,
+      endLine: 0,
+      quote: 'Barnabas worked with Mark.',
+      contentHash: 'hash-mark',
+      extractionModelKey: 'model',
+      updatedAt: 1,
+    };
+    await graphStore.addEvidence(secondEvidence);
+    await graphStore.upsertEntity(createEntity('Mark', [], [secondEvidence.id]));
+    await graphStore.addRelation({
+      id: 'relation::barnabas-mark',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      relationTypeId: 'collaborated_with',
+      sourceEntityId: 'entity::general::person::barnabas',
+      targetEntityId: 'entity::general::person::mark',
+      description: 'Barnabas worked with Mark.',
+      properties: {},
+      confidence: 0.8,
+      evidenceIds: [secondEvidence.id],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await vectorStore.add([createVectorEntry('Mark.md::0', 'Mark.md')]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+      queryPlanner: {
+        plan: () =>
+          Promise.resolve({
+            type: 'relational',
+            queryMode: 'local',
+            traversalDepth: 2,
+            evidenceFirst: false,
+            entityHints: ['Paul'],
+          }),
+      },
+    });
+
+    const candidates = await engine.query({
+      question: 'Paul과 관련된 관계를 넓게 보여줘',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
+      expect.arrayContaining(['Acts.md', 'Mark.md']),
+    );
+    expect(candidates.find((candidate) => candidate.entry.metadata.filePath === 'Acts.md')?.sourceScore)
+      .toBeGreaterThan(candidates.find((candidate) => candidate.entry.metadata.filePath === 'Mark.md')?.sourceScore ?? 0);
+  });
 });
 
 describe('GraphRagCandidateProvider', () => {
@@ -137,11 +260,41 @@ describe('GraphRagCandidateProvider', () => {
 });
 
 describe('planGraphQuery', () => {
-  it('질문 유형을 규칙 기반으로 분류한다', () => {
-    expect(planGraphQuery('근거가 어디에 있어?').type).toBe('source-seeking');
-    expect(planGraphQuery('반복되는 핵심 주제는?').type).toBe('thematic');
-    expect(planGraphQuery('A와 관련된 관계는?').type).toBe('relational');
-    expect(planGraphQuery('평범한 질문').type).toBe('ordinary-rag');
+  it('질문 유형과 graph 탐색 전략을 함께 계획한다', () => {
+    expect(planGraphQuery('근거가 어디에 있어?')).toEqual(
+      expect.objectContaining({
+        type: 'source-seeking',
+        queryMode: 'local',
+        evidenceFirst: true,
+      }),
+    );
+    expect(planGraphQuery('반복되는 핵심 주제는?')).toEqual(
+      expect.objectContaining({
+        type: 'thematic',
+        queryMode: 'global',
+      }),
+    );
+    expect(planGraphQuery('A와 관련된 관계는?')).toEqual(
+      expect.objectContaining({
+        type: 'relational',
+        queryMode: 'local',
+        traversalDepth: 2,
+      }),
+    );
+    expect(planGraphQuery('Paul과 Barnabas의 차이를 비교해줘')).toEqual(
+      expect.objectContaining({
+        type: 'comparative',
+        queryMode: 'hybrid',
+        traversalDepth: 2,
+        entityHints: ['Paul', 'Barnabas'],
+      }),
+    );
+    expect(planGraphQuery('평범한 질문')).toEqual(
+      expect.objectContaining({
+        type: 'ordinary-rag',
+        queryMode: 'none',
+      }),
+    );
   });
 });
 
@@ -163,8 +316,8 @@ async function createGraphFixture(): Promise<{
     updatedAt: 1,
   };
   await graphStore.addEvidence(evidence);
-  await graphStore.upsertEntity(createEntity('Paul', ['Saul'], [evidence.id]));
-  await graphStore.upsertEntity(createEntity('Barnabas', [], [evidence.id]));
+  await graphStore.upsertEntity(createEntity('Paul', ['Saul', '바울'], [evidence.id]));
+  await graphStore.upsertEntity(createEntity('Barnabas', ['바나바'], [evidence.id]));
   await graphStore.addRelation(createRelation(evidence.id));
   await graphStore.addClaim(createClaim(evidence.id));
   await vectorStore.add([createVectorEntry('Acts.md::1::0', 'Acts.md')]);
