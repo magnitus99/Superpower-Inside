@@ -69,8 +69,7 @@ export class GraphRagQueryEngine {
   }
 
   async query(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const plan =
-      this.queryMode === 'global' ? undefined : await this.planQuery(request.question);
+    const plan = this.queryMode === 'global' ? undefined : await this.planQuery(request.question);
     if (this.queryMode === 'local') {
       return this.queryLocal(request, plan);
     }
@@ -212,15 +211,14 @@ export class GraphRagQueryEngine {
     candidateLimit: number,
     isEntryCompatible?: (entry: VectorEntry) => boolean,
   ): Promise<RetrievalCandidate[]> {
-    const evidenceById = new Map((await this.graphStore.getEvidence()).map((evidence) => [evidence.id, evidence]));
+    const evidenceById = new Map(
+      (await this.graphStore.getEvidence()).map((evidence) => [evidence.id, evidence]),
+    );
     const scoreByEvidenceId = mergeEvidenceScores(evidenceScores);
     const evidenceRecords = [...scoreByEvidenceId.keys()]
       .map((evidenceId) => evidenceById.get(evidenceId))
       .filter((evidence): evidence is GraphEvidenceRecord => evidence !== undefined)
-      .sort(
-        (a, b) =>
-          (scoreByEvidenceId.get(b.id) ?? 0) - (scoreByEvidenceId.get(a.id) ?? 0),
-      );
+      .sort((a, b) => (scoreByEvidenceId.get(b.id) ?? 0) - (scoreByEvidenceId.get(a.id) ?? 0));
     if (evidenceRecords.length === 0) return [];
 
     const paths = [...new Set(evidenceRecords.map((evidence) => evidence.filePath))];
@@ -232,11 +230,13 @@ export class GraphRagQueryEngine {
         evidence,
         entry: entriesById.get(evidence.entryId),
       }))
-      .filter((item): item is { evidence: GraphEvidenceRecord; entry: VectorEntry } =>
-        item.entry !== undefined && (isEntryCompatible?.(item.entry) ?? true),
+      .filter(
+        (item): item is { evidence: GraphEvidenceRecord; entry: VectorEntry } =>
+          item.entry !== undefined && (isEntryCompatible?.(item.entry) ?? true),
       )
-      .filter((item, index, items) =>
-        items.findIndex((candidate) => candidate.entry.id === item.entry.id) === index,
+      .filter(
+        (item, index, items) =>
+          items.findIndex((candidate) => candidate.entry.id === item.entry.id) === index,
       )
       .slice(0, candidateLimit)
       .map(({ evidence, entry }) => ({
@@ -262,7 +262,10 @@ function collectLocalEvidenceScores(
 
   for (const match of mentionedMatches) {
     const entityScore = clampScore(match.score * match.entity.confidence);
-    entityScores.set(match.entity.id, Math.max(entityScores.get(match.entity.id) ?? 0, entityScore));
+    entityScores.set(
+      match.entity.id,
+      Math.max(entityScores.get(match.entity.id) ?? 0, entityScore),
+    );
     entityDistances.set(match.entity.id, 0);
     frontier.add(match.entity.id);
     for (const evidenceId of match.entity.evidenceIds) {
@@ -286,9 +289,7 @@ function collectLocalEvidenceScores(
 
       const bestEndpointScore = Math.max(sourceScore, targetScore);
       const distanceFactor = 1 / (1 + (depth - 1) * 0.45);
-      const relationScore = clampScore(
-        bestEndpointScore * relation.confidence * distanceFactor,
-      );
+      const relationScore = clampScore(bestEndpointScore * relation.confidence * distanceFactor);
       for (const evidenceId of relation.evidenceIds) {
         evidenceScores.push({ evidenceId, score: relationScore });
       }
@@ -477,7 +478,10 @@ function findMentionedEntityMatches(
         bestScore = Math.max(bestScore, 1);
       }
       if (isSafeMention(normalizedQuestion, name)) {
-        bestScore = Math.max(bestScore, name === normalizeEntityName(entity.canonicalName) ? 0.94 : 0.88);
+        bestScore = Math.max(
+          bestScore,
+          name === normalizeEntityName(entity.canonicalName) ? 0.94 : 0.88,
+        );
       }
     }
     if (bestScore > 0) {
@@ -495,7 +499,8 @@ function isSafeMention(normalizedText: string, normalizedName: string): boolean 
   }
 
   const escaped = escapeRegExp(normalizedName);
-  const koreanParticlePattern = '(?:은|는|이|가|을|를|과|와|의|에|에서|로|으로|에게|께|도|만|부터|까지)';
+  const koreanParticlePattern =
+    '(?:\\uC740|\\uB294|\\uC774|\\uAC00|\\uC744|\\uB97C|\\uACFC|\\uC640|\\uC758|\\uC5D0|\\uC5D0\\uC11C|\\uB85C|\\uC73C\\uB85C|\\uC5D0\\uAC8C|\\uAED8|\\uB3C4|\\uB9CC|\\uBD80\\uD130|\\uAE4C\\uC9C0)';
   const pattern = new RegExp(
     `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}]|${koreanParticlePattern})`,
     'u',
@@ -535,7 +540,10 @@ function parsePlannerResponse(response: string): GraphQueryPlan | null {
   const parsed = parseJsonObject(response);
   if (!parsed) return null;
   return {
-    type: typeof parsed.type === 'string' && isGraphQueryType(parsed.type) ? parsed.type : 'ordinary-rag',
+    type:
+      typeof parsed.type === 'string' && isGraphQueryType(parsed.type)
+        ? parsed.type
+        : 'ordinary-rag',
     queryMode:
       typeof parsed.queryMode === 'string' && isGraphQueryExecutionMode(parsed.queryMode)
         ? parsed.queryMode
@@ -551,9 +559,7 @@ function parsePlannerResponse(response: string): GraphQueryPlan | null {
 function parseJsonObject(response: string): Record<string, unknown> | null {
   const trimmed = response.trim();
   const jsonText =
-    trimmed.startsWith('{') && trimmed.endsWith('}')
-      ? trimmed
-      : trimmed.match(/\{[\s\S]*\}/u)?.[0];
+    trimmed.startsWith('{') && trimmed.endsWith('}') ? trimmed : trimmed.match(/\{[\s\S]*\}/u)?.[0];
   if (!jsonText) return null;
   try {
     const parsed = JSON.parse(jsonText) as unknown;

@@ -1,6 +1,13 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
 import type SuperpowerInsidePlugin from '../../main';
-import type { GraphEntityRecord, GraphRelationRecord, GraphCommunityRecord, GraphEvidenceRecord, GraphRejectedFactRecord } from './store';
+import { t } from '../i18n';
+import type {
+  GraphEntityRecord,
+  GraphRelationRecord,
+  GraphCommunityRecord,
+  GraphEvidenceRecord,
+  GraphRejectedFactRecord,
+} from './store';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
 
@@ -39,7 +46,8 @@ const SEARCH_DEBOUNCE_MS = 200;
 
 export class GraphRagView extends ItemView {
   private plugin: SuperpowerInsidePlugin;
-  private activeTab: 'entities' | 'relations' | 'evidence' | 'communities' | 'rejected' = 'entities';
+  private activeTab: 'entities' | 'relations' | 'evidence' | 'communities' | 'rejected' =
+    'entities';
   private searchQuery = '';
   private headerEl: HTMLElement | null = null;
   private searchInputEl: HTMLInputElement | null = null;
@@ -51,7 +59,10 @@ export class GraphRagView extends ItemView {
   private allCommunities: GraphCommunityRecord[] = [];
   private allRejectedFacts: GraphRejectedFactRecord[] = [];
   private entityTypeInfoMap = new Map<string, { id: string; label: string }>();
-  private relationTypeInfoMap = new Map<string, { id: string; label: string; sourceTypeIds: string[]; targetTypeIds: string[] }>();
+  private relationTypeInfoMap = new Map<
+    string,
+    { id: string; label: string; sourceTypeIds: string[]; targetTypeIds: string[] }
+  >();
   private minConfidence = 0;
   private detailEntity: GraphEntityRecord | null = null;
   private progressUnsubscriber: (() => void) | null = null;
@@ -71,7 +82,7 @@ export class GraphRagView extends ItemView {
   }
 
   getDisplayText(): string {
-    return 'GraphRAG 탐색기';
+    return t('graphRagViewTabTitle');
   }
 
   getIcon(): string {
@@ -88,7 +99,7 @@ export class GraphRagView extends ItemView {
 
     this.searchInputEl = this.headerEl.createEl('input', {
       type: 'text',
-      placeholder: '검색...',
+      placeholder: t('graphRagViewSearchPlaceholder'),
     });
     this.searchInputEl.addClass('superpower-inside-graph-view-search');
     this.searchInputEl.addEventListener('input', () => {
@@ -102,21 +113,39 @@ export class GraphRagView extends ItemView {
 
     this.progressEl = this.headerEl.createDiv({ cls: 'superpower-inside-graph-view-progress' });
     this.progressEl.style.display = 'none';
-    this.progressTextEl = this.progressEl.createSpan({ cls: 'superpower-inside-graph-view-progress-text' });
-    this.progressBarEl = this.progressEl.createDiv({ cls: 'superpower-inside-graph-view-progress-bar' });
-    const fill = this.progressBarEl.createDiv({ cls: 'superpower-inside-graph-view-progress-fill' });
+    this.progressTextEl = this.progressEl.createSpan({
+      cls: 'superpower-inside-graph-view-progress-text',
+    });
+    this.progressBarEl = this.progressEl.createDiv({
+      cls: 'superpower-inside-graph-view-progress-bar',
+    });
+    const fill = this.progressBarEl.createDiv({
+      cls: 'superpower-inside-graph-view-progress-fill',
+    });
     fill.id = 'superpower-inside-graph-progress-fill';
 
     const bus = this.plugin.refreshBus;
     if (bus) {
       this.progressUnsubscriber = bus.on('graph-progress', (result: unknown) => {
-        this.showProgress(result as { progress?: { processedFiles: number; failedFiles: number; selectedFiles: number; currentFile: string | null } });
+        this.showProgress(
+          result as {
+            progress?: {
+              processedFiles: number;
+              failedFiles: number;
+              selectedFiles: number;
+              currentFile: string | null;
+            };
+          },
+        );
       });
     }
 
     const filterBar = this.headerEl.createDiv({ cls: 'superpower-inside-graph-view-filter-bar' });
-    filterBar.createSpan({ text: '최소 신뢰도:' });
-    const confidenceInput = filterBar.createEl('input', { type: 'number', attr: { min: '0', max: '100', value: '0', step: '5' } });
+    filterBar.createSpan({ text: t('graphRagViewMinConfidence') });
+    const confidenceInput = filterBar.createEl('input', {
+      type: 'number',
+      attr: { min: '0', max: '100', value: '0', step: '5' },
+    });
     confidenceInput.addClass('superpower-inside-graph-view-confidence-filter');
     confidenceInput.addEventListener('input', () => {
       this.minConfidence = Number(confidenceInput.value) / 100;
@@ -126,15 +155,21 @@ export class GraphRagView extends ItemView {
         this.renderContent();
       }, SEARCH_DEBOUNCE_MS);
     });
-    filterBar.createSpan({ cls: 'superpower-inside-graph-view-schema-version', text: `Ontology v${DEFAULT_ONTOLOGY_SCHEMA.version}` });
+    filterBar.createSpan({
+      cls: 'superpower-inside-graph-view-schema-version',
+      text: `Ontology v${DEFAULT_ONTOLOGY_SCHEMA.version}`,
+    });
 
     this.tabBarEl = container.createDiv({ cls: 'superpower-inside-graph-view-tabs' });
-    const tabDefs: { id: 'entities' | 'relations' | 'evidence' | 'communities' | 'rejected'; label: string }[] = [
-      { id: 'entities', label: '엔티티' },
-      { id: 'relations', label: '관계' },
-      { id: 'evidence', label: '증거' },
-      { id: 'communities', label: '커뮤니티' },
-      { id: 'rejected', label: '거부됨' },
+    const tabDefs: {
+      id: 'entities' | 'relations' | 'evidence' | 'communities' | 'rejected';
+      label: string;
+    }[] = [
+      { id: 'entities', label: t('graphRagViewTabEntities') },
+      { id: 'relations', label: t('graphRagViewTabRelations') },
+      { id: 'evidence', label: t('graphRagViewTabEvidence') },
+      { id: 'communities', label: t('graphRagViewTabCommunities') },
+      { id: 'rejected', label: t('graphRagViewTabRejected') },
     ];
     for (const tab of tabDefs) {
       const btn = this.tabBarEl.createEl('button', { text: tab.label });
@@ -161,13 +196,15 @@ export class GraphRagView extends ItemView {
 
   private addLoadMoreButton(total: number, shown: number): void {
     if (shown >= total || !this.bodyEl) return;
-    this.bodyEl.createEl('button', {
-      cls: 'superpower-inside-graph-view-load-more',
-      text: `${total - shown}개 더 보기`,
-    }).addEventListener('click', () => {
-      this.renderedItemLimit += LOAD_MORE_CHUNK;
-      this.renderContent();
-    });
+    this.bodyEl
+      .createEl('button', {
+        cls: 'superpower-inside-graph-view-load-more',
+        text: t('graphRagViewLoadMore', { count: total - shown }),
+      })
+      .addEventListener('click', () => {
+        this.renderedItemLimit += LOAD_MORE_CHUNK;
+        this.renderContent();
+      });
   }
 
   private async loadData(): Promise<void> {
@@ -227,8 +264,16 @@ export class GraphRagView extends ItemView {
     if (!this.bodyEl) return;
     this.bodyEl.empty();
 
-    if (this.allEntities.length === 0 && this.allRelations.length === 0 && this.allEvidence.length === 0 && this.allCommunities.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: '추출된 데이터가 없습니다. GraphRAG 인덱싱을 먼저 실행하세요.' });
+    if (
+      this.allEntities.length === 0 &&
+      this.allRelations.length === 0 &&
+      this.allEvidence.length === 0 &&
+      this.allCommunities.length === 0
+    ) {
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: t('graphRagViewEmpty'),
+      });
       return;
     }
 
@@ -272,7 +317,10 @@ export class GraphRagView extends ItemView {
     }
 
     if (filtered.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: '검색 결과가 없습니다.' });
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: t('graphRagViewNoSearchResults'),
+      });
       return;
     }
 
@@ -288,23 +336,43 @@ export class GraphRagView extends ItemView {
     for (const [typeId, entities] of groups) {
       const label = this.entityTypeInfoMap.get(typeId)?.label ?? typeId;
       const group = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-group' });
-      group.createDiv({ cls: 'superpower-inside-graph-view-group-header', text: `${label} (${entities.length})` });
+      group.createDiv({
+        cls: 'superpower-inside-graph-view-group-header',
+        text: `${label} (${entities.length})`,
+      });
       for (const entity of entities) {
-        if (shown >= this.renderedItemLimit) { hasMore = true; break; }
+        if (shown >= this.renderedItemLimit) {
+          hasMore = true;
+          break;
+        }
         shown++;
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.addEventListener('click', () => {
           this.detailEntity = entity;
           this.renderContent();
         });
-        item.createSpan({ cls: 'superpower-inside-graph-view-badge', text: label }).style.setProperty('--badge-color', getBadgeColor(typeId));
-        const nameSpan = item.createSpan({ cls: 'superpower-inside-graph-view-item-name', text: entity.canonicalName });
+        item
+          .createSpan({ cls: 'superpower-inside-graph-view-badge', text: label })
+          .style.setProperty('--badge-color', getBadgeColor(typeId));
+        const nameSpan = item.createSpan({
+          cls: 'superpower-inside-graph-view-item-name',
+          text: entity.canonicalName,
+        });
         if (entity.aliases.length > 0) {
-          nameSpan.createSpan({ cls: 'superpower-inside-graph-view-item-aliases', text: ` (${entity.aliases.join(', ')})` });
+          nameSpan.createSpan({
+            cls: 'superpower-inside-graph-view-item-aliases',
+            text: ` (${entity.aliases.join(', ')})`,
+          });
         }
-        item.createSpan({ cls: 'superpower-inside-graph-view-confidence', text: `${Math.round(entity.confidence * 100)}%` });
+        item.createSpan({
+          cls: 'superpower-inside-graph-view-confidence',
+          text: `${Math.round(entity.confidence * 100)}%`,
+        });
         if (entity.description) {
-          item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(entity.description, 120) });
+          item.createDiv({
+            cls: 'superpower-inside-graph-view-item-desc',
+            text: truncate(entity.description, 120),
+          });
         }
       }
       if (hasMore) break;
@@ -314,55 +382,88 @@ export class GraphRagView extends ItemView {
 
   private renderEntityDetail(entity: GraphEntityRecord): void {
     if (!this.bodyEl) return;
-    this.bodyEl.createEl('button', { cls: 'superpower-inside-graph-view-back', text: '← 목록으로' })
+    this.bodyEl
+      .createEl('button', {
+        cls: 'superpower-inside-graph-view-back',
+        text: t('graphRagViewBackToList'),
+      })
       .addEventListener('click', () => {
         this.detailEntity = null;
         this.renderContent();
       });
 
     const header = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-header' });
-    header.createSpan({ cls: 'superpower-inside-graph-view-badge', text: this.entityTypeInfoMap.get(entity.typeId)?.label ?? entity.typeId })
+    header
+      .createSpan({
+        cls: 'superpower-inside-graph-view-badge',
+        text: this.entityTypeInfoMap.get(entity.typeId)?.label ?? entity.typeId,
+      })
       .style.setProperty('--badge-color', getBadgeColor(entity.typeId));
     header.createEl('h3', { text: entity.canonicalName });
     if (entity.aliases.length > 0) {
-      header.createDiv({ cls: 'superpower-inside-graph-view-item-aliases', text: '별칭: ' + entity.aliases.join(', ') });
+      header.createDiv({
+        cls: 'superpower-inside-graph-view-item-aliases',
+        text: t('graphRagViewAliases') + entity.aliases.join(', '),
+      });
     }
-    header.createSpan({ cls: 'superpower-inside-graph-view-confidence', text: `신뢰도: ${Math.round(entity.confidence * 100)}%` });
+    header.createSpan({
+      cls: 'superpower-inside-graph-view-confidence',
+      text: t('graphRagViewConfidence', { percent: Math.round(entity.confidence * 100) }),
+    });
     if (entity.description) header.createDiv({ text: entity.description });
 
     const entityMap = new Map(this.allEntities.map((e) => [e.id, e]));
-    const related = this.allRelations.filter((r) => r.sourceEntityId === entity.id || r.targetEntityId === entity.id);
+    const related = this.allRelations.filter(
+      (r) => r.sourceEntityId === entity.id || r.targetEntityId === entity.id,
+    );
     if (related.length > 0) {
       const section = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-section' });
-      section.createEl('h4', { text: `관계 (${related.length})` });
+      section.createEl('h4', { text: t('graphRagViewRelationsCount', { count: related.length }) });
       for (const rel of related) {
         const item = section.createDiv({ cls: 'superpower-inside-graph-view-item' });
         const src = entityMap.get(rel.sourceEntityId);
         const tgt = entityMap.get(rel.targetEntityId);
         const srcName = src?.canonicalName ?? rel.sourceEntityId;
         const tgtName = tgt?.canonicalName ?? rel.targetEntityId;
-        const rtLabel = this.relationTypeInfoMap.get(rel.relationTypeId)?.label ?? rel.relationTypeId;
-        const srcEl = item.createSpan({ cls: 'superpower-inside-graph-view-entity-link', text: srcName });
+        const rtLabel =
+          this.relationTypeInfoMap.get(rel.relationTypeId)?.label ?? rel.relationTypeId;
+        const srcEl = item.createSpan({
+          cls: 'superpower-inside-graph-view-entity-link',
+          text: srcName,
+        });
         srcEl.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (src) { this.detailEntity = src; this.renderContent(); }
+          if (src) {
+            this.detailEntity = src;
+            this.renderContent();
+          }
         });
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-arrow', text: ' → ' });
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-type', text: rtLabel });
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-arrow', text: ' → ' });
-        const tgtEl = item.createSpan({ cls: 'superpower-inside-graph-view-entity-link', text: tgtName });
+        const tgtEl = item.createSpan({
+          cls: 'superpower-inside-graph-view-entity-link',
+          text: tgtName,
+        });
         tgtEl.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (tgt) { this.detailEntity = tgt; this.renderContent(); }
+          if (tgt) {
+            this.detailEntity = tgt;
+            this.renderContent();
+          }
         });
-        if (rel.description) item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(rel.description, 200) });
+        if (rel.description)
+          item.createDiv({
+            cls: 'superpower-inside-graph-view-item-desc',
+            text: truncate(rel.description, 200),
+          });
       }
     }
 
     const evidence = this.allEvidence.filter((e) => entity.evidenceIds.includes(e.id));
     if (evidence.length > 0) {
       const section = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-section' });
-      section.createEl('h4', { text: `증거 (${evidence.length})` });
+      section.createEl('h4', { text: t('graphRagViewEvidenceCount', { count: evidence.length }) });
       for (const ev of evidence) {
         const item = section.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.addEventListener('click', () => {
@@ -372,8 +473,14 @@ export class GraphRagView extends ItemView {
           }
         });
         const lineInfo = ev.endLine ? `L${ev.startLine}-${ev.endLine}` : `L${ev.startLine}`;
-        item.createSpan({ cls: 'superpower-inside-graph-view-evidence-lines', text: `${ev.filePath}:${lineInfo}` });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(ev.quote, 200) });
+        item.createSpan({
+          cls: 'superpower-inside-graph-view-evidence-lines',
+          text: `${ev.filePath}:${lineInfo}`,
+        });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-desc',
+          text: truncate(ev.quote, 200),
+        });
       }
     }
   }
@@ -389,7 +496,12 @@ export class GraphRagView extends ItemView {
           const srcName = src?.canonicalName ?? r.sourceEntityId;
           const tgtName = tgt?.canonicalName ?? r.targetEntityId;
           const rtLabel = this.relationTypeInfoMap.get(r.relationTypeId)?.label ?? r.relationTypeId;
-          return srcName.toLowerCase().includes(query) || tgtName.toLowerCase().includes(query) || rtLabel.toLowerCase().includes(query) || r.description.toLowerCase().includes(query);
+          return (
+            srcName.toLowerCase().includes(query) ||
+            tgtName.toLowerCase().includes(query) ||
+            rtLabel.toLowerCase().includes(query) ||
+            r.description.toLowerCase().includes(query)
+          );
         })
       : this.allRelations;
     if (this.minConfidence > 0) {
@@ -397,7 +509,10 @@ export class GraphRagView extends ItemView {
     }
 
     if (filtered.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: '검색 결과가 없습니다.' });
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: t('graphRagViewNoSearchResults'),
+      });
       return;
     }
 
@@ -413,17 +528,27 @@ export class GraphRagView extends ItemView {
     for (const [typeId, rels] of groups) {
       const label = this.relationTypeInfoMap.get(typeId)?.label ?? typeId;
       const group = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-group' });
-      group.createDiv({ cls: 'superpower-inside-graph-view-group-header', text: `${label} (${rels.length})` });
+      group.createDiv({
+        cls: 'superpower-inside-graph-view-group-header',
+        text: `${label} (${rels.length})`,
+      });
       for (const rel of rels) {
-        if (shown >= this.renderedItemLimit) { hasMore = true; break; }
+        if (shown >= this.renderedItemLimit) {
+          hasMore = true;
+          break;
+        }
         shown++;
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
         const src = entityMap.get(rel.sourceEntityId);
         const tgt = entityMap.get(rel.targetEntityId);
         const srcName = src?.canonicalName ?? rel.sourceEntityId;
         const tgtName = tgt?.canonicalName ?? rel.targetEntityId;
-        const rtLabel = this.relationTypeInfoMap.get(rel.relationTypeId)?.label ?? rel.relationTypeId;
-        const srcEl = item.createSpan({ cls: 'superpower-inside-graph-view-entity-link', text: srcName });
+        const rtLabel =
+          this.relationTypeInfoMap.get(rel.relationTypeId)?.label ?? rel.relationTypeId;
+        const srcEl = item.createSpan({
+          cls: 'superpower-inside-graph-view-entity-link',
+          text: srcName,
+        });
         srcEl.addEventListener('click', (e) => {
           e.stopPropagation();
           this.navigateToEntity(src ?? null);
@@ -431,12 +556,19 @@ export class GraphRagView extends ItemView {
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-arrow', text: ' → ' });
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-type', text: rtLabel });
         item.createSpan({ cls: 'superpower-inside-graph-view-relation-arrow', text: ' → ' });
-        const tgtEl = item.createSpan({ cls: 'superpower-inside-graph-view-entity-link', text: tgtName });
+        const tgtEl = item.createSpan({
+          cls: 'superpower-inside-graph-view-entity-link',
+          text: tgtName,
+        });
         tgtEl.addEventListener('click', (e) => {
           e.stopPropagation();
           this.navigateToEntity(tgt ?? null);
         });
-        if (rel.description) item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(rel.description, 120) });
+        if (rel.description)
+          item.createDiv({
+            cls: 'superpower-inside-graph-view-item-desc',
+            text: truncate(rel.description, 120),
+          });
       }
       if (hasMore) break;
     }
@@ -447,11 +579,16 @@ export class GraphRagView extends ItemView {
     if (!this.bodyEl) return;
     const query = this.searchQuery.toLowerCase().trim();
     const filtered = query
-      ? this.allEvidence.filter((e) => e.filePath.toLowerCase().includes(query) || e.quote.toLowerCase().includes(query))
+      ? this.allEvidence.filter(
+          (e) => e.filePath.toLowerCase().includes(query) || e.quote.toLowerCase().includes(query),
+        )
       : this.allEvidence;
 
     if (filtered.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: '검색 결과가 없습니다.' });
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: t('graphRagViewNoSearchResults'),
+      });
       return;
     }
 
@@ -468,9 +605,15 @@ export class GraphRagView extends ItemView {
       const group = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-group' });
       const header = group.createDiv({ cls: 'superpower-inside-graph-view-group-header' });
       header.createSpan({ text: `${filePath} ` });
-      header.createSpan({ cls: 'superpower-inside-graph-view-group-count', text: `(${evidence.length})` });
+      header.createSpan({
+        cls: 'superpower-inside-graph-view-group-count',
+        text: `(${evidence.length})`,
+      });
       for (const ev of evidence) {
-        if (shown >= this.renderedItemLimit) { hasMore = true; break; }
+        if (shown >= this.renderedItemLimit) {
+          hasMore = true;
+          break;
+        }
         shown++;
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.addEventListener('click', () => {
@@ -481,7 +624,10 @@ export class GraphRagView extends ItemView {
         });
         const lineInfo = ev.endLine ? `L${ev.startLine}-${ev.endLine}` : `L${ev.startLine}`;
         item.createSpan({ cls: 'superpower-inside-graph-view-evidence-lines', text: lineInfo });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(ev.quote, 200) });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-desc',
+          text: truncate(ev.quote, 200),
+        });
       }
       if (hasMore) break;
     }
@@ -491,13 +637,18 @@ export class GraphRagView extends ItemView {
   private renderCommunities(): void {
     if (!this.bodyEl) return;
     if (this.allCommunities.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: '커뮤니티가 없습니다. GraphRAG 인덱싱 후 커뮤니티 빌드를 실행하세요.' });
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: t('graphRagViewNoCommunities'),
+      });
       return;
     }
 
     const query = this.searchQuery.toLowerCase().trim();
     const filtered = query
-      ? this.allCommunities.filter((c) => c.title.toLowerCase().includes(query) || c.summary.toLowerCase().includes(query))
+      ? this.allCommunities.filter(
+          (c) => c.title.toLowerCase().includes(query) || c.summary.toLowerCase().includes(query),
+        )
       : this.allCommunities;
 
     const groups = new Map<number, GraphCommunityRecord[]>();
@@ -511,13 +662,22 @@ export class GraphRagView extends ItemView {
     let hasMore = false;
     for (const [level, communities] of groups) {
       const group = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-group' });
-      group.createDiv({ cls: 'superpower-inside-graph-view-group-header', text: `Level ${level} (${communities.length})` });
+      group.createDiv({
+        cls: 'superpower-inside-graph-view-group-header',
+        text: `Level ${level} (${communities.length})`,
+      });
       for (const c of communities) {
-        if (shown >= this.renderedItemLimit) { hasMore = true; break; }
+        if (shown >= this.renderedItemLimit) {
+          hasMore = true;
+          break;
+        }
         shown++;
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.createSpan({ cls: 'superpower-inside-graph-view-item-name', text: c.title });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: truncate(c.summary, 200) });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-desc',
+          text: truncate(c.summary, 200),
+        });
       }
       if (hasMore) break;
     }
@@ -528,11 +688,16 @@ export class GraphRagView extends ItemView {
     if (!this.bodyEl) return;
     const query = this.searchQuery.toLowerCase().trim();
     const filtered = query
-      ? this.allRejectedFacts.filter((r) => r.filePath.toLowerCase().includes(query) || r.reason.toLowerCase().includes(query))
+      ? this.allRejectedFacts.filter(
+          (r) => r.filePath.toLowerCase().includes(query) || r.reason.toLowerCase().includes(query),
+        )
       : this.allRejectedFacts;
 
     if (filtered.length === 0) {
-      this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-empty', text: query ? '검색 결과가 없습니다.' : '거부된 사실이 없습니다.' });
+      this.bodyEl.createDiv({
+        cls: 'superpower-inside-graph-view-empty',
+        text: query ? t('graphRagViewNoSearchResults') : t('graphRagViewNoRejectedFacts'),
+      });
       return;
     }
 
@@ -549,37 +714,60 @@ export class GraphRagView extends ItemView {
       const group = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-group' });
       const header = group.createDiv({ cls: 'superpower-inside-graph-view-group-header' });
       header.createSpan({ text: `${filePath} ` });
-      header.createSpan({ cls: 'superpower-inside-graph-view-group-count', text: `(${facts.length})` });
+      header.createSpan({
+        cls: 'superpower-inside-graph-view-group-count',
+        text: `(${facts.length})`,
+      });
       for (const fact of facts) {
-        if (shown >= this.renderedItemLimit) { hasMore = true; break; }
+        if (shown >= this.renderedItemLimit) {
+          hasMore = true;
+          break;
+        }
         shown++;
         const presentation = getRejectedFactPresentation(fact);
         const item = group.createDiv({ cls: 'superpower-inside-graph-view-item' });
-        item.createSpan({ cls: 'superpower-inside-graph-view-item-date', text: new Date(fact.updatedAt).toLocaleString() });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-name', text: `${presentation.errorCode} · ${presentation.title}` });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: presentation.description });
-        item.createDiv({ cls: 'superpower-inside-graph-view-item-desc', text: `원본 응답: ${presentation.rawPreview}` });
-        const details = item.createEl('details', { cls: 'superpower-inside-graph-view-rejected-details' });
-        details.createEl('summary', { text: '상세 보기' });
+        item.createSpan({
+          cls: 'superpower-inside-graph-view-item-date',
+          text: new Date(fact.updatedAt).toLocaleString(),
+        });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-name',
+          text: `${presentation.errorCode} · ${presentation.title}`,
+        });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-desc',
+          text: presentation.description,
+        });
+        item.createDiv({
+          cls: 'superpower-inside-graph-view-item-desc',
+          text: t('graphRagViewRawResponse', { preview: presentation.rawPreview }),
+        });
+        const details = item.createEl('details', {
+          cls: 'superpower-inside-graph-view-rejected-details',
+        });
+        details.createEl('summary', { text: t('graphRagViewDetails') });
         details.createEl('pre', {
           cls: 'superpower-inside-graph-view-rejected-raw',
           text: presentation.rawText,
         });
         const actions = item.createDiv({ cls: 'superpower-inside-graph-view-item-actions' });
-        const copyDetailBtn = actions.createEl('button', { text: '상세 복사' });
+        const copyDetailBtn = actions.createEl('button', { text: t('graphRagViewCopyDetails') });
         copyDetailBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           void this.copyRejectedFactDetail(fact);
         });
-        const copyRawBtn = actions.createEl('button', { text: '응답 복사' });
+        const copyRawBtn = actions.createEl('button', { text: t('graphRagViewCopyResponse') });
         copyRawBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          void this.copyText(presentation.rawText, 'GraphRAG 원본 응답을 복사했습니다.');
+          void this.copyText(presentation.rawText, t('graphRagViewRawCopied'));
         });
-        const retryBtn = actions.createEl('button', { cls: 'mod-cta', text: '다시 시도' });
+        const retryBtn = actions.createEl('button', {
+          cls: 'mod-cta',
+          text: t('graphRagViewRetry'),
+        });
         retryBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          retryBtn.setText('처리 중...');
+          retryBtn.setText(t('graphRagViewProcessing'));
           retryBtn.setAttr('disabled', 'true');
           void this.plugin.runGraphRagIndexing();
         });
@@ -590,7 +778,7 @@ export class GraphRagView extends ItemView {
   }
 
   private async copyRejectedFactDetail(fact: GraphRejectedFactRecord): Promise<void> {
-    await this.copyText(buildRejectedFactCopyText(fact), 'GraphRAG 오류 상세 정보를 복사했습니다.');
+    await this.copyText(buildRejectedFactCopyText(fact), t('graphRagViewErrorCopied'));
   }
 
   private async copyText(text: string, successMessage: string): Promise<void> {
@@ -599,7 +787,7 @@ export class GraphRagView extends ItemView {
       new Notice(successMessage, 3000);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      new Notice(`복사 실패: ${msg}`, 5000);
+      new Notice(t('graphRagViewCopyFailed', { message: msg }), 5000);
     }
   }
 
@@ -614,7 +802,14 @@ export class GraphRagView extends ItemView {
     this.renderContent();
   }
 
-  private showProgress(result: { progress?: { processedFiles: number; failedFiles: number; selectedFiles: number; currentFile: string | null } }): void {
+  private showProgress(result: {
+    progress?: {
+      processedFiles: number;
+      failedFiles: number;
+      selectedFiles: number;
+      currentFile: string | null;
+    };
+  }): void {
     if (!this.progressEl || !this.progressTextEl || !this.progressBarEl) return;
     const progress = result.progress;
     if (!progress) {
@@ -624,7 +819,13 @@ export class GraphRagView extends ItemView {
     const done = progress.processedFiles + progress.failedFiles;
     const pct = progress.selectedFiles > 0 ? Math.round((done / progress.selectedFiles) * 100) : 0;
     this.progressEl.style.display = '';
-    this.progressTextEl.setText(`인덱싱 중: ${done}/${progress.selectedFiles} 파일 처리 (${pct}%)`);
+    this.progressTextEl.setText(
+      t('graphRagViewIndexingProgress', {
+        done,
+        total: progress.selectedFiles,
+        percent: pct,
+      }),
+    );
     const fill = document.getElementById('superpower-inside-graph-progress-fill');
     if (fill) fill.style.width = `${pct}%`;
   }

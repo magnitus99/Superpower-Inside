@@ -1,4 +1,5 @@
 import { TFile, TFolder, type App } from 'obsidian';
+import { t } from '../i18n';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
@@ -7,7 +8,12 @@ import { createContentHash } from '../rag/hash';
 import type { ContextAttachment, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
 import { expandReferencedVaultFiles } from './context-expansion';
-import { type ParsedMention, parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
+import {
+  type ParsedMention,
+  parseMentions,
+  shouldUseAutoRagForMentions,
+  type MentionResolver,
+} from './mention-parser';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -44,11 +50,13 @@ const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
 const DEFAULT_MAX_REFERENCE_FILES = 6;
 const DEFAULT_RAG_TOP_K = 5;
 const GRAPH_COMMUNITY_SOURCE_PREFIX = 'graph://community/';
-const VAULT_CONTEXT_RULES = [
-  'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
-  '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
-  '근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
-].join('\n');
+function getVaultContextRules(): string {
+  return [
+    t('contextRuleNoSourceOutsideVault'),
+    t('contextRuleSeparateSuggestions'),
+    t('contextRuleNoEvidence'),
+  ].join('\n');
+}
 
 export async function buildChatContext(
   question: string,
@@ -62,7 +70,11 @@ export async function buildChatContext(
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
   const warnings: string[] = [];
-  const resolver = createAppMentionResolver(options.app, options.mcpRegistry, options.knowledgeGraphStore);
+  const resolver = createAppMentionResolver(
+    options.app,
+    options.mcpRegistry,
+    options.knowledgeGraphStore,
+  );
   const mentions = parseMentions(question, resolver);
   const shouldUseAutoRag = shouldUseAutoRagForMentions(mentions);
 
@@ -138,26 +150,26 @@ export async function buildChatContext(
         id: 'rag:auto',
         type: 'rag',
         name: 'auto',
-        label: `자동 RAG ${sourceIds.length}개`,
+        label: t('contextAutoRagDetail', { count: sourceIds.length }),
         status: sourceIds.length > 0 ? 'attached' : 'low-relevance',
         detail:
           sourceIds.length > 0
             ? combineAttachmentDetails([
                 rejectedCount > 0
-                  ? `검증 실패 후보 ${rejectedCount}개는 컨텍스트에서 제외했습니다.`
+                  ? t('contextRejectedCandidatesExcluded', { count: rejectedCount })
                   : null,
                 diagnosticsText,
               ])
-            : '유사도 임계치를 충족하는 관련 문서가 없습니다.',
+            : t('contextNoRelevantDocs'),
         sourceIds,
       });
     } catch (err) {
-      warnings.push(`RAG 컨텍스트를 불러오지 못했습니다: ${stringifyError(err)}`);
+      warnings.push(t('contextRagLoadFailed', { error: stringifyError(err) }));
       attachments.push({
         id: 'rag:auto',
         type: 'rag',
         name: 'auto',
-        label: '자동 RAG',
+        label: t('contextAutoRagTitle'),
         status: 'error',
         detail: stringifyError(err),
       });
@@ -187,7 +199,7 @@ export async function buildChatContext(
   const warningText = warnings.length > 0 ? `\n\n[Context Warnings]\n${warnings.join('\n')}` : '';
   return {
     systemPrompt: contextText
-      ? `[Vault Context Rules]\n${VAULT_CONTEXT_RULES}\n\n[Vault Context]\n${contextText}${warningText}`
+      ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
       : warningText.trim() || null,
     attachments,
     citations,
@@ -247,27 +259,34 @@ function createCitation(
   };
 }
 
-function formatRetrievalDiagnostics(diagnostics: readonly RetrievalProviderDiagnostic[]): string | null {
+function formatRetrievalDiagnostics(
+  diagnostics: readonly RetrievalProviderDiagnostic[],
+): string | null {
   if (diagnostics.length === 0) return null;
   const summary = diagnostics
-    .map((diagnostic) => `${diagnostic.providerId} ${diagnostic.status} ${diagnostic.candidateCount}개`)
+    .map((diagnostic) =>
+      t('contextDiagnosticProviderSummary', {
+        provider: diagnostic.providerId,
+        status: diagnostic.status,
+        count: diagnostic.candidateCount,
+      }),
+    )
     .join(', ');
-  return `검색 진단: ${summary}`;
+  return t('contextSearchDiagnostic', { summary });
 }
 
-function combineAttachmentDetails(details: readonly (string | null | undefined)[]): string | undefined {
+function combineAttachmentDetails(
+  details: readonly (string | null | undefined)[],
+): string | undefined {
   const text = details.filter((detail): detail is string => Boolean(detail)).join(' ');
   return text || undefined;
 }
 
-async function verifyQueryResult(
-  result: QueryResult,
-  app: App,
-): Promise<QueryResultVerification> {
+async function verifyQueryResult(result: QueryResult, app: App): Promise<QueryResultVerification> {
   const metadata = result.entry.metadata;
   const file = app.vault.getAbstractFileByPath(metadata.filePath);
   if (!(file instanceof TFile)) {
-    return { status: 'missing', detail: '파일이 vault에 존재하지 않습니다.' };
+    return { status: 'missing', detail: t('contextFileMissing') };
   }
   if (
     typeof metadata.sourceMtime !== 'number' ||
@@ -275,14 +294,14 @@ async function verifyQueryResult(
     typeof metadata.contentHash !== 'string' ||
     typeof metadata.endLine !== 'number'
   ) {
-    return { status: 'stale', detail: '이전 형식의 인덱스라 재인덱싱이 필요합니다.' };
+    return { status: 'stale', detail: t('contextLegacyIndexNeedsReindex') };
   }
   if (metadata.sourceMtime !== file.stat.mtime || metadata.sourceSize !== file.stat.size) {
-    return { status: 'stale', detail: '파일이 마지막 인덱싱 이후 변경되었습니다.' };
+    return { status: 'stale', detail: t('contextFileModified') };
   }
   const content = await app.vault.cachedRead(file);
   if (createContentHash(content) !== metadata.contentHash) {
-    return { status: 'stale', detail: '파일 내용 해시가 마지막 인덱싱 이후 변경되었습니다.' };
+    return { status: 'stale', detail: t('contextHashChanged') };
   }
   const lineCount = content.split('\n').length;
   if (
@@ -290,7 +309,7 @@ async function verifyQueryResult(
     metadata.endLine < metadata.startLine ||
     metadata.endLine >= lineCount
   ) {
-    return { status: 'stale', detail: '청크 라인 범위가 현재 파일과 맞지 않습니다.' };
+    return { status: 'stale', detail: t('contextLineMismatch') };
   }
   return { status: 'verified' };
 }
@@ -309,7 +328,7 @@ function verifyGraphQueryResult(result: QueryResult): QueryResultVerification {
   if (result.entry.metadata.filePath.startsWith(GRAPH_COMMUNITY_SOURCE_PREFIX)) {
     return { status: 'verified', graphType: 'community' };
   }
-  return { status: 'missing', detail: '지원하지 않는 GraphRAG 출처입니다.' };
+  return { status: 'missing', detail: t('contextUnsupportedGraphRagSource') };
 }
 
 async function appendFileMention(
@@ -327,7 +346,7 @@ async function appendFileMention(
       name: path,
       label: path,
       status: 'missing',
-      detail: '파일을 찾을 수 없습니다.',
+      detail: t('fileNotFoundError', { path }),
     });
     return null;
   }
@@ -350,7 +369,7 @@ async function appendFileMention(
       name: file.path,
       label: file.path,
       status: attachedFully ? 'attached' : 'partial',
-      detail: attachedFully ? undefined : '컨텍스트 예산 때문에 일부만 첨부했습니다.',
+      detail: attachedFully ? undefined : t('contextPartialBudget'),
       sourceIds: [citation.id],
     });
     return { file, content };
@@ -390,7 +409,7 @@ function appendReferenceFile(
     name: file.path,
     label: file.path,
     status: attachedFully ? 'attached' : 'partial',
-    detail: attachedFully ? undefined : '컨텍스트 예산 때문에 일부만 첨부했습니다.',
+    detail: attachedFully ? undefined : t('contextPartialBudget'),
     sourceIds: [citation.id],
   });
 }
@@ -411,7 +430,7 @@ async function appendFolderMention(
       name: path,
       label: path,
       status: 'missing',
-      detail: '폴더를 찾을 수 없습니다.',
+      detail: t('contextFolderNotFound'),
     });
     return;
   }
@@ -454,9 +473,7 @@ async function appendFolderMention(
     name: path,
     label: path,
     status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
-    detail: partial
-      ? `최대 ${maxFolderFiles}개 파일 및 컨텍스트 예산 안에서 첨부했습니다.`
-      : undefined,
+    detail: partial ? t('contextFolderAttachedLimited', { count: maxFolderFiles }) : undefined,
     sourceIds,
   });
 }
@@ -475,7 +492,7 @@ async function appendServerMention(
       name,
       label: name,
       status: 'missing',
-      detail: '연결되지 않은 MCP 서버입니다.',
+      detail: t('contextMcpDisconnected'),
     });
     return;
   }
@@ -489,11 +506,10 @@ async function appendServerMention(
       })
       .join('\n');
     const attachedFully = appendBlock({
-      text: `[MCP Server: ${name}]
-Available tools:
-${toolList || '(사용 가능한 툴 없음)'}
-
-Instruction: 사용자가 이 서버를 @${name}로 명시했습니다. 질문 해결에 최신 정보, 검색, 외부 데이터가 필요하면 위 도구를 호출하고, 도구 결과를 근거로 최종 답변을 작성하세요. 검색 결과 기반 답변에는 가능한 출처 링크를 포함하세요.`,
+      text: t('contextMcpServerBlock', {
+        name,
+        tools: toolList || t('contextMcpNoTools'),
+      }),
     });
     attachments.push({
       id: `mcp:${name}`,
@@ -501,7 +517,7 @@ Instruction: 사용자가 이 서버를 @${name}로 명시했습니다. 질문 �
       name,
       label: name,
       status: attachedFully ? 'attached' : 'partial',
-      detail: attachedFully ? undefined : '컨텍스트 예산 때문에 일부만 첨부했습니다.',
+      detail: attachedFully ? undefined : t('contextPartialBudget'),
     });
   } catch (err) {
     attachments.push({
@@ -539,9 +555,9 @@ async function appendGraphEntityContext(
       id: 'graph-rag:auto',
       type: 'graph-rag',
       name: 'auto',
-      label: 'GraphRAG 엔티티',
+      label: t('contextGraphRagEntitiesTitle'),
       status: 'missing',
-      detail: '멘션된 엔티티를 지식 그래프에서 찾을 수 없습니다.',
+      detail: t('contextGraphRagEntityNotFound'),
     });
     return;
   }
@@ -587,17 +603,14 @@ async function appendGraphEntityContext(
     id: 'graph-rag:auto',
     type: 'graph-rag',
     name: 'auto',
-    label: `GraphRAG ${matchedEntities.length}개 엔티티`,
+    label: t('contextGraphRagEntitiesDetail', { count: matchedEntities.length }),
     status: 'attached',
-    detail: `${matchedRelations.length}개 관계 정보가 함께 첨부되었습니다.`,
+    detail: t('contextGraphRagRelationsDetail', { count: matchedRelations.length }),
     sourceIds: [entityCitation.id],
   });
 }
 
-function createGraphCitation(
-  entities: GraphEntityRecord[],
-  index: number,
-): SourceCitation {
+function createGraphCitation(entities: GraphEntityRecord[], index: number): SourceCitation {
   const names = entities.map((e) => e.canonicalName).join(', ');
   return {
     id: `graph-${index}`,

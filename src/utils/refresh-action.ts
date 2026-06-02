@@ -1,4 +1,5 @@
 import { Notice } from 'obsidian';
+import { t } from '../i18n';
 
 // ── 타입 ────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ export interface RefreshActionOptions {
 // ── 기본값 ──────────────────────────────────────────────────────────
 
 const DEFAULT_OPTIONS: Required<Omit<RefreshActionOptions, 'action'>> = {
-  loadingText: '새로고침 중...',
+  loadingText: '',
   successNotice: false,
   errorNotice: false,
   throttleMs: 300,
@@ -64,7 +65,11 @@ export class RefreshAction {
   private btn: HTMLElement | null = null;
 
   constructor(options: RefreshActionOptions) {
-    this.opts = { ...DEFAULT_OPTIONS, ...options };
+    this.opts = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+      loadingText: options.loadingText ?? t('refreshing'),
+    };
   }
 
   /** 버튼이 HTMLButtonElement인지 duck-typing으로 확인 (jsdom 등에서 instanceof 실패 방지) */
@@ -128,7 +133,7 @@ export class RefreshAction {
     }
 
     if (this.state === 'loading') {
-      return { status: 'error', detail: '이미 실행 중입니다.' };
+      return { status: 'error', detail: t('refreshAlreadyRunning') };
     }
 
     this.abortController = new AbortController();
@@ -147,14 +152,13 @@ export class RefreshAction {
       this.transition(result.status === 'error' ? 'error' : 'success');
 
       if (result.status !== 'error' && this.opts.successNotice !== false) {
-        const msg =
-          this.opts.successNotice || this.getDefaultSuccessMessage(result);
+        const msg = this.opts.successNotice || this.getDefaultSuccessMessage(result);
         if (msg) new Notice(msg, 3000);
       }
       if (result.status === 'error' && this.opts.errorNotice !== false) {
         const msg =
           this.opts.errorNotice ||
-          `새로고침 실패: ${result.detail ?? '알 수 없는 오류'}`;
+          t('refreshFailedWithMessage', { message: result.detail ?? t('autoSaveUnknownError') });
         new Notice(msg, 5000);
       }
 
@@ -163,12 +167,12 @@ export class RefreshAction {
       // AbortError는 정상 취소로 간주 (silent)
       if (err instanceof DOMException && err.name === 'AbortError') {
         this.transition('idle');
-        return { status: 'error', detail: '취소됨' };
+        return { status: 'error', detail: t('refreshCancelled') };
       }
       const msg = err instanceof Error ? err.message : String(err);
       this.transition('error');
       if (this.opts.errorNotice !== false) {
-        const notice = this.opts.errorNotice || `새로고침 실패: ${msg}`;
+        const notice = this.opts.errorNotice || t('refreshFailedWithMessage', { message: msg });
         new Notice(notice, 5000);
       }
       return { status: 'error', detail: msg };
@@ -204,10 +208,7 @@ export class RefreshAction {
       if (this.opts.spinnerClass) {
         this.btn.addClass(this.opts.spinnerClass);
       }
-      if (
-        this.opts.loadingText &&
-        this.isButton(this.btn)
-      ) {
+      if (this.opts.loadingText && this.isButton(this.btn)) {
         this.originalText = this.btn.textContent ?? '';
         this.btn.setText(this.opts.loadingText);
       }
@@ -227,11 +228,7 @@ export class RefreshAction {
     if (this.opts.spinnerClass) {
       this.btn.removeClass(this.opts.spinnerClass);
     }
-    if (
-      this.opts.restoreText &&
-      this.originalText &&
-      this.isButton(this.btn)
-    ) {
+    if (this.opts.restoreText && this.originalText && this.isButton(this.btn)) {
       (this.btn as HTMLButtonElement).setText(this.originalText);
     }
     this.state = 'idle';
@@ -249,10 +246,8 @@ export class RefreshAction {
     }
   }
 
-  private getDefaultSuccessMessage(
-    result: RefreshResult,
-  ): string | null {
-    if (result.status === 'success') return '새로고침 완료';
+  private getDefaultSuccessMessage(result: RefreshResult): string | null {
+    if (result.status === 'success') return t('refreshComplete');
     if (result.status === 'partial' && result.detail) return result.detail;
     return null;
   }

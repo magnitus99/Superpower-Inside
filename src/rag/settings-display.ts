@@ -1,3 +1,5 @@
+import { t } from '../i18n';
+
 export type VectorStoreType = 'json' | 'indexeddb';
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
@@ -135,9 +137,7 @@ export interface GraphRagIndexingCostEstimate {
   costLabel: string;
 }
 
-export function resolveRagPerformanceSettings(
-  rag: RagPerformanceConfig,
-): RagPerformanceSettings {
+export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
   if (normalizeRagPerformanceTuningMode(rag.performanceTuningMode) === 'custom') {
     return {
       enabled: rag.performanceGuardEnabled,
@@ -157,9 +157,7 @@ export function resolveRagPerformanceSettings(
   };
 }
 
-export function normalizeRagPerformanceTuningMode(
-  value: unknown,
-): RagPerformanceTuningMode {
+export function normalizeRagPerformanceTuningMode(value: unknown): RagPerformanceTuningMode {
   return value === 'custom' ? 'custom' : 'auto';
 }
 
@@ -173,10 +171,7 @@ export function getVectorStoreLabel(type: VectorStoreType): string {
 }
 
 export function getVectorStoreDescription(): string {
-  return [
-    'JSON File은 볼트 내부의 .superpower-inside/vectors.json에 저장되어 Obsidian Sync, Git, 파일 백업에 포함하기 쉽지만, 벡터가 커질수록 파일 읽기/쓰기와 동기화 충돌 부담이 커집니다.',
-    'IndexedDB는 Obsidian/Electron의 로컬 브라우저 DB에 저장되어 대용량 구조화 데이터와 인덱스 조회에 더 적합하고 볼트 파일을 변경하지 않지만, 장치별 로컬 데이터라 볼트 동기화나 Git 백업에 자동 포함되지 않습니다.',
-  ].join(' ');
+  return [t('vectorStoreDescriptionJson'), t('vectorStoreDescriptionIndexedDb')].join(' ');
 }
 
 export function getVectorStoreTransferNotice(
@@ -185,17 +180,17 @@ export function getVectorStoreTransferNotice(
   indexedDbVectorCount: number,
 ): string | null {
   if (selectedType === 'indexeddb' && indexedDbVectorCount === 0 && jsonVectorCount > 0) {
-    return 'IndexedDB는 기존 JSON 벡터를 자동 복사하지 않습니다. 전체 재인덱싱을 실행하거나 JSON File 저장소로 되돌리세요.';
+    return t('vectorStoreTransferToIndexedDb');
   }
   if (selectedType === 'json' && jsonVectorCount === 0 && indexedDbVectorCount > 0) {
-    return 'JSON File은 기존 IndexedDB 벡터를 자동 복사하지 않습니다. 전체 재인덱싱을 실행하거나 IndexedDB 저장소로 되돌리세요.';
+    return t('vectorStoreTransferToJson');
   }
   return null;
 }
 
 export function getChatFolderExcludeDescription(saveFolder: string): string {
-  const folder = saveFolder.trim() || '미설정';
-  return `채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다. 현재 제외 대상: ${folder}`;
+  const folder = saveFolder.trim() || t('unsetLabel');
+  return t('chatFolderExcludeCurrentDesc', { folder });
 }
 
 export function shouldShowProviderApiKey(key: string): boolean {
@@ -209,30 +204,29 @@ export function shouldRequireProviderApiKey(key: string): boolean {
 export function getRagIndexingControlState(
   input: RagIndexingControlStateInput,
 ): RagIndexingControlState {
-  const setupReason = input.hasIndexer ? null : 'RAG 인덱서가 초기화되지 않았습니다.';
-  const runningReason = input.isIndexing ? '인덱싱이 이미 실행 중입니다.' : null;
+  const setupReason = input.hasIndexer ? null : t('ragIndexerNotInitializedBase');
+  const runningReason = input.isIndexing ? t('ragAutoUpdateAlreadyRunning') : null;
   const pauseReason =
     input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
-      ? `성능 보호 대기 중입니다. 약 ${Math.ceil(input.guardRemainingPauseMs / 1000)}초 후 다시 시도할 수 있습니다.`
+      ? t('ragAutoUpdatePausedRetry', { seconds: Math.ceil(input.guardRemainingPauseMs / 1000) })
       : null;
-  const noUpdatesReason =
-    input.updateRequiredCount === 0 ? '업데이트가 필요한 문서가 없습니다.' : null;
-  const noDocumentsReason = input.totalDocuments === 0 ? 'RAG 대상 문서가 없습니다.' : null;
+  const noUpdatesReason = input.updateRequiredCount === 0 ? t('ragNoUpdates') : null;
+  const noDocumentsReason = input.totalDocuments === 0 ? t('ragNoDocuments') : null;
 
   return {
     updatePending: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noUpdatesReason),
     reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
-    cancel: toButtonState(input.isIndexing ? null : '실행 중인 인덱싱이 없습니다.'),
+    cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
     resume: toButtonState(
       input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
         ? null
-        : '성능 보호 대기 상태가 아닙니다.',
+        : t('ragNotPerformancePaused'),
     ),
   };
 }
 
 export function getGraphRagStatusLabel(input: GraphRagStatusLabelInput): string {
-  if (!input.enabled) return '비활성';
+  if (!input.enabled) return t('graphRagStatusDisabledLabel');
   if (input.schemaError === true) return 'schema-error';
   if (input.isRunning) return 'building';
   if (!input.hasGraphIndex) return 'not-built';
@@ -244,106 +238,98 @@ export function getGraphRagStatusLabel(input: GraphRagStatusLabelInput): string 
 export interface GraphRagStatusPresentation {
   label: string;
   description: string;
-  tone: "neutral" | "success" | "warning" | "danger";
+  tone: 'neutral' | 'success' | 'warning' | 'danger';
 }
 
-export function getGraphRagStatusPresentation(
-  state: string,
-): GraphRagStatusPresentation {
+export function getGraphRagStatusPresentation(state: string): GraphRagStatusPresentation {
   switch (state) {
-    case "disabled":
+    case 'disabled':
       return {
-        label: "비활성",
-        description: "GraphRAG 기능이 꺼져 있습니다.",
-        tone: "neutral",
+        label: t('graphRagStatusDisabledLabel'),
+        description: t('graphRagStatusDisabledDesc'),
+        tone: 'neutral',
       };
-    case "not-built":
+    case 'not-built':
       return {
-        label: "미생성",
-        description: "GraphRAG 인덱스가 아직 생성되지 않았습니다. 시작 버튼으로 생성하세요.",
-        tone: "neutral",
+        label: t('graphRagStatusNotBuiltLabel'),
+        description: t('graphRagStatusNotBuiltDesc'),
+        tone: 'neutral',
       };
-    case "building":
+    case 'building':
       return {
-        label: "생성 중",
-        description: "지식 그래프를 추출하고 있습니다. 완료까지 기다려 주세요.",
-        tone: "neutral",
+        label: t('graphRagStatusBuildingLabel'),
+        description: t('graphRagStatusBuildingDesc'),
+        tone: 'neutral',
       };
-    case "ready":
+    case 'ready':
       return {
-        label: "준비됨",
-        description: "GraphRAG가 최신 상태입니다. 질문 시 지식 그래프를 활용합니다.",
-        tone: "success",
+        label: t('graphRagStatusReadyLabel'),
+        description: t('graphRagStatusReadyDesc'),
+        tone: 'success',
       };
-    case "stale":
+    case 'stale':
       return {
-        label: "동기화 필요",
-        description: "일부 파일이 수정되거나 추출 모델/온톨로지 규칙이 바뀌어 재추출이 필요합니다.",
-        tone: "warning",
+        label: t('graphRagStatusStaleLabel'),
+        description: t('graphRagStatusStaleDesc'),
+        tone: 'warning',
       };
-    case "partial":
+    case 'partial':
       return {
-        label: "부분 완료",
-        description: "일부 파일 추출에 실패했습니다. 실패한 파일만 다시 시도할 수 있습니다.",
-        tone: "warning",
+        label: t('graphRagStatusPartialLabel'),
+        description: t('graphRagStatusPartialDesc'),
+        tone: 'warning',
       };
-    case "schema-error":
+    case 'schema-error':
       return {
-        label: "설정 오류",
-        description: "온톨로지 스키마에 오류가 있습니다. 설정을 확인하세요.",
-        tone: "danger",
+        label: t('graphRagStatusSchemaErrorLabel'),
+        description: t('graphRagStatusSchemaErrorDesc'),
+        tone: 'danger',
       };
     default:
-      return { label: state, description: "", tone: "neutral" };
+      return { label: state, description: '', tone: 'neutral' };
   }
 }
 
-
-export function getGraphRagControlState(
-  input: GraphRagControlStateInput,
-): GraphRagControlState {
-  const disabledReason = input.enabled ? null : 'GraphRAG가 비활성 상태입니다.';
-  const providerReason = input.hasProvider ? null : 'LLM provider가 초기화되지 않았습니다.';
-  const modelReason = input.hasModel ? null : 'GraphRAG 추출 모델을 선택하세요.';
-  const runningReason = input.isRunning ? 'GraphRAG 인덱싱이 이미 실행 중입니다.' : null;
-  const noFilesReason =
-    input.totalCandidateFiles > 0 ? null : 'GraphRAG 인덱싱 대상 파일이 없습니다.';
+export function getGraphRagControlState(input: GraphRagControlStateInput): GraphRagControlState {
+  const disabledReason = input.enabled ? null : t('graphRagDisabledReason');
+  const providerReason = input.hasProvider ? null : t('graphRagProviderMissingReason');
+  const modelReason = input.hasModel ? null : t('graphRagModelMissingReason');
+  const runningReason = input.isRunning ? t('graphRagAlreadyRunningReason') : null;
+  const noFilesReason = input.totalCandidateFiles > 0 ? null : t('graphRagNoFilesReason');
 
   return {
     start: toButtonState(
       disabledReason ?? providerReason ?? modelReason ?? runningReason ?? noFilesReason,
     ),
-    cancel: toButtonState(input.isRunning ? null : '실행 중인 GraphRAG 인덱싱이 없습니다.'),
+    cancel: toButtonState(input.isRunning ? null : t('graphRagNoRunningReason')),
     resume: toButtonState(
       disabledReason ??
         providerReason ??
         modelReason ??
         runningReason ??
-        (input.failedFileCount > 0 ? null : '이어 실행할 실패 파일이 없습니다.'),
+        (input.failedFileCount > 0 ? null : t('graphRagNoFailedReason')),
     ),
   };
 }
 
-export function buildGraphRagActionGroups(
-  input: GraphRagActionGroupInput,
-): GraphRagActionGroup[] {
+export function buildGraphRagActionGroups(input: GraphRagActionGroupInput): GraphRagActionGroup[] {
   const runLimit = Math.min(input.totalCandidateFiles, input.maxFilesPerRun);
   const startScope =
     runLimit > 0
-      ? `대상 ${input.totalCandidateFiles}개 중 최대 ${runLimit}개 파일을 새로 추출합니다.`
-      : 'GraphRAG 대상 파일을 새로 추출합니다.';
+      ? t('graphRagStartScopeLimited', { total: input.totalCandidateFiles, limit: runLimit })
+      : t('graphRagStartScopeAll');
 
   const groups: GraphRagActionGroup[] = [
     {
       id: 'extract',
-      label: '추출 실행',
+      label: t('graphRagActionExtract'),
       actions: [
         {
           id: 'start',
           groupId: 'extract',
-          groupLabel: '추출 실행',
-          label: '전체 추출 실행',
-          description: `${startScope} 실패 기록은 해당 파일을 다시 처리할 때 정리됩니다.`,
+          groupLabel: t('graphRagActionExtract'),
+          label: t('graphRagStartAll'),
+          description: t('graphRagStartDescription', { scope: startScope }),
           iconName: 'play',
           state: input.controls.start,
           tone: 'primary',
@@ -351,9 +337,9 @@ export function buildGraphRagActionGroups(
         {
           id: 'cancel',
           groupId: 'extract',
-          groupLabel: '추출 실행',
-          label: '실행 중지',
-          description: '현재 진행 중인 GraphRAG 추출 작업에 취소 요청을 보냅니다.',
+          groupLabel: t('graphRagActionExtract'),
+          label: t('graphRagCancel'),
+          description: t('graphRagCancelDesc'),
           iconName: 'square',
           state: input.controls.cancel,
           tone: 'danger',
@@ -361,9 +347,12 @@ export function buildGraphRagActionGroups(
         {
           id: 'resumeFailed',
           groupId: 'extract',
-          groupLabel: '추출 실행',
-          label: `실패만 재시도${input.failedFileCount > 0 ? ` (${input.failedFileCount})` : ''}`,
-          description: '마지막 실행에서 실패한 파일만 다시 추출합니다. 성공한 파일은 건드리지 않습니다.',
+          groupLabel: t('graphRagActionExtract'),
+          label:
+            input.failedFileCount > 0
+              ? t('graphRagResumeFailedWithCount', { count: input.failedFileCount })
+              : t('graphRagResumeFailed'),
+          description: t('graphRagResumeFailedDesc'),
           iconName: 'skip-forward',
           state: input.controls.resume,
           tone: 'normal',
@@ -371,9 +360,12 @@ export function buildGraphRagActionGroups(
         {
           id: 'syncStale',
           groupId: 'extract',
-          groupLabel: '추출 실행',
-          label: `변경분 동기화${input.staleFileCount > 0 ? ` (${input.staleFileCount})` : ''}`,
-          description: '수정되었거나 모델/온톨로지 변경으로 오래된 파일만 다시 추출합니다.',
+          groupLabel: t('graphRagActionExtract'),
+          label:
+            input.staleFileCount > 0
+              ? t('graphRagSyncStaleWithCount', { count: input.staleFileCount })
+              : t('graphRagSyncStale'),
+          description: t('graphRagSyncStaleDesc'),
           iconName: 'refresh-cw',
           state: input.syncStale,
           tone: 'normal',
@@ -382,14 +374,14 @@ export function buildGraphRagActionGroups(
     },
     {
       id: 'maintain',
-      label: '그래프 정리',
+      label: t('graphRagMaintain'),
       actions: [
         {
           id: 'buildCommunities',
           groupId: 'maintain',
-          groupLabel: '그래프 정리',
-          label: '커뮤니티 다시 빌드',
-          description: '이미 추출된 엔티티/관계로 커뮤니티 요약을 다시 계산합니다. 파일 재추출은 하지 않습니다.',
+          groupLabel: t('graphRagMaintain'),
+          label: t('graphRagBuildCommunities'),
+          description: t('graphRagBuildCommunitiesDesc'),
           iconName: 'git-fork',
           state: input.buildCommunities,
           tone: 'normal',
@@ -398,14 +390,14 @@ export function buildGraphRagActionGroups(
     },
     {
       id: 'inspect',
-      label: '결과 확인',
+      label: t('graphRagInspect'),
       actions: [
         {
           id: 'openExplorer',
           groupId: 'inspect',
-          groupLabel: '결과 확인',
-          label: '탐색기 열기',
-          description: '엔티티, 관계, 증거, 거부된 응답과 오류 코드를 확인합니다.',
+          groupLabel: t('graphRagInspect'),
+          label: t('graphRagOpenExplorer'),
+          description: t('graphRagOpenExplorerDesc'),
           iconName: 'search',
           state: input.openExplorer,
           tone: 'normal',
@@ -429,7 +421,7 @@ export function estimateGraphRagIndexingCost(
     estimatedFiles: cappedFiles,
     estimatedCalls,
     estimatedInputTokens: estimatedCalls * tokensPerChunk,
-    costLabel: input.providerKind === 'local' ? '로컬 실행' : '원격 LLM 본문 전송 발생',
+    costLabel: input.providerKind === 'local' ? t('graphRagCostLocal') : t('graphRagCostRemote'),
   };
 }
 
@@ -447,7 +439,7 @@ export function buildEmbeddingModelOptions(
   for (const preset of presets) {
     options.set(preset.id, {
       id: preset.id,
-      label: `${preset.name} (${preset.dimensions}차원)`,
+      label: t('embeddingDimensionsLabel', { name: preset.name, dimensions: preset.dimensions }),
       description: preset.description,
       source: 'preset',
     });
@@ -459,7 +451,7 @@ export function buildEmbeddingModelOptions(
     options.set(id, {
       id,
       label: id,
-      description: 'Providers 탭의 모델 목록에서 가져온 임베딩 모델입니다.',
+      description: t('embeddingProviderModelDesc'),
       source: 'provider',
     });
   }
@@ -468,9 +460,8 @@ export function buildEmbeddingModelOptions(
   if (selected && !options.has(selected)) {
     options.set(selected, {
       id: selected,
-      label: `${selected} (현재 선택됨)`,
-      description:
-        '현재 선택된 모델입니다. Providers 탭의 모델 목록이나 기본 프리셋에는 없지만 설정 손실을 막기 위해 유지합니다.',
+      label: t('embeddingCurrentLabel', { model: selected }),
+      description: t('embeddingCurrentDesc'),
       source: 'current',
     });
   }

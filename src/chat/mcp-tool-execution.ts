@@ -1,10 +1,17 @@
 import type { MCPServerConnectionStatus } from '../mcp/connection-state';
 import type { MCPServerConfig } from '../settings';
-import { createToolExecutionPolicy, normalizeToolResult, shouldAutoExecuteToolCall } from './mcp-tools';
+import { t } from '../i18n';
+import {
+  createToolExecutionPolicy,
+  normalizeToolResult,
+  shouldAutoExecuteToolCall,
+} from './mcp-tools';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 
 export interface MCPToolClientLike {
-  listTools(): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]>;
+  listTools(): Promise<
+    { name: string; description?: string; inputSchema?: Record<string, unknown> }[]
+  >;
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -63,7 +70,7 @@ export async function executeMcpToolCalls(
     );
     if (!serverName) {
       toolCall.status = 'error';
-      toolCall.result = `연결된 MCP 서버에서 \`${toolCall.name}\` 도구를 찾을 수 없습니다.`;
+      toolCall.result = t('mcpToolNotFoundInConnectedServers', { tool: toolCall.name });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
@@ -71,7 +78,7 @@ export async function executeMcpToolCalls(
     const client = options.registry?.getClient(serverName);
     if (!client) {
       toolCall.status = 'error';
-      toolCall.result = `MCP 서버 \`${serverName}\`에 연결되어 있지 않습니다.`;
+      toolCall.result = t('mcpServerNotConnected', { server: serverName });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
@@ -94,7 +101,7 @@ export async function executeMcpToolCalls(
       toolCall.status = isErrorResult ? 'error' : 'success';
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : String(err);
-      toolCall.result = `[MCP 도구 오류] ${normalizeToolError(rawMsg)}`;
+      toolCall.result = t('mcpToolErrorPrefix', { message: normalizeToolError(rawMsg) });
       toolCall.status = 'error';
     }
 
@@ -155,7 +162,7 @@ export function parseToolArguments(argumentsText: string): Record<string, unknow
 
 function assertNonEmptyToolResult(toolName: string, displayText: string, modelText: string): void {
   if (displayText.trim().length === 0 || modelText.trim().length === 0) {
-    throw new Error(`MCP 도구 \`${toolName}\`가 빈 결과를 반환했습니다.`);
+    throw new Error(t('mcpToolEmptyResult', { tool: toolName }));
   }
 }
 
@@ -169,7 +176,7 @@ function assertMcpContentIsNotEmpty(toolName: string, result: unknown): void {
     return Object.keys(item).length > 0;
   });
   if (!hasContent) {
-    throw new Error(`MCP 도구 \`${toolName}\`가 빈 결과를 반환했습니다.`);
+    throw new Error(t('mcpToolEmptyResult', { tool: toolName }));
   }
 }
 
@@ -177,13 +184,13 @@ function normalizeToolError(rawMsg: string): string {
   if (rawMsg.includes('Input validation error')) {
     const match = rawMsg.match(/does not match '(.+?)'/);
     if (match) {
-      return `입력값의 형식이 올바르지 않습니다. 요구되는 패턴: \`${match[1]}\``;
+      return t('mcpValidationPattern', { pattern: match[1] });
     }
     const fieldMatch = rawMsg.match(/'([^']+)'/);
     if (fieldMatch) {
-      return `필드 \`${fieldMatch[1]}\`의 입력값이 잘못되었습니다.`;
+      return t('mcpValidationField', { field: fieldMatch[1] });
     }
-    return '입력값 검증에 실패했습니다.';
+    return t('mcpValidationGeneric');
   }
   return rawMsg;
 }

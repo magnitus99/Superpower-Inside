@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { GraphRejectedFactRecord } from './store';
 
 export interface RejectedFactPresentation {
@@ -14,62 +15,69 @@ interface ReasonPresentation {
   description: string;
 }
 
-const REASON_PRESENTATIONS: Record<string, ReasonPresentation> = {
-  'invalid-json': {
-    errorCode: 'SPI-GRAPH-JSON-001',
-    title: 'LLM 응답을 JSON으로 파싱할 수 없음',
-    description:
-      '모델이 GraphRAG 추출 스키마와 맞는 JSON 객체를 반환하지 않았습니다. OpenRouter/free 모델에서는 빈 응답, 설명문, 제한 문구, 잘린 응답이 섞이면 자주 발생합니다.',
-  },
-  'unknown-entity-type': {
-    errorCode: 'SPI-GRAPH-SCHEMA-ENTITY-001',
-    title: '알 수 없는 엔티티 타입',
-    description: '모델이 현재 ontology schema에 없는 entity typeId를 반환했습니다.',
-  },
-  'schema-shape-mismatch': {
-    errorCode: 'SPI-GRAPH-SCHEMA-SHAPE-001',
-    title: 'JSON 구조가 GraphRAG 추출 스키마와 다름',
-    description:
-      '응답은 JSON으로 파싱됐지만 entities.name/typeId, relations.relationTypeId, claims.text/claimTypeId 같은 필수 필드 구조를 따르지 않았습니다.',
-  },
-  'unknown-relation-entity': {
-    errorCode: 'SPI-GRAPH-SCHEMA-RELATION-001',
-    title: '관계의 엔티티를 찾을 수 없음',
-    description: '모델이 relation source/target에 쓴 이름이 같은 응답의 entities 목록과 매칭되지 않았습니다.',
-  },
-  'relation-domain-range-mismatch': {
-    errorCode: 'SPI-GRAPH-SCHEMA-RELATION-002',
-    title: '관계 타입의 source/target 타입 불일치',
-    description: '모델이 ontology schema에서 허용하지 않는 entity type 조합으로 relation을 반환했습니다.',
-  },
-  'unknown-claim-type': {
-    errorCode: 'SPI-GRAPH-SCHEMA-CLAIM-001',
-    title: '알 수 없는 claim 타입',
-    description: '모델이 현재 ontology schema에 없는 claimTypeId를 반환했습니다.',
-  },
-  'extraction-error': {
-    errorCode: 'SPI-GRAPH-EXTRACT-001',
-    title: '추출 호출 중 오류',
-    description: 'LLM 호출, 네트워크, provider 응답 처리 중 예외가 발생했습니다.',
-  },
-};
-
-const DEFAULT_PRESENTATION: ReasonPresentation = {
-  errorCode: 'SPI-GRAPH-SCHEMA-001',
-  title: 'GraphRAG 추출 결과가 schema 검증을 통과하지 못함',
-  description: '모델 응답의 일부 fact가 현재 ontology schema 또는 저장소 검증 규칙과 맞지 않습니다.',
-};
-
 export function getRejectedFactPresentation(
   fact: GraphRejectedFactRecord,
 ): RejectedFactPresentation {
-  const presentation = REASON_PRESENTATIONS[fact.reason] ?? DEFAULT_PRESENTATION;
+  const presentation = getReasonPresentation(fact.reason);
   const rawText = stringifyRawFact(fact.rawFact);
   return {
     ...presentation,
     rawText,
     rawPreview: createRawPreview(rawText),
   };
+}
+
+function getReasonPresentation(reason: string): ReasonPresentation {
+  switch (reason) {
+    case 'invalid-json':
+      return {
+        errorCode: 'SPI-GRAPH-JSON-001',
+        title: t('rejectedFactInvalidJsonTitle'),
+        description: t('rejectedFactInvalidJsonDesc'),
+      };
+    case 'unknown-entity-type':
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-ENTITY-001',
+        title: t('rejectedFactUnknownEntityTitle'),
+        description: t('rejectedFactUnknownEntityDesc'),
+      };
+    case 'schema-shape-mismatch':
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-SHAPE-001',
+        title: t('rejectedFactSchemaShapeTitle'),
+        description: t('rejectedFactSchemaShapeDesc'),
+      };
+    case 'unknown-relation-entity':
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-RELATION-001',
+        title: t('rejectedFactUnknownRelationEntityTitle'),
+        description: t('rejectedFactUnknownRelationEntityDesc'),
+      };
+    case 'relation-domain-range-mismatch':
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-RELATION-002',
+        title: t('rejectedFactRelationMismatchTitle'),
+        description: t('rejectedFactRelationMismatchDesc'),
+      };
+    case 'unknown-claim-type':
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-CLAIM-001',
+        title: t('rejectedFactUnknownClaimTitle'),
+        description: t('rejectedFactUnknownClaimDesc'),
+      };
+    case 'extraction-error':
+      return {
+        errorCode: 'SPI-GRAPH-EXTRACT-001',
+        title: t('rejectedFactExtractionErrorTitle'),
+        description: t('rejectedFactExtractionErrorDesc'),
+      };
+    default:
+      return {
+        errorCode: 'SPI-GRAPH-SCHEMA-001',
+        title: t('rejectedFactDefaultTitle'),
+        description: t('rejectedFactDefaultDesc'),
+      };
+  }
 }
 
 export function buildRejectedFactCopyText(fact: GraphRejectedFactRecord): string {
@@ -102,6 +110,6 @@ function stringifyRawFact(rawFact: unknown): string {
 
 function createRawPreview(rawText: string): string {
   const normalized = rawText.replace(/\s+/gu, ' ').trim();
-  if (!normalized) return '(빈 응답)';
+  if (!normalized) return t('rejectedFactEmptyResponse');
   return normalized.length <= 240 ? normalized : `${normalized.slice(0, 240)}...`;
 }

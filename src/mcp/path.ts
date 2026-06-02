@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { t } from '../i18n';
 
 const SHELL_CANDIDATES = [
   '/opt/homebrew/bin/fish',
@@ -42,7 +43,9 @@ function getPosixLoginShellPath(runner: MCPPathCommandRunner): string {
 
   for (const candidate of candidates) {
     try {
-      const args = candidate.includes('fish') ? ['-lc', 'printenv PATH'] : ['-ilc', 'printenv PATH'];
+      const args = candidate.includes('fish')
+        ? ['-lc', 'printenv PATH']
+        : ['-ilc', 'printenv PATH'];
       const output = runner(candidate, args).trim();
 
       if (isPathOutput(output)) {
@@ -53,7 +56,7 @@ function getPosixLoginShellPath(runner: MCPPathCommandRunner): string {
     }
   }
 
-  throw new Error('실행 가능한 shell을 찾을 수 없습니다.');
+  throw new Error(t('mcpNoExecutableShell'));
 }
 
 function getWindowsPath(runner: MCPPathCommandRunner, includeWslPath: boolean): string {
@@ -78,7 +81,7 @@ function getWindowsPath(runner: MCPPathCommandRunner, includeWslPath: boolean): 
   }
 
   if (!windowsPath) {
-    throw new Error('PowerShell에서 PATH를 가져올 수 없습니다.');
+    throw new Error(t('mcpNoPowerShellPath'));
   }
 
   if (!includeWslPath) {

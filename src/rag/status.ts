@@ -1,4 +1,5 @@
 import type { TFile, Vault } from 'obsidian';
+import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
 import type { FileIndexRecord, VectorStore } from './store';
@@ -64,12 +65,7 @@ export async function calculateRagStatus(
   for (const file of includedFiles) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    const state = getFileIndexState(
-      file,
-      recordsByPath.get(file.path) ?? null,
-      ragConfig,
-      signal,
-    );
+    const state = getFileIndexState(file, recordsByPath.get(file.path) ?? null, ragConfig, signal);
     if (state.status === 'healthy') {
       healthyDocuments++;
       continue;
@@ -121,7 +117,7 @@ function getFileIndexState(
   signal?: AbortSignal,
 ): FileIndexState {
   if (!record || record.vectorCount === 0) {
-    return { status: 'missing', reason: '아직 인덱싱되지 않았습니다.' };
+    return { status: 'missing', reason: t('ragStatusMissingReason') };
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
@@ -136,14 +132,14 @@ function getFileIndexState(
   if (isLegacyRecord) {
     return {
       status: 'unknown',
-      reason: '이전 형식의 벡터라 파일 변경 여부를 확인할 수 없습니다.',
+      reason: t('ragStatusLegacyReason'),
     };
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   // mtime/size가 달라졌으면 stale (내용 읽기 불필요)
   if (record.sourceMtime !== file.stat.mtime || record.sourceSize !== file.stat.size) {
-    return { status: 'stale', reason: '파일이 마지막 인덱싱 이후 수정되었습니다.' };
+    return { status: 'stale', reason: t('ragStatusStaleFileReason') };
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
@@ -154,10 +150,10 @@ function getFileIndexState(
     record.embeddingProvider !== ragConfig.embeddingProvider ||
     record.embeddingModel !== ragConfig.embeddingModel
   ) {
-    return { status: 'stale', reason: '현재 임베딩 설정과 저장된 벡터 설정이 다릅니다.' };
+    return { status: 'stale', reason: t('ragStatusEmbeddingChangedReason') };
   }
 
-  return { status: 'healthy', reason: '최신 상태입니다.' };
+  return { status: 'healthy', reason: t('ragStatusHealthyReason') };
 }
 
 function statusSortOrder(status: Exclude<RagDocumentStatus, 'healthy'>): number {

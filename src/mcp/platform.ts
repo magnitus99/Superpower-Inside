@@ -1,5 +1,8 @@
-export const MCP_DESKTOP_ONLY_MESSAGE =
-  'MCP stdio transport는 Obsidian 데스크톱 앱에서만 사용할 수 있습니다.';
+import { t } from '../i18n';
+
+export function getMcpDesktopOnlyMessage(): string {
+  return t('mcpDesktopOnly');
+}
 
 export interface MCPPlatformLike {
   isDesktopApp: boolean;

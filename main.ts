@@ -43,13 +43,20 @@ import {
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { LLMRAGResultReranker, RAGQueryEngine } from './src/rag/query';
-import { GraphRagIndexingRunner, type GraphRagCommunityBuildResult, type GraphRagIndexingResult } from './src/graph/indexing-runner';
+import {
+  GraphRagIndexingRunner,
+  type GraphRagCommunityBuildResult,
+  type GraphRagIndexingResult,
+} from './src/graph/indexing-runner';
 import { GraphRagQueryEngine, LLMGraphQueryPlanner } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
 import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/schema';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
-import { RAGIndexingScheduler, type RagIndexingSchedulerStatus } from './src/rag/indexing-scheduler';
+import {
+  RAGIndexingScheduler,
+  type RagIndexingSchedulerStatus,
+} from './src/rag/indexing-scheduler';
 import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
@@ -61,14 +68,10 @@ import {
   type MCPConnectionState,
 } from './src/mcp/connection-state';
 import { shouldAppendMcpPathHint } from './src/mcp/errors';
-import { MCP_DESKTOP_ONLY_MESSAGE, isMcpStdioAvailable } from './src/mcp/platform';
+import { getMcpDesktopOnlyMessage, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
-import {
-  loadLocalSettings,
-  removeLegacyDataJson,
-  saveLocalSettings,
-} from './src/settings-storage';
+import { loadLocalSettings, removeLegacyDataJson, saveLocalSettings } from './src/settings-storage';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -119,12 +122,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void this.initMCP()
       .then((errors) => {
         if (errors.length > 0) {
-          new Notice(`MCP 자동 연결 실패: ${errors.length}개 서버를 확인하세요.`, 10000);
+          new Notice(t('mcpAutoConnectFailedCount', { count: errors.length }), 10000);
         }
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
-        new Notice(`MCP 자동 연결 실패: ${msg}`, 10000);
+        new Notice(t('mcpAutoConnectFailedMessage', { message: msg }), 10000);
       });
 
     // 채팅 뷰 등록
@@ -154,20 +157,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
         if (!this.vaultIndexer) {
           const rag = this.settings.rag;
           const providerKey = rag.embeddingProvider;
-          let reason = 'RAG 인덱서가 초기화되지 않았습니다.';
+          let reason = t('ragIndexerNotInitializedBase');
           const config = this.getEmbeddingProviderConfig(providerKey);
           const providerLabel = this.getEmbeddingProviderLabel(providerKey);
           const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
             ? 'customOpenAI'
             : providerKey;
           if (!config?.enabled) {
-            reason += ` Providers 탭에서 "${providerLabel}"의 Enabled 토글을 켜주세요.`;
+            reason += ` ${t('ragIndexerEnableProvider', { provider: providerLabel })}`;
           } else if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
-            reason += ` Providers 탭에서 "${providerLabel}"의 API Key를 입력하세요.`;
+            reason += ` ${t('ragIndexerEnterApiKey', { provider: providerLabel })}`;
           } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
-            reason += ` 임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.`;
+            reason += ` ${t('ragIndexerSelectEmbeddingModel')}`;
           } else {
-            reason += ` "${providerLabel}"(${rag.embeddingModel}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.`;
+            reason += ` ${t('ragIndexerConnectionFailed', {
+              provider: providerLabel,
+              model: rag.embeddingModel,
+            })}`;
           }
           new Notice(reason);
           return;
@@ -183,22 +189,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
               )
             : null;
           if (!status || status.totalDocuments === 0) return;
-          new Notice('볼트 인덱싱 시작...');
+          new Notice(t('vaultIndexingStarted'));
           const result = await this.ragIndexingScheduler?.reindexAll();
           if (result) {
-            new Notice(`${result.indexed}개 파일 인덱싱 완료`);
+            new Notice(t('vaultIndexingDone', { count: result.indexed }));
           }
         } catch (err) {
           if (isIndexingCancelledError(err)) {
-            new Notice('인덱싱이 중단되었습니다.');
+            new Notice(t('indexingCancelled'));
             return;
           }
           const msg = err instanceof Error ? err.message : String(err);
-          new Notice(`인덱싱 실패: ${msg}`);
+          new Notice(t('indexingFailedWithMessage', { message: msg }));
         }
       },
     });
-
 
     this.addCommand({
       id: 'open-graph-rag-view',
@@ -240,7 +245,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   isRagIndexing(): boolean {
-    return this.ragIndexAbortController !== null || (this.ragIndexingScheduler?.isRunning() ?? false);
+    return (
+      this.ragIndexAbortController !== null || (this.ragIndexingScheduler?.isRunning() ?? false)
+    );
   }
 
   cancelRagIndexing(): void {
@@ -249,7 +256,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   isGraphRagIndexing(): boolean {
-    return this.graphRagAbortController !== null || (this.graphRagIndexingRunner?.isRunning() ?? false);
+    return (
+      this.graphRagAbortController !== null || (this.graphRagIndexingRunner?.isRunning() ?? false)
+    );
   }
 
   cancelGraphRagIndexing(): void {
@@ -275,7 +284,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       status: 'success',
       detail: this.ragIndexingStatus
         ? this.formatRagIndexingStatus(this.ragIndexingStatus)
-        : '대기 중',
+        : t('ragIdle'),
     });
   }
 
@@ -305,7 +314,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void this.computeAndEmitGraphRagStatus();
   }
 
-  private async runGraphRagOperation(resumeFailed: boolean): Promise<GraphRagIndexingResult | null> {
+  private async runGraphRagOperation(
+    resumeFailed: boolean,
+  ): Promise<GraphRagIndexingResult | null> {
     if (this.graphRagAbortController || !this.graphRagIndexingRunner) {
       return null;
     }
@@ -385,7 +396,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
     } catch {
       if (this.refreshBus) {
-        this.refreshBus.emit('rag', { status: 'error', detail: '통계 계산 실패' });
+        this.refreshBus.emit('rag', { status: 'error', detail: t('ragStatsFailed') });
       }
     }
   }
@@ -687,7 +698,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  async saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{ success: boolean; mcpErrors?: string[] }> {
+  async saveSettings(options?: {
+    reinitRag?: boolean;
+    reinitMcp?: boolean;
+  }): Promise<{ success: boolean; mcpErrors?: string[] }> {
     const reinitRag = options?.reinitRag ?? true;
     const reinitMcp = options?.reinitMcp ?? true;
     saveLocalSettings(this.app, this.settings);
@@ -848,17 +862,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.isGraphRagIndexing()) return;
     await this.computeAndEmitGraphRagStatus();
     if (this.graphRagStatus?.state === 'stale') {
-      new Notice('GraphRAG 자동 동기화 시작...');
+      new Notice(t('graphRagAutoSyncStarted'));
       const result = await this.syncStaleGraphRag();
       if (result) {
         new Notice(
-          `GraphRAG 자동 동기화 완료: ${result.processedFiles}개 처리, ${result.failedFiles}개 실패`,
+          t('graphRagAutoSyncDone', {
+            processed: result.processedFiles,
+            failed: result.failedFiles,
+          }),
         );
       }
     }
   }
-
-
 
   async initRAG(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
@@ -917,7 +932,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       rag.vectorStoreType === 'indexeddb'
         ? new IndexedDbVectorStore()
         : new JsonFileVectorStore(this.app.vault.adapter, '.superpower-inside/vectors.json');
-    this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(this.createIndexedDbName('KnowledgeGraph'));
+    this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
+      this.createIndexedDbName('KnowledgeGraph'),
+    );
     await this.computeAndEmitGraphRagStatus();
 
     // BM25 index
@@ -1031,8 +1048,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       createIndexingOptions: (signal) => ({
         signal,
         maxEmbeddingBatchSize:
-          this.ragPerformanceGuard?.getBatchSize() ??
-          performanceSettings.maxEmbeddingBatchSize,
+          this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
         indexingYieldMs:
           this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
         onBatchComplete: (durationMs) => {
@@ -1058,27 +1074,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private formatRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
-    const guardState = status.lastResult?.guardState ?? this.ragPerformanceGuard?.getState() ?? null;
+    const guardState =
+      status.lastResult?.guardState ?? this.ragPerformanceGuard?.getState() ?? null;
     if (guardState?.mode === 'paused') {
-      return '성능 보호 대기';
+      return t('ragPerformancePaused');
     }
     if (guardState?.mode === 'throttled') {
-      return '속도 조절 중';
+      return t('ragPerformanceThrottled');
     }
     if (status.running) {
-      return `인덱싱 중: ${this.formatRagIndexingPhase(status.phase)}`;
+      return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
     }
     if (status.lastResult) {
-      return `${status.lastResult.indexed}개 문서, ${status.lastResult.vectors}개 벡터`;
+      return t('ragIndexingResult', {
+        documents: status.lastResult.indexed,
+        vectors: status.lastResult.vectors,
+      });
     }
-    return '대기 중';
+    return t('ragIdle');
   }
 
   private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
-    if (phase === 'file') return '변경 파일';
-    if (phase === 'pending') return '필요 문서 업데이트';
-    if (phase === 'all') return '전체 재인덱싱';
-    return '대기';
+    if (phase === 'file') return t('ragPhaseFile');
+    if (phase === 'pending') return t('ragPhasePending');
+    if (phase === 'all') return t('ragPhaseAll');
+    return t('ragPhaseIdle');
   }
 
   private clearRAG(): void {
@@ -1267,19 +1287,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async autoIndex(): Promise<void> {
     if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) {
-      this.lastAutoUpdateSkippedReason = 'RAG 인덱서가 초기화되지 않았습니다.';
+      this.lastAutoUpdateSkippedReason = t('ragIndexerNotInitializedBase');
       return;
     }
     this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
     if (this.isRagIndexing()) {
-      this.lastAutoUpdateSkippedReason = '인덱싱이 이미 실행 중입니다.';
-      this.refreshBus?.emit('rag', { status: 'partial', detail: '인덱싱 중' });
+      this.lastAutoUpdateSkippedReason = t('ragAutoUpdateAlreadyRunning');
+      this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragIndexingInProgress') });
       return;
     }
     const guardState = this.ragPerformanceGuard?.getState() ?? null;
     if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
-      this.lastAutoUpdateSkippedReason = `성능 보호 대기 중입니다. 약 ${Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)}초 후 다시 시도합니다.`;
-      this.refreshBus?.emit('rag', { status: 'partial', detail: '성능 보호 대기' });
+      this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
+        seconds: Math.ceil((guardState.remainingPauseMs ?? 0) / 1000),
+      });
+      this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
       return;
     }
     try {
@@ -1290,8 +1312,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.settings.chat,
       );
       if (status.updateRequiredDocuments.length === 0) {
-        this.lastAutoUpdateSkippedReason = '업데이트 대상 없음';
-        this.refreshBus?.emit('rag', { status: 'success', detail: '업데이트 대상 없음' });
+        this.lastAutoUpdateSkippedReason = t('ragAutoUpdateNoTargets');
+        this.refreshBus?.emit('rag', { status: 'success', detail: t('ragAutoUpdateNoTargets') });
         return;
       }
       new Notice(t('autoUpdateIndexingStarted'));
@@ -1306,12 +1328,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (isIndexingCancelledError(err)) {
         const pausedState = this.ragPerformanceGuard?.getState() ?? null;
         if (pausedState?.mode === 'paused') {
-          this.lastAutoUpdateSkippedReason = `성능 보호 대기 중입니다. 약 ${Math.ceil((pausedState.remainingPauseMs ?? 0) / 1000)}초 후 다시 시도합니다.`;
-          this.refreshBus?.emit('rag', { status: 'partial', detail: '성능 보호 대기' });
+          this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
+            seconds: Math.ceil((pausedState.remainingPauseMs ?? 0) / 1000),
+          });
+          this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
           return;
         }
-        this.lastAutoUpdateSkippedReason = '인덱싱이 중단되었습니다.';
-        new Notice('인덱싱이 중단되었습니다.');
+        this.lastAutoUpdateSkippedReason = t('indexingCancelled');
+        new Notice(t('indexingCancelled'));
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
@@ -1346,9 +1370,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     if (!isMcpStdioAvailable(Platform)) {
       const enabledServers = this.mcpRegistry.getEnabledServers();
-      const errors = enabledServers.map((server) => `${server.name}: ${MCP_DESKTOP_ONLY_MESSAGE}`);
+      const desktopOnlyMessage = getMcpDesktopOnlyMessage();
+      const errors = enabledServers.map((server) => `${server.name}: ${desktopOnlyMessage}`);
       for (const server of enabledServers) {
-        this.mcpRegistry.setConnectionStatus(server.name, 'error', MCP_DESKTOP_ONLY_MESSAGE);
+        this.mcpRegistry.setConnectionStatus(server.name, 'error', desktopOnlyMessage);
       }
       this.refreshMcpConnectionState();
       return errors;

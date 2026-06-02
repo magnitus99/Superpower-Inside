@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { SourceCitation, SourceValidationWarning } from './types';
 
 export interface SourceReferenceResolver {
@@ -32,7 +33,7 @@ export function validateAnswerSources(
       addWarning(warnings, seen, {
         id: `source:${reference.target}`,
         label: reference.label,
-        detail: '이번 응답의 검증된 검색 근거에 없는 출처 ID입니다.',
+        detail: t('sourceUnverifiedIdWarning'),
         kind: 'unverified-source',
       });
       continue;
@@ -46,7 +47,7 @@ export function validateAnswerSources(
     addWarning(warnings, seen, {
       id: `link:${reference.target}`,
       label: reference.label,
-      detail: 'vault에서 확인되지 않은 문서 링크입니다.',
+      detail: t('sourceMissingVaultLinkWarning'),
       kind: 'missing-link',
     });
   }

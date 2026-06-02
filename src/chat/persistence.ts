@@ -1,4 +1,5 @@
 import { TFile, type Vault } from 'obsidian';
+import { t } from '../i18n';
 import type { ChatMessage } from '../llm/providers';
 import type {
   ChatMessageWithMeta,
@@ -79,7 +80,7 @@ export async function saveChat(
   const summary = deriveSummary(messages);
 
   const fmLines = [
-    `title: ${formatFrontmatterValue(title || '새 채팅')}`,
+    `title: ${formatFrontmatterValue(title || t('defaultChatTitle'))}`,
     `created: ${formatFrontmatterValue(normalizeDateValue(created))}`,
     `updated: ${formatFrontmatterValue(updated)}`,
     `messages: ${messages.length}`,
@@ -110,7 +111,7 @@ export async function saveChat(
     '## Session Metadata',
     '',
     buildMarkdownTable([
-      ['Title', title || '새 채팅'],
+      ['Title', title || t('defaultChatTitle')],
       ['Created', formatDisplayDate(normalizeDateValue(created))],
       ['Updated', formatDisplayDate(updated)],
       ['Messages', String(messages.length)],
@@ -131,8 +132,12 @@ export async function saveChat(
 
   // 빈 content를 가진 메시지가 있으면 경고
   for (const message of messages) {
-    if (message.role === 'assistant' && !message.content?.trim() && !message.originalContent?.trim()) {
-      console.warn(`[Superpower Inside] 저장 경고: 메시지 ${message.id}의 content가 비어 있습니다.`);
+    if (
+      message.role === 'assistant' &&
+      !message.content?.trim() &&
+      !message.originalContent?.trim()
+    ) {
+      console.warn(t('chatSaveEmptyAssistantWarning', { id: message.id }));
     }
   }
   const content = frontmatter + body.trimEnd() + '\n';
@@ -270,7 +275,7 @@ function extractPreview(body: string): string | undefined {
 
 export async function renameChat(vault: Vault, oldPath: string, newTitle: string): Promise<string> {
   const file = vault.getAbstractFileByPath(oldPath);
-  if (!(file instanceof TFile)) throw new Error(`파일을 찾을 수 없음: ${oldPath}`);
+  if (!(file instanceof TFile)) throw new Error(t('fileNotFoundError', { path: oldPath }));
 
   const content = await vault.cachedRead(file);
   const parsed = parseFrontmatter(content);
@@ -306,7 +311,7 @@ export async function renameChat(vault: Vault, oldPath: string, newTitle: string
 
 export async function deleteChat(vault: Vault, filePath: string): Promise<void> {
   const file = vault.getAbstractFileByPath(filePath);
-  if (!file) throw new Error(`파일을 찾을 수 없음: ${filePath}`);
+  if (!file) throw new Error(t('fileNotFoundError', { path: filePath }));
   await vault.delete(file);
 }
 
@@ -395,12 +400,12 @@ function formatToolCall(toolCall: ToolCallRecord): string {
   let resultBlock = null;
   if (rawResult !== null) {
     if (rawResult.length > MAX_RESULT_SIZE) {
-      resultBlock = `\n\n**Result** (일부 생략됨)\n\n\`\`\`markdown\n${rawResult.slice(0, MAX_RESULT_SIZE)}…\n\`\`\``;
+      resultBlock = `\n\n**Result** (${t('toolResultTruncatedLabel')})\n\n\`\`\`markdown\n${rawResult.slice(0, MAX_RESULT_SIZE)}...\n\`\`\``;
     } else {
       resultBlock = `\n\n**Result**\n\n\`\`\`markdown\n${rawResult}\n\`\`\``;
     }
   }
-  const approval = toolCall.approved === false ? ' (승인 대기)' : '';
+  const approval = toolCall.approved === false ? t('toolApprovalPendingSuffix') : '';
   const server = toolCall.serverName ? ` @ ${toolCall.serverName}` : '';
   return `##### Tool: ${toolCall.name}${server} [${toolCall.status}]${approval}${argsBlock}${resultBlock ?? ''}\n`;
 }
@@ -435,7 +440,7 @@ function parseMarkdownMessages(body: string): ChatMessageWithMeta[] {
     const updatedAt = normalizeDateValue(meta.updatedAt);
 
     // content가 완전히 비어 있으면 reasoning을 폴백으로 사용
-    const finalContent = content.trim() ? content : (reasoning || '');
+    const finalContent = content.trim() ? content : reasoning || '';
     messages.push({
       id: meta.id,
       role: meta.role,

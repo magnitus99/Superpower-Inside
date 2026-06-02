@@ -1,21 +1,18 @@
 import { Notice } from 'obsidian';
+import { t } from '../i18n';
 import {
   CHAT_PROVIDER_KEYS,
   PROVIDER_LABELS,
   type PluginLike,
   type ProviderKey,
 } from '../settings';
-import {
-  createCustomOpenAIProvider,
-  createProvider,
-  type LLMProvider,
-} from '../llm/providers';
+import { createCustomOpenAIProvider, createProvider, type LLMProvider } from '../llm/providers';
 import type { VectorStore } from '../rag/store';
 import {
   buildVaultPromptGenerationMessages,
   createPromptEntry,
   DEFAULT_OBSIDIAN_PROMPT_ID,
-  PROMPT_DIRECTION_PRESETS,
+  getPromptDirectionPresets,
   type PromptLibraryEntry,
 } from './prompt-library';
 
@@ -41,11 +38,11 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   const overlay = options.containerEl.createDiv({ cls: 'superpower-inside-prompt-overlay' });
   const modal = overlay.createDiv({ cls: 'superpower-inside-prompt-modal' });
   const titleBar = modal.createDiv({ cls: 'superpower-inside-prompt-titlebar' });
-  titleBar.createEl('h2', { text: '프롬프트 보관함' });
+  titleBar.createEl('h2', { text: t('promptLibraryTitle') });
   const closeBtn = titleBar.createEl('button', {
     cls: 'superpower-inside-prompt-close',
     text: '×',
-    attr: { type: 'button', 'aria-label': '닫기' },
+    attr: { type: 'button', 'aria-label': t('closeLabel') },
   });
 
   const body = modal.createDiv({ cls: 'superpower-inside-prompt-body' });
@@ -70,7 +67,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   const saveSettings = async (): Promise<boolean> => {
     const result = await options.plugin.saveSettings({ reinitRag: false, reinitMcp: false });
     if (!result.success && result.mcpErrors && result.mcpErrors.length > 0) {
-      new Notice(`설정 저장 후 MCP 재연결 중 ${result.mcpErrors.length}개 서버 실패`, 5000);
+      new Notice(t('settingsSaveMcpReconnectFailed', { count: result.mcpErrors.length }), 5000);
     }
     return result.success;
   };
@@ -85,8 +82,8 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const createNewPrompt = async (): Promise<void> => {
     const entry = createPromptEntry({
-      title: '새 시스템 프롬프트',
-      description: '직접 작성한 프롬프트',
+      title: t('promptNewSystemPromptTitle'),
+      description: t('manualPromptDescription'),
       content: options.currentSessionPrompt?.trim() || '',
       source: 'user',
     });
@@ -102,7 +99,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   const deleteSelectedPrompt = async (): Promise<void> => {
     const entry = getSelectedEntry();
     if (!entry || entry.id === DEFAULT_OBSIDIAN_PROMPT_ID) return;
-    const confirmed = window.confirm(`"${entry.title}" 프롬프트를 삭제하시겠습니까?`);
+    const confirmed = window.confirm(t('promptDeleteConfirm', { title: entry.title }));
     if (!confirmed) return;
     options.plugin.settings.chat.promptLibrary = options.plugin.settings.chat.promptLibrary.filter(
       (item) => item.id !== entry.id,
@@ -127,16 +124,16 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     if (!entry) return;
     const content = contentInput.value.trim();
     if (!content) {
-      new Notice('시스템 프롬프트 본문을 입력하세요.');
+      new Notice(t('promptBodyRequired'));
       return;
     }
-    entry.title = titleInput.value.trim() || '시스템 프롬프트';
+    entry.title = titleInput.value.trim() || t('systemPrompt');
     entry.description = descriptionInput.value.trim() || undefined;
     entry.content = content;
     entry.source = entry.source === 'default' ? 'user' : entry.source;
     entry.updatedAt = new Date().toISOString();
     await saveSettings();
-    new Notice('프롬프트가 저장되었습니다.');
+    new Notice(t('promptSavedNotice'));
     render();
   };
 
@@ -144,7 +141,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     const entry = getSelectedEntry();
     if (!entry || !options.onApplyToSession) return;
     options.onApplyToSession(entry.content);
-    new Notice(`"${entry.title}" 프롬프트를 현재 세션에 적용했습니다.`);
+    new Notice(t('promptAppliedToSessionNotice', { title: entry.title }));
   };
 
   const setSelectedAsGlobalDefault = async (): Promise<void> => {
@@ -152,7 +149,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     if (!entry) return;
     options.plugin.settings.chat.activePromptId = entry.id;
     await saveSettings();
-    new Notice(`"${entry.title}" 프롬프트를 전역 기본값으로 지정했습니다.`);
+    new Notice(t('promptSetGlobalDefaultNotice', { title: entry.title }));
     render();
   };
 
@@ -165,26 +162,26 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     if (isGenerating) return;
     const providerInfo = createProviderFromModelValue(options.plugin, modelSelect.value);
     if (!providerInfo) {
-      new Notice('프롬프트 생성에 사용할 모델을 선택하세요.');
+      new Notice(t('promptGenerationModelRequired'));
       return;
     }
     const vectorStore = (options.plugin as unknown as { vectorStore?: VectorStore | null })
       .vectorStore;
     if (!vectorStore) {
-      new Notice('RAG 벡터 저장소가 초기화되지 않았습니다. RAG 설정과 인덱싱 상태를 확인하세요.', 7000);
+      new Notice(t('promptRagStoreMissing'), 7000);
       return;
     }
 
     isGenerating = true;
     generateBtn.disabled = true;
-    generateBtn.setText('생성 중...');
+    generateBtn.setText(t('generating'));
     try {
       const entries = await vectorStore.getEntries();
       if (entries.length === 0) {
-        new Notice('임베딩된 볼트 정보가 없습니다. 먼저 RAG 인덱싱을 실행하세요.', 7000);
+        new Notice(t('promptNoEmbeddedVaultInfo'), 7000);
         return;
       }
-      const preset = PROMPT_DIRECTION_PRESETS.find((item) => item.id === directionSelect.value);
+      const preset = getPromptDirectionPresets().find((item) => item.id === directionSelect.value);
       const generated = await providerInfo.provider.chat(
         buildVaultPromptGenerationMessages({
           entries,
@@ -195,12 +192,12 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       );
       const content = generated.trim();
       if (!content) {
-        new Notice('모델이 빈 프롬프트를 반환했습니다.');
+        new Notice(t('promptEmptyModelResponse'));
         return;
       }
       const entry = createPromptEntry({
-        title: `볼트 기반 프롬프트 - ${preset?.label ?? '사용자 지정'}`,
-        description: '임베딩된 볼트 정보로 생성한 시스템 프롬프트',
+        title: t('vaultBasedPromptTitle', { preset: preset?.label ?? t('customLabel') }),
+        description: t('generatedPromptDescription'),
         content,
         source: 'generated',
         directionPreset: preset?.id,
@@ -213,15 +210,15 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       ];
       selectedId = entry.id;
       await saveSettings();
-      new Notice('볼트 기반 시스템 프롬프트를 생성해 보관함에 저장했습니다.');
+      new Notice(t('vaultBasedPromptGeneratedNotice'));
       render();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      new Notice(`프롬프트 생성 실패: ${message}`, 7000);
+      new Notice(t('promptGenerationFailed', { message }), 7000);
     } finally {
       isGenerating = false;
       generateBtn.disabled = false;
-      generateBtn.setText('볼트 기반 생성');
+      generateBtn.setText(t('vaultBasedGeneration'));
     }
   };
 
@@ -230,7 +227,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     const actions = listPane.createDiv({ cls: 'superpower-inside-prompt-list-actions' });
     const newBtn = actions.createEl('button', {
       cls: 'superpower-inside-prompt-secondary-btn',
-      text: '새 프롬프트',
+      text: t('newPromptButton'),
       attr: { type: 'button' },
     });
     newBtn.addEventListener('click', () => void createNewPrompt());
@@ -256,26 +253,26 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     detailPane.empty();
     const entry = getSelectedEntry();
     if (!entry) {
-      detailPane.createDiv({ cls: 'superpower-inside-prompt-empty', text: '프롬프트가 없습니다.' });
+      detailPane.createDiv({ cls: 'superpower-inside-prompt-empty', text: t('promptEmptyState') });
       return;
     }
 
     const form = detailPane.createDiv({ cls: 'superpower-inside-prompt-form' });
-    form.createEl('label', { text: '제목' });
+    form.createEl('label', { text: t('titleLabel') });
     const titleInput = form.createEl('input', {
       cls: 'superpower-inside-prompt-input',
       attr: { type: 'text' },
     });
     titleInput.value = entry.title;
 
-    form.createEl('label', { text: '설명' });
+    form.createEl('label', { text: t('descriptionLabel') });
     const descriptionInput = form.createEl('input', {
       cls: 'superpower-inside-prompt-input',
       attr: { type: 'text' },
     });
     descriptionInput.value = entry.description ?? '';
 
-    form.createEl('label', { text: '시스템 프롬프트' });
+    form.createEl('label', { text: t('systemPrompt') });
     const contentInput = form.createEl('textarea', {
       cls: 'superpower-inside-prompt-textarea',
       text: entry.content,
@@ -286,17 +283,18 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     const actionRow = form.createDiv({ cls: 'superpower-inside-prompt-actions' });
     const saveBtn = actionRow.createEl('button', {
       cls: 'superpower-inside-prompt-primary-btn',
-      text: '저장',
+      text: t('save'),
       attr: { type: 'button' },
     });
-    saveBtn.addEventListener('click', () =>
-      void saveSelectedPrompt(titleInput, descriptionInput, contentInput),
+    saveBtn.addEventListener(
+      'click',
+      () => void saveSelectedPrompt(titleInput, descriptionInput, contentInput),
     );
 
     if (options.onApplyToSession) {
       const applyBtn = actionRow.createEl('button', {
         cls: 'superpower-inside-prompt-secondary-btn',
-        text: '현재 세션에 적용',
+        text: t('applyToCurrentSession'),
         attr: { type: 'button' },
       });
       applyBtn.addEventListener('click', applySelectedToSession);
@@ -304,7 +302,10 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
     const defaultBtn = actionRow.createEl('button', {
       cls: 'superpower-inside-prompt-secondary-btn',
-      text: entry.id === options.plugin.settings.chat.activePromptId ? '전역 기본값' : '전역 기본으로 지정',
+      text:
+        entry.id === options.plugin.settings.chat.activePromptId
+          ? t('globalDefault')
+          : t('setGlobalDefault'),
       attr: { type: 'button' },
     });
     defaultBtn.disabled = entry.id === options.plugin.settings.chat.activePromptId;
@@ -312,7 +313,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
     const deleteBtn = actionRow.createEl('button', {
       cls: 'superpower-inside-prompt-danger-btn',
-      text: '삭제',
+      text: t('deleteLabel'),
       attr: { type: 'button' },
     });
     deleteBtn.disabled = entry.id === DEFAULT_OBSIDIAN_PROMPT_ID;
@@ -323,14 +324,14 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const renderGenerationPanel = (container: HTMLElement): void => {
     const panel = container.createDiv({ cls: 'superpower-inside-prompt-generation' });
-    panel.createEl('h3', { text: '임베딩된 볼트 정보로 생성' });
+    panel.createEl('h3', { text: t('embeddedVaultGenerateTitle') });
 
     const modelOptions = getModelOptions(options.plugin);
     const modelSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
     if (modelOptions.length === 0) {
       const opt = modelSelect.createEl('option');
       opt.value = '';
-      opt.text = '활성화된 모델 없음';
+      opt.text = t('noModelsEnabled');
       modelSelect.disabled = true;
     } else {
       for (const model of modelOptions) {
@@ -344,7 +345,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     }
 
     const directionSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
-    for (const preset of PROMPT_DIRECTION_PRESETS) {
+    for (const preset of getPromptDirectionPresets()) {
       const opt = directionSelect.createEl('option');
       opt.value = preset.id;
       opt.text = preset.label;
@@ -354,17 +355,18 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       cls: 'superpower-inside-prompt-direction',
       attr: {
         rows: '3',
-        placeholder: '응답 태도, 문체, 피해야 할 행동, 노트 연결 방식을 추가로 적으세요.',
+        placeholder: t('promptDirectionPlaceholder'),
       },
     });
 
     const generateBtn = panel.createEl('button', {
       cls: 'superpower-inside-prompt-primary-btn',
-      text: '볼트 기반 생성',
+      text: t('vaultBasedGeneration'),
       attr: { type: 'button' },
     });
-    generateBtn.addEventListener('click', () =>
-      void generateVaultPrompt(modelSelect, directionSelect, directionText, generateBtn),
+    generateBtn.addEventListener(
+      'click',
+      () => void generateVaultPrompt(modelSelect, directionSelect, directionText, generateBtn),
     );
   };
 
@@ -425,7 +427,11 @@ function createProviderFromModelValue(
 
 function formatPromptSource(entry: PromptLibraryEntry): string {
   const source =
-    entry.source === 'default' ? '기본' : entry.source === 'generated' ? '볼트 생성' : '사용자';
+    entry.source === 'default'
+      ? t('promptSourceDefault')
+      : entry.source === 'generated'
+        ? t('promptSourceGenerated')
+        : t('promptSourceUser');
   const model = entry.model ? ` · ${entry.model}` : '';
   return `${source}${model}`;
 }

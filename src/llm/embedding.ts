@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import Dexie from 'dexie';
+import { t } from '../i18n';
 import { createContentHash } from '../rag/hash';
 import { assertValidEmbeddingBatch } from './embedding-validation';
 export { assertValidEmbeddingBatch } from './embedding-validation';
@@ -237,9 +238,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     }
 
     const rawError = lastError || res.text;
-    const isContextLengthError = /context length|input length exceeds|exceeds the context length/i.test(rawError);
+    const isContextLengthError =
+      /context length|input length exceeds|exceeds the context length/i.test(rawError);
     const message = isContextLengthError
-      ? `Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 긴 단일 줄이나 로그 파일은 자동 분할되도록 수정되었으니 플러그인을 다시 빌드한 뒤 RAG 재인덱싱을 실행하세요. 계속 실패하면 해당 파일을 제외하거나 청크 크기(chunkSize)를 더 낮춰보세요. (원본 오류: ${rawError})`
+      ? t('ollamaEmbeddingContextTooLong', { error: rawError })
       : `Ollama embedding failed for model "${this.model}". Tried /api/embed -> ${res.status}, then ${fallbackRequests.map((request) => request.url).join(', ')}. Last error: ${rawError}`;
     throw new Error(message);
   }
@@ -338,7 +340,12 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       const newVectors = await this.inner.embedBatch(missingTexts, options);
       throwIfAborted(options?.signal);
       const now = Date.now();
-      const bulkRecords: Array<{ id: string; textHash: string; vector: number[]; updated: number }> = [];
+      const bulkRecords: Array<{
+        id: string;
+        textHash: string;
+        vector: number[];
+        updated: number;
+      }> = [];
       for (let j = 0; j < missingTexts.length; j++) {
         const originalIdx = missingIndices[j];
         const vector = newVectors[j];

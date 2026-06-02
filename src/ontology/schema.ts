@@ -81,14 +81,17 @@ export type OntologyRelationValidationResult =
 const ANY_ENTITY_TYPE = 'any';
 
 const baseEntityTypes: OntologyEntityType[] = [
-  entityType('person', 'Person', '사람, 저자, 역사 인물', ['Paul', 'Augustine']),
-  entityType('organization', 'Organization', '기관, 단체, 종파, 학교', ['University', 'Council']),
-  entityType('place', 'Place', '장소, 지역, 국가', ['Jerusalem', 'Rome']),
-  entityType('work', 'Work', '책, 논문, 문서, 작품', ['Romans', 'A research paper']),
-  entityType('concept', 'Concept', '개념, 주제, 이론', ['Grace', 'Covenant']),
-  entityType('event', 'Event', '사건, 회의, 전쟁, 변화', ['Council meeting']),
-  entityType('argument', 'Argument', '주장, 논증, 해석', ['A theological argument']),
-  entityType('evidence', 'Evidence', '근거, 인용, 사례', ['A quoted passage']),
+  entityType('person', 'Person', t('ontologyEntityPersonDesc'), ['Paul', 'Augustine']),
+  entityType('organization', 'Organization', t('ontologyEntityOrganizationDesc'), [
+    'University',
+    'Council',
+  ]),
+  entityType('place', 'Place', t('ontologyEntityPlaceDesc'), ['Jerusalem', 'Rome']),
+  entityType('work', 'Work', t('ontologyEntityWorkDesc'), ['Romans', 'A research paper']),
+  entityType('concept', 'Concept', t('ontologyEntityConceptDesc'), ['Grace', 'Covenant']),
+  entityType('event', 'Event', t('ontologyEntityEventDesc'), ['Council meeting']),
+  entityType('argument', 'Argument', t('ontologyEntityArgumentDesc'), ['A theological argument']),
+  entityType('evidence', 'Evidence', t('ontologyEntityEvidenceDesc'), ['A quoted passage']),
 ];
 
 export const DEFAULT_ONTOLOGY_SCHEMA: OntologySchema = {
@@ -96,43 +99,90 @@ export const DEFAULT_ONTOLOGY_SCHEMA: OntologySchema = {
   name: 'Default',
   version: 1,
   locale: 'mixed',
-  description: '기본 온톨로지 스키마입니다.',
+  description: t('ontologyDefaultDescription'),
   entityTypes: baseEntityTypes,
   relationTypes: [
-    relationType('authored', 'Authored', ['person'], ['work'], '저작 관계'),
-    relationType('mentions', 'Mentions', [ANY_ENTITY_TYPE], [ANY_ENTITY_TYPE], '언급 관계'),
-    relationType('supports', 'Supports', ['evidence', 'argument'], ['argument', 'concept'], '지지'),
-    relationType('opposes', 'Opposes', ['argument'], ['argument', 'concept'], '반대'),
+    relationType('authored', 'Authored', ['person'], ['work'], t('ontologyRelationAuthoredDesc')),
+    relationType(
+      'mentions',
+      'Mentions',
+      [ANY_ENTITY_TYPE],
+      [ANY_ENTITY_TYPE],
+      t('ontologyRelationMentionsDesc'),
+    ),
+    relationType(
+      'supports',
+      'Supports',
+      ['evidence', 'argument'],
+      ['argument', 'concept'],
+      t('ontologyRelationSupportsDesc'),
+    ),
+    relationType(
+      'opposes',
+      'Opposes',
+      ['argument'],
+      ['argument', 'concept'],
+      t('ontologyRelationOpposesDesc'),
+    ),
     relationType(
       'collaborated_with',
       'Collaborated With',
       [ANY_ENTITY_TYPE],
       [ANY_ENTITY_TYPE],
-      '협력',
+      t('ontologyRelationCollaboratedDesc'),
       { symmetric: true },
     ),
-    relationType('causes', 'Causes', ['event', 'concept'], ['event', 'concept'], '원인'),
-    relationType('influences', 'Influences', [ANY_ENTITY_TYPE], [ANY_ENTITY_TYPE], '영향'),
-    relationType('part_of', 'Part Of', [ANY_ENTITY_TYPE], [ANY_ENTITY_TYPE], '포함 관계'),
-    relationType('located_in', 'Located In', ['event', 'organization'], ['place'], '위치'),
-    relationType('interprets', 'Interprets', ['argument'], ['work', 'concept'], '해석'),
+    relationType(
+      'causes',
+      'Causes',
+      ['event', 'concept'],
+      ['event', 'concept'],
+      t('ontologyRelationCausesDesc'),
+    ),
+    relationType(
+      'influences',
+      'Influences',
+      [ANY_ENTITY_TYPE],
+      [ANY_ENTITY_TYPE],
+      t('ontologyRelationInfluencesDesc'),
+    ),
+    relationType(
+      'part_of',
+      'Part Of',
+      [ANY_ENTITY_TYPE],
+      [ANY_ENTITY_TYPE],
+      t('ontologyRelationPartOfDesc'),
+    ),
+    relationType(
+      'located_in',
+      'Located In',
+      ['event', 'organization'],
+      ['place'],
+      t('ontologyRelationLocatedInDesc'),
+    ),
+    relationType(
+      'interprets',
+      'Interprets',
+      ['argument'],
+      ['work', 'concept'],
+      t('ontologyRelationInterpretsDesc'),
+    ),
   ],
   claimTypes: [
-    claimType('factual_claim', 'Factual Claim', '사실 관계 주장'),
-    claimType('interpretive_claim', 'Interpretive Claim', '해석적 주장'),
-    claimType('evaluative_claim', 'Evaluative Claim', '평가적 주장'),
+    claimType('factual_claim', 'Factual Claim', t('ontologyClaimFactualDesc')),
+    claimType('interpretive_claim', 'Interpretive Claim', t('ontologyClaimInterpretiveDesc')),
+    claimType('evaluative_claim', 'Evaluative Claim', t('ontologyClaimEvaluativeDesc')),
   ],
-  aliasRules: [{ id: 'case-fold-trim', description: '공백 정리와 영문 대소문자 정규화' }],
+  aliasRules: [{ id: 'case-fold-trim', description: t('ontologyAliasRuleDesc') }],
   mergeRules: [
     {
       id: 'default-name-alias-merge',
-      description: 'canonical name과 alias exact match 기반 병합',
+      description: t('ontologyMergeRuleDesc'),
       autoMergeThreshold: 0.88,
       pendingMergeThreshold: 0.72,
     },
   ],
-  extractionGuidelines:
-    '허용된 entity/relation/claim type만 사용하고, 근거가 있는 본문 표현을 중심으로 추출한다.',
+  extractionGuidelines: t('ontologyExtractionGuidelines'),
 };
 
 export function validateOntologySchema(schema: OntologySchema): string[] {
@@ -248,3 +298,4 @@ function isKnownEntityType(entityTypeIds: Set<string>, typeId: string): boolean 
 function typeListContains(typeIds: readonly string[], typeId: string): boolean {
   return typeIds.includes(ANY_ENTITY_TYPE) || typeIds.includes(typeId);
 }
+import { t } from '../i18n';

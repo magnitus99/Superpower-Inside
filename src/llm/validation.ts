@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import { t } from '../i18n';
 import type { CustomOpenAIProviderConfig, EmbeddingProviderKey, ProviderConfig } from '../settings';
 import type { ProviderKey } from './providers';
 
@@ -75,15 +76,15 @@ function getFixedProviderBaseUrl(key: ProviderKey): string {
 
 function classifyHttpError(status: number, bodyText: string): string {
   if (status === 401 || status === 403) {
-    return `API 키가 유효하지 않거나 권한이 없습니다 (${status})`;
+    return t('apiKeyUnauthorizedError', { status });
   }
   if (status === 404) {
-    return `엔드포인트 또는 모델을 찾을 수 없습니다 (${status})`;
+    return t('endpointOrModelNotFoundError', { status });
   }
   if (status >= 500) {
-    return `서버 오류가 발생했습니다 (${status})`;
+    return t('serverStatusError', { status });
   }
-  return `API 오류 (${status}): ${bodyText}`;
+  return t('apiStatusError', { status, body: bodyText });
 }
 
 function classifyFetchError(err: unknown): string {
@@ -95,7 +96,7 @@ function classifyFetchError(err: unknown): string {
     msg.includes('NetworkError') ||
     msg.includes('fetch failed')
   ) {
-    return '연결 실패: 서버에 접근할 수 없습니다';
+    return t('connectionFailedNoServer');
   }
   return msg;
 }
@@ -109,7 +110,7 @@ function getResponseText(text: unknown): string {
 }
 
 function withCustomProviderHint(error: string): string {
-  return `${error}. Custom provider base URL 또는 /models 지원 여부를 확인하세요.`;
+  return t('customProviderBaseUrlHint', { error });
 }
 
 interface OpenAIModelRecord {
@@ -522,10 +523,7 @@ export async function fetchProviderModels(
     return {
       valid: false,
       models: [],
-      error:
-        key === 'customOpenAI'
-          ? 'Custom provider base URL을 입력하세요.'
-          : 'Unknown provider',
+      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
     };
   }
   return validator.fetchModels();
@@ -540,10 +538,7 @@ export async function validateProviderConnection(
     return {
       valid: false,
       models: [],
-      error:
-        key === 'customOpenAI'
-          ? 'Custom provider base URL을 입력하세요.'
-          : 'Unknown provider',
+      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
     };
   }
   return validator.validateConnection();
@@ -559,10 +554,7 @@ export async function testProviderGeneration(
     return {
       valid: false,
       models: [],
-      error:
-        key === 'customOpenAI'
-          ? 'Custom provider base URL을 입력하세요.'
-          : 'Unknown provider',
+      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
     };
   }
   return validator.testGeneration(modelId);

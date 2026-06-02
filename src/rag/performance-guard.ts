@@ -1,3 +1,5 @@
+import { t } from '../i18n';
+
 export type PerformanceGuardMode = 'normal' | 'throttled' | 'paused';
 
 export interface PerformanceGuardOptions {
@@ -82,7 +84,7 @@ export class PerformanceGuard {
     this.slowSamples = 0;
     this.recoverySamples = 0;
     this.pauseUntilMs = null;
-    this.reason = '성능 보호 대기 후 최소 배치로 재개됨';
+    this.reason = t('perfGuardResumed');
     return this.getState();
   }
 
@@ -101,14 +103,14 @@ export class PerformanceGuard {
   recordEventLoopLag(lagMs: number): PerformanceGuardState {
     return this.recordSample(
       lagMs > this.options.slowEventLoopThresholdMs,
-      `이벤트 루프 지연 ${Math.round(lagMs)}ms`,
+      t('perfEventLoopLag', { ms: Math.round(lagMs) }),
     );
   }
 
   recordBatchDuration(durationMs: number): PerformanceGuardState {
     return this.recordSample(
       durationMs > this.options.slowBatchThresholdMs,
-      `인덱싱 배치 ${Math.round(durationMs)}ms`,
+      t('perfIndexingBatch', { ms: Math.round(durationMs) }),
     );
   }
 
@@ -154,7 +156,7 @@ export class PerformanceGuard {
       MAX_YIELD_MS,
       Math.max(this.initialYieldMs * 2, this.currentYieldMs * 2),
     );
-    this.reason = `느림 감지: ${reason}`;
+    this.reason = t('perfSlowDetected', { reason });
   }
 
   private pause(reason: string): void {
@@ -163,7 +165,7 @@ export class PerformanceGuard {
     this.currentYieldMs = MAX_YIELD_MS;
     this.pauseUntilMs = Date.now() + DEFAULT_PAUSE_MS;
     this.lastSlowReason = reason;
-    this.reason = `성능 보호 대기 중: ${reason}`;
+    this.reason = t('perfPausedWithReason', { reason });
   }
 
   private resumeIfReady(): void {

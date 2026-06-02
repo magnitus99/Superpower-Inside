@@ -1,4 +1,5 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
+import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
 
 export interface RagFileTypeCount {
@@ -226,7 +227,12 @@ function normalizeExtension(extension: string): string {
 }
 
 function normalizePath(path: string): string {
-  return path.trim().replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^\/+/, '').toLowerCase();
+  return path
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '')
+    .toLowerCase();
 }
 
 function getPathExtension(filePath: string): string {
@@ -289,9 +295,9 @@ function isProbablyText(sample: string): boolean {
 
 function getExcludeRecommendationReason(file: TFile): string {
   if (isSensitiveFile(file)) {
-    return '민감 정보 가능성이 있어 기본 RAG 대상에서 제외됩니다.';
+    return t('ragExcludeSensitiveReason');
   }
-  return '텍스트로 안전하게 읽을 수 없어 RAG 대상에서 제외됩니다.';
+  return t('ragExcludeUnreadableReason');
 }
 
 function toSortedFileTypeCounts(counts: Map<string, number>): RagFileTypeCount[] {
@@ -305,7 +311,7 @@ function toSortedFileTypeCounts(counts: Map<string, number>): RagFileTypeCount[]
 }
 
 function getExtensionLabel(extension: string): string {
-  return extension === '(none)' ? '확장자 없음' : `.${extension}`;
+  return extension === '(none)' ? t('noExtensionLabel') : `.${extension}`;
 }
 
 /**
@@ -356,10 +362,7 @@ export async function readJsonFromVault(adapter: DataAdapter, path: string): Pro
   }
 }
 
-export function getEffectiveExcludePaths(
-  ragConfig: RAGConfig,
-  chatConfig: ChatConfig,
-): string[] {
+export function getEffectiveExcludePaths(ragConfig: RAGConfig, chatConfig: ChatConfig): string[] {
   const paths = [...DEFAULT_EXCLUDE_PATHS, ...ragConfig.excludePaths];
   if (ragConfig.excludeChatFolder && chatConfig.saveFolder) {
     if (!paths.includes(chatConfig.saveFolder)) {

@@ -1,4 +1,5 @@
 import { TFile, type App } from 'obsidian';
+import { t } from '../i18n';
 
 export interface ReferencedVaultFile {
   file: TFile;
@@ -53,7 +54,7 @@ export async function expandReferencedVaultFiles(
   for (const requestedPath of extractVaultLinks(sourceContent).slice(0, maxReferences)) {
     const file = resolveVaultLink(app, sourceFile.path, requestedPath);
     if (!file) {
-      warnings.push(`참조 문서를 찾을 수 없습니다: ${requestedPath}`);
+      warnings.push(t('referenceMissingWarning', { path: requestedPath }));
       continue;
     }
     if (file.path === sourceFile.path) continue;
@@ -66,7 +67,9 @@ export async function expandReferencedVaultFiles(
         content: await app.vault.cachedRead(file),
       });
     } catch (err) {
-      warnings.push(`참조 문서를 읽을 수 없습니다: ${file.path} (${stringifyError(err)})`);
+      warnings.push(
+        t('referenceReadFailedWarning', { path: file.path, error: stringifyError(err) }),
+      );
     }
   }
 
@@ -86,8 +89,9 @@ function resolveVaultLink(app: App, sourcePath: string, rawTarget: string): TFil
   return (
     app.vault
       .getMarkdownFiles()
-      .find((file) => file.basename === stripMarkdownExtension(target.split('/').pop() ?? target)) ??
-    null
+      .find(
+        (file) => file.basename === stripMarkdownExtension(target.split('/').pop() ?? target),
+      ) ?? null
   );
 }
 

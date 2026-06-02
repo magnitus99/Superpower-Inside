@@ -1,4 +1,5 @@
 import type { App } from 'obsidian';
+import { t } from '../i18n';
 
 interface PluginManifestLike {
   id?: string;
@@ -76,8 +77,8 @@ export function formatActivePluginsForPrompt(app: App): string {
   return [
     `\n\n[Active Obsidian Plugins]\n${lines}`,
     '[Plugin-Aware Generation Rules]',
-    '활성 Obsidian 플러그인의 문법, API, 설정, 코드 예시, 쿼리, 템플릿, 자동화 생성이 필요하면 먼저 Context7 MCP 도구로 관련 문서를 조회하세요.',
-    'Context7에서 문서를 찾을 수 없으면 문서가 없다고 명시하고 플러그인 전용 문법을 추측하지 마세요.',
+    t('pluginAwareContext7FirstRule'),
+    t('pluginAwareContext7NoGuessRule'),
   ].join('\n');
 }
 

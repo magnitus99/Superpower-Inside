@@ -1,9 +1,7 @@
 import type { GraphRagStatusSummary } from './graph/status';
-import type {
-  MCPConnectionState,
-  MCPServerConnectionStatus,
-} from './mcp/connection-state';
+import type { MCPConnectionState, MCPServerConnectionStatus } from './mcp/connection-state';
 import type { RagStatusSummary } from './rag/status';
+import { t } from './i18n';
 import { shouldShowProviderApiKey } from './rag/settings-display';
 import type {
   CustomOpenAIProviderConfig,
@@ -100,13 +98,7 @@ export function buildSettingsOverviewSnapshot(input: {
   });
 
   return {
-    metrics: [
-      buildProviderMetric(providerRows),
-      rag,
-      graphRag,
-      mcp,
-      chat,
-    ],
+    metrics: [buildProviderMetric(providerRows), rag, graphRag, mcp, chat],
     providerRows,
     rag,
     graphRag,
@@ -130,20 +122,22 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
           ? 'warning'
           : 'success';
     const statusLabel = !source.config.enabled
-      ? '꺼짐'
+      ? t('overviewProviderOff')
       : missingKey
-        ? '키 필요'
+        ? t('overviewProviderKeyNeeded')
         : modelCount === 0
-          ? '모델 없음'
-          : '준비됨';
-    const value = source.config.enabled ? `${modelCount}개 모델` : '비활성';
+          ? t('overviewProviderNoModels')
+          : t('overviewReady');
+    const value = source.config.enabled
+      ? t('overviewModelsCount', { count: modelCount })
+      : t('overviewDisabled');
     const detail = missingKey
-      ? 'API Key를 입력해야 채팅과 임베딩에서 사용할 수 있습니다.'
+      ? t('overviewProviderMissingKeyDetail')
       : modelCount === 0 && source.config.enabled
-        ? '모델을 하나 이상 선택해야 기본 모델로 사용할 수 있습니다.'
+        ? t('overviewProviderNoModelsDetail')
         : source.config.enabled
-          ? source.config.models.slice(0, 2).join(', ') || '모델 선택됨'
-          : '필요할 때 Providers 탭에서 켤 수 있습니다.';
+          ? source.config.models.slice(0, 2).join(', ') || t('overviewProviderModelsSelected')
+          : t('overviewProviderDisabledDetail');
 
     return {
       id: `provider-${source.id}`,
@@ -174,21 +168,39 @@ function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[
 }
 
 function buildProviderMetric(rows: readonly SettingsOverviewStatusRow[]): SettingsOverviewMetric {
-  const enabledRows = rows.filter((row) => row.statusLabel !== '꺼짐');
+  const enabledRows = rows.filter((row) => row.statusLabel !== t('overviewProviderOff'));
   const readyRows = rows.filter((row) => row.tone === 'success');
   const failingRows = rows.filter((row) => row.tone === 'danger');
   const warningRows = rows.filter((row) => row.tone === 'warning');
   const tone: SettingsOverviewTone =
-    failingRows.length > 0 ? 'danger' : warningRows.length > 0 ? 'warning' : readyRows.length > 0 ? 'success' : 'neutral';
+    failingRows.length > 0
+      ? 'danger'
+      : warningRows.length > 0
+        ? 'warning'
+        : readyRows.length > 0
+          ? 'success'
+          : 'neutral';
   const statusLabel =
-    failingRows.length > 0 ? '키 필요' : warningRows.length > 0 ? '모델 확인' : readyRows.length > 0 ? '준비됨' : '비활성';
+    failingRows.length > 0
+      ? t('overviewProviderKeyNeeded')
+      : warningRows.length > 0
+        ? t('overviewProviderCheckModels')
+        : readyRows.length > 0
+          ? t('overviewReady')
+          : t('overviewDisabled');
 
   return {
     id: 'providers',
     label: 'Providers',
     value: `${readyRows.length}/${enabledRows.length}`,
     statusLabel,
-    detail: enabledRows.length > 0 ? `${enabledRows.length}개 활성, ${readyRows.length}개 준비됨` : '활성 Provider가 없습니다.',
+    detail:
+      enabledRows.length > 0
+        ? t('overviewProviderSummaryDetail', {
+            enabled: enabledRows.length,
+            ready: readyRows.length,
+          })
+        : t('overviewProviderNoneActive'),
     tone,
     target: 'providers',
   };
@@ -203,9 +215,9 @@ function buildRagMetric(
     return {
       id: 'rag',
       label: 'RAG',
-      value: '실행 중',
-      statusLabel: '인덱싱 중',
-      detail: '인덱싱이 진행 중입니다.',
+      value: t('overviewRunning'),
+      statusLabel: t('ragIndexingInProgress'),
+      detail: t('overviewGraphRagExtractingDetail'),
       tone: 'warning',
       target: 'rag',
     };
@@ -214,9 +226,9 @@ function buildRagMetric(
     return {
       id: 'rag',
       label: 'RAG',
-      value: '계산 전',
-      statusLabel: '계산 전',
-      detail: `${getEmbeddingLabel(settings)} 기준 상태를 아직 계산하지 않았습니다.`,
+      value: t('overviewBeforeCalculation'),
+      statusLabel: t('overviewBeforeCalculation'),
+      detail: t('overviewRagNotCalculatedDetail', { embedding: getEmbeddingLabel(settings) }),
       tone: 'warning',
       target: 'rag',
     };
@@ -227,23 +239,30 @@ function buildRagMetric(
     status.totalDocuments === 0 ? 'warning' : updateRequiredCount > 0 ? 'warning' : 'success';
   const value =
     status.totalDocuments === 0
-      ? '대상 없음'
+      ? t('overviewNoTargets')
       : updateRequiredCount > 0
-        ? `${updateRequiredCount}개 필요`
-        : '최신';
+        ? t('overviewNeedsCount', { count: updateRequiredCount })
+        : t('overviewLatest');
   const detail =
     status.totalDocuments === 0
-      ? '인덱싱 대상 파일이 없습니다.'
+      ? t('overviewNoIndexingTargetFiles')
       : updateRequiredCount > 0
-        ? `${updateRequiredCount}개 문서가 missing/stale/unknown 상태입니다.`
-        : `${status.healthyDocuments}/${status.totalDocuments}개 문서가 최신입니다.`;
+        ? t('overviewRagNeedsDetail', { count: updateRequiredCount })
+        : t('overviewRagHealthyDetail', {
+            healthy: status.healthyDocuments,
+            total: status.totalDocuments,
+          });
 
   return {
     id: 'rag',
     label: 'RAG',
     value,
     statusLabel:
-      status.totalDocuments === 0 ? '대상 없음' : updateRequiredCount > 0 ? '동기화 필요' : '최신',
+      status.totalDocuments === 0
+        ? t('overviewNoTargets')
+        : updateRequiredCount > 0
+          ? t('overviewSyncRequired')
+          : t('overviewLatest'),
     detail,
     tone,
     target: 'rag',
@@ -258,9 +277,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '꺼짐',
-      statusLabel: '꺼짐',
-      detail: '기본 RAG 검색은 계속 사용할 수 있습니다.',
+      value: t('overviewProviderOff'),
+      statusLabel: t('overviewProviderOff'),
+      detail: t('overviewGraphRagDisabledDetail'),
       tone: 'neutral',
       target: 'rag',
     };
@@ -269,9 +288,11 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '설정 필요',
-      statusLabel: '설정 필요',
-      detail: runtime.hasGraphRagRunner ? 'GraphRAG 모델을 선택하세요.' : 'Runner가 초기화되지 않았습니다.',
+      value: t('overviewNeedsSetup'),
+      statusLabel: t('overviewNeedsSetup'),
+      detail: runtime.hasGraphRagRunner
+        ? t('graphRagModelMissingReason')
+        : t('overviewGraphRagRunnerMissing'),
       tone: 'warning',
       target: 'rag',
     };
@@ -280,9 +301,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '실행 중',
-      statusLabel: '인덱싱 중',
-      detail: '추출 인덱싱이 진행 중입니다.',
+      value: t('overviewRunning'),
+      statusLabel: t('ragIndexingInProgress'),
+      detail: t('overviewGraphRagExtractingDetail'),
       tone: 'warning',
       target: 'rag',
     };
@@ -293,9 +314,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '계산 전',
-      statusLabel: '계산 전',
-      detail: 'GraphRAG 상태를 아직 계산하지 않았습니다.',
+      value: t('overviewBeforeCalculation'),
+      statusLabel: t('overviewBeforeCalculation'),
+      detail: t('overviewGraphRagNotCalculated'),
       tone: 'warning',
       target: 'rag',
     };
@@ -304,9 +325,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '최신',
-      statusLabel: '최신',
-      detail: `${status.graphEvidenceCount}개 evidence가 준비되어 있습니다.`,
+      value: t('overviewLatest'),
+      statusLabel: t('overviewLatest'),
+      detail: t('overviewGraphRagEvidenceReady', { count: status.graphEvidenceCount }),
       tone: 'success',
       target: 'rag',
     };
@@ -315,9 +336,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: `${status.staleFileCount}개 stale`,
-      statusLabel: '동기화 필요',
-      detail: '파일 수정 또는 모델 변경으로 동기화가 필요합니다.',
+      value: t('overviewGraphRagStaleValue', { count: status.staleFileCount }),
+      statusLabel: t('overviewSyncRequired'),
+      detail: t('overviewGraphRagStaleDetail'),
       tone: 'warning',
       target: 'rag',
     };
@@ -326,9 +347,9 @@ function buildGraphRagMetric(
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: '부분 완료',
-      statusLabel: '부분 완료',
-      detail: `${status.failedFileCount}개 파일 실패가 남아 있습니다.`,
+      value: t('graphRagStatusPartialLabel'),
+      statusLabel: t('graphRagStatusPartialLabel'),
+      detail: t('overviewGraphRagPartialDetail', { count: status.failedFileCount }),
       tone: 'warning',
       target: 'rag',
     };
@@ -337,9 +358,10 @@ function buildGraphRagMetric(
   return {
     id: 'graph-rag',
     label: 'GraphRAG',
-    value: '준비 안 됨',
-    statusLabel: status.state === 'schema-error' ? '스키마 오류' : '준비 안 됨',
-    detail: 'GraphRAG 인덱싱을 실행해야 합니다.',
+    value: t('overviewNotReady'),
+    statusLabel:
+      status.state === 'schema-error' ? t('graphRagStatusSchemaErrorLabel') : t('overviewNotReady'),
+    detail: t('overviewGraphRagNeedIndexing'),
     tone: status.state === 'schema-error' ? 'danger' : 'warning',
     target: 'rag',
   };
@@ -359,7 +381,9 @@ function buildMcpRows(
       label: server.name,
       value: server.command,
       statusLabel: mcpStatusLabel(status),
-      detail: runtime?.error ?? (status === 'connected' ? '도구 호출 준비됨' : '연결 상태를 확인하세요.'),
+      detail:
+        runtime?.error ??
+        (status === 'connected' ? t('overviewToolCallReady') : t('overviewConnectionCheck')),
       tone,
       target: 'mcp',
     };
@@ -375,28 +399,36 @@ function buildMcpMetric(
   const connected = rows.filter((row) => row.tone === 'success').length;
   const errors = rows.filter((row) => row.tone === 'danger').length;
   const tone: SettingsOverviewTone =
-    total === 0 ? 'neutral' : errors > 0 ? 'danger' : connected === total ? 'success' : runtime.mcpConnectionState === 'connecting' ? 'warning' : 'warning';
-  const value = total === 0 ? '없음' : `${connected}/${total}`;
+    total === 0
+      ? 'neutral'
+      : errors > 0
+        ? 'danger'
+        : connected === total
+          ? 'success'
+          : runtime.mcpConnectionState === 'connecting'
+            ? 'warning'
+            : 'warning';
+  const value = total === 0 ? t('overviewNone') : `${connected}/${total}`;
   const statusLabel =
     total === 0
-      ? '서버 없음'
+      ? t('overviewNoServers')
       : errors > 0
         ? connected > 0
-          ? '부분 오류'
-          : '오류'
+          ? t('overviewPartialError')
+          : t('overviewError')
         : connected === total
-          ? '연결됨'
+          ? t('overviewConnected')
           : runtime.mcpConnectionState === 'connecting'
-            ? '연결 중'
-            : '끊김';
+            ? t('overviewConnecting')
+            : t('overviewDisconnected');
   const detail =
     total === 0
-      ? '등록된 MCP 서버가 없습니다.'
+      ? t('overviewMcpNoServersDetail')
       : errors > 0
-        ? `${errors}개 서버 연결 오류가 있습니다.`
+        ? t('overviewMcpErrorsDetail', { count: errors })
         : connected === total
-          ? '모든 MCP 서버가 연결되어 있습니다.'
-          : '일부 MCP 서버가 연결되지 않았습니다.';
+          ? t('overviewMcpAllConnected')
+          : t('overviewMcpSomeDisconnected');
 
   return {
     id: 'mcp',
@@ -416,11 +448,11 @@ function buildChatMetric(settings: SuperpowerInsideSettings): SettingsOverviewMe
   return {
     id: 'chat',
     label: 'Chat',
-    value: defaultModelAvailable ? '준비됨' : '모델 확인',
-    statusLabel: defaultModelAvailable ? '준비됨' : '모델 확인',
+    value: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
+    statusLabel: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
     detail: defaultModelAvailable
-      ? `기본 모델 ${settings.chat.defaultModel}`
-      : '기본 모델이 활성 Provider 모델 목록에 없습니다.',
+      ? t('overviewChatDefaultModel', { model: settings.chat.defaultModel })
+      : t('overviewChatDefaultUnavailable'),
     tone: defaultModelAvailable ? 'success' : 'warning',
     target: 'chat',
   };
@@ -437,10 +469,10 @@ function buildAttentionItems(input: {
   const items: SettingsOverviewAttentionItem[] = [];
 
   for (const row of input.providerRows) {
-    if (row.statusLabel === '키 필요') {
+    if (row.statusLabel === t('overviewProviderKeyNeeded')) {
       items.push({
         id: `${row.id}-api-key`,
-        label: `${row.label} API Key 필요`,
+        label: t('overviewProviderApiKeyNeeded', { provider: row.label }),
         detail: row.detail,
         tone: 'danger',
         target: 'providers',
@@ -452,7 +484,7 @@ function buildAttentionItems(input: {
   if (input.chat.tone === 'warning') {
     items.push({
       id: 'chat-default-model-unavailable',
-      label: '기본 모델 확인 필요',
+      label: t('overviewChatModelAttention'),
       detail: input.chat.detail,
       tone: 'warning',
       target: 'general',
@@ -460,10 +492,10 @@ function buildAttentionItems(input: {
     });
   }
 
-  if (input.rag.tone === 'warning' && input.rag.value.includes('개 필요')) {
+  if (input.rag.tone === 'warning' && input.rag.statusLabel === t('overviewSyncRequired')) {
     items.push({
       id: 'rag-update-required',
-      label: 'RAG 동기화 필요',
+      label: t('overviewRagSyncAttention'),
       detail: input.rag.detail,
       tone: 'warning',
       target: 'rag',
@@ -474,7 +506,7 @@ function buildAttentionItems(input: {
   if (input.mcp.tone === 'danger') {
     items.push({
       id: 'mcp-errors',
-      label: 'MCP 연결 오류',
+      label: t('overviewMcpErrorAttention'),
       detail: input.mcp.detail,
       tone: 'danger',
       target: 'mcp',
@@ -485,7 +517,7 @@ function buildAttentionItems(input: {
   if (input.graphRag.tone === 'danger') {
     items.push({
       id: 'graph-rag-error',
-      label: 'GraphRAG 상태 오류',
+      label: t('overviewGraphRagErrorAttention'),
       detail: input.graphRag.detail,
       tone: 'danger',
       target: 'rag',
@@ -511,7 +543,10 @@ function getAvailableChatModelValues(settings: SuperpowerInsideSettings): string
 }
 
 function getEmbeddingLabel(settings: SuperpowerInsideSettings): string {
-  return `${settings.rag.embeddingProvider} / ${settings.rag.embeddingModel || '미설정'}`;
+  return t('overviewEmbeddingLabel', {
+    provider: settings.rag.embeddingProvider,
+    model: settings.rag.embeddingModel || t('unsetLabel'),
+  });
 }
 
 function mcpStatusTone(status: MCPServerConnectionStatus): SettingsOverviewTone {
@@ -522,8 +557,8 @@ function mcpStatusTone(status: MCPServerConnectionStatus): SettingsOverviewTone 
 }
 
 function mcpStatusLabel(status: MCPServerConnectionStatus): string {
-  if (status === 'connected') return '연결됨';
-  if (status === 'error') return '오류';
-  if (status === 'connecting') return '연결 중';
-  return '끊김';
+  if (status === 'connected') return t('overviewConnected');
+  if (status === 'error') return t('overviewError');
+  if (status === 'connecting') return t('overviewConnecting');
+  return t('overviewDisconnected');
 }

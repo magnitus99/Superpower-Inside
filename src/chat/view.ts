@@ -173,7 +173,14 @@ export class ChatView extends ItemView {
   }
 
   private registerRefreshBusEvents(): void {
-    const pluginWithBus = this.plugin as unknown as { refreshBus?: { on: (domain: string, handler: (result: { status: string; detail?: string }) => void) => () => void } };
+    const pluginWithBus = this.plugin as unknown as {
+      refreshBus?: {
+        on: (
+          domain: string,
+          handler: (result: { status: string; detail?: string }) => void,
+        ) => () => void;
+      };
+    };
     if (!pluginWithBus.refreshBus) return;
 
     this.refreshBusUnsubscribers.push(
@@ -361,13 +368,20 @@ export class ChatView extends ItemView {
       action: async (_signal) => {
         const errors = await this.plugin.reconnectMCP();
         if (errors.length > 0) {
-          new Notice(`MCP 재연결 중 ${errors.length}개 서버 실패`, 5000);
-          return { status: 'partial', detail: `${errors.length}개 실패` };
+          new Notice(t('chatMcpReconnectFailedNotice', { count: errors.length }), 5000);
+          return {
+            status: 'partial',
+            detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
+          };
         }
         // RefreshBus로 MCP 이벤트 발행 (설정 탭 동기화)
-        const pluginWithBus = this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string; detail?: string }) => void } };
+        const pluginWithBus = this.plugin as unknown as {
+          refreshBus?: {
+            emit: (domain: string, result: { status: string; detail?: string }) => void;
+          };
+        };
         pluginWithBus.refreshBus?.emit('mcp', { status: 'success' });
-        new Notice('MCP 서버 재연결 완료', 3000);
+        new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
         return { status: 'success' };
       },
       loadingText: t('mcpRefreshing'),
@@ -397,8 +411,8 @@ export class ChatView extends ItemView {
 
     const searchBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',
-      text: '검색',
-      attr: { 'aria-label': '메시지 검색' },
+      text: t('chatSearchButton'),
+      attr: { 'aria-label': t('chatMessageSearchAria') },
     });
     searchBtn.addEventListener('click', () => this.focusMessageSearch());
 
@@ -408,7 +422,7 @@ export class ChatView extends ItemView {
     const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
     this.inputArea = inputRow.createEl('textarea', {
       cls: 'superpower-inside-chat-input',
-      attr: { placeholder: '메시지를 입력하세요...', rows: '2' },
+      attr: { placeholder: t('chatInputPlaceholder'), rows: '2' },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
     this.inputArea.addEventListener('input', () => {
@@ -434,12 +448,12 @@ export class ChatView extends ItemView {
   }
 
   private focusMessageSearch(): void {
-    const query = window.prompt('검색할 메시지 내용을 입력하세요.');
+    const query = window.prompt(t('chatMessageSearchPrompt'));
     if (!query) return;
     const lowered = query.toLowerCase();
     const match = this.messages.find((message) => message.content.toLowerCase().includes(lowered));
     if (!match) {
-      new Notice('검색 결과가 없습니다.');
+      new Notice(t('chatNoSearchResults'));
       return;
     }
     const el = this.messageEls.get(match.id);
@@ -454,14 +468,14 @@ export class ChatView extends ItemView {
     this.contextPreviewEl.empty();
     const mentions = text.trim() ? this.parseMentions(text) : [];
     const chips = [
-      { label: '자동 RAG', cls: 'rag' },
+      { label: t('chatAutoRagChip'), cls: 'rag' },
       ...mentions.map((mention) => ({
         label:
           mention.type === 'server'
             ? `MCP ${mention.name}`
             : mention.type === 'folder'
-              ? `폴더 ${mention.name}`
-              : `파일 ${mention.name}`,
+              ? t('chatFolderMentionChip', { name: mention.name })
+              : t('chatFileMentionChip', { name: mention.name }),
         cls: mention.type,
       })),
     ];
@@ -482,7 +496,7 @@ export class ChatView extends ItemView {
     if (current) {
       this.updateMessage(
         current.id,
-        current.content || '응답 생성이 중단되었습니다.',
+        current.content || t('chatGenerationStopped'),
         true,
         current.reasoning,
         current.toolCalls,
@@ -1106,7 +1120,7 @@ export class ChatView extends ItemView {
         ) {
           const label = document.createElement('span');
           label.className = 'superpower-inside-chat-generating-label';
-          label.textContent = '응답 생성 중...';
+          label.textContent = t('chatGeneratingResponse');
           if (meta instanceof HTMLElement) {
             meta.appendChild(label);
           }
@@ -1139,8 +1153,8 @@ export class ChatView extends ItemView {
     prompt.setAttribute(
       'title',
       question.source === 'reasoning-leak'
-        ? '모델의 thinking 출력에서 사용자 질문을 감지했습니다.'
-        : '모델이 사용자 선택을 요청했습니다.',
+        ? t('assistantQuestionReasoningTitle')
+        : t('assistantQuestionSelectionTitle'),
     );
 
     const selected = new Set<string>();
@@ -1173,13 +1187,16 @@ export class ChatView extends ItemView {
     if (question.allowFreeText) {
       freeTextInput = container.createEl('textarea', {
         cls: 'superpower-inside-chat-question-free-text',
-        attr: { placeholder: '직접 입력' },
+        attr: { placeholder: t('assistantQuestionFreeTextPlaceholder') },
       });
     }
 
     const submit = container.createEl('button', {
       cls: 'superpower-inside-chat-question-submit',
-      text: question.selectionMode === 'multiple' ? '선택 완료' : '답변 보내기',
+      text:
+        question.selectionMode === 'multiple'
+          ? t('assistantQuestionCompleteSelection')
+          : t('assistantQuestionSendAnswer'),
     });
     submit.addEventListener('click', () => {
       const selectedLabels = question.choices
@@ -1187,12 +1204,12 @@ export class ChatView extends ItemView {
         .map((choice) => choice.label);
       const freeText = freeTextInput?.value.trim() ?? '';
       if (selectedLabels.length === 0 && !freeText) {
-        new Notice('답변할 항목을 선택하거나 직접 입력하세요.');
+        new Notice(t('assistantQuestionRequiredNotice'));
         return;
       }
       const answer = formatAssistantQuestionAnswer(question, selectedLabels, freeText);
       if (!answer) {
-        new Notice('답변할 항목을 선택하거나 직접 입력하세요.');
+        new Notice(t('assistantQuestionRequiredNotice'));
         return;
       }
       if (this.inputArea) {
@@ -1315,7 +1332,7 @@ export class ChatView extends ItemView {
       ) {
         const approveBtn = callRow.createEl('button', {
           cls: 'superpower-inside-tool-call-approve',
-          text: '실행 승인',
+          text: t('toolApproveExecution'),
         });
         approveBtn.addEventListener('click', () => {
           const messageId = section
@@ -1401,8 +1418,8 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-citations-label',
       text:
         verifiedCount === citations.length
-          ? `검증된 근거 ${verifiedCount}개`
-          : `검색 근거 ${verifiedCount}/${citations.length}개 검증`,
+          ? t('sourceVerifiedCount', { count: verifiedCount })
+          : t('sourceSearchVerifiedCount', { verified: verifiedCount, total: citations.length }),
     });
 
     for (const citation of citations) {
@@ -1437,11 +1454,11 @@ export class ChatView extends ItemView {
       }
       card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: citation.preview });
       const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
-      const openBtn = actions.createEl('button', { text: '열기' });
+      const openBtn = actions.createEl('button', { text: t('sourceOpenAction') });
       openBtn.addEventListener('click', () => void this.openCitation(citation));
-      const copyBtn = actions.createEl('button', { text: '링크 복사' });
+      const copyBtn = actions.createEl('button', { text: t('sourceCopyLinkAction') });
       copyBtn.addEventListener('click', () => void this.copyCitationLink(citation, copyBtn));
-      const insertBtn = actions.createEl('button', { text: '노트에 삽입' });
+      const insertBtn = actions.createEl('button', { text: t('sourceInsertIntoNoteAction') });
       insertBtn.addEventListener('click', () => void this.insertCitationIntoActiveNote(citation));
     }
   }
@@ -1461,7 +1478,7 @@ export class ChatView extends ItemView {
     section.empty();
     section.createDiv({
       cls: 'superpower-inside-chat-source-warnings-label',
-      text: `검증되지 않은 링크/출처 ${warnings.length}개`,
+      text: t('sourceUnverifiedCount', { count: warnings.length }),
     });
     for (const warning of warnings) {
       const item = section.createDiv({
@@ -1502,7 +1519,7 @@ export class ChatView extends ItemView {
   private async openCitation(citation: SourceCitation): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(citation.filePath);
     if (!(file instanceof TFile)) {
-      new Notice(`파일을 찾을 수 없습니다: ${citation.filePath}`);
+      new Notice(t('sourceFileNotFound', { path: citation.filePath }));
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(file);
@@ -1513,29 +1530,36 @@ export class ChatView extends ItemView {
     button: HTMLButtonElement,
   ): Promise<void> {
     if (citation.status && citation.status !== 'verified') {
-      new Notice(`검증되지 않은 검색 후보입니다: ${citation.detail ?? citation.status}`);
+      new Notice(
+        t('sourceUnverifiedCandidate', { detail: citation.detail ?? citation.status ?? '' }),
+      );
     }
     const heading = citation.heading ? `#${citation.heading}` : '';
     await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
     button.setText(t('copied'));
-    window.setTimeout(() => button.setText('링크 복사'), 1500);
+    window.setTimeout(() => button.setText(t('sourceCopyLinkAction')), 1500);
   }
 
   private async insertCitationIntoActiveNote(citation: SourceCitation): Promise<void> {
     if (citation.status && citation.status !== 'verified') {
-      new Notice(`검증되지 않은 검색 후보입니다: ${citation.detail ?? citation.status}`);
+      new Notice(
+        t('sourceUnverifiedCandidate', { detail: citation.detail ?? citation.status ?? '' }),
+      );
       return;
     }
     const active = this.app.workspace.getActiveFile();
     if (!active) {
-      new Notice('활성 노트가 없습니다.');
+      new Notice(t('activeNoteMissingNotice'));
       return;
     }
     const link = citation.heading
       ? `[[${citation.filePath}#${citation.heading}]]`
       : `[[${citation.filePath}]]`;
-    await this.app.vault.append(active, `\n> 출처: ${link}\n> ${citation.preview}\n`);
-    new Notice('활성 노트에 출처를 삽입했습니다.');
+    await this.app.vault.append(
+      active,
+      t('sourceInsertBlock', { link, preview: citation.preview }),
+    );
+    new Notice(t('sourceInsertedNotice'));
   }
 
   private renderToolCallStatus(statusBadge: HTMLElement, status: ToolCallRecord['status']): void {
@@ -1665,20 +1689,20 @@ export class ChatView extends ItemView {
     existing?.remove();
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
 
-    const copyBtn = actions.createEl('button', { text: '복사' });
+    const copyBtn = actions.createEl('button', { text: t('messageCopyAction') });
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const retryBtn = actions.createEl('button', { text: '재생성' });
+      const retryBtn = actions.createEl('button', { text: t('messageRetryAction') });
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
-      const insertBtn = actions.createEl('button', { text: '노트에 삽입' });
+      const insertBtn = actions.createEl('button', { text: t('sourceInsertIntoNoteAction') });
       insertBtn.addEventListener('click', () => void this.insertMessageIntoActiveNote(msg));
-      const saveBtn = actions.createEl('button', { text: '새 노트' });
+      const saveBtn = actions.createEl('button', { text: t('messageNewNoteAction') });
       saveBtn.addEventListener('click', () => void this.saveMessageAsNote(msg));
-      const branchBtn = actions.createEl('button', { text: '브랜치' });
+      const branchBtn = actions.createEl('button', { text: t('messageBranchAction') });
       branchBtn.addEventListener('click', () => void this.branchFromMessage(msg.id));
     } else if (msg.role === 'user') {
-      const editBtn = actions.createEl('button', { text: '수정 후 전송' });
+      const editBtn = actions.createEl('button', { text: t('messageEditAndSendAction') });
       editBtn.addEventListener('click', () => void this.editAndResendUserMessage(msg));
     }
   }
@@ -1687,35 +1711,35 @@ export class ChatView extends ItemView {
     this.noticeSourceWarnings(msg);
     await navigator.clipboard.writeText(msg.content);
     button.setText(t('copied'));
-    window.setTimeout(() => button.setText('복사'), 1500);
+    window.setTimeout(() => button.setText(t('messageCopyAction')), 1500);
   }
 
   private async insertMessageIntoActiveNote(msg: ChatMessageWithMeta): Promise<void> {
     this.noticeSourceWarnings(msg);
     const active = this.app.workspace.getActiveFile();
     if (!active) {
-      new Notice('활성 노트가 없습니다.');
+      new Notice(t('activeNoteMissingNotice'));
       return;
     }
     await this.app.vault.append(active, `\n\n${msg.content}\n`);
-    new Notice('활성 노트에 삽입했습니다.');
+    new Notice(t('messageInsertedNotice'));
   }
 
   private noticeSourceWarnings(msg: ChatMessageWithMeta): void {
     if (!msg.sourceWarnings || msg.sourceWarnings.length === 0) return;
-    new Notice(`검증되지 않은 링크/출처 ${msg.sourceWarnings.length}개가 포함되어 있습니다.`, 5000);
+    new Notice(t('sourceWarningIncluded', { count: msg.sourceWarnings.length }), 5000);
   }
 
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
     const folder = this.plugin.settings.chat.saveFolder || 'SuperpowerInsideChats';
-    const title = this.session.title || 'AI 답변';
+    const title = this.session.title || t('aiAnswerTitle');
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
     if (!(await this.app.vault.adapter.exists(folder))) {
       await this.app.vault.createFolder(folder);
     }
     await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
-    new Notice(`새 노트로 저장했습니다: ${path}`);
+    new Notice(t('savedAsNewNoteNotice', { path }));
   }
 
   private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
@@ -1763,7 +1787,7 @@ export class ChatView extends ItemView {
     };
     this.rebuildMessagesDOM();
     await this.saveCurrentSession(true);
-    new Notice('브랜치 세션을 만들었습니다.');
+    new Notice(t('branchSessionCreatedNotice'));
   }
 
   private formatExactTimestamp(value: string): string {
@@ -1781,13 +1805,13 @@ export class ChatView extends ItemView {
   private getMessageStatusLabel(status: ChatMessageWithMeta['status']): string {
     switch (status) {
       case 'pending':
-        return '대기';
+        return t('chatStatusIdle');
       case 'streaming':
-        return '생성 중';
+        return t('chatStatusRunning');
       case 'complete':
-        return '완료';
+        return t('chatStatusDone');
       case 'error':
-        return '오류';
+        return t('chatStatusError');
     }
   }
 
@@ -1827,7 +1851,7 @@ export class ChatView extends ItemView {
     this.setLoading(false);
     if (this.typingIndicator) this.typingIndicator.style.display = 'none';
     if (hadMessages) {
-      new Notice(`채팅 세션 파일이 삭제되어 채팅창을 초기화했습니다: ${missingPath}`);
+      new Notice(t('deletedSessionResetNotice', { path: missingPath }));
     }
   }
 
@@ -1922,12 +1946,15 @@ export class ChatView extends ItemView {
       );
       this.session.filePath = file.path;
       this.session.isDirty = false;
-      (this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string }) => void } })
-        .refreshBus?.emit('sessions', { status: 'success' });
+      (
+        this.plugin as unknown as {
+          refreshBus?: { emit: (domain: string, result: { status: string }) => void };
+        }
+      ).refreshBus?.emit('sessions', { status: 'success' });
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
-      console.error('[Superpower Inside] 채팅 자동 저장 실패:', err);
+      console.error(t('chatAutoSaveFailedLog'), err);
     }
   }
 
@@ -1978,7 +2005,9 @@ export class ChatView extends ItemView {
       this.rebuildMessagesDOM();
       this.updateHeaderTitle();
     } catch (err) {
-      new Notice(`채팅 불러오기 실패: ${err instanceof Error ? err.message : String(err)}`);
+      new Notice(
+        t('chatLoadFailedNotice', { message: err instanceof Error ? err.message : String(err) }),
+      );
     }
   }
 
@@ -2093,14 +2122,16 @@ export class ChatView extends ItemView {
 
   private async openSessionHistoryModal(): Promise<void> {
     if (!this.plugin.settings.chat.saveFolder) {
-      new Notice(t('chatSaveFolder') + ' 경로를 먼저 설정하세요.');
+      new Notice(t('chatSaveFolder') + t('providerPathRequiredSuffix'));
       return;
     }
     this.clearAutoSaveTimer();
     this.isStreaming = false;
     this.setLoading(false);
     await this.saveCurrentSession(true);
-    const pluginWithBus = this.plugin as unknown as { refreshBus?: { emit: (domain: string, result: { status: string }) => void } };
+    const pluginWithBus = this.plugin as unknown as {
+      refreshBus?: { emit: (domain: string, result: { status: string }) => void };
+    };
     openSessionHistoryModal(
       this.container!,
       this.app,
@@ -2123,13 +2154,13 @@ export class ChatView extends ItemView {
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
-      new Notice('기본 모델이 설정되지 않았습니다. 설정 탭에서 모델을 선택하세요.');
+      new Notice(t('defaultModelMissingNotice'));
       return;
     }
 
     const parts = selectedModel.split(':');
     if (parts.length < 2) {
-      new Notice('모델 설정 형식이 잘못되었습니다.');
+      new Notice(t('modelSettingInvalid'));
       return;
     }
 
@@ -2140,7 +2171,7 @@ export class ChatView extends ItemView {
 
     if (parts[0] === 'customOpenAI') {
       if (parts.length < 3) {
-        new Notice('커스텀 모델 설정 형식이 잘못되었습니다.');
+        new Notice(t('customModelSettingInvalid'));
         return;
       }
       const providerId = parts[1];
@@ -2149,7 +2180,7 @@ export class ChatView extends ItemView {
         (item) => item.id === providerId,
       );
       if (!customProvider?.enabled) {
-        new Notice('커스텀 Provider가 활성화되지 않았습니다.');
+        new Notice(t('customProviderDisabled'));
         return;
       }
       key = `customOpenAI:${providerId}`;
@@ -2163,7 +2194,7 @@ export class ChatView extends ItemView {
       providerLabel = PROVIDER_LABELS[fixedKey];
 
       if (!config?.enabled) {
-        new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
+        new Notice(t('noActiveProviderNotice'));
         return;
       }
 
@@ -2310,7 +2341,7 @@ export class ChatView extends ItemView {
         this.plugin.settings.chat.enforceMcpTools
       ) {
         const serverNames = mentionedServers.join(', ');
-        new Notice(`🔄 @${serverNames} 도구를 호출하지 않아 재시도합니다...`, 3000);
+        new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
 
         const retrySystemPrompt = `${systemPrompt}\n\n[IMPORTANT] You have access to the following MCP server(s): ${serverNames}. You MUST use the available tools to answer the question. Do NOT generate an answer without calling tools. If you need to read files or directories, use the appropriate tools first.`;
 
@@ -2395,7 +2426,7 @@ export class ChatView extends ItemView {
         toolCalls = Array.from(toolCallMap.values());
 
         if (toolCalls.length === 0 && fullText.trim().length > 50) {
-          new Notice(`⚠️ @${serverNames} — 재시도했지만 도구를 호출하지 않았습니다.`, 5000);
+          new Notice(t('mcpRetryNoToolUseNotice', { servers: serverNames }), 5000);
         }
       }
 
@@ -2432,7 +2463,7 @@ export class ChatView extends ItemView {
             sourceWarnings,
             contextAttachments: promptContext.attachments,
           });
-          new Notice('일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
+          new Notice(t('mcpApprovalRequiredNotice'));
         }
         toolCalls = await this.executeAssistantToolCalls(
           assistantId,
@@ -2475,7 +2506,7 @@ export class ChatView extends ItemView {
           const assistantMsg = this.messages.find((message) => message.id === assistantId);
           this.updateMessage(
             assistantId,
-            assistantMsg?.content || '응답 생성이 중단되었습니다.',
+            assistantMsg?.content || t('chatGenerationStopped'),
             true,
             assistantMsg?.reasoning,
             assistantMsg?.toolCalls,
@@ -2495,16 +2526,23 @@ export class ChatView extends ItemView {
       const errorMsg = err instanceof Error ? err.message : String(err);
       if (assistantId) {
         const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
-        this.updateMessage(assistantId, `LLM API 오류: ${errDetail}`, true, undefined, undefined, {
-          providerKey: key,
-          providerLabel,
-          model: modelName,
-          status: 'error',
-          errorMessage: errDetail,
-          citations: promptContext.citations,
-          contextAttachments: promptContext.attachments,
-          stopReason: 'error',
-        });
+        this.updateMessage(
+          assistantId,
+          t('llmApiError', { detail: errDetail }),
+          true,
+          undefined,
+          undefined,
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            status: 'error',
+            errorMessage: errDetail,
+            citations: promptContext.citations,
+            contextAttachments: promptContext.attachments,
+            stopReason: 'error',
+          },
+        );
         if (assistantWrapper) {
           assistantWrapper.classList.remove('generating');
           const generatingLabel = assistantWrapper.querySelector(
@@ -2516,13 +2554,19 @@ export class ChatView extends ItemView {
         }
       } else {
         const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
-        this.addMessage('assistant', `LLM API 오류: ${errDetail}`, undefined, undefined, {
-          providerKey: key,
-          providerLabel,
-          model: modelName,
-          status: 'error',
-          errorMessage: errDetail,
-        });
+        this.addMessage(
+          'assistant',
+          t('llmApiError', { detail: errDetail }),
+          undefined,
+          undefined,
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            status: 'error',
+            errorMessage: errDetail,
+          },
+        );
       }
     } finally {
       if (this.abortController === abortController) {
@@ -2537,7 +2581,7 @@ export class ChatView extends ItemView {
     this.isStreaming = loading;
     if (this.sendBtn) {
       this.sendBtn.disabled = false;
-      this.sendBtn.setText(loading ? '중단' : t('sendButton'));
+      this.sendBtn.setText(loading ? t('stopButton') : t('sendButton'));
     }
     if (this.inputArea) this.inputArea.disabled = loading;
     if (this.mcpBtn) this.mcpBtn.disabled = loading;
@@ -2550,9 +2594,12 @@ export class ChatView extends ItemView {
       content:
         message.content ||
         (message.assistantQuestion
-          ? `질문: ${message.assistantQuestion.prompt}\n${message.assistantQuestion.choices
-              .map((choice) => `- ${choice.label}`)
-              .join('\n')}`
+          ? t('assistantQuestionProviderContent', {
+              prompt: message.assistantQuestion.prompt,
+              choices: message.assistantQuestion.choices
+                .map((choice) => `- ${choice.label}`)
+                .join('\n'),
+            })
           : ''),
       ...(message.reasoning ? { reasoning: message.reasoning } : {}),
     };
@@ -2830,15 +2877,14 @@ export class ChatView extends ItemView {
       if (!accumulatedText.trim()) {
         this.updateMessage(
           args.messageId,
-          'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
+          t('mcpToolFinalAnswerMissing'),
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
           {
             ...args.meta,
             status: 'error',
-            errorMessage:
-              'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
+            errorMessage: t('mcpToolFinalAnswerMissing'),
             stopReason: 'tool-failed',
           },
         );
@@ -2892,14 +2938,14 @@ export class ChatView extends ItemView {
       );
       this.updateMessage(
         args.messageId,
-        accumulatedText || '취소됨',
+        accumulatedText || t('cancelledLabel'),
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
         { ...args.meta, sourceWarnings, status: 'complete', stopReason: 'cancelled' },
       );
     } else {
-      const content = accumulatedText || '툴 호출이 너무 많이 반복되었습니다.';
+      const content = accumulatedText || t('tooManyToolCalls');
       const sourceWarnings = this.validateAssistantSources(content, args.meta.citations ?? []);
       this.updateMessage(
         args.messageId,
@@ -2953,7 +2999,7 @@ export class ChatView extends ItemView {
   ): Promise<ToolCallRecord[]> {
     const message = this.messages.find((m) => m.id === messageId);
     if (!message) {
-      throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
+      throw new Error(t('mcpResultMessageMissing', { messageId }));
     }
     return executeMcpToolCalls({
       registry: this.plugin.mcpRegistry,
@@ -2962,7 +3008,7 @@ export class ChatView extends ItemView {
       onUpdate: (updatedToolCalls) => {
         const current = this.messages.find((m) => m.id === messageId);
         if (!current) {
-          throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
+          throw new Error(t('mcpResultMessageMissing', { messageId }));
         }
         const isDone = !updatedToolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved !== false,
@@ -3003,7 +3049,7 @@ export class ChatView extends ItemView {
               (item) => item.id === providerId,
             );
             if (!customProvider) {
-              throw new Error('커스텀 Provider를 찾을 수 없습니다.');
+              throw new Error(t('customProviderNotFound'));
             }
             return createCustomOpenAIProvider(customProvider, message.model);
           })()
@@ -3285,7 +3331,7 @@ export class ChatView extends ItemView {
           if (Number.isNaN(numVal)) {
             if (required) {
               validationErrors.push(
-                t('mcpToolInvalidField', { field: key, detail: '숫자 값이 필요합니다.' }),
+                t('mcpToolInvalidField', { field: key, detail: t('validationNeedsNumber') }),
               );
               continue;
             }
@@ -3295,7 +3341,7 @@ export class ChatView extends ItemView {
             validationErrors.push(
               t('mcpToolInvalidField', {
                 field: key,
-                detail: `최소값 ${def.minimum} 이상이어야 합니다.`,
+                detail: t('validationMinValue', { minimum: def.minimum }),
               }),
             );
             continue;
@@ -3304,7 +3350,7 @@ export class ChatView extends ItemView {
             validationErrors.push(
               t('mcpToolInvalidField', {
                 field: key,
-                detail: `최대값 ${def.maximum} 이하여야 합니다.`,
+                detail: t('validationMaxValue', { maximum: def.maximum }),
               }),
             );
             continue;
@@ -3314,7 +3360,7 @@ export class ChatView extends ItemView {
           const trimmed = el.value.trim();
           if (required && trimmed === '') {
             validationErrors.push(
-              t('mcpToolInvalidField', { field: key, detail: '필수 입력값입니다.' }),
+              t('mcpToolInvalidField', { field: key, detail: t('validationRequiredValue') }),
             );
             continue;
           }
@@ -3328,7 +3374,7 @@ export class ChatView extends ItemView {
                 validationErrors.push(
                   t('mcpToolInvalidField', {
                     field: key,
-                    detail: `형식이 올바르지 않습니다. (패턴: ${def.pattern})`,
+                    detail: t('validationPatternDetail', { pattern: def.pattern }),
                   }),
                 );
                 continue;
@@ -3444,16 +3490,16 @@ export class ChatView extends ItemView {
     if (rawMsg.includes('Input validation error')) {
       const match = rawMsg.match(/does not match '(.+?)'/);
       if (match) {
-        return `입력값의 형식이 올바르지 않습니다. 요구되는 패턴: \`${match[1]}\``;
+        return t('mcpValidationPattern', { pattern: match[1] });
       }
       const fieldMatch = rawMsg.match(/'([^']+)'/);
       if (fieldMatch) {
-        return `필드 \`${fieldMatch[1]}\`의 입력값이 잘못되었습니다.`;
+        return t('mcpValidationField', { field: fieldMatch[1] });
       }
-      return '입력값이 스키마 검증을 통과하지 못했습니다. 필수 필드와 값의 형식을 확인해주세요.';
+      return t('mcpValidationSchemaFailed');
     }
     if (rawMsg.includes('required')) {
-      return '필수 입력값이 누락되었습니다. 모든 필수 필드를 채워주세요.';
+      return t('mcpValidationRequiredMissing');
     }
     return rawMsg;
   }
@@ -3465,28 +3511,28 @@ export class ChatView extends ItemView {
     const statusCode = statusMatch ? statusMatch[1] : '???';
 
     const providerHints: Record<number, string> = {
-      400: '요청 형식이 잘못되었습니다. 입력값이나 파라미터를 확인하세요.',
-      401: 'API 키가 유효하지 않거나 만료되었습니다.',
-      402: '잔액이 부족합니다. 결제 수단을 확인하세요.',
-      403: '접근이 거부되었습니다. API 키 권한을 확인하세요.',
-      404: '요청한 모델/엔드포인트를 찾을 수 없습니다.',
-      429: '요청 횟수 제한을 초과했습니다. 잠시 후 다시 시도하세요.',
-      500: '서버 내부 오류입니다. 잠시 후 다시 시도하세요.',
-      502: '게이트웨이 오류입니다. 서버가 일시적으로 불안정합니다.',
-      503: '서비스가 일시적으로 사용 불가능합니다.',
+      400: t('apiHintBadRequest'),
+      401: t('apiHintUnauthorized'),
+      402: t('apiHintPaymentRequired'),
+      403: t('apiHintForbidden'),
+      404: t('apiHintNotFound'),
+      429: t('apiHintRateLimited'),
+      500: t('apiHintServerError'),
+      502: t('apiHintBadGateway'),
+      503: t('apiHintServiceUnavailable'),
     };
 
     const hint =
       statusCode !== '???'
         ? (providerHints[Number(statusCode)] ?? '')
         : rawError.includes('Failed to fetch')
-          ? '브라우저 fetch/CORS 또는 네트워크 차단 가능성이 있습니다. Provider 요청 경로를 확인하세요.'
+          ? t('apiHintFetchCors')
           : '';
     const detail = [
       `[${timestamp}] ${providerKey}/${model}`,
-      `오류 코드: ${statusCode}`,
-      ...(hint ? [`원인 추정: ${hint}`] : []),
-      `원본: ${rawError}`,
+      t('apiErrorCode', { code: statusCode }),
+      ...(hint ? [t('apiErrorLikelyCause', { hint })] : []),
+      t('apiErrorRaw', { error: rawError }),
     ];
     return detail.join('\n');
   }

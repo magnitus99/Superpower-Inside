@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 import type { AssistantQuestion } from './types';
 
 export function formatAssistantQuestionAnswer(
@@ -8,12 +9,12 @@ export function formatAssistantQuestionAnswer(
   const trimmedFreeText = freeText.trim();
   if (selectedLabels.length === 0 && !trimmedFreeText) return null;
 
-  const parts = [`질문: ${question.prompt}`];
+  const parts = [t('assistantQuestionPrefix', { question: question.prompt })];
   if (selectedLabels.length > 0) {
-    parts.push('선택한 항목:', ...selectedLabels.map((label) => `- ${label}`));
+    parts.push(t('assistantQuestionSelectedItems'), ...selectedLabels.map((label) => `- ${label}`));
   }
   if (trimmedFreeText) {
-    parts.push('추가 입력:', trimmedFreeText);
+    parts.push(t('assistantQuestionAdditionalInput'), trimmedFreeText);
   }
   return parts.join('\n');
 }

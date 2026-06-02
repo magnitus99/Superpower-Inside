@@ -45,7 +45,10 @@ export function openSessionHistoryModal(
   saveFolder: string,
   onLoadSession: (filePath: string) => void,
   currentSessionPath?: string | null,
-  sessionsEventBus?: { emit: (domain: string, result: { status: string }) => void; on?: (domain: string, handler: (...args: unknown[]) => void) => () => void },
+  sessionsEventBus?: {
+    emit: (domain: string, result: { status: string }) => void;
+    on?: (domain: string, handler: (...args: unknown[]) => void) => () => void;
+  },
 ): void {
   const activeVault = app.vault;
   void vault;
@@ -239,13 +242,16 @@ export function openSessionHistoryModal(
           }
 
           deleteBtn.disabled = true;
-          void deleteChat(activeVault, meta.filePath).then(() => {
-            sessionsEventBus?.emit('sessions', { status: 'success' });
-            void loadMetas();
-          }, () => {
-            deleteBtn.disabled = false;
-            deleteConfirmPath = null;
-          });
+          void deleteChat(activeVault, meta.filePath).then(
+            () => {
+              sessionsEventBus?.emit('sessions', { status: 'success' });
+              void loadMetas();
+            },
+            () => {
+              deleteBtn.disabled = false;
+              deleteConfirmPath = null;
+            },
+          );
         });
       }
     }
@@ -421,7 +427,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   gap: var(--size-2-2);
 }
 
-/* 검색 바 */
+/* Search bar */
 .superpower-inside-session-search-container {
   display: flex;
   align-items: center;
@@ -474,14 +480,14 @@ function ensureSessionModalStyles(documentRef: Document): void {
   color: var(--text-on-accent);
 }
 
-/* 목록 */
+/* List */
 .superpower-inside-session-modal-list {
   overflow-y: auto;
   padding: 0;
   flex: 1;
 }
 
-/* 날짜 그룹 헤더 */
+/* Date group header */
 .superpower-inside-session-group-header {
   display: flex;
   align-items: center;
@@ -509,7 +515,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   font-size: var(--font-ui-smaller);
 }
 
-/* 세션 항목 */
+/* Session item */
 .superpower-inside-session-item {
   display: flex;
   align-items: center;
@@ -603,7 +609,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   margin-bottom: var(--size-2-2);
 }
 
-/* 하단 카운트 */
+/* Footer count */
 .superpower-inside-session-footer {
   display: flex;
   align-items: center;
