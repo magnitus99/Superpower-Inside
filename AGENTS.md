@@ -117,10 +117,11 @@ npm run dev
 npm run lint
 npm run typecheck
 npm run test
+npm run check:i18n
 npm run build
 ```
 
-현재 `npm run test`는 `vitest run`이며 `src/chat/mention-parser.test.ts`만 확인한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
+현재 `npm run test`는 `vitest run` 이후 `npm run check:i18n`을 실행한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
 
 ## VERSIONING AND RELEASES
 
@@ -137,6 +138,9 @@ npm run build
 ## CONVENTIONS
 
 - 답변과 코드 주석은 한국어로 작성한다. 변수명/함수명/타입명 등 코드 식별자는 영어를 사용한다.
+- 모든 사용자 표시 텍스트, UI 레이블, 버튼, placeholder, Notice, 상태/오류 메시지, 기본 프롬프트, 도구 설명은 반드시 `src/i18n.ts`에 한국어와 영어를 모두 준비하고 `t()`로 호출한다.
+- `src/i18n.ts` 외 런타임 TypeScript 파일에 한국어 문자열/템플릿 리터럴을 직접 두지 않는다. 예외는 테스트/문서가 아닌 이상 만들지 않는다.
+- i18n 변경 후에는 `npm run check:i18n`으로 한국어 문자열이 `src/i18n.ts` 밖에 남지 않았고 영어 번역 객체에 한국어가 섞이지 않았는지 확인한다.
 - 터미널 스크립트와 예시는 fish 문법을 사용한다. `export`, `&&`, `||`, `if [` 대신 `set`, `and`, `or`, `if test`를 사용한다.
 - 이 프로젝트는 Node/npm 기반 Obsidian 플러그인이다. Python/uv는 별도 지시가 없으면 사용하지 않는다.
 - Obsidian 파일 접근은 `this.app.vault`, `vault.adapter`, `cachedRead`, `modify`, `create`를 우선한다. 런타임 코드에서 직접 `fs` 접근을 늘리지 않는다.
@@ -168,6 +172,7 @@ npm run dev        # esbuild watch, 개발 중 main.js 자동 재빌드
 npm run lint       # ESLint: src/, main.ts
 npm run typecheck  # tsc --noEmit
 npm run test       # Vitest
+npm run check:i18n # 런타임 한글 문자열이 src/i18n.ts 밖에 남았는지 검사
 npm run build      # production 번들(minify, no sourcemap)
 npm run format     # Prettier --write src/ main.ts
 ```

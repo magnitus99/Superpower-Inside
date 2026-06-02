@@ -9,7 +9,8 @@
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm run check:i18n",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {
