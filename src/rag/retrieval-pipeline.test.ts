@@ -30,11 +30,16 @@ describe('RagRetrievalPipeline', () => {
   });
 
   it('provider timeout은 전체 retrieval 실패로 전파하지 않고 diagnostic에 기록한다', async () => {
+    const signals: AbortSignal[] = [];
     const slowProvider: CandidateProvider = {
       id: 'slow-provider',
       source: 'vector',
       deadlineMs: 5,
-      getCandidates: () => new Promise<RetrievalCandidate[]>(() => undefined),
+      getCandidates: (_request, signal) =>
+        new Promise<RetrievalCandidate[]>((resolve) => {
+          if (signal) signals.push(signal);
+          setTimeout(() => resolve([]), 30);
+        }),
     };
     const pipeline = new RagRetrievalPipeline([slowProvider]);
 
@@ -48,6 +53,7 @@ describe('RagRetrievalPipeline', () => {
         status: 'timeout',
       }),
     ]);
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it('IvfVectorCandidateProvider는 작은 저장소에서 exact vector source를 유지한다', async () => {
@@ -94,21 +100,44 @@ describe('RagRetrievalPipeline', () => {
     );
   });
 
+  it('IvfVectorCandidateProvider는 같은 엔트리 개수로 교체된 저장소를 stale ANN 캐시로 조회하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add(
+      Array.from({ length: 12 }, (_, index) =>
+        createEntry(`entry-${index}.md`, index === 0 ? [1, 0] : [0, 1], `old-${index}`),
+      ),
+    );
+    const provider = new IvfVectorCandidateProvider(store, {
+      minEntryCount: 10,
+      clusterCount: 2,
+      probeCount: 1,
+    });
+
+    await provider.getCandidates(createRequest([1, 0], 1));
+    await store.replaceFileEntries('entry-0.md', [createEntry('entry-0.md', [0, 1], 'new-0')]);
+    await store.replaceFileEntries('entry-1.md', [createEntry('entry-1.md', [1, 0], 'new-1')]);
+
+    const candidates = await provider.getCandidates(createRequest([1, 0], 1));
+
+    expect(candidates[0]?.entry.id).toBe('entry-1.md::1');
+  });
+
   it('calculateRecallAtK는 exact 상위 후보 대비 ANN recall을 계산한다', () => {
     const recall = calculateRecallAtK(['a', 'b', 'c'], ['c', 'x', 'a'], 3);
 
     expect(recall).toBeCloseTo(2 / 3);
   });
 
-  it('BM25CandidateProvider는 전체 entries를 읽지 않고 filePath lookup만 사용한다', async () => {
+  it('BM25CandidateProvider는 전체 entries를 읽지 않고 entry id lookup만 사용한다', async () => {
     const store = new PathLookupStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '일반 문서'),
-      createEntry('keyword.md', [0, 1], 'specialterm 문서'),
-    ]);
+    const semantic = createEntry('semantic.md', [1, 0], '일반 문서');
+    const keyword = createEntry('keyword.md', [0, 1], 'specialterm 문서');
+    const unrelatedSameFile = createEntry('keyword.md', [0.2, 0.8], '다른 청크', 10);
+    await store.add([semantic, keyword, unrelatedSameFile]);
     const bm25 = await createBm25([
-      ['semantic.md', '일반 문서'],
-      ['keyword.md', 'specialterm 문서'],
+      [semantic.id, semantic.metadata.text, semantic.metadata.filePath],
+      [keyword.id, keyword.metadata.text, keyword.metadata.filePath],
+      [unrelatedSameFile.id, unrelatedSameFile.metadata.text, unrelatedSameFile.metadata.filePath],
     ]);
     const provider = new BM25CandidateProvider(store, bm25);
 
@@ -117,11 +146,10 @@ describe('RagRetrievalPipeline', () => {
       question: 'specialterm',
     });
 
-    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual([
-      'keyword.md',
-    ]);
+    expect(candidates.map((candidate) => candidate.entry.id)).toEqual([keyword.id]);
     expect(store.getEntriesCalls).toBe(0);
-    expect(store.requestedPaths).toEqual([['keyword.md']]);
+    expect(store.requestedPaths).toEqual([]);
+    expect(store.requestedIds).toEqual([[keyword.id]]);
   });
 
   it('StructuralGraphCandidateProvider는 seed 파일의 링크와 백링크 파일 후보를 추가한다', async () => {
@@ -211,12 +239,15 @@ function createEntry(
 }
 
 async function createBm25(
-  documents: readonly (readonly [string, string])[],
+  documents: readonly (readonly [string, string] | readonly [string, string, string])[],
 ): Promise<JsonFileBM25Index> {
   const bm25 = new JsonFileBM25Index(createAdapter());
   await bm25.load();
-  for (const [path, text] of documents) {
-    bm25.addDocument(path, text);
+  const writableBm25 = bm25 as unknown as {
+    addDocument(docId: string, text: string, filePath?: string): void;
+  };
+  for (const [id, text, filePath] of documents) {
+    writableBm25.addDocument(id, text, filePath);
   }
   return bm25;
 }
@@ -233,6 +264,7 @@ function createAdapter(): DataAdapter {
 class PathLookupStore extends MemoryVectorStore {
   getEntriesCalls = 0;
   requestedPaths: string[][] = [];
+  requestedIds: string[][] = [];
 
   override getEntries(): Promise<VectorEntry[]> {
     this.getEntriesCalls++;
@@ -243,6 +275,12 @@ class PathLookupStore extends MemoryVectorStore {
     this.requestedPaths.push([...filePaths].sort());
     const allowed = new Set(filePaths);
     return (await super.getEntries()).filter((entry) => allowed.has(entry.metadata.filePath));
+  }
+
+  override async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
+    this.requestedIds.push([...ids].sort());
+    const allowed = new Set(ids);
+    return (await super.getEntries()).filter((entry) => allowed.has(entry.id));
   }
 }
 

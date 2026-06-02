@@ -215,6 +215,10 @@ async function expectVectorStoreContract(store: VectorStore): Promise<void> {
     'note.md::0',
     'note.md::10',
   ]);
+  expect((await store.getEntriesByIds(['note.md::10', 'missing::0', 'note.md::0'])).map((entry) => entry.id)).toEqual([
+    'note.md::10',
+    'note.md::0',
+  ]);
   expect(await store.removeByFilePath('note.md')).toBe(2);
   expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['other.md::0']);
 

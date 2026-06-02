@@ -45,7 +45,7 @@ export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
   removeByFilePath(filePath: string): Promise<number>;
-  query(vector: number[], topK: number): Promise<VectorEntry[]>;
+  query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]>;
   clear(): Promise<void>;
   persist(): Promise<void>;
   withBatch<T>(operation: () => Promise<T>): Promise<T>;
@@ -53,6 +53,7 @@ export interface VectorStore {
   getIndexedFilePaths(): Promise<string[]>;
   getFileIndexRecords(): Promise<FileIndexRecord[]>;
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]>;
+  getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]>;
   getEntries(): Promise<VectorEntry[]>;
 }
 
@@ -91,9 +92,21 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 const QUERY_YIELD_INTERVAL = 256;
 
-async function scoredQuery(entries: VectorEntry[], vector: number[], topK: number): Promise<VectorEntry[]> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+}
+
+async function scoredQuery(
+  entries: VectorEntry[],
+  vector: number[],
+  topK: number,
+  signal?: AbortSignal,
+): Promise<VectorEntry[]> {
   const scored: Array<{ entry: VectorEntry; score: number }> = [];
   for (let index = 0; index < entries.length; index++) {
+    throwIfAborted(signal);
     const entry = entries[index];
     scored.push({
       entry,
@@ -103,6 +116,7 @@ async function scoredQuery(entries: VectorEntry[], vector: number[], topK: numbe
       await yieldToEventLoop();
     }
   }
+  throwIfAborted(signal);
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK).map((s) => s.entry);
 }
@@ -163,9 +177,9 @@ export class IndexedDbVectorStore implements VectorStore {
     return removed;
   }
 
-  async query(vector: number[], topK: number): Promise<VectorEntry[]> {
+  async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
     const entries = await this.getCachedEntries();
-    return scoredQuery(entries, vector, topK);
+    return scoredQuery(entries, vector, topK, signal);
   }
 
   async clear(): Promise<void> {
@@ -223,6 +237,18 @@ export class IndexedDbVectorStore implements VectorStore {
       vector: [...vector],
       metadata: { ...metadata },
     }));
+  }
+
+  async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
+    if (ids.length === 0) return [];
+    const records = await this.db.vectors.bulkGet([...ids]);
+    return records
+      .filter((record): record is IndexedDbVectorRecord => record !== undefined)
+      .map(({ id, vector, metadata }) => ({
+        id,
+        vector: [...vector],
+        metadata: { ...metadata },
+      }));
   }
 
   async getEntries(): Promise<VectorEntry[]> {
@@ -319,9 +345,9 @@ export class JsonFileVectorStore implements VectorStore {
     return removed;
   }
 
-  async query(vector: number[], topK: number): Promise<VectorEntry[]> {
+  async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    return scoredQuery(this.entries, vector, topK);
+    return scoredQuery(this.entries, vector, topK, signal);
   }
 
   async clear(): Promise<void> {
@@ -403,6 +429,12 @@ export class JsonFileVectorStore implements VectorStore {
     return copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath)));
   }
 
+  async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
+    await this.loadIfNeeded();
+    const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
+    return copyEntries(ids.map((id) => byId.get(id)).filter((entry): entry is VectorEntry => entry !== undefined));
+  }
+
   async getEntries(): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
     return copyEntries(this.entries);
@@ -443,8 +475,8 @@ export class MemoryVectorStore implements VectorStore {
     return Promise.resolve(before - this.entries.length);
   }
 
-  async query(vector: number[], topK: number): Promise<VectorEntry[]> {
-    return scoredQuery(this.entries, vector, topK);
+  async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
+    return scoredQuery(this.entries, vector, topK, signal);
   }
 
   async clear(): Promise<void> {
@@ -483,6 +515,13 @@ export class MemoryVectorStore implements VectorStore {
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
     const allowed = new Set(filePaths);
     return Promise.resolve(copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath))));
+  }
+
+  getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
+    const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
+    return Promise.resolve(
+      copyEntries(ids.map((id) => byId.get(id)).filter((entry): entry is VectorEntry => entry !== undefined)),
+    );
   }
 
   getEntries(): Promise<VectorEntry[]> {

@@ -8,6 +8,7 @@ interface InvertedEntry {
 interface BM25Data {
   inverted: Record<string, InvertedEntry>;
   docLengths: Record<string, number>;
+  docSources: Record<string, string>;
   totalDocs: number;
   avgDocLength: number;
 }
@@ -42,14 +43,24 @@ export class JsonFileBM25Index {
   constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
     this.adapter = adapter;
     this.path = path;
-    this.data = { inverted: {}, docLengths: {}, totalDocs: 0, avgDocLength: 1 };
+    this.data = { inverted: {}, docLengths: {}, docSources: {}, totalDocs: 0, avgDocLength: 1 };
     this.loaded = false;
   }
 
   async load(): Promise<void> {
     const raw = await readJsonFromVault(this.adapter, this.path);
     if (raw && typeof raw === 'object' && 'inverted' in (raw as Record<string, unknown>)) {
-      this.data = raw as BM25Data;
+      const parsed = raw as Partial<BM25Data>;
+      const docLengths = parsed.docLengths ?? {};
+      this.data = {
+        inverted: parsed.inverted ?? {},
+        docLengths,
+        docSources:
+          parsed.docSources ??
+          Object.fromEntries(Object.keys(docLengths).map((docId) => [docId, docId])),
+        totalDocs: parsed.totalDocs ?? Object.keys(docLengths).length,
+        avgDocLength: parsed.avgDocLength ?? 1,
+      };
     }
     this.loaded = true;
   }
@@ -58,7 +69,12 @@ export class JsonFileBM25Index {
     await writeJsonToVault(this.adapter, this.path, this.data);
   }
 
-  addDocument(docId: string, text: string): void {
+  async clear(): Promise<void> {
+    this.data = { inverted: {}, docLengths: {}, docSources: {}, totalDocs: 0, avgDocLength: 1 };
+    await this.persist();
+  }
+
+  addDocument(docId: string, text: string, sourcePath = docId): void {
     const tokens = tokenize(text);
     const freq: Record<string, number> = {};
     for (const token of tokens) {
@@ -72,6 +88,7 @@ export class JsonFileBM25Index {
       this.data.inverted[term][docId] = tf;
     }
     this.data.docLengths[docId] = tokens.length;
+    this.data.docSources[docId] = sourcePath;
     this.data.totalDocs = Object.keys(this.data.docLengths).length;
     const totalLen = Object.values(this.data.docLengths).reduce((a, b) => a + b, 0);
     this.data.avgDocLength = this.data.totalDocs > 0 ? totalLen / this.data.totalDocs : 1;
@@ -85,9 +102,19 @@ export class JsonFileBM25Index {
       }
     }
     delete this.data.docLengths[docId];
+    delete this.data.docSources[docId];
     this.data.totalDocs = Object.keys(this.data.docLengths).length;
     const totalLen = Object.values(this.data.docLengths).reduce((a, b) => a + b, 0);
     this.data.avgDocLength = this.data.totalDocs > 0 ? totalLen / this.data.totalDocs : 1;
+  }
+
+  removeDocumentsBySource(sourcePath: string): void {
+    const docIds = Object.entries(this.data.docSources)
+      .filter(([, source]) => source === sourcePath)
+      .map(([docId]) => docId);
+    for (const docId of docIds) {
+      this.removeDocument(docId);
+    }
   }
 
   search(query: string): Map<string, number> {
@@ -121,5 +148,9 @@ export class JsonFileBM25Index {
 
   get totalDocs(): number {
     return this.data.totalDocs;
+  }
+
+  getDocumentSource(docId: string): string | undefined {
+    return this.data.docSources[docId];
   }
 }

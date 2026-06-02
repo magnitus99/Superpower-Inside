@@ -1014,7 +1014,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.ragIndexingScheduler = new RAGIndexingScheduler({
       debounceMs: 500,
       indexFile: (file, options) => this.vaultIndexer!.indexFile(file, options),
-      removeFile: (filePath) => this.vectorStore!.removeByFilePath(filePath),
+      removeFile: (filePath) => this.vaultIndexer!.removeFile(filePath),
       indexPending: (options) => this.vaultIndexer!.indexPending(options),
       reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
       createIndexingOptions: (signal) => ({
