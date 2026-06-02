@@ -11,6 +11,7 @@ vi.mock('obsidian', () => ({
 
 import {
   buildEmbeddingModelOptions,
+  buildGraphRagActionGroups,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
   getVectorStoreTransferNotice,
@@ -250,6 +251,36 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(state.updatePending.disabled).toBe(true);
     expect(state.reindexAll.disabled).toBe(false);
     expect(state.reindexAll.reason).toBeNull();
+  });
+
+  it('GraphRAG 작업 버튼은 실행 범위와 차이를 라벨/설명에 드러낸다', () => {
+    const groups = buildGraphRagActionGroups({
+      controls: {
+        start: { disabled: false, reason: null },
+        cancel: { disabled: true, reason: '실행 중인 GraphRAG 인덱싱이 없습니다.' },
+        resume: { disabled: false, reason: null },
+      },
+      syncStale: { disabled: false, reason: null },
+      buildCommunities: { disabled: false, reason: null },
+      openExplorer: { disabled: false, reason: null },
+      totalCandidateFiles: 50,
+      maxFilesPerRun: 20,
+      failedFileCount: 3,
+      staleFileCount: 7,
+    });
+
+    expect(groups.map((group) => group.label)).toEqual(['추출 실행', '그래프 정리', '결과 확인']);
+    expect(groups.flatMap((group) => group.actions.map((action) => action.label))).toEqual([
+      '전체 추출 실행',
+      '실행 중지',
+      '실패만 재시도 (3)',
+      '변경분 동기화 (7)',
+      '커뮤니티 다시 빌드',
+      '탐색기 열기',
+    ]);
+    expect(groups[0]?.actions[0]?.description).toContain('대상 50개 중 최대 20개');
+    expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
+    expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
   });
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {

@@ -84,6 +84,42 @@ export interface GraphRagControlState {
   resume: RagIndexingButtonState;
 }
 
+export type GraphRagActionId =
+  | 'start'
+  | 'cancel'
+  | 'resumeFailed'
+  | 'syncStale'
+  | 'buildCommunities'
+  | 'openExplorer';
+
+export interface GraphRagActionDefinition {
+  id: GraphRagActionId;
+  groupId: 'extract' | 'maintain' | 'inspect';
+  groupLabel: string;
+  label: string;
+  description: string;
+  iconName: string;
+  state: RagIndexingButtonState;
+  tone: 'primary' | 'normal' | 'danger';
+}
+
+export interface GraphRagActionGroup {
+  id: GraphRagActionDefinition['groupId'];
+  label: string;
+  actions: GraphRagActionDefinition[];
+}
+
+export interface GraphRagActionGroupInput {
+  controls: GraphRagControlState;
+  syncStale: RagIndexingButtonState;
+  buildCommunities: RagIndexingButtonState;
+  openExplorer: RagIndexingButtonState;
+  totalCandidateFiles: number;
+  maxFilesPerRun: number;
+  failedFileCount: number;
+  staleFileCount: number;
+}
+
 export interface GraphRagIndexingCostInput {
   totalCandidateFiles: number;
   maxFilesPerRun: number;
@@ -286,6 +322,99 @@ export function getGraphRagControlState(
         (input.failedFileCount > 0 ? null : '이어 실행할 실패 파일이 없습니다.'),
     ),
   };
+}
+
+export function buildGraphRagActionGroups(
+  input: GraphRagActionGroupInput,
+): GraphRagActionGroup[] {
+  const runLimit = Math.min(input.totalCandidateFiles, input.maxFilesPerRun);
+  const startScope =
+    runLimit > 0
+      ? `대상 ${input.totalCandidateFiles}개 중 최대 ${runLimit}개 파일을 새로 추출합니다.`
+      : 'GraphRAG 대상 파일을 새로 추출합니다.';
+
+  const groups: GraphRagActionGroup[] = [
+    {
+      id: 'extract',
+      label: '추출 실행',
+      actions: [
+        {
+          id: 'start',
+          groupId: 'extract',
+          groupLabel: '추출 실행',
+          label: '전체 추출 실행',
+          description: `${startScope} 실패 기록은 해당 파일을 다시 처리할 때 정리됩니다.`,
+          iconName: 'play',
+          state: input.controls.start,
+          tone: 'primary',
+        },
+        {
+          id: 'cancel',
+          groupId: 'extract',
+          groupLabel: '추출 실행',
+          label: '실행 중지',
+          description: '현재 진행 중인 GraphRAG 추출 작업에 취소 요청을 보냅니다.',
+          iconName: 'square',
+          state: input.controls.cancel,
+          tone: 'danger',
+        },
+        {
+          id: 'resumeFailed',
+          groupId: 'extract',
+          groupLabel: '추출 실행',
+          label: `실패만 재시도${input.failedFileCount > 0 ? ` (${input.failedFileCount})` : ''}`,
+          description: '마지막 실행에서 실패한 파일만 다시 추출합니다. 성공한 파일은 건드리지 않습니다.',
+          iconName: 'skip-forward',
+          state: input.controls.resume,
+          tone: 'normal',
+        },
+        {
+          id: 'syncStale',
+          groupId: 'extract',
+          groupLabel: '추출 실행',
+          label: `변경분 동기화${input.staleFileCount > 0 ? ` (${input.staleFileCount})` : ''}`,
+          description: '수정되었거나 모델/온톨로지 변경으로 오래된 파일만 다시 추출합니다.',
+          iconName: 'refresh-cw',
+          state: input.syncStale,
+          tone: 'normal',
+        },
+      ],
+    },
+    {
+      id: 'maintain',
+      label: '그래프 정리',
+      actions: [
+        {
+          id: 'buildCommunities',
+          groupId: 'maintain',
+          groupLabel: '그래프 정리',
+          label: '커뮤니티 다시 빌드',
+          description: '이미 추출된 엔티티/관계로 커뮤니티 요약을 다시 계산합니다. 파일 재추출은 하지 않습니다.',
+          iconName: 'git-fork',
+          state: input.buildCommunities,
+          tone: 'normal',
+        },
+      ],
+    },
+    {
+      id: 'inspect',
+      label: '결과 확인',
+      actions: [
+        {
+          id: 'openExplorer',
+          groupId: 'inspect',
+          groupLabel: '결과 확인',
+          label: '탐색기 열기',
+          description: '엔티티, 관계, 증거, 거부된 응답과 오류 코드를 확인합니다.',
+          iconName: 'search',
+          state: input.openExplorer,
+          tone: 'normal',
+        },
+      ],
+    },
+  ];
+
+  return groups;
 }
 
 export function estimateGraphRagIndexingCost(

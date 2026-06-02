@@ -35,10 +35,12 @@ import {
   type RagPerformanceTuningMode,
   type VectorStoreType,
   shouldShowProviderApiKey,
+  buildGraphRagActionGroups,
   getGraphRagStatusPresentation,
   getGraphRagStatusLabel,
   getGraphRagControlState,
   estimateGraphRagIndexingCost,
+  type GraphRagActionDefinition,
 } from './rag/settings-display';
 import {
   createDefaultPromptEntry,
@@ -1427,26 +1429,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
 
     // 실행 버튼 그룹
-    const actions = section.createDiv({ cls: 'superpower-inside-rag-controls-group is-primary' });
+    const actions = section.createDiv({ cls: 'superpower-inside-rag-action-groups' });
     this.graphRagActionsGroup = actions;
-    this.createGraphRagActionButton(actions, '시작', 'play', controls.start, async () => {
-      if (!this.confirmGraphRagRemoteRun(cost)) return;
-      const result = await this.plugin.runGraphRagIndexing();
-      this.showGraphRagResult(result);
-      this.updateGraphRagStats();
-    });
-    this.createGraphRagActionButton(actions, '취소', 'square', controls.cancel, () => {
-      this.plugin.cancelGraphRagIndexing();
-      new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
-      this.updateGraphRagStats();
-    });
-    this.createGraphRagActionButton(actions, '이어서 실행', 'skip-forward', controls.resume, async () => {
-      if (!this.confirmGraphRagRemoteRun(cost)) return;
-      const result = await this.plugin.resumeGraphRagIndexing();
-      this.showGraphRagResult(result);
-      this.updateGraphRagStats();
-    });
-    // 동기화만 실행 버튼
     const syncButtonState = getGraphRagControlState({
       enabled: rag.graphRagEnabled && (graphState?.staleFileCount ?? 0) > 0,
       hasProvider: this.plugin.hasGraphRagRunner(),
@@ -1455,12 +1439,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       totalCandidateFiles: graphState?.staleFileCount ?? 0,
       failedFileCount: 0,
     }).start;
-    this.createGraphRagActionButton(actions, '동기화만 실행', 'refresh-cw', syncButtonState, async () => {
-      if (!this.confirmGraphRagRemoteRun(cost)) return;
-      const result = await this.plugin.syncStaleGraphRag();
-      this.showGraphRagResult(result);
-      this.updateGraphRagStats();
-    });
     const communityButtonState = {
       disabled: !rag.graphRagEnabled || !this.plugin.hasGraphRagRunner() || !rag.graphRagModel.trim() || this.plugin.isGraphRagIndexing(),
       reason: !rag.graphRagEnabled ? 'GraphRAG가 비활성화되어 있습니다.'
@@ -1469,18 +1447,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             : this.plugin.isGraphRagIndexing() ? '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.'
               : null,
     };
-    this.createGraphRagActionButton(actions, '커뮤니티 빌드', 'git-fork', communityButtonState, async () => {
-      if (!this.confirmGraphRagRemoteRun(cost)) return;
-      const result = await this.plugin.buildGraphRagCommunities();
-      if (result) {
-        new Notice(`커뮤니티 빌드 완료: ${result.communityCount}개 커뮤니티, modularity ${result.modularity.toFixed(3)} (${(result.durationMs / 1000).toFixed(1)}초)`);
-      }
-      this.updateGraphRagStats();
-    });
     const hasData = done > 0;
     const detailButtonState = { disabled: !hasData, reason: hasData ? null : '추출된 데이터가 없습니다.' };
-    this.createGraphRagActionButton(actions, '상세 보기', 'search', detailButtonState, () => {
-      this.plugin.openGraphRagView();
+    this.renderGraphRagActions(actions, {
+      controls,
+      syncButtonState,
+      communityButtonState,
+      detailButtonState,
+      cost,
+      totalCandidateFiles: total,
+      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+      failedFileCount: failed,
+      staleFileCount: stale,
     });
   }
 
@@ -1570,24 +1548,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
     }
     if (this.graphRagActionsGroup) {
-      this.graphRagActionsGroup.empty();
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '시작', 'play', controls.start, async () => {
-        if (!this.confirmGraphRagRemoteRun(cost)) return;
-        const result = await this.plugin.runGraphRagIndexing();
-        this.showGraphRagResult(result);
-        this.updateGraphRagStats();
-      });
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '취소', 'square', controls.cancel, () => {
-        this.plugin.cancelGraphRagIndexing();
-        new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
-        this.updateGraphRagStats();
-      });
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '이어서 실행', 'skip-forward', controls.resume, async () => {
-        if (!this.confirmGraphRagRemoteRun(cost)) return;
-        const result = await this.plugin.resumeGraphRagIndexing();
-        this.showGraphRagResult(result);
-        this.updateGraphRagStats();
-      });
       const syncButtonState = getGraphRagControlState({
         enabled: rag.graphRagEnabled && stale > 0,
         hasProvider: this.plugin.hasGraphRagRunner(),
@@ -1596,12 +1556,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         totalCandidateFiles: stale,
         failedFileCount: 0,
       }).start;
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '동기화만 실행', 'refresh-cw', syncButtonState, async () => {
-        if (!this.confirmGraphRagRemoteRun(cost)) return;
-        const result = await this.plugin.syncStaleGraphRag();
-        this.showGraphRagResult(result);
-        this.updateGraphRagStats();
-      });
       const communityButtonState = {
         disabled: !rag.graphRagEnabled || !this.plugin.hasGraphRagRunner() || !rag.graphRagModel.trim() || this.plugin.isGraphRagIndexing(),
         reason: !rag.graphRagEnabled ? 'GraphRAG가 비활성화되어 있습니다.'
@@ -1610,37 +1564,124 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               : this.plugin.isGraphRagIndexing() ? '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.'
                 : null,
       };
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '커뮤니티 빌드', 'git-fork', communityButtonState, async () => {
+      const hasDetailData = done > 0;
+      const detailState = { disabled: !hasDetailData, reason: hasDetailData ? null : '추출된 데이터가 없습니다.' };
+      this.renderGraphRagActions(this.graphRagActionsGroup, {
+        controls,
+        syncButtonState,
+        communityButtonState,
+        detailButtonState: detailState,
+        cost,
+        totalCandidateFiles: total,
+        maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+        failedFileCount: failed,
+        staleFileCount: stale,
+      });
+    }
+  }
+
+  private renderGraphRagActions(
+    containerEl: HTMLElement,
+    input: {
+      controls: ReturnType<typeof getGraphRagControlState>;
+      syncButtonState: { disabled: boolean; reason: string | null };
+      communityButtonState: { disabled: boolean; reason: string | null };
+      detailButtonState: { disabled: boolean; reason: string | null };
+      cost: { costLabel: string };
+      totalCandidateFiles: number;
+      maxFilesPerRun: number;
+      failedFileCount: number;
+      staleFileCount: number;
+    },
+  ): void {
+    containerEl.empty();
+    const groups = buildGraphRagActionGroups({
+      controls: input.controls,
+      syncStale: input.syncButtonState,
+      buildCommunities: input.communityButtonState,
+      openExplorer: input.detailButtonState,
+      totalCandidateFiles: input.totalCandidateFiles,
+      maxFilesPerRun: input.maxFilesPerRun,
+      failedFileCount: input.failedFileCount,
+      staleFileCount: input.staleFileCount,
+    });
+
+    for (const group of groups) {
+      const groupEl = containerEl.createDiv({ cls: 'superpower-inside-rag-action-group' });
+      groupEl.createDiv({ cls: 'superpower-inside-rag-action-group-title', text: group.label });
+      const listEl = groupEl.createDiv({ cls: 'superpower-inside-rag-action-list' });
+      for (const action of group.actions) {
+        this.createGraphRagActionCard(listEl, action, input.cost);
+      }
+    }
+  }
+
+  private createGraphRagActionCard(
+    containerEl: HTMLElement,
+    action: GraphRagActionDefinition,
+    cost: { costLabel: string },
+  ): void {
+    const item = containerEl.createDiv({
+      cls: `superpower-inside-rag-action-card is-${action.tone}`,
+    });
+    const button = item.createEl('button', { attr: { type: 'button' } });
+    setIcon(button, action.iconName);
+    button.createSpan({ text: action.label });
+    button.disabled = action.state.disabled;
+    button.title = action.state.reason ?? action.description;
+    button.addEventListener('click', () => {
+      void this.handleGraphRagAction(action, cost);
+    });
+    item.createDiv({ cls: 'superpower-inside-rag-action-desc', text: action.description });
+    if (action.state.reason) {
+      item.createDiv({ cls: 'superpower-inside-rag-action-disabled-reason', text: action.state.reason });
+    }
+  }
+
+  private async handleGraphRagAction(
+    action: GraphRagActionDefinition,
+    cost: { costLabel: string },
+  ): Promise<void> {
+    switch (action.id) {
+      case 'start': {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.runGraphRagIndexing();
+        this.showGraphRagResult(result);
+        this.updateGraphRagStats();
+        return;
+      }
+      case 'cancel':
+        this.plugin.cancelGraphRagIndexing();
+        new Notice('GraphRAG 인덱싱 취소를 요청했습니다.');
+        this.updateGraphRagStats();
+        return;
+      case 'resumeFailed': {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.resumeGraphRagIndexing();
+        this.showGraphRagResult(result);
+        this.updateGraphRagStats();
+        return;
+      }
+      case 'syncStale': {
+        if (!this.confirmGraphRagRemoteRun(cost)) return;
+        const result = await this.plugin.syncStaleGraphRag();
+        this.showGraphRagResult(result);
+        this.updateGraphRagStats();
+        return;
+      }
+      case 'buildCommunities': {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.buildGraphRagCommunities();
         if (result) {
           new Notice(`커뮤니티 빌드 완료: ${result.communityCount}개 커뮤니티, modularity ${result.modularity.toFixed(3)} (${(result.durationMs / 1000).toFixed(1)}초)`);
         }
         this.updateGraphRagStats();
-      });
-      const hasDetailData = done > 0;
-      const detailState = { disabled: !hasDetailData, reason: hasDetailData ? null : '추출된 데이터가 없습니다.' };
-      this.createGraphRagActionButton(this.graphRagActionsGroup, '상세 보기', 'search', detailState, () => {
+        return;
+      }
+      case 'openExplorer':
         this.plugin.openGraphRagView();
-      });
+        return;
     }
-  }
-
-  private createGraphRagActionButton(
-    containerEl: HTMLElement,
-    label: string,
-    iconName: string,
-    state: { disabled: boolean; reason: string | null },
-    onClick: () => void | Promise<void>,
-  ): void {
-    const button = containerEl.createEl('button', { attr: { type: 'button' } });
-    setIcon(button, iconName);
-    button.createSpan({ text: label });
-    button.disabled = state.disabled;
-    button.title = state.reason ?? '';
-    button.addEventListener('click', () => {
-      void onClick();
-    });
   }
 
   private confirmGraphRagRemoteRun(cost: { costLabel: string }): boolean {

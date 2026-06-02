@@ -765,6 +765,76 @@
   background: rgba(var(--color-red-rgb), 0.1);
 }
 
+.superpower-inside-rag-action-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.superpower-inside-rag-action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.superpower-inside-rag-action-group-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.superpower-inside-rag-action-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.superpower-inside-rag-action-card {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-rag-action-card button {
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: 6px;
+  white-space: normal;
+}
+
+.superpower-inside-rag-action-card.is-primary button:not(:disabled) {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.superpower-inside-rag-action-card.is-danger button:not(:disabled) {
+  border-color: var(--text-error);
+  color: var(--text-error);
+}
+
+.superpower-inside-rag-action-desc {
+  margin-top: 6px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-rag-action-disabled-reason {
+  margin-top: 4px;
+  font-size: var(--font-smallest);
+  line-height: 1.35;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
 /* ── Filter Tabs ── */
 .superpower-inside-rag-filter-tabs {
   display: flex;
