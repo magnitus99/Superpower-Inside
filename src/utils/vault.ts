@@ -109,6 +109,7 @@ export async function getRagCandidateFiles(
 
 export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boolean> {
   if (isSensitiveFile(file)) return false;
+  if (file.stat.size === 0) return false;
   const extension = normalizeExtension(file.extension || getPathExtension(file.path));
   if (TEXT_EXTENSIONS.has(extension) || isKnownTextFileName(file.name)) return true;
   return canReadAsText(vault, file);

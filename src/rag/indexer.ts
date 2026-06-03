@@ -637,7 +637,10 @@ async function shouldIndexRagFile(
 /** 파일 변경 이벤트를 등록하여 자동 재인덱싱합니다. */
 export function registerModifyEvent(
   vault: Vault,
-  indexer: { indexFile(file: TFile): Promise<unknown> },
+  indexer: {
+    indexFile(file: TFile): Promise<unknown>;
+    removeByFilePath?(filePath: string): Promise<number>;
+  },
   excludePaths: string[],
   excludeExts: string[],
   onComplete?: (file: TFile) => void,
@@ -646,7 +649,14 @@ export function registerModifyEvent(
     if (!(file instanceof Object)) return;
     if (!('path' in file)) return;
     const f = file as TFile;
-    if (!(await shouldIndexRagFile(vault, f, excludePaths, excludeExts))) return;
+    if (!shouldConsiderRagPath(f.path, excludePaths, excludeExts)) return;
+    if (!(await isRagIndexableFile(vault, f))) {
+      const removed = await indexer.removeByFilePath?.(f.path);
+      if (removed && removed > 0) {
+        onComplete?.(f);
+      }
+      return;
+    }
     await indexer.indexFile(f);
     onComplete?.(f);
   });

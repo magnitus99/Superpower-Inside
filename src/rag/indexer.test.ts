@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { chunkMarkdown, chunkPlainText, buildSearchText, VaultIndexer } from './indexer';
+import {
+  chunkMarkdown,
+  chunkPlainText,
+  buildSearchText,
+  registerModifyEvent,
+  VaultIndexer,
+} from './indexer';
 import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
@@ -192,6 +198,34 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(await store.getEntries()).toEqual([]);
   });
 
+  it('modify 이벤트에서 파일이 비워지면 기존 벡터를 제거한다', async () => {
+    const file = createFile('empty.md', 1000, 0);
+    const vault = createEventVault(new Map([[file.path, '']]));
+    const indexedPaths: string[] = [];
+    const removedPaths: string[] = [];
+
+    registerModifyEvent(
+      vault,
+      {
+        indexFile: (target) => {
+          indexedPaths.push(target.path);
+          return Promise.resolve();
+        },
+        removeByFilePath: (path) => {
+          removedPaths.push(path);
+          return Promise.resolve(1);
+        },
+      },
+      [],
+      [],
+    );
+
+    await vault.emitModify(file);
+
+    expect(indexedPaths).toEqual([]);
+    expect(removedPaths).toEqual(['empty.md']);
+  });
+
   it('BM25 인덱스는 청크 ID로 갱신하고 파일 삭제 시 함께 제거한다', async () => {
     const file = createFile('note.md', 1000, 120);
     const vault = createVault(new Map([[file.path, ['specialterm 첫 청크', '', '다른 내용'].join('\n')]]));
@@ -339,6 +373,28 @@ function createVault(contents: Map<string, string>): Vault {
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
   } as unknown as Vault;
+}
+
+function createEventVault(contents: Map<string, string>): Vault & {
+  emitModify(file: TFile): Promise<void>;
+} {
+  const baseVault = createVault(contents);
+  let modifyHandler: ((file: TFile) => Promise<void>) | null = null;
+  return {
+    ...baseVault,
+    on: (name: string, callback: (file: TFile) => Promise<void>) => {
+      if (name === 'modify') {
+        modifyHandler = callback;
+      }
+      return { name };
+    },
+    offref: () => undefined,
+    emitModify: async (file: TFile) => {
+      if (modifyHandler) {
+        await modifyHandler(file);
+      }
+    },
+  } as unknown as Vault & { emitModify(file: TFile): Promise<void> };
 }
 
 function createAdapter(): DataAdapter {

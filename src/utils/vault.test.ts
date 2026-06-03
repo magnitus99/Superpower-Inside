@@ -121,6 +121,20 @@ describe('RAG 후보 파일', () => {
     expect(files.map((file) => file.path)).toEqual(['note.md', 'src/main.ts']);
   });
 
+  it('내용이 없는 텍스트 파일은 후보에서 제외한다', async () => {
+    const vault = createVault(
+      [createFile('note.md'), createFile('package.egg-info/dependency_links.txt', 0)],
+      new Map([
+        ['note.md', '# Note'],
+        ['package.egg-info/dependency_links.txt', ''],
+      ]),
+    );
+
+    const files = await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig);
+
+    expect(files.map((file) => file.path)).toEqual(['note.md']);
+  });
+
   it('파일 형식별 대상 수와 제외 추천을 계산한다', async () => {
     const vault = createVault(
       [createFile('note.md'), createFile('src/main.ts'), createFile('.env')],
@@ -164,7 +178,7 @@ describe('Vault JSON 쓰기', () => {
   });
 });
 
-function createFile(path: string): TFile {
+function createFile(path: string, size = 10): TFile {
   const name = path.split('/').pop() ?? path;
   const extension = name.startsWith('.') && name.indexOf('.', 1) === -1
     ? ''
@@ -177,7 +191,7 @@ function createFile(path: string): TFile {
     stat: {
       ctime: 1000,
       mtime: 1000,
-      size: 10,
+      size,
     },
   } as unknown as TFile;
 }

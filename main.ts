@@ -1160,6 +1160,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
           this.ragIndexingScheduler?.scheduleFile(file, 'modify');
           return Promise.resolve();
         },
+        removeByFilePath: (filePath: string) =>
+          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
       },
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
