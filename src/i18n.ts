@@ -1513,7 +1513,7 @@ const ko: I18nKeys = {
   settingsAuto060: '자동 동기화 간격(분)',
   settingsAuto061: '파일 변경 후 자동 동기화까지 대기하는 최소 시간입니다.',
   settingsAuto062: 'GraphRAG가 비활성화되어 있습니다.',
-  settingsAuto063: 'GraphRAG Runner가 없습니다.',
+  settingsAuto063: '선택한 GraphRAG 모델의 provider가 꺼져 있거나 모델 목록에 없습니다.',
   settingsAuto064: 'GraphRAG 모델이 설정되지 않았습니다.',
   settingsAuto065: '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.',
   settingsAuto066: '추출된 데이터가 없습니다.',
@@ -1890,7 +1890,8 @@ const ko: I18nKeys = {
   graphRagStatusSchemaErrorLabel: '설정 오류',
   graphRagStatusSchemaErrorDesc: '온톨로지 스키마에 오류가 있습니다. 설정을 확인하세요.',
   graphRagDisabledReason: 'GraphRAG가 비활성 상태입니다.',
-  graphRagProviderMissingReason: 'LLM provider가 초기화되지 않았습니다.',
+  graphRagProviderMissingReason:
+    '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
   graphRagModelMissingReason: 'GraphRAG 추출 모델을 선택하세요.',
   graphRagAlreadyRunningReason: 'GraphRAG 인덱싱이 이미 실행 중입니다.',
   graphRagNoFilesReason: 'GraphRAG 인덱싱 대상 파일이 없습니다.',
@@ -2676,7 +2677,8 @@ const en: I18nKeys = {
   settingsAuto060: 'Auto-sync interval (minutes)',
   settingsAuto061: 'Minimum wait time after file changes before auto-sync.',
   settingsAuto062: 'GraphRAG is disabled.',
-  settingsAuto063: 'GraphRAG runner is missing.',
+  settingsAuto063:
+    'The selected GraphRAG model provider is disabled or the model is missing from its model list.',
   settingsAuto064: 'GraphRAG model is not configured.',
   settingsAuto065: 'Community build cannot run while indexing.',
   settingsAuto066: 'No extracted data.',
@@ -3024,7 +3026,8 @@ const en: I18nKeys = {
   ragPhaseAll: 'Full reindex',
   ragPhaseIdle: 'Idle',
   ragAutoUpdateAlreadyRunning: 'Indexing is already running.',
-  ragAutoUpdatePausedRetry: 'Performance guard paused. You can try again in about {seconds} seconds.',
+  ragAutoUpdatePausedRetry:
+    'Performance guard paused. You can try again in about {seconds} seconds.',
   ragAutoUpdateNoTargets: 'No update targets',
   vectorStoreDescriptionJson:
     'JSON File stores data in .superpower-inside/vectors.json inside the vault, so it is easy to include in Obsidian Sync, Git, and file backups, but large vector files increase write cost and sync conflict risk.',
@@ -3058,7 +3061,8 @@ const en: I18nKeys = {
   graphRagStatusSchemaErrorLabel: 'Configuration error',
   graphRagStatusSchemaErrorDesc: 'The ontology schema has errors. Check the settings.',
   graphRagDisabledReason: 'GraphRAG is disabled.',
-  graphRagProviderMissingReason: 'LLM provider is not initialized.',
+  graphRagProviderMissingReason:
+    'Enable the selected GraphRAG model provider and add the model to its model list.',
   graphRagModelMissingReason: 'Select a GraphRAG extraction model.',
   graphRagAlreadyRunningReason: 'GraphRAG indexing is already running.',
   graphRagNoFilesReason: 'There are no files eligible for GraphRAG indexing.',

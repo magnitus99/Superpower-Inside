@@ -12,6 +12,7 @@ vi.mock('obsidian', () => ({
 import {
   buildEmbeddingModelOptions,
   buildGraphRagActionGroups,
+  getGraphRagControlState,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
   getVectorStoreTransferNotice,
@@ -26,11 +27,9 @@ import {
   buildMcpJsonEditorValue,
   DEFAULT_SETTINGS,
   normalizeChatSaveFolder,
+  SuperpowerInsideSettingTab,
 } from './settings';
-import {
-  CONTEXT7_MCP_SERVER_NAME,
-  shouldShowPluginAwareContext7Warning,
-} from './mcp/context7';
+import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
 
 describe('RAG 설정 표시 헬퍼', () => {
@@ -88,9 +87,7 @@ describe('RAG 설정 표시 헬퍼', () => {
       'custom-embedding',
       'legacy-selected',
     ]);
-    expect(options.find((option) => option.id === 'text-embedding-3-small')?.source).toBe(
-      'preset',
-    );
+    expect(options.find((option) => option.id === 'text-embedding-3-small')?.source).toBe('preset');
     expect(options.find((option) => option.id === 'custom-embedding')?.source).toBe('provider');
     expect(options.find((option) => option.id === 'legacy-selected')?.label).toContain(
       '현재 선택됨',
@@ -283,6 +280,67 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
   });
 
+  it('GraphRAG 추출 모델이 없으면 provider 상태보다 모델 선택 안내를 먼저 표시한다', () => {
+    const state = getGraphRagControlState({
+      enabled: true,
+      hasProvider: false,
+      hasModel: false,
+      isRunning: false,
+      totalCandidateFiles: 1,
+      failedFileCount: 0,
+    });
+
+    expect(state.start.reason).toBe('GraphRAG 추출 모델을 선택하세요.');
+  });
+
+  it('GraphRAG 모델은 있지만 runner가 없으면 provider와 모델 목록 설정을 안내한다', () => {
+    const state = getGraphRagControlState({
+      enabled: true,
+      hasProvider: false,
+      hasModel: true,
+      isRunning: false,
+      totalCandidateFiles: 1,
+      failedFileCount: 0,
+    });
+
+    expect(state.start.reason).toBe(
+      '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
+    );
+  });
+
+  it('GraphRAG가 켜져 있고 대상 파일만 없으면 비활성 대신 대상 없음 사유를 표시한다', () => {
+    const state = getGraphRagControlState({
+      enabled: true,
+      hasProvider: true,
+      hasModel: true,
+      isRunning: false,
+      totalCandidateFiles: 0,
+      failedFileCount: 0,
+    });
+
+    expect(state.start.reason).toBe('GraphRAG 인덱싱 대상 파일이 없습니다.');
+  });
+
+  it('설정 자동 저장은 GraphRAG runner를 다시 만들 수 있도록 RAG를 재초기화한다', async () => {
+    const saveSettings = vi.fn().mockResolvedValue({ success: true });
+    const saveSettingsLight = vi.fn().mockResolvedValue(undefined);
+    const plugin = {
+      settings: {
+        ...DEFAULT_SETTINGS,
+        autoSaveEnabled: false,
+      },
+      saveSettings,
+      saveSettingsLight,
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    tab.debouncedSave();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
+    expect(saveSettingsLight).not.toHaveBeenCalled();
+  });
+
   it('설정 자동 저장 기본 debounce는 1초다', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
   });
@@ -318,7 +376,10 @@ describe('RAG 설정 표시 헬퍼', () => {
         },
       ]),
     ) as {
-      mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+      mcpServers: Record<
+        string,
+        { command: string; args?: string[]; env?: Record<string, string> }
+      >;
     };
 
     expect(parsed.mcpServers.context7?.args).toEqual([
@@ -359,7 +420,9 @@ describe('RAG 설정 표시 헬퍼', () => {
     setLanguage('ko');
     expect(t('mcpToolExecutionPolicyDesc')).toContain('멘션한 MCP 서버');
     expect(t('mcpToolExecutionPolicyDesc')).toContain('사용 의사');
-    expect(t('mcpToolExecutionPolicyDesc')).toContain('최종 답변 생성을 위해 LLM provider로 다시 전달');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain(
+      '최종 답변 생성을 위해 LLM provider로 다시 전달',
+    );
 
     setLanguage('en');
     expect(t('mcpToolExecutionPolicyDesc')).toContain('mentioned MCP server');

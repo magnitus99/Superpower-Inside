@@ -292,20 +292,20 @@ export function getGraphRagStatusPresentation(state: string): GraphRagStatusPres
 
 export function getGraphRagControlState(input: GraphRagControlStateInput): GraphRagControlState {
   const disabledReason = input.enabled ? null : t('graphRagDisabledReason');
-  const providerReason = input.hasProvider ? null : t('graphRagProviderMissingReason');
   const modelReason = input.hasModel ? null : t('graphRagModelMissingReason');
+  const providerReason = input.hasProvider ? null : t('graphRagProviderMissingReason');
   const runningReason = input.isRunning ? t('graphRagAlreadyRunningReason') : null;
   const noFilesReason = input.totalCandidateFiles > 0 ? null : t('graphRagNoFilesReason');
 
   return {
     start: toButtonState(
-      disabledReason ?? providerReason ?? modelReason ?? runningReason ?? noFilesReason,
+      disabledReason ?? modelReason ?? providerReason ?? runningReason ?? noFilesReason,
     ),
     cancel: toButtonState(input.isRunning ? null : t('graphRagNoRunningReason')),
     resume: toButtonState(
       disabledReason ??
-        providerReason ??
         modelReason ??
+        providerReason ??
         runningReason ??
         (input.failedFileCount > 0 ? null : t('graphRagNoFailedReason')),
     ),

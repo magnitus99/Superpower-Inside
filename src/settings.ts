@@ -508,7 +508,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private async saveSettingsWithFeedback(): Promise<void> {
     try {
-      await this.plugin.saveSettingsLight();
+      await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
       new Notice(t('autoSaveSuccessNotice'));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1406,7 +1406,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const actions = section.createDiv({ cls: 'superpower-inside-rag-action-groups' });
     this.graphRagActionsGroup = actions;
     const syncButtonState = getGraphRagControlState({
-      enabled: rag.graphRagEnabled && (graphState?.staleFileCount ?? 0) > 0,
+      enabled: rag.graphRagEnabled,
       hasProvider: this.plugin.hasGraphRagRunner(),
       hasModel: rag.graphRagModel.trim().length > 0,
       isRunning: this.plugin.isGraphRagIndexing(),
@@ -1421,10 +1421,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.plugin.isGraphRagIndexing(),
       reason: !rag.graphRagEnabled
         ? t('settingsAuto062')
-        : !this.plugin.hasGraphRagRunner()
-          ? t('settingsAuto063')
-          : !rag.graphRagModel.trim()
-            ? t('settingsAuto064')
+        : !rag.graphRagModel.trim()
+          ? t('settingsAuto064')
+          : !this.plugin.hasGraphRagRunner()
+            ? t('settingsAuto063')
             : this.plugin.isGraphRagIndexing()
               ? t('settingsAuto065')
               : null,
@@ -1583,7 +1583,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (this.graphRagActionsGroup) {
       const syncButtonState = getGraphRagControlState({
-        enabled: rag.graphRagEnabled && stale > 0,
+        enabled: rag.graphRagEnabled,
         hasProvider: this.plugin.hasGraphRagRunner(),
         hasModel: rag.graphRagModel.trim().length > 0,
         isRunning: this.plugin.isGraphRagIndexing(),
@@ -1598,10 +1598,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.plugin.isGraphRagIndexing(),
         reason: !rag.graphRagEnabled
           ? t('settingsAuto062')
-          : !this.plugin.hasGraphRagRunner()
-            ? t('settingsAuto063')
-            : !rag.graphRagModel.trim()
-              ? t('settingsAuto064')
+          : !rag.graphRagModel.trim()
+            ? t('settingsAuto064')
+            : !this.plugin.hasGraphRagRunner()
+              ? t('settingsAuto063')
               : this.plugin.isGraphRagIndexing()
                 ? t('settingsAuto065')
                 : null,
