@@ -58,9 +58,11 @@ export interface ToolDefinition {
   };
 }
 
-export interface StreamChatOptions {
+export interface ChatOptions {
   signal?: AbortSignal;
 }
+
+export type StreamChatOptions = ChatOptions;
 
 /* ---------- Message Normalizers ---------- */
 
@@ -73,6 +75,12 @@ function parseToolArgs(args: string): unknown {
     return JSON.parse(args);
   } catch {
     return args;
+  }
+}
+
+function throwIfChatAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('LLM request cancelled', 'AbortError');
   }
 }
 
@@ -153,6 +161,7 @@ export interface LLMProvider {
     messages: ChatMessage[],
     temperature?: number,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string>;
   streamChat(
     messages: ChatMessage[],
@@ -194,7 +203,9 @@ class OpenAICompatibleProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const body = this.buildChatBody(messages, temperature, false, tools);
     if (this.useRequestUrl) {
       const res = await requestUrl({
@@ -209,12 +220,14 @@ class OpenAICompatibleProvider implements LLMProvider {
       const data = res.json as {
         choices?: Array<{ message?: { content?: string } }>;
       };
+      throwIfChatAborted(options?.signal);
       return data.choices?.[0]?.message?.content ?? '';
     }
     const res = await fetch(this.endpoint, {
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
+      signal: options?.signal,
     });
     if (!res.ok) {
       throw new Error(`LLM chat failed: ${res.status} ${await res.text()}`);
@@ -389,7 +402,9 @@ class ClaudeProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       max_tokens: 4096,
@@ -412,6 +427,7 @@ class ClaudeProvider implements LLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
+      signal: options?.signal,
     });
     if (!res.ok) {
       throw new Error(`Claude chat failed: ${res.status} ${await res.text()}`);
@@ -561,7 +577,9 @@ class OllamaProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
     const body: Record<string, unknown> = {
@@ -583,6 +601,7 @@ class OllamaProvider implements LLMProvider {
       throw new Error(`Ollama chat failed: ${res.status} ${res.text}`);
     }
     const data = res.json as { message?: { content?: string } };
+    throwIfChatAborted(options?.signal);
     return data.message?.content ?? '';
   }
 

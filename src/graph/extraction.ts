@@ -33,6 +33,7 @@ export interface GraphExtractionChunkInput {
   contentHash: string;
   extractionModelKey: string;
   ontologySchema: OntologySchema;
+  signal?: AbortSignal;
 }
 
 interface ExtractedGraphPayload {
@@ -85,6 +86,7 @@ export class GraphExtractionIndexer {
   }
 
   async extractChunk(input: GraphExtractionChunkInput): Promise<void> {
+    throwIfGraphExtractionAborted(input.signal);
     const cacheKey = {
       entryId: input.entryId,
       contentHash: input.contentHash,
@@ -93,14 +95,17 @@ export class GraphExtractionIndexer {
       ontologyVersion: input.ontologySchema.version,
     };
     if (await this.store.isExtractionCached(cacheKey)) return;
+    throwIfGraphExtractionAborted(input.signal);
 
     const evidence = createEvidence(input);
     await this.store.addEvidence(evidence);
+    throwIfGraphExtractionAborted(input.signal);
 
     const rawResponse = await this.provider.chat([
       { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
       { role: 'user', content: buildExtractionUserPrompt(input) },
-    ], 0);
+    ], 0, undefined, { signal: input.signal });
+    throwIfGraphExtractionAborted(input.signal);
     const parsed = parseExtractedGraphPayload(rawResponse);
     if (!parsed.ok) {
       await this.reject(input, parsed.reason, parsed.rawFact);
@@ -394,6 +399,12 @@ function isExtractedClaim(value: unknown): value is ExtractedClaim {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function throwIfGraphExtractionAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('GraphRAG extraction cancelled', 'AbortError');
+  }
 }
 
 function normalizeName(name: string): string {

@@ -120,8 +120,9 @@ export class CommunitySummarizer {
         claims.slice(0, 10),
         signal,
       );
+      if (signal?.aborted) break;
 
-      const summaryVector = await this.embeddingProvider.embed(summary);
+      const summaryVector = await this.embeddingProvider.embed(summary, { signal });
 
       const relationIds = relations.map((r) => r.id);
       const claimIds = claims.map((c) => c.id);
@@ -187,10 +188,12 @@ export class CommunitySummarizer {
     ];
 
     try {
-      void signal;
-      const summary = await this.provider.chat(messages, 0.3);
+      const summary = await this.provider.chat(messages, 0.3, undefined, { signal });
       return summary.trim() || `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
     } catch {
+      if (signal?.aborted) {
+        return `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
+      }
       return `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
     }
   }

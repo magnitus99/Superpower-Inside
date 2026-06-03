@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage, LLMProvider, StreamChunk, ToolDefinition } from '../llm/providers';
+import type {
+  ChatMessage,
+  LLMProvider,
+  StreamChatOptions,
+  StreamChunk,
+  ToolDefinition,
+} from '../llm/providers';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
@@ -159,8 +165,24 @@ describe('GraphRagIndexingRunner', () => {
     const result = await runner.run({ signal: controller.signal });
 
     expect(result.cancelled).toBe(true);
-    expect(result.processedFiles).toBe(1);
+    expect(result.processedFiles).toBe(0);
     expect(result.selectedFiles).toBe(2);
+  });
+
+  it('GraphRAG 추출 요청에 runner AbortSignal을 전달한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('a.md', 'hash-a')]);
+    const controller = new AbortController();
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore: new InMemoryKnowledgeGraphStore(),
+      provider,
+    }));
+
+    await runner.run({ signal: controller.signal });
+
+    expect(provider.chatSignals).toEqual([controller.signal]);
   });
 
   it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {
@@ -442,6 +464,7 @@ describe('GraphRagIndexingRunner', () => {
 
 class FakeProvider implements LLMProvider {
   calls = 0;
+  chatSignals: Array<AbortSignal | undefined> = [];
   onCall?: () => void;
   private responses: ProviderResponse[];
 
@@ -449,8 +472,14 @@ class FakeProvider implements LLMProvider {
     this.responses = responses;
   }
 
-  chat(_messages: ChatMessage[], _temperature?: number, _tools?: ToolDefinition[]): Promise<string> {
+  chat(
+    _messages: ChatMessage[],
+    _temperature?: number,
+    _tools?: ToolDefinition[],
+    options?: StreamChatOptions,
+  ): Promise<string> {
     this.calls += 1;
+    this.chatSignals.push(options?.signal);
     this.onCall?.();
     const response = this.responses.shift() ?? textResponse(graphPayload());
     if (response.kind === 'throw') {

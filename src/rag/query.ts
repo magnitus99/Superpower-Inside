@@ -271,7 +271,7 @@ export class LLMRAGResultReranker implements RAGResultReranker {
   ): Promise<readonly string[]> {
     if (results.length === 0) return [];
     const response = await withTimeout(
-      this.provider.chat(buildRerankMessages(question, results), 0),
+      this.provider.chat(buildRerankMessages(question, results), 0, undefined, { signal }),
       this.timeoutMs,
       signal,
     );

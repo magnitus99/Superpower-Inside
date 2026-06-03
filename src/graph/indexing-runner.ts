@@ -327,9 +327,13 @@ export class GraphRagIndexingRunner {
       }
       const batch = preparedEntries.slice(i, i + CONCURRENCY_LIMIT);
       const batchResults = await Promise.all(
-        batch.map(async ({ entry, contentHash }): Promise<{ processed: boolean; failed: boolean }> => {
+        batch.map(async ({ entry, contentHash }): Promise<{
+          processed: boolean;
+          failed: boolean;
+          cancelled: boolean;
+        }> => {
           if (signal?.aborted) {
-            return { processed: false, failed: false };
+            return { processed: false, failed: false, cancelled: true };
           }
           try {
             await this.indexer.extractChunk({
@@ -341,11 +345,15 @@ export class GraphRagIndexingRunner {
               contentHash,
               extractionModelKey: this.extractionModelKey,
               ontologySchema: this.ontologySchema,
+              signal,
             });
-            return { processed: true, failed: false };
+            return { processed: true, failed: false, cancelled: false };
           } catch (error) {
+            if (signal?.aborted || isAbortError(error)) {
+              return { processed: false, failed: false, cancelled: true };
+            }
             await this.graphStore.addRejectedFact(createChunkFailureRecord(filePath, entry, error));
-            return { processed: false, failed: true };
+            return { processed: false, failed: true, cancelled: false };
           }
         }),
       );
@@ -353,7 +361,9 @@ export class GraphRagIndexingRunner {
       for (const r of batchResults) {
         if (r.processed) result.processedChunks += 1;
         if (r.failed) result.failedChunks += 1;
+        if (r.cancelled) result.cancelled = true;
       }
+      if (result.cancelled) break;
     }
     return result;
   }
@@ -409,6 +419,10 @@ function createChunkFailureRecord(
     rawFact: message,
     updatedAt: Date.now(),
   };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 function filterGraphRagFilePaths(filePaths: readonly string[]): string[] {
