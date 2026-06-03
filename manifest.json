@@ -1,7 +1,7 @@
 {
   "id": "superpower-inside",
   "name": "Superpower Inside",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "minAppVersion": "1.8.7",
   "description": "Desktop AI copilot with LLM chat, RAG, MCP tools, and source-aware context.",
   "author": "Superpower Inside Team",
