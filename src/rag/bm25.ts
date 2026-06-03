@@ -39,12 +39,16 @@ export class JsonFileBM25Index {
   private adapter: DataAdapter;
   private path: string;
   private loaded: boolean;
+  private batchDepth: number;
+  private batchDirty: boolean;
 
   constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
     this.adapter = adapter;
     this.path = path;
     this.data = { inverted: {}, docLengths: {}, docSources: {}, totalDocs: 0, avgDocLength: 1 };
     this.loaded = false;
+    this.batchDepth = 0;
+    this.batchDirty = false;
   }
 
   async load(): Promise<void> {
@@ -66,7 +70,28 @@ export class JsonFileBM25Index {
   }
 
   async persist(): Promise<void> {
+    if (this.batchDepth > 0) {
+      this.batchDirty = true;
+      return;
+    }
+    await this.persistNow();
+  }
+
+  async withBatch<T>(operation: () => Promise<T>): Promise<T> {
+    this.batchDepth++;
+    try {
+      return await operation();
+    } finally {
+      this.batchDepth--;
+      if (this.batchDepth === 0 && this.batchDirty) {
+        await this.persistNow();
+      }
+    }
+  }
+
+  private async persistNow(): Promise<void> {
     await writeJsonToVault(this.adapter, this.path, this.data);
+    this.batchDirty = false;
   }
 
   async clear(): Promise<void> {

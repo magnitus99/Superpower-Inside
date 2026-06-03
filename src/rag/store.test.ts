@@ -253,6 +253,18 @@ class TestJsonAdapter {
         this.files.set(path, data);
         return Promise.resolve();
       },
+      rename: (path: string, newPath: string) => {
+        const data = this.files.get(path);
+        if (data !== undefined) {
+          this.files.set(newPath, data);
+          this.files.delete(path);
+        }
+        return Promise.resolve();
+      },
+      remove: (path: string) => {
+        this.files.delete(path);
+        return Promise.resolve();
+      },
       mkdir: () => Promise.resolve(),
     } as unknown as DataAdapter;
   }
@@ -284,7 +296,7 @@ describe('VectorStore 파일 단위 교체', () => {
       await store.replaceFileEntries('b.md', [createEntry('b.md', 0, [0, 1], 'b')]);
     });
 
-    expect(adapter.writeCount).toBe(2);
+    expect(adapter.writeCount).toBe(1);
     expect((await store.getIndexedFilePaths()).sort()).toEqual(['a.md', 'b.md']);
   });
 });

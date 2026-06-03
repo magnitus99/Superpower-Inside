@@ -249,6 +249,38 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
     expect([...bm25.search('staleterm').keys()]).toEqual([]);
   });
+
+  it('전체 재인덱싱 중 BM25 JSON은 파일마다 저장하지 않고 한 번만 저장한다', async () => {
+    const contents = new Map([
+      ['a.md', 'alpha 문서 내용'],
+      ['b.md', 'beta 문서 내용'],
+      ['c.md', 'gamma 문서 내용'],
+    ]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const adapter = new CountingAdapter();
+    const bm25 = new JsonFileBM25Index(adapter.asDataAdapter());
+    await bm25.load();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), enableBM25: true },
+      createChatConfig(),
+      bm25,
+    );
+
+    await indexer.reindexAll();
+
+    expect(adapter.writeCount).toBe(1);
+    expect([...bm25.search('alpha').keys()].length).toBeGreaterThan(0);
+    expect([...bm25.search('beta').keys()].length).toBeGreaterThan(0);
+    expect([...bm25.search('gamma').keys()].length).toBeGreaterThan(0);
+  });
 });
 
 function createRagConfig(): RAGConfig {
@@ -318,8 +350,50 @@ function createAdapter(): DataAdapter {
       files.set(path, data);
       return Promise.resolve();
     },
+    rename: (path: string, newPath: string) => {
+      const data = files.get(path);
+      if (data !== undefined) {
+        files.set(newPath, data);
+        files.delete(path);
+      }
+      return Promise.resolve();
+    },
+    remove: (path: string) => {
+      files.delete(path);
+      return Promise.resolve();
+    },
     mkdir: () => Promise.resolve(),
   } as unknown as DataAdapter;
+}
+
+class CountingAdapter {
+  private files = new Map<string, string>();
+  writeCount = 0;
+
+  asDataAdapter(): DataAdapter {
+    return {
+      exists: (path: string) => Promise.resolve(this.files.has(path)),
+      read: (path: string) => Promise.resolve(this.files.get(path) ?? ''),
+      write: (path: string, data: string) => {
+        this.writeCount += 1;
+        this.files.set(path, data);
+        return Promise.resolve();
+      },
+      rename: (path: string, newPath: string) => {
+        const data = this.files.get(path);
+        if (data !== undefined) {
+          this.files.set(newPath, data);
+          this.files.delete(path);
+        }
+        return Promise.resolve();
+      },
+      remove: (path: string) => {
+        this.files.delete(path);
+        return Promise.resolve();
+      },
+      mkdir: () => Promise.resolve(),
+    } as unknown as DataAdapter;
+  }
 }
 
 function createFile(path: string, mtime: number, size: number): TFile {

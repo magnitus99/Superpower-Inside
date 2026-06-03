@@ -18,7 +18,13 @@ export interface RagFileTypeSummary {
   totalTargetFiles: number;
 }
 
-const DEFAULT_EXCLUDE_PATHS = ['.obsidian', '.git', 'node_modules', 'attachments'];
+const DEFAULT_EXCLUDE_PATHS = [
+  '.obsidian',
+  '.superpower-inside',
+  '.git',
+  'node_modules',
+  'attachments',
+];
 const SENSITIVE_FILE_NAMES = new Set(['.env']);
 const SENSITIVE_EXTENSIONS = new Set(['env']);
 const TEXT_EXTENSIONS = new Set([
@@ -332,17 +338,21 @@ export async function writeJsonToVault(
   const tmpPath = `${path}.tmp.${Date.now()}`;
   await adapter.write(tmpPath, json);
   try {
-    if (await adapter.exists(path)) {
-      await adapter.remove(path);
+    await adapter.rename(tmpPath, path);
+  } catch (renameError) {
+    try {
+      if (await adapter.exists(path)) {
+        await adapter.remove(path);
+      }
+      await adapter.rename(tmpPath, path);
+    } catch (fallbackError) {
+      try {
+        await adapter.remove(tmpPath);
+      } catch {
+        // temp 파일 정리 실패는 무시
+      }
+      throw fallbackError instanceof Error ? fallbackError : renameError;
     }
-  } catch {
-    // 이전 파일이 없으면 무시
-  }
-  await adapter.write(path, json);
-  try {
-    await adapter.remove(tmpPath);
-  } catch {
-    // temp 파일 정리 실패는 무시
   }
 }
 

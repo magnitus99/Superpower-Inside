@@ -391,7 +391,7 @@ export class VaultIndexer {
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
 
-    const result = await this.vectorStore.withBatch(async () => {
+    const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
       for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
@@ -490,7 +490,7 @@ export class VaultIndexer {
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    const result = await this.vectorStore.withBatch(async () => {
+    const result = await this.withIndexBatch(async () => {
       await this.vectorStore.clear();
       if (this.bm25Index) {
         await this.bm25Index.clear();
@@ -534,7 +534,7 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
 
-    const result = await this.vectorStore.withBatch(async () => {
+    const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
       for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
@@ -605,6 +605,13 @@ export class VaultIndexer {
     }
 
     return vectors;
+  }
+
+  private async withIndexBatch<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.bm25Index) {
+      return this.vectorStore.withBatch(operation);
+    }
+    return this.vectorStore.withBatch(() => this.bm25Index!.withBatch(operation));
   }
 }
 
