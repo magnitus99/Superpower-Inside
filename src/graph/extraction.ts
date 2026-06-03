@@ -1,13 +1,6 @@
 import type { LLMProvider } from '../llm/providers';
-import {
-  type OntologySchema,
-  validateOntologyRelation,
-} from '../ontology/schema';
-import {
-  EntityResolver,
-  normalizeEntityName,
-  type EntityResolverOptions,
-} from './entity-resolver';
+import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
+import { EntityResolver, normalizeEntityName, type EntityResolverOptions } from './entity-resolver';
 import {
   type GraphClaimRecord,
   type GraphClaimStance,
@@ -101,10 +94,15 @@ export class GraphExtractionIndexer {
     await this.store.addEvidence(evidence);
     throwIfGraphExtractionAborted(input.signal);
 
-    const rawResponse = await this.provider.chat([
-      { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
-      { role: 'user', content: buildExtractionUserPrompt(input) },
-    ], 0, undefined, { signal: input.signal });
+    const rawResponse = await this.provider.chat(
+      [
+        { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
+        { role: 'user', content: buildExtractionUserPrompt(input) },
+      ],
+      0,
+      undefined,
+      { signal: input.signal },
+    );
     throwIfGraphExtractionAborted(input.signal);
     const parsed = parseExtractedGraphPayload(rawResponse);
     if (!parsed.ok) {
@@ -165,7 +163,10 @@ export class GraphExtractionIndexer {
       }
 
       const record = createRelationRecord(input, evidence.id, relation, source.id, target.id, now);
-      relationIdsByKey.set(`${normalizeName(relation.source)}\u0000${normalizeName(relation.target)}`, record.id);
+      relationIdsByKey.set(
+        `${normalizeName(relation.source)}\u0000${normalizeName(relation.target)}`,
+        record.id,
+      );
       await this.store.addRelation(record);
     }
 
@@ -177,7 +178,13 @@ export class GraphExtractionIndexer {
       const entityIds = (claim.entityNames ?? [])
         .map((name) => entitiesByName.get(normalizeName(name))?.id)
         .filter((id): id is string => typeof id === 'string');
-      const record = createClaimRecord(evidence.id, claim, entityIds, [...relationIdsByKey.values()], now);
+      const record = createClaimRecord(
+        evidence.id,
+        claim,
+        entityIds,
+        [...relationIdsByKey.values()],
+        now,
+      );
       await this.store.addClaim(record);
     }
   }
@@ -203,14 +210,14 @@ function parseExtractedGraphPayload(rawResponse: string): GraphPayloadParseResul
   const jsonText = extractJsonObject(rawResponse);
   if (!jsonText) return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
   try {
-    const parsed = JSON.parse(jsonText) as Partial<ExtractedGraphPayload>;
-    if (!Array.isArray(parsed.entities) || !Array.isArray(parsed.relations) || !Array.isArray(parsed.claims)) {
+    const parsed = JSON.parse(jsonText) as unknown;
+    const normalized = normalizeExtractedGraphPayload(parsed);
+    if (!normalized) {
       return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
     }
-    const entities = parsed.entities.filter(isExtractedEntity);
-    const relations = parsed.relations.filter(isExtractedRelation);
-    const claims = parsed.claims.filter(isExtractedClaim);
-    const rawFactCount = parsed.entities.length + parsed.relations.length + parsed.claims.length;
+
+    const { payload, rawFactCount } = normalized;
+    const { entities, relations, claims } = payload;
     const validFactCount = entities.length + relations.length + claims.length;
     if (rawFactCount > 0 && validFactCount === 0) {
       return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
@@ -226,6 +233,190 @@ function parseExtractedGraphPayload(rawResponse: string): GraphPayloadParseResul
   } catch {
     return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
   }
+}
+
+function normalizeExtractedGraphPayload(
+  value: unknown,
+): { payload: ExtractedGraphPayload; rawFactCount: number } | null {
+  if (!isRecord(value)) return null;
+
+  const entityItems = collectEntityItems(value);
+  const relationItems = collectRecordItems(value.relations);
+  const claimItems = collectRecordItems(value.claims);
+  const hasKnownShape =
+    'entities' in value ||
+    'relations' in value ||
+    'claims' in value ||
+    entityItems.inferredFromTopLevel;
+
+  if (!hasKnownShape) return null;
+
+  const entities = entityItems.items
+    .map((item) => normalizeExtractedEntity(item.value, item.fallbackName))
+    .filter((entity): entity is ExtractedEntity => entity !== null);
+  const relations = relationItems
+    .map((item) => normalizeExtractedRelation(item.value))
+    .filter((relation): relation is ExtractedRelation => relation !== null);
+  const claims = claimItems
+    .map((item) => normalizeExtractedClaim(item.value))
+    .filter((claim): claim is ExtractedClaim => claim !== null);
+
+  return {
+    payload: { entities, relations, claims },
+    rawFactCount: entityItems.items.length + relationItems.length + claimItems.length,
+  };
+}
+
+function collectEntityItems(payload: Record<string, unknown>): {
+  items: { value: unknown; fallbackName?: string }[];
+  inferredFromTopLevel: boolean;
+} {
+  if ('entities' in payload) {
+    return { items: collectRecordItems(payload.entities), inferredFromTopLevel: false };
+  }
+
+  const items = Object.entries(payload)
+    .filter(
+      ([, value]) =>
+        isRecord(value) &&
+        getStringField(value, ['typeId', 'type_id', 'entityTypeId', 'entity_type', 'type']) !==
+          undefined,
+    )
+    .map(([key, value]) => ({ value, fallbackName: key }));
+  return { items, inferredFromTopLevel: items.length > 0 };
+}
+
+function collectRecordItems(value: unknown): { value: unknown; fallbackName?: string }[] {
+  if (Array.isArray(value)) {
+    return (value as readonly unknown[]).map((item) => ({ value: item }));
+  }
+  if (!isRecord(value)) return [];
+  return Object.entries(value).map(([key, item]) => ({ value: item, fallbackName: key }));
+}
+
+function normalizeExtractedEntity(value: unknown, fallbackName?: string): ExtractedEntity | null {
+  if (!isRecord(value)) return null;
+  const name = getStringField(value, ['name', 'canonicalName', 'label', 'id']) ?? fallbackName;
+  const typeId = getStringField(value, [
+    'typeId',
+    'type_id',
+    'entityTypeId',
+    'entity_type',
+    'type',
+  ]);
+  if (!name || !typeId) return null;
+  return {
+    name,
+    typeId,
+    description: getStringField(value, ['description', 'desc']),
+    aliases: getStringArrayField(value, ['aliases', 'alias']),
+    confidence: getNumberField(value, ['confidence', 'score']),
+  };
+}
+
+function normalizeExtractedRelation(value: unknown): ExtractedRelation | null {
+  if (!isRecord(value)) return null;
+  const source = getStringField(value, ['source', 'from', 'subject']);
+  const target = getStringField(value, ['target', 'to', 'object']);
+  const relationTypeId = getStringField(value, [
+    'relationTypeId',
+    'relation_type_id',
+    'relationType',
+    'relation_type',
+    'typeId',
+    'type',
+    'relation',
+  ]);
+  if (!source || !target || !relationTypeId) return null;
+  return {
+    source,
+    target,
+    relationTypeId,
+    description: getStringField(value, ['description', 'desc']),
+    confidence: getNumberField(value, ['confidence', 'score']),
+  };
+}
+
+function normalizeExtractedClaim(value: unknown): ExtractedClaim | null {
+  if (!isRecord(value)) return null;
+  const text = getStringField(value, ['text', 'claim', 'statement']);
+  const claimTypeId = getStringField(value, [
+    'claimTypeId',
+    'claim_type_id',
+    'claimType',
+    'claim_type',
+    'typeId',
+    'type',
+  ]);
+  if (!text || !claimTypeId) return null;
+  return {
+    text,
+    claimTypeId,
+    entityNames: getClaimEntityNames(value),
+    stance: getGraphClaimStance(value.stance),
+    confidence: getNumberField(value, ['confidence', 'score']),
+  };
+}
+
+function getClaimEntityNames(value: Record<string, unknown>): string[] | undefined {
+  const direct = getStringArrayField(value, ['entityNames', 'entity_names', 'entities']);
+  const names = direct ?? [];
+  for (const key of ['entity', 'subject', 'source', 'object', 'target']) {
+    const candidate = getStringField(value, [key]);
+    if (candidate) names.push(candidate);
+  }
+  return names.length > 0 ? [...new Set(names)] : undefined;
+}
+
+function getStringField(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim();
+  }
+  return undefined;
+}
+
+function getStringArrayField(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): string[] | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return [candidate.trim()];
+    }
+    if (Array.isArray(candidate)) {
+      const strings = candidate
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (strings.length > 0) return strings;
+    }
+  }
+  return undefined;
+}
+
+function getNumberField(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): number | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function getGraphClaimStance(value: unknown): GraphClaimStance | undefined {
+  return value === 'supports' ||
+    value === 'opposes' ||
+    value === 'neutral' ||
+    value === 'interprets'
+    ? value
+    : undefined;
 }
 
 function extractJsonObject(rawResponse: string): string | null {
@@ -255,6 +446,11 @@ function buildExtractionSystemPrompt(schema: OntologySchema): string {
     `Entity types: ${entityTypes}`,
     `Relation types: ${relationTypes}`,
     `Claim types: ${claimTypes}`,
+    'Return exactly one JSON object with this shape:',
+    '{"entities":[{"name":"string","typeId":"person|organization|place|work|concept|event|argument|evidence","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"source":"entity name","target":"entity name","relationTypeId":"authored|mentions|supports|opposes|collaborated_with|causes|influences|part_of|located_in|interprets","description":"string","confidence":0.0}],"claims":[{"text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityNames":["entity name"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
+    'Use entities, relations, claims as arrays even when empty.',
+    'Use typeId, relationTypeId, claimTypeId exactly. Do not use type, relation, claim_type, subject, object, or keyed objects.',
+    'Every relation source and target must match an entity name in entities.',
     schema.extractionGuidelines,
   ].join('\n');
 }
@@ -365,38 +561,6 @@ function isKnownClaimType(schema: OntologySchema, typeId: string): boolean {
   return schema.claimTypes.some((claimType) => claimType.id === typeId);
 }
 
-function isExtractedEntity(value: unknown): value is ExtractedEntity {
-  return (
-    isRecord(value) &&
-    typeof value.name === 'string' &&
-    value.name.trim().length > 0 &&
-    typeof value.typeId === 'string' &&
-    value.typeId.trim().length > 0
-  );
-}
-
-function isExtractedRelation(value: unknown): value is ExtractedRelation {
-  return (
-    isRecord(value) &&
-    typeof value.source === 'string' &&
-    value.source.trim().length > 0 &&
-    typeof value.target === 'string' &&
-    value.target.trim().length > 0 &&
-    typeof value.relationTypeId === 'string' &&
-    value.relationTypeId.trim().length > 0
-  );
-}
-
-function isExtractedClaim(value: unknown): value is ExtractedClaim {
-  return (
-    isRecord(value) &&
-    typeof value.text === 'string' &&
-    value.text.trim().length > 0 &&
-    typeof value.claimTypeId === 'string' &&
-    value.claimTypeId.trim().length > 0
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -422,5 +586,8 @@ function createId(...parts: string[]): string {
 }
 
 function sanitizeIdPart(part: string): string {
-  return part.trim().toLowerCase().replace(/[^a-z0-9가-힣_.:-]+/giu, '-');
+  return part
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣_.:-]+/giu, '-');
 }

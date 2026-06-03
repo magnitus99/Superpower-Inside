@@ -164,28 +164,34 @@ describe('GraphExtractionIndexer', () => {
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
   });
 
-  it('JSON은 유효하지만 GraphRAG schema shape가 틀린 응답은 별도 reason으로 reject한다', async () => {
+  it('LLM이 흔히 반환하는 대체 필드명은 GraphRAG schema로 정규화해 저장한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
-      provider: createProvider([
-        '```json',
-        JSON.stringify({
-          entities: [
-            { id: 'Base', type: 'work', name: 'Base' },
-            { id: '표', type: 'concept', name: '표' },
-          ],
-          relations: [{ source: '표', target: 'Base', type: 'part_of' }],
-          claims: [
+      provider: createProvider(
+        [
+          '```json',
+          JSON.stringify(
             {
-              subject: 'Base',
-              object: '표',
-              claim: "The work titled 'Base' contains a table view named '표'.",
-              type: 'factual_claim',
+              entities: [
+                { id: 'Base', type: 'work', name: 'Base' },
+                { id: '표', type: 'concept', name: '표' },
+              ],
+              relations: [{ source: '표', target: 'Base', type: 'part_of' }],
+              claims: [
+                {
+                  subject: 'Base',
+                  object: '표',
+                  claim: "The work titled 'Base' contains a table view named '표'.",
+                  type: 'factual_claim',
+                },
+              ],
             },
-          ],
-        }, null, 2),
-        '```',
-      ].join('\n')),
+            null,
+            2,
+          ),
+          '```',
+        ].join('\n'),
+      ),
       store,
     });
 
@@ -194,32 +200,42 @@ describe('GraphExtractionIndexer', () => {
       filePath: 'Base.base',
     });
 
-    expect(await store.getRejectedFacts()).toEqual([
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Base',
+      '표',
+    ]);
+    expect(await store.getRelations()).toEqual([
       expect.objectContaining({
-        reason: 'schema-shape-mismatch',
-        filePath: 'Base.base',
-        entryId: 'Base.base::0::0',
+        relationTypeId: 'part_of',
       }),
     ]);
-    expect(await store.getEntities()).toEqual([]);
+    expect(await store.getClaims()).toEqual([
+      expect.objectContaining({
+        claimTypeId: 'factual_claim',
+        text: "The work titled 'Base' contains a table view named '표'.",
+      }),
+    ]);
+    expect(await store.getRejectedFacts()).toEqual([]);
   });
 
   it('fenced JSON과 앞뒤 설명이 섞여도 유효 fact는 저장하고 invalid fact만 reject한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
-      provider: createProvider([
-        '아래 결과입니다.',
-        '```json',
-        JSON.stringify({
-          entities: [
-            { name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.9 },
-            { name: 'Mystery', typeId: 'unknown-type', description: 'Invalid', confidence: 0.9 },
-          ],
-          relations: [],
-          claims: [],
-        }),
-        '```',
-      ].join('\n')),
+      provider: createProvider(
+        [
+          '아래 결과입니다.',
+          '```json',
+          JSON.stringify({
+            entities: [
+              { name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.9 },
+              { name: 'Mystery', typeId: 'unknown-type', description: 'Invalid', confidence: 0.9 },
+            ],
+            relations: [],
+            claims: [],
+          }),
+          '```',
+        ].join('\n'),
+      ),
       store,
     });
 
@@ -257,14 +273,26 @@ describe('GraphExtractionIndexer', () => {
       provider: createProviderSequence([
         JSON.stringify({
           entities: [
-            { name: 'Paul', typeId: 'person', aliases: ['Saul'], description: 'Apostle', confidence: 0.9 },
+            {
+              name: 'Paul',
+              typeId: 'person',
+              aliases: ['Saul'],
+              description: 'Apostle',
+              confidence: 0.9,
+            },
           ],
           relations: [],
           claims: [],
         }),
         JSON.stringify({
           entities: [
-            { name: 'Saul', typeId: 'person', aliases: [], description: 'Apostle', confidence: 0.8 },
+            {
+              name: 'Saul',
+              typeId: 'person',
+              aliases: [],
+              description: 'Apostle',
+              confidence: 0.8,
+            },
           ],
           relations: [],
           claims: [],
