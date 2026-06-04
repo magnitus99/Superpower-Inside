@@ -97,6 +97,34 @@ describe('GraphRagIndexingRunner', () => {
     ]);
   });
 
+  it('현재 vault에 없는 Markdown vector entry는 GraphRAG 추출에서 제외한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('current.md', 'hash-current'),
+      createEntry('foreign.md', 'hash-foreign'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const provider = new FakeProvider();
+    const options = {
+      ...makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+      isProcessableFilePath: (filePath: string) => filePath === 'current.md',
+    };
+    const runner = new GraphRagIndexingRunner(options);
+
+    const result = await runner.run();
+
+    expect(result.totalCandidateFiles).toBe(1);
+    expect(result.processedFiles).toBe(1);
+    expect(provider.calls).toBe(1);
+    expect((await graphStore.getEvidence()).map((evidence) => evidence.filePath)).toEqual([
+      'current.md',
+    ]);
+  });
+
   it('기존 non-Markdown GraphRAG rejected fact는 다음 실행에서 정리한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-note')]);

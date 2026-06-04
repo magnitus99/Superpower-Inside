@@ -7,6 +7,12 @@ import { buildEdges, detectCommunities } from './community-detector';
 import { CommunitySummarizer } from './community-summarizer';
 import { GraphExtractionIndexer } from './extraction';
 import type { EntityResolverOptions } from './entity-resolver';
+import {
+  filterGraphRagMarkdownFilePaths,
+  filterProcessableGraphRagFilePaths,
+  isProcessableGraphRagFilePath,
+  type GraphRagFilePathPredicate,
+} from './file-paths';
 import type { GraphRejectedFactRecord, KnowledgeGraphStore } from './store';
 
 export interface GraphRagIndexingRunnerOptions {
@@ -18,6 +24,7 @@ export interface GraphRagIndexingRunnerOptions {
   extractionModelKey: string;
   maxFilesPerRun: number;
   entityResolverOptions?: EntityResolverOptions;
+  isProcessableFilePath?: GraphRagFilePathPredicate;
   onProgress?: (progress: GraphRagIndexingProgress) => void;
 }
 
@@ -65,6 +72,7 @@ export class GraphRagIndexingRunner {
   private readonly ontologySchema: OntologySchema;
   private readonly extractionModelKey: string;
   private readonly maxFilesPerRun: number;
+  private readonly isProcessableFilePath: GraphRagFilePathPredicate | undefined;
   private failedFilePaths = new Set<string>();
   private running = false;
   private communityBuildRunning = false;
@@ -86,6 +94,7 @@ export class GraphRagIndexingRunner {
     this.ontologySchema = options.ontologySchema;
     this.extractionModelKey = options.extractionModelKey;
     this.maxFilesPerRun = Math.max(1, Math.floor(options.maxFilesPerRun));
+    this.isProcessableFilePath = options.isProcessableFilePath;
     this.onProgress = options.onProgress;
     this.indexer = new GraphExtractionIndexer({
       provider: options.provider,
@@ -225,7 +234,9 @@ export class GraphRagIndexingRunner {
         }
         this.progress.currentFile = filePath;
         this.onProgress?.(this.getProgress());
-        const entries = await this.vectorStore.getEntriesByFilePaths([filePath]);
+        const entries = this.isProcessable(filePath)
+          ? await this.vectorStore.getEntriesByFilePaths([filePath])
+          : [];
         const fileResult = await this.processFile(filePath, entries, options.signal);
         result.processedChunks += fileResult.processedChunks;
         result.skippedChunks += fileResult.skippedChunks;
@@ -262,16 +273,26 @@ export class GraphRagIndexingRunner {
 
   private async getCandidateFilePaths(options: GraphRagRunOptions): Promise<string[]> {
     if (options.onlyFailedFiles === true) {
-      return filterGraphRagFilePaths([...this.failedFilePaths]).sort();
+      return filterGraphRagMarkdownFilePaths([...this.failedFilePaths]).sort();
     }
     if (options.onlyStaleFiles === true && options.staleFilePaths) {
-      return filterGraphRagFilePaths([...options.staleFilePaths]).sort();
+      return filterGraphRagMarkdownFilePaths([...options.staleFilePaths]).sort();
     }
     const records = await this.vectorStore.getFileIndexRecords();
     if (records.length > 0) {
-      return filterGraphRagFilePaths(records.map((record) => record.filePath)).sort();
+      return filterProcessableGraphRagFilePaths(
+        records.map((record) => record.filePath),
+        this.isProcessableFilePath,
+      ).sort();
     }
-    return filterGraphRagFilePaths(await this.vectorStore.getIndexedFilePaths());
+    return filterProcessableGraphRagFilePaths(
+      await this.vectorStore.getIndexedFilePaths(),
+      this.isProcessableFilePath,
+    ).sort();
+  }
+
+  private isProcessable(filePath: string): boolean {
+    return isProcessableGraphRagFilePath(filePath, this.isProcessableFilePath);
   }
 
   private async processFile(
@@ -375,10 +396,10 @@ export class GraphRagIndexingRunner {
     ]);
     const unsupportedFilePaths = new Set<string>();
     for (const record of evidence) {
-      if (!isGraphRagFilePath(record.filePath)) unsupportedFilePaths.add(record.filePath);
+      if (!this.isProcessable(record.filePath)) unsupportedFilePaths.add(record.filePath);
     }
     for (const record of rejectedFacts) {
-      if (!isGraphRagFilePath(record.filePath)) unsupportedFilePaths.add(record.filePath);
+      if (!this.isProcessable(record.filePath)) unsupportedFilePaths.add(record.filePath);
     }
     if (unsupportedFilePaths.size === 0) return;
     await this.graphStore.pruneByFilePaths([...unsupportedFilePaths]);
@@ -423,12 +444,4 @@ function createChunkFailureRecord(
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
-}
-
-function filterGraphRagFilePaths(filePaths: readonly string[]): string[] {
-  return filePaths.filter(isGraphRagFilePath);
-}
-
-function isGraphRagFilePath(filePath: string): boolean {
-  return filePath.toLowerCase().endsWith('.md');
 }

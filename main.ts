@@ -930,7 +930,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // Vector store
     this.vectorStore =
       rag.vectorStoreType === 'indexeddb'
-        ? new IndexedDbVectorStore()
+        ? new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'))
         : new JsonFileVectorStore(this.app.vault.adapter, '.superpower-inside/vectors.json');
     this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
       this.createIndexedDbName('KnowledgeGraph'),
@@ -1020,6 +1020,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
               autoMergeThreshold: rag.ontologyAutoMergeThreshold,
               pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
             },
+            isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
             onProgress: (progress) => {
               this.refreshBus.emit('graph-progress', {
                 status: 'partial',
@@ -1239,6 +1240,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       vectorStore: this.vectorStore,
       isRunning: this.isGraphRagIndexing(),
       schemaErrors,
+      isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
     });
     this.graphRagStatus = nextStatus;
     const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
@@ -1266,11 +1268,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private createIndexedDbName(kind: string): string {
+  createIndexedDbName(kind: string): string {
     const vault = this.app.vault as { getName?: () => string };
     const vaultName = vault.getName ? vault.getName() : 'default-vault';
     const pluginId = this.manifest?.id ?? 'superpower-inside';
     return `${pluginId}:${vaultName}:${kind}`.replace(/[^a-zA-Z0-9:_-]/g, '_');
+  }
+
+  private isCurrentVaultFilePath(filePath: string): boolean {
+    return this.app.vault.getAbstractFileByPath(filePath) instanceof TFile;
   }
 
   setupAutoUpdate(): void {

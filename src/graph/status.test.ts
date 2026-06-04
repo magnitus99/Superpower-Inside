@@ -103,6 +103,47 @@ describe('calculateGraphRagStatus', () => {
     expect(status.staleFileCount).toBe(0);
   });
 
+  it('현재 vault에 없는 vector file은 후보와 stale 계산에서 제외한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('current.md', 'hash-current'),
+      createEntry('foreign.md', 'hash-foreign'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-current',
+      filePath: 'current.md',
+      entryId: 'current.md::0',
+      startLine: 1,
+      quote: 'current text',
+      contentHash: 'hash-current',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'current.md::0',
+      contentHash: 'hash-current',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+      updatedAt: 1000,
+    });
+    const input = {
+      ragConfig: baseRagConfig,
+      graphStore,
+      vectorStore,
+      isRunning: false,
+      schemaErrors: [],
+      isProcessableFilePath: (filePath: string) => filePath === 'current.md',
+    };
+
+    const status = await calculateGraphRagStatus(input);
+
+    expect(status.state).toBe('ready');
+    expect(status.totalCandidateFiles).toBe(1);
+    expect(status.staleFilePaths).toEqual([]);
+  });
+
   it('graph evidence의 파일이 vector store에 없으면 stale로 반환한다', async () => {
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addEvidence({

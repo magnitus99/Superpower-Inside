@@ -401,6 +401,7 @@ export interface PluginLike {
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
   resumeRagIndexing(): void;
   getRagPerformanceGuardState(): PerformanceGuardState | null;
+  createIndexedDbName(kind: string): string;
   mcpRegistry: MCPRegistry | null;
   mcpConnectionState?: MCPConnectionState;
   mcpLastErrors?: string[];
@@ -2549,7 +2550,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return stats.totalVectors;
   }
   private async getIndexedDbVectorCount(): Promise<number> {
-    const store = new IndexedDbVectorStore();
+    const store = new IndexedDbVectorStore(this.plugin.createIndexedDbName('VectorStore'));
     const stats = await store.getStats();
     return stats.totalVectors;
   }

@@ -1,7 +1,12 @@
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import type { RAGConfig } from '../settings';
 import { createContentHash } from '../rag/hash';
-import type { VectorStore } from '../rag/store';
+import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
+import {
+  filterProcessableGraphRagFilePaths,
+  isProcessableGraphRagFilePath,
+  type GraphRagFilePathPredicate,
+} from './file-paths';
 import type { KnowledgeGraphStore } from './store';
 
 export type GraphRagIndexState =
@@ -22,6 +27,7 @@ export interface GraphRagStatusInput {
   vectorStore: VectorStore;
   isRunning: boolean;
   schemaErrors: readonly string[];
+  isProcessableFilePath?: GraphRagFilePathPredicate;
 }
 
 export interface GraphRagStatusSummary {
@@ -39,7 +45,15 @@ export interface GraphRagStatusSummary {
 export async function calculateGraphRagStatus(
   input: GraphRagStatusInput,
 ): Promise<GraphRagStatusSummary> {
-  const totalCandidateFiles = await getTotalCandidateFiles(input.vectorStore);
+  const fileIndexRecords = await getFileIndexRecords(
+    input.vectorStore,
+    input.isProcessableFilePath,
+  );
+  const totalCandidateFiles = await getTotalCandidateFiles(
+    input.vectorStore,
+    input.isProcessableFilePath,
+    fileIndexRecords,
+  );
   const maxFilesPerRun = Math.max(1, Math.floor(input.ragConfig.graphRagMaxFilesPerRun));
   if (!input.ragConfig.graphRagEnabled) {
     return emptyStatus('disabled', totalCandidateFiles, maxFilesPerRun);
@@ -69,11 +83,13 @@ export async function calculateGraphRagStatus(
 
   const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
   const cacheByEntryId = new Map(cacheRecords.map((record) => [record.entryId, record]));
-  const fileIndexRecords = await input.vectorStore.getFileIndexRecords();
   const vectorFilePaths = new Set(fileIndexRecords.map((record) => record.filePath));
   const staleFiles = new Set<string>();
   for (const record of evidence) {
-    if (!vectorFilePaths.has(record.filePath)) {
+    if (
+      !isProcessableGraphRagFilePath(record.filePath, input.isProcessableFilePath) ||
+      !vectorFilePaths.has(record.filePath)
+    ) {
       staleFiles.add(record.filePath);
     }
   }
@@ -81,7 +97,10 @@ export async function calculateGraphRagStatus(
   const relevantEntryIds = [
     ...new Set([...evidence.map((record) => record.entryId), ...cacheRecords.map((record) => record.entryId)]),
   ];
-  const entries = await input.vectorStore.getEntriesByIds(relevantEntryIds);
+  const entries = filterProcessableGraphRagEntries(
+    await input.vectorStore.getEntriesByIds(relevantEntryIds),
+    input.isProcessableFilePath,
+  );
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
   const freshCacheCountByFilePath = new Map<string, number>();
 
@@ -145,10 +164,35 @@ export async function calculateGraphRagStatus(
   };
 }
 
-async function getTotalCandidateFiles(vectorStore: VectorStore): Promise<number> {
-  const records = await vectorStore.getFileIndexRecords();
+async function getTotalCandidateFiles(
+  vectorStore: VectorStore,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+  fileIndexRecords: readonly FileIndexRecord[],
+): Promise<number> {
+  const records = fileIndexRecords;
   if (records.length > 0) return records.length;
-  return (await vectorStore.getIndexedFilePaths()).length;
+  return filterProcessableGraphRagFilePaths(
+    await vectorStore.getIndexedFilePaths(),
+    isProcessableFilePath,
+  ).length;
+}
+
+async function getFileIndexRecords(
+  vectorStore: VectorStore,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): Promise<FileIndexRecord[]> {
+  return (await vectorStore.getFileIndexRecords()).filter((record) =>
+    isProcessableGraphRagFilePath(record.filePath, isProcessableFilePath),
+  );
+}
+
+function filterProcessableGraphRagEntries(
+  entries: readonly VectorEntry[],
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): VectorEntry[] {
+  return entries.filter((entry) =>
+    isProcessableGraphRagFilePath(entry.metadata.filePath, isProcessableFilePath),
+  );
 }
 
 function emptyStatus(
