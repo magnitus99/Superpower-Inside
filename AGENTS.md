@@ -34,65 +34,65 @@
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-|------|----------|-------|
-| 플러그인 생명주기/명령어 | `main.ts` | `open-ai-chat`, `reindex-vault`, `execute-ai-directive`, RAG 이벤트 훅 |
-| 설정 타입/설정 UI | `src/settings.ts` | Provider/RAG/MCP/Chat 설정 탭. 저장 시 provider/RAG/MCP 재초기화 |
-| LLM Provider 변경 | `src/llm/providers.ts` + `src/settings.ts` | `createProvider`, `PROVIDER_KEYS`, `PROVIDER_LABELS`, 기본 설정 동시 확인 |
-| 임베딩 변경 | `src/llm/embedding.ts` | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼 |
-| LLM/임베딩 연결 테스트 | `src/llm/validation.ts` | 설정 UI의 연결 검증과 연결됨 |
-| RAG 청킹/인덱싱 | `src/rag/indexer.ts` | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트 |
-| RAG 저장소 | `src/rag/store.ts` | `JsonFileVectorStore`는 `.superpower-inside/vectors.json` 사용 |
-| RAG 질의/컨텍스트 | `src/rag/query.ts` + `src/chat/context.ts` | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감 |
-| 채팅 UI | `src/chat/view.ts` | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨 |
-| 채팅 저장/로드 | `src/chat/persistence.ts` | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원 |
-| 멘션 처리 | `src/chat/mention-parser.ts` + `src/chat/context.ts` | `@server`, `@file.md`, `@[path with spaces.md]`, 폴더 멘션 |
-| 멘션 테스트 | `src/chat/mention-parser.test.ts` | 현재 유일한 Vitest 테스트 |
-| 세션 히스토리 모달 | `src/chat/session-modal.ts` | `FuzzySuggestModal`, 채팅 메타 로드 |
-| MCP 연결/도구 호출 | `src/mcp/client.ts` + `src/mcp/registry.ts` | stdio 전용. `mcpPath`/env PATH 처리 |
-| MCP JSON 편집 | `src/utils/mcp-json.ts` | 표준 `mcpServers` JSON 검증/포맷 |
-| 활성 플러그인 탐지 | `src/utils/obsidian-compat.ts` | 비공식 Obsidian API 접근이므로 try/catch 유지 |
-| 개발 볼트/QA | `.test-vault/` | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인 |
+| Task                     | Location                                             | Notes                                                                     |
+| ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------- |
+| 플러그인 생명주기/명령어 | `main.ts`                                            | `open-ai-chat`, `reindex-vault`, `execute-ai-directive`, RAG 이벤트 훅    |
+| 설정 타입/설정 UI        | `src/settings.ts`                                    | Provider/RAG/MCP/Chat 설정 탭. 저장 시 provider/RAG/MCP 재초기화          |
+| LLM Provider 변경        | `src/llm/providers.ts` + `src/settings.ts`           | `createProvider`, `PROVIDER_KEYS`, `PROVIDER_LABELS`, 기본 설정 동시 확인 |
+| 임베딩 변경              | `src/llm/embedding.ts`                               | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼                         |
+| LLM/임베딩 연결 테스트   | `src/llm/validation.ts`                              | 설정 UI의 연결 검증과 연결됨                                              |
+| RAG 청킹/인덱싱          | `src/rag/indexer.ts`                                 | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트         |
+| RAG 저장소               | `src/rag/store.ts`                                   | `JsonFileVectorStore`는 `.superpower-inside/vectors.json` 사용            |
+| RAG 질의/컨텍스트        | `src/rag/query.ts` + `src/chat/context.ts`           | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감                |
+| 채팅 UI                  | `src/chat/view.ts`                                   | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨                |
+| 채팅 저장/로드           | `src/chat/persistence.ts`                            | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원             |
+| 멘션 처리                | `src/chat/mention-parser.ts` + `src/chat/context.ts` | `@server`, `@file.md`, `@[path with spaces.md]`, 폴더 멘션                |
+| 멘션 테스트              | `src/chat/mention-parser.test.ts`                    | 현재 유일한 Vitest 테스트                                                 |
+| 세션 히스토리 모달       | `src/chat/session-modal.ts`                          | `FuzzySuggestModal`, 채팅 메타 로드                                       |
+| MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
+| MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
+| 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
+| 개발 볼트/QA             | `.test-vault/`                                       | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인                       |
 
 ## CODE MAP
 
-| Symbol | Type | Location | Role |
-|--------|------|----------|------|
-| `SuperpowerInsidePlugin` | class | `main.ts` | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
-| `SuperpowerInsideSettings` | interface | `src/settings.ts` | 전체 설정 스키마 |
-| `DEFAULT_SETTINGS` | const | `src/settings.ts` | Provider/RAG/MCP/Chat 기본값 |
-| `SuperpowerInsideSettingTab` | class | `src/settings.ts` | 설정 UI와 debounced save |
-| `createProvider` | function | `src/llm/providers.ts` | ProviderKey → LLMProvider 팩토리 |
-| `OpenAICompatibleProvider` | class | `src/llm/providers.ts` | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리 |
-| `ClaudeProvider` | class | `src/llm/providers.ts` | Anthropic Claude Provider |
-| `OllamaProvider` | class | `src/llm/providers.ts` | Ollama Local/Cloud Provider |
-| `CachedEmbeddingProvider` | class | `src/llm/embedding.ts` | 메모리 + IndexedDB(Dexie) 임베딩 캐시 |
-| `chunkMarkdown` | function | `src/rag/indexer.ts` | 헤딩/코드블록 경계 존중 Markdown 청킹 |
-| `VaultIndexer` | class | `src/rag/indexer.ts` | 전체/증분/파일별 인덱싱 |
-| `JsonFileVectorStore` | class | `src/rag/store.ts` | vault.adapter 기반 JSON 벡터 저장소 |
-| `RAGQueryEngine` | class | `src/rag/query.ts` | 임베딩 → 코사인 유사도 → 컨텍스트 |
-| `ChatView` | class | `src/chat/view.ts` | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI |
-| `buildChatContext` | function | `src/chat/context.ts` | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성 |
-| `parseMentions` | function | `src/chat/mention-parser.ts` | `@...` 멘션 파싱과 중복 제거 |
-| `saveChat` / `loadChat` | function | `src/chat/persistence.ts` | 채팅 세션 Markdown 저장/복원 |
-| `MCPClientManager` | class | `src/mcp/client.ts` | MCP SDK Client + stdio transport |
-| `MCPRegistry` | class | `src/mcp/registry.ts` | MCP 서버 설정/클라이언트/연결 상태 관리 |
+| Symbol                       | Type      | Location                     | Role                                                   |
+| ---------------------------- | --------- | ---------------------------- | ------------------------------------------------------ |
+| `SuperpowerInsidePlugin`     | class     | `main.ts`                    | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
+| `SuperpowerInsideSettings`   | interface | `src/settings.ts`            | 전체 설정 스키마                                       |
+| `DEFAULT_SETTINGS`           | const     | `src/settings.ts`            | Provider/RAG/MCP/Chat 기본값                           |
+| `SuperpowerInsideSettingTab` | class     | `src/settings.ts`            | 설정 UI와 debounced save                               |
+| `createProvider`             | function  | `src/llm/providers.ts`       | ProviderKey → LLMProvider 팩토리                       |
+| `OpenAICompatibleProvider`   | class     | `src/llm/providers.ts`       | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리         |
+| `ClaudeProvider`             | class     | `src/llm/providers.ts`       | Anthropic Claude Provider                              |
+| `OllamaProvider`             | class     | `src/llm/providers.ts`       | Ollama Local/Cloud Provider                            |
+| `CachedEmbeddingProvider`    | class     | `src/llm/embedding.ts`       | 메모리 + IndexedDB(Dexie) 임베딩 캐시                  |
+| `chunkMarkdown`              | function  | `src/rag/indexer.ts`         | 헤딩/코드블록 경계 존중 Markdown 청킹                  |
+| `VaultIndexer`               | class     | `src/rag/indexer.ts`         | 전체/증분/파일별 인덱싱                                |
+| `JsonFileVectorStore`        | class     | `src/rag/store.ts`           | vault.adapter 기반 JSON 벡터 저장소                    |
+| `RAGQueryEngine`             | class     | `src/rag/query.ts`           | 임베딩 → 코사인 유사도 → 컨텍스트                      |
+| `ChatView`                   | class     | `src/chat/view.ts`           | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI    |
+| `buildChatContext`           | function  | `src/chat/context.ts`        | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성            |
+| `parseMentions`              | function  | `src/chat/mention-parser.ts` | `@...` 멘션 파싱과 중복 제거                           |
+| `saveChat` / `loadChat`      | function  | `src/chat/persistence.ts`    | 채팅 세션 Markdown 저장/복원                           |
+| `MCPClientManager`           | class     | `src/mcp/client.ts`          | MCP SDK Client + stdio transport                       |
+| `MCPRegistry`                | class     | `src/mcp/registry.ts`        | MCP 서버 설정/클라이언트/연결 상태 관리                |
 
 ## TEST VAULT
 
 `.test-vault/`는 저장소 내부 개발용 Obsidian 볼트이며 `.gitignore` 대상이다. 새 에이전트는 이 폴더를 샘플 fixture로만 보지 말고, 실제 QA 상태와 런타임 산출물을 담는 작업 공간으로 취급한다.
 
-| Path | Meaning |
-|------|---------|
+| Path                                              | Meaning                                                                         |
+| ------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `.test-vault/.obsidian/plugins/superpower-inside` | 저장소 루트로 향하는 심링크. 복사본이 아니어야 `npm run dev` 결과가 즉시 반영됨 |
-| `.test-vault/.obsidian/plugins/hot-reload/` | `pjeby/hot-reload` 클론. `main.js` 변경 시 플러그인 자동 리로드 |
-| `.test-vault/.obsidian/community-plugins.json` | `superpower-inside`, `hot-reload` 활성화 상태 |
-| `.test-vault/.obsidian/workspace.json` | Obsidian UI 상태. 개인/일시 상태라 커밋 대상 아님 |
-| `.test-vault/.superpower-inside/vectors.json` | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준 |
-| `.test-vault/SuperpowerInsideChats/` | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용 |
-| `.test-vault/catholic bible/` | RAG 인덱싱 대용량 한국어 Markdown corpus. 약 110개 이상의 장/입문 파일 |
-| `.test-vault/Base.base` | Obsidian Bases 기능 확인용 파일 |
-| `.test-vault/test.md`, `Welcome.md` | 간단한 문서 요약/링크/멘션 QA용 |
+| `.test-vault/.obsidian/plugins/hot-reload/`       | `pjeby/hot-reload` 클론. `main.js` 변경 시 플러그인 자동 리로드                 |
+| `.test-vault/.obsidian/community-plugins.json`    | `superpower-inside`, `hot-reload` 활성화 상태                                   |
+| `.test-vault/.obsidian/workspace.json`            | Obsidian UI 상태. 개인/일시 상태라 커밋 대상 아님                               |
+| `.test-vault/.superpower-inside/vectors.json`     | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준                           |
+| `.test-vault/SuperpowerInsideChats/`              | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용               |
+| `.test-vault/catholic bible/`                     | RAG 인덱싱 대용량 한국어 Markdown corpus. 약 110개 이상의 장/입문 파일          |
+| `.test-vault/Base.base`                           | Obsidian Bases 기능 확인용 파일                                                 |
+| `.test-vault/test.md`, `Welcome.md`               | 간단한 문서 요약/링크/멘션 QA용                                                 |
 
 `.test-vault/SuperpowerInsideChats/*.md`는 두 종류의 포맷이 섞여 있다. 2026-05-10 파일들은 이전 저장 포맷에 가깝고, 2026-05-14 파일들은 `tags`, `pinned`, `sourceCount`, `summary`, `contextAttachments`, `citations` 등 최신 메타가 포함된다. `persistence.ts` 수정 시 두 계열을 모두 열 수 있어야 한다.
 
@@ -151,19 +151,29 @@ npm run build
 - RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.superpower-inside/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
 - `manifest.json`은 `isDesktopOnly: true`다. 이 플러그인은 MCP stdio, 로컬 Ollama 등 데스크톱 중심 기능을 전제로 하며 모바일 지원을 목표로 하지 않는다.
 
+## LOGGING
+
+- 런타임 진단 로그는 `src/utils/logger.ts`의 통합 로거를 사용한다. 새 `console.*` 호출을 추가하지 않는다.
+- 로그 source는 기능 경계를 드러내는 점 표기법을 쓴다. 예: `rag.indexer`, `rag.auto`, `graph.indexing`, `embedding.openai`, `mcp`, `chat.context`.
+- 레벨 의미를 지킨다: `trace`는 반복 배치/세부 루프, `debug`는 상태 전환과 스케줄링, `info`는 작업 시작, `notice`는 사용자에게 의미 있는 성공, `warn`은 복구 가능한 문제, `error`는 실패, `fatal`은 플러그인 핵심 흐름 중단이다.
+- API 키, Authorization 헤더, 토큰, 쿠키, 세션, 비밀번호, credential 원문은 로그에 넣지 않는다. 컨텍스트 객체를 넘길 때도 endpoint/model/status/count/path 중심으로 남긴다.
+- API 429, 재시도, backoff, abort/cancel, fallback endpoint, indexing skip 사유는 반드시 로그에 남긴다.
+- 설정 화면의 General -> Debugging -> 통합 로그 페이지에서 확인 가능한 로그를 우선하고, 콘솔 출력은 `mirrorToConsole` 옵션에 종속시킨다.
+
 ## ANTI-PATTERNS
 
-| 금지 패턴 | 이유 |
-|----------|------|
-| `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반 |
-| `eslint-disable`, `prettier-ignore` | 예외를 만들기보다 타입/구조를 바로잡을 것 |
-| `ChatView`에 큰 기능을 계속 누적 | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리 |
-| 단순 `\n\n` 청킹 | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지 |
-| 런타임 `.env`/`process.env` 의존 | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸 |
-| 웹 세션/쿠키 기반 크롤링 | Obsidian 보안/배포 정책상 부적합 |
-| `.test-vault` 산출물 무심코 커밋 | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음 |
-| `package-lock.json` 없이 의존성 변경 | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다 |
-| `src/llm/providers.ts.bak` 유지 | 백업 파일 성격. 정리 작업 시 삭제 후보 |
+| 금지 패턴                                  | 이유                                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반                                                                     |
+| `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                        |
+| `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                           |
+| 새 `console.*` 직접 호출                   | 통합 로그 페이지에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용 |
+| 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                  |
+| 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                       |
+| 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                 |
+| `.test-vault` 산출물 무심코 커밋           | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음                                              |
+| `package-lock.json` 없이 의존성 변경       | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다        |
+| `src/llm/providers.ts.bak` 유지            | 백업 파일 성격. 정리 작업 시 삭제 후보                                                           |
 
 ## COMMANDS
 
