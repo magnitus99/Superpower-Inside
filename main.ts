@@ -71,7 +71,8 @@ import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { getMcpDesktopOnlyMessage, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
-import { loadLocalSettings, removeLegacyDataJson, saveLocalSettings } from './src/settings-storage';
+import { loadLocalSettings, saveLocalSettings } from './src/settings-storage';
+import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -81,6 +82,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
+  logger: AppLogger = appLogger;
   private provider: LLMProvider | null = null;
   vectorStore: VectorStore | null = null;
   knowledgeGraphStore: KnowledgeGraphStore | null = null;
@@ -116,6 +118,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   refreshBus: RefreshBus = new RefreshBus();
 
   async onload(): Promise<void> {
+    this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     await this.loadSettings();
     this.initProvider();
     await this.initRAG();
@@ -127,6 +130,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
+        this.getLogger().error('MCP auto-connect failed.', { source: 'mcp', error: err });
         new Notice(t('mcpAutoConnectFailedMessage', { message: msg }), 10000);
       });
 
@@ -189,17 +193,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
               )
             : null;
           if (!status || status.totalDocuments === 0) return;
+          this.getLogger().info('Manual RAG reindex started.', {
+            source: 'rag',
+            data: { totalDocuments: status.totalDocuments },
+          });
           new Notice(t('vaultIndexingStarted'));
           const result = await this.ragIndexingScheduler?.reindexAll();
           if (result) {
+            this.getLogger().notice('Manual RAG reindex completed.', {
+              source: 'rag',
+              data: { indexed: result.indexed, vectors: result.vectors, skipped: result.skipped },
+            });
             new Notice(t('vaultIndexingDone', { count: result.indexed }));
           }
         } catch (err) {
           if (isIndexingCancelledError(err)) {
+            this.getLogger().warn('Manual RAG reindex cancelled.', { source: 'rag' });
             new Notice(t('indexingCancelled'));
             return;
           }
           const msg = err instanceof Error ? err.message : String(err);
+          this.getLogger().error('Manual RAG reindex failed.', { source: 'rag', error: err });
           new Notice(t('indexingFailedWithMessage', { message: msg }));
         }
       },
@@ -212,9 +226,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
+    this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
   }
 
   onunload(): void {
+    this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
@@ -242,6 +258,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
     this.refreshBus.destroy();
+    this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
+  }
+
+  private getLogger(): AppLogger {
+    if (!this.logger) {
+      this.logger = appLogger;
+    }
+    return this.logger;
   }
 
   isRagIndexing(): boolean {
@@ -294,18 +318,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
     if (this.ragIndexAbortController) {
+      this.getLogger().debug('RAG operation ignored because another operation is running.', {
+        source: 'rag.indexing',
+      });
       return null;
     }
     const controller = new AbortController();
     this.ragIndexAbortController = controller;
     this.notifyRagStatsRefresh();
     try {
+      this.getLogger().info('RAG operation started.', { source: 'rag.indexing' });
       return await operation(controller.signal);
+    } catch (err) {
+      if (isIndexingCancelledError(err)) {
+        this.getLogger().warn('RAG operation cancelled.', { source: 'rag.indexing' });
+      } else {
+        this.getLogger().error('RAG operation failed.', { source: 'rag.indexing', error: err });
+      }
+      throw err;
     } finally {
       if (this.ragIndexAbortController === controller) {
         this.ragIndexAbortController = null;
       }
       this.notifyRagStatsRefresh();
+      this.getLogger().info('RAG operation finished.', { source: 'rag.indexing' });
     }
   }
 
@@ -324,11 +360,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
     try {
+      this.getLogger().info('GraphRAG indexing operation started.', {
+        source: 'graph.indexing',
+        data: { resumeFailed },
+      });
       const result = resumeFailed
         ? await this.graphRagIndexingRunner.resumeFailed({ signal: controller.signal })
         : await this.graphRagIndexingRunner.run({ signal: controller.signal });
       await this.computeAndEmitGraphRagStatus();
+      this.getLogger().notice('GraphRAG indexing operation completed.', {
+        source: 'graph.indexing',
+        data: {
+          processedFiles: result.processedFiles,
+          failedFiles: result.failedFiles,
+          processedChunks: result.processedChunks,
+          failedChunks: result.failedChunks,
+          cancelled: result.cancelled,
+        },
+      });
       return result;
+    } catch (err) {
+      this.getLogger().error('GraphRAG indexing operation failed.', {
+        source: 'graph.indexing',
+        error: err,
+      });
+      throw err;
     } finally {
       if (this.graphRagAbortController === controller) {
         this.graphRagAbortController = null;
@@ -348,6 +404,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
     try {
+      this.getLogger().info('GraphRAG stale sync started.', {
+        source: 'graph.indexing',
+        data: { staleFileCount: this.graphRagStatus.staleFileCount },
+      });
       const result = await this.graphRagIndexingRunner.run({
         signal: controller.signal,
         onlyStaleFiles: true,
@@ -355,8 +415,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       await this.computeAndEmitGraphRagStatus();
       const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
+      this.getLogger().notice('GraphRAG stale sync completed.', {
+        source: 'graph.indexing',
+        data: { processedFiles: result.processedFiles, failedFiles: result.failedFiles },
+      });
       new Notice(`GraphRAG ${presentation.label}: ${presentation.description}`);
       return result;
+    } catch (err) {
+      this.getLogger().error('GraphRAG stale sync failed.', {
+        source: 'graph.indexing',
+        error: err,
+      });
+      throw err;
     } finally {
       if (this.graphRagAbortController === controller) {
         this.graphRagAbortController = null;
@@ -367,8 +437,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null> {
     if (!this.graphRagIndexingRunner) return null;
+    this.getLogger().info('GraphRAG community build started.', { source: 'graph.community' });
     const result = await this.graphRagIndexingRunner.buildCommunities();
     await this.computeAndEmitGraphRagStatus();
+    this.getLogger().notice('GraphRAG community build completed.', {
+      source: 'graph.community',
+      data: result,
+    });
     return result;
   }
 
@@ -394,7 +469,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
         this.refreshBus.emit('exclude-counts', { status: 'success' });
       }
-    } catch {
+    } catch (err) {
+      this.getLogger().warn('RAG status calculation failed.', { source: 'rag.status', error: err });
       if (this.refreshBus) {
         this.refreshBus.emit('rag', { status: 'error', detail: t('ragStatsFailed') });
       }
@@ -679,10 +755,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       ...DEFAULT_SETTINGS.rag,
       ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
     };
+    this.settings.logging = normalizeLoggerConfig(
+      data.logging as Partial<SuperpowerInsideSettings['logging']> | undefined,
+    );
+    this.getLogger().configure(this.settings.logging);
     setLanguage(this.settings.language);
+    this.getLogger().info('Settings loaded.', {
+      source: 'settings',
+      data: {
+        language: this.settings.language,
+        logLevel: this.settings.logging.minLevel,
+        logMaxEntries: this.settings.logging.maxEntries,
+      },
+    });
     if (migratedFromLegacyData) {
       saveLocalSettings(this.app, this.settings);
-      await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
+      await this.saveData(this.settings);
     }
   }
 
@@ -704,8 +792,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }): Promise<{ success: boolean; mcpErrors?: string[] }> {
     const reinitRag = options?.reinitRag ?? true;
     const reinitMcp = options?.reinitMcp ?? true;
+    this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.getLogger().configure(this.settings.logging);
     saveLocalSettings(this.app, this.settings);
-    await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
+    await this.saveData(this.settings);
+    this.getLogger().debug('Settings saved.', {
+      source: 'settings',
+      data: { reinitRag, reinitMcp },
+    });
     this.initProvider();
     if (reinitRag) {
       await this.initRAG();
@@ -719,8 +813,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async saveSettingsLight(): Promise<void> {
+    this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.getLogger().configure(this.settings.logging);
     saveLocalSettings(this.app, this.settings);
-    await removeLegacyDataJson(this.app, this.manifest?.id ?? 'superpower-inside');
+    await this.saveData(this.settings);
+    this.getLogger().debug('Settings saved without runtime reinitialization.', {
+      source: 'settings',
+    });
     this.initProvider();
   }
 
@@ -738,11 +837,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const defaultModel = this.settings.chat.defaultModel;
     if (!defaultModel) {
       this.provider = null;
+      this.getLogger().warn('Default chat model is empty.', { source: 'provider' });
       return;
     }
     const parts = defaultModel.split(':');
     if (parts.length < 2) {
       this.provider = null;
+      this.getLogger().warn('Default chat model key is invalid.', {
+        source: 'provider',
+        data: { defaultModel },
+      });
       return;
     }
     const providerKey = parts[0] as ProviderKey;
@@ -751,6 +855,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (parts[0] === 'customOpenAI') {
       if (parts.length < 3) {
         this.provider = null;
+        this.getLogger().warn('Custom provider model key is invalid.', {
+          source: 'provider',
+          data: { defaultModel },
+        });
         return;
       }
       const providerId = parts[1];
@@ -764,12 +872,24 @@ export default class SuperpowerInsidePlugin extends Plugin {
         !customProvider.baseUrl?.trim()
       ) {
         this.provider = null;
+        this.getLogger().warn('Custom provider is unavailable for selected model.', {
+          source: 'provider',
+          data: { providerId, model: customModelName },
+        });
         return;
       }
       try {
         this.provider = createCustomOpenAIProvider(customProvider, customModelName);
+        this.getLogger().info('Chat provider initialized.', {
+          source: 'provider',
+          data: { provider: 'customOpenAI', providerId, model: customModelName },
+        });
       } catch {
         this.provider = null;
+        this.getLogger().error('Custom chat provider initialization failed.', {
+          source: 'provider',
+          data: { providerId, model: customModelName },
+        });
       }
       return;
     }
@@ -777,12 +897,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const config = this.settings[providerKey];
     if (!config?.enabled || !config.models.includes(modelName)) {
       this.provider = null;
+      this.getLogger().warn('Configured chat provider is disabled or model is unavailable.', {
+        source: 'provider',
+        data: { provider: providerKey, model: modelName },
+      });
       return;
     }
     try {
       this.provider = createProvider(providerKey, config, modelName);
-    } catch {
+      this.getLogger().info('Chat provider initialized.', {
+        source: 'provider',
+        data: { provider: providerKey, model: modelName },
+      });
+    } catch (err) {
       this.provider = null;
+      this.getLogger().error('Chat provider initialization failed.', {
+        source: 'provider',
+        data: { provider: providerKey, model: modelName },
+        error: err,
+      });
     }
   }
 
@@ -875,6 +1008,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
+  private async rebuildBM25Index(bm25Index: JsonFileBM25Index): Promise<void> {
+    if (!this.vectorStore) return;
+    const entries = await this.vectorStore.getEntries();
+    await bm25Index.rebuild(
+      entries.map((entry) => ({
+        id: entry.id,
+        text: entry.metadata.text,
+        sourcePath: entry.metadata.filePath,
+      })),
+    );
+  }
+
   async initRAG(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
     // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
@@ -886,10 +1031,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     const rag = this.settings.rag;
     const providerKey = rag.embeddingProvider;
+    this.getLogger().info('RAG runtime initialization started.', {
+      source: 'rag',
+      data: {
+        embeddingProvider: providerKey,
+        embeddingModel: rag.embeddingModel,
+        vectorStoreType: rag.vectorStoreType,
+        bm25Enabled: rag.enableBM25,
+        graphRagEnabled: rag.graphRagEnabled,
+      },
+    });
 
     const config = this.getEmbeddingProviderConfig(providerKey);
     if (!config?.enabled) {
-      console.warn(`[Superpower Inside] RAG embedding provider "${providerKey}" is disabled.`);
+      this.getLogger().warn('RAG embedding provider is disabled.', {
+        source: 'rag',
+        data: { embeddingProvider: providerKey },
+      });
       return;
     }
 
@@ -917,9 +1075,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // Create embedding provider
     let rawProvider: EmbeddingProvider;
     if (providerKey === 'ollama') {
-      rawProvider = new OllamaEmbeddingProvider(baseUrl, rag.embeddingModel, apiKey);
+      rawProvider = new OllamaEmbeddingProvider(baseUrl, rag.embeddingModel, apiKey, {
+        logger: this.getLogger(),
+      });
     } else {
-      rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel);
+      rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel, {
+        logger: this.getLogger(),
+      });
     }
 
     this.embeddingProvider = new CachedEmbeddingProvider(
@@ -945,6 +1107,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         '.superpower-inside/bm25-index.json',
       );
       await bm25Index.load();
+      if (!bm25Index.isTokenizerCurrent) {
+        this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+          source: 'rag.bm25',
+        });
+        await this.rebuildBM25Index(bm25Index);
+      }
     }
     const structuralMetadataContext = this.app.metadataCache
       ? {
@@ -1004,6 +1172,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.settings.rag,
       this.settings.chat,
       bm25Index,
+      this.getLogger(),
     );
 
     this.graphRagIndexingRunner =
@@ -1022,6 +1191,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
             },
             isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
             onProgress: (progress) => {
+              this.getLogger().debug('GraphRAG indexing progress updated.', {
+                source: 'graph.progress',
+                data: {
+                  currentFile: progress.currentFile,
+                  processedFiles: progress.processedFiles,
+                  failedFiles: progress.failedFiles,
+                  selectedFiles: progress.selectedFiles,
+                },
+              });
               this.refreshBus.emit('graph-progress', {
                 status: 'partial',
                 detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
@@ -1053,6 +1231,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
         indexingYieldMs:
           this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
         onBatchComplete: (durationMs) => {
+          this.getLogger().debug('RAG embedding batch completed.', {
+            source: 'rag.indexing',
+            data: {
+              durationMs: Math.round(durationMs),
+              guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
+            },
+          });
           this.ragPerformanceGuard?.recordBatchDuration(durationMs);
           void this.ragPerformanceGuard?.measureEventLoopLag();
         },
@@ -1060,6 +1245,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }),
       onStatusChange: (status) => {
         this.ragIndexingStatus = status;
+        this.getLogger().debug('RAG indexing scheduler status changed.', {
+          source: 'rag.indexing',
+          data: {
+            running: status.running,
+            phase: status.phase,
+            queuedFiles: status.queuedFiles,
+            lastIndexed: status.lastResult?.indexed ?? null,
+            lastVectors: status.lastResult?.vectors ?? null,
+          },
+        });
         this.refreshBus?.emit('rag', {
           status: status.running ? 'partial' : 'success',
           detail: this.formatRagIndexingStatus(status),
@@ -1072,6 +1267,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // RAG 상태 자동 갱신 타이머 (30초 간격)
     this.setupRagStatusTimer();
     this.registerRAGEvents();
+    this.getLogger().info('RAG runtime initialization completed.', {
+      source: 'rag',
+      data: {
+        hasVectorStore: this.vectorStore !== null,
+        hasGraphRagRunner: this.graphRagIndexingRunner !== null,
+        hasBM25: rag.enableBM25,
+      },
+    });
   }
 
   private formatRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
@@ -1154,10 +1357,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (!this.vaultIndexer || !this.ragIndexingScheduler) return;
 
     const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+    this.getLogger().debug('Registering RAG vault events.', {
+      source: 'rag.events',
+      data: {
+        excludePaths: effectiveExcludePaths,
+        excludeExts: this.settings.rag.excludeExts,
+      },
+    });
     this.modifyCleanup = registerModifyEvent(
       this.app.vault,
       {
         indexFile: (file: TFile) => {
+          this.getLogger().debug('Scheduling RAG reindex for modified file.', {
+            source: 'rag.events',
+            data: { path: file.path },
+          });
           this.ragIndexingScheduler?.scheduleFile(file, 'modify');
           return Promise.resolve();
         },
@@ -1181,6 +1395,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
       (filePath) => {
+        this.getLogger().debug('RAG entries removed for deleted file.', {
+          source: 'rag.events',
+          data: { path: filePath },
+        });
         this.debouncedRefreshStats();
         if (this.knowledgeGraphStore) {
           void this.cleanupGraphRagForDeletedFiles([filePath]);
@@ -1191,6 +1409,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.app.vault,
       {
         indexFile: (file: TFile) => {
+          this.getLogger().debug('Scheduling RAG reindex for renamed file.', {
+            source: 'rag.events',
+            data: { path: file.path },
+          });
           this.ragIndexingScheduler?.scheduleFile(file, 'rename');
           return Promise.resolve();
         },
@@ -1202,6 +1424,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       effectiveExcludePaths,
       this.settings.rag.excludeExts,
       (oldPath) => {
+        this.getLogger().debug('RAG entries removed for old renamed path.', {
+          source: 'rag.events',
+          data: { oldPath },
+        });
         this.debouncedRefreshStats();
         if (this.knowledgeGraphStore) {
           void this.cleanupGraphRagForDeletedFiles([oldPath]);
@@ -1244,6 +1470,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
     this.graphRagStatus = nextStatus;
     const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
+    this.getLogger().debug('GraphRAG status calculated.', {
+      source: 'graph.status',
+      data: {
+        state: this.graphRagStatus.state,
+        totalCandidateFiles: this.graphRagStatus.totalCandidateFiles,
+        staleFileCount: this.graphRagStatus.staleFileCount,
+        failedFileCount: this.graphRagStatus.failedFileCount,
+      },
+    });
     this.refreshBus?.emit('rag', {
       status: this.graphRagStatus.state === 'ready' ? 'success' : 'partial',
       detail: `GraphRAG ${presentation.label}: ${presentation.description}`,
@@ -1296,11 +1531,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async autoIndex(): Promise<void> {
     if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) {
       this.lastAutoUpdateSkippedReason = t('ragIndexerNotInitializedBase');
+      this.getLogger().warn('Auto RAG indexing skipped because runtime is not initialized.', {
+        source: 'rag.auto',
+      });
       return;
     }
     this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
     if (this.isRagIndexing()) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdateAlreadyRunning');
+      this.getLogger().debug('Auto RAG indexing skipped because indexing is already running.', {
+        source: 'rag.auto',
+      });
       this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragIndexingInProgress') });
       return;
     }
@@ -1308,6 +1549,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
         seconds: Math.ceil((guardState.remainingPauseMs ?? 0) / 1000),
+      });
+      this.getLogger().warn('Auto RAG indexing skipped because performance guard is paused.', {
+        source: 'rag.auto',
+        data: { remainingPauseMs: guardState.remainingPauseMs },
       });
       this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
       return;
@@ -1321,13 +1566,24 @@ export default class SuperpowerInsidePlugin extends Plugin {
       );
       if (status.updateRequiredDocuments.length === 0) {
         this.lastAutoUpdateSkippedReason = t('ragAutoUpdateNoTargets');
+        this.getLogger().debug('Auto RAG indexing skipped because no documents need updates.', {
+          source: 'rag.auto',
+        });
         this.refreshBus?.emit('rag', { status: 'success', detail: t('ragAutoUpdateNoTargets') });
         return;
       }
+      this.getLogger().info('Auto RAG indexing started.', {
+        source: 'rag.auto',
+        data: { updateRequired: status.updateRequiredDocuments.length },
+      });
       new Notice(t('autoUpdateIndexingStarted'));
       const result = await this.ragIndexingScheduler.indexPending();
       this.lastAutoUpdateResult = result;
       this.lastAutoUpdateSkippedReason = null;
+      this.getLogger().notice('Auto RAG indexing completed.', {
+        source: 'rag.auto',
+        data: { indexed: result.indexed, vectors: result.vectors, skipped: result.skipped },
+      });
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
@@ -1340,14 +1596,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
             seconds: Math.ceil((pausedState.remainingPauseMs ?? 0) / 1000),
           });
           this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
+          this.getLogger().warn('Auto RAG indexing paused by performance guard.', {
+            source: 'rag.auto',
+            data: { remainingPauseMs: pausedState.remainingPauseMs },
+          });
           return;
         }
         this.lastAutoUpdateSkippedReason = t('indexingCancelled');
+        this.getLogger().warn('Auto RAG indexing cancelled.', { source: 'rag.auto' });
         new Notice(t('indexingCancelled'));
         return;
       }
       const msg = err instanceof Error ? err.message : String(err);
       this.lastAutoUpdateSkippedReason = msg;
+      this.getLogger().error('Auto RAG indexing failed.', { source: 'rag.auto', error: err });
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     }
   }
@@ -1365,12 +1627,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
     const runId = ++this.mcpConnectionRunId;
     this.clearMcpRetryTimers();
+    this.getLogger().info('MCP connection run started.', {
+      source: 'mcp',
+      data: {
+        runId,
+        retryFailed: options.retryFailed,
+        serverCount: this.settings.mcpServers.length,
+      },
+    });
 
     if (this.mcpRegistry) {
       try {
         await this.mcpRegistry.disconnectAll();
-      } catch {
-        /* ignore disconnect errors */
+      } catch (err) {
+        this.getLogger().warn('Previous MCP connections did not disconnect cleanly.', {
+          source: 'mcp',
+          error: err,
+        });
       }
     }
     this.mcpRegistry = new MCPRegistry(this.settings.mcpServers);
@@ -1384,6 +1657,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.mcpRegistry.setConnectionStatus(server.name, 'error', desktopOnlyMessage);
       }
       this.refreshMcpConnectionState();
+      this.getLogger().error('MCP stdio is not available on this platform.', {
+        source: 'mcp',
+        data: { serverCount: enabledServers.length },
+      });
       return errors;
     }
 
@@ -1409,12 +1686,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
           break;
         }
 
+        this.getLogger().warn('Retrying failed MCP connections.', {
+          source: 'mcp',
+          data: { delayMs, failedServers: failedServers.map((server) => server.name) },
+        });
         this.setMcpConnectionState('connecting', errors);
         errors = await this.connectMcpServers(failedServers, runId);
       }
     }
 
     this.refreshMcpConnectionState();
+    this.getLogger().notice('MCP connection run completed.', {
+      source: 'mcp',
+      data: { runId, errorCount: errors.length },
+    });
     return errors;
   }
 
@@ -1467,6 +1752,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
         }
 
         registry.setConnectionStatus(server.name, 'connected');
+        this.getLogger().info('MCP server connected.', {
+          source: 'mcp',
+          data: { server: server.name, command: server.command },
+        });
       } catch (err) {
         let msg = err instanceof Error ? err.message : String(err);
         if (shouldAppendMcpPathHint(server.command, msg)) {
@@ -1474,6 +1763,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
         }
         if (runId !== this.mcpConnectionRunId) return;
         registry.setConnectionStatus(server.name, 'error', msg);
+        this.getLogger().error('MCP server connection failed.', {
+          source: 'mcp',
+          data: { server: server.name, command: server.command },
+          error: err,
+        });
         errors.push(`${server.name}: ${msg}`);
       } finally {
         if (runId === this.mcpConnectionRunId) {

@@ -25,6 +25,7 @@ import {
 import {
   buildEmbeddingProviderOptions,
   buildMcpJsonEditorValue,
+  buildChatModelOptions,
   DEFAULT_SETTINGS,
   normalizeChatSaveFolder,
   SuperpowerInsideSettingTab,
@@ -117,6 +118,32 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(options).toContainEqual({ value: 'customOpenAI:local', label: 'Local Embeddings' });
     expect(options.some((option) => option.value === 'customOpenAI:disabled')).toBe(false);
+  });
+
+  it('GraphRAG 모델 옵션은 custom provider 내부 id 대신 사용자가 정한 이름을 표시한다', () => {
+    const options = buildChatModelOptions(
+      {
+        ...DEFAULT_SETTINGS,
+        customOpenAIProviders: [
+          {
+            id: 'custom-1',
+            name: 'Onyx Graph Provider',
+            apiKey: 'key',
+            baseUrl: 'https://example.com/v1',
+            models: ['auto'],
+            enabled: true,
+            useRequestUrl: true,
+          },
+        ],
+      },
+      { currentModel: 'customOpenAI:custom-1:auto', includeEmpty: true },
+    );
+
+    expect(options).toContainEqual({
+      value: 'customOpenAI:custom-1:auto',
+      label: 'Onyx Graph Provider — auto',
+    });
+    expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
   });
 
   it('채팅 저장 폴더 값은 레거시 이름이어도 저장된 값을 그대로 보존한다', () => {

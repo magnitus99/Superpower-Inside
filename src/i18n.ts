@@ -26,6 +26,29 @@ export interface I18nKeys {
   langKo: string;
   langEn: string;
   languageChangeConfirm: string;
+  loggingDebugPanelTitle: string;
+  loggingDebugPanelDesc: string;
+  loggingMinLevel: string;
+  loggingMinLevelDesc: string;
+  loggingMirrorConsole: string;
+  loggingMirrorConsoleDesc: string;
+  loggingMaxEntries: string;
+  loggingMaxEntriesDesc: string;
+  loggingOpenViewer: string;
+  loggingOpenViewerDesc: string;
+  loggingOpenViewerButton: string;
+  loggingViewerTitle: string;
+  loggingViewerDesc: string;
+  loggingCopyVisible: string;
+  loggingClear: string;
+  loggingFilterLevel: string;
+  loggingFilterAllLevels: string;
+  loggingFilterSource: string;
+  loggingFilterSourcePlaceholder: string;
+  loggingVisibleCount: string;
+  loggingEmpty: string;
+  loggingCopied: string;
+  loggingCopyFailed: string;
 
   // 프로바이더 탭
   apiKey: string;
@@ -127,7 +150,7 @@ export interface I18nKeys {
   excludePathMissingWarning: string;
   excludeExtLeadingDot: string;
   excludeExtInvalid: string;
-  excludeExtMarkdownWarning: string;
+  excludeExtProtectedDocument: string;
   chunkSize: string;
   chunkSizeDesc: string;
   ragChunkSizeOllamaWarning: string;
@@ -707,6 +730,7 @@ export interface I18nKeys {
   tabChat: string;
   tabMcp: string;
   tabAdvanced: string;
+  tabLogs: string;
 
   // 명령어
   mcpAutoConnectFailedCount: string;
@@ -1094,6 +1118,29 @@ const ko: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
+  loggingDebugPanelTitle: '디버깅',
+  loggingDebugPanelDesc: '통합 로그 수집과 표시 범위를 제어합니다.',
+  loggingMinLevel: '최소 로그 레벨',
+  loggingMinLevelDesc: '이 레벨보다 낮은 로그는 저장하지 않습니다.',
+  loggingMirrorConsole: '콘솔에도 출력',
+  loggingMirrorConsoleDesc: '통합 로그를 Obsidian 개발자 콘솔에도 함께 출력합니다.',
+  loggingMaxEntries: '로그 보존 개수',
+  loggingMaxEntriesDesc: '메모리에 유지할 최근 로그 개수입니다. 오래된 항목부터 제거됩니다.',
+  loggingOpenViewer: '통합 로그 보기',
+  loggingOpenViewerDesc: '현재 세션의 플러그인 로그를 전체 페이지로 확인합니다.',
+  loggingOpenViewerButton: '로그 페이지 열기',
+  loggingViewerTitle: '통합 로그',
+  loggingViewerDesc: '플러그인 런타임, RAG, GraphRAG, MCP, 임베딩 오류를 한 곳에서 확인합니다.',
+  loggingCopyVisible: '보이는 로그 복사',
+  loggingClear: '로그 비우기',
+  loggingFilterLevel: '레벨',
+  loggingFilterAllLevels: '전체',
+  loggingFilterSource: '출처',
+  loggingFilterSourcePlaceholder: '예: embedding, rag, mcp',
+  loggingVisibleCount: '표시 {count}개',
+  loggingEmpty: '표시할 로그가 없습니다.',
+  loggingCopied: '로그를 복사했습니다.',
+  loggingCopyFailed: '로그 복사 실패: {message}',
 
   // Providers
   apiKey: 'API 키',
@@ -1196,7 +1243,8 @@ const ko: I18nKeys = {
     '현재 볼트에서 찾을 수 없습니다. 패턴이라면 그대로 저장할 수 있습니다.',
   excludeExtLeadingDot: '앞의 점은 저장 시 제거됩니다.',
   excludeExtInvalid: '확장자는 영문/숫자/하이픈/밑줄만 입력하세요.',
-  excludeExtMarkdownWarning: 'md를 제외하면 마크다운 노트가 인덱싱되지 않습니다.',
+  excludeExtProtectedDocument:
+    'Obsidian 핵심 문서 확장자는 제외할 수 없습니다. 문제가 있는 파일은 경로나 폴더로 제외하세요.',
   excludeChatFolder: '채팅 저장 폴더 RAG 제외',
   excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
   chunkSize: '청크 크기',
@@ -1806,7 +1854,7 @@ const ko: I18nKeys = {
   // Settings Header
   settingsTitle: 'Superpower Inside — 설정',
   securityWarning:
-    '경고: 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 저장소에 저장됩니다. 볼트 동기화 대상 data.json에는 새로 저장하지 않지만, 같은 기기에 접근할 수 있는 사용자나 로컬 백업에는 노출될 수 있습니다.',
+    '경고: 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 저장소와 플러그인 data.json에 저장됩니다. 볼트 동기화, 로컬 백업, 같은 기기에 접근할 수 있는 사용자에게 노출될 수 있습니다.',
 
   // Tabs
   tabGeneral: 'Overview',
@@ -1826,6 +1874,7 @@ const ko: I18nKeys = {
   tabChat: '채팅',
   tabMcp: 'MCP',
   tabAdvanced: '고급',
+  tabLogs: '로그',
 
   // Commands
   mcpAutoConnectFailedCount: 'MCP 자동 연결 실패: {count}개 서버를 확인하세요.',
@@ -2260,6 +2309,30 @@ const en: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
+  loggingDebugPanelTitle: 'Debugging',
+  loggingDebugPanelDesc: 'Control integrated log collection and display scope.',
+  loggingMinLevel: 'Minimum log level',
+  loggingMinLevelDesc: 'Logs below this level are not stored.',
+  loggingMirrorConsole: 'Mirror to console',
+  loggingMirrorConsoleDesc: 'Also write integrated logs to the Obsidian developer console.',
+  loggingMaxEntries: 'Retained log entries',
+  loggingMaxEntriesDesc: 'Recent log entries kept in memory. Older entries are removed first.',
+  loggingOpenViewer: 'View integrated logs',
+  loggingOpenViewerDesc: 'Open a full-page view of the current plugin session logs.',
+  loggingOpenViewerButton: 'Open log page',
+  loggingViewerTitle: 'Integrated Logs',
+  loggingViewerDesc:
+    'Inspect plugin runtime, RAG, GraphRAG, MCP, and embedding errors in one place.',
+  loggingCopyVisible: 'Copy visible logs',
+  loggingClear: 'Clear logs',
+  loggingFilterLevel: 'Level',
+  loggingFilterAllLevels: 'All',
+  loggingFilterSource: 'Source',
+  loggingFilterSourcePlaceholder: 'e.g. embedding, rag, mcp',
+  loggingVisibleCount: 'Showing {count}',
+  loggingEmpty: 'No logs to show.',
+  loggingCopied: 'Logs copied.',
+  loggingCopyFailed: 'Failed to copy logs: {message}',
 
   // Providers
   apiKey: 'API Key',
@@ -2362,7 +2435,8 @@ const en: I18nKeys = {
     'This path was not found in the current vault. You can still save it if it is a pattern.',
   excludeExtLeadingDot: 'The leading dot will be removed.',
   excludeExtInvalid: 'Use only letters, numbers, hyphens, or underscores.',
-  excludeExtMarkdownWarning: 'Excluding md prevents markdown notes from being indexed.',
+  excludeExtProtectedDocument:
+    'Obsidian core document extensions cannot be excluded. Exclude the problematic file or folder by path instead.',
   excludeChatFolder: 'Exclude Chat Folder from RAG',
   excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
   chunkSize: 'Chunk Size',
@@ -2977,7 +3051,7 @@ const en: I18nKeys = {
   // Settings Header
   settingsTitle: 'Superpower Inside — Settings',
   securityWarning:
-    'Warning: settings and API keys are stored unencrypted in this device’s Obsidian local storage. They are no longer newly saved to synced data.json, but may still be exposed to users with access to this device or local backups.',
+    'Warning: settings and API keys are stored unencrypted in this device’s Obsidian local storage and plugin data.json. They may be exposed through vault sync, local backups, or users with access to this device.',
 
   // Tabs
   tabGeneral: 'Overview',
@@ -2997,6 +3071,7 @@ const en: I18nKeys = {
   tabChat: 'Chat',
   tabMcp: 'MCP',
   tabAdvanced: 'Advanced',
+  tabLogs: 'Logs',
 
   // Commands
   mcpAutoConnectFailedCount: 'MCP auto-connect failed: check {count} servers.',

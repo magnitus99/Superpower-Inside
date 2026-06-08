@@ -172,7 +172,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.rag.embeddingModel).toBe('text-embedding-3-small');
   });
 
-  it('localStorage 설정이 없으면 legacy data.json을 마이그레이션한다', async () => {
+  it('localStorage 설정이 없으면 data.json에서 복구하고 localStorage에도 다시 저장한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const app = createApp({ legacyDataExists: true });
@@ -180,6 +180,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       app: ReturnType<typeof createApp>;
       manifest: { id: string };
       loadData: ReturnType<typeof vi.fn>;
+      saveData: ReturnType<typeof vi.fn>;
       settings: typeof DEFAULT_SETTINGS;
     };
     plugin.app = app;
@@ -189,6 +190,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'legacy-key' },
       }),
     );
+    plugin.saveData = vi.fn(() => Promise.resolve());
 
     await plugin.loadSettings();
 
@@ -199,12 +201,15 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         openai: expect.objectContaining({ apiKey: 'legacy-key' }),
       }),
     );
-    expect(app.vault.adapter.remove).toHaveBeenCalledWith(
-      '.obsidian/plugins/superpower-inside/data.json',
+    expect(app.vault.adapter.remove).not.toHaveBeenCalled();
+    expect(plugin.saveData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        openai: expect.objectContaining({ apiKey: 'legacy-key' }),
+      }),
     );
   });
 
-  it('설정 저장 시 saveData 대신 localStorage를 사용한다', async () => {
+  it('설정 저장 시 localStorage와 data.json에 모두 저장해 재활성화 후에도 복구 가능하게 한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const app = createApp();
@@ -225,8 +230,11 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 
     await plugin.saveSettings();
 
-    expect(plugin.saveData).not.toHaveBeenCalled();
-    expect(app.saveLocalStorage).toHaveBeenCalledWith('superpower-inside:settings', DEFAULT_SETTINGS);
+    expect(app.saveLocalStorage).toHaveBeenCalledWith(
+      'superpower-inside:settings',
+      DEFAULT_SETTINGS,
+    );
+    expect(plugin.saveData).toHaveBeenCalledWith(DEFAULT_SETTINGS);
   });
 });
 

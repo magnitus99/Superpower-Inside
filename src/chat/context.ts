@@ -14,6 +14,7 @@ import {
   shouldUseAutoRagForMentions,
   type MentionResolver,
 } from './mention-parser';
+import { appLogger } from '../utils/logger';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -164,6 +165,10 @@ export async function buildChatContext(
         sourceIds,
       });
     } catch (err) {
+      appLogger.warn('Auto RAG context build failed.', {
+        source: 'chat.context',
+        error: err,
+      });
       warnings.push(t('contextRagLoadFailed', { error: stringifyError(err) }));
       attachments.push({
         id: 'rag:auto',
@@ -374,6 +379,11 @@ async function appendFileMention(
     });
     return { file, content };
   } catch (err) {
+    appLogger.warn('File context attachment failed.', {
+      source: 'chat.context',
+      data: { path },
+      error: err,
+    });
     attachments.push({
       id: `file:${path}`,
       type: 'file',
@@ -520,6 +530,11 @@ async function appendServerMention(
       detail: attachedFully ? undefined : t('contextPartialBudget'),
     });
   } catch (err) {
+    appLogger.warn('MCP context attachment failed.', {
+      source: 'chat.context',
+      data: { server: name },
+      error: err,
+    });
     attachments.push({
       id: `mcp:${name}`,
       type: 'mcp-server',

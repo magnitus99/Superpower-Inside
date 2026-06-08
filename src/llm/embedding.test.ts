@@ -7,6 +7,7 @@ import {
   createEmbeddingCacheNamespace,
   type EmbeddingProvider,
 } from './embedding';
+import { createLogger } from '../utils/logger';
 import {
   requestUrl,
   type RequestUrlParam,
@@ -23,11 +24,12 @@ function mockResponse(data: {
   status: number;
   json: Record<string, unknown>;
   text: string;
+  headers?: Record<string, string>;
 }): RequestUrlResponsePromise {
   const jsonPromise = Promise.resolve(data.json);
   const full: RequestUrlResponse = {
     status: data.status,
-    headers: {},
+    headers: data.headers ?? {},
     arrayBuffer: new ArrayBuffer(0),
     json: data.json,
     text: data.text,
@@ -60,7 +62,7 @@ describe('OllamaEmbeddingProvider', () => {
 
     const mocked = vi.mocked(requestUrl);
     mocked.mockImplementation((request: string | RequestUrlParam) => {
-      const url = typeof request === 'string' ? request : request.url ?? '';
+      const url = typeof request === 'string' ? request : (request.url ?? '');
       if (url.endsWith('/api/embed')) {
         return mockResponse({ status: 400, json: {}, text: 'bad request' });
       }
@@ -90,7 +92,7 @@ describe('OllamaEmbeddingProvider', () => {
 
     const mocked = vi.mocked(requestUrl);
     mocked.mockImplementation((request: string | RequestUrlParam) => {
-      const url = typeof request === 'string' ? request : request.url ?? '';
+      const url = typeof request === 'string' ? request : (request.url ?? '');
       if (!url.endsWith('/api/embed')) {
         return mockResponse({ status: 500, json: {}, text: 'unexpected fallback' });
       }
@@ -125,7 +127,7 @@ describe('OllamaEmbeddingProvider', () => {
 
     const mocked = vi.mocked(requestUrl);
     mocked.mockImplementation((request: string | RequestUrlParam) => {
-      const url = typeof request === 'string' ? request : request.url ?? '';
+      const url = typeof request === 'string' ? request : (request.url ?? '');
       if (url.endsWith('/api/embed')) {
         return mockResponse({ status: 400, json: {}, text: 'some other error' });
       }
@@ -138,9 +140,7 @@ describe('OllamaEmbeddingProvider', () => {
       return mockResponse({ status: 500, json: {}, text: 'unknown' });
     });
 
-    await expect(provider.embedBatch(['short'])).rejects.toThrow(
-      /Ollama embedding failed/,
-    );
+    await expect(provider.embedBatch(['short'])).rejects.toThrow(/Ollama embedding failed/);
   });
 });
 
@@ -185,21 +185,74 @@ describe('OpenAIEmbeddingProvider', () => {
       }),
     );
   });
+
+  it('429 rate limit 응답은 retry-after/backoff 이후 재시도하고 통합 로거에 남긴다', async () => {
+    const logger = createLogger({ minLevel: 'trace', maxEntries: 100, mirrorToConsole: false });
+    const delays: number[] = [];
+    vi.mocked(requestUrl)
+      .mockImplementationOnce(() =>
+        mockResponse({
+          status: 429,
+          json: {},
+          text: 'rate limited',
+          headers: { 'retry-after': '2' },
+        }),
+      )
+      .mockImplementationOnce(() =>
+        mockResponse({
+          status: 200,
+          json: { data: [{ embedding: [0.5, 0.6] }] },
+          text: '',
+        }),
+      );
+
+    const provider = new OpenAIEmbeddingProvider(
+      'test-key',
+      'http://localhost:1234/v1',
+      'custom-embedding',
+      {
+        logger,
+        retry: {
+          maxRetries: 2,
+          baseDelayMs: 10,
+          maxDelayMs: 10_000,
+          sleep: (ms) => {
+            delays.push(ms);
+            return Promise.resolve();
+          },
+        },
+      },
+    );
+
+    await expect(provider.embedBatch(['first'])).resolves.toEqual([[0.5, 0.6]]);
+
+    expect(requestUrl).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([2000]);
+    expect(logger.getEntries()).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        source: 'embedding.openai',
+        message: 'Embedding API rate limited; retrying request.',
+      }),
+    );
+  });
 });
 
 describe('CachedEmbeddingProvider', () => {
   it('provider와 model을 함께 cache namespace에 포함한다', () => {
-    expect(createEmbeddingCacheNamespace('openai', 'shared-model')).toBe(
-      'openai::shared-model',
-    );
-    expect(createEmbeddingCacheNamespace('ollama', 'shared-model')).toBe(
-      'ollama::shared-model',
-    );
+    expect(createEmbeddingCacheNamespace('openai', 'shared-model')).toBe('openai::shared-model');
+    expect(createEmbeddingCacheNamespace('ollama', 'shared-model')).toBe('ollama::shared-model');
   });
 
   it('같은 텍스트라도 cache namespace가 다르면 서로 다른 벡터를 저장한다', async () => {
-    const first = new CachedEmbeddingProvider(createStaticEmbeddingProvider([1, 0]), 'openai::model');
-    const second = new CachedEmbeddingProvider(createStaticEmbeddingProvider([0, 1]), 'ollama::model');
+    const first = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([1, 0]),
+      'openai::model',
+    );
+    const second = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([0, 1]),
+      'ollama::model',
+    );
     await first.clearCache();
 
     await expect(first.embed('same text')).resolves.toEqual([1, 0]);

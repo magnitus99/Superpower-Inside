@@ -1,6 +1,7 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
 import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
+import { isRecommendableExcludeExtension } from './rag-exclude-validation';
 
 export interface RagFileTypeCount {
   extension: string;
@@ -132,6 +133,9 @@ export async function getRagFileTypeSummary(
     const key = extension || '(none)';
     if (await isRagIndexableFile(vault, file)) {
       targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
+      continue;
+    }
+    if (key !== '(none)' && !isRecommendableExcludeExtension(key)) {
       continue;
     }
 

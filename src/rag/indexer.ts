@@ -13,6 +13,7 @@ import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 import { createContentHash } from './hash';
 import type { PerformanceGuardState } from './performance-guard';
+import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 
 export class IndexingCancelledError extends Error {
   constructor() {
@@ -105,7 +106,11 @@ interface TextSegment {
   endLine: number;
 }
 
-function splitTextToSegments(text: string, initialLine: number, maxChunkSize: number): TextSegment[] {
+function splitTextToSegments(
+  text: string,
+  initialLine: number,
+  maxChunkSize: number,
+): TextSegment[] {
   const maxSize = Math.max(1, Math.floor(maxChunkSize));
   const lines = text.split('\n');
   const segments: TextSegment[] = [];
@@ -165,15 +170,17 @@ function splitTextToSegments(text: string, initialLine: number, maxChunkSize: nu
 function enforceChunkSize(chunks: Chunk[], maxChunkSize: number): Chunk[] {
   return chunks.flatMap((chunk) => {
     if (chunk.text.length <= maxChunkSize) return [chunk];
-    return splitTextToSegments(chunk.text, chunk.metadata.startLine, maxChunkSize).map((segment) => ({
-      ...chunk,
-      text: segment.text,
-      metadata: {
-        ...chunk.metadata,
-        startLine: segment.startLine,
-        endLine: segment.endLine,
-      },
-    }));
+    return splitTextToSegments(chunk.text, chunk.metadata.startLine, maxChunkSize).map(
+      (segment) => ({
+        ...chunk,
+        text: segment.text,
+        metadata: {
+          ...chunk.metadata,
+          startLine: segment.startLine,
+          endLine: segment.endLine,
+        },
+      }),
+    );
   });
 }
 
@@ -200,7 +207,10 @@ function applyLineOverlap(chunks: Chunk[], overlapChars: number, maxChunkSize: n
     if (!overlapText) return chunk;
 
     const overlapLineCount = overlapText.split('\n').length;
-    const startLine = Math.max(previous.metadata.startLine, chunk.metadata.startLine - overlapLineCount);
+    const startLine = Math.max(
+      previous.metadata.startLine,
+      chunk.metadata.startLine - overlapLineCount,
+    );
     return {
       ...chunk,
       text: `${overlapText}\n${chunk.text}`.trim(),
@@ -369,6 +379,7 @@ export class VaultIndexer {
   private embeddingProvider: EmbeddingProvider;
   private ragConfig: RAGConfig;
   private chatConfig: ChatConfig;
+  private logger: ScopedLogger;
 
   constructor(
     vault: Vault,
@@ -377,12 +388,14 @@ export class VaultIndexer {
     ragConfig: RAGConfig,
     chatConfig: ChatConfig,
     private bm25Index?: JsonFileBM25Index,
+    logger?: AppLogger | ScopedLogger,
   ) {
     this.chatConfig = chatConfig;
     this.vault = vault;
     this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
     this.ragConfig = ragConfig;
+    this.logger = createScopedIndexerLogger(logger);
   }
 
   async indexVault(options: IndexingOptions = {}): Promise<IndexingResult> {
@@ -390,6 +403,7 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
+    this.logger.info('Vault indexing started.', { data: { fileCount: files.length } });
 
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
@@ -408,7 +422,7 @@ export class VaultIndexer {
       }
       return batchResult;
     });
-    return finishIndexingResult(
+    const finished = finishIndexingResult(
       {
         indexed: result.indexed,
         vectors: result.vectors,
@@ -418,11 +432,23 @@ export class VaultIndexer {
       startedAt,
       options,
     );
+    this.logger.notice('Vault indexing completed.', {
+      data: {
+        indexed: finished.indexed,
+        vectors: finished.vectors,
+        skipped: finished.skipped,
+        durationMs: Math.round(finished.durationMs),
+      },
+    });
+    return finished;
   }
 
   async indexFile(file: TFile, options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
+    this.logger.debug('File indexing started.', {
+      data: { path: file.path, size: file.stat.size },
+    });
     const content = await this.vault.cachedRead(file);
     throwIfIndexingCancelled(options.signal);
     const sourceHash = createContentHash(content);
@@ -439,11 +465,15 @@ export class VaultIndexer {
         await this.bm25Index.persist();
       }
       throwIfIndexingCancelled(options.signal);
-      return finishIndexingResult(
+      const skipped = finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
         startedAt,
         options,
       );
+      this.logger.debug('File indexing skipped because no chunks were produced.', {
+        data: { path: file.path },
+      });
+      return skipped;
     }
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
@@ -480,11 +510,20 @@ export class VaultIndexer {
       throwIfIndexingCancelled(options.signal);
     }
 
-    return finishIndexingResult(
+    const finished = finishIndexingResult(
       { indexed: 1, vectors: entries.length, skipped: 0, documents: [file.path] },
       startedAt,
       options,
     );
+    this.logger.debug('File indexing completed.', {
+      data: {
+        path: file.path,
+        chunks: chunks.length,
+        vectors: entries.length,
+        durationMs: Math.round(finished.durationMs),
+      },
+    });
+    return finished;
   }
 
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
@@ -529,7 +568,8 @@ export class VaultIndexer {
       this.vault,
       this.vectorStore,
       this.ragConfig,
-      this.chatConfig, options.signal,
+      this.chatConfig,
+      options.signal,
     );
     throwIfIndexingCancelled(options.signal);
     const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
@@ -585,7 +625,16 @@ export class VaultIndexer {
       throwIfIndexingCancelled(options.signal);
       const batch = texts.slice(offset, offset + batchSize);
       const startedAt = performance.now();
-      const batchVectors = await this.embeddingProvider.embedBatch(batch, { signal: options.signal });
+      this.logger.trace('Embedding batch started.', {
+        data: {
+          offset,
+          batchSize: batch.length,
+          total: texts.length,
+        },
+      });
+      const batchVectors = await this.embeddingProvider.embedBatch(batch, {
+        signal: options.signal,
+      });
       expectedDimension = assertValidEmbeddingBatch(
         batchVectors,
         batch.length,
@@ -594,6 +643,14 @@ export class VaultIndexer {
       );
       const durationMs = performance.now() - startedAt;
       options.onBatchComplete?.(durationMs);
+      this.logger.trace('Embedding batch validated.', {
+        data: {
+          offset,
+          batchSize: batch.length,
+          durationMs: Math.round(durationMs),
+          dimension: expectedDimension,
+        },
+      });
       if (options.getPerformanceGuardState?.()?.mode === 'paused') {
         throw new IndexingCancelledError();
       }
@@ -613,6 +670,11 @@ export class VaultIndexer {
     }
     return this.vectorStore.withBatch(() => this.bm25Index!.withBatch(operation));
   }
+}
+
+function createScopedIndexerLogger(logger: AppLogger | ScopedLogger | undefined): ScopedLogger {
+  const candidate = logger ?? appLogger;
+  return 'child' in candidate ? candidate.child('rag.indexer') : candidate;
 }
 
 function shouldConsiderRagPath(

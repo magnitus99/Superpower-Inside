@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  validateExcludeExtensionInput,
-  validateExcludePathInput,
-} from './rag-exclude-validation';
+import { validateExcludeExtensionInput, validateExcludePathInput } from './rag-exclude-validation';
 
 describe('RAG 제외 경로 검증', () => {
   it('앞뒤 공백을 제거하고 경고를 반환한다', () => {
@@ -55,10 +52,16 @@ describe('RAG 제외 확장자 검증', () => {
     expect(comma.issues).toContainEqual({ level: 'error', code: 'comma' });
   });
 
-  it('md 제외는 저장 가능한 경고로 처리한다', () => {
-    const result = validateExcludeExtensionInput('md', []);
+  it('Obsidian 핵심 문서 확장자는 제외 확장자로 저장하지 못하게 막는다', () => {
+    const md = validateExcludeExtensionInput('md', []);
+    const markdown = validateExcludeExtensionInput('.markdown', []);
 
-    expect(result.valid).toBe(true);
-    expect(result.issues).toContainEqual({ level: 'warning', code: 'extension-markdown' });
+    expect(md.valid).toBe(false);
+    expect(md.issues).toContainEqual({ level: 'error', code: 'extension-protected-document' });
+    expect(markdown.valid).toBe(false);
+    expect(markdown.issues).toContainEqual({
+      level: 'error',
+      code: 'extension-protected-document',
+    });
   });
 });

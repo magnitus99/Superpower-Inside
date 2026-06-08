@@ -10,7 +10,7 @@ export type ExcludeValidationCode =
   | 'path-missing'
   | 'extension-leading-dot'
   | 'extension-invalid'
-  | 'extension-markdown';
+  | 'extension-protected-document';
 
 export interface ExcludeValidationIssue {
   level: ExcludeValidationLevel;
@@ -21,6 +21,21 @@ export interface ExcludeValidationResult {
   normalized: string;
   issues: ExcludeValidationIssue[];
   valid: boolean;
+}
+
+const PROTECTED_RAG_DOCUMENT_EXTENSIONS = new Set(['md', 'markdown']);
+
+export function normalizeExcludeExtension(extension: string): string {
+  return extension.trim().replace(/^\./, '').toLowerCase();
+}
+
+export function isProtectedRagDocumentExtension(extension: string): boolean {
+  return PROTECTED_RAG_DOCUMENT_EXTENSIONS.has(normalizeExcludeExtension(extension));
+}
+
+export function isRecommendableExcludeExtension(extension: string): boolean {
+  const normalized = normalizeExcludeExtension(extension);
+  return normalized.length > 0 && !isProtectedRagDocumentExtension(normalized);
 }
 
 export function validateExcludePathInput(
@@ -88,7 +103,7 @@ export function validateExcludeExtensionInput(
     issues.push({ level: 'warning', code: 'extension-leading-dot' });
   }
 
-  const normalized = withoutLeadingDot.toLowerCase();
+  const normalized = normalizeExcludeExtension(trimmed);
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(normalized)) {
     issues.push({ level: 'error', code: 'extension-invalid' });
   }
@@ -97,8 +112,8 @@ export function validateExcludeExtensionInput(
     issues.push({ level: 'error', code: 'duplicate' });
   }
 
-  if (normalized === 'md') {
-    issues.push({ level: 'warning', code: 'extension-markdown' });
+  if (isProtectedRagDocumentExtension(normalized)) {
+    issues.push({ level: 'error', code: 'extension-protected-document' });
   }
 
   return createResult(normalized, issues);

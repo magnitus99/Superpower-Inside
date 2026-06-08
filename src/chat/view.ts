@@ -1954,7 +1954,10 @@ export class ChatView extends ItemView {
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
-      console.error(t('chatAutoSaveFailedLog'), err);
+      this.plugin.logger.error(t('chatAutoSaveFailedLog'), {
+        source: 'chat',
+        error: err,
+      });
     }
   }
 

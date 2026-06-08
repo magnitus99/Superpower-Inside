@@ -1,8 +1,9 @@
-import { requestUrl } from 'obsidian';
+import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from 'obsidian';
 import Dexie from 'dexie';
 import { t } from '../i18n';
 import { createContentHash } from '../rag/hash';
 import { assertValidEmbeddingBatch } from './embedding-validation';
+import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 export { assertValidEmbeddingBatch } from './embedding-validation';
 
 export interface EmbeddingRecord {
@@ -34,9 +35,158 @@ export interface EmbeddingOptions {
   signal?: AbortSignal;
 }
 
+export interface EmbeddingRetryOptions {
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export interface EmbeddingProviderRuntimeOptions {
+  logger?: AppLogger | ScopedLogger;
+  retry?: Partial<EmbeddingRetryOptions>;
+}
+
+interface RetryRequestContext {
+  endpoint: string;
+  model: string;
+  batchSize: number;
+  signal?: AbortSignal;
+}
+
+const DEFAULT_EMBEDDING_RETRY: EmbeddingRetryOptions = {
+  maxRetries: 4,
+  baseDelayMs: 1000,
+  maxDelayMs: 60_000,
+};
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('Embedding request cancelled', 'AbortError');
+  }
+}
+
+async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(new DOMException('Embedding request cancelled', 'AbortError'));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function normalizeRetryOptions(options?: Partial<EmbeddingRetryOptions>): EmbeddingRetryOptions {
+  return {
+    maxRetries: clampRetryInteger(options?.maxRetries, 0, 10, DEFAULT_EMBEDDING_RETRY.maxRetries),
+    baseDelayMs: clampRetryInteger(
+      options?.baseDelayMs,
+      0,
+      300_000,
+      DEFAULT_EMBEDDING_RETRY.baseDelayMs,
+    ),
+    maxDelayMs: clampRetryInteger(
+      options?.maxDelayMs,
+      1,
+      300_000,
+      DEFAULT_EMBEDDING_RETRY.maxDelayMs,
+    ),
+    sleep: options?.sleep ?? sleepWithAbort,
+  };
+}
+
+function clampRetryInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function createScopedEmbeddingLogger(
+  logger: AppLogger | ScopedLogger | undefined,
+  source: string,
+): ScopedLogger {
+  const candidate = logger ?? appLogger;
+  return 'child' in candidate ? candidate.child(source) : candidate;
+}
+
+function getHeaderValue(headers: RequestUrlResponse['headers'], headerName: string): string | null {
+  const normalizedHeaderName = headerName.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedHeaderName) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function parseRetryAfterMs(
+  headers: RequestUrlResponse['headers'],
+  now = Date.now(),
+): number | null {
+  const retryAfter = getHeaderValue(headers, 'retry-after');
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const dateMs = Date.parse(retryAfter);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - now);
+  }
+  return null;
+}
+
+function calculateRetryDelayMs(
+  response: RequestUrlResponse,
+  attempt: number,
+  retry: EmbeddingRetryOptions,
+): number {
+  return Math.min(
+    retry.maxDelayMs,
+    parseRetryAfterMs(response.headers) ?? retry.baseDelayMs * 2 ** attempt,
+  );
+}
+
+async function requestEmbeddingWithRateLimitRetry(
+  request: RequestUrlParam,
+  retry: EmbeddingRetryOptions,
+  logger: ScopedLogger,
+  context: RetryRequestContext,
+): Promise<RequestUrlResponse> {
+  for (let attempt = 0; ; attempt++) {
+    throwIfAborted(context.signal);
+    const response = await requestUrl(request);
+    throwIfAborted(context.signal);
+    if (response.status !== 429 || attempt >= retry.maxRetries) {
+      if (response.status === 429) {
+        logger.error('Embedding API rate limit retries exhausted.', {
+          data: {
+            endpoint: context.endpoint,
+            model: context.model,
+            batchSize: context.batchSize,
+            attempts: attempt + 1,
+          },
+        });
+      }
+      return response;
+    }
+
+    const retryInMs = calculateRetryDelayMs(response, attempt, retry);
+    logger.warn('Embedding API rate limited; retrying request.', {
+      data: {
+        endpoint: context.endpoint,
+        model: context.model,
+        batchSize: context.batchSize,
+        attempt: attempt + 1,
+        retryInMs,
+      },
+    });
+    await retry.sleep?.(retryInMs, context.signal);
   }
 }
 
@@ -81,15 +231,20 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private embeddingsUrl: string;
   private model: string;
+  private retry: EmbeddingRetryOptions;
+  private logger: ScopedLogger;
 
   constructor(
     apiKey: string,
     baseUrl = 'https://api.openai.com',
     model = 'text-embedding-3-small',
+    options: EmbeddingProviderRuntimeOptions = {},
   ) {
     this.apiKey = apiKey;
     this.embeddingsUrl = normalizeOpenAIEmbeddingsUrl(baseUrl);
     this.model = model;
+    this.retry = normalizeRetryOptions(options.retry);
+    this.logger = createScopedEmbeddingLogger(options.logger, 'embedding.openai');
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
@@ -105,18 +260,40 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (this.apiKey.trim()) {
       headers.Authorization = `Bearer ${this.apiKey.trim()}`;
     }
-    const res = await requestUrl({
-      url: this.embeddingsUrl,
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        input: texts,
-        model: this.model,
-      }),
-      throw: false,
+    this.logger.debug('Embedding batch request started.', {
+      data: { endpoint: this.embeddingsUrl, model: this.model, batchSize: texts.length },
     });
+    const res = await requestEmbeddingWithRateLimitRetry(
+      {
+        url: this.embeddingsUrl,
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          input: texts,
+          model: this.model,
+        }),
+        throw: false,
+      },
+      this.retry,
+      this.logger,
+      {
+        endpoint: this.embeddingsUrl,
+        model: this.model,
+        batchSize: texts.length,
+        signal: options?.signal,
+      },
+    );
     throwIfAborted(options?.signal);
     if (res.status >= 400) {
+      this.logger.error('Embedding batch request failed.', {
+        data: {
+          endpoint: this.embeddingsUrl,
+          model: this.model,
+          batchSize: texts.length,
+          status: res.status,
+          response: res.text,
+        },
+      });
       throw new Error(
         `Embedding API ${res.status} (endpoint: ${this.embeddingsUrl}, model: ${this.model}): ${res.text}`,
       );
@@ -129,6 +306,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     }
     const vectors = data.data.map((d) => d.embedding);
     assertValidEmbeddingBatch(vectors, texts.length, 'OpenAI embedding batch');
+    this.logger.debug('Embedding batch request completed.', {
+      data: { endpoint: this.embeddingsUrl, model: this.model, batchSize: texts.length },
+    });
     return vectors;
   }
 }
@@ -148,8 +328,15 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private baseUrl: string;
   private model: string;
   private apiKey?: string;
+  private retry: EmbeddingRetryOptions;
+  private logger: ScopedLogger;
 
-  constructor(baseUrl = 'http://localhost:11434', model = 'nomic-embed-text', apiKey?: string) {
+  constructor(
+    baseUrl = 'http://localhost:11434',
+    model = 'nomic-embed-text',
+    apiKey?: string,
+    options: EmbeddingProviderRuntimeOptions = {},
+  ) {
     let normalized = baseUrl.trim().replace(/\/+$/, '');
     if (normalized.endsWith('/api')) {
       normalized = normalized.slice(0, -4);
@@ -157,6 +344,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.baseUrl = normalized.replace(/\/+$/, '');
     this.model = model;
     this.apiKey = apiKey;
+    this.retry = normalizeRetryOptions(options.retry);
+    this.logger = createScopedEmbeddingLogger(options.logger, 'embedding.ollama');
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
@@ -186,13 +375,19 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     options?: EmbeddingOptions,
   ): Promise<number[]> {
     // Ollama native endpoint 시도
-    const res = await requestUrl({
-      url: `${this.baseUrl}/api/embed`,
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: this.model, input: text, truncate: true }),
-      throw: false,
-    });
+    const primaryUrl = `${this.baseUrl}/api/embed`;
+    const res = await requestEmbeddingWithRateLimitRetry(
+      {
+        url: primaryUrl,
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: this.model, input: text, truncate: true }),
+        throw: false,
+      },
+      this.retry,
+      this.logger,
+      { endpoint: primaryUrl, model: this.model, batchSize: 1, signal: options?.signal },
+    );
     throwIfAborted(options?.signal);
 
     if (res.status < 400) {
@@ -217,13 +412,18 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     let lastError = '';
     for (const request of fallbackRequests) {
       try {
-        const fbRes = await requestUrl({
-          url: request.url,
-          method: 'POST',
-          headers,
-          body: request.body,
-          throw: false,
-        });
+        const fbRes = await requestEmbeddingWithRateLimitRetry(
+          {
+            url: request.url,
+            method: 'POST',
+            headers,
+            body: request.body,
+            throw: false,
+          },
+          this.retry,
+          this.logger,
+          { endpoint: request.url, model: this.model, batchSize: 1, signal: options?.signal },
+        );
         throwIfAborted(options?.signal);
         if (fbRes.status < 400) {
           const vector = extractEmbeddingVector(fbRes.json);

@@ -69,6 +69,24 @@ describe('RAGQueryEngine', () => {
     expect(results[0]?.bm25Score).toBeGreaterThan(0);
   });
 
+  it('BM25는 OpenRouter 문서를 open router처럼 띄어 쓴 질의로도 끌어올린다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '일반 설정 문서'),
+      createEntry('api.md', [0, 1], 'OpenRouter API access key'),
+    ]);
+    const bm25 = await createBm25([
+      ['semantic.md', '일반 설정 문서'],
+      ['api.md', 'OpenRouter API access key'],
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), bm25, 0.6, 0.5);
+
+    const results = await engine.query('open router api', 1);
+
+    expect(results[0]?.entry.metadata.filePath).toBe('api.md');
+    expect(results[0]?.bm25Score).toBeGreaterThan(0);
+  });
+
   it('파일 단위 BM25 보정만 받은 무관 청크는 통과시키지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

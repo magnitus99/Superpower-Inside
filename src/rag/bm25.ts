@@ -6,6 +6,7 @@ interface InvertedEntry {
 }
 
 interface BM25Data {
+  tokenizerVersion: number;
   inverted: Record<string, InvertedEntry>;
   docLengths: Record<string, number>;
   docSources: Record<string, string>;
@@ -13,26 +14,103 @@ interface BM25Data {
   avgDocLength: number;
 }
 
+export interface BM25DocumentInput {
+  id: string;
+  text: string;
+  sourcePath?: string;
+}
+
 export function tokenize(text: string): string[] {
   const tokens: string[] = [];
-  const parts = text.split(/[\s,.!?;:()[\]{}"'「」『』【】《》]+/u);
+  const parts = text.match(/[\p{L}\p{N}_\-/\\@.]+/gu) ?? [];
   for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    if (/^[a-zA-Z0-9_\-/\\@.]+$/.test(trimmed)) {
-      tokens.push(trimmed.toLowerCase());
-    } else {
-      const chars = [...trimmed];
-      for (let i = 0; i < chars.length - 1; i++) {
-        tokens.push(chars[i] + chars[i + 1]);
-      }
-    }
+    tokens.push(...tokenizePart(part));
   }
   return tokens;
 }
 
+function tokenizePart(part: string): string[] {
+  const trimmed = part.trim();
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) return [];
+
+  const localTokens: string[] = [];
+  const normalized = normalizeToken(trimmed);
+  pushToken(localTokens, normalized);
+
+  if (isAscii(trimmed)) {
+    tokenizeAsciiPart(trimmed, localTokens);
+  } else {
+    tokenizeUnicodePart(normalized, localTokens);
+  }
+
+  return [...new Set(localTokens)];
+}
+
+function tokenizeAsciiPart(part: string, tokens: string[]): void {
+  const segments = part.split(/[_\-/\\@.]+/u).filter(Boolean);
+  if (segments.length > 1) {
+    pushToken(tokens, segments.join('').toLowerCase());
+  }
+
+  for (const segment of segments) {
+    const camelParts = splitAsciiIdentifier(segment);
+    if (camelParts.length > 1) {
+      pushToken(tokens, camelParts.join('').toLowerCase());
+    }
+    for (const camelPart of camelParts) {
+      pushToken(tokens, camelPart.toLowerCase());
+    }
+  }
+}
+
+function tokenizeUnicodePart(part: string, tokens: string[]): void {
+  const compact = part.replace(/[^\p{L}\p{N}]+/gu, '');
+  pushToken(tokens, compact);
+
+  const groups =
+    compact.match(
+      /\p{Script=Hangul}+|\p{Script=Han}+|\p{Script=Hiragana}+|\p{Script=Katakana}+|\p{N}+|[a-zA-Z]+/gu,
+    ) ?? [];
+  for (const group of groups) {
+    pushToken(tokens, group.toLowerCase());
+  }
+
+  const chars = [...compact];
+  for (const size of [2, 3]) {
+    for (let i = 0; i <= chars.length - size; i++) {
+      pushToken(tokens, chars.slice(i, i + size).join(''));
+    }
+  }
+}
+
+function splitAsciiIdentifier(segment: string): string[] {
+  const parts = segment.match(/[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+/g) ?? [];
+  return parts.length > 0 ? parts : [segment];
+}
+
+function normalizeToken(token: string): string {
+  return token
+    .trim()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    .toLowerCase();
+}
+
+function pushToken(tokens: string[], token: string): void {
+  const normalized = normalizeToken(token);
+  if (normalized.length < 2) return;
+  tokens.push(normalized);
+}
+
+function isAscii(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 127) return false;
+  }
+  return true;
+}
+
 const K1 = 1.2;
 const B = 0.75;
+const TOKENIZER_VERSION = 2;
 
 export class JsonFileBM25Index {
   private data: BM25Data;
@@ -45,7 +123,7 @@ export class JsonFileBM25Index {
   constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
     this.adapter = adapter;
     this.path = path;
-    this.data = { inverted: {}, docLengths: {}, docSources: {}, totalDocs: 0, avgDocLength: 1 };
+    this.data = createEmptyData();
     this.loaded = false;
     this.batchDepth = 0;
     this.batchDirty = false;
@@ -57,6 +135,7 @@ export class JsonFileBM25Index {
       const parsed = raw as Partial<BM25Data>;
       const docLengths = parsed.docLengths ?? {};
       this.data = {
+        tokenizerVersion: typeof parsed.tokenizerVersion === 'number' ? parsed.tokenizerVersion : 0,
         inverted: parsed.inverted ?? {},
         docLengths,
         docSources:
@@ -95,8 +174,18 @@ export class JsonFileBM25Index {
   }
 
   async clear(): Promise<void> {
-    this.data = { inverted: {}, docLengths: {}, docSources: {}, totalDocs: 0, avgDocLength: 1 };
+    this.data = createEmptyData();
     await this.persist();
+  }
+
+  async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
+    await this.withBatch(async () => {
+      await this.clear();
+      for (const document of documents) {
+        this.addDocument(document.id, document.text, document.sourcePath);
+      }
+      await this.persist();
+    });
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
@@ -143,7 +232,7 @@ export class JsonFileBM25Index {
   }
 
   search(query: string): Map<string, number> {
-    const queryTokens = tokenize(query);
+    const queryTokens = [...new Set(tokenize(query))];
     const scores = new Map<string, number>();
     const totalDocs = this.data.totalDocs;
     if (totalDocs === 0) return scores;
@@ -171,6 +260,10 @@ export class JsonFileBM25Index {
     return this.loaded && this.data.totalDocs > 0;
   }
 
+  get isTokenizerCurrent(): boolean {
+    return this.data.tokenizerVersion === TOKENIZER_VERSION;
+  }
+
   get totalDocs(): number {
     return this.data.totalDocs;
   }
@@ -178,4 +271,15 @@ export class JsonFileBM25Index {
   getDocumentSource(docId: string): string | undefined {
     return this.data.docSources[docId];
   }
+}
+
+function createEmptyData(): BM25Data {
+  return {
+    tokenizerVersion: TOKENIZER_VERSION,
+    inverted: {},
+    docLengths: {},
+    docSources: {},
+    totalDocs: 0,
+    avgDocLength: 1,
+  };
 }

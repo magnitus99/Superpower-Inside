@@ -26,4 +26,32 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('createSettingsPanel(');
     expect(settingsSource).toContain('superpower-inside-settings-tab-panels');
   });
+
+  it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {
+    const renderStatsStart = settingsSource.indexOf('private async renderStats(');
+    const getStatusIndex = settingsSource.indexOf(
+      'const status = await this.getRagStatus();',
+      renderStatsStart,
+    );
+    const emptyIndex = settingsSource.indexOf('gridEl.empty();', renderStatsStart);
+
+    expect(renderStatsStart).toBeGreaterThanOrEqual(0);
+    expect(getStatusIndex).toBeGreaterThan(renderStatsStart);
+    expect(emptyIndex).toBeGreaterThan(getStatusIndex);
+  });
+
+  it('General 탭에서 통합 로그 페이지로 이동하는 디버깅 옵션을 제공한다', () => {
+    expect(settingsSource).toContain(
+      "type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced' | 'logs'",
+    );
+    expect(settingsSource).toContain("id: 'logs'");
+    expect(settingsSource).toContain('buildLogsTab(');
+    expect(settingsSource).toContain('openLogsPageFromGeneral(');
+  });
+
+  it('로그 레벨별 색상 클래스가 CSS에 정의되어 있다', () => {
+    for (const level of ['trace', 'debug', 'info', 'notice', 'warn', 'error', 'fatal']) {
+      expect(styles).toContain(`.superpower-inside-log-entry--${level}`);
+    }
+  });
 });

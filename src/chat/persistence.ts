@@ -11,6 +11,7 @@ import type {
   AssistantQuestion,
   ToolCallRecord,
 } from './types';
+import { appLogger } from '../utils/logger';
 
 export type { ChatMessage } from '../llm/providers';
 
@@ -137,7 +138,10 @@ export async function saveChat(
       !message.content?.trim() &&
       !message.originalContent?.trim()
     ) {
-      console.warn(t('chatSaveEmptyAssistantWarning', { id: message.id }));
+      appLogger.warn(t('chatSaveEmptyAssistantWarning', { id: message.id }), {
+        source: 'chat.persistence',
+        data: { messageId: message.id },
+      });
     }
   }
   const content = frontmatter + body.trimEnd() + '\n';

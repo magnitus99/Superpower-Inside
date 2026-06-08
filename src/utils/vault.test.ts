@@ -155,6 +155,42 @@ describe('RAG 후보 파일', () => {
       expect.objectContaining({ extension: '(none)', label: '확장자 없음', count: 1 }),
     ]);
   });
+
+  it('비어 있거나 읽을 수 없는 마크다운 파일은 제외 추천에 올리지 않는다', async () => {
+    const vault = createVault(
+      [createFile('empty.md', 0), createFile('empty.markdown', 0), createFile('empty.txt', 0)],
+      new Map([
+        ['empty.md', ''],
+        ['empty.markdown', ''],
+        ['empty.txt', ''],
+      ]),
+    );
+
+    const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
+
+    expect(summary.excludeRecommendations).toEqual([
+      expect.objectContaining({ extension: 'txt', label: '.txt', count: 1 }),
+    ]);
+    expect(summary.excludeRecommendations.some((item) => item.extension === 'md')).toBe(false);
+    expect(summary.excludeRecommendations.some((item) => item.extension === 'markdown')).toBe(
+      false,
+    );
+  });
+
+  it('지원되는 마크다운 파일이 하나도 없어도 Obsidian 핵심 문서 확장자는 제외 추천하지 않는다', async () => {
+    const vault = createVault(
+      [createFile('empty.md', 0), createFile('empty.markdown', 0), createFile('image.png')],
+      new Map([
+        ['empty.md', ''],
+        ['empty.markdown', ''],
+        ['image.png', '\u0000binary'],
+      ]),
+    );
+
+    const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
+
+    expect(summary.excludeRecommendations.map((item) => item.extension)).toEqual(['png']);
+  });
 });
 
 describe('Vault JSON 쓰기', () => {
@@ -167,9 +203,7 @@ describe('Vault JSON 쓰기', () => {
     });
 
     expect(adapter.writePaths).toHaveLength(1);
-    expect(adapter.writePaths[0]).toMatch(
-      /^\.superpower-inside\/bm25-index\.json\.tmp\.\d+$/,
-    );
+    expect(adapter.writePaths[0]).toMatch(/^\.superpower-inside\/bm25-index\.json\.tmp\.\d+$/);
     expect(adapter.renamePairs).toEqual([
       [adapter.writePaths[0], '.superpower-inside/bm25-index.json'],
     ]);
@@ -180,9 +214,12 @@ describe('Vault JSON 쓰기', () => {
 
 function createFile(path: string, size = 10): TFile {
   const name = path.split('/').pop() ?? path;
-  const extension = name.startsWith('.') && name.indexOf('.', 1) === -1
-    ? ''
-    : name.includes('.') ? (name.split('.').pop() ?? '') : '';
+  const extension =
+    name.startsWith('.') && name.indexOf('.', 1) === -1
+      ? ''
+      : name.includes('.')
+        ? (name.split('.').pop() ?? '')
+        : '';
   return {
     path,
     name,
