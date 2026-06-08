@@ -730,7 +730,6 @@ export interface I18nKeys {
   tabChat: string;
   tabMcp: string;
   tabAdvanced: string;
-  tabLogs: string;
 
   // 명령어
   mcpAutoConnectFailedCount: string;
@@ -1080,6 +1079,7 @@ export interface I18nKeys {
   cmdOpenAiChat: string;
   cmdReindexVault: string;
   cmdOpenGraphRagView: string;
+  cmdOpenLogView: string;
   graphRagViewTabTitle: string;
   graphRagViewTabEntities: string;
   graphRagViewTabRelations: string;
@@ -1874,7 +1874,6 @@ const ko: I18nKeys = {
   tabChat: '채팅',
   tabMcp: 'MCP',
   tabAdvanced: '고급',
-  tabLogs: '로그',
 
   // Commands
   mcpAutoConnectFailedCount: 'MCP 자동 연결 실패: {count}개 서버를 확인하세요.',
@@ -2270,6 +2269,7 @@ const ko: I18nKeys = {
   cmdOpenAiChat: 'AI 채팅 열기',
   cmdReindexVault: '볼트 RAG 재인덱싱',
   cmdOpenGraphRagView: 'GraphRAG 탐색기 열기',
+  cmdOpenLogView: '통합 로그 페이지 열기',
   graphRagViewTabTitle: 'GraphRAG 탐색기',
   graphRagViewTabEntities: '엔티티',
   graphRagViewTabRelations: '관계',
@@ -3071,7 +3071,6 @@ const en: I18nKeys = {
   tabChat: 'Chat',
   tabMcp: 'MCP',
   tabAdvanced: 'Advanced',
-  tabLogs: 'Logs',
 
   // Commands
   mcpAutoConnectFailedCount: 'MCP auto-connect failed: check {count} servers.',
@@ -3482,6 +3481,7 @@ const en: I18nKeys = {
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
   cmdOpenGraphRagView: 'Open GraphRAG Explorer',
+  cmdOpenLogView: 'Open Integrated Logs',
   graphRagViewTabTitle: 'GraphRAG Explorer',
   graphRagViewTabEntities: 'Entities',
   graphRagViewTabRelations: 'Relations',

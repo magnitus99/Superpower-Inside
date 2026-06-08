@@ -60,6 +60,7 @@ import {
 import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
+import { LOG_VIEW_TYPE, LogView } from './src/logs/view';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPRegistry } from './src/mcp/registry';
 import {
@@ -136,6 +137,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
+    this.registerView(LOG_VIEW_TYPE, (leaf) => new LogView(leaf, this));
 
     // 리본 아이콘
     this.registerView(GRAPH_RAG_VIEW_TYPE, (leaf) => new GraphRagView(leaf, this));
@@ -145,6 +147,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     this.addRibbonIcon('git-branch', t('cmdOpenGraphRagView'), () => {
       void this.openGraphRagView();
+    });
+
+    this.addRibbonIcon('scroll-text', t('cmdOpenLogView'), () => {
+      this.openLogView();
     });
 
     // 명령어
@@ -223,6 +229,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       id: 'open-graph-rag-view',
       name: t('cmdOpenGraphRagView'),
       callback: () => this.openGraphRagView(),
+    });
+
+    this.addCommand({
+      id: 'open-log-view',
+      name: t('cmdOpenLogView'),
+      callback: () => this.openLogView(),
     });
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
@@ -1848,6 +1860,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     void leaf.setViewState({ type: GRAPH_RAG_VIEW_TYPE, active: true });
+    void this.app.workspace.revealLeaf(leaf);
+  }
+
+  openLogView(): void {
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    void leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
   }
 }

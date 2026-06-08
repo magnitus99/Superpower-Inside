@@ -69,14 +69,7 @@ import {
   type SettingsOverviewRuntimeState,
   type SettingsOverviewStatusRow,
 } from './settings-overview';
-import {
-  LOG_LEVEL_LABELS,
-  LOG_LEVELS,
-  type AppLogger,
-  type LogEntry,
-  type LogLevel,
-  type LoggerConfig,
-} from './utils/logger';
+import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
   command: string;
   args?: string[];
@@ -427,7 +420,7 @@ export interface PluginLike {
   logger: AppLogger;
 }
 // 탭 타입 및 설정
-type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced' | 'logs';
+type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
 const TABS: {
   id: SettingsTabId;
   label: string;
@@ -438,7 +431,6 @@ const TABS: {
   { id: 'chat', label: t('tabChat') },
   { id: 'mcp', label: t('tabMcp') },
   { id: 'advanced', label: t('tabAdvanced') },
-  { id: 'logs', label: t('tabLogs') },
 ];
 interface ProviderValidationCache {
   [key: string]: {
@@ -493,11 +485,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private graphRagSectionContainer: HTMLElement | null = null;
   private graphRagProgressBanner: HTMLElement | null = null;
   private graphRagModelSelectEl: HTMLSelectElement | null = null;
-  private loggerUnsubscribe: (() => void) | null = null;
-  private logEntriesContainer: HTMLElement | null = null;
-  private logCountEl: HTMLElement | null = null;
-  private logLevelFilter: LogLevel | 'all' = 'all';
-  private logSourceFilter = '';
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
   constructor(app: App, plugin: PluginLike) {
@@ -540,8 +527,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   hide(): void {
     this.unregisterMcpStatusEvent();
-    this.loggerUnsubscribe?.();
-    this.loggerUnsubscribe = null;
     // RefreshAction 인스턴스 정리
     this.mcpStatusRefresh?.detach();
     this.mcpStatusRefresh = null;
@@ -561,8 +546,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
-    this.logEntriesContainer = null;
-    this.logCountEl = null;
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
       this.pendingEmbeddingProvider = null;
       this.pendingEmbeddingModel = null;
@@ -606,10 +589,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
     }
-    this.loggerUnsubscribe?.();
-    this.loggerUnsubscribe = this.plugin.logger.subscribe(() => {
-      this.refreshLogsTab();
-    });
     containerEl.addClass('superpower-inside-settings-root');
     // 헤더
     containerEl.createEl('h2', { text: t('settingsTitle') });
@@ -657,9 +636,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         case 'advanced':
           this.buildAdvancedTab(panel);
           break;
-        case 'logs':
-          this.buildLogsTab(panel);
-          break;
       }
     });
     // 첫 번째 탭을 활성 상태로 초기화
@@ -688,8 +664,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshGeneralTab();
     } else if (tabId === 'rag') {
       this.refreshRagTab();
-    } else if (tabId === 'logs') {
-      this.refreshLogsTab();
     }
   }
   private refreshGeneralTab(): void {
@@ -935,225 +909,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
-
-    const debugPanel = this.createSettingsPanel(containerEl, t('loggingDebugPanelTitle'), {
-      description: t('loggingDebugPanelDesc'),
-      className: 'superpower-inside-debug-panel',
-    });
-    new Setting(debugPanel)
-      .setName(t('loggingMinLevel'))
-      .setDesc(t('loggingMinLevelDesc'))
-      .addDropdown((dropdown) => {
-        for (const level of LOG_LEVELS) {
-          dropdown.addOption(level, LOG_LEVEL_LABELS[level]);
-        }
-        dropdown.setValue(this.plugin.settings.logging.minLevel);
-        dropdown.onChange(async (value) => {
-          const level = value as LogLevel;
-          this.plugin.settings.logging.minLevel = level;
-          this.plugin.logger.configure(this.plugin.settings.logging);
-          await this.plugin.saveSettingsLight();
-        });
-      });
-    new Setting(debugPanel)
-      .setName(t('loggingMirrorConsole'))
-      .setDesc(t('loggingMirrorConsoleDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.logging.mirrorToConsole).onChange(async (value) => {
-          this.plugin.settings.logging.mirrorToConsole = value;
-          this.plugin.logger.configure(this.plugin.settings.logging);
-          await this.plugin.saveSettingsLight();
-        }),
-      );
-    new Setting(debugPanel)
-      .setName(t('loggingMaxEntries'))
-      .setDesc(t('loggingMaxEntriesDesc'))
-      .addText((text) => {
-        text.inputEl.type = 'number';
-        text.inputEl.min = '100';
-        text.inputEl.max = '10000';
-        text.inputEl.step = '100';
-        text.setValue(String(this.plugin.settings.logging.maxEntries));
-        text.onChange(async (value) => {
-          const num = Number.parseInt(value, 10);
-          if (Number.isNaN(num)) return;
-          this.plugin.settings.logging.maxEntries = Math.max(100, Math.min(10000, num));
-          this.plugin.logger.configure(this.plugin.settings.logging);
-          await this.plugin.saveSettingsLight();
-        });
-      });
-    new Setting(debugPanel)
-      .setName(t('loggingOpenViewer'))
-      .setDesc(t('loggingOpenViewerDesc'))
-      .addButton((button) => {
-        button.setButtonText(t('loggingOpenViewerButton'));
-        button.onClick(() => this.openLogsPageFromGeneral());
-      });
-  }
-
-  private openLogsPageFromGeneral(): void {
-    this.switchTab('logs');
-  }
-
-  private buildLogsTab(containerEl: HTMLElement): void {
-    containerEl.empty();
-    containerEl.addClass('superpower-inside-logs-tab');
-
-    const header = containerEl.createDiv({ cls: 'superpower-inside-logs-header' });
-    const title = header.createDiv({ cls: 'superpower-inside-logs-title' });
-    title.createEl('h3', { text: t('loggingViewerTitle') });
-    title.createDiv({ cls: 'superpower-inside-logs-subtitle', text: t('loggingViewerDesc') });
-
-    const actions = header.createDiv({ cls: 'superpower-inside-logs-actions' });
-    const copyButton = actions.createEl('button', {
-      attr: { type: 'button' },
-      text: t('loggingCopyVisible'),
-    });
-    copyButton.addEventListener('click', () => {
-      void this.copyVisibleLogs();
-    });
-    const clearButton = actions.createEl('button', {
-      attr: { type: 'button' },
-      text: t('loggingClear'),
-    });
-    clearButton.addEventListener('click', () => {
-      this.plugin.logger.clear();
-      this.refreshLogsTab();
-    });
-
-    const controls = containerEl.createDiv({ cls: 'superpower-inside-logs-controls' });
-    const levelControl = controls.createDiv({ cls: 'superpower-inside-logs-control' });
-    levelControl.createSpan({ text: t('loggingFilterLevel') });
-    const levelSelect = levelControl.createEl('select');
-    const allOption = levelSelect.createEl('option');
-    allOption.value = 'all';
-    allOption.text = t('loggingFilterAllLevels');
-    for (const level of LOG_LEVELS) {
-      const option = levelSelect.createEl('option');
-      option.value = level;
-      option.text = LOG_LEVEL_LABELS[level];
-    }
-    levelSelect.value = this.logLevelFilter;
-    levelSelect.addEventListener('change', () => {
-      this.logLevelFilter = levelSelect.value === 'all' ? 'all' : (levelSelect.value as LogLevel);
-      this.refreshLogsTab();
-    });
-
-    const sourceControl = controls.createDiv({ cls: 'superpower-inside-logs-control' });
-    sourceControl.createSpan({ text: t('loggingFilterSource') });
-    const sourceInput = sourceControl.createEl('input', {
-      attr: { type: 'search', placeholder: t('loggingFilterSourcePlaceholder') },
-    });
-    sourceInput.value = this.logSourceFilter;
-    sourceInput.addEventListener('input', () => {
-      this.logSourceFilter = sourceInput.value;
-      this.refreshLogsTab();
-    });
-
-    this.logCountEl = controls.createDiv({ cls: 'superpower-inside-logs-count' });
-    this.logEntriesContainer = containerEl.createDiv({ cls: 'superpower-inside-logs-list' });
-    this.refreshLogsTab();
-  }
-
-  private refreshLogsTab(): void {
-    if (!this.logEntriesContainer) return;
-    const entries = this.getVisibleLogEntries();
-    this.logEntriesContainer.empty();
-    this.logCountEl?.setText(t('loggingVisibleCount', { count: entries.length }));
-
-    if (entries.length === 0) {
-      this.logEntriesContainer.createDiv({
-        cls: 'superpower-inside-logs-empty',
-        text: t('loggingEmpty'),
-      });
-      return;
-    }
-
-    for (const entry of [...entries].reverse()) {
-      this.renderLogEntry(this.logEntriesContainer, entry);
-    }
-  }
-
-  private getVisibleLogEntries(): LogEntry[] {
-    const sourceFilter = this.logSourceFilter.trim().toLowerCase();
-    return this.plugin.logger.getEntries().filter((entry) => {
-      if (this.logLevelFilter !== 'all') {
-        const selectedIndex = LOG_LEVELS.indexOf(this.logLevelFilter);
-        const entryIndex = LOG_LEVELS.indexOf(entry.level);
-        if (entryIndex < selectedIndex) return false;
-      }
-      if (sourceFilter && !entry.source.toLowerCase().includes(sourceFilter)) {
-        return false;
-      }
-      return true;
-    });
-  }
-
-  private renderLogEntry(containerEl: HTMLElement, entry: LogEntry): void {
-    const item = containerEl.createDiv({
-      cls: `superpower-inside-log-entry superpower-inside-log-entry--${entry.level}`,
-    });
-    const meta = item.createDiv({ cls: 'superpower-inside-log-entry-meta' });
-    meta.createSpan({
-      cls: `superpower-inside-log-level superpower-inside-log-level--${entry.level}`,
-      text: LOG_LEVEL_LABELS[entry.level],
-    });
-    meta.createSpan({ cls: 'superpower-inside-log-time', text: this.formatLogTime(entry) });
-    meta.createSpan({ cls: 'superpower-inside-log-source', text: entry.source });
-    item.createDiv({ cls: 'superpower-inside-log-message', text: entry.message });
-
-    const detailText = this.formatLogDetail(entry);
-    if (detailText) {
-      item.createEl('pre', {
-        cls: 'superpower-inside-log-detail',
-        text: detailText,
-      });
-    }
-  }
-
-  private formatLogTime(entry: LogEntry): string {
-    return new Date(entry.timestamp).toLocaleTimeString(undefined, {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }
-
-  private formatLogDetail(entry: LogEntry): string {
-    const parts: string[] = [];
-    if (entry.data !== undefined) {
-      parts.push(this.stringifyLogValue(entry.data));
-    }
-    if (entry.error) {
-      parts.push(entry.error);
-    }
-    return parts.join('\n');
-  }
-
-  private stringifyLogValue(value: unknown): string {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-
-  private async copyVisibleLogs(): Promise<void> {
-    const text = this.getVisibleLogEntries()
-      .map((entry) => {
-        const detail = this.formatLogDetail(entry);
-        const line = `${new Date(entry.timestamp).toISOString()} ${LOG_LEVEL_LABELS[entry.level]} [${entry.source}] ${entry.message}`;
-        return detail ? `${line}\n${detail}` : line;
-      })
-      .join('\n\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      new Notice(t('loggingCopied'));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(t('loggingCopyFailed', { message }), 5000);
-    }
   }
 
   private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {

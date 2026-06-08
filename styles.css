@@ -594,7 +594,8 @@
   border-color: var(--background-modifier-border);
 }
 
-.superpower-inside-logs-tab {
+.superpower-inside-logs-view {
+  padding: 20px;
   height: 100%;
   min-height: 520px;
   display: flex;
@@ -620,11 +621,27 @@
 }
 
 .superpower-inside-logs-actions,
+.superpower-inside-logs-runtime-controls,
 .superpower-inside-logs-controls {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.superpower-inside-logs-runtime-controls {
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-logs-toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
 }
 
 .superpower-inside-logs-control {

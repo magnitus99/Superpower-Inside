@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(__dirname, '..');
 const styles = readFileSync(resolve(root, 'styles.css'), 'utf8');
 const settingsSource = readFileSync(resolve(root, 'src/settings.ts'), 'utf8');
+const mainSource = readFileSync(resolve(root, 'main.ts'), 'utf8');
+const logViewSource = readFileSync(resolve(root, 'src/logs/view.ts'), 'utf8');
 
 describe('설정 화면 리디자인 구조', () => {
   it('Overview metric grid는 좁은 116px 카드로 압축되지 않는다', () => {
@@ -40,13 +42,23 @@ describe('설정 화면 리디자인 구조', () => {
     expect(emptyIndex).toBeGreaterThan(getStatusIndex);
   });
 
-  it('General 탭에서 통합 로그 페이지로 이동하는 디버깅 옵션을 제공한다', () => {
-    expect(settingsSource).toContain(
-      "type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced' | 'logs'",
-    );
-    expect(settingsSource).toContain("id: 'logs'");
-    expect(settingsSource).toContain('buildLogsTab(');
-    expect(settingsSource).toContain('openLogsPageFromGeneral(');
+  it('통합 로그는 설정 탭이 아니라 별도 Obsidian view/page로 열린다', () => {
+    expect(settingsSource).not.toContain("| 'logs'");
+    expect(settingsSource).not.toContain("id: 'logs'");
+    expect(settingsSource).not.toContain('buildLogsTab(');
+    expect(settingsSource).not.toContain("switchTab('logs')");
+    expect(settingsSource).not.toContain('loggingDebugPanelTitle');
+    expect(settingsSource).not.toContain('openLogView');
+
+    expect(mainSource).toContain('LOG_VIEW_TYPE');
+    expect(mainSource).toContain('LogView');
+    expect(mainSource).toContain('registerView(LOG_VIEW_TYPE');
+    expect(mainSource).toContain("addRibbonIcon('scroll-text'");
+    expect(mainSource).toContain("id: 'open-log-view'");
+
+    expect(logViewSource).toContain('extends ItemView');
+    expect(logViewSource).toContain('saveSettingsLight');
+    expect(logViewSource).toContain('loggingMinLevel');
   });
 
   it('로그 레벨별 색상 클래스가 CSS에 정의되어 있다', () => {
