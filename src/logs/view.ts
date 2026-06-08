@@ -54,7 +54,7 @@ export class LogView extends ItemView {
   private buildLayout(containerEl: HTMLElement): void {
     const header = containerEl.createDiv({ cls: 'superpower-inside-logs-header' });
     const title = header.createDiv({ cls: 'superpower-inside-logs-title' });
-    title.createEl('h3', { text: t('loggingViewerTitle') });
+    title.createDiv({ cls: 'superpower-inside-logs-heading', text: t('loggingViewerTitle') });
     title.createDiv({ cls: 'superpower-inside-logs-subtitle', text: t('loggingViewerDesc') });
 
     const actions = header.createDiv({ cls: 'superpower-inside-logs-actions' });

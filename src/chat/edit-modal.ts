@@ -14,12 +14,15 @@ export class EditMessageModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.addClass('superpower-inside-edit-modal');
-    contentEl.createEl('h3', { text: t('editMessageTitle') });
+    contentEl.createDiv({
+      cls: 'superpower-inside-edit-modal-heading',
+      text: t('editMessageTitle'),
+    });
 
     const textarea = contentEl.createEl('textarea', {
+      cls: 'superpower-inside-edit-modal-textarea',
       attr: {
         rows: '6',
-        style: 'width: 100%; box-sizing: border-box; resize: vertical;',
       },
     });
     textarea.value = this.originalContent;

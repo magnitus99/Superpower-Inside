@@ -40,13 +40,34 @@ import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
 import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
-import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
+import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
+const HIDDEN_CLASS = 'superpower-inside-hidden';
+const MENTION_TOP_VAR = '--superpower-inside-mention-top';
+const MENTION_BOTTOM_VAR = '--superpower-inside-mention-bottom';
+const CHAT_INPUT_HEIGHT_VAR = '--superpower-inside-chat-input-height';
+
+function setHidden(el: HTMLElement | null, hidden: boolean): void {
+  if (!el) return;
+  el.toggleClass(HIDDEN_CLASS, hidden);
+}
+
+function renderPlainTextWithBreaks(container: HTMLElement, text: string): void {
+  container.empty();
+  const doc = container.ownerDocument;
+  const lines = text.split('\n');
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      container.createEl('br');
+    }
+    container.appendChild(doc.createTextNode(line));
+  });
+}
 
 interface MessageMetaInput {
   providerKey?: ChatMessageWithMeta['providerKey'];
@@ -156,15 +177,21 @@ export class ChatView extends ItemView {
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
 
     this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
-    this.scrollBtn.style.display = 'none';
+    setHidden(this.scrollBtn, true);
     this.scrollBtn.setText(t('chatScrollToBottom'));
     this.scrollBtn.addEventListener('click', () => this.scrollToBottom());
 
     this.typingIndicator = this.messagesArea.createDiv({
       cls: 'superpower-inside-typing-indicator',
     });
-    this.typingIndicator.style.display = 'none';
-    this.typingIndicator.innerHTML = `<span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-text">${t('chatTyping')}</span>`;
+    setHidden(this.typingIndicator, true);
+    for (let i = 0; i < 3; i++) {
+      this.typingIndicator.createSpan({ cls: 'superpower-inside-typing-dot' });
+    }
+    this.typingIndicator.createSpan({
+      cls: 'superpower-inside-typing-text',
+      text: t('chatTyping'),
+    });
 
     this.buildInputArea(root);
     this.registerMcpStatusEvents();
@@ -491,7 +518,7 @@ export class ChatView extends ItemView {
     this.abortController?.abort();
     this.abortController = null;
     this.isStreaming = false;
-    if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+    setHidden(this.typingIndicator, true);
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
     if (current) {
       this.updateMessage(
@@ -554,7 +581,7 @@ export class ChatView extends ItemView {
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
-    if (this.mentionDropdown && this.mentionDropdown.style.display !== 'none') {
+    if (this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS)) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         this.selectMentionItem(this.mentionSelectedIndex + 1);
@@ -666,7 +693,7 @@ export class ChatView extends ItemView {
 
   private showMentionDropdown(): void {
     if (!this.inputArea || !this.container || this.mentionItems.length === 0) {
-      if (this.mentionDropdown) this.mentionDropdown.style.display = 'none';
+      setHidden(this.mentionDropdown, true);
       return;
     }
 
@@ -676,7 +703,7 @@ export class ChatView extends ItemView {
       });
     }
     this.mentionDropdown.empty();
-    this.mentionDropdown.style.display = 'block';
+    setHidden(this.mentionDropdown, false);
 
     const serverItems = this.mentionItems.filter((i) => i.type === 'server');
     const fileItems = this.mentionItems.filter((i) => i.type === 'file');
@@ -735,17 +762,17 @@ export class ChatView extends ItemView {
     const spaceBelow = containerRect.height - (inputRect.bottom - containerRect.top);
     const spaceAbove = inputRect.top - containerRect.top;
 
-    this.mentionDropdown.style.position = 'absolute';
-    this.mentionDropdown.style.left = '12px';
-    this.mentionDropdown.style.right = '12px';
-
     if (spaceBelow < 200 && spaceAbove > 200) {
-      this.mentionDropdown.style.bottom = `${containerRect.height - (inputRect.top - containerRect.top) + 4}px`;
-      this.mentionDropdown.style.top = 'auto';
+      this.mentionDropdown.setCssProps({
+        [MENTION_BOTTOM_VAR]: `${containerRect.height - (inputRect.top - containerRect.top) + 4}px`,
+        [MENTION_TOP_VAR]: 'auto',
+      });
       this.mentionDropdown.addClass('above');
     } else {
-      this.mentionDropdown.style.top = `${inputRect.bottom - containerRect.top + 4}px`;
-      this.mentionDropdown.style.bottom = 'auto';
+      this.mentionDropdown.setCssProps({
+        [MENTION_TOP_VAR]: `${inputRect.bottom - containerRect.top + 4}px`,
+        [MENTION_BOTTOM_VAR]: 'auto',
+      });
       this.mentionDropdown.removeClass('above');
     }
   }
@@ -794,7 +821,7 @@ export class ChatView extends ItemView {
 
   private hideMentionDropdown(): void {
     if (this.mentionDropdown) {
-      this.mentionDropdown.style.display = 'none';
+      setHidden(this.mentionDropdown, true);
     }
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
@@ -808,8 +835,10 @@ export class ChatView extends ItemView {
 
   private autoResizeInput(): void {
     if (!this.inputArea) return;
-    this.inputArea.style.height = 'auto';
-    this.inputArea.style.height = `${Math.min(this.inputArea.scrollHeight, 200)}px`;
+    this.inputArea.setCssProps({ [CHAT_INPUT_HEIGHT_VAR]: 'auto' });
+    this.inputArea.setCssProps({
+      [CHAT_INPUT_HEIGHT_VAR]: `${Math.min(this.inputArea.scrollHeight, 200)}px`,
+    });
   }
 
   private handleScroll(): void {
@@ -818,7 +847,7 @@ export class ChatView extends ItemView {
     const nearBottom = scrollHeight - scrollTop - clientHeight < 60;
     this.autoScroll = nearBottom;
     if (this.scrollBtn) {
-      this.scrollBtn.style.display = nearBottom ? 'none' : 'flex';
+      setHidden(this.scrollBtn, nearBottom);
     }
   }
 
@@ -826,7 +855,7 @@ export class ChatView extends ItemView {
     if (!this.messagesArea) return;
     this.messagesArea.scrollTo({ top: this.messagesArea.scrollHeight, behavior: 'auto' });
     this.autoScroll = true;
-    if (this.scrollBtn) this.scrollBtn.style.display = 'none';
+    setHidden(this.scrollBtn, true);
   }
 
   addMessage(
@@ -980,7 +1009,7 @@ export class ChatView extends ItemView {
       const bubble = wrapper.querySelector('.superpower-inside-chat-bubble');
       if (bubble instanceof HTMLElement) {
         if (!isDone) {
-          bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+          renderPlainTextWithBreaks(bubble, content);
         } else {
           void this.renderMarkdownBubble(bubble, content);
         }
@@ -1006,7 +1035,7 @@ export class ChatView extends ItemView {
     const thinking = bubbleContainer.createEl('details', {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
-    thinking.style.display = reasoning || shouldShowStreamingPlaceholders ? '' : 'none';
+    setHidden(thinking, !(reasoning || shouldShowStreamingPlaceholders));
     if (shouldShowStreamingPlaceholders || (reasoning && reasoning.length > 0)) {
       thinking.open = true;
     }
@@ -1024,7 +1053,7 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-tool-calls',
     });
     const hasToolCalls = toolCalls && toolCalls.length > 0;
-    toolCallsSection.style.display = hasToolCalls || shouldShowStreamingPlaceholders ? '' : 'none';
+    setHidden(toolCallsSection, !(hasToolCalls || shouldShowStreamingPlaceholders));
     this.renderToolCallsSection(
       toolCallsSection,
       toolCalls ?? [],
@@ -1079,12 +1108,12 @@ export class ChatView extends ItemView {
 
     if (thinking instanceof HTMLDetailsElement) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
-      thinking.style.display = hasReasoning || !isDone ? '' : 'none';
+      setHidden(thinking, !(hasReasoning || !isDone));
       const thinkingContent = thinking.querySelector('.superpower-inside-chat-thinking-content');
       if (thinkingContent instanceof HTMLElement) {
         if (!isDone) {
           const text = hasReasoning ? reasoning : t('thinkingPlaceholder');
-          thinkingContent.innerHTML = escapeHtml(text ?? '').replace(/\n/g, '<br>');
+          renderPlainTextWithBreaks(thinkingContent, text ?? '');
           thinking.open = true;
         } else if (hasReasoning) {
           void this.renderMarkdownBubble(thinkingContent, reasoning ?? '');
@@ -1101,7 +1130,7 @@ export class ChatView extends ItemView {
     const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
     if (toolCallsSection instanceof HTMLElement) {
       const calls = toolCalls ?? [];
-      toolCallsSection.style.display = calls.length > 0 || !isDone ? '' : 'none';
+      setHidden(toolCallsSection, !(calls.length > 0 || !isDone));
       this.renderToolCallsSection(toolCallsSection, calls, !isDone);
     }
 
@@ -1118,7 +1147,7 @@ export class ChatView extends ItemView {
             ?.textContent?.trim() &&
           !(toolCalls && toolCalls.length > 0)
         ) {
-          const label = document.createElement('span');
+          const label = bubbleContainer.ownerDocument.createElement('span');
           label.className = 'superpower-inside-chat-generating-label';
           label.textContent = t('chatGeneratingResponse');
           if (meta instanceof HTMLElement) {
@@ -1226,7 +1255,7 @@ export class ChatView extends ItemView {
   }
 
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
-    bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+    renderPlainTextWithBreaks(bubble, content);
 
     const existingCursor = bubble.querySelector('.superpower-inside-chat-streaming-cursor');
     if (!existingCursor) {
@@ -1849,7 +1878,7 @@ export class ChatView extends ItemView {
     const hadMessages = this.messages.length > 0;
     this.clearMessages();
     this.setLoading(false);
-    if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+    setHidden(this.typingIndicator, true);
     if (hadMessages) {
       new Notice(t('deletedSessionResetNotice', { path: missingPath }));
     }
@@ -2218,7 +2247,7 @@ export class ChatView extends ItemView {
     await this.saveCurrentSession(true);
     this.setLoading(true);
 
-    if (this.typingIndicator) this.typingIndicator.style.display = 'flex';
+    setHidden(this.typingIndicator, false);
 
     let assistantId = '';
     let assistantWrapper: HTMLElement | undefined;
@@ -2266,7 +2295,7 @@ export class ChatView extends ItemView {
 
           if (!hasReceivedContent && (fullText || fullReasoning)) {
             hasReceivedContent = true;
-            if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+            setHidden(this.typingIndicator, true);
           }
 
           this.updateMessage(
@@ -2289,7 +2318,7 @@ export class ChatView extends ItemView {
         toolDefinitions,
         { signal: abortController.signal },
       );
-      if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+      setHidden(this.typingIndicator, true);
       let normalized = normalizeReasoningChunk({
         content: fullText,
         reasoning: fullReasoning || undefined,
@@ -2503,7 +2532,7 @@ export class ChatView extends ItemView {
         }
       }
     } catch (err) {
-      if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+      setHidden(this.typingIndicator, true);
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (assistantId) {
           const assistantMsg = this.messages.find((message) => message.id === assistantId);

@@ -4,6 +4,7 @@ import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
 const SESSION_MODAL_STYLE_ID = 'superpower-inside-session-modal-styles';
+const HIDDEN_CLASS = 'superpower-inside-hidden';
 
 /** 날짜를 기준으로 세션을 그룹핑하기 위한 키 */
 type DateGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older';
@@ -59,7 +60,7 @@ export function openSessionHistoryModal(
 
   // 제목 표시줄
   const titleBar = modal.createDiv({ cls: 'superpower-inside-session-modal-title' });
-  titleBar.createEl('h2', { text: t('chatHistory') });
+  titleBar.createDiv({ cls: 'superpower-inside-session-modal-heading', text: t('chatHistory') });
 
   const titleActions = titleBar.createDiv({ cls: 'superpower-inside-session-title-actions' });
   const closeBtn = titleActions.createEl('button', {
@@ -83,7 +84,7 @@ export function openSessionHistoryModal(
     text: '×',
     attr: { type: 'button', 'aria-label': t('cancel') },
   });
-  searchClear.style.display = 'none';
+  searchClear.addClass(HIDDEN_CLASS);
 
   // 목록
   const listEl = modal.createDiv({ cls: 'superpower-inside-session-modal-list' });
@@ -326,14 +327,14 @@ export function openSessionHistoryModal(
 
   searchInput.addEventListener('input', () => {
     searchQuery = searchInput.value;
-    searchClear.style.display = searchQuery ? 'flex' : 'none';
+    searchClear.toggleClass(HIDDEN_CLASS, !searchQuery);
     filterAndRender();
   });
 
   searchClear.addEventListener('click', () => {
     searchInput.value = '';
     searchQuery = '';
-    searchClear.style.display = 'none';
+    searchClear.addClass(HIDDEN_CLASS);
     searchInput.focus();
     filterAndRender();
   });
@@ -414,7 +415,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-session-modal-title h2 {
+.superpower-inside-session-modal-heading {
   margin: 0;
   font-size: var(--font-ui-large);
 }
@@ -459,7 +460,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
 }
 
 .superpower-inside-session-search-clear {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;

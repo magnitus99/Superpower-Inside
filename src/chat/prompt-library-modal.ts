@@ -38,7 +38,10 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   const overlay = options.containerEl.createDiv({ cls: 'superpower-inside-prompt-overlay' });
   const modal = overlay.createDiv({ cls: 'superpower-inside-prompt-modal' });
   const titleBar = modal.createDiv({ cls: 'superpower-inside-prompt-titlebar' });
-  titleBar.createEl('h2', { text: t('promptLibraryTitle') });
+  titleBar.createDiv({
+    cls: 'superpower-inside-prompt-heading',
+    text: t('promptLibraryTitle'),
+  });
   const closeBtn = titleBar.createEl('button', {
     cls: 'superpower-inside-prompt-close',
     text: '×',
@@ -324,7 +327,10 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const renderGenerationPanel = (container: HTMLElement): void => {
     const panel = container.createDiv({ cls: 'superpower-inside-prompt-generation' });
-    panel.createEl('h3', { text: t('embeddedVaultGenerateTitle') });
+    panel.createDiv({
+      cls: 'superpower-inside-prompt-generation-heading',
+      text: t('embeddedVaultGenerateTitle'),
+    });
 
     const modelOptions = getModelOptions(options.plugin);
     const modelSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
@@ -470,8 +476,8 @@ function ensurePromptLibraryModalStyles(doc: Document): void {
       padding: 14px 18px;
       border-bottom: 1px solid var(--background-modifier-border);
     }
-    .superpower-inside-prompt-titlebar h2,
-    .superpower-inside-prompt-generation h3 {
+    .superpower-inside-prompt-heading,
+    .superpower-inside-prompt-generation-heading {
       margin: 0;
       font-size: var(--font-ui-medium);
       line-height: 1.4;

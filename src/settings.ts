@@ -452,6 +452,13 @@ type ProviderSettingsTarget =
       label: string;
       config: CustomOpenAIProviderConfig;
     };
+const HIDDEN_CLASS = 'superpower-inside-hidden';
+
+function setHidden(el: HTMLElement | null, hidden: boolean): void {
+  if (!el) return;
+  el.toggleClass(HIDDEN_CLASS, hidden);
+}
+
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
@@ -591,7 +598,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     containerEl.addClass('superpower-inside-settings-root');
     // 헤더
-    containerEl.createEl('h2', { text: t('settingsTitle') });
+    new Setting(containerEl).setName(t('settingsTitle')).setHeading();
     // 보안 경고
     const warning = containerEl.createDiv({
       cls: 'superpower-inside-settings-warning',
@@ -786,7 +793,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const dashboard = containerEl.createDiv({ cls: 'superpower-inside-overview' });
     const header = dashboard.createDiv({ cls: 'superpower-inside-overview-header' });
     const title = header.createDiv({ cls: 'superpower-inside-overview-title' });
-    title.createEl('h3', { text: 'Overview' });
+    title.createDiv({ cls: 'superpower-inside-overview-heading', text: 'Overview' });
     title.createDiv({
       cls: 'superpower-inside-overview-subtitle',
       text: t('settingsAuto009'),
@@ -853,12 +860,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addText((text) => {
         text.inputEl.type = 'number';
         text.setValue(String(this.plugin.settings.autoSaveDebounceMs));
-        const unit = document.createElement('span');
-        unit.textContent = ` ${t('delayMs')}`;
-        unit.style.marginLeft = '6px';
-        unit.style.color = 'var(--text-muted)';
-        unit.style.fontSize = 'var(--font-ui-small)';
-        text.inputEl.parentElement?.appendChild(unit);
+        text.inputEl.parentElement?.createSpan({
+          cls: 'superpower-inside-delay-unit',
+          text: ` ${t('delayMs')}`,
+        });
         text.onChange((value) => {
           const num = parseInt(value, 10);
           if (!Number.isNaN(num) && num >= 0 && num <= 5000) {
@@ -1195,9 +1200,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     // 진행 중 배너 (기본 숨김)
     const progressBanner = section.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-banner',
+      cls: 'superpower-inside-rag-graph-progress-banner superpower-inside-hidden',
     });
-    progressBanner.style.display = 'none';
     progressBanner.createDiv({ cls: 'superpower-inside-spinner' });
     const progressText = progressBanner.createSpan({ text: '' });
     progressText.id = 'superpower-inside-graph-progress-text';
@@ -1494,10 +1498,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               }),
             );
           }
-          this.graphRagProgressBanner.style.display = '';
+          setHidden(this.graphRagProgressBanner, false);
         }
       } else {
-        this.graphRagProgressBanner.style.display = 'none';
+        setHidden(this.graphRagProgressBanner, true);
       }
     }
     const graphState = this.plugin.graphRagStatus;
@@ -1883,11 +1887,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     providerNotice.setText(t('settingsAuto082'));
     if (isPending) {
       const warningEl = section.createDiv({
-        cls: `${WARNING_CLS} superpower-inside-settings-warning`,
+        cls: `${WARNING_CLS} superpower-inside-settings-warning superpower-inside-embedding-pending-warning`,
       });
       warningEl.setText(t('settingsAuto083'));
-      warningEl.style.marginBottom = '12px';
-      warningEl.style.whiteSpace = 'normal';
     }
     new Setting(section)
       .setName(t('embeddingProvider'))
@@ -1973,8 +1975,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       descEl.setText(selectedModel?.description ?? '');
     }
     if (isPending) {
-      const btnRow = section.createDiv({ cls: 'superpower-inside-rag-controls' });
-      btnRow.style.marginTop = '8px';
+      const btnRow = section.createDiv({
+        cls: 'superpower-inside-rag-controls superpower-inside-embedding-pending-actions',
+      });
       const saveBtn = btnRow.createEl('button', { text: t('settingsAuto088') });
       saveBtn.addEventListener('click', () => {
         void (async () => {
@@ -3505,18 +3508,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       })();
     });
     pathHeader.addEventListener('click', () => {
-      const isExpanded = pathContent.style.display !== 'none';
+      const isExpanded = !pathContent.hasClass(HIDDEN_CLASS);
       if (isExpanded) {
-        pathContent.style.display = 'none';
+        pathContent.addClass(HIDDEN_CLASS);
         pathChevron.textContent = '▶';
         pathHeader.removeClass('is-expanded');
       } else {
-        pathContent.style.display = 'block';
+        pathContent.removeClass(HIDDEN_CLASS);
         pathChevron.textContent = '▼';
         pathHeader.addClass('is-expanded');
       }
     });
-    pathContent.style.display = 'none';
+    pathContent.addClass(HIDDEN_CLASS);
     const statusSection = statusPanel.createDiv({ cls: 'superpower-inside-mcp-status' });
     this.renderMCPStatus(statusSection);
     this.unregisterMcpStatusEvent();
@@ -4052,10 +4055,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       cls: 'superpower-inside-mcp-refresh-btn',
       attr: { 'aria-label': t('settingsAuto269') },
     });
-    refreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="23 4 23 10 17 10"></polyline>
-      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-    </svg>`;
+    setIcon(refreshBtn, 'refresh-cw');
     this.mcpStatusRefresh = new RefreshAction({
       action: async (_signal) => {
         if (plugin.reconnectMCP) {

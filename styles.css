@@ -8,6 +8,19 @@
   --superpower-inside-accent: var(--interactive-accent);
 }
 
+.superpower-inside-hidden {
+  display: none;
+}
+
+.superpower-inside-scroll-to-bottom.superpower-inside-hidden,
+.superpower-inside-typing-indicator.superpower-inside-hidden,
+.superpower-inside-mention-dropdown.superpower-inside-hidden,
+.superpower-inside-session-search-clear.superpower-inside-hidden,
+.superpower-inside-rag-graph-progress-banner.superpower-inside-hidden,
+.superpower-inside-graph-view-progress.superpower-inside-hidden {
+  display: none;
+}
+
 /* Message Bubbles */
 .superpower-inside-chat-message {
   max-width: 90%;
@@ -198,7 +211,7 @@
   padding-bottom: 24px;
 }
 
-.superpower-inside-settings-root h2 {
+.superpower-inside-settings-root .setting-item-heading {
   margin: 0 0 10px;
   font-size: var(--font-ui-large);
   line-height: 1.35;
@@ -367,7 +380,7 @@
   gap: 10px;
 }
 
-.superpower-inside-overview-title h3 {
+.superpower-inside-overview-heading {
   margin: 0;
   font-size: var(--font-ui-medium);
   line-height: 1.3;
@@ -610,8 +623,26 @@
   gap: 12px;
 }
 
-.superpower-inside-logs-title h3 {
+.superpower-inside-logs-heading {
   margin: 0;
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.superpower-inside-delay-unit {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.superpower-inside-embedding-pending-warning {
+  margin-bottom: 12px;
+  white-space: normal;
+}
+
+.superpower-inside-embedding-pending-actions {
+  margin-top: 8px;
 }
 
 .superpower-inside-logs-subtitle {
@@ -2728,6 +2759,7 @@
 
 .superpower-inside-chat-input {
   flex: 1 1 auto;
+  height: var(--superpower-inside-chat-input-height, auto);
   resize: none;
   min-height: 36px;
   max-height: 200px;
@@ -2948,6 +2980,10 @@
 /* Mention Autocomplete Dropdown */
 .superpower-inside-mention-dropdown {
   position: absolute;
+  left: 12px;
+  right: 12px;
+  top: var(--superpower-inside-mention-top, auto);
+  bottom: var(--superpower-inside-mention-bottom, auto);
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
@@ -3449,8 +3485,6 @@
 
 /* Dropdown Upward Positioning */
 .superpower-inside-mention-dropdown.above {
-  bottom: 100%;
-  top: auto;
   margin-bottom: 4px;
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
 }
@@ -3596,7 +3630,7 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-session-modal-title h2 {
+.superpower-inside-session-modal-heading {
   margin: 0;
   font-size: var(--font-ui-large);
 }
@@ -3641,7 +3675,7 @@
 }
 
 .superpower-inside-session-search-clear {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;
@@ -3818,6 +3852,9 @@
 }
 
 .superpower-inside-edit-modal textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-small);
   line-height: 1.5;
@@ -3827,6 +3864,13 @@
   border-radius: 4px;
   background: var(--background-primary);
   color: var(--text-normal);
+}
+
+.superpower-inside-edit-modal-heading {
+  margin: 0 0 8px;
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .superpower-inside-edit-modal-buttons {
@@ -4310,7 +4354,7 @@
   border-radius: 2px;
   background: var(--text-accent);
   transition: width 0.3s ease;
-  width: 0%;
+  width: var(--superpower-inside-graph-progress-width, 0%);
 }
 
 .superpower-inside-graph-view-banner {
@@ -4394,17 +4438,21 @@
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-graph-view-detail-header h3 {
+.superpower-inside-graph-view-detail-heading {
   margin: 4px 0;
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .superpower-inside-graph-view-detail-section {
   margin-top: 12px;
 }
 
-.superpower-inside-graph-view-detail-section h4 {
+.superpower-inside-graph-view-detail-section-heading {
   margin: 0 0 4px;
   font-size: var(--font-ui-small);
+  font-weight: 700;
   color: var(--text-muted);
 }
 

@@ -43,6 +43,13 @@ function truncate(text: string, maxLen: number): string {
 
 const LOAD_MORE_CHUNK = 100;
 const SEARCH_DEBOUNCE_MS = 200;
+const HIDDEN_CLASS = 'superpower-inside-hidden';
+const GRAPH_PROGRESS_WIDTH_VAR = '--superpower-inside-graph-progress-width';
+
+function setHidden(el: HTMLElement | null, hidden: boolean): void {
+  if (!el) return;
+  el.toggleClass(HIDDEN_CLASS, hidden);
+}
 
 export class GraphRagView extends ItemView {
   private plugin: SuperpowerInsidePlugin;
@@ -112,7 +119,7 @@ export class GraphRagView extends ItemView {
     });
 
     this.progressEl = this.headerEl.createDiv({ cls: 'superpower-inside-graph-view-progress' });
-    this.progressEl.style.display = 'none';
+    setHidden(this.progressEl, true);
     this.progressTextEl = this.progressEl.createSpan({
       cls: 'superpower-inside-graph-view-progress-text',
     });
@@ -351,9 +358,8 @@ export class GraphRagView extends ItemView {
           this.detailEntity = entity;
           this.renderContent();
         });
-        item
-          .createSpan({ cls: 'superpower-inside-graph-view-badge', text: label })
-          .style.setProperty('--badge-color', getBadgeColor(typeId));
+        const badge = item.createSpan({ cls: 'superpower-inside-graph-view-badge', text: label });
+        badge.setCssProps({ '--badge-color': getBadgeColor(typeId) });
         const nameSpan = item.createSpan({
           cls: 'superpower-inside-graph-view-item-name',
           text: entity.canonicalName,
@@ -393,13 +399,15 @@ export class GraphRagView extends ItemView {
       });
 
     const header = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-header' });
-    header
-      .createSpan({
-        cls: 'superpower-inside-graph-view-badge',
-        text: this.entityTypeInfoMap.get(entity.typeId)?.label ?? entity.typeId,
-      })
-      .style.setProperty('--badge-color', getBadgeColor(entity.typeId));
-    header.createEl('h3', { text: entity.canonicalName });
+    const badge = header.createSpan({
+      cls: 'superpower-inside-graph-view-badge',
+      text: this.entityTypeInfoMap.get(entity.typeId)?.label ?? entity.typeId,
+    });
+    badge.setCssProps({ '--badge-color': getBadgeColor(entity.typeId) });
+    header.createDiv({
+      cls: 'superpower-inside-graph-view-detail-heading',
+      text: entity.canonicalName,
+    });
     if (entity.aliases.length > 0) {
       header.createDiv({
         cls: 'superpower-inside-graph-view-item-aliases',
@@ -418,7 +426,10 @@ export class GraphRagView extends ItemView {
     );
     if (related.length > 0) {
       const section = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-section' });
-      section.createEl('h4', { text: t('graphRagViewRelationsCount', { count: related.length }) });
+      section.createDiv({
+        cls: 'superpower-inside-graph-view-detail-section-heading',
+        text: t('graphRagViewRelationsCount', { count: related.length }),
+      });
       for (const rel of related) {
         const item = section.createDiv({ cls: 'superpower-inside-graph-view-item' });
         const src = entityMap.get(rel.sourceEntityId);
@@ -463,7 +474,10 @@ export class GraphRagView extends ItemView {
     const evidence = this.allEvidence.filter((e) => entity.evidenceIds.includes(e.id));
     if (evidence.length > 0) {
       const section = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-detail-section' });
-      section.createEl('h4', { text: t('graphRagViewEvidenceCount', { count: evidence.length }) });
+      section.createDiv({
+        cls: 'superpower-inside-graph-view-detail-section-heading',
+        text: t('graphRagViewEvidenceCount', { count: evidence.length }),
+      });
       for (const ev of evidence) {
         const item = section.createDiv({ cls: 'superpower-inside-graph-view-item' });
         item.addEventListener('click', () => {
@@ -813,12 +827,12 @@ export class GraphRagView extends ItemView {
     if (!this.progressEl || !this.progressTextEl || !this.progressBarEl) return;
     const progress = result.progress;
     if (!progress) {
-      this.progressEl.style.display = 'none';
+      setHidden(this.progressEl, true);
       return;
     }
     const done = progress.processedFiles + progress.failedFiles;
     const pct = progress.selectedFiles > 0 ? Math.round((done / progress.selectedFiles) * 100) : 0;
-    this.progressEl.style.display = '';
+    setHidden(this.progressEl, false);
     this.progressTextEl.setText(
       t('graphRagViewIndexingProgress', {
         done,
@@ -826,7 +840,9 @@ export class GraphRagView extends ItemView {
         percent: pct,
       }),
     );
-    const fill = document.getElementById('superpower-inside-graph-progress-fill');
-    if (fill) fill.style.width = `${pct}%`;
+    const fill = this.progressBarEl.querySelector<HTMLElement>(
+      '#superpower-inside-graph-progress-fill',
+    );
+    fill?.setCssProps({ [GRAPH_PROGRESS_WIDTH_VAR]: `${pct}%` });
   }
 }
