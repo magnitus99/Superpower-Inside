@@ -1,5 +1,11 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { OntologySchema } from '../ontology/schema';
+import {
+  cosineSimilarityRust,
+  normalizeEntityNameRust,
+  scoreEntityMatchRust,
+  type RustEntityMatchInput,
+} from '../rag/rust-core';
 import type {
   GraphEntityRecord,
   KnowledgeGraphStore,
@@ -83,6 +89,12 @@ export class EntityResolver {
 }
 
 export function normalizeEntityName(name: string): string {
+  const rustResult = normalizeEntityNameRust(name);
+  if (rustResult !== null) return rustResult;
+  return normalizeEntityNameWithTypeScript(name);
+}
+
+function normalizeEntityNameWithTypeScript(name: string): string {
   return name
     .trim()
     .toLowerCase()
@@ -104,13 +116,51 @@ async function scoreEntityMatch(
   input: EntityResolutionInput,
   embeddingProvider?: EmbeddingProvider,
 ): Promise<number> {
+  const rustInput = createRustEntityMatchInput(entity, input, 0);
+  const rustScoreWithoutEmbedding = scoreEntityMatchRust(rustInput);
+  if (rustScoreWithoutEmbedding === 1 || !embeddingProvider) {
+    if (rustScoreWithoutEmbedding !== null) return rustScoreWithoutEmbedding;
+  }
+
+  const embeddingScore = await embeddingSimilarityScore(entity, input, embeddingProvider);
+  const rustScore = scoreEntityMatchRust({
+    ...rustInput,
+    embeddingScore,
+  });
+  if (rustScore !== null) return rustScore;
+
+  return scoreEntityMatchWithTypeScript(entity, input, embeddingScore);
+}
+
+function createRustEntityMatchInput(
+  entity: GraphEntityRecord,
+  input: EntityResolutionInput,
+  embeddingScore: number,
+): RustEntityMatchInput {
+  return {
+    candidateNames: [input.canonicalName, ...input.aliases],
+    existingNames: [entity.canonicalName, ...entity.aliases],
+    candidateDescription: `${input.canonicalName} ${input.description}`,
+    existingDescription: `${entity.canonicalName} ${entity.description}`,
+    candidateEvidenceIds: input.evidenceIds ?? [],
+    existingEvidenceIds: entity.evidenceIds,
+    sameType: entity.typeId === input.typeId,
+    embeddingScore,
+  };
+}
+
+function scoreEntityMatchWithTypeScript(
+  entity: GraphEntityRecord,
+  input: EntityResolutionInput,
+  embeddingScore: number,
+): number {
   const candidateNames = new Set([
-    normalizeEntityName(input.canonicalName),
-    ...input.aliases.map(normalizeEntityName),
+    normalizeEntityNameWithTypeScript(input.canonicalName),
+    ...input.aliases.map(normalizeEntityNameWithTypeScript),
   ]);
   const existingNames = new Set([
-    normalizeEntityName(entity.canonicalName),
-    ...entity.aliases.map(normalizeEntityName),
+    normalizeEntityNameWithTypeScript(entity.canonicalName),
+    ...entity.aliases.map(normalizeEntityNameWithTypeScript),
   ]);
 
   const hasExactNameOrAlias = hasIntersection(candidateNames, existingNames);
@@ -123,7 +173,6 @@ async function scoreEntityMatch(
     `${input.canonicalName} ${input.description}`,
   );
   const evidenceScore = sharedEvidenceScore(entity.evidenceIds, input.evidenceIds ?? []);
-  const embeddingScore = await embeddingSimilarityScore(entity, input, embeddingProvider);
   const ontologyTypeScore = entity.typeId === input.typeId ? 1 : 0;
   const semanticScore = Math.max(descriptionScore, embeddingScore);
 
@@ -202,6 +251,12 @@ async function embeddingSimilarityScore(
 }
 
 function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
+  const rustScore = cosineSimilarityRust(left, right);
+  if (rustScore !== null) return rustScore;
+  return cosineSimilarityWithTypeScript(left, right);
+}
+
+function cosineSimilarityWithTypeScript(left: readonly number[], right: readonly number[]): number {
   const dimensions = Math.min(left.length, right.length);
   if (dimensions === 0) return 0;
   let dot = 0;

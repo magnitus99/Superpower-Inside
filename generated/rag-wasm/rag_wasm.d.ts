@@ -57,6 +57,11 @@ export function hybrid_score_or_nan(combined_base: number, rrf_score: number, so
 export function is_excluded_path(file_path: string, patterns: string): boolean;
 
 /**
+ * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
+ */
+export function normalize_entity_name(name: string): string;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
@@ -65,6 +70,11 @@ export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dim
  * retrieval source rank map에서 RRF score를 계산한다.
  */
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
+
+/**
+ * `GraphRAG` entity merge score를 계산한다.
+ */
+export function score_entity_match_or_nan(candidate_names: string, existing_names: string, descriptions: string, evidence_ids: string, same_type: boolean, embedding_score: number): number;
 
 /**
  * `GraphRAG` local/evidence-first evidence score pair를 계산한다.
@@ -101,8 +111,10 @@ export interface InitOutput {
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
+    readonly normalize_entity_name: (a: number, b: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly score_entity_match_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly score_local_evidence_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];

@@ -12,7 +12,9 @@ import {
   extractVaultLinksRust,
   isExcludedPathRust,
   isRustCoreAvailable,
+  normalizeEntityNameRust,
   rankTopKPairsRust,
+  scoreEntityMatchRust,
   scoreBm25Rust,
   selectDiverseIndicesRust,
   scoreLocalEvidenceRust,
@@ -185,6 +187,38 @@ describe('Rust WASM RAG core bridge', () => {
     expect(isExcludedPathRust('src/main.test.ts', ['src/*.test.ts'])).toBe(true);
     expect(isExcludedPathRust('notes/today.md', ['png', 'jpg'])).toBe(false);
     expect(isExcludedPathRust('images/logo.PNG', ['png'])).toBe(true);
+  });
+
+  it('scores GraphRAG entity name matches through Rust', () => {
+    expect(normalizeEntityNameRust('  Saul / Paul【Apostle】  ')).toBe('saul paul apostle');
+
+    const exactScore = scoreEntityMatchRust({
+      candidateNames: ['Saul'],
+      existingNames: ['Paul', 'Saul'],
+      candidateDescription: 'Apostle',
+      existingDescription: 'Paul Apostle',
+      candidateEvidenceIds: [],
+      existingEvidenceIds: [],
+      sameType: true,
+      embeddingScore: 0,
+    });
+
+    expect(exactScore).toBe(1);
+
+    const partialScore = scoreEntityMatchRust({
+      candidateNames: ['Apostle Paul'],
+      existingNames: ['Paul the Apostle'],
+      candidateDescription: 'Apostle missionary',
+      existingDescription: 'Paul missionary',
+      candidateEvidenceIds: ['evidence::acts'],
+      existingEvidenceIds: ['evidence::acts'],
+      sameType: true,
+      embeddingScore: 0,
+    });
+
+    expect(partialScore).not.toBeNull();
+    expect(partialScore).toBeGreaterThanOrEqual(0.72);
+    expect(partialScore).toBeLessThan(1);
   });
 
   it('returns GraphRAG local evidence scores from numeric graph inputs', () => {

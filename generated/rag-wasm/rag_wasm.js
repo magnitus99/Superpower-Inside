@@ -217,6 +217,26 @@ export function is_excluded_path(file_path, patterns) {
 }
 
 /**
+ * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
+ * @param {string} name
+ * @returns {string}
+ */
+export function normalize_entity_name(name) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.normalize_entity_name(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors
@@ -248,6 +268,29 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
     const ptr1 = passArrayF64ToWasm0(ranks, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.rrf_score_or_nan(ptr0, len0, ptr1, len1, bm25_weight);
+    return ret;
+}
+
+/**
+ * `GraphRAG` entity merge score를 계산한다.
+ * @param {string} candidate_names
+ * @param {string} existing_names
+ * @param {string} descriptions
+ * @param {string} evidence_ids
+ * @param {boolean} same_type
+ * @param {number} embedding_score
+ * @returns {number}
+ */
+export function score_entity_match_or_nan(candidate_names, existing_names, descriptions, evidence_ids, same_type, embedding_score) {
+    const ptr0 = passStringToWasm0(candidate_names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(existing_names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(descriptions, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(evidence_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.score_entity_match_or_nan(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, same_type, embedding_score);
     return ret;
 }
 

@@ -11,8 +11,10 @@ import {
   hybrid_score_or_nan,
   initSync,
   is_excluded_path,
+  normalize_entity_name,
   rank_top_k_pairs,
   rrf_score_or_nan,
+  score_entity_match_or_nan,
   select_diverse_indices,
   score_local_evidence_pairs,
   token_frequencies_json,
@@ -87,6 +89,17 @@ export interface RustLocalEvidenceInput {
   claimEvidenceIndices: readonly number[];
   evidenceCount: number;
   traversalDepth: number;
+}
+
+export interface RustEntityMatchInput {
+  candidateNames: readonly string[];
+  existingNames: readonly string[];
+  candidateDescription: string;
+  existingDescription: string;
+  candidateEvidenceIds: readonly string[];
+  existingEvidenceIds: readonly string[];
+  sameType: boolean;
+  embeddingScore: number;
 }
 
 let initialized = false;
@@ -505,6 +518,35 @@ export function isExcludedPathRust(filePath: string, patterns: readonly string[]
   return is_excluded_path(filePath, patterns.join('\0'));
 }
 
+export function normalizeEntityNameRust(name: string): string | null {
+  if (!ensureRustCore()) return null;
+  return normalize_entity_name(name);
+}
+
+export function scoreEntityMatchRust(input: RustEntityMatchInput): number | null {
+  if (!ensureRustCore()) return null;
+  if (!input.candidateNames.every(isStringValue) || !input.existingNames.every(isStringValue)) {
+    return null;
+  }
+  if (
+    !input.candidateEvidenceIds.every(isStringValue) ||
+    !input.existingEvidenceIds.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!Number.isFinite(input.embeddingScore)) return null;
+
+  const score = score_entity_match_or_nan(
+    input.candidateNames.join('\0'),
+    input.existingNames.join('\0'),
+    `${input.existingDescription}\u{1f}${input.candidateDescription}`,
+    `${input.existingEvidenceIds.join('\0')}\u{1f}${input.candidateEvidenceIds.join('\0')}`,
+    input.sameType,
+    input.embeddingScore,
+  );
+  return Number.isFinite(score) ? score : null;
+}
+
 function ensureRustCore(): boolean {
   if (initialized) return true;
   if (unavailable) return false;
@@ -616,6 +658,10 @@ function isValidBm25Posting(posting: RustBm25Posting): boolean {
 
 function isValidUint32(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+function isStringValue(value: unknown): value is string {
+  return typeof value === 'string';
 }
 
 function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {

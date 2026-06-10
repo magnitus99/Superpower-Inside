@@ -511,6 +511,75 @@ pub fn is_excluded_path(file_path: &str, patterns: &str) -> bool {
     is_vault_path_excluded(file_path, patterns.split('\0'))
 }
 
+/// `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn normalize_entity_name(name: &str) -> String {
+    normalize_graph_entity_name(name)
+}
+
+/// `GraphRAG` entity merge score를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn score_entity_match_or_nan(
+    candidate_names: &str,
+    existing_names: &str,
+    descriptions: &str,
+    evidence_ids: &str,
+    same_type: bool,
+    embedding_score: f64,
+) -> f64 {
+    let Some((existing_description, candidate_description)) = descriptions.split_once('\u{1f}')
+    else {
+        return f64::NAN;
+    };
+    let Some((existing_evidence_ids, candidate_evidence_ids)) = evidence_ids.split_once('\u{1f}')
+    else {
+        return f64::NAN;
+    };
+    let candidate_names = split_entity_wire_values(candidate_names)
+        .map(normalize_graph_entity_name)
+        .collect::<Vec<_>>();
+    let existing_names = split_entity_wire_values(existing_names)
+        .map(normalize_graph_entity_name)
+        .collect::<Vec<_>>();
+
+    if has_string_intersection(&candidate_names, &existing_names) {
+        return 1.0;
+    }
+
+    let name_score = max_entity_name_similarity(&candidate_names, &existing_names);
+    let alias_score = max_entity_alias_containment_score(&candidate_names, &existing_names);
+    let description_score = entity_jaccard_token_score(existing_description, candidate_description);
+    let evidence_score =
+        shared_entity_evidence_score(existing_evidence_ids, candidate_evidence_ids);
+    let embedding_score = if embedding_score.is_finite() {
+        embedding_score
+    } else {
+        0.0
+    };
+    let ontology_type_score = if same_type { 1.0 } else { 0.0 };
+    let semantic_score = description_score.max(embedding_score);
+
+    let weighted_score = clamp_unit_score(0.42_f64.mul_add(
+        name_score,
+        0.18_f64.mul_add(
+            alias_score,
+            0.22_f64.mul_add(
+                semantic_score,
+                0.18_f64.mul_add(evidence_score, 0.08 * ontology_type_score),
+            ),
+        ),
+    ));
+    let semantic_boost = if same_type && embedding_score >= 0.92 && description_score >= 0.5 {
+        0.74
+    } else {
+        0.0
+    };
+
+    weighted_score.max(semantic_boost)
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -1176,6 +1245,218 @@ const fn clamp_unit_score(score: f64) -> f64 {
         return 1.0;
     }
     score
+}
+
+/// entity wire 문자열을 `NUL` separator 기준으로 나눈다.
+fn split_entity_wire_values(values: &str) -> impl Iterator<Item = &str> {
+    values.split('\0')
+}
+
+/// `GraphRAG` entity 이름을 기존 `TypeScript` 정규화 규칙과 같게 만든다.
+fn normalize_graph_entity_name(name: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_space = true;
+
+    for character in name.trim().to_lowercase().chars() {
+        if is_entity_name_separator(character) || character.is_whitespace() {
+            if !last_was_space {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+            continue;
+        }
+        normalized.push(character);
+        last_was_space = false;
+    }
+
+    if normalized.ends_with(' ') {
+        normalized.pop();
+    }
+    normalized
+}
+
+/// entity 이름에서 구분자로 취급하는 문자인지 확인한다.
+const fn is_entity_name_separator(character: char) -> bool {
+    matches!(
+        character,
+        '_' | '/'
+            | '\\'
+            | '|'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '"'
+            | '\''
+            | '「'
+            | '」'
+            | '『'
+            | '』'
+            | '【'
+            | '】'
+            | '《'
+            | '》'
+            | '.'
+            | ','
+            | ';'
+            | ':'
+            | '!'
+            | '?'
+    )
+}
+
+/// 두 문자열 목록이 공통 값을 갖는지 확인한다.
+fn has_string_intersection(left: &[String], right: &[String]) -> bool {
+    left.iter()
+        .any(|left_value| right.iter().any(|right_value| left_value == right_value))
+}
+
+/// 두 entity name set 사이의 최대 이름 유사도를 계산한다.
+fn max_entity_name_similarity(left: &[String], right: &[String]) -> f64 {
+    let mut best = 0.0_f64;
+    for left_name in left {
+        for right_name in right {
+            best = best.max(entity_name_similarity(left_name, right_name));
+        }
+    }
+    best
+}
+
+/// 두 entity 이름의 token overlap/Jaccard 기반 유사도를 계산한다.
+fn entity_name_similarity(left: &str, right: &str) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    if left == right {
+        return 1.0;
+    }
+
+    let left_tokens = remove_weak_entity_name_tokens(&tokenize_entity_name(left));
+    let right_tokens = remove_weak_entity_name_tokens(&tokenize_entity_name(right));
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = left_tokens
+        .iter()
+        .filter(|token| right_tokens.iter().any(|right_token| right_token == *token))
+        .count();
+    let Some(intersection_score) = usize_to_f64(intersection) else {
+        return entity_jaccard_token_score(left, right);
+    };
+    let Some(denominator) = usize_to_f64(left_tokens.len().min(right_tokens.len())) else {
+        return entity_jaccard_token_score(left, right);
+    };
+    let overlap = intersection_score / denominator;
+    entity_jaccard_token_score(left, right).max(overlap)
+}
+
+/// 약한 entity 이름 token을 제거한다.
+fn remove_weak_entity_name_tokens(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .filter(|token| !matches!(token.as_str(), "the" | "of" | "a" | "an"))
+        .cloned()
+        .collect()
+}
+
+/// 두 entity name set 사이의 최대 containment score를 계산한다.
+fn max_entity_alias_containment_score(left: &[String], right: &[String]) -> f64 {
+    let mut best = 0.0_f64;
+    for left_name in left {
+        for right_name in right {
+            best = best.max(entity_containment_score(left_name, right_name));
+        }
+    }
+    best
+}
+
+/// alias 부분 문자열 포함 score를 계산한다.
+fn entity_containment_score(left: &str, right: &str) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return if left == right { 1.0 } else { 0.0 };
+    }
+    if left == right {
+        return 1.0;
+    }
+
+    let (shorter, longer) = if left.len() <= right.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    if !longer.contains(shorter) {
+        return 0.0;
+    }
+
+    let Some(shorter_len) = usize_to_f64(shorter.len()) else {
+        return 0.72;
+    };
+    let Some(longer_len) = usize_to_f64(longer.len()) else {
+        return 0.72;
+    };
+    0.72_f64.max(shorter_len / longer_len)
+}
+
+/// entity evidence id에 공통 값이 있으면 1을 반환한다.
+fn shared_entity_evidence_score(left: &str, right: &str) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let left_values = split_entity_wire_values(left).collect::<Vec<_>>();
+    let right_values = split_entity_wire_values(right).collect::<Vec<_>>();
+    if left_values.iter().any(|left_value| {
+        right_values
+            .iter()
+            .any(|right_value| left_value == right_value)
+    }) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// entity 텍스트의 token Jaccard score를 계산한다.
+fn entity_jaccard_token_score(left: &str, right: &str) -> f64 {
+    let left_tokens = unique_entity_tokens(left);
+    let right_tokens = unique_entity_tokens(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = left_tokens
+        .iter()
+        .filter(|token| right_tokens.contains(*token))
+        .count();
+    let union = left_tokens
+        .iter()
+        .chain(right_tokens.iter())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+
+    let Some(intersection_score) = usize_to_f64(intersection) else {
+        return 0.0;
+    };
+    let Some(union_score) = usize_to_f64(union) else {
+        return 0.0;
+    };
+    intersection_score / union_score
+}
+
+/// entity 텍스트를 정규화하고 공백 token으로 나눈다.
+fn tokenize_entity_name(text: &str) -> Vec<String> {
+    normalize_graph_entity_name(text)
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// entity 텍스트의 unique token set을 만든다.
+fn unique_entity_tokens(text: &str) -> std::collections::BTreeSet<String> {
+    tokenize_entity_name(text).into_iter().collect()
 }
 
 /// flat edge 배열에서 community detection graph를 만든다.
@@ -2568,8 +2849,9 @@ mod tests {
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
         cosine_similarity, create_content_hash, detect_communities_flat, extract_vault_links_json,
-        hybrid_score_or_nan, is_excluded_path, rank_top_k_pairs, rrf_score_or_nan,
-        score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
+        hybrid_score_or_nan, is_excluded_path, normalize_entity_name, rank_top_k_pairs,
+        rrf_score_or_nan, score_entity_match_or_nan, score_local_evidence_pairs,
+        select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -2700,6 +2982,41 @@ mod tests {
         assert!(is_excluded_path("src/main.test.ts", "src/*.test.ts"));
         assert!(is_excluded_path("images/logo.PNG", "png"));
         assert!(!is_excluded_path("notes/today.md", "png\0jpg"));
+    }
+
+    /// `GraphRAG` entity resolver의 이름 정규화와 merge score 수식을 보존해야 한다.
+    #[test]
+    fn entity_match_score_preserves_typescript_contract() {
+        assert_eq!(
+            normalize_entity_name("  Saul / Paul【Apostle】  "),
+            "saul paul apostle",
+        );
+        assert_float_close(
+            score_entity_match_or_nan(
+                "Saul",
+                "Paul\0Saul",
+                "Paul Apostle\u{1f}Apostle",
+                "\u{1f}",
+                true,
+                0.0,
+            ),
+            1.0,
+            "exact canonical/alias match는 즉시 1이어야 한다",
+        );
+
+        let score = score_entity_match_or_nan(
+            "Apostle Paul",
+            "Paul the Apostle",
+            "Paul missionary\u{1f}Apostle missionary",
+            "evidence::acts\u{1f}evidence::acts",
+            true,
+            0.0,
+        );
+
+        assert!(
+            (0.72..1.0).contains(&score),
+            "이름 순서 차이와 공통 evidence는 pending merge 수준 score여야 한다: {score}",
+        );
     }
 
     /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.
