@@ -48,6 +48,13 @@
 - `chunkPlainText()`는 Rust/WASM을 우선 사용하고, 초기화 또는 JSON 검증 실패 시 기존 TypeScript 구현으로 fallback한다.
 - RAG chunking 계열 중 파일 확장자 분기와 vault I/O는 TypeScript에 남고, 실제 chunk 계산은 Rust/WASM 경로를 먼저 탄다.
 
+## 현재 다섯 번째 slice
+
+- BM25 검색 scoring을 Rust/WASM에 추가했다.
+- `JsonFileBM25Index.search()`는 기존 JSON 저장 구조와 vault persistence를 유지하면서 posting list를 typed array로 변환하고, IDF/TF score 누적 계산은 Rust/WASM을 우선 사용한다.
+- Rust/WASM 초기화 실패 시 기존 TypeScript BM25 scoring 구현으로 fallback한다.
+- BM25 인덱스 파일 생성/삭제/rename 흐름은 과거 churn 방지 계약 때문에 TypeScript vault I/O 경계에 그대로 둔다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
