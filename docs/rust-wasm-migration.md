@@ -76,6 +76,13 @@
 - `sourcePath`와 heading 문자열을 숫자 key로 바꾸는 작업, 후보 객체 조립, fallback selection loop는 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 typed array/index 검증 실패 시 기존 TypeScript MMR 루프를 그대로 사용한다.
 
+## 현재 아홉 번째 slice
+
+- GraphRAG community detection의 반복 assignment 계산과 modularity 계산을 Rust/WASM에 추가했다.
+- `detectCommunities()`는 entity id를 안정적으로 정렬해 numeric node index로 매핑하고, edge index/weight 배열을 Rust/WASM에 넘긴다.
+- entity/relation record 접근, relation confidence를 edge로 합치는 `buildEdges()`, community summarizer/LLM 호출, graph store persistence는 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 index/modularity 검증 실패 시 기존 TypeScript community detection 루프를 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
