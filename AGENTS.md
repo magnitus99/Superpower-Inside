@@ -57,7 +57,7 @@
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
 | 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
 | Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
-| Rust/WASM JS bridge      | `src/rag/rust-core.ts` + `generated/rag-wasm/`       | embedded WASM init, hash/tokenize/vector scoring bridge                   |
+| Rust/WASM JS bridge      | `src/rag/rust-core.ts` + `generated/rag-wasm/`       | embedded WASM init, hash/tokenize/vector/query scoring bridge             |
 | Rust 보안 게이트         | `scripts/check-rust-security.fish` + `deny.toml`     | fmt, clippy, test, wasm build, deny, audit, vet, geiger                   |
 | 개발 볼트/QA             | `.test-vault/`                                       | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인                       |
 
@@ -96,6 +96,8 @@
 | `calculateRrfScoreRust`      | function  | `src/rag/rust-core.ts`       | TS source rank map과 Rust RRF bridge                   |
 | `hybrid_score_or_nan`        | function  | `crates/rag-wasm/src/lib.rs` | RAG hybrid result score 계산                           |
 | `calculateHybridScoreRust`   | function  | `src/rag/rust-core.ts`       | TS query score input과 Rust hybrid score bridge        |
+| `select_diverse_indices`     | function  | `crates/rag-wasm/src/lib.rs` | RAG MMR diversity selection index 계산                 |
+| `selectDiverseIndicesRust`   | function  | `src/rag/rust-core.ts`       | TS query 후보와 Rust MMR selection bridge              |
 | `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
 | `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
 | `chunk_plain_text_json`      | function  | `crates/rag-wasm/src/lib.rs` | plain text/code RAG chunk를 JSON으로 생성              |

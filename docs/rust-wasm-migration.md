@@ -66,8 +66,15 @@
 
 - RAG query ranking의 RRF score와 hybrid result score 계산을 Rust/WASM에 추가했다.
 - `RAGQueryEngine.query()`는 후보의 source rank fusion과 graph/evidence-aware hybrid score를 만들 때 Rust/WASM을 우선 사용한다.
-- source 문자열 분류와 후보 객체 조립, threshold/filter, MMR 다양성 선택, reranker/LLM 호출은 TypeScript 경계에 남긴다.
+- source 문자열 분류와 후보 객체 조립, threshold/filter, reranker/LLM 호출은 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 score 검증 실패 시 기존 TypeScript ranking 수식으로 fallback한다.
+
+## 현재 여덟 번째 slice
+
+- RAG query result의 MMR diversity selection을 Rust/WASM에 추가했다.
+- `selectDiverseResults()`는 topK 후보 index 선택을 Rust/WASM에 먼저 맡기고, 반환 index를 기존 `QueryResult` 객체에 다시 매핑한다.
+- `sourcePath`와 heading 문자열을 숫자 key로 바꾸는 작업, 후보 객체 조립, fallback selection loop는 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 typed array/index 검증 실패 시 기존 TypeScript MMR 루프를 그대로 사용한다.
 
 ## 실시간성 개선 방향
 
