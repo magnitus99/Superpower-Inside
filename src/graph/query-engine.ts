@@ -7,7 +7,7 @@ import type {
   RetrievalCandidateSource,
 } from '../rag/retrieval-pipeline';
 import type { VectorEntry, VectorStore } from '../rag/store';
-import { scoreLocalEvidenceRust } from '../rag/rust-core';
+import { rankTopKPairsRust, scoreLocalEvidenceRust } from '../rag/rust-core';
 import { normalizeEntityName } from './entity-resolver';
 import type {
   GraphClaimRecord,
@@ -184,8 +184,13 @@ export class GraphRagQueryEngine {
   }
 
   private async queryGlobal(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const communities = (await this.graphStore.getCommunities())
-      .filter((community) => community.ontologySchemaId === this.ontologySchema.id)
+    const schemaCommunities = (await this.graphStore.getCommunities())
+      .filter((community) => community.ontologySchemaId === this.ontologySchema.id);
+    const communities = rankGlobalCommunitiesWithRust(
+      schemaCommunities,
+      request.queryVector,
+      request.candidateLimit,
+    ) ?? schemaCommunities
       .map((community) => ({
         community,
         score: cosineSimilarity(request.queryVector, community.summaryVector),
@@ -247,6 +252,27 @@ export class GraphRagQueryEngine {
         reason,
       }));
   }
+}
+
+function rankGlobalCommunitiesWithRust(
+  communities: readonly GraphCommunityRecord[],
+  queryVector: readonly number[],
+  candidateLimit: number,
+): Array<{ community: GraphCommunityRecord; score: number }> | null {
+  const rustScores = rankTopKPairsRust(
+    queryVector,
+    communities.map((community) => community.summaryVector),
+    candidateLimit,
+  );
+  if (rustScores === null) return null;
+
+  const ranked: Array<{ community: GraphCommunityRecord; score: number }> = [];
+  for (const result of rustScores) {
+    const community = communities[result.index];
+    if (!community) return null;
+    ranked.push({ community, score: result.score });
+  }
+  return ranked;
 }
 
 function collectLocalEvidenceScores(
