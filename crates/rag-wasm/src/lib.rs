@@ -16,6 +16,26 @@ const FNV_PRIME: u32 = 0x0100_0193;
 const BM25_K1: f64 = 1.2;
 /// 기존 `TypeScript BM25` 검색 경로의 `b` 상수.
 const BM25_B: f64 = 0.75;
+/// 기존 `TypeScript RRF` 계산의 rank smoothing 상수.
+const RRF_K: f64 = 60.0;
+/// 기존 hybrid score의 base vector/BM25 component weight.
+const VECTOR_SCORE_WEIGHT: f64 = 0.35;
+/// 기존 hybrid score의 reciprocal rank fusion component weight.
+const RRF_SCORE_WEIGHT: f64 = 0.55;
+/// 기존 hybrid score의 source prior component weight.
+const SOURCE_PRIOR_WEIGHT: f64 = 0.1;
+/// 강한 graph/evidence 후보의 score floor.
+const STRONG_EVIDENCE_SCORE_FLOOR: f64 = 0.58;
+/// 강한 graph/evidence 후보의 score cap.
+const STRONG_EVIDENCE_SCORE_CAP: f64 = 0.88;
+/// BM25 retrieval source.
+const SOURCE_BM25: u8 = 1;
+/// vector/ANN retrieval source.
+const SOURCE_VECTOR: u8 = 2;
+/// graph-local/graph-global/evidence retrieval source.
+const SOURCE_GRAPH_EVIDENCE: u8 = 3;
+/// structural retrieval source.
+const SOURCE_STRUCTURAL: u8 = 4;
 
 /// `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
 #[must_use]
@@ -238,6 +258,68 @@ pub fn bm25_score_pairs(
     pairs.into_boxed_slice()
 }
 
+/// retrieval source rank map에서 RRF score를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn rrf_score_or_nan(source_codes: &[u8], ranks: &[f64], bm25_weight: f64) -> f64 {
+    if source_codes.len() != ranks.len() || !bm25_weight.is_finite() {
+        return f64::NAN;
+    }
+
+    let mut weighted_score = 0.0_f64;
+    let mut total_weight = 0.0_f64;
+
+    for (source_code, rank) in source_codes.iter().copied().zip(ranks.iter().copied()) {
+        if !rank.is_finite() || rank < 1.0 {
+            continue;
+        }
+        let weight = rrf_source_weight(source_code, bm25_weight);
+        weighted_score = weight.mul_add(1.0 / (RRF_K + rank), weighted_score);
+        total_weight = weight.mul_add(1.0 / (RRF_K + 1.0), total_weight);
+    }
+
+    if total_weight == 0.0 {
+        return 0.0;
+    }
+    weighted_score / total_weight
+}
+
+/// RAG hybrid score를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn hybrid_score_or_nan(
+    combined_base: f64,
+    rrf_score: f64,
+    source_prior: f64,
+    source_evidence_score: f64,
+    best_evidence_rank: f64,
+    source_codes: &[u8],
+) -> f64 {
+    if !combined_base.is_finite()
+        || !rrf_score.is_finite()
+        || !source_prior.is_finite()
+        || !source_evidence_score.is_finite()
+    {
+        return f64::NAN;
+    }
+
+    let base_score = VECTOR_SCORE_WEIGHT.mul_add(
+        combined_base,
+        RRF_SCORE_WEIGHT.mul_add(rrf_score, SOURCE_PRIOR_WEIGHT * source_prior),
+    );
+    if !has_graph_evidence_source(source_codes) {
+        return base_score;
+    }
+    if !is_strong_evidence_score(source_evidence_score, best_evidence_rank) {
+        return base_score;
+    }
+
+    let evidence_score = source_evidence_score.clamp(0.0, 1.0);
+    let evidence_aware_score =
+        STRONG_EVIDENCE_SCORE_FLOOR + evidence_score.mul_add(0.25, rrf_score * 0.08);
+    base_score.max(evidence_aware_score.min(STRONG_EVIDENCE_SCORE_CAP))
+}
+
 /// Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -268,6 +350,27 @@ fn compare_scored_rows_descending(left: &ScoredRow, right: &ScoredRow) -> std::c
         .score
         .total_cmp(&left.score)
         .then_with(|| left.row_index.cmp(&right.row_index))
+}
+
+/// retrieval source별 RRF weight를 반환한다.
+fn rrf_source_weight(source_code: u8, bm25_weight: f64) -> f64 {
+    match source_code {
+        SOURCE_BM25 => bm25_weight.max(0.05),
+        SOURCE_VECTOR => (1.0 - bm25_weight).max(0.05),
+        SOURCE_GRAPH_EVIDENCE => 0.2,
+        SOURCE_STRUCTURAL => 0.12,
+        _ => 0.05,
+    }
+}
+
+/// graph/evidence source가 있는지 반환한다.
+fn has_graph_evidence_source(source_codes: &[u8]) -> bool {
+    source_codes.contains(&SOURCE_GRAPH_EVIDENCE)
+}
+
+/// graph/evidence score가 강한 근거인지 반환한다.
+fn is_strong_evidence_score(evidence_score: f64, rank: f64) -> bool {
+    evidence_score >= 0.7 || (rank.is_finite() && rank <= 2.0)
 }
 
 /// RAG chunk metadata.
@@ -1077,8 +1180,9 @@ mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
     use super::{
-        BM25_B, BM25_K1, bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity,
-        create_content_hash, rank_top_k_pairs, token_frequencies_json, tokenize,
+        BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
+        bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash,
+        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1300,6 +1404,38 @@ mod tests {
             pair_value(&pairs, 3),
             bm25_score(2.0, 2.0, 1.0, 4.0, 3.5),
             "doc 1 score는 첫 term 점수만 포함해야 한다",
+        );
+    }
+
+    /// RRF score는 retrieval source별 weight와 rank smoothing을 보존해야 한다.
+    #[test]
+    fn rrf_score_matches_typescript_source_weights() {
+        let score = rrf_score_or_nan(
+            &[SOURCE_VECTOR, SOURCE_BM25, SOURCE_STRUCTURAL],
+            &[1.0, 3.0, 2.0],
+            0.3,
+        );
+        let weighted = 0.12_f64.mul_add(
+            1.0 / (60.0 + 2.0),
+            0.3_f64.mul_add(1.0 / (60.0 + 3.0), 0.7 * (1.0 / (60.0 + 1.0))),
+        );
+        let total = 0.12_f64.mul_add(
+            1.0 / (60.0 + 1.0),
+            0.3_f64.mul_add(1.0 / (60.0 + 1.0), 0.7 * (1.0 / (60.0 + 1.0))),
+        );
+
+        assert_float_close(score, weighted / total, "RRF score mismatch");
+    }
+
+    /// 강한 graph/evidence source는 hybrid score floor/cap 경로를 적용해야 한다.
+    #[test]
+    fn hybrid_score_preserves_strong_graph_evidence_floor() {
+        let score = hybrid_score_or_nan(0.2, 0.5, 0.1, 0.8, 3.0, &[SOURCE_GRAPH_EVIDENCE]);
+
+        assert_float_close(
+            score,
+            0.5_f64.mul_add(0.08, 0.8_f64.mul_add(0.25, 0.58)),
+            "strong graph evidence score mismatch",
         );
     }
 

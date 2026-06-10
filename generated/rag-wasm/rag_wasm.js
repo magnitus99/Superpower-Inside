@@ -122,6 +122,23 @@ export function create_content_hash(content) {
 }
 
 /**
+ * RAG hybrid score를 계산한다.
+ * @param {number} combined_base
+ * @param {number} rrf_score
+ * @param {number} source_prior
+ * @param {number} source_evidence_score
+ * @param {number} best_evidence_rank
+ * @param {Uint8Array} source_codes
+ * @returns {number}
+ */
+export function hybrid_score_or_nan(combined_base, rrf_score, source_prior, source_evidence_score, best_evidence_rank, source_codes) {
+    const ptr0 = passArray8ToWasm0(source_codes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.hybrid_score_or_nan(combined_base, rrf_score, source_prior, source_evidence_score, best_evidence_rank, ptr0, len0);
+    return ret;
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors
@@ -138,6 +155,22 @@ export function rank_top_k_pairs(query, vectors, dimensions, top_k) {
     var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v3;
+}
+
+/**
+ * retrieval source rank map에서 RRF score를 계산한다.
+ * @param {Uint8Array} source_codes
+ * @param {Float64Array} ranks
+ * @param {number} bm25_weight
+ * @returns {number}
+ */
+export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
+    const ptr0 = passArray8ToWasm0(source_codes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(ranks, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.rrf_score_or_nan(ptr0, len0, ptr1, len1, bm25_weight);
+    return ret;
 }
 
 /**
@@ -234,6 +267,13 @@ function getUint8ArrayMemory0() {
 function passArray32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }

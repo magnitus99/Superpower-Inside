@@ -16,7 +16,11 @@ import {
   type RetrievalProviderDiagnostic,
   type StructuralMetadataContext,
 } from './retrieval-pipeline';
-import { cosineSimilarityRust } from './rust-core';
+import {
+  calculateHybridScoreRust,
+  calculateRrfScoreRust,
+  cosineSimilarityRust,
+} from './rust-core';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 const RRF_K = 60;
@@ -427,6 +431,9 @@ interface HybridScoreInput {
 }
 
 function calculateHybridScore(input: HybridScoreInput): number {
+  const rustScore = calculateHybridScoreRust(input);
+  if (rustScore !== null) return rustScore;
+
   const baseScore =
     VECTOR_SCORE_WEIGHT * input.combinedBase +
     RRF_SCORE_WEIGHT * input.rrfScore +
@@ -483,6 +490,9 @@ function calculateRrfScore(
   sourceRanks: Partial<Record<string, number>>,
   bm25Weight: number,
 ): number {
+  const rustScore = calculateRrfScoreRust(sourceRanks, bm25Weight);
+  if (rustScore !== null) return rustScore;
+
   let weightedScore = 0;
   let totalWeight = 0;
 

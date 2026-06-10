@@ -5,8 +5,10 @@ import {
   core_version,
   cosine_similarity_or_nan,
   create_content_hash,
+  hybrid_score_or_nan,
   initSync,
   rank_top_k_pairs,
+  rrf_score_or_nan,
   token_frequencies_json,
   tokenize_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
@@ -31,6 +33,15 @@ export interface RustBm25Term {
 export interface RustBm25TermFrequencies {
   totalTokens: number;
   frequencies: Record<string, number>;
+}
+
+export interface RustHybridScoreInput {
+  combinedBase: number;
+  rrfScore: number;
+  sourcePrior: number;
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+  retrievalSources: readonly string[];
 }
 
 let initialized = false;
@@ -155,6 +166,38 @@ export function scoreBm25Rust(
   return decodeIndexScorePairs(pairs);
 }
 
+export function calculateRrfScoreRust(
+  sourceRanks: Partial<Record<string, number>>,
+  bm25Weight: number,
+): number | null {
+  const sourceCodes: number[] = [];
+  const ranks: number[] = [];
+  for (const [source, rank] of Object.entries(sourceRanks)) {
+    if (typeof rank !== 'number' || rank < 1) continue;
+    sourceCodes.push(sourceToCode(source));
+    ranks.push(rank);
+  }
+  if (sourceCodes.length === 0) return 0;
+  if (!ensureRustCore()) return null;
+
+  const score = rrf_score_or_nan(new Uint8Array(sourceCodes), new Float64Array(ranks), bm25Weight);
+  return Number.isFinite(score) ? score : null;
+}
+
+export function calculateHybridScoreRust(input: RustHybridScoreInput): number | null {
+  if (!ensureRustCore()) return null;
+  const sourceCodes = input.retrievalSources.map(sourceToCode);
+  const score = hybrid_score_or_nan(
+    input.combinedBase,
+    input.rrfScore,
+    input.sourcePrior,
+    input.sourceEvidenceScore,
+    input.bestEvidenceRank ?? Number.NaN,
+    new Uint8Array(sourceCodes),
+  );
+  return Number.isFinite(score) ? score : null;
+}
+
 export function chunkMarkdownRust(
   content: string,
   maxChunkSize: number,
@@ -260,6 +303,14 @@ function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies
       Number.isSafeInteger(count) &&
       count > 0,
   );
+}
+
+function sourceToCode(source: string): number {
+  if (source === 'bm25') return 1;
+  if (source === 'vector' || source === 'ann') return 2;
+  if (source === 'graph-local' || source === 'graph-global' || source === 'evidence') return 3;
+  if (source === 'structural') return 4;
+  return 0;
 }
 
 function normalizePositiveInteger(value: number): number {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  calculateHybridScoreRust,
+  calculateRrfScoreRust,
   createContentHashRust,
   chunkMarkdownRust,
   chunkPlainTextRust,
@@ -92,6 +94,41 @@ describe('Rust WASM RAG core bridge', () => {
     expect(scores?.map((score) => score.index)).toEqual([0, 1]);
     expect(scores?.[0]?.score).toBeCloseTo(bm25(firstTermIdf, 2, 3) + bm25(secondTermIdf, 1, 3));
     expect(scores?.[1]?.score).toBeCloseTo(bm25(firstTermIdf, 1, 4));
+  });
+
+  it('returns RRF scores with retrieval source weights', () => {
+    const score = calculateRrfScoreRust(
+      {
+        vector: 1,
+        bm25: 3,
+        structural: 2,
+      },
+      0.3,
+    );
+
+    const weighted =
+      0.7 * (1 / (60 + 1)) +
+      0.3 * (1 / (60 + 3)) +
+      0.12 * (1 / (60 + 2));
+    const total =
+      0.7 * (1 / (60 + 1)) +
+      0.3 * (1 / (60 + 1)) +
+      0.12 * (1 / (60 + 1));
+
+    expect(score).toBeCloseTo(weighted / total);
+  });
+
+  it('returns evidence-aware hybrid scores for strong graph sources', () => {
+    const score = calculateHybridScoreRust({
+      combinedBase: 0.2,
+      rrfScore: 0.5,
+      sourcePrior: 0.1,
+      sourceEvidenceScore: 0.8,
+      bestEvidenceRank: 3,
+      retrievalSources: ['graph-local'],
+    });
+
+    expect(score).toBeCloseTo(0.58 + 0.8 * 0.25 + 0.5 * 0.08);
   });
 
   it('returns markdown chunks with heading and line metadata', () => {

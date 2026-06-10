@@ -32,9 +32,19 @@ export function cosine_similarity_or_nan(left: Float64Array, right: Float64Array
 export function create_content_hash(content: string): string;
 
 /**
+ * RAG hybrid score를 계산한다.
+ */
+export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
+
+/**
+ * retrieval source rank map에서 RRF score를 계산한다.
+ */
+export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
 
 /**
  * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
@@ -56,7 +66,9 @@ export interface InitOutput {
     readonly core_version: () => [number, number];
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
+    readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly token_frequencies_json: (a: number, b: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
