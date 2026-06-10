@@ -1,5 +1,6 @@
 import {
   chunk_markdown_json,
+  chunk_plain_text_json,
   core_version,
   cosine_similarity_or_nan,
   create_content_hash,
@@ -92,6 +93,27 @@ export function chunkMarkdownRust(
   try {
     const parsed: unknown = JSON.parse(
       chunk_markdown_json(
+        content,
+        normalizePositiveInteger(maxChunkSize),
+        normalizeNonNegativeInteger(overlapChars),
+      ),
+    );
+    if (!isChunkArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function chunkPlainTextRust(
+  content: string,
+  maxChunkSize: number,
+  overlapChars = 0,
+): Chunk[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      chunk_plain_text_json(
         content,
         normalizePositiveInteger(maxChunkSize),
         normalizeNonNegativeInteger(overlapChars),

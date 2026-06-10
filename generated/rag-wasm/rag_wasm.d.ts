@@ -7,6 +7,11 @@
 export function chunk_markdown_json(content: string, max_chunk_size: number, overlap_chars: number): string;
 
 /**
+ * 일반 텍스트와 코드 파일을 줄/빈 줄 경계 기준으로 chunk JSON으로 만든다.
+ */
+export function chunk_plain_text_json(content: string, max_chunk_size: number, overlap_chars: number): string;
+
+/**
  * `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
  */
 export function core_version(): string;
@@ -36,6 +41,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly core_version: () => [number, number];
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];

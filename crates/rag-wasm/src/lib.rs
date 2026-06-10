@@ -134,6 +134,14 @@ pub fn chunk_markdown_json(content: &str, max_chunk_size: usize, overlap_chars: 
     serialize_chunks_json(&chunks)
 }
 
+/// 일반 텍스트와 코드 파일을 줄/빈 줄 경계 기준으로 chunk JSON으로 만든다.
+#[must_use]
+#[wasm_bindgen]
+pub fn chunk_plain_text_json(content: &str, max_chunk_size: usize, overlap_chars: usize) -> String {
+    let chunks = chunk_plain_text(content, max_chunk_size, overlap_chars);
+    serialize_chunks_json(&chunks)
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -263,6 +271,73 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
             &mut chunks,
             &mut current_lines,
             current_heading.as_ref(),
+            start_line,
+            lines.len().saturating_sub(1),
+        );
+    }
+
+    finalize_chunks(chunks, max_chunk_size, overlap_chars)
+}
+
+/// 일반 텍스트와 코드 파일을 줄 경계를 우선해 chunk로 나눈다.
+fn chunk_plain_text(content: &str, max_chunk_size: usize, overlap_chars: usize) -> Vec<Chunk> {
+    let lines = content.split('\n').map(str::to_owned).collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut current_lines = Vec::new();
+    let mut start_line = 0_usize;
+
+    for (index, line) in lines.iter().enumerate() {
+        current_lines.push(line.clone());
+        let chunk_text = current_lines.join("\n");
+        if text_len(&chunk_text) < max_chunk_size {
+            continue;
+        }
+
+        let last_blank_line = current_lines
+            .iter()
+            .enumerate()
+            .filter_map(|(line_index, candidate)| {
+                if candidate.trim().is_empty() {
+                    Some(line_index)
+                } else {
+                    None
+                }
+            })
+            .next_back();
+
+        if let Some(last_blank_line) = last_blank_line.filter(|line_index| *line_index > 0) {
+            let part = current_lines
+                .iter()
+                .take(last_blank_line.saturating_add(1))
+                .cloned()
+                .collect::<Vec<_>>();
+            let rest = current_lines
+                .iter()
+                .skip(last_blank_line.saturating_add(1))
+                .cloned()
+                .collect::<Vec<_>>();
+            current_lines = part;
+            flush_chunk(
+                &mut chunks,
+                &mut current_lines,
+                None,
+                start_line,
+                index.saturating_sub(rest.len()),
+            );
+            current_lines = rest;
+            start_line = index.saturating_sub(current_lines.len()).saturating_add(1);
+            continue;
+        }
+
+        flush_chunk(&mut chunks, &mut current_lines, None, start_line, index);
+        start_line = index.saturating_add(1);
+    }
+
+    if !current_lines.is_empty() {
+        flush_chunk(
+            &mut chunks,
+            &mut current_lines,
+            None,
             start_line,
             lines.len().saturating_sub(1),
         );
@@ -872,7 +947,8 @@ mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
     use super::{
-        chunk_markdown, cosine_similarity, create_content_hash, rank_top_k_pairs, tokenize,
+        chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash, rank_top_k_pairs,
+        tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -945,6 +1021,25 @@ mod tests {
         assert_eq!(second.metadata.heading.as_deref(), Some("Second"));
         assert_eq!(second.metadata.start_line, 4);
         assert_eq!(second.metadata.end_line, 7);
+    }
+
+    /// 일반 텍스트 chunking은 빈 줄 split과 line metadata를 보존해야 한다.
+    #[test]
+    fn chunk_plain_text_preserves_blank_line_split_metadata() {
+        let chunks = chunk_plain_text("alpha\n\nbeta beta", 12, 0);
+
+        assert_eq!(chunks.len(), 2, "빈 줄 기준으로 두 chunk가 필요하다");
+        let [first, second] = chunks.as_slice() else {
+            return;
+        };
+        assert_eq!(first.text, "alpha");
+        assert_eq!(first.metadata.heading, None);
+        assert_eq!(first.metadata.start_line, 0);
+        assert_eq!(first.metadata.end_line, 1);
+        assert_eq!(second.text, "beta beta");
+        assert_eq!(second.metadata.heading, None);
+        assert_eq!(second.metadata.start_line, 2);
+        assert_eq!(second.metadata.end_line, 2);
     }
 
     /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.

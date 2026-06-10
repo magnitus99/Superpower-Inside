@@ -12,7 +12,7 @@ import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 import { createContentHash } from './hash';
-import { chunkMarkdownRust } from './rust-core';
+import { chunkMarkdownRust, chunkPlainTextRust } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 
@@ -318,6 +318,9 @@ export function chunkMarkdown(content: string, maxChunkSize: number, overlapChar
 
 /** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
 export function chunkPlainText(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
+  const rustChunks = chunkPlainTextRust(content, maxChunkSize, overlapChars);
+  if (rustChunks !== null) return rustChunks;
+
   const lines = content.split('\n');
   const chunks: Chunk[] = [];
   let currentLines: string[] = [];

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createContentHashRust,
   chunkMarkdownRust,
+  chunkPlainTextRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   tokenizeRust,
@@ -70,6 +71,29 @@ describe('Rust WASM RAG core bridge', () => {
           heading: 'Second',
           startLine: 4,
           endLine: 7,
+        },
+      },
+    ]);
+  });
+
+  it('returns plain text chunks with blank-line split metadata', () => {
+    const chunks = chunkPlainTextRust(['alpha', '', 'beta beta'].join('\n'), 12, 0);
+
+    expect(chunks).toEqual([
+      {
+        text: 'alpha',
+        metadata: {
+          filePath: '',
+          startLine: 0,
+          endLine: 1,
+        },
+      },
+      {
+        text: 'beta beta',
+        metadata: {
+          filePath: '',
+          startLine: 2,
+          endLine: 2,
         },
       },
     ]);

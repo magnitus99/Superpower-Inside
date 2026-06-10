@@ -23,6 +23,28 @@ export function chunk_markdown_json(content, max_chunk_size, overlap_chars) {
 }
 
 /**
+ * 일반 텍스트와 코드 파일을 줄/빈 줄 경계 기준으로 chunk JSON으로 만든다.
+ * @param {string} content
+ * @param {number} max_chunk_size
+ * @param {number} overlap_chars
+ * @returns {string}
+ */
+export function chunk_plain_text_json(content, max_chunk_size, overlap_chars) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.chunk_plain_text_json(ptr0, len0, max_chunk_size, overlap_chars);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
  * @returns {string}
  */
