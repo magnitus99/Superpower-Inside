@@ -1864,8 +1864,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   openLogView(): void {
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
+    const existingLeaf = this.app.workspace.getLeavesOfType(LOG_VIEW_TYPE)[0];
+    if (existingLeaf) {
+      void this.app.workspace.revealLeaf(existingLeaf);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf('tab');
     void leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
   }

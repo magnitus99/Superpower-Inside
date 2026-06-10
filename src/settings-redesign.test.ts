@@ -61,6 +61,19 @@ describe('설정 화면 리디자인 구조', () => {
     expect(logViewSource).toContain('loggingMinLevel');
   });
 
+  it('통합 로그는 사이드바 leaf가 아니라 root workspace tab으로 연다', () => {
+    const methodStart = mainSource.indexOf('openLogView(): void');
+    const methodEnd = mainSource.indexOf('\n  }\n}', methodStart);
+    const methodSource = mainSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).not.toContain('getRightLeaf');
+    expect(methodSource).not.toContain('getLeftLeaf');
+    expect(methodSource).toContain("getLeaf('tab')");
+    expect(methodSource).toContain('LOG_VIEW_TYPE');
+    expect(methodSource).toContain('revealLeaf');
+  });
+
   it('로그 레벨별 색상 클래스가 CSS에 정의되어 있다', () => {
     for (const level of ['trace', 'debug', 'info', 'notice', 'warn', 'error', 'fatal']) {
       expect(styles).toContain(`.superpower-inside-log-entry--${level}`);
