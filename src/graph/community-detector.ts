@@ -52,8 +52,11 @@ function buildAdjacency(
   degrees: number[];
   totalWeight: number;
 } {
-  const adjacency: Map<number, number>[] = Array.from({ length: nodeCount }, () => new Map());
-  const degrees: number[] = new Array(nodeCount).fill(0);
+  const adjacency = Array.from(
+    { length: nodeCount },
+    (): Map<number, number> => new Map<number, number>(),
+  );
+  const degrees = Array.from({ length: nodeCount }, (): number => 0);
   let totalWeight = 0;
 
   for (const edge of edges) {
