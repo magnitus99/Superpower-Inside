@@ -42,6 +42,11 @@ export function create_content_hash(content: string): string;
 export function detect_communities_flat(source_indices: Uint32Array, target_indices: Uint32Array, weights: Float64Array, node_count: number, max_iterations: number): Float64Array;
 
 /**
+ * vault 내부 참조 링크를 추출하고 `JSON` 문자열로 반환한다.
+ */
+export function extract_vault_links_json(content: string): string;
+
+/**
  * RAG hybrid score를 계산한다.
  */
 export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
@@ -88,6 +93,7 @@ export interface InitOutput {
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
     readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly extract_vault_links_json: (a: number, b: number) => [number, number];
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;

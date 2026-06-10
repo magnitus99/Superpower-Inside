@@ -165,6 +165,26 @@ export function detect_communities_flat(source_indices, target_indices, weights,
 }
 
 /**
+ * vault 내부 참조 링크를 추출하고 `JSON` 문자열로 반환한다.
+ * @param {string} content
+ * @returns {string}
+ */
+export function extract_vault_links_json(content) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.extract_vault_links_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * RAG hybrid score를 계산한다.
  * @param {number} combined_base
  * @param {number} rrf_score

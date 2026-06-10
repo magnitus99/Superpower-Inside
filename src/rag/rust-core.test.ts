@@ -9,6 +9,7 @@ import {
   aggregateGraphEdgesRust,
   bm25TermFrequenciesRust,
   detectCommunitiesRust,
+  extractVaultLinksRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   scoreBm25Rust,
@@ -159,6 +160,20 @@ describe('Rust WASM RAG core bridge', () => {
       { sourceIndex: 0, targetIndex: 2, weight: 0.2 },
       { sourceIndex: 0, targetIndex: 3, weight: 0.9 },
     ]);
+  });
+
+  it('extracts vault links through Rust with normalization and dedupe', () => {
+    const links = extractVaultLinksRust(
+      [
+        '[[제품 개념 정리]]',
+        '![[Monithub%EC%9D%98%20%EA%B0%80%EC%B9%98.md#핵심]]',
+        '[[제품 개념 정리|alias]]',
+        '[기획](../제품%20개념%20정리.md)',
+        '[외부](https://example.com)',
+      ].join('\n'),
+    );
+
+    expect(links).toEqual(['제품 개념 정리', 'Monithub의 가치.md', '../제품 개념 정리.md']);
   });
 
   it('returns GraphRAG local evidence scores from numeric graph inputs', () => {

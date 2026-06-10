@@ -496,6 +496,14 @@ pub fn chunk_plain_text_json(content: &str, max_chunk_size: usize, overlap_chars
     serialize_chunks_json(&chunks)
 }
 
+/// vault 내부 참조 링크를 추출하고 `JSON` 문자열로 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn extract_vault_links_json(content: &str) -> String {
+    let links = extract_vault_links(content);
+    serialize_string_array_json(&links)
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -1622,6 +1630,144 @@ fn chunk_plain_text(content: &str, max_chunk_size: usize, overlap_chars: usize) 
     finalize_chunks(chunks, max_chunk_size, overlap_chars)
 }
 
+/// Obsidian wikilink와 Markdown link에서 vault 내부 target을 추출한다.
+fn extract_vault_links(content: &str) -> Vec<String> {
+    let mut links = Vec::<String>::new();
+    extract_wiki_link_targets(content, &mut links);
+    extract_markdown_link_targets(content, &mut links);
+    links
+}
+
+/// `[[...]]` target을 추출한다.
+fn extract_wiki_link_targets(content: &str, links: &mut Vec<String>) {
+    let mut offset = 0_usize;
+    while let Some(start) = content.get(offset..).and_then(|text| text.find("[[")) {
+        let target_start = offset.saturating_add(start).saturating_add(2);
+        let Some(end) = content.get(target_start..).and_then(|text| text.find("]]")) else {
+            break;
+        };
+        let target_end = target_start.saturating_add(end);
+        if let Some(raw) = content.get(target_start..target_end) {
+            push_normalized_vault_link(links, raw);
+        }
+        offset = target_end.saturating_add(2);
+    }
+}
+
+/// `[label](target)` target을 추출한다.
+fn extract_markdown_link_targets(content: &str, links: &mut Vec<String>) {
+    let mut offset = 0_usize;
+    while let Some(start) = content.get(offset..).and_then(|text| text.find('[')) {
+        let label_start = offset.saturating_add(start);
+        let label_end_start = label_start.saturating_add(1);
+        let Some(label_end_offset) = content
+            .get(label_end_start..)
+            .and_then(|text| text.find(']'))
+        else {
+            break;
+        };
+        let label_end = label_end_start.saturating_add(label_end_offset);
+        let open_paren = label_end.saturating_add(1);
+        if content.get(open_paren..open_paren.saturating_add(1)) != Some("(") {
+            offset = label_end.saturating_add(1);
+            continue;
+        }
+
+        let target_start = open_paren.saturating_add(1);
+        let Some(target_end_offset) = content.get(target_start..).and_then(|text| text.find(')'))
+        else {
+            break;
+        };
+        let target_end = target_start.saturating_add(target_end_offset);
+        if let Some(raw) = content.get(target_start..target_end) {
+            push_normalized_vault_link(links, raw);
+        }
+        offset = target_end.saturating_add(1);
+    }
+}
+
+/// link target을 정규화하고 중복 없이 추가한다.
+fn push_normalized_vault_link(links: &mut Vec<String>, raw: &str) {
+    let normalized = normalize_vault_link_target(raw);
+    if normalized.is_empty() || should_ignore_vault_link_target(&normalized) {
+        return;
+    }
+    let key = normalized.to_lowercase();
+    if links.iter().any(|link| link.to_lowercase() == key) {
+        return;
+    }
+    links.push(normalized);
+}
+
+/// alias, heading, block id를 제거하고 percent-encoded target을 decode한다.
+fn normalize_vault_link_target(raw: &str) -> String {
+    let without_alias = raw.split('|').next().unwrap_or_default();
+    let without_heading = without_alias.split('#').next().unwrap_or_default();
+    let without_block = without_heading.split('^').next().unwrap_or_default();
+    let trimmed = without_block.trim();
+    decode_uri_component(trimmed).unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// vault 내부 링크로 처리하지 않을 target인지 확인한다.
+fn should_ignore_vault_link_target(target: &str) -> bool {
+    target.is_empty()
+        || target.starts_with('#')
+        || target.starts_with("mailto:")
+        || has_uri_scheme(target)
+}
+
+/// `URI` scheme prefix가 있는지 확인한다.
+fn has_uri_scheme(target: &str) -> bool {
+    let mut chars = target.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    for character in chars {
+        if character == ':' {
+            return true;
+        }
+        if !character.is_ascii_alphanumeric() && !matches!(character, '+' | '.' | '-') {
+            return false;
+        }
+    }
+    false
+}
+
+/// `decodeURIComponent`와 같은 percent decoding을 시도한다.
+fn decode_uri_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::<u8>::with_capacity(bytes.len());
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if bytes.get(index).copied() != Some(b'%') {
+            decoded.push(*bytes.get(index)?);
+            index = index.saturating_add(1);
+            continue;
+        }
+        let high = *bytes.get(index.saturating_add(1))?;
+        let low = *bytes.get(index.saturating_add(2))?;
+        let byte = hex_value(high)?
+            .saturating_mul(16)
+            .saturating_add(hex_value(low)?);
+        decoded.push(byte);
+        index = index.saturating_add(3);
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// ASCII hex digit 값을 반환한다.
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// heading marker를 제거한다.
 fn normalize_heading(line: &str) -> String {
     line.trim_start_matches('#').trim().to_owned()
@@ -1927,6 +2073,16 @@ fn serialize_chunks_json(chunks: &[Chunk]) -> String {
     let body = chunks
         .iter()
         .map(serialize_chunk_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{body}]")
+}
+
+/// 문자열 배열을 JSON 문자열로 serialize한다.
+fn serialize_string_array_json(values: &[String]) -> String {
+    let body = values
+        .iter()
+        .map(|value| format!("\"{}\"", escape_json_string(value)))
         .collect::<Vec<_>>()
         .join(",");
     format!("[{body}]")
@@ -2254,9 +2410,9 @@ mod tests {
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
-        cosine_similarity, create_content_hash, detect_communities_flat, hybrid_score_or_nan,
-        rank_top_k_pairs, rrf_score_or_nan, score_local_evidence_pairs, select_diverse_indices,
-        token_frequencies_json, tokenize,
+        cosine_similarity, create_content_hash, detect_communities_flat, extract_vault_links_json,
+        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, score_local_evidence_pairs,
+        select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -2358,6 +2514,23 @@ mod tests {
         assert_eq!(second.metadata.heading, None);
         assert_eq!(second.metadata.start_line, 2);
         assert_eq!(second.metadata.end_line, 2);
+    }
+
+    /// vault link 추출은 wikilink/Markdown link 정규화와 중복 제거를 보존해야 한다.
+    #[test]
+    fn extract_vault_links_json_normalizes_and_dedupes_targets() {
+        let links = extract_vault_links_json(
+            "[[제품 개념 정리]]\n\
+             ![[Monithub%EC%9D%98%20%EA%B0%80%EC%B9%98.md#핵심]]\n\
+             [[제품 개념 정리|alias]]\n\
+             [기획](../제품%20개념%20정리.md)\n\
+             [외부](https://example.com)",
+        );
+
+        assert_eq!(
+            links, "[\"제품 개념 정리\",\"Monithub의 가치.md\",\"../제품 개념 정리.md\"]",
+            "vault link JSON은 기존 TypeScript 추출 계약과 같아야 한다",
+        );
     }
 
     /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.

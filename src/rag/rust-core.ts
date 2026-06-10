@@ -7,6 +7,7 @@ import {
   cosine_similarity_or_nan,
   create_content_hash,
   detect_communities_flat,
+  extract_vault_links_json,
   hybrid_score_or_nan,
   initSync,
   rank_top_k_pairs,
@@ -476,6 +477,22 @@ export function chunkPlainTextRust(
       ),
     );
     if (!isChunkArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function extractVaultLinksRust(content: string): string[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(extract_vault_links_json(content));
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((link): link is string => typeof link === 'string')
+    ) {
+      return null;
+    }
     return parsed;
   } catch {
     return null;

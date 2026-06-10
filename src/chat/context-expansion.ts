@@ -1,5 +1,6 @@
 import { TFile, type App } from 'obsidian';
 import { t } from '../i18n';
+import { extractVaultLinksRust } from '../rag/rust-core';
 
 export interface ReferencedVaultFile {
   file: TFile;
@@ -15,6 +16,12 @@ export interface ReferenceExpansionResult {
 const DEFAULT_MAX_REFERENCES = 6;
 
 export function extractVaultLinks(content: string): string[] {
+  const rustLinks = extractVaultLinksRust(content);
+  if (rustLinks !== null) return rustLinks;
+  return extractVaultLinksWithTypeScript(content);
+}
+
+function extractVaultLinksWithTypeScript(content: string): string[] {
   const links: string[] = [];
   const seen = new Set<string>();
 
