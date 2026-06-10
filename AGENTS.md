@@ -24,6 +24,10 @@
 │   └── utils/                    # vault adapter JSON IO, 플러그인 탐지, MCP JSON 검증
 ├── scripts/                      # fish 스크립트(setup-dev, launch-obsidian-debug, bump-version)
 ├── docs/                         # 개발/제출 문서
+├── crates/rag-wasm/              # Rust/WASM RAG 계산 코어
+├── Cargo.toml                    # Rust workspace, strict lint 기준
+├── deny.toml                     # cargo-deny 보안/라이선스/소스 정책
+├── rust-toolchain.toml           # Rust 1.96.0 + wasm32-unknown-unknown 고정
 ├── simulations/                  # chat-sim.html UI 시뮬레이션(미추적/배포 제외 성격)
 ├── .test-vault/                  # 실제 개발용 Obsidian 테스트 볼트(.gitignore 대상)
 ├── esbuild.config.mjs            # main.ts → main.js 번들, format:cjs, target:es2022
@@ -52,6 +56,8 @@
 | MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
 | 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
+| Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
+| Rust 보안 게이트         | `scripts/check-rust-security.fish` + `deny.toml`     | fmt, clippy, test, wasm build, deny, audit, vet, geiger                   |
 | 개발 볼트/QA             | `.test-vault/`                                       | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인                       |
 
 ## CODE MAP
@@ -77,6 +83,8 @@
 | `saveChat` / `loadChat`      | function  | `src/chat/persistence.ts`    | 채팅 세션 Markdown 저장/복원                           |
 | `MCPClientManager`           | class     | `src/mcp/client.ts`          | MCP SDK Client + stdio transport                       |
 | `MCPRegistry`                | class     | `src/mcp/registry.ts`        | MCP 서버 설정/클라이언트/연결 상태 관리                |
+| `create_content_hash`        | function  | `crates/rag-wasm/src/lib.rs` | TypeScript `createContentHash()`와 같은 UTF-16 FNV-1a |
+| `tokenize`                   | function  | `crates/rag-wasm/src/lib.rs` | TypeScript BM25 토크나이저와 같은 검색 토큰 생성      |
 
 ## TEST VAULT
 
@@ -118,6 +126,7 @@ npm run lint
 npm run typecheck
 npm run test
 npm run check:i18n
+npm run rust:security
 npm run build
 npm run review -- --tag <manifest-version> --built
 ```
@@ -126,13 +135,22 @@ npm run review -- --tag <manifest-version> --built
 
 Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint만으로 잡히지 않을 수 있다. UI/DOM/CSS를 수정하면 반드시 `src/obsidian-community-review.test.ts`와 `npm run review -- --tag <manifest-version> --built`를 통과시킨다.
 
+## RUST/WASM MIGRATION
+
+- 기본 방향은 JS/TS를 Obsidian UI, DOM, 플러그인 생명주기, vault I/O, provider 네트워크 호출, MCP stdio 경계에만 남기는 것이다.
+- 성능 민감 순수 계산은 Rust/WASM으로 옮긴다. RAG 해시/토큰화/청킹/BM25, vector score/top-k, GraphRAG ranking/layout 계산, 대용량 metadata diff/검증이 우선 대상이다.
+- Rust 코어는 deterministic input/output 계약을 가져야 하며, Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않는다.
+- 실시간성은 snapshot id/revision id로 보장한다. UI는 최신 revision만 반영하고, 오래된 Rust worker 결과는 폐기한다.
+- Rust 변경은 `npm run rust:security`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`를 실행한다.
+- 세부 전환 계획은 `docs/rust-wasm-migration.md`를 기준으로 삼는다.
+
 ## VERSIONING AND RELEASES
 
 - 플러그인 버전은 SemVer `x.y.z` 형식을 사용하고, `manifest.json`, `package.json`, `versions.json`을 항상 함께 갱신한다.
 - `versions.json`은 플러그인 버전을 키로, 해당 버전의 최소 Obsidian 버전을 값으로 기록한다. 예: `"1.0.0": "0.15.0"`.
 - Obsidian 커뮤니티 제출/배포는 `manifest.json.version`과 **완전히 같은 이름의 GitHub Release 태그**를 찾는다. `manifest.json.version`이 `1.0.0`이면 태그도 반드시 `1.0.0`이어야 하며, `v1.0.0`만 만들면 커뮤니티 제출 화면에서 릴리스를 찾지 못한다.
 - GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
-- 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
+- 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run rust:security`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
 - 릴리스 전후에는 `npm run review -- --tag <version> --built`를 실행해 release asset 기준 Obsidian review gate를 통과시킨다.
 - `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
 - Obsidian 플러그인 스토어 출시와 업데이트는 별도 릴리스 브랜치나 PR 브랜치를 만들지 않고 `main` 브랜치에서 직접 준비한다.
@@ -196,6 +214,7 @@ npm run lint       # ESLint: src/, main.ts
 npm run typecheck  # tsc --noEmit
 npm run test       # Vitest
 npm run check:i18n # 런타임 한글 문자열이 src/i18n.ts 밖에 남았는지 검사
+npm run rust:security # Rust/WASM fmt, lint, test, wasm build, supply-chain/security gate
 npm run build      # production 번들(minify, no sourcemap)
 npm run format     # Prettier --write src/ main.ts
 ```
