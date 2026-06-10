@@ -2,6 +2,11 @@
 /* eslint-disable */
 
 /**
+ * Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
+ */
+export function chunk_markdown_json(content: string, max_chunk_size: number, overlap_chars: number): string;
+
+/**
  * `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
  */
 export function core_version(): string;
@@ -30,15 +35,16 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly core_version: () => [number, number];
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

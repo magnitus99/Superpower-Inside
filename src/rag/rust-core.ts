@@ -1,4 +1,5 @@
 import {
+  chunk_markdown_json,
   core_version,
   cosine_similarity_or_nan,
   create_content_hash,
@@ -6,6 +7,7 @@ import {
   rank_top_k_pairs,
   tokenize_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
+import type { Chunk } from './indexer';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
 
 export interface RustVectorScore {
@@ -81,6 +83,27 @@ export function rankTopKPairsRust(
   return decodeRankPairs(pairs, compatibleRows);
 }
 
+export function chunkMarkdownRust(
+  content: string,
+  maxChunkSize: number,
+  overlapChars = 0,
+): Chunk[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      chunk_markdown_json(
+        content,
+        normalizePositiveInteger(maxChunkSize),
+        normalizeNonNegativeInteger(overlapChars),
+      ),
+    );
+    if (!isChunkArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function ensureRustCore(): boolean {
   if (initialized) return true;
   if (unavailable) return false;
@@ -106,6 +129,34 @@ function decodeRankPairs(pairs: Float64Array, compatibleRows: readonly number[])
     scores.push({ index: originalIndex, score });
   }
   return scores;
+}
+
+function normalizePositiveInteger(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeNonNegativeInteger(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function isChunkArray(value: unknown): value is Chunk[] {
+  return Array.isArray(value) && value.every(isChunk);
+}
+
+function isChunk(value: unknown): value is Chunk {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<Chunk>;
+  return (
+    typeof candidate.text === 'string' &&
+    !!candidate.metadata &&
+    typeof candidate.metadata === 'object' &&
+    typeof candidate.metadata.filePath === 'string' &&
+    Number.isSafeInteger(candidate.metadata.startLine) &&
+    Number.isSafeInteger(candidate.metadata.endLine) &&
+    (candidate.metadata.heading === undefined || typeof candidate.metadata.heading === 'string')
+  );
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {

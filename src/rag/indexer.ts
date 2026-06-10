@@ -12,6 +12,7 @@ import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 import { createContentHash } from './hash';
+import { chunkMarkdownRust } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 
@@ -229,6 +230,9 @@ function finalizeChunks(chunks: Chunk[], maxChunkSize: number, overlapChars: num
 
 /** 마크다운을 헤딩/코드블록/단락을 존중하며 청킹합니다. */
 export function chunkMarkdown(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
+  const rustChunks = chunkMarkdownRust(content, maxChunkSize, overlapChars);
+  if (rustChunks !== null) return rustChunks;
+
   const lines = content.split('\n');
   const chunks: Chunk[] = [];
   let currentLines: string[] = [];

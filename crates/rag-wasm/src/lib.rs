@@ -126,6 +126,14 @@ pub fn rank_top_k_pairs(
     pairs.into_boxed_slice()
 }
 
+/// Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
+#[must_use]
+#[wasm_bindgen]
+pub fn chunk_markdown_json(content: &str, max_chunk_size: usize, overlap_chars: usize) -> String {
+    let chunks = chunk_markdown(content, max_chunk_size, overlap_chars);
+    serialize_chunks_json(&chunks)
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -140,6 +148,438 @@ fn compare_scored_rows_descending(left: &ScoredRow, right: &ScoredRow) -> std::c
         .score
         .total_cmp(&left.score)
         .then_with(|| left.row_index.cmp(&right.row_index))
+}
+
+/// RAG chunk metadata.
+#[derive(Clone)]
+struct ChunkMetadata {
+    /// vault-relative file path. Rust chunking 단계에서는 host I/O를 모르므로 비워둔다.
+    file_path: String,
+    /// Markdown heading title.
+    heading: Option<String>,
+    /// chunk 시작 line.
+    start_line: usize,
+    /// chunk 종료 line.
+    end_line: usize,
+}
+
+/// RAG text chunk.
+#[derive(Clone)]
+struct Chunk {
+    /// chunk text.
+    text: String,
+    /// chunk metadata.
+    metadata: ChunkMetadata,
+}
+
+/// line-preserving text segment.
+struct TextSegment {
+    /// segment text.
+    text: String,
+    /// segment 시작 line.
+    start_line: usize,
+    /// segment 종료 line.
+    end_line: usize,
+}
+
+/// Markdown을 heading/code block/paragraph 경계를 존중해 chunk로 나눈다.
+fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) -> Vec<Chunk> {
+    let lines = content.split('\n').map(str::to_owned).collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut current_lines = Vec::new();
+    let mut current_heading = None;
+    let mut start_line = 0_usize;
+    let mut in_code_block = false;
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            current_lines.push(line.clone());
+            if !in_code_block {
+                let chunk_text = current_lines.join("\n");
+                if text_len(&chunk_text) > max_chunk_size {
+                    flush_chunk(
+                        &mut chunks,
+                        &mut current_lines,
+                        current_heading.as_ref(),
+                        start_line,
+                        index,
+                    );
+                    start_line = index.saturating_add(1);
+                }
+            }
+            continue;
+        }
+
+        if !in_code_block && line.starts_with('#') {
+            if !current_lines.is_empty() {
+                flush_chunk(
+                    &mut chunks,
+                    &mut current_lines,
+                    current_heading.as_ref(),
+                    start_line,
+                    index.saturating_sub(1),
+                );
+            }
+            current_heading = Some(normalize_heading(line));
+            start_line = index;
+            current_lines = vec![line.clone()];
+            continue;
+        }
+
+        current_lines.push(line.clone());
+        let chunk_text = current_lines.join("\n");
+
+        if !in_code_block && text_len(&chunk_text) >= max_chunk_size {
+            let last_para_break = chunk_text
+                .rfind("\n\n")
+                .map(|break_index| text_len(&chunk_text[..break_index]));
+            if last_para_break
+                .is_some_and(|break_index| break_index.saturating_mul(2) > max_chunk_size)
+            {
+                split_at_paragraph_break(
+                    &mut chunks,
+                    &mut current_lines,
+                    current_heading.as_ref(),
+                    &mut start_line,
+                    index,
+                    last_para_break.unwrap_or_default(),
+                );
+            } else {
+                flush_chunk(
+                    &mut chunks,
+                    &mut current_lines,
+                    current_heading.as_ref(),
+                    start_line,
+                    index,
+                );
+                start_line = index.saturating_add(1);
+            }
+        }
+    }
+
+    if !current_lines.is_empty() {
+        flush_chunk(
+            &mut chunks,
+            &mut current_lines,
+            current_heading.as_ref(),
+            start_line,
+            lines.len().saturating_sub(1),
+        );
+    }
+
+    finalize_chunks(chunks, max_chunk_size, overlap_chars)
+}
+
+/// heading marker를 제거한다.
+fn normalize_heading(line: &str) -> String {
+    line.trim_start_matches('#').trim().to_owned()
+}
+
+/// current lines를 chunk로 flush한다.
+fn flush_chunk(
+    chunks: &mut Vec<Chunk>,
+    current_lines: &mut Vec<String>,
+    current_heading: Option<&String>,
+    start_line: usize,
+    end_line: usize,
+) {
+    let text = current_lines.join("\n").trim().to_owned();
+    if !text.is_empty() {
+        chunks.push(Chunk {
+            text,
+            metadata: ChunkMetadata {
+                file_path: String::new(),
+                heading: current_heading.cloned(),
+                start_line,
+                end_line,
+            },
+        });
+    }
+    current_lines.clear();
+}
+
+/// paragraph break 주변에서 현재 chunk를 나눈다.
+fn split_at_paragraph_break(
+    chunks: &mut Vec<Chunk>,
+    current_lines: &mut Vec<String>,
+    current_heading: Option<&String>,
+    start_line: &mut usize,
+    index: usize,
+    last_para_break: usize,
+) {
+    let split_index = current_lines
+        .iter()
+        .enumerate()
+        .find_map(|(line_index, _)| {
+            let partial = current_lines
+                .iter()
+                .take(line_index.saturating_add(1))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text_len(&partial) >= last_para_break {
+                Some(line_index)
+            } else {
+                None
+            }
+        });
+
+    if let Some(split_index) = split_index {
+        let part = current_lines
+            .iter()
+            .take(split_index.saturating_add(1))
+            .cloned()
+            .collect::<Vec<_>>();
+        let rest = current_lines
+            .iter()
+            .skip(split_index.saturating_add(1))
+            .cloned()
+            .collect::<Vec<_>>();
+        *current_lines = part;
+        flush_chunk(chunks, current_lines, current_heading, *start_line, index);
+        *current_lines = rest;
+        *start_line = index.saturating_sub(current_lines.len()).saturating_add(1);
+    } else {
+        flush_chunk(chunks, current_lines, current_heading, *start_line, index);
+        *start_line = index.saturating_add(1);
+    }
+}
+
+/// 최종 chunk 크기 제한과 overlap을 적용한다.
+fn finalize_chunks(chunks: Vec<Chunk>, max_chunk_size: usize, overlap_chars: usize) -> Vec<Chunk> {
+    let sized_chunks = enforce_chunk_size(chunks, max_chunk_size);
+    apply_line_overlap(sized_chunks, overlap_chars, max_chunk_size)
+}
+
+/// max size를 넘는 chunk를 hard split한다.
+fn enforce_chunk_size(chunks: Vec<Chunk>, max_chunk_size: usize) -> Vec<Chunk> {
+    let mut sized_chunks = Vec::new();
+    for chunk in chunks {
+        if text_len(&chunk.text) <= max_chunk_size {
+            sized_chunks.push(chunk);
+            continue;
+        }
+        for segment in
+            split_text_to_segments(&chunk.text, chunk.metadata.start_line, max_chunk_size)
+        {
+            let mut next_chunk = chunk.clone();
+            next_chunk.text = segment.text;
+            next_chunk.metadata.start_line = segment.start_line;
+            next_chunk.metadata.end_line = segment.end_line;
+            sized_chunks.push(next_chunk);
+        }
+    }
+    sized_chunks
+}
+
+/// 긴 text를 line 경계 우선으로 segment화한다.
+fn split_text_to_segments(
+    text: &str,
+    initial_line: usize,
+    max_chunk_size: usize,
+) -> Vec<TextSegment> {
+    let max_size = max_chunk_size.max(1);
+    let lines = text.split('\n').collect::<Vec<_>>();
+    let mut segments = Vec::new();
+    let mut current_lines = Vec::new();
+    let mut current_start_line = initial_line;
+    let mut current_length = 0_usize;
+
+    for (index, line) in lines.iter().copied().enumerate() {
+        let line_number = initial_line.saturating_add(index);
+        if text_len(line) > max_size {
+            flush_segment(
+                &mut segments,
+                &mut current_lines,
+                current_start_line,
+                line_number.saturating_sub(1),
+            );
+            for piece in split_line_to_pieces(line, max_size) {
+                let trimmed = piece.trim().to_owned();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                segments.push(TextSegment {
+                    text: trimmed,
+                    start_line: line_number,
+                    end_line: line_number,
+                });
+            }
+            current_start_line = line_number.saturating_add(1);
+            current_length = 0;
+            continue;
+        }
+
+        let line_length = text_len(line);
+        let next_length = if current_lines.is_empty() {
+            line_length
+        } else {
+            current_length.saturating_add(1).saturating_add(line_length)
+        };
+        if !current_lines.is_empty() && next_length > max_size {
+            flush_segment(
+                &mut segments,
+                &mut current_lines,
+                current_start_line,
+                line_number.saturating_sub(1),
+            );
+            current_start_line = line_number;
+            current_length = 0;
+        }
+
+        current_lines.push(line.to_owned());
+        current_length = if current_lines.len() == 1 {
+            line_length
+        } else {
+            current_length.saturating_add(1).saturating_add(line_length)
+        };
+    }
+
+    if !current_lines.is_empty() {
+        flush_segment(
+            &mut segments,
+            &mut current_lines,
+            current_start_line,
+            initial_line.saturating_add(lines.len()).saturating_sub(1),
+        );
+    }
+
+    segments
+}
+
+/// current segment를 flush한다.
+fn flush_segment(
+    segments: &mut Vec<TextSegment>,
+    current_lines: &mut Vec<String>,
+    current_start_line: usize,
+    end_line: usize,
+) {
+    let segment_text = current_lines.join("\n").trim().to_owned();
+    if !segment_text.is_empty() {
+        segments.push(TextSegment {
+            text: segment_text,
+            start_line: current_start_line,
+            end_line,
+        });
+    }
+    current_lines.clear();
+}
+
+/// line을 character count 기준으로 나눈다.
+fn split_line_to_pieces(line: &str, max_size: usize) -> Vec<String> {
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut pieces = Vec::new();
+    let mut offset = 0_usize;
+    while offset < chars.len() {
+        let end = offset.saturating_add(max_size).min(chars.len());
+        pieces.push(chars.iter().skip(offset).take(end - offset).collect());
+        offset = end;
+    }
+    pieces
+}
+
+/// line overlap을 적용한다.
+fn apply_line_overlap(
+    chunks: Vec<Chunk>,
+    overlap_chars: usize,
+    max_chunk_size: usize,
+) -> Vec<Chunk> {
+    if overlap_chars == 0 || chunks.len() <= 1 {
+        return chunks;
+    }
+
+    let mut overlapped = Vec::with_capacity(chunks.len());
+    for (index, chunk) in chunks.iter().enumerate() {
+        if index == 0 {
+            overlapped.push(chunk.clone());
+            continue;
+        }
+        let Some(previous) = chunks.get(index.saturating_sub(1)) else {
+            overlapped.push(chunk.clone());
+            continue;
+        };
+        let available = max_chunk_size
+            .saturating_sub(text_len(&chunk.text))
+            .saturating_sub(1);
+        let max_overlap_chars = overlap_chars.min(available);
+        let overlap_text = get_trailing_overlap(&previous.text, max_overlap_chars);
+        if overlap_text.is_empty() {
+            overlapped.push(chunk.clone());
+            continue;
+        }
+
+        let overlap_line_count = overlap_text.split('\n').count();
+        let start_line = previous
+            .metadata
+            .start_line
+            .max(chunk.metadata.start_line.saturating_sub(overlap_line_count));
+        let mut next_chunk = chunk.clone();
+        let overlapped_text = format!("{overlap_text}\n{}", chunk.text);
+        next_chunk.text.clear();
+        next_chunk.text.push_str(overlapped_text.trim());
+        next_chunk.metadata.start_line = start_line;
+        overlapped.push(next_chunk);
+    }
+    overlapped
+}
+
+/// 이전 chunk의 trailing overlap text를 구한다.
+fn get_trailing_overlap(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text_len(text) <= max_chars {
+        return text.trim().to_owned();
+    }
+
+    let tail = text
+        .chars()
+        .rev()
+        .take(max_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    if let Some((before_newline, after_newline)) = tail.split_once('\n')
+        && !before_newline.is_empty()
+        && !after_newline.is_empty()
+    {
+        return after_newline.trim().to_owned();
+    }
+    tail.trim().to_owned()
+}
+
+/// 기존 `TypeScript` `.length`와 같은 UTF-16 code unit 기준으로 길이를 계산한다.
+fn text_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// chunk 배열을 JSON 문자열로 serialize한다.
+fn serialize_chunks_json(chunks: &[Chunk]) -> String {
+    let body = chunks
+        .iter()
+        .map(serialize_chunk_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{body}]")
+}
+
+/// chunk 하나를 JSON 문자열로 serialize한다.
+fn serialize_chunk_json(chunk: &Chunk) -> String {
+    let heading = chunk
+        .metadata
+        .heading
+        .as_ref()
+        .map(|heading| format!(",\"heading\":\"{}\"", escape_json_string(heading)))
+        .unwrap_or_default();
+    format!(
+        "{{\"text\":\"{}\",\"metadata\":{{\"filePath\":\"{}\"{heading},\"startLine\":{},\"endLine\":{}}}}}",
+        escape_json_string(&chunk.text),
+        escape_json_string(&chunk.metadata.file_path),
+        chunk.metadata.start_line,
+        chunk.metadata.end_line,
+    )
 }
 
 /// 문자가 `BM25` 토큰 부분 문자 클래스에 속하는지 반환한다.
@@ -431,7 +871,9 @@ const fn hex_digit(nibble: u32) -> char {
 mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
-    use super::{cosine_similarity, create_content_hash, rank_top_k_pairs, tokenize};
+    use super::{
+        chunk_markdown, cosine_similarity, create_content_hash, rank_top_k_pairs, tokenize,
+    };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
     #[test]
@@ -480,6 +922,29 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// Markdown chunking은 heading과 code block 경계를 유지하고 line metadata를 보존해야 한다.
+    #[test]
+    fn chunk_markdown_preserves_headings_code_blocks_and_line_metadata() {
+        let chunks = chunk_markdown(
+            "# First\nalpha\n\nbeta\n# Second\n```\nconst value = 1;\n```",
+            100,
+            0,
+        );
+
+        assert_eq!(chunks.len(), 2, "heading 경계 기준으로 두 chunk가 필요하다");
+        let [first, second] = chunks.as_slice() else {
+            return;
+        };
+        assert_eq!(first.text, "# First\nalpha\n\nbeta");
+        assert_eq!(first.metadata.heading.as_deref(), Some("First"));
+        assert_eq!(first.metadata.start_line, 0);
+        assert_eq!(first.metadata.end_line, 3);
+        assert_eq!(second.text, "# Second\n```\nconst value = 1;\n```");
+        assert_eq!(second.metadata.heading.as_deref(), Some("Second"));
+        assert_eq!(second.metadata.start_line, 4);
+        assert_eq!(second.metadata.end_line, 7);
     }
 
     /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.

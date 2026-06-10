@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createContentHashRust,
+  chunkMarkdownRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   tokenizeRust,
@@ -42,6 +43,35 @@ describe('Rust WASM RAG core bridge', () => {
       { index: 1, score: 1 },
       { index: 2, score: 0.6 },
       { index: 0, score: 0 },
+    ]);
+  });
+
+  it('returns markdown chunks with heading and line metadata', () => {
+    const chunks = chunkMarkdownRust(
+      ['# First', 'alpha', '', 'beta', '# Second', '```', 'const value = 1;', '```'].join('\n'),
+      100,
+      0,
+    );
+
+    expect(chunks).toEqual([
+      {
+        text: '# First\nalpha\n\nbeta',
+        metadata: {
+          filePath: '',
+          heading: 'First',
+          startLine: 0,
+          endLine: 3,
+        },
+      },
+      {
+        text: '# Second\n```\nconst value = 1;\n```',
+        metadata: {
+          filePath: '',
+          heading: 'Second',
+          startLine: 4,
+          endLine: 7,
+        },
+      },
     ]);
   });
 });
