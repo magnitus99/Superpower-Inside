@@ -92,6 +92,10 @@
 | `scoreBm25Rust`              | function  | `src/rag/rust-core.ts`       | TS BM25 posting 배열과 Rust score pair bridge          |
 | `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
 | `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
+| `rrf_score_or_nan`           | function  | `crates/rag-wasm/src/lib.rs` | RAG retrieval source rank fusion score 계산            |
+| `calculateRrfScoreRust`      | function  | `src/rag/rust-core.ts`       | TS source rank map과 Rust RRF bridge                   |
+| `hybrid_score_or_nan`        | function  | `crates/rag-wasm/src/lib.rs` | RAG hybrid result score 계산                           |
+| `calculateHybridScoreRust`   | function  | `src/rag/rust-core.ts`       | TS query score input과 Rust hybrid score bridge        |
 | `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
 | `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
 | `chunk_plain_text_json`      | function  | `crates/rag-wasm/src/lib.rs` | plain text/code RAG chunk를 JSON으로 생성              |

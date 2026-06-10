@@ -62,6 +62,13 @@
 - inverted index 객체 mutation, doc source bookkeeping, 평균 문서 길이 갱신, vault persistence는 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript frequency 계산으로 fallback한다.
 
+## 현재 일곱 번째 slice
+
+- RAG query ranking의 RRF score와 hybrid result score 계산을 Rust/WASM에 추가했다.
+- `RAGQueryEngine.query()`는 후보의 source rank fusion과 graph/evidence-aware hybrid score를 만들 때 Rust/WASM을 우선 사용한다.
+- source 문자열 분류와 후보 객체 조립, threshold/filter, MMR 다양성 선택, reranker/LLM 호출은 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 score 검증 실패 시 기존 TypeScript ranking 수식으로 fallback한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
