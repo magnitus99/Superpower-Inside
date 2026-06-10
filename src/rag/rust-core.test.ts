@@ -10,6 +10,7 @@ import {
   bm25TermFrequenciesRust,
   detectCommunitiesRust,
   extractVaultLinksRust,
+  isExcludedPathRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   scoreBm25Rust,
@@ -174,6 +175,16 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(links).toEqual(['제품 개념 정리', 'Monithub의 가치.md', '../제품 개념 정리.md']);
+  });
+
+  it('matches vault exclude path patterns through Rust', () => {
+    expect(isExcludedPathRust('Archive/old.txt', ['archive'])).toBe(true);
+    expect(isExcludedPathRust('foo/.git/config', ['**/.git'])).toBe(true);
+    expect(isExcludedPathRust('.git/config', ['.git/**'])).toBe(true);
+    expect(isExcludedPathRust('Projects/drafts/note.md', ['**/drafts'])).toBe(true);
+    expect(isExcludedPathRust('src/main.test.ts', ['src/*.test.ts'])).toBe(true);
+    expect(isExcludedPathRust('notes/today.md', ['png', 'jpg'])).toBe(false);
+    expect(isExcludedPathRust('images/logo.PNG', ['png'])).toBe(true);
   });
 
   it('returns GraphRAG local evidence scores from numeric graph inputs', () => {

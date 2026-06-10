@@ -202,6 +202,21 @@ export function hybrid_score_or_nan(combined_base, rrf_score, source_prior, sour
 }
 
 /**
+ * vault path가 제외 pattern 목록에 매칭되는지 확인한다.
+ * @param {string} file_path
+ * @param {string} patterns
+ * @returns {boolean}
+ */
+export function is_excluded_path(file_path, patterns) {
+    const ptr0 = passStringToWasm0(file_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(patterns, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.is_excluded_path(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors

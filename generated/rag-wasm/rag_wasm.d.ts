@@ -52,6 +52,11 @@ export function extract_vault_links_json(content: string): string;
 export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
 
 /**
+ * vault path가 제외 pattern 목록에 매칭되는지 확인한다.
+ */
+export function is_excluded_path(file_path: string, patterns: string): boolean;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
@@ -95,6 +100,7 @@ export interface InitOutput {
     readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+    readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly score_local_evidence_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];

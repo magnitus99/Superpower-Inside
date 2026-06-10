@@ -1,5 +1,6 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
 import { t } from '../i18n';
+import { isExcludedPathRust } from '../rag/rust-core';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { isRecommendableExcludeExtension } from './rag-exclude-validation';
 
@@ -172,6 +173,12 @@ export function isExcluded(filePath: string, patterns: string[]): boolean {
 }
 
 export function isExcludedPath(filePath: string, patterns: readonly string[]): boolean {
+  const rustResult = isExcludedPathRust(filePath, patterns);
+  if (rustResult !== null) return rustResult;
+  return isExcludedPathWithTypeScript(filePath, patterns);
+}
+
+function isExcludedPathWithTypeScript(filePath: string, patterns: readonly string[]): boolean {
   const lowerPath = normalizePath(filePath);
   for (const pattern of patterns) {
     const p = normalizePath(pattern);

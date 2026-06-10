@@ -10,6 +10,7 @@ import {
   extract_vault_links_json,
   hybrid_score_or_nan,
   initSync,
+  is_excluded_path,
   rank_top_k_pairs,
   rrf_score_or_nan,
   select_diverse_indices,
@@ -497,6 +498,11 @@ export function extractVaultLinksRust(content: string): string[] | null {
   } catch {
     return null;
   }
+}
+
+export function isExcludedPathRust(filePath: string, patterns: readonly string[]): boolean | null {
+  if (!ensureRustCore()) return null;
+  return is_excluded_path(filePath, patterns.join('\0'));
 }
 
 function ensureRustCore(): boolean {

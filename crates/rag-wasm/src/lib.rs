@@ -504,6 +504,13 @@ pub fn extract_vault_links_json(content: &str) -> String {
     serialize_string_array_json(&links)
 }
 
+/// vault path가 제외 pattern 목록에 매칭되는지 확인한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn is_excluded_path(file_path: &str, patterns: &str) -> bool {
+    is_vault_path_excluded(file_path, patterns.split('\0'))
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -1638,6 +1645,156 @@ fn extract_vault_links(content: &str) -> Vec<String> {
     links
 }
 
+/// path가 제외 pattern 목록에 매칭되는지 확인한다.
+fn is_vault_path_excluded<'a>(
+    file_path: &str,
+    patterns: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let lower_path = normalize_exclude_path(file_path);
+    for pattern in patterns {
+        let normalized_pattern = normalize_exclude_path(pattern);
+        if normalized_pattern.is_empty() {
+            continue;
+        }
+
+        if let Some(segment_pattern) = normalized_pattern.strip_suffix("/**") {
+            if matches_path_segment(&lower_path, segment_pattern) {
+                return true;
+            }
+            continue;
+        }
+
+        if let Some(segment_pattern) = normalized_pattern.strip_prefix("**/") {
+            if matches_path_segment(&lower_path, segment_pattern) {
+                return true;
+            }
+            continue;
+        }
+
+        if normalized_pattern.contains('*') {
+            if glob_matches_path(&lower_path, &normalized_pattern) {
+                return true;
+            }
+            continue;
+        }
+
+        if matches_path_segment(&lower_path, &normalized_pattern) {
+            return true;
+        }
+
+        if !normalized_pattern.contains('/')
+            && lower_path.ends_with(&format!(".{normalized_pattern}"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// `TypeScript` exclude path normalization과 같은 규칙을 적용한다.
+fn normalize_exclude_path(path: &str) -> String {
+    let replaced = path.trim().replace('\\', "/");
+    let without_dot_slash = replaced
+        .strip_prefix("./")
+        .or_else(|| replaced.strip_prefix('/'))
+        .unwrap_or(&replaced);
+    without_dot_slash.trim_start_matches('/').to_lowercase()
+}
+
+/// file path가 pattern segment 또는 그 하위 path와 일치하는지 확인한다.
+fn matches_path_segment(file_path: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    file_path == pattern
+        || file_path.starts_with(&format!("{pattern}/"))
+        || file_path.ends_with(&format!("/{pattern}"))
+        || file_path.contains(&format!("/{pattern}/"))
+}
+
+/// glob-like pattern이 slash boundary 안에서 path와 매칭되는지 확인한다.
+fn glob_matches_path(file_path: &str, pattern: &str) -> bool {
+    let starts = slash_boundary_starts(file_path);
+    let ends = slash_boundary_ends(file_path);
+    for start in starts {
+        for end in ends.iter().copied().filter(|end| *end >= start) {
+            let Some(candidate) = file_path.get(start..end) else {
+                continue;
+            };
+            if wildcard_matches(pattern, candidate) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// glob match가 시작될 수 있는 slash boundary byte offset을 반환한다.
+fn slash_boundary_starts(path: &str) -> Vec<usize> {
+    let mut starts = vec![0_usize];
+    for (index, character) in path.char_indices() {
+        if character == '/' {
+            starts.push(index.saturating_add(1));
+        }
+    }
+    starts
+}
+
+/// glob match가 끝날 수 있는 slash boundary byte offset을 반환한다.
+fn slash_boundary_ends(path: &str) -> Vec<usize> {
+    let mut ends = vec![path.len()];
+    for (index, character) in path.char_indices() {
+        if character == '/' {
+            ends.push(index);
+        }
+    }
+    ends
+}
+
+/// `*`는 slash를 제외한 0개 이상의 문자와 매칭한다.
+fn wildcard_matches(pattern: &str, candidate: &str) -> bool {
+    wildcard_matches_chars(
+        &pattern.chars().collect::<Vec<_>>(),
+        &candidate.chars().collect::<Vec<_>>(),
+    )
+}
+
+/// 작은 glob pattern을 backtracking으로 매칭한다.
+fn wildcard_matches_chars(pattern: &[char], candidate: &[char]) -> bool {
+    let mut pattern_index = 0_usize;
+    let mut candidate_index = 0_usize;
+    let mut star_index = None::<usize>;
+    let mut star_candidate_index = 0_usize;
+
+    while candidate_index < candidate.len() {
+        if pattern.get(pattern_index) == candidate.get(candidate_index) {
+            pattern_index = pattern_index.saturating_add(1);
+            candidate_index = candidate_index.saturating_add(1);
+            continue;
+        }
+        if pattern.get(pattern_index) == Some(&'*') {
+            star_index = Some(pattern_index);
+            star_candidate_index = candidate_index;
+            pattern_index = pattern_index.saturating_add(1);
+            continue;
+        }
+        let Some(previous_star) = star_index else {
+            return false;
+        };
+        if candidate.get(star_candidate_index) == Some(&'/') {
+            return false;
+        }
+        pattern_index = previous_star.saturating_add(1);
+        star_candidate_index = star_candidate_index.saturating_add(1);
+        candidate_index = star_candidate_index;
+    }
+
+    pattern
+        .iter()
+        .skip(pattern_index)
+        .all(|character| *character == '*')
+}
+
 /// `[[...]]` target을 추출한다.
 fn extract_wiki_link_targets(content: &str, links: &mut Vec<String>) {
     let mut offset = 0_usize;
@@ -2411,8 +2568,8 @@ mod tests {
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
         cosine_similarity, create_content_hash, detect_communities_flat, extract_vault_links_json,
-        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, score_local_evidence_pairs,
-        select_diverse_indices, token_frequencies_json, tokenize,
+        hybrid_score_or_nan, is_excluded_path, rank_top_k_pairs, rrf_score_or_nan,
+        score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -2531,6 +2688,18 @@ mod tests {
             links, "[\"제품 개념 정리\",\"Monithub의 가치.md\",\"../제품 개념 정리.md\"]",
             "vault link JSON은 기존 TypeScript 추출 계약과 같아야 한다",
         );
+    }
+
+    /// vault exclude path matching은 기존 `TypeScript` pattern 계약을 보존해야 한다.
+    #[test]
+    fn is_excluded_path_matches_typescript_patterns() {
+        assert!(is_excluded_path("Archive/old.txt", "archive"));
+        assert!(is_excluded_path("foo/.git/config", "**/.git"));
+        assert!(is_excluded_path(".git/config", ".git/**"));
+        assert!(is_excluded_path("Projects/drafts/note.md", "**/drafts"));
+        assert!(is_excluded_path("src/main.test.ts", "src/*.test.ts"));
+        assert!(is_excluded_path("images/logo.PNG", "png"));
+        assert!(!is_excluded_path("notes/today.md", "png\0jpg"));
     }
 
     /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.
