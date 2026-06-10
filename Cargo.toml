@@ -1,0 +1,37 @@
+[workspace]
+members = ["crates/rag-wasm"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/magnitus99/Superpower-Inside"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+alloc_instead_of_core = "deny"
+allow_attributes = "deny"
+as_conversions = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+integer_division = "deny"
+missing_assert_message = "deny"
+missing_docs_in_private_items = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

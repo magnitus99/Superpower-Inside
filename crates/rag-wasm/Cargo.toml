@@ -1,0 +1,18 @@
+[package]
+name = "superpower-rag-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust WebAssembly core for Superpower Inside RAG indexing and retrieval."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.123"
+
+[lints]
+workspace = true
