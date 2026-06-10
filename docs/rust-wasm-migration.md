@@ -103,6 +103,14 @@
 - Rust/WASM에는 numeric source/target/confidence 배열만 넘긴다. Rust는 `[sourceIndex, targetIndex, weight]` flat triple을 첫 출현 순서대로 반환한다.
 - Rust/WASM 초기화 또는 triple/index 검증 실패 시 기존 TypeScript `Map` 기반 aggregation 루프를 그대로 사용한다.
 
+## 현재 열세 번째 slice
+
+- 채팅 context expansion의 vault link extraction을 Rust/WASM에 추가했다.
+- `extractVaultLinks()`는 Obsidian host I/O 없이 content 문자열만 파싱하므로 `extractVaultLinksRust()`를 우선 사용한다.
+- Rust/WASM은 wikilink, embed wikilink, Markdown link target 추출, alias/heading/block 제거, percent decoding, 외부 URL 제외, case-insensitive dedupe를 담당한다.
+- `expandReferencedVaultFiles()`의 `TFile` resolve, `metadataCache`, `vault.cachedRead`, warning 생성은 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript parser를 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
