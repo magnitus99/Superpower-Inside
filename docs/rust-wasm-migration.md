@@ -55,6 +55,13 @@
 - Rust/WASM 초기화 실패 시 기존 TypeScript BM25 scoring 구현으로 fallback한다.
 - BM25 인덱스 파일 생성/삭제/rename 흐름은 과거 churn 방지 계약 때문에 TypeScript vault I/O 경계에 그대로 둔다.
 
+## 현재 여섯 번째 slice
+
+- BM25 문서 term frequency 계산을 Rust/WASM에 추가했다.
+- `JsonFileBM25Index.addDocument()`는 텍스트에서 token frequency map과 총 token 수를 만들 때 Rust/WASM을 우선 사용한다.
+- inverted index 객체 mutation, doc source bookkeeping, 평균 문서 길이 갱신, vault persistence는 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript frequency 계산으로 fallback한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.

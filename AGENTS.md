@@ -86,6 +86,8 @@
 | `MCPRegistry`                | class     | `src/mcp/registry.ts`        | MCP 서버 설정/클라이언트/연결 상태 관리                |
 | `create_content_hash`        | function  | `crates/rag-wasm/src/lib.rs` | TypeScript `createContentHash()`와 같은 UTF-16 FNV-1a |
 | `tokenize`                   | function  | `crates/rag-wasm/src/lib.rs` | TypeScript BM25 토크나이저와 같은 검색 토큰 생성      |
+| `token_frequencies_json`     | function  | `crates/rag-wasm/src/lib.rs` | BM25 문서 term frequency JSON 생성                    |
+| `bm25TermFrequenciesRust`    | function  | `src/rag/rust-core.ts`       | BM25 문서 frequency bridge                            |
 | `bm25_score_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | BM25 posting list의 doc index/score 계산              |
 | `scoreBm25Rust`              | function  | `src/rag/rust-core.ts`       | TS BM25 posting 배열과 Rust score pair bridge          |
 | `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
