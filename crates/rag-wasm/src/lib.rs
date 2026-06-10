@@ -62,6 +62,86 @@ pub fn tokenize_json(text: &str) -> String {
     format!("[{body}]")
 }
 
+/// 두 vector의 cosine similarity를 계산한다.
+#[must_use]
+pub fn cosine_similarity(left: &[f64], right: &[f64]) -> Option<f64> {
+    if left.is_empty() || left.len() != right.len() {
+        return None;
+    }
+
+    let mut dot = 0.0_f64;
+    let mut norm_left = 0.0_f64;
+    let mut norm_right = 0.0_f64;
+    for (left_value, right_value) in left.iter().zip(right.iter()) {
+        dot = left_value.mul_add(*right_value, dot);
+        norm_left = left_value.mul_add(*left_value, norm_left);
+        norm_right = right_value.mul_add(*right_value, norm_right);
+    }
+
+    if norm_left == 0.0 || norm_right == 0.0 {
+        return None;
+    }
+
+    Some(dot / (norm_left.sqrt() * norm_right.sqrt()))
+}
+
+/// `WASM` 호출용 cosine similarity. invalid vector는 `NaN`으로 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn cosine_similarity_or_nan(left: &[f64], right: &[f64]) -> f64 {
+    cosine_similarity(left, right).unwrap_or(f64::NAN)
+}
+
+/// flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn rank_top_k_pairs(
+    query: &[f64],
+    vectors: &[f64],
+    dimensions: usize,
+    top_k: usize,
+) -> Box<[f64]> {
+    if dimensions == 0 || top_k == 0 || query.len() != dimensions {
+        return Box::default();
+    }
+
+    let mut scored = Vec::new();
+    for (row_index, vector) in vectors.chunks_exact(dimensions).enumerate() {
+        let Some(score) = cosine_similarity(query, vector) else {
+            continue;
+        };
+        scored.push(ScoredRow { row_index, score });
+    }
+
+    scored.sort_by(compare_scored_rows_descending);
+    scored.truncate(top_k);
+
+    let mut pairs = Vec::with_capacity(scored.len() * 2);
+    for scored_row in scored {
+        if let Ok(index) = u32::try_from(scored_row.row_index) {
+            pairs.push(f64::from(index));
+            pairs.push(scored_row.score);
+        }
+    }
+    pairs.into_boxed_slice()
+}
+
+/// vector row와 cosine score.
+struct ScoredRow {
+    /// flattened matrix 안의 row index.
+    row_index: usize,
+    /// query와 row vector의 cosine score.
+    score: f64,
+}
+
+/// 높은 score 우선, 같은 score는 원래 row 순서 우선으로 정렬한다.
+fn compare_scored_rows_descending(left: &ScoredRow, right: &ScoredRow) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| left.row_index.cmp(&right.row_index))
+}
+
 /// 문자가 `BM25` 토큰 부분 문자 클래스에 속하는지 반환한다.
 fn is_token_part_character(character: char) -> bool {
     character.is_alphanumeric() || matches!(character, '_' | '-' | '/' | '\\' | '@' | '.')
@@ -351,7 +431,7 @@ const fn hex_digit(nibble: u32) -> char {
 mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
-    use super::{create_content_hash, tokenize};
+    use super::{cosine_similarity, create_content_hash, rank_top_k_pairs, tokenize};
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
     #[test]
@@ -400,5 +480,112 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// cosine score는 기존 `TypeScript` RAG 경로처럼 차원 불일치와 zero vector를 제외한다.
+    #[test]
+    fn cosine_similarity_preserves_rag_invalid_vector_contract() {
+        assert_some_float_close(
+            cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]),
+            1.0,
+            "동일 방향 vector는 1.0이어야 한다",
+        );
+        assert_some_float_close(
+            cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]),
+            0.0,
+            "직교 vector는 0.0이어야 한다",
+        );
+        assert!(
+            cosine_similarity(&[1.0], &[1.0, 0.0]).is_none(),
+            "차원이 다르면 기존 RAG 경로처럼 제외해야 한다"
+        );
+        assert!(
+            cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]).is_none(),
+            "zero vector는 기존 RAG 경로처럼 제외해야 한다"
+        );
+    }
+
+    /// top-k ranking은 flattened matrix를 받아 원래 row index와 score를 내림차순으로 반환한다.
+    #[test]
+    fn rank_top_k_pairs_returns_descending_indices_and_scores() {
+        let query = [1.0, 0.0];
+        let vectors = [
+            0.0, 1.0, // index 0, score 0
+            1.0, 0.0, // index 1, score 1
+            0.6, 0.8, // index 2, score 0.6
+            0.0, 0.0, // index 3, ignored
+        ];
+
+        let pairs = rank_top_k_pairs(&query, &vectors, 2, 3);
+
+        assert_eq!(
+            pairs.len(),
+            6,
+            "top 3 rows should produce 3 index/score pairs"
+        );
+        assert_float_close(pair_value(&pairs, 0), 1.0, "best row index should be first");
+        assert_float_close(pair_value(&pairs, 1), 1.0, "best score should be preserved");
+        assert_float_close(pair_value(&pairs, 2), 2.0, "second row index should follow");
+        assert!(
+            (pair_value(&pairs, 3) - 0.6).abs() < f64::EPSILON,
+            "second score should be preserved; got {pairs:?}",
+        );
+        assert_float_close(
+            pair_value(&pairs, 4),
+            0.0,
+            "orthogonal row remains valid and should be third",
+        );
+        assert_float_close(
+            pair_value(&pairs, 5),
+            0.0,
+            "orthogonal score should be zero",
+        );
+    }
+
+    /// 같은 score는 기존 stable sort 관찰값처럼 원래 row 순서를 보존한다.
+    #[test]
+    fn rank_top_k_pairs_preserves_original_order_for_ties() {
+        let query = [1.0, 0.0];
+        let vectors = [
+            1.0, 0.0, // index 0, score 1
+            2.0, 0.0, // index 1, score 1
+            3.0, 0.0, // index 2, score 1
+        ];
+
+        let pairs = rank_top_k_pairs(&query, &vectors, 2, 3);
+
+        for (offset, expected) in [0.0_f64, 1.0, 1.0, 1.0, 2.0, 1.0]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            assert_float_close(
+                pair_value(&pairs, offset),
+                expected,
+                "tie order pair mismatch",
+            );
+        }
+    }
+
+    /// `Option<f64>` 값이 존재하고 기대값과 같은지 확인한다.
+    fn assert_some_float_close(actual: Option<f64>, expected: f64, message: &str) {
+        if let Some(value) = actual {
+            assert_float_close(value, expected, message);
+        } else {
+            assert!(actual.is_some(), "{message}; got None");
+        }
+    }
+
+    /// 부동소수점 값을 strict equality 없이 확인한다.
+    fn assert_float_close(actual: f64, expected: f64, message: &str) {
+        assert!(
+            (actual - expected).abs() <= f64::EPSILON,
+            "{message}; expected {expected}, got {actual}",
+        );
+    }
+
+    /// pair 배열에서 값을 안전하게 읽는다.
+    fn pair_value(pairs: &[f64], offset: usize) -> f64 {
+        pairs.get(offset).copied().unwrap_or(f64::NAN)
     }
 }
