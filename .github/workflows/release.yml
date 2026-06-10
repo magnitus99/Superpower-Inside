@@ -33,6 +33,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y fish
+          cargo install wasm-bindgen-cli --version 0.2.123 --locked
           cargo install cargo-deny --version 0.19.8 --locked
           cargo install cargo-audit --version 0.22.2 --locked
           cargo install cargo-geiger --version 0.13.0 --locked

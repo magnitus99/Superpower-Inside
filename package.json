@@ -4,13 +4,14 @@
   "description": "Desktop AI copilot with LLM chat, RAG, MCP tools, and source-aware context.",
   "main": "main.js",
   "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production",
+    "dev": "npm run wasm:build && node esbuild.config.mjs",
+    "build": "npm run wasm:build && node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && npm run check:i18n",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "wasm:build": "fish scripts/build-rag-wasm.fish",
     "rust:security": "fish scripts/check-rust-security.fish",
     "format": "prettier --write src/ main.ts"
   },

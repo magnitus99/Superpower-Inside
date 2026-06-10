@@ -36,7 +36,7 @@ end
 
 set -x CARGO_TARGET_DIR "$REPO_ROOT/target/rustup-$TOOLCHAIN"
 
-set -l REQUIRED_TOOLS cargo-deny cargo-audit cargo-geiger cargo-vet
+set -l REQUIRED_TOOLS wasm-bindgen cargo-deny cargo-audit cargo-geiger cargo-vet
 for tool in $REQUIRED_TOOLS
     if not command -sq "$tool"
         echo "ERROR: $tool 명령을 찾을 수 없습니다. brew 또는 cargo로 먼저 설치해야 합니다."
@@ -75,3 +75,15 @@ or exit $status
 echo "==> cargo-geiger"
 cargo geiger --manifest-path "$REPO_ROOT/crates/rag-wasm/Cargo.toml" --all-features --all-targets --locked --forbid-only --output-format Ratio
 or exit $status
+
+echo "==> wasm bindings"
+fish scripts/build-rag-wasm.fish
+or exit $status
+
+if command -sq git
+    git diff --exit-code -- generated/rag-wasm src/rag/rag-wasm-bytes.ts
+    or begin
+        echo "ERROR: Rust/WASM generated files are out of date. Run npm run wasm:build and commit the result."
+        exit 1
+    end
+end
