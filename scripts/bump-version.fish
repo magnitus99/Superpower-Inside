@@ -103,6 +103,12 @@ or begin
     exit 1
 end
 
+npm run rust:security
+or begin
+    echo "ERROR: Rust/WASM 보안 게이트 실패"
+    exit 1
+end
+
 npm run review -- --tag "$NEW_VERSION"
 or begin
     echo "ERROR: Obsidian review gate 실패"

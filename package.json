@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run && npm run check:i18n",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "rust:security": "fish scripts/check-rust-security.fish",
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {

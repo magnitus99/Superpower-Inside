@@ -23,6 +23,21 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy,rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install Rust security tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fish
+          cargo install cargo-deny --version 0.19.8 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-geiger --version 0.13.0 --locked
+          cargo install cargo-vet --version 0.10.2 --locked
+
       - name: Install dependencies
         run: npm ci
 
@@ -34,6 +49,9 @@ jobs:
 
       - name: Test
         run: npm run test
+
+      - name: Rust security gate
+        run: npm run rust:security
 
       - name: Obsidian review gate
         run: npm run review -- --tag "$GITHUB_REF_NAME"
