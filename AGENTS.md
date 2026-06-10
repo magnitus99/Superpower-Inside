@@ -88,6 +88,8 @@
 | `tokenize`                   | function  | `crates/rag-wasm/src/lib.rs` | TypeScript BM25 토크나이저와 같은 검색 토큰 생성      |
 | `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
 | `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
+| `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
+| `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
 
 ## TEST VAULT
 
