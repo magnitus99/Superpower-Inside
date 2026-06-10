@@ -1,6 +1,11 @@
 import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault, writeJsonToVault } from '../utils/vault';
-import { scoreBm25Rust, tokenizeRust, type RustBm25Term } from './rust-core';
+import {
+  bm25TermFrequenciesRust,
+  scoreBm25Rust,
+  tokenizeRust,
+  type RustBm25Term,
+} from './rust-core';
 
 interface InvertedEntry {
   [docId: string]: number;
@@ -193,19 +198,15 @@ export class JsonFileBM25Index {
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
-    const tokens = tokenize(text);
-    const freq: Record<string, number> = {};
-    for (const token of tokens) {
-      freq[token] = (freq[token] ?? 0) + 1;
-    }
+    const terms = bm25TermFrequenciesRust(text) ?? calculateTermFrequencies(text);
 
     this.removeDocument(docId);
 
-    for (const [term, tf] of Object.entries(freq)) {
+    for (const [term, tf] of Object.entries(terms.frequencies)) {
       if (!this.data.inverted[term]) this.data.inverted[term] = {};
       this.data.inverted[term][docId] = tf;
     }
-    this.data.docLengths[docId] = tokens.length;
+    this.data.docLengths[docId] = terms.totalTokens;
     this.data.docSources[docId] = sourcePath;
     this.data.totalDocs = Object.keys(this.data.docLengths).length;
     const totalLen = Object.values(this.data.docLengths).reduce((a, b) => a + b, 0);
@@ -336,4 +337,13 @@ function createEmptyData(): BM25Data {
     totalDocs: 0,
     avgDocLength: 1,
   };
+}
+
+function calculateTermFrequencies(text: string): { frequencies: Record<string, number>; totalTokens: number } {
+  const tokens = tokenize(text);
+  const frequencies: Record<string, number> = {};
+  for (const token of tokens) {
+    frequencies[token] = (frequencies[token] ?? 0) + 1;
+  }
+  return { frequencies, totalTokens: tokens.length };
 }

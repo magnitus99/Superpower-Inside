@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
@@ -64,6 +65,19 @@ pub fn tokenize_json(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("[{body}]")
+}
+
+/// 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn token_frequencies_json(text: &str) -> String {
+    let tokens = tokenize(text);
+    let mut frequencies = BTreeMap::<String, usize>::new();
+    for token in &tokens {
+        let count = frequencies.entry(token.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    serialize_token_frequencies_json(tokens.len(), &frequencies)
 }
 
 /// 두 vector의 cosine similarity를 계산한다.
@@ -743,6 +757,19 @@ fn serialize_chunks_json(chunks: &[Chunk]) -> String {
     format!("[{body}]")
 }
 
+/// token frequency payload를 JSON 문자열로 serialize한다.
+fn serialize_token_frequencies_json(
+    total_tokens: usize,
+    frequencies: &BTreeMap<String, usize>,
+) -> String {
+    let body = frequencies
+        .iter()
+        .map(|(token, frequency)| format!("\"{}\":{frequency}", escape_json_string(token)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"totalTokens\":{total_tokens},\"frequencies\":{{{body}}}}}")
+}
+
 /// chunk 하나를 JSON 문자열로 serialize한다.
 fn serialize_chunk_json(chunk: &Chunk) -> String {
     let heading = chunk
@@ -1051,7 +1078,7 @@ mod tests {
 
     use super::{
         BM25_B, BM25_K1, bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity,
-        create_content_hash, rank_top_k_pairs, tokenize,
+        create_content_hash, rank_top_k_pairs, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1088,6 +1115,16 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// BM25 term frequency JSON은 Rust tokenizer output의 중복 횟수를 보존해야 한다.
+    #[test]
+    fn token_frequencies_json_counts_tokenizer_output() {
+        assert_eq!(
+            token_frequencies_json("OpenRouter OpenRouter freeLLMApi"),
+            "{\"totalTokens\":10,\"frequencies\":{\"api\":1,\"free\":1,\"freellmapi\":1,\"llm\":1,\"open\":2,\"openrouter\":2,\"router\":2}}",
+            "frequency JSON은 token별 중복 횟수를 보존해야 한다",
+        );
     }
 
     /// `Unicode` 토크나이저 동작은 한국어 숫자 그룹과 짧은 `n-gram`을 보존해야 한다.

@@ -7,6 +7,7 @@ import {
   create_content_hash,
   initSync,
   rank_top_k_pairs,
+  token_frequencies_json,
   tokenize_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
@@ -25,6 +26,11 @@ export interface RustBm25Posting {
 
 export interface RustBm25Term {
   postings: readonly RustBm25Posting[];
+}
+
+export interface RustBm25TermFrequencies {
+  totalTokens: number;
+  frequencies: Record<string, number>;
 }
 
 let initialized = false;
@@ -51,6 +57,17 @@ export function tokenizeRust(text: string): string[] | null {
     if (!Array.isArray(parsed) || !parsed.every((token): token is string => typeof token === 'string')) {
       return null;
     }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function bm25TermFrequenciesRust(text: string): RustBm25TermFrequencies | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(token_frequencies_json(text));
+    if (!isBm25TermFrequencies(parsed)) return null;
     return parsed;
   } catch {
     return null;
@@ -226,6 +243,22 @@ function isValidBm25Posting(posting: RustBm25Posting): boolean {
     posting.termFrequency > 0 &&
     Number.isFinite(posting.docLength) &&
     posting.docLength > 0
+  );
+}
+
+function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RustBm25TermFrequencies>;
+  const totalTokens = candidate.totalTokens;
+  if (typeof totalTokens !== 'number' || !Number.isSafeInteger(totalTokens) || totalTokens < 0) {
+    return false;
+  }
+  if (!candidate.frequencies || typeof candidate.frequencies !== 'object') return false;
+  return Object.entries(candidate.frequencies).every(
+    ([token, count]) =>
+      token.length > 0 &&
+      Number.isSafeInteger(count) &&
+      count > 0,
   );
 }
 

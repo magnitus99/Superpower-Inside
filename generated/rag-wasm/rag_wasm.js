@@ -141,6 +141,26 @@ export function rank_top_k_pairs(query, vectors, dimensions, top_k) {
 }
 
 /**
+ * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
+ * @param {string} text
+ * @returns {string}
+ */
+export function token_frequencies_json(text) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.token_frequencies_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 텍스트를 토큰화하고 `JavaScript` 호스트 브리지를 위한 `JSON` 문자열로 반환한다.
  * @param {string} text
  * @returns {string}

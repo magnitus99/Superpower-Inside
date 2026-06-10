@@ -37,6 +37,11 @@ export function create_content_hash(content: string): string;
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
 
 /**
+ * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
+ */
+export function token_frequencies_json(text: string): string;
+
+/**
  * 텍스트를 토큰화하고 `JavaScript` 호스트 브리지를 위한 `JSON` 문자열로 반환한다.
  */
 export function tokenize_json(text: string): string;
@@ -52,6 +57,7 @@ export interface InitOutput {
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly token_frequencies_json: (a: number, b: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

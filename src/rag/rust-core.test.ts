@@ -4,6 +4,7 @@ import {
   createContentHashRust,
   chunkMarkdownRust,
   chunkPlainTextRust,
+  bm25TermFrequenciesRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   scoreBm25Rust,
@@ -26,6 +27,23 @@ describe('Rust WASM RAG core bridge', () => {
     expect(tokens).toContain('llm');
     expect(tokens).toContain('요고49');
     expect(tokens).toContain('포인트');
+  });
+
+  it('returns BM25 term frequencies from Rust tokenizer output', () => {
+    const frequencies = bm25TermFrequenciesRust('OpenRouter OpenRouter freeLLMApi');
+
+    expect(frequencies).toEqual({
+      totalTokens: 10,
+      frequencies: {
+        openrouter: 2,
+        open: 2,
+        router: 2,
+        freellmapi: 1,
+        free: 1,
+        llm: 1,
+        api: 1,
+      },
+    });
   });
 
   it('returns original vector row indexes and scores for top-k ranking', () => {
