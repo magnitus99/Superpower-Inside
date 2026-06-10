@@ -56,7 +56,7 @@
 | MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
 | 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
-| GraphRAG community 감지  | `src/graph/community-detector.ts`                    | entity/relation edge 구성, Rust/WASM community detection fallback         |
+| GraphRAG community 감지  | `src/graph/community-detector.ts`                    | Rust/WASM edge aggregation과 community detection fallback                 |
 | Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
 | Rust/WASM JS bridge      | `src/rag/rust-core.ts` + `generated/rag-wasm/`       | embedded WASM init, hash/tokenize/vector/query scoring bridge             |
 | Rust 보안 게이트         | `scripts/check-rust-security.fish` + `deny.toml`     | fmt, clippy, test, wasm build, deny, audit, vet, geiger                   |
@@ -100,6 +100,9 @@
 | `calculateHybridScoreRust`   | function  | `src/rag/rust-core.ts`       | TS query score input과 Rust hybrid score bridge        |
 | `select_diverse_indices`     | function  | `crates/rag-wasm/src/lib.rs` | RAG MMR diversity selection index 계산                 |
 | `selectDiverseIndicesRust`   | function  | `src/rag/rust-core.ts`       | TS query 후보와 Rust MMR selection bridge              |
+| `aggregate_graph_edges_flat` | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG relation edge confidence를 무방향 endpoint pair별로 집계 |
+| `aggregateGraphEdgesRust`    | function  | `src/rag/rust-core.ts`       | TS entity id index 배열과 Rust edge aggregation bridge |
+| `buildEdges`                 | function  | `src/graph/community-detector.ts` | GraphRAG relation filtering, id mapping, Rust 우선 edge aggregation |
 | `detect_communities_flat`    | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG community assignment와 modularity 계산        |
 | `detectCommunitiesRust`      | function  | `src/rag/rust-core.ts`       | numeric graph edge 배열과 Rust community detection bridge |
 | `detectCommunities`          | function  | `src/graph/community-detector.ts` | GraphRAG edge 문자열 매핑과 Rust 우선 community detection |
