@@ -9,6 +9,7 @@ import {
   initSync,
   rank_top_k_pairs,
   rrf_score_or_nan,
+  select_diverse_indices,
   token_frequencies_json,
   tokenize_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
@@ -42,6 +43,13 @@ export interface RustHybridScoreInput {
   sourceEvidenceScore: number;
   bestEvidenceRank?: number;
   retrievalSources: readonly string[];
+}
+
+export interface RustDiverseCandidate {
+  score: number;
+  vector: readonly number[];
+  sourceKey: number;
+  headingKey: number;
 }
 
 let initialized = false;
@@ -198,6 +206,52 @@ export function calculateHybridScoreRust(input: RustHybridScoreInput): number | 
   return Number.isFinite(score) ? score : null;
 }
 
+export function selectDiverseIndicesRust(
+  candidates: readonly RustDiverseCandidate[],
+  topK: number,
+): number[] | null {
+  if (topK <= 0) return [];
+  if (candidates.length === 0) return [];
+  if (candidates.length <= topK) return candidates.map((_, index) => index);
+  if (!ensureRustCore()) return null;
+
+  const dimension = candidates[0]?.vector.length ?? 0;
+  if (dimension <= 0) return null;
+
+  const scores = new Float64Array(candidates.length);
+  const flatVectors = new Float64Array(candidates.length * dimension);
+  const sourceKeys = new Uint32Array(candidates.length);
+  const headingKeys = new Uint32Array(candidates.length);
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!candidate || !isValidUint32(candidate.sourceKey) || !isValidUint32(candidate.headingKey)) {
+      return null;
+    }
+    if (!Number.isFinite(candidate.score) || candidate.vector.length !== dimension) {
+      return null;
+    }
+    scores[index] = candidate.score;
+    sourceKeys[index] = candidate.sourceKey;
+    headingKeys[index] = candidate.headingKey;
+    for (let vectorIndex = 0; vectorIndex < dimension; vectorIndex++) {
+      const value = candidate.vector[vectorIndex];
+      if (!Number.isFinite(value)) return null;
+      flatVectors[index * dimension + vectorIndex] = value;
+    }
+  }
+
+  const indexes = select_diverse_indices(
+    scores,
+    flatVectors,
+    dimension,
+    sourceKeys,
+    headingKeys,
+    normalizeNonNegativeInteger(topK),
+  );
+  return decodeIndexArray(indexes, candidates.length);
+}
+
 export function chunkMarkdownRust(
   content: string,
   maxChunkSize: number,
@@ -278,6 +332,15 @@ function decodeIndexScorePairs(pairs: Float64Array): RustVectorScore[] {
   return scores;
 }
 
+function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] | null {
+  const indexes: number[] = [];
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0 || value >= maxExclusive) return null;
+    indexes.push(value);
+  }
+  return indexes;
+}
+
 function isValidBm25Posting(posting: RustBm25Posting): boolean {
   return (
     Number.isSafeInteger(posting.docIndex) &&
@@ -287,6 +350,10 @@ function isValidBm25Posting(posting: RustBm25Posting): boolean {
     Number.isFinite(posting.docLength) &&
     posting.docLength > 0
   );
+}
+
+function isValidUint32(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
 }
 
 function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies {

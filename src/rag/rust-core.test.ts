@@ -10,6 +10,7 @@ import {
   isRustCoreAvailable,
   rankTopKPairsRust,
   scoreBm25Rust,
+  selectDiverseIndicesRust,
   tokenizeRust,
 } from './rust-core';
 
@@ -129,6 +130,19 @@ describe('Rust WASM RAG core bridge', () => {
     });
 
     expect(score).toBeCloseTo(0.58 + 0.8 * 0.25 + 0.5 * 0.08);
+  });
+
+  it('returns MMR diverse indexes with same-file penalties', () => {
+    const indexes = selectDiverseIndicesRust(
+      [
+        { score: 1, vector: [1, 0], sourceKey: 1, headingKey: 1 },
+        { score: 0.99, vector: [0.999, 0.001], sourceKey: 1, headingKey: 1 },
+        { score: 0.96, vector: [0.96, 0.28], sourceKey: 2, headingKey: 0 },
+      ],
+      2,
+    );
+
+    expect(indexes).toEqual([0, 2]);
   });
 
   it('returns markdown chunks with heading and line metadata', () => {

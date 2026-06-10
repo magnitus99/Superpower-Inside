@@ -36,6 +36,12 @@ const SOURCE_VECTOR: u8 = 2;
 const SOURCE_GRAPH_EVIDENCE: u8 = 3;
 /// structural retrieval source.
 const SOURCE_STRUCTURAL: u8 = 4;
+/// 기존 `TypeScript` MMR selection의 relevance 가중치.
+const MMR_RELEVANCE_WEIGHT: f64 = 0.72;
+/// 같은 파일 후보를 연속 선택하지 않기 위한 penalty.
+const SAME_FILE_DIVERSITY_PENALTY: f64 = 0.12;
+/// 같은 heading 후보를 연속 선택하지 않기 위한 추가 penalty.
+const SAME_HEADING_DIVERSITY_PENALTY: f64 = 0.06;
 
 /// `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
 #[must_use]
@@ -320,6 +326,77 @@ pub fn hybrid_score_or_nan(
     base_score.max(evidence_aware_score.min(STRONG_EVIDENCE_SCORE_CAP))
 }
 
+/// Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
+#[must_use]
+#[wasm_bindgen]
+pub fn select_diverse_indices(
+    scores: &[f64],
+    vectors: &[f64],
+    dimensions: usize,
+    source_keys: &[u32],
+    heading_keys: &[u32],
+    top_k: usize,
+) -> Box<[f64]> {
+    if top_k == 0 || scores.is_empty() {
+        return Box::default();
+    }
+    if dimensions == 0
+        || vectors.len() != scores.len().saturating_mul(dimensions)
+        || source_keys.len() != scores.len()
+        || heading_keys.len() != scores.len()
+        || scores.iter().any(|score| !score.is_finite())
+        || vectors.iter().any(|value| !value.is_finite())
+    {
+        return Box::default();
+    }
+    if scores.len() <= top_k {
+        return collect_indices_as_f64(0..scores.len());
+    }
+
+    let rows = vectors.chunks_exact(dimensions).collect::<Vec<_>>();
+    if rows.len() != scores.len() {
+        return Box::default();
+    }
+
+    let mut selected = Vec::with_capacity(top_k.min(scores.len()));
+    let mut remaining = (0..scores.len()).collect::<Vec<_>>();
+
+    while selected.len() < top_k && !remaining.is_empty() {
+        let mut best_remaining_position = 0_usize;
+        let mut best_selection_score = f64::NEG_INFINITY;
+
+        for (remaining_position, candidate_index) in remaining.iter().copied().enumerate() {
+            let Some(candidate_score) = scores.get(candidate_index).copied() else {
+                continue;
+            };
+            let diversity_penalty = calculate_mmr_diversity_penalty(
+                candidate_index,
+                &selected,
+                source_keys,
+                heading_keys,
+            );
+            let max_similarity =
+                calculate_max_selected_similarity(candidate_index, &selected, &rows);
+            let novelty_penalty =
+                (1.0 - MMR_RELEVANCE_WEIGHT).mul_add(max_similarity, diversity_penalty);
+            let selection_score = MMR_RELEVANCE_WEIGHT.mul_add(candidate_score, -novelty_penalty);
+
+            if selection_score > best_selection_score {
+                best_selection_score = selection_score;
+                best_remaining_position = remaining_position;
+            }
+        }
+
+        let Some(next_index) = remaining.get(best_remaining_position).copied() else {
+            break;
+        };
+        remaining.remove(best_remaining_position);
+        selected.push(next_index);
+    }
+
+    collect_indices_as_f64(selected)
+}
+
 /// Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -371,6 +448,61 @@ fn has_graph_evidence_source(source_codes: &[u8]) -> bool {
 /// graph/evidence score가 강한 근거인지 반환한다.
 fn is_strong_evidence_score(evidence_score: f64, rank: f64) -> bool {
     evidence_score >= 0.7 || (rank.is_finite() && rank <= 2.0)
+}
+
+/// 후보가 이미 선택된 후보와 같은 파일/heading을 공유할 때 penalty를 계산한다.
+fn calculate_mmr_diversity_penalty(
+    candidate_index: usize,
+    selected: &[usize],
+    source_keys: &[u32],
+    heading_keys: &[u32],
+) -> f64 {
+    let Some(candidate_source_key) = source_keys.get(candidate_index).copied() else {
+        return 0.0;
+    };
+    let candidate_heading_key = heading_keys
+        .get(candidate_index)
+        .copied()
+        .unwrap_or_default();
+    let mut penalty = 0.0_f64;
+
+    for selected_index in selected {
+        if source_keys.get(*selected_index).copied() != Some(candidate_source_key) {
+            continue;
+        }
+        penalty = penalty.max(SAME_FILE_DIVERSITY_PENALTY);
+        if candidate_heading_key != 0
+            && heading_keys.get(*selected_index).copied() == Some(candidate_heading_key)
+        {
+            penalty = penalty.max(SAME_FILE_DIVERSITY_PENALTY + SAME_HEADING_DIVERSITY_PENALTY);
+        }
+    }
+
+    penalty
+}
+
+/// 후보와 이미 선택된 후보들의 최대 cosine similarity를 계산한다.
+fn calculate_max_selected_similarity(
+    candidate_index: usize,
+    selected: &[usize],
+    rows: &[&[f64]],
+) -> f64 {
+    let mut max_similarity = 0.0_f64;
+    let Some(candidate_vector) = rows.get(candidate_index).copied() else {
+        return max_similarity;
+    };
+
+    for selected_index in selected {
+        let Some(selected_vector) = rows.get(*selected_index).copied() else {
+            continue;
+        };
+        let Some(similarity) = cosine_similarity(candidate_vector, selected_vector) else {
+            continue;
+        };
+        max_similarity = max_similarity.max(similarity);
+    }
+
+    max_similarity
 }
 
 /// RAG chunk metadata.
@@ -850,6 +982,17 @@ fn usize_to_f64(value: usize) -> Option<f64> {
     u32::try_from(value).ok().map(f64::from)
 }
 
+/// index 배열을 `wasm-bindgen`이 안정적으로 넘길 수 있는 `f64` 배열로 변환한다.
+fn collect_indices_as_f64(indices: impl IntoIterator<Item = usize>) -> Box<[f64]> {
+    let mut output = Vec::new();
+    for index in indices {
+        if let Some(value) = usize_to_f64(index) {
+            output.push(value);
+        }
+    }
+    output.into_boxed_slice()
+}
+
 /// chunk 배열을 JSON 문자열로 serialize한다.
 fn serialize_chunks_json(chunks: &[Chunk]) -> String {
     let body = chunks
@@ -1182,7 +1325,8 @@ mod tests {
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash,
-        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, token_frequencies_json, tokenize,
+        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, select_diverse_indices,
+        token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1436,6 +1580,33 @@ mod tests {
             score,
             0.5_f64.mul_add(0.08, 0.8_f64.mul_add(0.25, 0.58)),
             "strong graph evidence score mismatch",
+        );
+    }
+
+    /// MMR diversity selection은 같은 파일/heading 후보보다 다른 파일 후보를 우선할 수 있어야 한다.
+    #[test]
+    fn select_diverse_indices_applies_same_file_penalty() {
+        let scores = [1.0, 0.99, 0.96];
+        let vectors = [
+            1.0, 0.0, // index 0
+            0.999, 0.001, // index 1
+            0.96, 0.28, // index 2
+        ];
+        let source_keys = [1_u32, 1, 2];
+        let heading_keys = [1_u32, 1, 0];
+
+        let indexes = select_diverse_indices(&scores, &vectors, 2, &source_keys, &heading_keys, 2);
+
+        assert_eq!(indexes.len(), 2, "top 2 index가 필요하다");
+        assert_float_close(
+            pair_value(&indexes, 0),
+            0.0,
+            "첫 후보는 최고 score여야 한다",
+        );
+        assert_float_close(
+            pair_value(&indexes, 1),
+            2.0,
+            "두 번째 후보는 같은 파일 중복보다 다른 파일이어야 한다",
         );
     }
 

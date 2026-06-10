@@ -20,6 +20,7 @@ import {
   calculateHybridScoreRust,
   calculateRrfScoreRust,
   cosineSimilarityRust,
+  selectDiverseIndicesRust,
 } from './rust-core';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
@@ -553,6 +554,9 @@ function getBestEvidenceRank(sourceRanks: Partial<Record<string, number>>): numb
 function selectDiverseResults(results: QueryResult[], topK: number): QueryResult[] {
   if (topK <= 0 || results.length <= topK) return results.slice(0, topK);
 
+  const rustSelected = selectDiverseResultsWithRust(results, topK);
+  if (rustSelected) return rustSelected;
+
   const selected: QueryResult[] = [];
   const remaining = [...results];
 
@@ -581,6 +585,42 @@ function selectDiverseResults(results: QueryResult[], topK: number): QueryResult
   }
 
   return selected;
+}
+
+function selectDiverseResultsWithRust(
+  results: readonly QueryResult[],
+  topK: number,
+): QueryResult[] | null {
+  const sourceKeys = new Map<string, number>();
+  const headingKeys = new Map<string, number>();
+  const indexes = selectDiverseIndicesRust(
+    results.map((result) => ({
+      score: result.score,
+      vector: result.entry.vector,
+      sourceKey: getOrCreateNumericKey(sourceKeys, result.sourcePath),
+      headingKey: result.entry.metadata.heading
+        ? getOrCreateNumericKey(headingKeys, result.entry.metadata.heading)
+        : 0,
+    })),
+    topK,
+  );
+  if (indexes === null) return null;
+
+  const selected: QueryResult[] = [];
+  for (const index of indexes) {
+    const result = results[index];
+    if (!result) return null;
+    selected.push(result);
+  }
+  return selected;
+}
+
+function getOrCreateNumericKey(keys: Map<string, number>, value: string): number {
+  const existing = keys.get(value);
+  if (existing !== undefined) return existing;
+  const nextKey = keys.size + 1;
+  keys.set(value, nextKey);
+  return nextKey;
 }
 
 function calculateDiversityPenalty(candidate: QueryResult, selected: readonly QueryResult[]): number {

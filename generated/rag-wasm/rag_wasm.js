@@ -174,6 +174,31 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
 }
 
 /**
+ * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
+ * @param {Float64Array} scores
+ * @param {Float64Array} vectors
+ * @param {number} dimensions
+ * @param {Uint32Array} source_keys
+ * @param {Uint32Array} heading_keys
+ * @param {number} top_k
+ * @returns {Float64Array}
+ */
+export function select_diverse_indices(scores, vectors, dimensions, source_keys, heading_keys, top_k) {
+    const ptr0 = passArrayF64ToWasm0(scores, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(vectors, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray32ToWasm0(source_keys, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray32ToWasm0(heading_keys, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.select_diverse_indices(ptr0, len0, ptr1, len1, dimensions, ptr2, len2, ptr3, len3, top_k);
+    var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v5;
+}
+
+/**
  * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
  * @param {string} text
  * @returns {string}
