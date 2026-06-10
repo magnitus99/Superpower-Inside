@@ -16,6 +16,7 @@ import {
   type RetrievalProviderDiagnostic,
   type StructuralMetadataContext,
 } from './retrieval-pipeline';
+import { cosineSimilarityRust } from './rust-core';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 const RRF_K = 60;
@@ -39,6 +40,9 @@ export interface RAGResultReranker {
 }
 
 function cosineSimilarity(a: number[], b: number[]): number | null {
+  const rustScore = cosineSimilarityRust(a, b);
+  if (rustScore !== null) return rustScore;
+
   if (a.length === 0 || a.length !== b.length) return null;
   let dot = 0;
   let normA = 0;

@@ -1,6 +1,7 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { writeJsonToVault, readJsonFromVault } from '../utils/vault';
+import { rankTopKPairsRust } from './rust-core';
 
 export interface VectorEntry {
   id: string;
@@ -106,6 +107,22 @@ async function scoredQuery(
   topK: number,
   signal?: AbortSignal,
 ): Promise<VectorEntry[]> {
+  throwIfAborted(signal);
+  const rustScores = rankTopKPairsRust(
+    vector,
+    entries.map((entry) => entry.vector),
+    topK,
+  );
+  if (rustScores !== null) {
+    throwIfAborted(signal);
+    const selected: VectorEntry[] = [];
+    for (const result of rustScores) {
+      const entry = entries[result.index];
+      if (entry) selected.push(entry);
+    }
+    return selected;
+  }
+
   const scored: Array<{ entry: VectorEntry; score: number }> = [];
   for (let index = 0; index < entries.length; index++) {
     throwIfAborted(signal);

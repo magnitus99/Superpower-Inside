@@ -1,6 +1,7 @@
 import type { JsonFileBM25Index } from './bm25';
 import type { VectorEntry, VectorStore } from './store';
 import type { CachedMetadata, TFile } from 'obsidian';
+import { rankTopKPairsRust } from './rust-core';
 
 export type RetrievalCandidateSource =
   | 'vector'
@@ -472,6 +473,22 @@ function scoreVectorEntries(
   topK: number,
   signal?: AbortSignal,
 ): Array<{ entry: VectorEntry; score: number }> {
+  throwIfAborted(signal);
+  const rustScores = rankTopKPairsRust(
+    vector,
+    entries.map((entry) => entry.vector),
+    topK,
+  );
+  if (rustScores !== null) {
+    throwIfAborted(signal);
+    const selected: Array<{ entry: VectorEntry; score: number }> = [];
+    for (const result of rustScores) {
+      const entry = entries[result.index];
+      if (entry) selected.push({ entry, score: result.score });
+    }
+    return selected;
+  }
+
   const scored: Array<{ entry: VectorEntry; score: number }> = [];
   for (const entry of entries) {
     throwIfAborted(signal);

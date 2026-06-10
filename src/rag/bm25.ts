@@ -1,5 +1,6 @@
 import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault, writeJsonToVault } from '../utils/vault';
+import { tokenizeRust } from './rust-core';
 
 interface InvertedEntry {
   [docId: string]: number;
@@ -21,6 +22,9 @@ export interface BM25DocumentInput {
 }
 
 export function tokenize(text: string): string[] {
+  const rustTokens = tokenizeRust(text);
+  if (rustTokens !== null) return rustTokens;
+
   const tokens: string[] = [];
   const parts = text.match(/[\p{L}\p{N}_\-/\\@.]+/gu) ?? [];
   for (const part of parts) {

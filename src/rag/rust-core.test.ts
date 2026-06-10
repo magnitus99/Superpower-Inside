@@ -1,0 +1,47 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  createContentHashRust,
+  isRustCoreAvailable,
+  rankTopKPairsRust,
+  tokenizeRust,
+} from './rust-core';
+
+describe('Rust WASM RAG core bridge', () => {
+  it('loads embedded WASM bytes synchronously', () => {
+    expect(isRustCoreAvailable()).toBe(true);
+  });
+
+  it('preserves content hash and tokenizer contracts through WASM', () => {
+    expect(createContentHashRust('hello')).toBe('4f9f2cab');
+    expect(createContentHashRust('요고49 포인트 페이백')).toBe('d30c670d');
+
+    const tokens = tokenizeRust('OpenRouter freeLLMApi 요고49 포인트 페이백');
+    expect(tokens).not.toBeNull();
+    expect(tokens).toContain('openrouter');
+    expect(tokens).toContain('free');
+    expect(tokens).toContain('llm');
+    expect(tokens).toContain('요고49');
+    expect(tokens).toContain('포인트');
+  });
+
+  it('returns original vector row indexes and scores for top-k ranking', () => {
+    const scores = rankTopKPairsRust(
+      [1, 0],
+      [
+        [0, 1],
+        [1, 0],
+        [0.6, 0.8],
+        [0, 0],
+      ],
+      3,
+    );
+
+    expect(scores).not.toBeNull();
+    expect(scores).toEqual([
+      { index: 1, score: 1 },
+      { index: 2, score: 0.6 },
+      { index: 0, score: 0 },
+    ]);
+  });
+});
