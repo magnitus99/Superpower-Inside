@@ -6,6 +6,7 @@ import {
   createContentHashRust,
   chunkMarkdownRust,
   chunkPlainTextRust,
+  aggregateGraphEdgesRust,
   bm25TermFrequenciesRust,
   detectCommunitiesRust,
   isRustCoreAvailable,
@@ -109,14 +110,8 @@ describe('Rust WASM RAG core bridge', () => {
       0.3,
     );
 
-    const weighted =
-      0.7 * (1 / (60 + 1)) +
-      0.3 * (1 / (60 + 3)) +
-      0.12 * (1 / (60 + 2));
-    const total =
-      0.7 * (1 / (60 + 1)) +
-      0.3 * (1 / (60 + 1)) +
-      0.12 * (1 / (60 + 1));
+    const weighted = 0.7 * (1 / (60 + 1)) + 0.3 * (1 / (60 + 3)) + 0.12 * (1 / (60 + 2));
+    const total = 0.7 * (1 / (60 + 1)) + 0.3 * (1 / (60 + 1)) + 0.12 * (1 / (60 + 1));
 
     expect(score).toBeCloseTo(weighted / total);
   });
@@ -148,18 +143,22 @@ describe('Rust WASM RAG core bridge', () => {
   });
 
   it('returns graph community assignments and modularity from numeric edges', () => {
-    const result = detectCommunitiesRust(
-      4,
-      [0, 2, 1],
-      [1, 3, 2],
-      [1, 1, 0.1],
-      20,
-    );
+    const result = detectCommunitiesRust(4, [0, 2, 1], [1, 3, 2], [1, 1, 0.1], 20);
 
     expect(result).not.toBeNull();
     expect(result?.assignments).toEqual([0, 0, 1, 1]);
     expect(result?.communityIds).toEqual([0, 1]);
     expect(result?.modularity).toBeGreaterThan(0);
+  });
+
+  it('aggregates GraphRAG relation edges by unordered endpoint pair', () => {
+    const edges = aggregateGraphEdgesRust([2, 1, 2, 0], [1, 2, 0, 3], [0.4, 0.6, 0.2, 0.9], 4);
+
+    expect(edges).toEqual([
+      { sourceIndex: 1, targetIndex: 2, weight: 1 },
+      { sourceIndex: 0, targetIndex: 2, weight: 0.2 },
+      { sourceIndex: 0, targetIndex: 3, weight: 0.9 },
+    ]);
   });
 
   it('returns GraphRAG local evidence scores from numeric graph inputs', () => {

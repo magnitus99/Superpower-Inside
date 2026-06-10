@@ -1,4 +1,5 @@
 import {
+  aggregate_graph_edges_flat,
   bm25_score_pairs,
   chunk_markdown_json,
   chunk_plain_text_json,
@@ -60,6 +61,12 @@ export interface RustCommunityDetectionResult {
   modularity: number;
 }
 
+export interface RustGraphEdge {
+  sourceIndex: number;
+  targetIndex: number;
+  weight: number;
+}
+
 export interface RustLocalEvidenceInput {
   entityCount: number;
   matchEntityIndices: readonly number[];
@@ -101,7 +108,10 @@ export function tokenizeRust(text: string): string[] | null {
   if (!ensureRustCore()) return null;
   try {
     const parsed: unknown = JSON.parse(tokenize_json(text));
-    if (!Array.isArray(parsed) || !parsed.every((token): token is string => typeof token === 'string')) {
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((token): token is string => typeof token === 'string')
+    ) {
       return null;
     }
     return parsed;
@@ -341,6 +351,55 @@ export function detectCommunitiesRust(
   };
 }
 
+export function aggregateGraphEdgesRust(
+  sourceIndices: readonly number[],
+  targetIndices: readonly number[],
+  confidences: readonly number[],
+  nodeCount: number,
+): RustGraphEdge[] | null {
+  if (nodeCount <= 0) return [];
+  if (
+    sourceIndices.length !== targetIndices.length ||
+    sourceIndices.length !== confidences.length ||
+    !Number.isSafeInteger(nodeCount)
+  ) {
+    return null;
+  }
+  if (sourceIndices.length === 0) return [];
+  if (!ensureRustCore()) return null;
+
+  const normalizedNodeCount = normalizePositiveInteger(nodeCount);
+  const normalizedSourceIndices = new Uint32Array(sourceIndices.length);
+  const normalizedTargetIndices = new Uint32Array(targetIndices.length);
+  const normalizedConfidences = new Float64Array(confidences.length);
+
+  for (let index = 0; index < sourceIndices.length; index++) {
+    const sourceIndex = sourceIndices[index];
+    const targetIndex = targetIndices[index];
+    const confidence = confidences[index];
+    if (
+      !isValidUint32(sourceIndex) ||
+      !isValidUint32(targetIndex) ||
+      sourceIndex >= normalizedNodeCount ||
+      targetIndex >= normalizedNodeCount ||
+      !Number.isFinite(confidence)
+    ) {
+      return null;
+    }
+    normalizedSourceIndices[index] = sourceIndex;
+    normalizedTargetIndices[index] = targetIndex;
+    normalizedConfidences[index] = confidence;
+  }
+
+  const values = aggregate_graph_edges_flat(
+    normalizedSourceIndices,
+    normalizedTargetIndices,
+    normalizedConfidences,
+    normalizedNodeCount,
+  );
+  return decodeGraphEdgeTriples(values, normalizedNodeCount);
+}
+
 export function scoreLocalEvidenceRust(input: RustLocalEvidenceInput): RustVectorScore[] | null {
   if (input.entityCount <= 0 || input.evidenceCount <= 0) return [];
   if (!ensureRustCore()) return null;
@@ -437,7 +496,10 @@ function ensureRustCore(): boolean {
   }
 }
 
-function decodeRankPairs(pairs: Float64Array, compatibleRows: readonly number[]): RustVectorScore[] {
+function decodeRankPairs(
+  pairs: Float64Array,
+  compatibleRows: readonly number[],
+): RustVectorScore[] {
   const scores: RustVectorScore[] = [];
   for (let offset = 0; offset + 1 < pairs.length; offset += 2) {
     const localIndex = pairs[offset];
@@ -481,6 +543,32 @@ function decodeBoundedIndexScorePairs(
     scores.push({ index, score });
   }
   return scores;
+}
+
+function decodeGraphEdgeTriples(
+  values: Float64Array,
+  maxExclusive: number,
+): RustGraphEdge[] | null {
+  if (values.length % 3 !== 0) return null;
+  const edges: RustGraphEdge[] = [];
+  for (let offset = 0; offset + 2 < values.length; offset += 3) {
+    const sourceIndex = values[offset];
+    const targetIndex = values[offset + 1];
+    const weight = values[offset + 2];
+    if (
+      !Number.isSafeInteger(sourceIndex) ||
+      sourceIndex < 0 ||
+      sourceIndex >= maxExclusive ||
+      !Number.isSafeInteger(targetIndex) ||
+      targetIndex < 0 ||
+      targetIndex >= maxExclusive ||
+      !Number.isFinite(weight)
+    ) {
+      return null;
+    }
+    edges.push({ sourceIndex, targetIndex, weight });
+  }
+  return edges;
 }
 
 function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] | null {
@@ -542,9 +630,7 @@ function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {
 
 function isValidUint32Array(values: readonly number[], maxExclusive?: number): boolean {
   return values.every(
-    (value) =>
-      isValidUint32(value) &&
-      (maxExclusive === undefined || value < maxExclusive),
+    (value) => isValidUint32(value) && (maxExclusive === undefined || value < maxExclusive),
   );
 }
 
@@ -567,10 +653,7 @@ function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies
   }
   if (!candidate.frequencies || typeof candidate.frequencies !== 'object') return false;
   return Object.entries(candidate.frequencies).every(
-    ([token, count]) =>
-      token.length > 0 &&
-      Number.isSafeInteger(count) &&
-      count > 0,
+    ([token, count]) => token.length > 0 && Number.isSafeInteger(count) && count > 0,
   );
 }
 

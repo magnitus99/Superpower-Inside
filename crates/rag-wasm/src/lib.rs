@@ -440,6 +440,32 @@ pub fn detect_communities_flat(
     output.into_boxed_slice()
 }
 
+/// `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn aggregate_graph_edges_flat(
+    source_indices: &[u32],
+    target_indices: &[u32],
+    confidences: &[f64],
+    node_count: usize,
+) -> Box<[f64]> {
+    if node_count == 0
+        || source_indices.len() != target_indices.len()
+        || source_indices.len() != confidences.len()
+        || confidences.iter().any(|confidence| !confidence.is_finite())
+    {
+        return Box::default();
+    }
+
+    let Some(edges) =
+        aggregate_graph_edges(source_indices, target_indices, confidences, node_count)
+    else {
+        return Box::default();
+    };
+
+    encode_aggregated_graph_edges(&edges)
+}
+
 /// `GraphRAG` local/evidence-first evidence score pair를 계산한다.
 #[must_use]
 #[wasm_bindgen]
@@ -570,6 +596,16 @@ struct CommunityGraph {
     degrees: Vec<f64>,
     /// 무방향 edge를 양방향 adjacency로 펼친 총 weight.
     total_weight: f64,
+}
+
+/// 집계된 `GraphRAG` relation edge.
+struct AggregatedGraphEdge {
+    /// lexicographic entity id 순서를 numeric index로 옮긴 source index.
+    source_index: usize,
+    /// lexicographic entity id 순서를 numeric index로 옮긴 target index.
+    target_index: usize,
+    /// 같은 무방향 endpoint pair의 누적 confidence.
+    weight: f64,
 }
 
 /// local evidence scoring 중간 상태.
@@ -1192,6 +1228,60 @@ fn add_weighted_neighbor(
         neighbors.push((target, weight));
     }
     Some(())
+}
+
+/// relation endpoint pair를 첫 출현 순서대로 집계한다.
+fn aggregate_graph_edges(
+    source_indices: &[u32],
+    target_indices: &[u32],
+    confidences: &[f64],
+    node_count: usize,
+) -> Option<Vec<AggregatedGraphEdge>> {
+    let mut edges = Vec::<AggregatedGraphEdge>::new();
+
+    for ((source_index, target_index), confidence) in source_indices
+        .iter()
+        .copied()
+        .zip(target_indices.iter().copied())
+        .zip(confidences.iter().copied())
+    {
+        let source = bounded_u32_index(source_index, node_count)?;
+        let target = bounded_u32_index(target_index, node_count)?;
+        let left = source.min(target);
+        let right = source.max(target);
+
+        if let Some(edge) = edges
+            .iter_mut()
+            .find(|edge| edge.source_index == left && edge.target_index == right)
+        {
+            edge.weight += confidence;
+        } else {
+            edges.push(AggregatedGraphEdge {
+                source_index: left,
+                target_index: right,
+                weight: confidence,
+            });
+        }
+    }
+
+    Some(edges)
+}
+
+/// 집계 edge를 `[sourceIndex, targetIndex, weight]` flat triple로 변환한다.
+fn encode_aggregated_graph_edges(edges: &[AggregatedGraphEdge]) -> Box<[f64]> {
+    let mut output = Vec::with_capacity(edges.len().saturating_mul(3));
+    for edge in edges {
+        let Some(source_index) = usize_to_f64(edge.source_index) else {
+            return Box::default();
+        };
+        let Some(target_index) = usize_to_f64(edge.target_index) else {
+            return Box::default();
+        };
+        output.push(source_index);
+        output.push(target_index);
+        output.push(edge.weight);
+    }
+    output.into_boxed_slice()
 }
 
 /// Louvain-style local move pass로 community assignment를 계산한다.
@@ -2163,9 +2253,10 @@ mod tests {
 
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
-        bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash,
-        detect_communities_flat, hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan,
-        score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
+        aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
+        cosine_similarity, create_content_hash, detect_communities_flat, hybrid_score_or_nan,
+        rank_top_k_pairs, rrf_score_or_nan, score_local_evidence_pairs, select_diverse_indices,
+        token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -2472,6 +2563,29 @@ mod tests {
                 pair_value(&output, offset.saturating_add(1)),
                 expected,
                 "community assignment mismatch",
+            );
+        }
+    }
+
+    /// `GraphRAG` relation edge 집계는 무방향 endpoint pair와 첫 출현 순서를 보존해야 한다.
+    #[test]
+    fn aggregate_graph_edges_flat_sums_unordered_endpoint_pairs() {
+        let source_indices = [2_u32, 1, 2, 0];
+        let target_indices = [1_u32, 2, 0, 3];
+        let confidences = [0.4, 0.6, 0.2, 0.9];
+
+        let output = aggregate_graph_edges_flat(&source_indices, &target_indices, &confidences, 4);
+
+        assert_eq!(output.len(), 9, "3개 edge triple이 필요하다");
+        for (offset, expected) in [1.0_f64, 2.0, 1.0, 0.0, 2.0, 0.2, 0.0, 3.0, 0.9]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            assert_float_near(
+                pair_value(&output, offset),
+                expected,
+                "aggregated edge triple mismatch",
             );
         }
     }

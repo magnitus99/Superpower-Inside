@@ -2,6 +2,11 @@
 /* eslint-disable */
 
 /**
+ * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
+ */
+export function aggregate_graph_edges_flat(source_indices: Uint32Array, target_indices: Uint32Array, confidences: Float64Array, node_count: number): Float64Array;
+
+/**
  * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
  */
 export function bm25_score_pairs(term_offsets: Uint32Array, doc_indices: Uint32Array, term_frequencies: Float64Array, doc_lengths: Float64Array, total_docs: number, avg_doc_length: number): Float64Array;
@@ -75,6 +80,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly aggregate_graph_edges_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];

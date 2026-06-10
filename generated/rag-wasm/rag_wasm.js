@@ -1,6 +1,27 @@
 /* @ts-self-types="./rag_wasm.d.ts" */
 
 /**
+ * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
+ * @param {Uint32Array} source_indices
+ * @param {Uint32Array} target_indices
+ * @param {Float64Array} confidences
+ * @param {number} node_count
+ * @returns {Float64Array}
+ */
+export function aggregate_graph_edges_flat(source_indices, target_indices, confidences, node_count) {
+    const ptr0 = passArray32ToWasm0(source_indices, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(target_indices, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(confidences, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.aggregate_graph_edges_flat(ptr0, len0, ptr1, len1, ptr2, len2, node_count);
+    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v4;
+}
+
+/**
  * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
  * @param {Uint32Array} term_offsets
  * @param {Uint32Array} doc_indices

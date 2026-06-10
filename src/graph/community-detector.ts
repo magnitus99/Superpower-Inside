@@ -1,5 +1,5 @@
 import type { GraphEntityRecord, GraphRelationRecord } from './store';
-import { detectCommunitiesRust } from '../rag/rust-core';
+import { aggregateGraphEdgesRust, detectCommunitiesRust } from '../rag/rust-core';
 
 export interface CommunityEdge {
   source: string;
@@ -17,11 +17,21 @@ export function buildEdges(
   entities: readonly GraphEntityRecord[],
   relations: readonly GraphRelationRecord[],
 ): CommunityEdge[] {
+  const rustEdges = buildEdgesWithRust(entities, relations);
+  if (rustEdges !== null) return rustEdges;
+  return buildEdgesWithTypeScript(entities, relations);
+}
+
+function buildEdgesWithTypeScript(
+  entities: readonly GraphEntityRecord[],
+  relations: readonly GraphRelationRecord[],
+): CommunityEdge[] {
   const entityIds = new Set(entities.map((e) => e.id));
   const edgeMap = new Map<string, CommunityEdge>();
 
   for (const relation of relations) {
-    if (!entityIds.has(relation.sourceEntityId) || !entityIds.has(relation.targetEntityId)) continue;
+    if (!entityIds.has(relation.sourceEntityId) || !entityIds.has(relation.targetEntityId))
+      continue;
     const [a, b] = [relation.sourceEntityId, relation.targetEntityId].sort();
     const key = `${a}\0${b}`;
     const existing = edgeMap.get(key);
@@ -33,6 +43,47 @@ export function buildEdges(
   }
 
   return [...edgeMap.values()];
+}
+
+function buildEdgesWithRust(
+  entities: readonly GraphEntityRecord[],
+  relations: readonly GraphRelationRecord[],
+): CommunityEdge[] | null {
+  if (entities.length === 0 || relations.length === 0) return [];
+
+  const entityIds = [...new Set(entities.map((entity) => entity.id))].sort();
+  const entityIndexById = new Map(entityIds.map((id, index) => [id, index]));
+  const sourceIndices: number[] = [];
+  const targetIndices: number[] = [];
+  const confidences: number[] = [];
+
+  for (const relation of relations) {
+    const sourceIndex = entityIndexById.get(relation.sourceEntityId);
+    const targetIndex = entityIndexById.get(relation.targetEntityId);
+    if (sourceIndex === undefined || targetIndex === undefined) continue;
+    sourceIndices.push(sourceIndex);
+    targetIndices.push(targetIndex);
+    confidences.push(relation.confidence);
+  }
+
+  if (sourceIndices.length === 0) return [];
+
+  const rustEdges = aggregateGraphEdgesRust(
+    sourceIndices,
+    targetIndices,
+    confidences,
+    entityIds.length,
+  );
+  if (rustEdges === null) return null;
+
+  const edges: CommunityEdge[] = [];
+  for (const edge of rustEdges) {
+    const source = entityIds[edge.sourceIndex];
+    const target = entityIds[edge.targetIndex];
+    if (source === undefined || target === undefined) return null;
+    edges.push({ source, target, weight: edge.weight });
+  }
+  return edges;
 }
 
 function extractUniqueEntityIds(edges: CommunityEdge[]): string[] {
@@ -96,7 +147,10 @@ function calculateModularity(
   return q / totalWeight;
 }
 
-function remapCommunityIds(nodeCount: number, rawAssignment: Map<number, number>): Map<number, number> {
+function remapCommunityIds(
+  nodeCount: number,
+  rawAssignment: Map<number, number>,
+): Map<number, number> {
   const uniqueIds = [...new Set(rawAssignment.values())].sort();
   const idMap = new Map(uniqueIds.map((id, idx) => [id, idx]));
   const result = new Map<number, number>();
@@ -164,7 +218,8 @@ export function detectCommunities(
         if (candidate === currentCommunity) continue;
         const candidateDegree = communityDegrees.get(candidate) ?? 0;
         const delta =
-          (edgeWeightToCommunity - (neighborCommunities.get(currentCommunity) ?? 0)) * invTotalWeight +
+          (edgeWeightToCommunity - (neighborCommunities.get(currentCommunity) ?? 0)) *
+            invTotalWeight +
           (currentCommunityDegree - candidateDegree) * degree * invTotalWeight * invTotalWeight;
 
         if (delta > bestDelta) {
@@ -175,7 +230,10 @@ export function detectCommunities(
 
       if (bestCommunity !== currentCommunity) {
         communityOfNode.set(i, bestCommunity);
-        communityDegrees.set(currentCommunity, (communityDegrees.get(currentCommunity) ?? 0) - degree);
+        communityDegrees.set(
+          currentCommunity,
+          (communityDegrees.get(currentCommunity) ?? 0) - degree,
+        );
         communityDegrees.set(bestCommunity, (communityDegrees.get(bestCommunity) ?? 0) + degree);
         changed = true;
       }
