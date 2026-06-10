@@ -83,6 +83,13 @@
 - entity/relation record 접근, relation confidence를 edge로 합치는 `buildEdges()`, community summarizer/LLM 호출, graph store persistence는 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 index/modularity 검증 실패 시 기존 TypeScript community detection 루프를 그대로 사용한다.
 
+## 현재 열 번째 slice
+
+- GraphRAG local/evidence-first retrieval의 evidence score traversal을 Rust/WASM에 추가했다.
+- `collectLocalEvidenceScores()`는 mentioned entity, relation, claim, evidence id를 numeric index 배열로 바꾼 뒤 Rust/WASM에 먼저 맡긴다.
+- entity/relation/claim/evidence record 조회, ontology filtering, ID 문자열 매핑, vector store 후보 조립과 compatibility filter는 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 wire-format/index 검증 실패 시 기존 TypeScript evidence scoring 루프를 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.

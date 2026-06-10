@@ -102,6 +102,8 @@
 | `detect_communities_flat`    | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG community assignment와 modularity 계산        |
 | `detectCommunitiesRust`      | function  | `src/rag/rust-core.ts`       | numeric graph edge 배열과 Rust community detection bridge |
 | `detectCommunities`          | function  | `src/graph/community-detector.ts` | GraphRAG edge 문자열 매핑과 Rust 우선 community detection |
+| `score_local_evidence_pairs` | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG local/evidence-first traversal evidence score 계산 |
+| `scoreLocalEvidenceRust`     | function  | `src/rag/rust-core.ts`       | numeric entity/relation/claim graph와 Rust evidence score bridge |
 | `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
 | `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
 | `chunk_plain_text_json`      | function  | `crates/rag-wasm/src/lib.rs` | plain text/code RAG chunk를 JSON으로 생성              |
