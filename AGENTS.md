@@ -90,6 +90,8 @@
 | `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
 | `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
 | `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
+| `chunk_plain_text_json`      | function  | `crates/rag-wasm/src/lib.rs` | plain text/code RAG chunk를 JSON으로 생성              |
+| `chunkPlainTextRust`         | function  | `src/rag/rust-core.ts`       | 내장 WASM plain text/code chunk bridge                 |
 
 ## TEST VAULT
 

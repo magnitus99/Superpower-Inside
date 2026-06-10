@@ -8,7 +8,7 @@
 
 ## Rust로 옮길 대상
 
-1. RAG 콘텐츠 해시, 토큰화, Markdown 청킹, BM25 인덱스 생성
+1. RAG 콘텐츠 해시, 토큰화, 청킹, BM25 인덱스 생성
 2. 벡터 검색 전처리, cosine/dot-product score 계산, top-k 선택
 3. GraphRAG 노드/엣지 정규화, ranking, community/layout용 계산
 4. 대용량 채팅/출처 metadata 직렬화 검증과 diff 계산
@@ -41,7 +41,12 @@
 
 - Markdown RAG chunking을 Rust/WASM에 추가했다.
 - `chunkMarkdown()`은 Rust/WASM을 우선 사용하고, 초기화 또는 JSON 검증 실패 시 기존 TypeScript 구현으로 fallback한다.
-- `chunkPlainText()`는 아직 TypeScript 경로에 남아 있다. 다음 순수 계산 slice로 옮길 수 있다.
+
+## 현재 네 번째 slice
+
+- plain text/code RAG chunking을 Rust/WASM에 추가했다.
+- `chunkPlainText()`는 Rust/WASM을 우선 사용하고, 초기화 또는 JSON 검증 실패 시 기존 TypeScript 구현으로 fallback한다.
+- RAG chunking 계열 중 파일 확장자 분기와 vault I/O는 TypeScript에 남고, 실제 chunk 계산은 Rust/WASM 경로를 먼저 탄다.
 
 ## 실시간성 개선 방향
 
