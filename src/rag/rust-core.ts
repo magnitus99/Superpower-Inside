@@ -11,6 +11,7 @@ import {
   rank_top_k_pairs,
   rrf_score_or_nan,
   select_diverse_indices,
+  score_local_evidence_pairs,
   token_frequencies_json,
   tokenize_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
@@ -57,6 +58,26 @@ export interface RustCommunityDetectionResult {
   assignments: number[];
   communityIds: number[];
   modularity: number;
+}
+
+export interface RustLocalEvidenceInput {
+  entityCount: number;
+  matchEntityIndices: readonly number[];
+  matchScores: readonly number[];
+  matchEvidenceOffsets: readonly number[];
+  matchEvidenceIndices: readonly number[];
+  relationSourceIndices: readonly number[];
+  relationTargetIndices: readonly number[];
+  relationConfidences: readonly number[];
+  relationEvidenceOffsets: readonly number[];
+  relationEvidenceIndices: readonly number[];
+  claimEntityOffsets: readonly number[];
+  claimEntityIndices: readonly number[];
+  claimConfidences: readonly number[];
+  claimEvidenceOffsets: readonly number[];
+  claimEvidenceIndices: readonly number[];
+  evidenceCount: number;
+  traversalDepth: number;
 }
 
 let initialized = false;
@@ -320,6 +341,46 @@ export function detectCommunitiesRust(
   };
 }
 
+export function scoreLocalEvidenceRust(input: RustLocalEvidenceInput): RustVectorScore[] | null {
+  if (input.entityCount <= 0 || input.evidenceCount <= 0) return [];
+  if (!ensureRustCore()) return null;
+  if (!isValidLocalEvidenceInput(input)) return null;
+
+  const config = new Uint32Array([
+    normalizeNonNegativeInteger(input.entityCount),
+    normalizeNonNegativeInteger(input.evidenceCount),
+    normalizeNonNegativeInteger(input.traversalDepth),
+    input.matchEntityIndices.length,
+    input.matchEvidenceIndices.length,
+    input.relationSourceIndices.length,
+    input.relationEvidenceIndices.length,
+    input.claimConfidences.length,
+    input.claimEntityIndices.length,
+    input.claimEvidenceIndices.length,
+  ]);
+  const indices = new Uint32Array([
+    ...input.matchEntityIndices,
+    ...input.matchEvidenceOffsets,
+    ...input.matchEvidenceIndices,
+    ...input.relationSourceIndices,
+    ...input.relationTargetIndices,
+    ...input.relationEvidenceOffsets,
+    ...input.relationEvidenceIndices,
+    ...input.claimEntityOffsets,
+    ...input.claimEntityIndices,
+    ...input.claimEvidenceOffsets,
+    ...input.claimEvidenceIndices,
+  ]);
+  const values = new Float64Array([
+    ...input.matchScores,
+    ...input.relationConfidences,
+    ...input.claimConfidences,
+  ]);
+
+  const pairs = score_local_evidence_pairs(config, indices, values);
+  return decodeBoundedIndexScorePairs(pairs, input.evidenceCount);
+}
+
 export function chunkMarkdownRust(
   content: string,
   maxChunkSize: number,
@@ -400,6 +461,28 @@ function decodeIndexScorePairs(pairs: Float64Array): RustVectorScore[] {
   return scores;
 }
 
+function decodeBoundedIndexScorePairs(
+  pairs: Float64Array,
+  maxExclusive: number,
+): RustVectorScore[] | null {
+  if (pairs.length % 2 !== 0) return null;
+  const scores: RustVectorScore[] = [];
+  for (let offset = 0; offset + 1 < pairs.length; offset += 2) {
+    const index = pairs[offset];
+    const score = pairs[offset + 1];
+    if (
+      !Number.isSafeInteger(index) ||
+      index < 0 ||
+      index >= maxExclusive ||
+      !Number.isFinite(score)
+    ) {
+      return null;
+    }
+    scores.push({ index, score });
+  }
+  return scores;
+}
+
 function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] | null {
   const indexes: number[] = [];
   for (const value of values) {
@@ -422,6 +505,57 @@ function isValidBm25Posting(posting: RustBm25Posting): boolean {
 
 function isValidUint32(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
+}
+
+function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {
+  return (
+    Number.isSafeInteger(input.entityCount) &&
+    Number.isSafeInteger(input.evidenceCount) &&
+    Number.isFinite(input.traversalDepth) &&
+    input.matchEntityIndices.length === input.matchScores.length &&
+    input.matchEvidenceOffsets.length === input.matchEntityIndices.length + 1 &&
+    input.relationSourceIndices.length === input.relationTargetIndices.length &&
+    input.relationSourceIndices.length === input.relationConfidences.length &&
+    input.relationEvidenceOffsets.length === input.relationSourceIndices.length + 1 &&
+    input.claimEntityOffsets.length === input.claimConfidences.length + 1 &&
+    input.claimEvidenceOffsets.length === input.claimConfidences.length + 1 &&
+    isValidUint32Array(input.matchEntityIndices, input.entityCount) &&
+    isValidUint32Array(input.matchEvidenceOffsets) &&
+    isValidUint32Array(input.matchEvidenceIndices, input.evidenceCount) &&
+    isValidUint32Array(input.relationSourceIndices, input.entityCount) &&
+    isValidUint32Array(input.relationTargetIndices, input.entityCount) &&
+    isValidUint32Array(input.relationEvidenceOffsets) &&
+    isValidUint32Array(input.relationEvidenceIndices, input.evidenceCount) &&
+    isValidUint32Array(input.claimEntityOffsets) &&
+    isValidUint32Array(input.claimEntityIndices, input.entityCount) &&
+    isValidUint32Array(input.claimEvidenceOffsets) &&
+    isValidUint32Array(input.claimEvidenceIndices, input.evidenceCount) &&
+    input.matchScores.every(Number.isFinite) &&
+    input.relationConfidences.every(Number.isFinite) &&
+    input.claimConfidences.every(Number.isFinite) &&
+    areValidOffsets(input.matchEvidenceOffsets, input.matchEvidenceIndices.length) &&
+    areValidOffsets(input.relationEvidenceOffsets, input.relationEvidenceIndices.length) &&
+    areValidOffsets(input.claimEntityOffsets, input.claimEntityIndices.length) &&
+    areValidOffsets(input.claimEvidenceOffsets, input.claimEvidenceIndices.length)
+  );
+}
+
+function isValidUint32Array(values: readonly number[], maxExclusive?: number): boolean {
+  return values.every(
+    (value) =>
+      isValidUint32(value) &&
+      (maxExclusive === undefined || value < maxExclusive),
+  );
+}
+
+function areValidOffsets(offsets: readonly number[], flatLength: number): boolean {
+  if (offsets.length === 0 || offsets[0] !== 0) return false;
+  let previous = 0;
+  for (const offset of offsets) {
+    if (!isValidUint32(offset) || offset < previous || offset > flatLength) return false;
+    previous = offset;
+  }
+  return previous === flatLength;
 }
 
 function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies {

@@ -196,6 +196,26 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
 }
 
 /**
+ * `GraphRAG` local/evidence-first evidence score pair를 계산한다.
+ * @param {Uint32Array} config
+ * @param {Uint32Array} indices
+ * @param {Float64Array} values
+ * @returns {Float64Array}
+ */
+export function score_local_evidence_pairs(config, indices, values) {
+    const ptr0 = passArray32ToWasm0(config, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(values, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.score_local_evidence_pairs(ptr0, len0, ptr1, len1, ptr2, len2);
+    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v4;
+}
+
+/**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
  * @param {Float64Array} scores
  * @param {Float64Array} vectors

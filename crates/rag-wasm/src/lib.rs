@@ -440,6 +440,20 @@ pub fn detect_communities_flat(
     output.into_boxed_slice()
 }
 
+/// `GraphRAG` local/evidence-first evidence score pair를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn score_local_evidence_pairs(config: &[u32], indices: &[u32], values: &[f64]) -> Box<[f64]> {
+    let Some(input) = parse_local_evidence_input(config, indices, values) else {
+        return Box::default();
+    };
+
+    let Some(evidence_scores) = score_local_evidence(&input) else {
+        return Box::default();
+    };
+    encode_local_evidence_scores(&evidence_scores)
+}
+
 /// Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -556,6 +570,561 @@ struct CommunityGraph {
     degrees: Vec<f64>,
     /// 무방향 edge를 양방향 adjacency로 펼친 총 weight.
     total_weight: f64,
+}
+
+/// local evidence scoring 중간 상태.
+struct LocalEvidenceState {
+    /// entity별 현재 score.
+    entity_scores: Vec<f64>,
+    /// entity별 traversal distance.
+    entity_distances: Vec<usize>,
+    /// entity가 한 번이라도 발견됐는지 여부.
+    entity_known: Vec<bool>,
+    /// 현재 depth frontier 여부.
+    frontier: Vec<bool>,
+}
+
+impl LocalEvidenceState {
+    /// entity 수에 맞는 빈 상태를 만든다.
+    fn new(entity_count: usize) -> Self {
+        Self {
+            entity_scores: vec![0.0_f64; entity_count],
+            entity_distances: vec![0_usize; entity_count],
+            entity_known: vec![false; entity_count],
+            frontier: vec![false; entity_count],
+        }
+    }
+}
+
+/// `GraphRAG` local evidence scoring wire input.
+struct LocalEvidenceInput<'a> {
+    /// numeric entity count.
+    entity_count: usize,
+    /// numeric evidence count.
+    evidence_count: usize,
+    /// relation traversal depth.
+    traversal_depth: usize,
+    /// mentioned match count.
+    match_count: usize,
+    /// match entity indices.
+    match_entity_indices: &'a [u32],
+    /// precomputed match entity scores.
+    match_scores: &'a [f64],
+    /// offsets into match evidence indices.
+    match_evidence_offsets: &'a [u32],
+    /// flattened match evidence indices.
+    match_evidence_indices: &'a [u32],
+    /// relation count.
+    relation_count: usize,
+    /// relation source entity indices.
+    relation_source_indices: &'a [u32],
+    /// relation target entity indices.
+    relation_target_indices: &'a [u32],
+    /// relation confidence values.
+    relation_confidences: &'a [f64],
+    /// offsets into relation evidence indices.
+    relation_evidence_offsets: &'a [u32],
+    /// flattened relation evidence indices.
+    relation_evidence_indices: &'a [u32],
+    /// claim count.
+    claim_count: usize,
+    /// offsets into claim entity indices.
+    claim_entity_offsets: &'a [u32],
+    /// flattened claim entity indices.
+    claim_entity_indices: &'a [u32],
+    /// claim confidence values.
+    claim_confidences: &'a [f64],
+    /// offsets into claim evidence indices.
+    claim_evidence_offsets: &'a [u32],
+    /// flattened claim evidence indices.
+    claim_evidence_indices: &'a [u32],
+}
+
+impl LocalEvidenceInput<'_> {
+    /// match index의 entity index를 반환한다.
+    fn entity_index_for_match(&self, match_index: usize) -> Option<usize> {
+        bounded_u32_index(
+            self.match_entity_indices.get(match_index).copied()?,
+            self.entity_count,
+        )
+    }
+
+    /// relation index의 source entity index를 반환한다.
+    fn entity_index_for_relation_source(&self, relation_index: usize) -> Option<usize> {
+        bounded_u32_index(
+            self.relation_source_indices.get(relation_index).copied()?,
+            self.entity_count,
+        )
+    }
+
+    /// relation index의 target entity index를 반환한다.
+    fn entity_index_for_relation_target(&self, relation_index: usize) -> Option<usize> {
+        bounded_u32_index(
+            self.relation_target_indices.get(relation_index).copied()?,
+            self.entity_count,
+        )
+    }
+}
+
+/// evidence index와 score.
+struct LocalEvidenceScore {
+    /// evidence index.
+    evidence_index: usize,
+    /// evidence score.
+    score: f64,
+    /// 생성 순서. 같은 score tie에서 기존 순서를 보존한다.
+    sequence: usize,
+}
+
+/// parsed input으로 local evidence score list를 계산한다.
+fn score_local_evidence(input: &LocalEvidenceInput<'_>) -> Option<Vec<LocalEvidenceScore>> {
+    let mut state = LocalEvidenceState::new(input.entity_count);
+    let mut evidence_scores = Vec::<LocalEvidenceScore>::new();
+    let mut sequence = 0_usize;
+
+    initialize_local_evidence_matches(input, &mut state, &mut evidence_scores, &mut sequence)?;
+    add_local_claim_evidence_scores(
+        input,
+        &state.entity_scores,
+        &state.entity_distances,
+        &state.entity_known,
+        &mut evidence_scores,
+        &mut sequence,
+    );
+
+    for depth in 1..=input.traversal_depth {
+        if !state.frontier.iter().any(|is_frontier| *is_frontier) {
+            break;
+        }
+        advance_local_evidence_depth(
+            input,
+            depth,
+            &mut state,
+            &mut evidence_scores,
+            &mut sequence,
+        )?;
+        add_local_claim_evidence_scores(
+            input,
+            &state.entity_scores,
+            &state.entity_distances,
+            &state.entity_known,
+            &mut evidence_scores,
+            &mut sequence,
+        );
+    }
+
+    evidence_scores.sort_by(compare_local_evidence_scores_descending);
+    Some(evidence_scores)
+}
+
+/// mentioned match의 entity/evidence score를 초기화한다.
+fn initialize_local_evidence_matches(
+    input: &LocalEvidenceInput<'_>,
+    state: &mut LocalEvidenceState,
+    evidence_scores: &mut Vec<LocalEvidenceScore>,
+    sequence: &mut usize,
+) -> Option<()> {
+    for match_index in 0..input.match_count {
+        let entity_index = input.entity_index_for_match(match_index)?;
+        let raw_score = input.match_scores.get(match_index).copied()?;
+        let entity_score = clamp_unit_score(raw_score);
+        if let Some(score_slot) = state.entity_scores.get_mut(entity_index) {
+            *score_slot = score_slot.max(entity_score);
+        }
+        if let Some(known_slot) = state.entity_known.get_mut(entity_index) {
+            *known_slot = true;
+        }
+        if let Some(distance_slot) = state.entity_distances.get_mut(entity_index) {
+            *distance_slot = 0;
+        }
+        if let Some(frontier_slot) = state.frontier.get_mut(entity_index) {
+            *frontier_slot = true;
+        }
+        push_evidence_scores_for_item(
+            input.match_evidence_offsets,
+            input.match_evidence_indices,
+            match_index,
+            clamp_unit_score(entity_score.mul_add(0.35, 0.55)),
+            input.evidence_count,
+            evidence_scores,
+            sequence,
+        );
+    }
+    Some(())
+}
+
+/// 한 traversal depth의 relation score propagation을 수행한다.
+fn advance_local_evidence_depth(
+    input: &LocalEvidenceInput<'_>,
+    depth: usize,
+    state: &mut LocalEvidenceState,
+    evidence_scores: &mut Vec<LocalEvidenceScore>,
+    sequence: &mut usize,
+) -> Option<()> {
+    let mut next_frontier = vec![false; input.entity_count];
+    let depth_minus_one = usize_to_f64(depth.saturating_sub(1))?;
+    let distance_factor = 1.0 / depth_minus_one.mul_add(0.45, 1.0);
+
+    for relation_index in 0..input.relation_count {
+        let source_index = input.entity_index_for_relation_source(relation_index)?;
+        let target_index = input.entity_index_for_relation_target(relation_index)?;
+        let source_score = state
+            .entity_scores
+            .get(source_index)
+            .copied()
+            .unwrap_or_default();
+        let target_score = state
+            .entity_scores
+            .get(target_index)
+            .copied()
+            .unwrap_or_default();
+        let touches_frontier = state.frontier.get(source_index).copied().unwrap_or(false)
+            || state.frontier.get(target_index).copied().unwrap_or(false);
+        if !touches_frontier || (source_score == 0.0 && target_score == 0.0) {
+            continue;
+        }
+
+        let confidence = input.relation_confidences.get(relation_index).copied()?;
+        let relation_score =
+            clamp_unit_score(source_score.max(target_score) * confidence * distance_factor);
+        push_evidence_scores_for_item(
+            input.relation_evidence_offsets,
+            input.relation_evidence_indices,
+            relation_index,
+            relation_score,
+            input.evidence_count,
+            evidence_scores,
+            sequence,
+        );
+        update_relation_endpoint_scores(
+            state,
+            &mut next_frontier,
+            source_index,
+            target_index,
+            depth,
+            relation_score,
+        );
+    }
+
+    state.frontier = next_frontier;
+    Some(())
+}
+
+/// 새 relation endpoint entity의 score/frontier 상태를 갱신한다.
+fn update_relation_endpoint_scores(
+    state: &mut LocalEvidenceState,
+    next_frontier: &mut [bool],
+    source_index: usize,
+    target_index: usize,
+    depth: usize,
+    relation_score: f64,
+) {
+    for entity_index in [source_index, target_index] {
+        if state
+            .entity_known
+            .get(entity_index)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(score_slot) = state.entity_scores.get_mut(entity_index) {
+            *score_slot = clamp_unit_score(relation_score * 0.82);
+        }
+        if let Some(distance_slot) = state.entity_distances.get_mut(entity_index) {
+            *distance_slot = depth;
+        }
+        if let Some(known_slot) = state.entity_known.get_mut(entity_index) {
+            *known_slot = true;
+        }
+        if let Some(frontier_slot) = next_frontier.get_mut(entity_index) {
+            *frontier_slot = true;
+        }
+    }
+}
+
+/// `GraphRAG` local evidence scoring wire input을 parsing한다.
+fn parse_local_evidence_input<'a>(
+    config: &[u32],
+    indices: &'a [u32],
+    values: &'a [f64],
+) -> Option<LocalEvidenceInput<'a>> {
+    if config.len() != 10 || values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let entity_count = u32_config_to_usize(config, 0)?;
+    let evidence_count = u32_config_to_usize(config, 1)?;
+    let traversal_depth = u32_config_to_usize(config, 2)?;
+    let match_count = u32_config_to_usize(config, 3)?;
+    let match_evidence_count = u32_config_to_usize(config, 4)?;
+    let relation_count = u32_config_to_usize(config, 5)?;
+    let relation_evidence_count = u32_config_to_usize(config, 6)?;
+    let claim_count = u32_config_to_usize(config, 7)?;
+    let claim_entity_count = u32_config_to_usize(config, 8)?;
+    let claim_evidence_count = u32_config_to_usize(config, 9)?;
+
+    let mut index_offset = 0_usize;
+    let match_entity_indices = take_slice(indices, &mut index_offset, match_count)?;
+    let match_evidence_offsets =
+        take_slice(indices, &mut index_offset, match_count.saturating_add(1))?;
+    let match_evidence_indices = take_slice(indices, &mut index_offset, match_evidence_count)?;
+    let relation_source_indices = take_slice(indices, &mut index_offset, relation_count)?;
+    let relation_target_indices = take_slice(indices, &mut index_offset, relation_count)?;
+    let relation_evidence_offsets =
+        take_slice(indices, &mut index_offset, relation_count.saturating_add(1))?;
+    let relation_evidence_indices =
+        take_slice(indices, &mut index_offset, relation_evidence_count)?;
+    let claim_entity_offsets =
+        take_slice(indices, &mut index_offset, claim_count.saturating_add(1))?;
+    let claim_entity_indices = take_slice(indices, &mut index_offset, claim_entity_count)?;
+    let claim_evidence_offsets =
+        take_slice(indices, &mut index_offset, claim_count.saturating_add(1))?;
+    let claim_evidence_indices = take_slice(indices, &mut index_offset, claim_evidence_count)?;
+    if index_offset != indices.len() {
+        return None;
+    }
+
+    let mut value_offset = 0_usize;
+    let match_scores = take_slice(values, &mut value_offset, match_count)?;
+    let relation_confidences = take_slice(values, &mut value_offset, relation_count)?;
+    let claim_confidences = take_slice(values, &mut value_offset, claim_count)?;
+    if value_offset != values.len() {
+        return None;
+    }
+
+    if !are_offsets_valid(match_evidence_offsets, match_count, match_evidence_count)
+        || !are_offsets_valid(
+            relation_evidence_offsets,
+            relation_count,
+            relation_evidence_count,
+        )
+        || !are_offsets_valid(claim_entity_offsets, claim_count, claim_entity_count)
+        || !are_offsets_valid(claim_evidence_offsets, claim_count, claim_evidence_count)
+        || !are_indices_in_range(match_entity_indices, entity_count)
+        || !are_indices_in_range(match_evidence_indices, evidence_count)
+        || !are_indices_in_range(relation_source_indices, entity_count)
+        || !are_indices_in_range(relation_target_indices, entity_count)
+        || !are_indices_in_range(relation_evidence_indices, evidence_count)
+        || !are_indices_in_range(claim_entity_indices, entity_count)
+        || !are_indices_in_range(claim_evidence_indices, evidence_count)
+    {
+        return None;
+    }
+
+    Some(LocalEvidenceInput {
+        entity_count,
+        evidence_count,
+        traversal_depth,
+        match_count,
+        match_entity_indices,
+        match_scores,
+        match_evidence_offsets,
+        match_evidence_indices,
+        relation_count,
+        relation_source_indices,
+        relation_target_indices,
+        relation_confidences,
+        relation_evidence_offsets,
+        relation_evidence_indices,
+        claim_count,
+        claim_entity_offsets,
+        claim_entity_indices,
+        claim_confidences,
+        claim_evidence_offsets,
+        claim_evidence_indices,
+    })
+}
+
+/// config의 `u32` 값을 `usize`로 변환한다.
+fn u32_config_to_usize(config: &[u32], index: usize) -> Option<usize> {
+    usize::try_from(config.get(index).copied()?).ok()
+}
+
+/// slice cursor에서 length만큼 안전하게 가져온다.
+fn take_slice<'a, T>(values: &'a [T], offset: &mut usize, length: usize) -> Option<&'a [T]> {
+    let end = offset.checked_add(length)?;
+    let slice = values.get(*offset..end)?;
+    *offset = end;
+    Some(slice)
+}
+
+/// offset 배열이 item count와 flat count에 맞는지 확인한다.
+fn are_offsets_valid(offsets: &[u32], item_count: usize, flat_count: usize) -> bool {
+    if offsets.len() != item_count.saturating_add(1) {
+        return false;
+    }
+    if offsets.first().copied() != Some(0) {
+        return false;
+    }
+
+    let mut previous = 0_usize;
+    for offset in offsets.iter().copied() {
+        let Ok(current) = usize::try_from(offset) else {
+            return false;
+        };
+        if current < previous || current > flat_count {
+            return false;
+        }
+        previous = current;
+    }
+    previous == flat_count
+}
+
+/// 모든 index가 `max_exclusive` 범위 안에 있는지 확인한다.
+fn are_indices_in_range(indices: &[u32], max_exclusive: usize) -> bool {
+    indices
+        .iter()
+        .copied()
+        .all(|index| bounded_u32_index(index, max_exclusive).is_some())
+}
+
+/// `u32` index를 `usize`로 바꾸고 범위를 확인한다.
+fn bounded_u32_index(index: u32, max_exclusive: usize) -> Option<usize> {
+    let converted = usize::try_from(index).ok()?;
+    (converted < max_exclusive).then_some(converted)
+}
+
+/// item offset 구간의 evidence score를 추가한다.
+fn push_evidence_scores_for_item(
+    offsets: &[u32],
+    evidence_indices: &[u32],
+    item_index: usize,
+    score: f64,
+    evidence_count: usize,
+    evidence_scores: &mut Vec<LocalEvidenceScore>,
+    sequence: &mut usize,
+) {
+    let Some(range) = offset_range(offsets, item_index, evidence_indices.len()) else {
+        return;
+    };
+    let Some(indices) = evidence_indices.get(range) else {
+        return;
+    };
+    for evidence_index_raw in indices {
+        let Some(evidence_index) = bounded_u32_index(*evidence_index_raw, evidence_count) else {
+            continue;
+        };
+        evidence_scores.push(LocalEvidenceScore {
+            evidence_index,
+            score,
+            sequence: *sequence,
+        });
+        *sequence = sequence.saturating_add(1);
+    }
+}
+
+/// offset 배열에서 item index가 가리키는 range를 반환한다.
+fn offset_range(
+    offsets: &[u32],
+    item_index: usize,
+    flat_len: usize,
+) -> Option<std::ops::Range<usize>> {
+    let start = usize::try_from(offsets.get(item_index).copied()?).ok()?;
+    let end = usize::try_from(offsets.get(item_index.saturating_add(1)).copied()?).ok()?;
+    (start <= end && end <= flat_len).then_some(start..end)
+}
+
+/// claim 기반 evidence score를 현재 entity score 상태에서 추가한다.
+fn add_local_claim_evidence_scores(
+    input: &LocalEvidenceInput<'_>,
+    entity_scores: &[f64],
+    entity_distances: &[usize],
+    entity_known: &[bool],
+    evidence_scores: &mut Vec<LocalEvidenceScore>,
+    sequence: &mut usize,
+) {
+    for claim_index in 0..input.claim_count {
+        let Some(range) = offset_range(
+            input.claim_entity_offsets,
+            claim_index,
+            input.claim_entity_indices.len(),
+        ) else {
+            continue;
+        };
+        let Some(entity_indices) = input.claim_entity_indices.get(range) else {
+            continue;
+        };
+
+        let mut best_score = 0.0_f64;
+        let mut best_distance = 0_usize;
+        for entity_index_raw in entity_indices {
+            let Some(entity_index) = bounded_u32_index(*entity_index_raw, input.entity_count)
+            else {
+                continue;
+            };
+            if !entity_known.get(entity_index).copied().unwrap_or(false) {
+                continue;
+            }
+            let score = entity_scores.get(entity_index).copied().unwrap_or_default();
+            if score <= 0.0 || score <= best_score {
+                continue;
+            }
+            best_score = score;
+            best_distance = entity_distances
+                .get(entity_index)
+                .copied()
+                .unwrap_or_default();
+        }
+        if best_score <= 0.0 {
+            continue;
+        }
+
+        let Some(confidence) = input.claim_confidences.get(claim_index).copied() else {
+            continue;
+        };
+        let Some(distance) = usize_to_f64(best_distance) else {
+            continue;
+        };
+        let distance_factor = 1.0 / distance.mul_add(0.35, 1.0);
+        let claim_score = clamp_unit_score(best_score * confidence * distance_factor);
+        push_evidence_scores_for_item(
+            input.claim_evidence_offsets,
+            input.claim_evidence_indices,
+            claim_index,
+            claim_score,
+            input.evidence_count,
+            evidence_scores,
+            sequence,
+        );
+    }
+}
+
+/// evidence score를 높은 score 우선, tie는 기존 생성 순서 우선으로 정렬한다.
+fn compare_local_evidence_scores_descending(
+    left: &LocalEvidenceScore,
+    right: &LocalEvidenceScore,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| left.sequence.cmp(&right.sequence))
+}
+
+/// evidence score list를 index/score pair 배열로 변환한다.
+fn encode_local_evidence_scores(scores: &[LocalEvidenceScore]) -> Box<[f64]> {
+    let mut pairs = Vec::with_capacity(scores.len().saturating_mul(2));
+    for score in scores {
+        let Some(index) = usize_to_f64(score.evidence_index) else {
+            return Box::default();
+        };
+        pairs.push(index);
+        pairs.push(score.score);
+    }
+    pairs.into_boxed_slice()
+}
+
+/// score를 기존 `TypeScript` 경로처럼 `[0, 1]` 범위로 제한한다.
+const fn clamp_unit_score(score: f64) -> f64 {
+    if !score.is_finite() {
+        return 0.0;
+    }
+    if score < 0.0 {
+        return 0.0;
+    }
+    if score > 1.0 {
+        return 1.0;
+    }
+    score
 }
 
 /// flat edge 배열에서 community detection graph를 만든다.
@@ -1596,7 +2165,7 @@ mod tests {
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash,
         detect_communities_flat, hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan,
-        select_diverse_indices, token_frequencies_json, tokenize,
+        score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1907,6 +2476,90 @@ mod tests {
         }
     }
 
+    /// `GraphRAG` local evidence scoring은 entity/relation/claim evidence 점수를 보존해야 한다.
+    #[test]
+    fn score_local_evidence_pairs_matches_typescript_formula() {
+        let config = [3_u32, 5, 2, 1, 1, 2, 2, 2, 2, 2];
+        let indices = [
+            0_u32, // match entity
+            0, 1, // match evidence offsets
+            0, // match evidence
+            0, 1, // relation sources
+            1, 2, // relation targets
+            0, 1, 2, // relation evidence offsets
+            1, 2, // relation evidence
+            0, 1, 2, // claim entity offsets
+            0, 1, // claim entities
+            0, 1, 2, // claim evidence offsets
+            3, 4, // claim evidence
+        ];
+        let values = [
+            0.9, // match score
+            0.8, 0.7, // relation confidence
+            0.6, 0.5, // claim confidence
+        ];
+
+        let pairs = score_local_evidence_pairs(&config, &indices, &values);
+
+        assert_eq!(
+            pairs.len(),
+            18,
+            "9개 raw evidence index/score pair가 필요하다"
+        );
+        for (offset, expected_index) in [0.0_f64, 1.0, 3.0, 3.0, 3.0, 1.0, 2.0, 4.0, 4.0]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            assert_float_close(
+                pair_value(&pairs, offset.saturating_mul(2)),
+                expected_index,
+                "evidence index mismatch",
+            );
+        }
+        assert_float_near(
+            pair_value(&pairs, 1),
+            0.865,
+            "direct evidence score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 3),
+            0.72,
+            "relation evidence score mismatch",
+        );
+        assert_float_near(pair_value(&pairs, 5), 0.54, "direct claim score mismatch");
+        assert_float_near(
+            pair_value(&pairs, 7),
+            0.54,
+            "repeated direct claim score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 9),
+            0.54,
+            "second repeated direct claim score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 11),
+            (0.9_f64 * 0.8) / 1.45,
+            "depth 2 repeated relation score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 13),
+            (0.72_f64 * 0.82 * 0.7) / 1.45,
+            "depth 2 relation score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 15),
+            (0.72_f64 * 0.82 * 0.5) / 1.35,
+            "depth 1 claim score mismatch",
+        );
+        assert_float_near(
+            pair_value(&pairs, 17),
+            (0.72_f64 * 0.82 * 0.5) / 1.35,
+            "repeated depth 1 claim score mismatch",
+        );
+    }
+
     /// `Option<f64>` 값이 존재하고 기대값과 같은지 확인한다.
     fn assert_some_float_close(actual: Option<f64>, expected: f64, message: &str) {
         if let Some(value) = actual {
@@ -1920,6 +2573,14 @@ mod tests {
     fn assert_float_close(actual: f64, expected: f64, message: &str) {
         assert!(
             (actual - expected).abs() <= f64::EPSILON,
+            "{message}; expected {expected}, got {actual}",
+        );
+    }
+
+    /// 부동소수점 근사값을 확인한다.
+    fn assert_float_near(actual: f64, expected: f64, message: &str) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-12,
             "{message}; expected {expected}, got {actual}",
         );
     }

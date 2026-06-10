@@ -7,6 +7,7 @@ import type {
   RetrievalCandidateSource,
 } from '../rag/retrieval-pipeline';
 import type { VectorEntry, VectorStore } from '../rag/store';
+import { scoreLocalEvidenceRust } from '../rag/rust-core';
 import { normalizeEntityName } from './entity-resolver';
 import type {
   GraphClaimRecord,
@@ -254,6 +255,14 @@ function collectLocalEvidenceScores(
   claims: readonly GraphClaimRecord[],
   traversalDepth: number,
 ): EvidenceScore[] {
+  const rustScores = collectLocalEvidenceScoresWithRust(
+    mentionedMatches,
+    relations,
+    claims,
+    traversalDepth,
+  );
+  if (rustScores !== null) return rustScores;
+
   const maxDepth = Math.max(0, Math.floor(traversalDepth));
   const entityScores = new Map<string, number>();
   const entityDistances = new Map<string, number>();
@@ -306,6 +315,110 @@ function collectLocalEvidenceScores(
   }
 
   return evidenceScores.sort((a, b) => b.score - a.score);
+}
+
+function collectLocalEvidenceScoresWithRust(
+  mentionedMatches: readonly EntityMatch[],
+  relations: readonly GraphRelationRecord[],
+  claims: readonly GraphClaimRecord[],
+  traversalDepth: number,
+): EvidenceScore[] | null {
+  const entityIds: string[] = [];
+  const entityIndexById = new Map<string, number>();
+  const evidenceIds: string[] = [];
+  const evidenceIndexById = new Map<string, number>();
+
+  const matchEntityIndices: number[] = [];
+  const matchScores: number[] = [];
+  const matchEvidenceOffsets: number[] = [0];
+  const matchEvidenceIndices: number[] = [];
+  for (const match of mentionedMatches) {
+    matchEntityIndices.push(getOrCreateIndex(entityIndexById, entityIds, match.entity.id));
+    matchScores.push(clampScore(match.score * match.entity.confidence));
+    pushEvidenceIndices(match.entity.evidenceIds, evidenceIndexById, evidenceIds, matchEvidenceIndices);
+    matchEvidenceOffsets.push(matchEvidenceIndices.length);
+  }
+
+  const relationSourceIndices: number[] = [];
+  const relationTargetIndices: number[] = [];
+  const relationConfidences: number[] = [];
+  const relationEvidenceOffsets: number[] = [0];
+  const relationEvidenceIndices: number[] = [];
+  for (const relation of relations) {
+    relationSourceIndices.push(getOrCreateIndex(entityIndexById, entityIds, relation.sourceEntityId));
+    relationTargetIndices.push(getOrCreateIndex(entityIndexById, entityIds, relation.targetEntityId));
+    relationConfidences.push(relation.confidence);
+    pushEvidenceIndices(relation.evidenceIds, evidenceIndexById, evidenceIds, relationEvidenceIndices);
+    relationEvidenceOffsets.push(relationEvidenceIndices.length);
+  }
+
+  const claimEntityOffsets: number[] = [0];
+  const claimEntityIndices: number[] = [];
+  const claimConfidences: number[] = [];
+  const claimEvidenceOffsets: number[] = [0];
+  const claimEvidenceIndices: number[] = [];
+  for (const claim of claims) {
+    claimConfidences.push(claim.confidence);
+    for (const entityId of claim.entityIds) {
+      claimEntityIndices.push(getOrCreateIndex(entityIndexById, entityIds, entityId));
+    }
+    claimEntityOffsets.push(claimEntityIndices.length);
+    pushEvidenceIndices(claim.evidenceIds, evidenceIndexById, evidenceIds, claimEvidenceIndices);
+    claimEvidenceOffsets.push(claimEvidenceIndices.length);
+  }
+
+  const rustScores = scoreLocalEvidenceRust({
+    entityCount: entityIds.length,
+    matchEntityIndices,
+    matchScores,
+    matchEvidenceOffsets,
+    matchEvidenceIndices,
+    relationSourceIndices,
+    relationTargetIndices,
+    relationConfidences,
+    relationEvidenceOffsets,
+    relationEvidenceIndices,
+    claimEntityOffsets,
+    claimEntityIndices,
+    claimConfidences,
+    claimEvidenceOffsets,
+    claimEvidenceIndices,
+    evidenceCount: evidenceIds.length,
+    traversalDepth,
+  });
+  if (rustScores === null) return null;
+
+  const scores: EvidenceScore[] = [];
+  for (const rustScore of rustScores) {
+    const evidenceId = evidenceIds[rustScore.index];
+    if (evidenceId === undefined) return null;
+    scores.push({ evidenceId, score: rustScore.score });
+  }
+  return scores;
+}
+
+function getOrCreateIndex(
+  indexes: Map<string, number>,
+  values: string[],
+  value: string,
+): number {
+  const existing = indexes.get(value);
+  if (existing !== undefined) return existing;
+  const nextIndex = values.length;
+  indexes.set(value, nextIndex);
+  values.push(value);
+  return nextIndex;
+}
+
+function pushEvidenceIndices(
+  evidenceIds: readonly string[],
+  evidenceIndexById: Map<string, number>,
+  indexedEvidenceIds: string[],
+  output: number[],
+): void {
+  for (const evidenceId of evidenceIds) {
+    output.push(getOrCreateIndex(evidenceIndexById, indexedEvidenceIds, evidenceId));
+  }
 }
 
 function addClaimEvidenceScores(

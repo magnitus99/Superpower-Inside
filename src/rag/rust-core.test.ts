@@ -12,6 +12,7 @@ import {
   rankTopKPairsRust,
   scoreBm25Rust,
   selectDiverseIndicesRust,
+  scoreLocalEvidenceRust,
   tokenizeRust,
 } from './rust-core';
 
@@ -159,6 +160,40 @@ describe('Rust WASM RAG core bridge', () => {
     expect(result?.assignments).toEqual([0, 0, 1, 1]);
     expect(result?.communityIds).toEqual([0, 1]);
     expect(result?.modularity).toBeGreaterThan(0);
+  });
+
+  it('returns GraphRAG local evidence scores from numeric graph inputs', () => {
+    const scores = scoreLocalEvidenceRust({
+      entityCount: 3,
+      matchEntityIndices: [0],
+      matchScores: [0.9],
+      matchEvidenceOffsets: [0, 1],
+      matchEvidenceIndices: [0],
+      relationSourceIndices: [0, 1],
+      relationTargetIndices: [1, 2],
+      relationConfidences: [0.8, 0.7],
+      relationEvidenceOffsets: [0, 1, 2],
+      relationEvidenceIndices: [1, 2],
+      claimEntityOffsets: [0, 1, 2],
+      claimEntityIndices: [0, 1],
+      claimConfidences: [0.6, 0.5],
+      claimEvidenceOffsets: [0, 1, 2],
+      claimEvidenceIndices: [3, 4],
+      evidenceCount: 5,
+      traversalDepth: 2,
+    });
+
+    expect(scores).not.toBeNull();
+    expect(scores?.map((score) => score.index)).toEqual([0, 1, 3, 3, 3, 1, 2, 4, 4]);
+    expect(scores?.[0]?.score).toBeCloseTo(0.865);
+    expect(scores?.[1]?.score).toBeCloseTo(0.72);
+    expect(scores?.[2]?.score).toBeCloseTo(0.54);
+    expect(scores?.[3]?.score).toBeCloseTo(0.54);
+    expect(scores?.[4]?.score).toBeCloseTo(0.54);
+    expect(scores?.[5]?.score).toBeCloseTo((0.9 * 0.8) / 1.45);
+    expect(scores?.[6]?.score).toBeCloseTo((0.72 * 0.82 * 0.7) / 1.45);
+    expect(scores?.[7]?.score).toBeCloseTo((0.72 * 0.82 * 0.5) / 1.35);
+    expect(scores?.[8]?.score).toBeCloseTo((0.72 * 0.82 * 0.5) / 1.35);
   });
 
   it('returns markdown chunks with heading and line metadata', () => {

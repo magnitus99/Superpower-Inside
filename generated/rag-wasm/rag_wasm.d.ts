@@ -52,6 +52,11 @@ export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dim
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
 
 /**
+ * `GraphRAG` local/evidence-first evidence score pair를 계산한다.
+ */
+export function score_local_evidence_pairs(config: Uint32Array, indices: Uint32Array, values: Float64Array): Float64Array;
+
+/**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
  */
 export function select_diverse_indices(scores: Float64Array, vectors: Float64Array, dimensions: number, source_keys: Uint32Array, heading_keys: Uint32Array, top_k: number): Float64Array;
@@ -80,6 +85,7 @@ export interface InitOutput {
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly score_local_evidence_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
