@@ -7,6 +7,7 @@ import {
   chunkMarkdownRust,
   chunkPlainTextRust,
   bm25TermFrequenciesRust,
+  detectCommunitiesRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
   scoreBm25Rust,
@@ -143,6 +144,21 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(indexes).toEqual([0, 2]);
+  });
+
+  it('returns graph community assignments and modularity from numeric edges', () => {
+    const result = detectCommunitiesRust(
+      4,
+      [0, 2, 1],
+      [1, 3, 2],
+      [1, 1, 0.1],
+      20,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.assignments).toEqual([0, 0, 1, 1]);
+    expect(result?.communityIds).toEqual([0, 1]);
+    expect(result?.modularity).toBeGreaterThan(0);
   });
 
   it('returns markdown chunks with heading and line metadata', () => {

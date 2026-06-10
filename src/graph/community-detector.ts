@@ -1,4 +1,5 @@
 import type { GraphEntityRecord, GraphRelationRecord } from './store';
+import { detectCommunitiesRust } from '../rag/rust-core';
 
 export interface CommunityEdge {
   source: string;
@@ -115,6 +116,9 @@ export function detectCommunities(
     return { communities: new Map(), communityIds: [], modularity: 0 };
   }
 
+  const rustResult = detectCommunitiesWithRust(edges, uniqueIds, maxIterations);
+  if (rustResult !== null) return rustResult;
+
   const nodeCount = uniqueIds.length;
   const idToIndex = new Map(uniqueIds.map((id, i) => [id, i]));
   const indexToId = new Map(uniqueIds.map((id, i) => [i, id]));
@@ -190,4 +194,47 @@ export function detectCommunities(
   const modularity = calculateModularity(nodeCount, adjacency, degrees, remapped, totalWeight);
 
   return { communities: finalAssignment, communityIds, modularity };
+}
+
+function detectCommunitiesWithRust(
+  edges: readonly CommunityEdge[],
+  uniqueIds: readonly string[],
+  maxIterations: number,
+): CommunityDetectionResult | null {
+  const idToIndex = new Map(uniqueIds.map((id, index) => [id, index]));
+  const sourceIndices: number[] = [];
+  const targetIndices: number[] = [];
+  const weights: number[] = [];
+
+  for (const edge of edges) {
+    const sourceIndex = idToIndex.get(edge.source);
+    const targetIndex = idToIndex.get(edge.target);
+    if (sourceIndex === undefined || targetIndex === undefined) continue;
+    sourceIndices.push(sourceIndex);
+    targetIndices.push(targetIndex);
+    weights.push(edge.weight);
+  }
+
+  const rustResult = detectCommunitiesRust(
+    uniqueIds.length,
+    sourceIndices,
+    targetIndices,
+    weights,
+    maxIterations,
+  );
+  if (rustResult === null || rustResult.assignments.length !== uniqueIds.length) return null;
+
+  const communities = new Map<string, number>();
+  for (let index = 0; index < uniqueIds.length; index++) {
+    const entityId = uniqueIds[index];
+    const communityId = rustResult.assignments[index];
+    if (entityId === undefined || communityId === undefined) return null;
+    communities.set(entityId, communityId);
+  }
+
+  return {
+    communities,
+    communityIds: rustResult.communityIds,
+    modularity: rustResult.modularity,
+  };
 }

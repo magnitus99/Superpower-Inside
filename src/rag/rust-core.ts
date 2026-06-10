@@ -5,6 +5,7 @@ import {
   core_version,
   cosine_similarity_or_nan,
   create_content_hash,
+  detect_communities_flat,
   hybrid_score_or_nan,
   initSync,
   rank_top_k_pairs,
@@ -50,6 +51,12 @@ export interface RustDiverseCandidate {
   vector: readonly number[];
   sourceKey: number;
   headingKey: number;
+}
+
+export interface RustCommunityDetectionResult {
+  assignments: number[];
+  communityIds: number[];
+  modularity: number;
 }
 
 let initialized = false;
@@ -250,6 +257,67 @@ export function selectDiverseIndicesRust(
     normalizeNonNegativeInteger(topK),
   );
   return decodeIndexArray(indexes, candidates.length);
+}
+
+export function detectCommunitiesRust(
+  nodeCount: number,
+  sourceIndices: readonly number[],
+  targetIndices: readonly number[],
+  weights: readonly number[],
+  maxIterations: number,
+): RustCommunityDetectionResult | null {
+  if (nodeCount <= 0) {
+    return { assignments: [], communityIds: [], modularity: 0 };
+  }
+  if (
+    sourceIndices.length !== targetIndices.length ||
+    sourceIndices.length !== weights.length ||
+    !Number.isSafeInteger(nodeCount)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  const normalizedNodeCount = normalizePositiveInteger(nodeCount);
+  const normalizedSourceIndices = new Uint32Array(sourceIndices.length);
+  const normalizedTargetIndices = new Uint32Array(targetIndices.length);
+  const normalizedWeights = new Float64Array(weights.length);
+
+  for (let index = 0; index < sourceIndices.length; index++) {
+    const sourceIndex = sourceIndices[index];
+    const targetIndex = targetIndices[index];
+    const weight = weights[index];
+    if (
+      !isValidUint32(sourceIndex) ||
+      !isValidUint32(targetIndex) ||
+      sourceIndex >= normalizedNodeCount ||
+      targetIndex >= normalizedNodeCount ||
+      !Number.isFinite(weight)
+    ) {
+      return null;
+    }
+    normalizedSourceIndices[index] = sourceIndex;
+    normalizedTargetIndices[index] = targetIndex;
+    normalizedWeights[index] = weight;
+  }
+
+  const values = detect_communities_flat(
+    normalizedSourceIndices,
+    normalizedTargetIndices,
+    normalizedWeights,
+    normalizedNodeCount,
+    normalizeNonNegativeInteger(maxIterations),
+  );
+  if (values.length !== normalizedNodeCount + 1) return null;
+  const modularity = values[0];
+  if (!Number.isFinite(modularity)) return null;
+  const assignments = decodeIndexArray(values.slice(1), normalizedNodeCount);
+  if (assignments === null || assignments.length !== normalizedNodeCount) return null;
+  return {
+    assignments,
+    communityIds: [...new Set(assignments)].sort((left, right) => left - right),
+    modularity,
+  };
 }
 
 export function chunkMarkdownRust(

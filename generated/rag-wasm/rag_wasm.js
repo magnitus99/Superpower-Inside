@@ -122,6 +122,28 @@ export function create_content_hash(content) {
 }
 
 /**
+ * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
+ * @param {Uint32Array} source_indices
+ * @param {Uint32Array} target_indices
+ * @param {Float64Array} weights
+ * @param {number} node_count
+ * @param {number} max_iterations
+ * @returns {Float64Array}
+ */
+export function detect_communities_flat(source_indices, target_indices, weights, node_count, max_iterations) {
+    const ptr0 = passArray32ToWasm0(source_indices, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(target_indices, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.detect_communities_flat(ptr0, len0, ptr1, len1, ptr2, len2, node_count, max_iterations);
+    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v4;
+}
+
+/**
  * RAG hybrid score를 계산한다.
  * @param {number} combined_base
  * @param {number} rrf_score

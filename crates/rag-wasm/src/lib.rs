@@ -397,6 +397,49 @@ pub fn select_diverse_indices(
     collect_indices_as_f64(selected)
 }
 
+/// `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn detect_communities_flat(
+    source_indices: &[u32],
+    target_indices: &[u32],
+    weights: &[f64],
+    node_count: usize,
+    max_iterations: usize,
+) -> Box<[f64]> {
+    if node_count == 0
+        || source_indices.len() != target_indices.len()
+        || source_indices.len() != weights.len()
+        || weights.iter().any(|weight| !weight.is_finite())
+    {
+        return Box::default();
+    }
+
+    let Some(graph) = build_community_graph(source_indices, target_indices, weights, node_count)
+    else {
+        return Box::default();
+    };
+    if graph.total_weight == 0.0 {
+        return Box::default();
+    }
+
+    let assignments = detect_community_assignments(&graph, max_iterations);
+    let remapped = remap_community_assignments(&assignments);
+    let modularity = calculate_community_modularity(&graph, &remapped);
+
+    let mut output = Vec::with_capacity(node_count.saturating_add(1));
+    output.push(modularity);
+    for community_id in remapped {
+        if let Some(value) = usize_to_f64(community_id) {
+            output.push(value);
+        }
+    }
+    if output.len() != node_count.saturating_add(1) {
+        return Box::default();
+    }
+    output.into_boxed_slice()
+}
+
 /// Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -503,6 +546,233 @@ fn calculate_max_selected_similarity(
     }
 
     max_similarity
+}
+
+/// Graph community detection용 adjacency graph.
+struct CommunityGraph {
+    /// node별 neighbor와 weight. 입력 edge 순서 기반 insertion order를 보존한다.
+    adjacency: Vec<Vec<(usize, f64)>>,
+    /// node별 weighted degree.
+    degrees: Vec<f64>,
+    /// 무방향 edge를 양방향 adjacency로 펼친 총 weight.
+    total_weight: f64,
+}
+
+/// flat edge 배열에서 community detection graph를 만든다.
+fn build_community_graph(
+    source_indices: &[u32],
+    target_indices: &[u32],
+    weights: &[f64],
+    node_count: usize,
+) -> Option<CommunityGraph> {
+    let mut adjacency = vec![Vec::<(usize, f64)>::new(); node_count];
+    let mut degrees = vec![0.0_f64; node_count];
+    let mut total_weight = 0.0_f64;
+
+    for ((source_index, target_index), weight) in source_indices
+        .iter()
+        .copied()
+        .zip(target_indices.iter().copied())
+        .zip(weights.iter().copied())
+    {
+        if weight <= 0.0 {
+            continue;
+        }
+        let Ok(source) = usize::try_from(source_index) else {
+            return None;
+        };
+        let Ok(target) = usize::try_from(target_index) else {
+            return None;
+        };
+        if source >= node_count || target >= node_count {
+            return None;
+        }
+
+        add_weighted_neighbor(&mut adjacency, source, target, weight)?;
+        add_weighted_neighbor(&mut adjacency, target, source, weight)?;
+        if let Some(degree) = degrees.get_mut(source) {
+            *degree += weight;
+        }
+        if let Some(degree) = degrees.get_mut(target) {
+            *degree += weight;
+        }
+        total_weight = weight.mul_add(2.0, total_weight);
+    }
+
+    Some(CommunityGraph {
+        adjacency,
+        degrees,
+        total_weight,
+    })
+}
+
+/// adjacency list에 weight를 누적한다.
+fn add_weighted_neighbor(
+    adjacency: &mut [Vec<(usize, f64)>],
+    source: usize,
+    target: usize,
+    weight: f64,
+) -> Option<()> {
+    let neighbors = adjacency.get_mut(source)?;
+    if let Some((_, existing_weight)) = neighbors
+        .iter_mut()
+        .find(|(neighbor, _)| *neighbor == target)
+    {
+        *existing_weight += weight;
+    } else {
+        neighbors.push((target, weight));
+    }
+    Some(())
+}
+
+/// Louvain-style local move pass로 community assignment를 계산한다.
+fn detect_community_assignments(graph: &CommunityGraph, max_iterations: usize) -> Vec<usize> {
+    let node_count = graph.degrees.len();
+    let mut community_of_node = (0..node_count).collect::<Vec<_>>();
+    let mut community_degrees = graph.degrees.clone();
+    let inv_total_weight = 1.0 / graph.total_weight;
+
+    for _ in 0..max_iterations {
+        let mut changed = false;
+
+        for node_index in 0..node_count {
+            let current_community = community_of_node
+                .get(node_index)
+                .copied()
+                .unwrap_or(node_index);
+            let degree = graph.degrees.get(node_index).copied().unwrap_or_default();
+            let neighbor_communities =
+                collect_neighbor_community_weights(node_index, graph, &community_of_node);
+            if neighbor_communities.is_empty() {
+                continue;
+            }
+
+            let current_neighbor_weight =
+                get_weight_for_id(&neighbor_communities, current_community);
+            let current_community_degree = community_degrees
+                .get(current_community)
+                .copied()
+                .unwrap_or_default();
+            let mut best_community = current_community;
+            let mut best_delta = 0.0_f64;
+
+            for (candidate_community, edge_weight_to_community) in &neighbor_communities {
+                if *candidate_community == current_community {
+                    continue;
+                }
+                let candidate_degree = community_degrees
+                    .get(*candidate_community)
+                    .copied()
+                    .unwrap_or_default();
+                let delta = (edge_weight_to_community - current_neighbor_weight).mul_add(
+                    inv_total_weight,
+                    (current_community_degree - candidate_degree)
+                        * degree
+                        * inv_total_weight
+                        * inv_total_weight,
+                );
+
+                if delta > best_delta {
+                    best_delta = delta;
+                    best_community = *candidate_community;
+                }
+            }
+
+            if best_community == current_community {
+                continue;
+            }
+            if let Some(slot) = community_of_node.get_mut(node_index) {
+                *slot = best_community;
+            }
+            if let Some(current_degree) = community_degrees.get_mut(current_community) {
+                *current_degree -= degree;
+            }
+            if let Some(best_degree) = community_degrees.get_mut(best_community) {
+                *best_degree += degree;
+            }
+            changed = true;
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    community_of_node
+}
+
+/// node neighbor들을 현재 community별 weight로 합친다.
+fn collect_neighbor_community_weights(
+    node_index: usize,
+    graph: &CommunityGraph,
+    community_of_node: &[usize],
+) -> Vec<(usize, f64)> {
+    let mut neighbor_communities = Vec::<(usize, f64)>::new();
+    let Some(neighbors) = graph.adjacency.get(node_index) else {
+        return neighbor_communities;
+    };
+
+    for (neighbor, weight) in neighbors {
+        let community = community_of_node
+            .get(*neighbor)
+            .copied()
+            .unwrap_or(*neighbor);
+        add_weight_for_id(&mut neighbor_communities, community, *weight);
+    }
+
+    neighbor_communities
+}
+
+/// `(id, weight)` list에 id별 weight를 누적하며 첫 출현 순서를 보존한다.
+fn add_weight_for_id(items: &mut Vec<(usize, f64)>, id: usize, weight: f64) {
+    if let Some((_, existing_weight)) = items.iter_mut().find(|(item_id, _)| *item_id == id) {
+        *existing_weight += weight;
+    } else {
+        items.push((id, weight));
+    }
+}
+
+/// `(id, weight)` list에서 id의 weight를 찾는다.
+fn get_weight_for_id(items: &[(usize, f64)], id: usize) -> f64 {
+    items
+        .iter()
+        .find_map(|(item_id, weight)| (*item_id == id).then_some(*weight))
+        .unwrap_or_default()
+}
+
+/// raw community id를 0부터 시작하는 안정적인 id로 다시 매핑한다.
+fn remap_community_assignments(raw_assignments: &[usize]) -> Vec<usize> {
+    let mut unique_ids = raw_assignments.to_vec();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+
+    raw_assignments
+        .iter()
+        .map(|community_id| unique_ids.binary_search(community_id).unwrap_or_default())
+        .collect()
+}
+
+/// community assignment의 modularity를 계산한다.
+fn calculate_community_modularity(graph: &CommunityGraph, assignments: &[usize]) -> f64 {
+    if graph.total_weight == 0.0 {
+        return 0.0;
+    }
+    let mut score = 0.0_f64;
+
+    for (node_index, neighbors) in graph.adjacency.iter().enumerate() {
+        let community = assignments.get(node_index).copied().unwrap_or(node_index);
+        for (neighbor, weight) in neighbors {
+            let neighbor_community = assignments.get(*neighbor).copied().unwrap_or(*neighbor);
+            if community != neighbor_community {
+                continue;
+            }
+            let degree = graph.degrees.get(node_index).copied().unwrap_or_default();
+            let neighbor_degree = graph.degrees.get(*neighbor).copied().unwrap_or_default();
+            score += weight - (degree * neighbor_degree) / graph.total_weight;
+        }
+    }
+
+    score / graph.total_weight
 }
 
 /// RAG chunk metadata.
@@ -1325,8 +1595,8 @@ mod tests {
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash,
-        hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan, select_diverse_indices,
-        token_frequencies_json, tokenize,
+        detect_communities_flat, hybrid_score_or_nan, rank_top_k_pairs, rrf_score_or_nan,
+        select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1608,6 +1878,33 @@ mod tests {
             2.0,
             "두 번째 후보는 같은 파일 중복보다 다른 파일이어야 한다",
         );
+    }
+
+    /// `GraphRAG` community detection은 강한 내부 edge를 기준으로 node assignment를 나눠야 한다.
+    #[test]
+    fn detect_communities_flat_returns_assignments_and_modularity() {
+        let source_indices = [0_u32, 2, 1];
+        let target_indices = [1_u32, 3, 2];
+        let weights = [1.0, 1.0, 0.1];
+
+        let output = detect_communities_flat(&source_indices, &target_indices, &weights, 4, 20);
+
+        assert_eq!(
+            output.len(),
+            5,
+            "modularity와 4개 node assignment가 필요하다",
+        );
+        assert!(
+            pair_value(&output, 0) > 0.0,
+            "두 cluster graph의 modularity는 양수여야 한다; got {output:?}",
+        );
+        for (offset, expected) in [0.0_f64, 0.0, 1.0, 1.0].iter().copied().enumerate() {
+            assert_float_close(
+                pair_value(&output, offset.saturating_add(1)),
+                expected,
+                "community assignment mismatch",
+            );
+        }
     }
 
     /// `Option<f64>` 값이 존재하고 기대값과 같은지 확인한다.

@@ -32,6 +32,11 @@ export function cosine_similarity_or_nan(left: Float64Array, right: Float64Array
 export function create_content_hash(content: string): string;
 
 /**
+ * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
+ */
+export function detect_communities_flat(source_indices: Uint32Array, target_indices: Uint32Array, weights: Float64Array, node_count: number, max_iterations: number): Float64Array;
+
+/**
  * RAG hybrid score를 계산한다.
  */
 export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
@@ -71,6 +76,7 @@ export interface InitOutput {
     readonly core_version: () => [number, number];
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
+    readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
