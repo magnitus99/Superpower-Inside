@@ -93,6 +93,7 @@
 | `scoreBm25Rust`              | function  | `src/rag/rust-core.ts`       | TS BM25 posting 배열과 Rust score pair bridge          |
 | `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
 | `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
+| `rankGlobalCommunitiesWithRust` | function | `src/graph/query-engine.ts` | GraphRAG community summary vector top-k Rust bridge 사용 |
 | `rrf_score_or_nan`           | function  | `crates/rag-wasm/src/lib.rs` | RAG retrieval source rank fusion score 계산            |
 | `calculateRrfScoreRust`      | function  | `src/rag/rust-core.ts`       | TS source rank map과 Rust RRF bridge                   |
 | `hybrid_score_or_nan`        | function  | `crates/rag-wasm/src/lib.rs` | RAG hybrid result score 계산                           |

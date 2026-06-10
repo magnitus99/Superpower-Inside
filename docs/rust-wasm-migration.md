@@ -90,6 +90,12 @@
 - entity/relation/claim/evidence record 조회, ontology filtering, ID 문자열 매핑, vector store 후보 조립과 compatibility filter는 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 wire-format/index 검증 실패 시 기존 TypeScript evidence scoring 루프를 그대로 사용한다.
 
+## 현재 열한 번째 slice
+
+- GraphRAG global community summary ranking을 기존 Rust/WASM vector top-k bridge에 연결했다.
+- `queryGlobal()`은 schema filtering과 community 객체 조립은 TypeScript에서 유지하고, summary vector cosine ranking과 topK 선택은 `rankTopKPairsRust()`를 우선 사용한다.
+- Rust/WASM 초기화 또는 ranking index 검증 실패 시 기존 TypeScript cosine/sort 경로를 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
