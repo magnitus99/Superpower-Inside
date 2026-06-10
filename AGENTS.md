@@ -57,6 +57,7 @@
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
 | 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
 | Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
+| Rust/WASM JS bridge      | `src/rag/rust-core.ts` + `generated/rag-wasm/`       | embedded WASM init, hash/tokenize/vector scoring bridge                   |
 | Rust 보안 게이트         | `scripts/check-rust-security.fish` + `deny.toml`     | fmt, clippy, test, wasm build, deny, audit, vet, geiger                   |
 | 개발 볼트/QA             | `.test-vault/`                                       | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인                       |
 
@@ -85,6 +86,8 @@
 | `MCPRegistry`                | class     | `src/mcp/registry.ts`        | MCP 서버 설정/클라이언트/연결 상태 관리                |
 | `create_content_hash`        | function  | `crates/rag-wasm/src/lib.rs` | TypeScript `createContentHash()`와 같은 UTF-16 FNV-1a |
 | `tokenize`                   | function  | `crates/rag-wasm/src/lib.rs` | TypeScript BM25 토크나이저와 같은 검색 토큰 생성      |
+| `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
+| `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
 
 ## TEST VAULT
 
@@ -141,7 +144,8 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - 성능 민감 순수 계산은 Rust/WASM으로 옮긴다. RAG 해시/토큰화/청킹/BM25, vector score/top-k, GraphRAG ranking/layout 계산, 대용량 metadata diff/검증이 우선 대상이다.
 - Rust 코어는 deterministic input/output 계약을 가져야 하며, Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않는다.
 - 실시간성은 snapshot id/revision id로 보장한다. UI는 최신 revision만 반영하고, 오래된 Rust worker 결과는 폐기한다.
-- Rust 변경은 `npm run rust:security`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`를 실행한다.
+- Rust 변경은 `npm run rust:security`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, generated WASM 최신성 검사를 실행한다.
+- `npm run build`와 `npm run dev`는 `npm run wasm:build`를 먼저 실행한다. generated glue/base64를 손으로 고치지 않는다.
 - 세부 전환 계획은 `docs/rust-wasm-migration.md`를 기준으로 삼는다.
 
 ## VERSIONING AND RELEASES
@@ -214,6 +218,7 @@ npm run lint       # ESLint: src/, main.ts
 npm run typecheck  # tsc --noEmit
 npm run test       # Vitest
 npm run check:i18n # 런타임 한글 문자열이 src/i18n.ts 밖에 남았는지 검사
+npm run wasm:build # Rust/WASM glue와 embedded bytes 생성
 npm run rust:security # Rust/WASM fmt, lint, test, wasm build, supply-chain/security gate
 npm run build      # production 번들(minify, no sourcemap)
 npm run format     # Prettier --write src/ main.ts

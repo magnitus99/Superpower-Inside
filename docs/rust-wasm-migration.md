@@ -29,6 +29,14 @@
 - 기존 BM25 토크나이저의 ASCII compound/camel-case, 한국어+숫자 n-gram 동작을 Rust에 구현했다.
 - Rust 단위 테스트가 TypeScript 계약을 고정한다.
 
+## 현재 두 번째 slice
+
+- `wasm-bindgen` web glue와 `.wasm` bytes를 생성해 `main.js`에 포함하는 빌드 경로를 추가했다.
+- `src/rag/rust-core.ts`가 embedded WASM을 `initSync(bytes)`로 초기화한다.
+- `createContentHash()`, BM25 `tokenize()`, RAG vector top-k scoring, query cosine scoring은 Rust/WASM을 우선 사용하고, 초기화 실패 시 기존 TypeScript 구현으로 fallback한다.
+- `npm run build`는 `npm run wasm:build`를 먼저 실행한다.
+- `npm run rust:security`는 generated WASM glue/base64 파일이 최신인지 검사한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
