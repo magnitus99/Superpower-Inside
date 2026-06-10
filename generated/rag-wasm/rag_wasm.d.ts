@@ -2,6 +2,11 @@
 /* eslint-disable */
 
 /**
+ * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
+ */
+export function bm25_score_pairs(term_offsets: Uint32Array, doc_indices: Uint32Array, term_frequencies: Float64Array, doc_lengths: Float64Array, total_docs: number, avg_doc_length: number): Float64Array;
+
+/**
  * Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
  */
 export function chunk_markdown_json(content: string, max_chunk_size: number, overlap_chars: number): string;
@@ -40,6 +45,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly core_version: () => [number, number];
@@ -49,8 +55,8 @@ export interface InitOutput {
     readonly tokenize_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_start: () => void;
 }
 

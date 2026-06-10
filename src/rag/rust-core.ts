@@ -1,4 +1,5 @@
 import {
+  bm25_score_pairs,
   chunk_markdown_json,
   chunk_plain_text_json,
   core_version,
@@ -14,6 +15,16 @@ import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
 export interface RustVectorScore {
   index: number;
   score: number;
+}
+
+export interface RustBm25Posting {
+  docIndex: number;
+  termFrequency: number;
+  docLength: number;
+}
+
+export interface RustBm25Term {
+  postings: readonly RustBm25Posting[];
 }
 
 let initialized = false;
@@ -84,6 +95,49 @@ export function rankTopKPairsRust(
   return decodeRankPairs(pairs, compatibleRows);
 }
 
+export function scoreBm25Rust(
+  terms: readonly RustBm25Term[],
+  totalDocs: number,
+  avgDocLength: number,
+): RustVectorScore[] | null {
+  if (terms.length === 0 || totalDocs <= 0) return [];
+  if (!Number.isFinite(avgDocLength) || avgDocLength <= 0) return [];
+  if (!ensureRustCore()) return null;
+
+  const termOffsets: number[] = [0];
+  const docIndices: number[] = [];
+  const termFrequencies: number[] = [];
+  const docLengths: number[] = [];
+
+  for (const term of terms) {
+    for (const posting of term.postings) {
+      if (!isValidBm25Posting(posting)) continue;
+      docIndices.push(posting.docIndex);
+      termFrequencies.push(posting.termFrequency);
+      docLengths[posting.docIndex] = posting.docLength;
+    }
+    termOffsets.push(docIndices.length);
+  }
+
+  if (docIndices.length === 0) return [];
+
+  for (let index = 0; index < docLengths.length; index++) {
+    if (!Number.isFinite(docLengths[index]) || docLengths[index] <= 0) {
+      docLengths[index] = 1;
+    }
+  }
+
+  const pairs = bm25_score_pairs(
+    new Uint32Array(termOffsets),
+    new Uint32Array(docIndices),
+    new Float64Array(termFrequencies),
+    new Float64Array(docLengths),
+    normalizeNonNegativeInteger(totalDocs),
+    avgDocLength,
+  );
+  return decodeIndexScorePairs(pairs);
+}
+
 export function chunkMarkdownRust(
   content: string,
   maxChunkSize: number,
@@ -151,6 +205,28 @@ function decodeRankPairs(pairs: Float64Array, compatibleRows: readonly number[])
     scores.push({ index: originalIndex, score });
   }
   return scores;
+}
+
+function decodeIndexScorePairs(pairs: Float64Array): RustVectorScore[] {
+  const scores: RustVectorScore[] = [];
+  for (let offset = 0; offset + 1 < pairs.length; offset += 2) {
+    const index = pairs[offset];
+    const score = pairs[offset + 1];
+    if (!Number.isSafeInteger(index) || !Number.isFinite(score)) continue;
+    scores.push({ index, score });
+  }
+  return scores;
+}
+
+function isValidBm25Posting(posting: RustBm25Posting): boolean {
+  return (
+    Number.isSafeInteger(posting.docIndex) &&
+    posting.docIndex >= 0 &&
+    Number.isFinite(posting.termFrequency) &&
+    posting.termFrequency > 0 &&
+    Number.isFinite(posting.docLength) &&
+    posting.docLength > 0
+  );
 }
 
 function normalizePositiveInteger(value: number): number {

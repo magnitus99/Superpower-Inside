@@ -6,6 +6,7 @@ import {
   chunkPlainTextRust,
   isRustCoreAvailable,
   rankTopKPairsRust,
+  scoreBm25Rust,
   tokenizeRust,
 } from './rust-core';
 
@@ -45,6 +46,34 @@ describe('Rust WASM RAG core bridge', () => {
       { index: 2, score: 0.6 },
       { index: 0, score: 0 },
     ]);
+  });
+
+  it('returns BM25 document scores from flat posting data', () => {
+    const scores = scoreBm25Rust(
+      [
+        {
+          postings: [
+            { docIndex: 0, termFrequency: 2, docLength: 3 },
+            { docIndex: 1, termFrequency: 1, docLength: 4 },
+          ],
+        },
+        {
+          postings: [{ docIndex: 0, termFrequency: 1, docLength: 3 }],
+        },
+      ],
+      2,
+      3.5,
+    );
+
+    const firstTermIdf = Math.log((2 - 2 + 0.5) / (2 + 0.5) + 1);
+    const secondTermIdf = Math.log((2 - 1 + 0.5) / (1 + 0.5) + 1);
+    const bm25 = (idf: number, tf: number, docLength: number) =>
+      idf * ((tf * (1.2 + 1)) / (tf + 1.2 * (1 - 0.75 + 0.75 * (docLength / 3.5))));
+
+    expect(scores).not.toBeNull();
+    expect(scores?.map((score) => score.index)).toEqual([0, 1]);
+    expect(scores?.[0]?.score).toBeCloseTo(bm25(firstTermIdf, 2, 3) + bm25(secondTermIdf, 1, 3));
+    expect(scores?.[1]?.score).toBeCloseTo(bm25(firstTermIdf, 1, 4));
   });
 
   it('returns markdown chunks with heading and line metadata', () => {

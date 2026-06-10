@@ -1,6 +1,31 @@
 /* @ts-self-types="./rag_wasm.d.ts" */
 
 /**
+ * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
+ * @param {Uint32Array} term_offsets
+ * @param {Uint32Array} doc_indices
+ * @param {Float64Array} term_frequencies
+ * @param {Float64Array} doc_lengths
+ * @param {number} total_docs
+ * @param {number} avg_doc_length
+ * @returns {Float64Array}
+ */
+export function bm25_score_pairs(term_offsets, doc_indices, term_frequencies, doc_lengths, total_docs, avg_doc_length) {
+    const ptr0 = passArray32ToWasm0(term_offsets, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(doc_indices, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(term_frequencies, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(doc_lengths, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.bm25_score_pairs(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, total_docs, avg_doc_length);
+    var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v5;
+}
+
+/**
  * Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
  * @param {string} content
  * @param {number} max_chunk_size
@@ -170,12 +195,27 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArrayF64ToWasm0(arg, malloc) {
@@ -257,6 +297,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedFloat64ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

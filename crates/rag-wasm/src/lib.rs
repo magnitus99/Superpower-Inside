@@ -11,6 +11,10 @@ use wasm_bindgen::prelude::wasm_bindgen;
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.
 const FNV_PRIME: u32 = 0x0100_0193;
+/// 기존 `TypeScript BM25` 검색 경로의 `k1` 상수.
+const BM25_K1: f64 = 1.2;
+/// 기존 `TypeScript BM25` 검색 경로의 `b` 상수.
+const BM25_B: f64 = 0.75;
 
 /// `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
 #[must_use]
@@ -121,6 +125,100 @@ pub fn rank_top_k_pairs(
         if let Ok(index) = u32::try_from(scored_row.row_index) {
             pairs.push(f64::from(index));
             pairs.push(scored_row.score);
+        }
+    }
+    pairs.into_boxed_slice()
+}
+
+/// flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn bm25_score_pairs(
+    term_offsets: &[u32],
+    doc_indices: &[u32],
+    term_frequencies: &[f64],
+    doc_lengths: &[f64],
+    total_docs: usize,
+    avg_doc_length: f64,
+) -> Box<[f64]> {
+    if term_offsets.len() < 2
+        || doc_indices.len() != term_frequencies.len()
+        || doc_lengths.is_empty()
+        || total_docs == 0
+        || !avg_doc_length.is_finite()
+        || avg_doc_length <= 0.0
+    {
+        return Box::default();
+    }
+
+    let Some(total_docs_f64) = usize_to_f64(total_docs) else {
+        return Box::default();
+    };
+    let mut scores = vec![0.0_f64; doc_lengths.len()];
+    let mut seen = vec![false; doc_lengths.len()];
+
+    for window in term_offsets.windows(2) {
+        let [start, end] = window else {
+            continue;
+        };
+        let Ok(start_index) = usize::try_from(*start) else {
+            continue;
+        };
+        let Ok(end_index) = usize::try_from(*end) else {
+            continue;
+        };
+        if start_index >= end_index || end_index > doc_indices.len() {
+            continue;
+        }
+        let df = end_index.saturating_sub(start_index);
+        let Some(df_f64) = usize_to_f64(df) else {
+            continue;
+        };
+        let idf = ((total_docs_f64 - df_f64 + 0.5) / (df_f64 + 0.5)).ln_1p();
+
+        for (doc_index_raw, tf) in doc_indices
+            .iter()
+            .copied()
+            .zip(term_frequencies.iter().copied())
+            .skip(start_index)
+            .take(df)
+        {
+            if !tf.is_finite() || tf <= 0.0 {
+                continue;
+            }
+            let Ok(doc_index) = usize::try_from(doc_index_raw) else {
+                continue;
+            };
+            let Some(score_slot) = scores.get_mut(doc_index) else {
+                continue;
+            };
+            let doc_length = doc_lengths
+                .get(doc_index)
+                .copied()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(1.0);
+            let denominator = BM25_K1.mul_add(
+                BM25_B.mul_add(doc_length / avg_doc_length, 1.0 - BM25_B),
+                tf,
+            );
+            if denominator <= 0.0 {
+                continue;
+            }
+            *score_slot += idf * ((tf * (BM25_K1 + 1.0)) / denominator);
+            if let Some(seen_slot) = seen.get_mut(doc_index) {
+                *seen_slot = true;
+            }
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for (doc_index, (score, seen_doc)) in scores.into_iter().zip(seen).enumerate() {
+        if !seen_doc || !score.is_finite() {
+            continue;
+        }
+        if let Ok(index) = u32::try_from(doc_index) {
+            pairs.push(f64::from(index));
+            pairs.push(score);
         }
     }
     pairs.into_boxed_slice()
@@ -630,6 +728,11 @@ fn text_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
+/// `usize`를 loss 없는 범위에서 `f64`로 변환한다.
+fn usize_to_f64(value: usize) -> Option<f64> {
+    u32::try_from(value).ok().map(f64::from)
+}
+
 /// chunk 배열을 JSON 문자열로 serialize한다.
 fn serialize_chunks_json(chunks: &[Chunk]) -> String {
     let body = chunks
@@ -947,8 +1050,8 @@ mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
     use super::{
-        chunk_markdown, chunk_plain_text, cosine_similarity, create_content_hash, rank_top_k_pairs,
-        tokenize,
+        BM25_B, BM25_K1, bm25_score_pairs, chunk_markdown, chunk_plain_text, cosine_similarity,
+        create_content_hash, rank_top_k_pairs, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -1127,6 +1230,42 @@ mod tests {
         }
     }
 
+    /// BM25 score 계산은 기존 TypeScript 공식과 doc index 순서를 보존해야 한다.
+    #[test]
+    fn bm25_score_pairs_matches_typescript_formula() {
+        let term_offsets = [0_u32, 2, 3];
+        let doc_indices = [0_u32, 1, 0];
+        let term_frequencies = [2.0, 1.0, 1.0];
+        let doc_lengths = [3.0, 4.0];
+
+        let pairs = bm25_score_pairs(
+            &term_offsets,
+            &doc_indices,
+            &term_frequencies,
+            &doc_lengths,
+            2,
+            3.5,
+        );
+
+        assert_eq!(pairs.len(), 4, "두 doc의 index/score pair가 필요하다");
+        assert_float_close(pair_value(&pairs, 0), 0.0, "첫 pair는 doc 0이어야 한다");
+        assert_float_close(
+            pair_value(&pairs, 2),
+            1.0,
+            "두 번째 pair는 doc 1이어야 한다",
+        );
+        assert_float_close(
+            pair_value(&pairs, 1),
+            bm25_score(2.0, 2.0, 2.0, 3.0, 3.5) + bm25_score(2.0, 1.0, 1.0, 3.0, 3.5),
+            "doc 0 score는 두 term 점수를 누적해야 한다",
+        );
+        assert_float_close(
+            pair_value(&pairs, 3),
+            bm25_score(2.0, 2.0, 1.0, 4.0, 3.5),
+            "doc 1 score는 첫 term 점수만 포함해야 한다",
+        );
+    }
+
     /// `Option<f64>` 값이 존재하고 기대값과 같은지 확인한다.
     fn assert_some_float_close(actual: Option<f64>, expected: f64, message: &str) {
         if let Some(value) = actual {
@@ -1147,5 +1286,15 @@ mod tests {
     /// pair 배열에서 값을 안전하게 읽는다.
     fn pair_value(pairs: &[f64], offset: usize) -> f64 {
         pairs.get(offset).copied().unwrap_or(f64::NAN)
+    }
+
+    /// 테스트용 BM25 공식 계산.
+    fn bm25_score(total_docs: f64, df: f64, tf: f64, doc_length: f64, avg_doc_length: f64) -> f64 {
+        let idf = ((total_docs - df + 0.5) / (df + 0.5)).ln_1p();
+        idf * ((tf * (BM25_K1 + 1.0))
+            / BM25_K1.mul_add(
+                BM25_B.mul_add(doc_length / avg_doc_length, 1.0 - BM25_B),
+                tf,
+            ))
     }
 }

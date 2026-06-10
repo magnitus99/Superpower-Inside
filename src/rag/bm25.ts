@@ -1,6 +1,6 @@
 import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault, writeJsonToVault } from '../utils/vault';
-import { tokenizeRust } from './rust-core';
+import { scoreBm25Rust, tokenizeRust, type RustBm25Term } from './rust-core';
 
 interface InvertedEntry {
   [docId: string]: number;
@@ -237,9 +237,13 @@ export class JsonFileBM25Index {
 
   search(query: string): Map<string, number> {
     const queryTokens = [...new Set(tokenize(query))];
-    const scores = new Map<string, number>();
     const totalDocs = this.data.totalDocs;
-    if (totalDocs === 0) return scores;
+    if (totalDocs === 0) return new Map();
+
+    const rustScores = this.searchWithRust(queryTokens, totalDocs);
+    if (rustScores !== null) return rustScores;
+
+    const scores = new Map<string, number>();
 
     for (const rawToken of queryTokens) {
       const token = rawToken;
@@ -258,6 +262,52 @@ export class JsonFileBM25Index {
       }
     }
     return scores;
+  }
+
+  private searchWithRust(queryTokens: readonly string[], totalDocs: number): Map<string, number> | null {
+    const docIds: string[] = [];
+    const docIndexById = new Map<string, number>();
+    const terms: RustBm25Term[] = [];
+
+    for (const token of queryTokens) {
+      const posting = this.data.inverted[token];
+      if (!posting) continue;
+      const postings: RustBm25Term['postings'] = Object.entries(posting)
+        .map(([docId, termFrequency]) => {
+          let docIndex = docIndexById.get(docId);
+          if (docIndex === undefined) {
+            docIndex = docIds.length;
+            docIds.push(docId);
+            docIndexById.set(docId, docIndex);
+          }
+          return {
+            docIndex,
+            termFrequency,
+            docLength: this.data.docLengths[docId] ?? 1,
+          };
+        })
+        .filter(
+          (entry) =>
+            Number.isFinite(entry.termFrequency) &&
+            entry.termFrequency > 0 &&
+            Number.isFinite(entry.docLength) &&
+            entry.docLength > 0,
+        );
+      if (postings.length > 0) {
+        terms.push({ postings });
+      }
+    }
+
+    const scores = scoreBm25Rust(terms, totalDocs, this.data.avgDocLength);
+    if (scores === null) return null;
+
+    const mappedScores = new Map<string, number>();
+    for (const { index, score } of scores) {
+      const docId = docIds[index];
+      if (docId === undefined) continue;
+      mappedScores.set(docId, score);
+    }
+    return mappedScores;
   }
 
   get isReady(): boolean {
