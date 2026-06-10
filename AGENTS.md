@@ -46,7 +46,7 @@
 | 임베딩 변경              | `src/llm/embedding.ts`                               | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼                         |
 | LLM/임베딩 연결 테스트   | `src/llm/validation.ts`                              | 설정 UI의 연결 검증과 연결됨                                              |
 | RAG 청킹/인덱싱          | `src/rag/indexer.ts`                                 | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트         |
-| RAG 저장소               | `src/rag/store.ts`                                   | `JsonFileVectorStore`는 `.superpower-inside/vectors.json` 사용            |
+| RAG 저장소/파일 필터     | `src/rag/store.ts` + `src/utils/vault.ts`            | vector JSON 저장소, Rust/WASM exclude path matching, vault file filtering |
 | RAG 질의/컨텍스트        | `src/rag/query.ts` + `src/chat/context.ts`           | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감                |
 | 채팅 UI                  | `src/chat/view.ts`                                   | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨                |
 | 채팅 저장/로드           | `src/chat/persistence.ts`                            | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원             |
@@ -107,6 +107,9 @@
 | `extract_vault_links_json`   | function  | `crates/rag-wasm/src/lib.rs` | Obsidian wikilink/Markdown link target 추출 JSON 생성  |
 | `extractVaultLinksRust`      | function  | `src/rag/rust-core.ts`       | 채팅 참조 확장의 Rust link extraction bridge           |
 | `extractVaultLinks`          | function  | `src/chat/context-expansion.ts` | Rust 우선 vault link extraction과 TypeScript fallback |
+| `is_excluded_path`           | function  | `crates/rag-wasm/src/lib.rs` | RAG exclude path pattern matching                      |
+| `isExcludedPathRust`         | function  | `src/rag/rust-core.ts`       | Rust exclude path matcher bridge                       |
+| `isExcludedPath`             | function  | `src/utils/vault.ts`         | Rust 우선 vault exclude path matching과 TypeScript fallback |
 | `detect_communities_flat`    | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG community assignment와 modularity 계산        |
 | `detectCommunitiesRust`      | function  | `src/rag/rust-core.ts`       | numeric graph edge 배열과 Rust community detection bridge |
 | `detectCommunities`          | function  | `src/graph/community-detector.ts` | GraphRAG edge 문자열 매핑과 Rust 우선 community detection |

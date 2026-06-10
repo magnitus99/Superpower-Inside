@@ -111,6 +111,13 @@
 - `expandReferencedVaultFiles()`의 `TFile` resolve, `metadataCache`, `vault.cachedRead`, warning 생성은 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript parser를 그대로 사용한다.
 
+## 현재 열네 번째 slice
+
+- RAG vault file filtering의 exclude path matching을 Rust/WASM에 추가했다.
+- `isExcludedPath()`는 path normalization, folder segment matching, `**/`/`/**`, glob-like `*`, extension shorthand matching을 `isExcludedPathRust()`에 먼저 맡긴다.
+- `getRagCandidateFiles()`, `getRagFileTypeSummary()`, `getMarkdownFilesFiltered()`는 Obsidian `Vault` file enumeration과 text-readability check를 TypeScript에 유지하고, path/pattern matching만 Rust/WASM 경로를 우선 사용한다.
+- Rust/WASM 초기화 실패 시 기존 TypeScript matcher를 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
