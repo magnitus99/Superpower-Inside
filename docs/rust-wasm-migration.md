@@ -118,6 +118,14 @@
 - `getRagCandidateFiles()`, `getRagFileTypeSummary()`, `getMarkdownFilesFiltered()`는 Obsidian `Vault` file enumeration과 text-readability check를 TypeScript에 유지하고, path/pattern matching만 Rust/WASM 경로를 우선 사용한다.
 - Rust/WASM 초기화 실패 시 기존 TypeScript matcher를 그대로 사용한다.
 
+## 현재 열다섯 번째 slice
+
+- GraphRAG entity resolver의 이름 정규화와 merge score 계산을 Rust/WASM에 추가했다.
+- `normalizeEntityName()`은 `normalizeEntityNameRust()`를 우선 사용하고, 초기화 실패 시 기존 TypeScript 정규화로 fallback한다.
+- `scoreEntityMatch()`는 canonical/alias/description/evidence/type/embedding score를 Rust/WASM에 넘겨 exact alias match, token overlap, alias containment, description Jaccard, shared evidence, semantic boost 계산을 `scoreEntityMatchRust()`에 먼저 맡긴다.
+- embedding provider 호출, ontology schema filtering, best match 선택, pending merge 저장은 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 실패 또는 invalid score 반환 시 기존 TypeScript score 수식을 그대로 사용한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
