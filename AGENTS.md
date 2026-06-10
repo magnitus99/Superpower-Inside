@@ -119,9 +119,12 @@ npm run typecheck
 npm run test
 npm run check:i18n
 npm run build
+npm run review -- --tag <manifest-version> --built
 ```
 
 현재 `npm run test`는 `vitest run` 이후 `npm run check:i18n`을 실행한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
+
+Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint만으로 잡히지 않을 수 있다. UI/DOM/CSS를 수정하면 반드시 `src/obsidian-community-review.test.ts`와 `npm run review -- --tag <manifest-version> --built`를 통과시킨다.
 
 ## VERSIONING AND RELEASES
 
@@ -130,10 +133,14 @@ npm run build
 - Obsidian 커뮤니티 제출/배포는 `manifest.json.version`과 **완전히 같은 이름의 GitHub Release 태그**를 찾는다. `manifest.json.version`이 `1.0.0`이면 태그도 반드시 `1.0.0`이어야 하며, `v1.0.0`만 만들면 커뮤니티 제출 화면에서 릴리스를 찾지 못한다.
 - GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
 - 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
+- 릴리스 전후에는 `npm run review -- --tag <version> --built`를 실행해 release asset 기준 Obsidian review gate를 통과시킨다.
 - `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
 - Obsidian 플러그인 스토어 출시와 업데이트는 별도 릴리스 브랜치나 PR 브랜치를 만들지 않고 `main` 브랜치에서 직접 준비한다.
 - 커뮤니티 제출 시스템은 기본 브랜치의 `manifest.json`과 동일 버전 GitHub Release 태그를 기준으로 삼는다. 따라서 릴리스 버전 변경은 `main`에 커밋하고, 버전명과 완전히 같은 태그만 생성해 관리한다.
 - 출시 이력과 업데이트 관리는 브랜치가 아니라 태그로만 추적한다. 예: `1.0.0`, `1.0.1`, `1.1.0`.
+- 같은 버전을 재출시할 때는 새 버전으로 올리지 말고 해당 버전 태그를 새 커밋으로 이동한다. 순서: `main` 푸시 → `git tag -f <version>` → `git push --force origin <version>` → Release workflow 완료 대기 → `gh release view <version> --json assets,tagName,targetCommitish,url`로 asset 3개 확인.
+- Release workflow가 tag push로 실행 중이거나 실행될 예정이면 같은 태그에 대해 수동 `gh release create`를 먼저 실행하지 않는다. workflow가 기존 asset을 지우고 다시 올리는 중 실패하면 `main.js` 누락 릴리즈가 생길 수 있다.
+- 릴리즈 완료 후 `gh release view <version> --json assets`에서 `manifest.json`, `main.js`, `styles.css`가 모두 있고, 가능하면 `gh attestation verify main.js --repo magnitus99/Superpower-Inside`, `gh attestation verify styles.css --repo magnitus99/Superpower-Inside`, `gh attestation verify manifest.json --repo magnitus99/Superpower-Inside`까지 확인한다.
 
 ## CONVENTIONS
 
@@ -146,6 +153,8 @@ npm run build
 - Obsidian 파일 접근은 `this.app.vault`, `vault.adapter`, `cachedRead`, `modify`, `create`를 우선한다. 런타임 코드에서 직접 `fs` 접근을 늘리지 않는다.
 - 대부분 named import/export와 `import type`을 사용한다. 하위 디렉터리 barrel 파일은 없다.
 - DOM은 Obsidian `createEl`, `createDiv`, `createSpan` 계열을 우선한다. 사용자/모델 출력에 `innerHTML` 직접 할당하지 않는다.
+- Obsidian 커뮤니티 정적 리뷰 Error를 피하기 위해 런타임 TypeScript에서 `.style.*`, `innerHTML`/`outerHTML` 대입, `createEl('h1'..'h6')`, `attr: { style: ... }`를 사용하지 않는다. 표시/숨김은 CSS class, 동적 수치는 `setCssProps`, 아이콘은 `setIcon`, heading UI는 설정 화면에서는 `new Setting(containerEl).setName(...).setHeading()`, 그 외 화면에서는 heading class가 붙은 `createDiv`를 사용한다.
+- UI 표시 텍스트 줄바꿈이 필요하면 HTML 문자열을 만들지 말고 text node와 `br`를 조합한다. 문서 객체가 필요하면 전역 `document` 대신 `container.ownerDocument`나 Obsidian API를 우선한다.
 - 설정 탭의 범위값 입력에는 슬라이더를 사용하지 않는다. 숫자 텍스트 입력(`addText` + `inputEl.type = 'number'`)으로 범위와 step을 지정한다.
 - Provider 추가 시 `PROVIDER_KEYS`, `PROVIDER_LABELS`, `DEFAULT_SETTINGS`, 설정 UI, `createProvider`, validation 경로를 함께 확인한다.
 - RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.superpower-inside/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
@@ -168,6 +177,10 @@ npm run build
 | `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                        |
 | `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                           |
 | 새 `console.*` 직접 호출                   | 통합 로그 페이지에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용 |
+| 런타임 TS에서 `.style.*` 직접 대입          | Obsidian 커뮤니티 리뷰의 `obsidianmd/no-static-styles-assignment` Error. CSS class 또는 `setCssProps` 사용 |
+| `innerHTML` / `outerHTML` 대입              | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용        |
+| `createEl('h1'..'h6')` 직접 생성            | 설정 UI 일관성 리뷰 Error. 설정 화면은 `Setting(...).setHeading()`, 일반 화면은 heading class `createDiv` 사용 |
+| `attr: { style: ... }` inline style         | Obsidian 커뮤니티 리뷰 Error. `styles.css` class로 이동                                           |
 | 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                  |
 | 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                       |
 | 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                 |
