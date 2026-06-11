@@ -141,6 +141,21 @@ export function cosine_similarity_or_nan(left, right) {
 }
 
 /**
+ * query token 목록과 텍스트에서 substring 매칭 수를 계산한다.
+ * @param {string} query_tokens
+ * @param {string} text
+ * @returns {number}
+ */
+export function count_keyword_matches(query_tokens, text) {
+    const ptr0 = passStringToWasm0(query_tokens, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.count_keyword_matches(ptr0, len0, ptr1, len1);
+    return ret >>> 0;
+}
+
+/**
  * 현재 `TypeScript` 경로와 같은 32비트 `FNV-1a` 콘텐츠 해시를 만든다.
  * @param {string} content
  * @returns {string}

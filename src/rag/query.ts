@@ -19,6 +19,7 @@ import {
 import {
   calculateHybridScoreRust,
   calculateRrfScoreRust,
+  countKeywordMatchesRust,
   cosineSimilarityRust,
   selectDiverseIndicesRust,
 } from './rust-core';
@@ -289,6 +290,9 @@ export class LLMRAGResultReranker implements RAGResultReranker {
 }
 
 function countKeywordMatches(queryTokens: string[], text: string): number {
+  const rustCount = countKeywordMatchesRust(queryTokens, text);
+  if (rustCount !== null) return rustCount;
+
   if (queryTokens.length === 0) return 0;
   const haystack = text.toLowerCase();
   return queryTokens.filter((token) => haystack.includes(token.toLowerCase())).length;

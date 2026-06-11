@@ -10,6 +10,7 @@ import {
   aggregateGraphEdgesRust,
   bm25TermFrequenciesRust,
   detectCommunitiesRust,
+  countKeywordMatchesRust,
   extractVaultLinksRust,
   isExcludedPathRust,
   isRustCoreAvailable,
@@ -58,6 +59,10 @@ describe('Rust WASM RAG core bridge', () => {
         api: 1,
       },
     });
+  });
+
+  it('returns Rust keyword-match counts with case-insensitive substring matching', () => {
+    expect(countKeywordMatchesRust(['Apple', 'missing', 'router'], 'Apple router')).toBe(2);
   });
 
   it('returns original vector row indexes and scores for top-k ranking', () => {

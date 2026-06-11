@@ -108,6 +108,22 @@ pub fn token_frequencies_json(text: &str) -> String {
     serialize_token_frequencies_json(tokens.len(), &frequencies)
 }
 
+/// query token 목록과 텍스트에서 substring 매칭 수를 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn count_keyword_matches(query_tokens: &str, text: &str) -> u32 {
+    if query_tokens.is_empty() || text.is_empty() {
+        return 0;
+    }
+
+    let haystack = text.to_lowercase();
+    let matches = query_tokens
+        .split('\u{1f}')
+        .filter(|token| haystack.contains(&token.to_lowercase()))
+        .count();
+    u32::try_from(matches).unwrap_or(u32::MAX)
+}
+
 /// 두 vector의 cosine similarity를 계산한다.
 #[must_use]
 pub fn cosine_similarity(left: &[f64], right: &[f64]) -> Option<f64> {
@@ -4021,10 +4037,10 @@ mod tests {
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         aggregate_graph_edges_flat, assign_vector_clusters, bm25_score_pairs, chunk_markdown,
-        chunk_plain_text, cosine_similarity, create_content_hash, detect_communities_flat,
-        extract_vault_links_json, hybrid_score_or_nan, is_excluded_path, normalize_entity_name,
-        parse_mention_candidates_json, prune_graph_indexes_json, rank_top_k_pairs,
-        recompute_centroids, rrf_score_or_nan, score_entity_match_or_nan,
+        chunk_plain_text, cosine_similarity, count_keyword_matches, create_content_hash,
+        detect_communities_flat, extract_vault_links_json, hybrid_score_or_nan, is_excluded_path,
+        normalize_entity_name, parse_mention_candidates_json, prune_graph_indexes_json,
+        rank_top_k_pairs, recompute_centroids, rrf_score_or_nan, score_entity_match_or_nan,
         score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
     };
 
@@ -4085,6 +4101,20 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// keyword 매칭은 소문자 비교 기준 substring 카운팅을 유지해야 한다.
+    #[test]
+    fn count_keyword_matches_is_case_insensitive_and_substring_based() {
+        assert_eq!(
+            count_keyword_matches("apple\u{1f}open\u{1f}router", "Apple router"),
+            2
+        );
+        assert_eq!(
+            count_keyword_matches("llm\u{1f}api", "No API docs, but LLM exists."),
+            2
+        );
+        assert_eq!(count_keyword_matches("missing", "No match here"), 0);
     }
 
     /// Markdown chunking은 heading과 code block 경계를 유지하고 line metadata를 보존해야 한다.

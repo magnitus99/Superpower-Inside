@@ -37,6 +37,11 @@ export function core_version(): string;
 export function cosine_similarity_or_nan(left: Float64Array, right: Float64Array): number;
 
 /**
+ * query token 목록과 텍스트에서 substring 매칭 수를 계산한다.
+ */
+export function count_keyword_matches(query_tokens: string, text: string): number;
+
+/**
  * 현재 `TypeScript` 경로와 같은 32비트 `FNV-1a` 콘텐츠 해시를 만든다.
  */
 export function create_content_hash(content: string): string;
@@ -127,6 +132,7 @@ export interface InitOutput {
     readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly core_version: () => [number, number];
     readonly cosine_similarity_or_nan: (a: number, b: number, c: number, d: number) => number;
+    readonly count_keyword_matches: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
     readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];

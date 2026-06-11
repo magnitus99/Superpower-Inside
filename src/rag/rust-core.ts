@@ -5,6 +5,7 @@ import {
   chunk_markdown_json,
   chunk_plain_text_json,
   core_version,
+  count_keyword_matches,
   cosine_similarity_or_nan,
   create_content_hash,
   detect_communities_flat,
@@ -190,6 +191,20 @@ export function bm25TermFrequenciesRust(text: string): RustBm25TermFrequencies |
     const parsed: unknown = JSON.parse(token_frequencies_json(text));
     if (!isBm25TermFrequencies(parsed)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function countKeywordMatchesRust(
+  queryTokens: readonly string[],
+  text: string,
+): number | null {
+  if (!ensureRustCore()) return null;
+  if (queryTokens.length === 0) return 0;
+  try {
+    const packedTokens = queryTokens.join('\u{1f}');
+    return count_keyword_matches(packedTokens, text);
   } catch {
     return null;
   }
