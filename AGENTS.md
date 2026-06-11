@@ -12,10 +12,12 @@
 
 - 수익화 관련 기능은 보류한다. 플러그인은 완전 무료/오픈소스로 유지한다.
 - 사용자는 모든 코드에 대해 매우 엄격한 검사를 요구한다. 작은 변경도 lint, typecheck, test, security, build, review gate 중 해당되는 검증을 피하지 않는다.
+- 실패한 검사 결과를 우회하지 않으며, 동일한 실패를 다시 실행/재현하고 원인을 분석한 뒤 수정한다. 모든 게이트 통과가 작업 완료 조건이다.
 - 실패하는 검증을 우회하지 않는다. `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `as any`, clippy allow, 무근거 fallback, generated 파일 수동 수정으로 통과시키지 않는다.
 - 새 기능/버그 수정/리팩터링은 기본적으로 테스트를 먼저 추가하거나 기존 테스트 계약을 확장한다. 순수 함수로 분리 가능한 로직은 Vitest 또는 Rust unit test로 고정한다.
 - 검증 결과를 말할 때는 실제 실행한 명령과 exit 0 근거가 있어야 한다. 추측으로 “될 것”이라고 말하지 않는다.
-- 코드 변경 후 기본 순서는 `npm run lint` → `npm run typecheck` → `npm run test` → 필요한 경우 `npm run rust:security` → `npm run build` → `npm run review -- --tag <manifest-version> --built`다.
+- 코드 변경 후 기본 순서는 `npm run lint` → `npm run typecheck` → `npm run test` → `npm run rust:security`(Rust 변경 시) → `npm run build` → `npm run review -- --tag <manifest-version> --built`다.  
+  검증이 통과되지 않으면 다음 단계로 진행하지 않는다.
 - Rust/WASM 변경은 반드시 `npm run rust:security`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, generated WASM 최신성 검사를 포함한다.
 - UI/DOM/CSS 변경은 Obsidian community review 규칙까지 검증한다. 런타임 TS에서 inline style, `innerHTML`, heading direct create 같은 review error 패턴을 만들지 않는다.
 
