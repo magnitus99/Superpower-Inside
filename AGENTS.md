@@ -6,6 +6,25 @@
 
 > Obsidian 플러그인. LLM, RAG, MCP 도구 호출, 인터넷 검색 도구, 사이드바 채팅, 채팅 세션 저장, 출처/컨텍스트 첨부를 통합한다.
 > TypeScript strict 모드, esbuild CJS 번들, Obsidian DOM API 기반 UI.
+> JS/TS는 UI와 Obsidian host boundary를 담당하고, 성능 민감 순수 계산은 Rust/WASM 코어로 이전한다.
+
+## NON-NEGOTIABLE QUALITY BAR
+
+- 사용자는 모든 코드에 대해 매우 엄격한 검사를 요구한다. 작은 변경도 lint, typecheck, test, security, build, review gate 중 해당되는 검증을 피하지 않는다.
+- 실패하는 검증을 우회하지 않는다. `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `as any`, clippy allow, 무근거 fallback, generated 파일 수동 수정으로 통과시키지 않는다.
+- 새 기능/버그 수정/리팩터링은 기본적으로 테스트를 먼저 추가하거나 기존 테스트 계약을 확장한다. 순수 함수로 분리 가능한 로직은 Vitest 또는 Rust unit test로 고정한다.
+- 검증 결과를 말할 때는 실제 실행한 명령과 exit 0 근거가 있어야 한다. 추측으로 “될 것”이라고 말하지 않는다.
+- 코드 변경 후 기본 순서는 `npm run lint` → `npm run typecheck` → `npm run test` → 필요한 경우 `npm run rust:security` → `npm run build` → `npm run review -- --tag <manifest-version> --built`다.
+- Rust/WASM 변경은 반드시 `npm run rust:security`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, generated WASM 최신성 검사를 포함한다.
+- UI/DOM/CSS 변경은 Obsidian community review 규칙까지 검증한다. 런타임 TS에서 inline style, `innerHTML`, heading direct create 같은 review error 패턴을 만들지 않는다.
+
+## JS/TS ROLE BOUNDARY
+
+- JS/TS는 프론트엔드와 host integration 담당이다. 허용 범위는 Obsidian API, DOM 렌더링, plugin lifecycle, settings UI, vault adapter I/O, provider fetch/stream, MCP stdio, IndexedDB/Dexie adapter, WASM bridge다.
+- RAG 해시/토큰화/청킹/BM25, vector score/top-k, GraphRAG ranking/community/entity scoring, 대용량 metadata diff/validation 같은 순수 계산은 Rust/WASM 우선으로 구현한다.
+- 새 순수 계산 로직을 TS에 추가해야 한다면 먼저 Rust/WASM 이전 가능성을 검토하고, TS에 남기는 이유가 host API, DOM, 네트워크, 저장소 I/O처럼 명확해야 한다.
+- Rust 코어는 deterministic input/output만 다룬다. Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않는다.
+- TS fallback은 WASM 초기화 실패나 wire-format 검증 실패를 위한 안전장치다. 새 성능 경로의 기본 실행 경로는 Rust/WASM이어야 한다.
 
 ## STRUCTURE
 
@@ -66,64 +85,64 @@
 
 ## CODE MAP
 
-| Symbol                       | Type      | Location                     | Role                                                   |
-| ---------------------------- | --------- | ---------------------------- | ------------------------------------------------------ |
-| `SuperpowerInsidePlugin`     | class     | `main.ts`                    | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화 |
-| `SuperpowerInsideSettings`   | interface | `src/settings.ts`            | 전체 설정 스키마                                       |
-| `DEFAULT_SETTINGS`           | const     | `src/settings.ts`            | Provider/RAG/MCP/Chat 기본값                           |
-| `SuperpowerInsideSettingTab` | class     | `src/settings.ts`            | 설정 UI와 debounced save                               |
-| `createProvider`             | function  | `src/llm/providers.ts`       | ProviderKey → LLMProvider 팩토리                       |
-| `OpenAICompatibleProvider`   | class     | `src/llm/providers.ts`       | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리         |
-| `ClaudeProvider`             | class     | `src/llm/providers.ts`       | Anthropic Claude Provider                              |
-| `OllamaProvider`             | class     | `src/llm/providers.ts`       | Ollama Local/Cloud Provider                            |
-| `CachedEmbeddingProvider`    | class     | `src/llm/embedding.ts`       | 메모리 + IndexedDB(Dexie) 임베딩 캐시                  |
-| `chunkMarkdown`              | function  | `src/rag/indexer.ts`         | 헤딩/코드블록 경계 존중 Markdown 청킹                  |
-| `VaultIndexer`               | class     | `src/rag/indexer.ts`         | 전체/증분/파일별 인덱싱                                |
-| `JsonFileVectorStore`        | class     | `src/rag/store.ts`           | vault.adapter 기반 JSON 벡터 저장소                    |
-| `RAGQueryEngine`             | class     | `src/rag/query.ts`           | 임베딩 → 코사인 유사도 → 컨텍스트                      |
-| `ChatView`                   | class     | `src/chat/view.ts`           | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI    |
-| `buildChatContext`           | function  | `src/chat/context.ts`        | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성            |
-| `parseMentions`              | function  | `src/chat/mention-parser.ts` | `@...` 멘션 파싱과 중복 제거                           |
-| `saveChat` / `loadChat`      | function  | `src/chat/persistence.ts`    | 채팅 세션 Markdown 저장/복원                           |
-| `MCPClientManager`           | class     | `src/mcp/client.ts`          | MCP SDK Client + stdio transport                       |
-| `MCPRegistry`                | class     | `src/mcp/registry.ts`        | MCP 서버 설정/클라이언트/연결 상태 관리                |
-| `create_content_hash`        | function  | `crates/rag-wasm/src/lib.rs` | TypeScript `createContentHash()`와 같은 UTF-16 FNV-1a |
-| `tokenize`                   | function  | `crates/rag-wasm/src/lib.rs` | TypeScript BM25 토크나이저와 같은 검색 토큰 생성      |
-| `token_frequencies_json`     | function  | `crates/rag-wasm/src/lib.rs` | BM25 문서 term frequency JSON 생성                    |
-| `bm25TermFrequenciesRust`    | function  | `src/rag/rust-core.ts`       | BM25 문서 frequency bridge                            |
-| `bm25_score_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | BM25 posting list의 doc index/score 계산              |
-| `scoreBm25Rust`              | function  | `src/rag/rust-core.ts`       | TS BM25 posting 배열과 Rust score pair bridge          |
-| `rank_top_k_pairs`           | function  | `crates/rag-wasm/src/lib.rs` | flattened vector matrix의 top-k index/score 계산      |
-| `rankTopKPairsRust`          | function  | `src/rag/rust-core.ts`       | TS entry 배열과 Rust row index/score bridge            |
-| `rankGlobalCommunitiesWithRust` | function | `src/graph/query-engine.ts` | GraphRAG community summary vector top-k Rust bridge 사용 |
-| `rrf_score_or_nan`           | function  | `crates/rag-wasm/src/lib.rs` | RAG retrieval source rank fusion score 계산            |
-| `calculateRrfScoreRust`      | function  | `src/rag/rust-core.ts`       | TS source rank map과 Rust RRF bridge                   |
-| `hybrid_score_or_nan`        | function  | `crates/rag-wasm/src/lib.rs` | RAG hybrid result score 계산                           |
-| `calculateHybridScoreRust`   | function  | `src/rag/rust-core.ts`       | TS query score input과 Rust hybrid score bridge        |
-| `select_diverse_indices`     | function  | `crates/rag-wasm/src/lib.rs` | RAG MMR diversity selection index 계산                 |
-| `selectDiverseIndicesRust`   | function  | `src/rag/rust-core.ts`       | TS query 후보와 Rust MMR selection bridge              |
-| `aggregate_graph_edges_flat` | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG relation edge confidence를 무방향 endpoint pair별로 집계 |
-| `aggregateGraphEdgesRust`    | function  | `src/rag/rust-core.ts`       | TS entity id index 배열과 Rust edge aggregation bridge |
-| `buildEdges`                 | function  | `src/graph/community-detector.ts` | GraphRAG relation filtering, id mapping, Rust 우선 edge aggregation |
-| `extract_vault_links_json`   | function  | `crates/rag-wasm/src/lib.rs` | Obsidian wikilink/Markdown link target 추출 JSON 생성  |
-| `extractVaultLinksRust`      | function  | `src/rag/rust-core.ts`       | 채팅 참조 확장의 Rust link extraction bridge           |
-| `extractVaultLinks`          | function  | `src/chat/context-expansion.ts` | Rust 우선 vault link extraction과 TypeScript fallback |
-| `is_excluded_path`           | function  | `crates/rag-wasm/src/lib.rs` | RAG exclude path pattern matching                      |
-| `isExcludedPathRust`         | function  | `src/rag/rust-core.ts`       | Rust exclude path matcher bridge                       |
-| `isExcludedPath`             | function  | `src/utils/vault.ts`         | Rust 우선 vault exclude path matching과 TypeScript fallback |
-| `normalize_entity_name`      | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG entity 이름 정규화                            |
-| `score_entity_match_or_nan`  | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG entity merge score 계산                       |
-| `scoreEntityMatchRust`       | function  | `src/rag/rust-core.ts`       | TS entity resolver와 Rust merge score bridge           |
-| `EntityResolver`             | class     | `src/graph/entity-resolver.ts` | GraphRAG entity 후보 선택, Rust 우선 score, pending merge 저장 |
-| `detect_communities_flat`    | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG community assignment와 modularity 계산        |
-| `detectCommunitiesRust`      | function  | `src/rag/rust-core.ts`       | numeric graph edge 배열과 Rust community detection bridge |
-| `detectCommunities`          | function  | `src/graph/community-detector.ts` | GraphRAG edge 문자열 매핑과 Rust 우선 community detection |
-| `score_local_evidence_pairs` | function  | `crates/rag-wasm/src/lib.rs` | GraphRAG local/evidence-first traversal evidence score 계산 |
-| `scoreLocalEvidenceRust`     | function  | `src/rag/rust-core.ts`       | numeric entity/relation/claim graph와 Rust evidence score bridge |
-| `chunk_markdown_json`        | function  | `crates/rag-wasm/src/lib.rs` | Markdown RAG chunk를 JSON으로 생성                     |
-| `chunkMarkdownRust`          | function  | `src/rag/rust-core.ts`       | 내장 WASM Markdown chunk bridge                        |
-| `chunk_plain_text_json`      | function  | `crates/rag-wasm/src/lib.rs` | plain text/code RAG chunk를 JSON으로 생성              |
-| `chunkPlainTextRust`         | function  | `src/rag/rust-core.ts`       | 내장 WASM plain text/code chunk bridge                 |
+| Symbol                          | Type      | Location                          | Role                                                                |
+| ------------------------------- | --------- | --------------------------------- | ------------------------------------------------------------------- |
+| `SuperpowerInsidePlugin`        | class     | `main.ts`                         | Plugin 진입점, 설정 migration, provider/RAG/MCP 초기화              |
+| `SuperpowerInsideSettings`      | interface | `src/settings.ts`                 | 전체 설정 스키마                                                    |
+| `DEFAULT_SETTINGS`              | const     | `src/settings.ts`                 | Provider/RAG/MCP/Chat 기본값                                        |
+| `SuperpowerInsideSettingTab`    | class     | `src/settings.ts`                 | 설정 UI와 debounced save                                            |
+| `createProvider`                | function  | `src/llm/providers.ts`            | ProviderKey → LLMProvider 팩토리                                    |
+| `OpenAICompatibleProvider`      | class     | `src/llm/providers.ts`            | OpenAI/OpenRouter 공통 스트리밍/도구 호출 처리                      |
+| `ClaudeProvider`                | class     | `src/llm/providers.ts`            | Anthropic Claude Provider                                           |
+| `OllamaProvider`                | class     | `src/llm/providers.ts`            | Ollama Local/Cloud Provider                                         |
+| `CachedEmbeddingProvider`       | class     | `src/llm/embedding.ts`            | 메모리 + IndexedDB(Dexie) 임베딩 캐시                               |
+| `chunkMarkdown`                 | function  | `src/rag/indexer.ts`              | 헤딩/코드블록 경계 존중 Markdown 청킹                               |
+| `VaultIndexer`                  | class     | `src/rag/indexer.ts`              | 전체/증분/파일별 인덱싱                                             |
+| `JsonFileVectorStore`           | class     | `src/rag/store.ts`                | vault.adapter 기반 JSON 벡터 저장소                                 |
+| `RAGQueryEngine`                | class     | `src/rag/query.ts`                | 임베딩 → 코사인 유사도 → 컨텍스트                                   |
+| `ChatView`                      | class     | `src/chat/view.ts`                | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI                 |
+| `buildChatContext`              | function  | `src/chat/context.ts`             | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성                         |
+| `parseMentions`                 | function  | `src/chat/mention-parser.ts`      | `@...` 멘션 파싱과 중복 제거                                        |
+| `saveChat` / `loadChat`         | function  | `src/chat/persistence.ts`         | 채팅 세션 Markdown 저장/복원                                        |
+| `MCPClientManager`              | class     | `src/mcp/client.ts`               | MCP SDK Client + stdio transport                                    |
+| `MCPRegistry`                   | class     | `src/mcp/registry.ts`             | MCP 서버 설정/클라이언트/연결 상태 관리                             |
+| `create_content_hash`           | function  | `crates/rag-wasm/src/lib.rs`      | TypeScript `createContentHash()`와 같은 UTF-16 FNV-1a               |
+| `tokenize`                      | function  | `crates/rag-wasm/src/lib.rs`      | TypeScript BM25 토크나이저와 같은 검색 토큰 생성                    |
+| `token_frequencies_json`        | function  | `crates/rag-wasm/src/lib.rs`      | BM25 문서 term frequency JSON 생성                                  |
+| `bm25TermFrequenciesRust`       | function  | `src/rag/rust-core.ts`            | BM25 문서 frequency bridge                                          |
+| `bm25_score_pairs`              | function  | `crates/rag-wasm/src/lib.rs`      | BM25 posting list의 doc index/score 계산                            |
+| `scoreBm25Rust`                 | function  | `src/rag/rust-core.ts`            | TS BM25 posting 배열과 Rust score pair bridge                       |
+| `rank_top_k_pairs`              | function  | `crates/rag-wasm/src/lib.rs`      | flattened vector matrix의 top-k index/score 계산                    |
+| `rankTopKPairsRust`             | function  | `src/rag/rust-core.ts`            | TS entry 배열과 Rust row index/score bridge                         |
+| `rankGlobalCommunitiesWithRust` | function  | `src/graph/query-engine.ts`       | GraphRAG community summary vector top-k Rust bridge 사용            |
+| `rrf_score_or_nan`              | function  | `crates/rag-wasm/src/lib.rs`      | RAG retrieval source rank fusion score 계산                         |
+| `calculateRrfScoreRust`         | function  | `src/rag/rust-core.ts`            | TS source rank map과 Rust RRF bridge                                |
+| `hybrid_score_or_nan`           | function  | `crates/rag-wasm/src/lib.rs`      | RAG hybrid result score 계산                                        |
+| `calculateHybridScoreRust`      | function  | `src/rag/rust-core.ts`            | TS query score input과 Rust hybrid score bridge                     |
+| `select_diverse_indices`        | function  | `crates/rag-wasm/src/lib.rs`      | RAG MMR diversity selection index 계산                              |
+| `selectDiverseIndicesRust`      | function  | `src/rag/rust-core.ts`            | TS query 후보와 Rust MMR selection bridge                           |
+| `aggregate_graph_edges_flat`    | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG relation edge confidence를 무방향 endpoint pair별로 집계   |
+| `aggregateGraphEdgesRust`       | function  | `src/rag/rust-core.ts`            | TS entity id index 배열과 Rust edge aggregation bridge              |
+| `buildEdges`                    | function  | `src/graph/community-detector.ts` | GraphRAG relation filtering, id mapping, Rust 우선 edge aggregation |
+| `extract_vault_links_json`      | function  | `crates/rag-wasm/src/lib.rs`      | Obsidian wikilink/Markdown link target 추출 JSON 생성               |
+| `extractVaultLinksRust`         | function  | `src/rag/rust-core.ts`            | 채팅 참조 확장의 Rust link extraction bridge                        |
+| `extractVaultLinks`             | function  | `src/chat/context-expansion.ts`   | Rust 우선 vault link extraction과 TypeScript fallback               |
+| `is_excluded_path`              | function  | `crates/rag-wasm/src/lib.rs`      | RAG exclude path pattern matching                                   |
+| `isExcludedPathRust`            | function  | `src/rag/rust-core.ts`            | Rust exclude path matcher bridge                                    |
+| `isExcludedPath`                | function  | `src/utils/vault.ts`              | Rust 우선 vault exclude path matching과 TypeScript fallback         |
+| `normalize_entity_name`         | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG entity 이름 정규화                                         |
+| `score_entity_match_or_nan`     | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG entity merge score 계산                                    |
+| `scoreEntityMatchRust`          | function  | `src/rag/rust-core.ts`            | TS entity resolver와 Rust merge score bridge                        |
+| `EntityResolver`                | class     | `src/graph/entity-resolver.ts`    | GraphRAG entity 후보 선택, Rust 우선 score, pending merge 저장      |
+| `detect_communities_flat`       | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG community assignment와 modularity 계산                     |
+| `detectCommunitiesRust`         | function  | `src/rag/rust-core.ts`            | numeric graph edge 배열과 Rust community detection bridge           |
+| `detectCommunities`             | function  | `src/graph/community-detector.ts` | GraphRAG edge 문자열 매핑과 Rust 우선 community detection           |
+| `score_local_evidence_pairs`    | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG local/evidence-first traversal evidence score 계산         |
+| `scoreLocalEvidenceRust`        | function  | `src/rag/rust-core.ts`            | numeric entity/relation/claim graph와 Rust evidence score bridge    |
+| `chunk_markdown_json`           | function  | `crates/rag-wasm/src/lib.rs`      | Markdown RAG chunk를 JSON으로 생성                                  |
+| `chunkMarkdownRust`             | function  | `src/rag/rust-core.ts`            | 내장 WASM Markdown chunk bridge                                     |
+| `chunk_plain_text_json`         | function  | `crates/rag-wasm/src/lib.rs`      | plain text/code RAG chunk를 JSON으로 생성                           |
+| `chunkPlainTextRust`            | function  | `src/rag/rust-core.ts`            | 내장 WASM plain text/code chunk bridge                              |
 
 ## TEST VAULT
 
@@ -229,22 +248,22 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 
 ## ANTI-PATTERNS
 
-| 금지 패턴                                  | 이유                                                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반                                                                     |
-| `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                        |
-| `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                           |
-| 새 `console.*` 직접 호출                   | 통합 로그 페이지에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용 |
-| 런타임 TS에서 `.style.*` 직접 대입          | Obsidian 커뮤니티 리뷰의 `obsidianmd/no-static-styles-assignment` Error. CSS class 또는 `setCssProps` 사용 |
-| `innerHTML` / `outerHTML` 대입              | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용        |
-| `createEl('h1'..'h6')` 직접 생성            | 설정 UI 일관성 리뷰 Error. 설정 화면은 `Setting(...).setHeading()`, 일반 화면은 heading class `createDiv` 사용 |
-| `attr: { style: ... }` inline style         | Obsidian 커뮤니티 리뷰 Error. `styles.css` class로 이동                                           |
-| 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                  |
-| 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                       |
-| 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                 |
-| `.test-vault` 산출물 무심코 커밋           | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음                                              |
-| `package-lock.json` 없이 의존성 변경       | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다        |
-| `src/llm/providers.ts.bak` 유지            | 백업 파일 성격. 정리 작업 시 삭제 후보                                                           |
+| 금지 패턴                                  | 이유                                                                                                           |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반                                                                                   |
+| `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                                      |
+| `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                                         |
+| 새 `console.*` 직접 호출                   | 통합 로그 페이지에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용               |
+| 런타임 TS에서 `.style.*` 직접 대입         | Obsidian 커뮤니티 리뷰의 `obsidianmd/no-static-styles-assignment` Error. CSS class 또는 `setCssProps` 사용     |
+| `innerHTML` / `outerHTML` 대입             | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용                      |
+| `createEl('h1'..'h6')` 직접 생성           | 설정 UI 일관성 리뷰 Error. 설정 화면은 `Setting(...).setHeading()`, 일반 화면은 heading class `createDiv` 사용 |
+| `attr: { style: ... }` inline style        | Obsidian 커뮤니티 리뷰 Error. `styles.css` class로 이동                                                        |
+| 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                                |
+| 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                                     |
+| 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                               |
+| `.test-vault` 산출물 무심코 커밋           | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음                                                            |
+| `package-lock.json` 없이 의존성 변경       | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다                      |
+| `src/llm/providers.ts.bak` 유지            | 백업 파일 성격. 정리 작업 시 삭제 후보                                                                         |
 
 ## COMMANDS
 
