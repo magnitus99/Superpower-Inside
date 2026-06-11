@@ -1,7 +1,7 @@
 import type { JsonFileBM25Index } from './bm25';
 import type { VectorEntry, VectorStore } from './store';
 import type { CachedMetadata, TFile } from 'obsidian';
-import { rankTopKPairsRust } from './rust-core';
+import { assignVectorClustersRust, rankTopKPairsRust, recomputeCentroidsRust } from './rust-core';
 
 export type RetrievalCandidateSource =
   | 'vector'
@@ -593,15 +593,23 @@ class IvfVectorIndex {
   ): Array<{ entry: VectorEntry; score: number }> {
     if (this.centroids.length === 0) return [];
 
-    const centroidIndexes = this.centroids
-      .map((centroid, index) => ({
-        index,
-        score: cosineSimilarity(vector, centroid),
-      }))
-      .filter((candidate): candidate is { index: number; score: number } => candidate.score !== null)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(1, Math.min(probeCount, this.centroids.length)))
-      .map((candidate) => candidate.index);
+    const resolvedProbeCount = Math.max(1, Math.min(probeCount, this.centroids.length));
+    const rustCentroidScores = rankTopKPairsRust(vector, this.centroids, resolvedProbeCount);
+    const centroidIndexes =
+      rustCentroidScores !== null
+        ? rustCentroidScores.map((candidate) => candidate.index)
+        : this.centroids
+            .map((centroid, index) => ({
+              index,
+              score: cosineSimilarity(vector, centroid),
+            }))
+            .filter(
+              (candidate): candidate is { index: number; score: number } =>
+                candidate.score !== null,
+            )
+            .sort((a, b) => b.score - a.score)
+            .slice(0, resolvedProbeCount)
+            .map((candidate) => candidate.index);
 
     const candidates = centroidIndexes.flatMap((index) => this.clusters[index] ?? []);
     throwIfAborted(signal);
@@ -631,6 +639,20 @@ function assignClusters(
   signal?: AbortSignal,
 ): VectorEntry[][] {
   const clusters = Array.from({ length: centroids.length }, () => [] as VectorEntry[]);
+  const rustAssignments = assignVectorClustersRust(
+    entries.map((entry) => entry.vector),
+    centroids,
+  );
+  if (rustAssignments !== null && rustAssignments.length === entries.length) {
+    for (let index = 0; index < entries.length; index++) {
+      throwIfAborted(signal);
+      const clusterIndex = rustAssignments[index] ?? 0;
+      const entry = entries[index];
+      if (entry) clusters[clusterIndex]?.push(entry);
+    }
+    return clusters;
+  }
+
   for (const entry of entries) {
     throwIfAborted(signal);
     let bestIndex = 0;
@@ -652,6 +674,19 @@ function recomputeCentroids(
   clusters: readonly (readonly VectorEntry[])[],
   previousCentroids: readonly (readonly number[])[],
 ): number[][] {
+  const vectors: number[][] = [];
+  const assignments: number[] = [];
+  for (let clusterIndex = 0; clusterIndex < clusters.length; clusterIndex++) {
+    const cluster = clusters[clusterIndex] ?? [];
+    for (const entry of cluster) {
+      vectors.push(entry.vector);
+      assignments.push(clusterIndex);
+    }
+  }
+
+  const rustCentroids = recomputeCentroidsRust(vectors, assignments, previousCentroids);
+  if (rustCentroids !== null) return rustCentroids;
+
   return clusters.map((cluster, index) => {
     if (cluster.length === 0) return [...previousCentroids[index]];
 

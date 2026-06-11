@@ -1,5 +1,6 @@
 import {
   aggregate_graph_edges_flat,
+  assign_vector_clusters,
   bm25_score_pairs,
   chunk_markdown_json,
   chunk_plain_text_json,
@@ -14,6 +15,7 @@ import {
   normalize_entity_name,
   parse_mention_candidates_json,
   rank_top_k_pairs,
+  recompute_centroids,
   rrf_score_or_nan,
   score_entity_match_or_nan,
   select_diverse_indices,
@@ -188,6 +190,46 @@ export function rankTopKPairsRust(
     topK,
   );
   return decodeRankPairs(pairs, compatibleRows);
+}
+
+export function assignVectorClustersRust(
+  vectors: readonly (readonly number[])[],
+  centroids: readonly (readonly number[])[],
+): number[] | null {
+  if (vectors.length === 0) return [];
+  const matrix = encodeCompatibleVectorMatrix(vectors, centroids);
+  if (matrix === null) return null;
+  if (!ensureRustCore()) return null;
+
+  const assignments = assign_vector_clusters(
+    matrix.flatVectors,
+    matrix.flatCentroids,
+    matrix.dimension,
+  );
+  const decoded = decodeIndexArray(assignments, centroids.length);
+  if (decoded === null || decoded.length !== vectors.length) return null;
+  return decoded;
+}
+
+export function recomputeCentroidsRust(
+  vectors: readonly (readonly number[])[],
+  assignments: readonly number[],
+  previousCentroids: readonly (readonly number[])[],
+): number[][] | null {
+  if (previousCentroids.length === 0) return [];
+  if (vectors.length !== assignments.length) return null;
+  const matrix = encodeCompatibleVectorMatrix(vectors, previousCentroids);
+  if (matrix === null) return null;
+  if (!isValidUint32Array(assignments, previousCentroids.length)) return null;
+  if (!ensureRustCore()) return null;
+
+  const values = recompute_centroids(
+    matrix.flatVectors,
+    new Uint32Array(assignments),
+    matrix.flatCentroids,
+    matrix.dimension,
+  );
+  return decodeVectorMatrix(values, previousCentroids.length, matrix.dimension);
 }
 
 export function scoreBm25Rust(
@@ -662,6 +704,65 @@ function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] 
     indexes.push(value);
   }
   return indexes;
+}
+
+interface EncodedVectorMatrixPair {
+  flatVectors: Float64Array;
+  flatCentroids: Float64Array;
+  dimension: number;
+}
+
+function encodeCompatibleVectorMatrix(
+  vectors: readonly (readonly number[])[],
+  centroids: readonly (readonly number[])[],
+): EncodedVectorMatrixPair | null {
+  const dimension = vectors[0]?.length ?? centroids[0]?.length ?? 0;
+  if (dimension <= 0 || centroids.length === 0) return null;
+
+  const flatVectors = encodeVectorMatrix(vectors, dimension);
+  const flatCentroids = encodeVectorMatrix(centroids, dimension);
+  if (flatVectors === null || flatCentroids === null) return null;
+  return {
+    flatVectors,
+    flatCentroids,
+    dimension,
+  };
+}
+
+function encodeVectorMatrix(
+  vectors: readonly (readonly number[])[],
+  dimension: number,
+): Float64Array | null {
+  const values = new Float64Array(vectors.length * dimension);
+  for (let rowIndex = 0; rowIndex < vectors.length; rowIndex++) {
+    const vector = vectors[rowIndex];
+    if (!vector || vector.length !== dimension) return null;
+    for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
+      const value = vector[dimensionIndex];
+      if (!Number.isFinite(value)) return null;
+      values[rowIndex * dimension + dimensionIndex] = value;
+    }
+  }
+  return values;
+}
+
+function decodeVectorMatrix(
+  values: Float64Array,
+  rowCount: number,
+  dimension: number,
+): number[][] | null {
+  if (dimension <= 0 || values.length !== rowCount * dimension) return null;
+  const rows: number[][] = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    const row: number[] = [];
+    for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
+      const value = values[rowIndex * dimension + dimensionIndex];
+      if (!Number.isFinite(value)) return null;
+      row.push(value);
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function isValidBm25Posting(posting: RustBm25Posting): boolean {

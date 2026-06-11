@@ -7,6 +7,11 @@
 export function aggregate_graph_edges_flat(source_indices: Uint32Array, target_indices: Uint32Array, confidences: Float64Array, node_count: number): Float64Array;
 
 /**
+ * flattened vector matrix의 각 row를 가장 가까운 centroid index로 배정한다.
+ */
+export function assign_vector_clusters(vectors: Float64Array, centroids: Float64Array, dimensions: number): Float64Array;
+
+/**
  * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
  */
 export function bm25_score_pairs(term_offsets: Uint32Array, doc_indices: Uint32Array, term_frequencies: Float64Array, doc_lengths: Float64Array, total_docs: number, avg_doc_length: number): Float64Array;
@@ -72,6 +77,11 @@ export function parse_mention_candidates_json(content: string): string;
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
 
 /**
+ * flattened vector matrix와 cluster assignment로 centroid matrix를 다시 계산한다.
+ */
+export function recompute_centroids(vectors: Float64Array, assignments: Uint32Array, previous_centroids: Float64Array, dimensions: number): Float64Array;
+
+/**
  * retrieval source rank map에서 RRF score를 계산한다.
  */
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
@@ -106,6 +116,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly aggregate_graph_edges_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -119,6 +130,7 @@ export interface InitOutput {
     readonly normalize_entity_name: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly score_entity_match_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly score_local_evidence_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];

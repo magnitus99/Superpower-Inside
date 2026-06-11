@@ -170,6 +170,45 @@ pub fn rank_top_k_pairs(
     pairs.into_boxed_slice()
 }
 
+/// flattened vector matrix의 각 row를 가장 가까운 centroid index로 배정한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn assign_vector_clusters(vectors: &[f64], centroids: &[f64], dimensions: usize) -> Box<[f64]> {
+    if dimensions == 0
+        || centroids.is_empty()
+        || !vectors.len().is_multiple_of(dimensions)
+        || !centroids.len().is_multiple_of(dimensions)
+    {
+        return Box::default();
+    }
+
+    collect_indices_as_f64(assign_vectors_to_centroids(vectors, centroids, dimensions))
+}
+
+/// flattened vector matrix와 cluster assignment로 centroid matrix를 다시 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn recompute_centroids(
+    vectors: &[f64],
+    assignments: &[u32],
+    previous_centroids: &[f64],
+    dimensions: usize,
+) -> Box<[f64]> {
+    let Some(vector_count) = vectors.len().checked_div(dimensions) else {
+        return Box::default();
+    };
+    if dimensions == 0
+        || !vectors.len().is_multiple_of(dimensions)
+        || !previous_centroids.len().is_multiple_of(dimensions)
+        || vector_count != assignments.len()
+    {
+        return Box::default();
+    }
+
+    recompute_centroids_from_assignments(vectors, assignments, previous_centroids, dimensions)
+        .into_boxed_slice()
+}
+
 /// flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
 #[must_use]
 #[wasm_bindgen]
@@ -602,6 +641,93 @@ fn compare_scored_rows_descending(left: &ScoredRow, right: &ScoredRow) -> std::c
         .score
         .total_cmp(&left.score)
         .then_with(|| left.row_index.cmp(&right.row_index))
+}
+
+/// 각 vector row를 가장 cosine score가 높은 centroid로 배정한다.
+fn assign_vectors_to_centroids(
+    vectors: &[f64],
+    centroids: &[f64],
+    dimensions: usize,
+) -> Vec<usize> {
+    let vector_count = vectors.len().checked_div(dimensions).unwrap_or_default();
+    let mut assignments = Vec::with_capacity(vector_count);
+    for vector in vectors.chunks_exact(dimensions) {
+        assignments.push(assign_vector_to_centroid(vector, centroids, dimensions));
+    }
+    assignments
+}
+
+/// 단일 vector의 centroid 배정을 계산한다. 유효 score가 없으면 기존 `TypeScript` 기본값처럼 0번 cluster로 둔다.
+fn assign_vector_to_centroid(vector: &[f64], centroids: &[f64], dimensions: usize) -> usize {
+    let mut best_index = 0_usize;
+    let mut best_score = f64::NEG_INFINITY;
+
+    for (centroid_index, centroid) in centroids.chunks_exact(dimensions).enumerate() {
+        let Some(score) = cosine_similarity(vector, centroid) else {
+            continue;
+        };
+        if score > best_score {
+            best_index = centroid_index;
+            best_score = score;
+        }
+    }
+
+    best_index
+}
+
+/// assignment를 기준으로 centroid 평균을 다시 계산한다. 비어 있는 cluster는 기존 centroid를 유지한다.
+fn recompute_centroids_from_assignments(
+    vectors: &[f64],
+    assignments: &[u32],
+    previous_centroids: &[f64],
+    dimensions: usize,
+) -> Vec<f64> {
+    let cluster_count = previous_centroids
+        .len()
+        .checked_div(dimensions)
+        .unwrap_or_default();
+    let mut sums = vec![0.0_f64; previous_centroids.len()];
+    let mut counts = vec![0_usize; cluster_count];
+
+    for (vector_index, vector) in vectors.chunks_exact(dimensions).enumerate() {
+        let Some(raw_assignment) = assignments.get(vector_index).copied() else {
+            return Vec::new();
+        };
+        let Some(cluster_index) = bounded_u32_index(raw_assignment, cluster_count) else {
+            return Vec::new();
+        };
+        if let Some(count) = counts.get_mut(cluster_index) {
+            *count = count.saturating_add(1);
+        }
+        let output_offset = cluster_index.saturating_mul(dimensions);
+        let Some(output_slice) = sums.get_mut(output_offset..output_offset + dimensions) else {
+            return Vec::new();
+        };
+        for (sum, value) in output_slice.iter_mut().zip(vector.iter().copied()) {
+            *sum += value;
+        }
+    }
+
+    let mut output = Vec::with_capacity(previous_centroids.len());
+    for (cluster_index, previous_centroid) in
+        previous_centroids.chunks_exact(dimensions).enumerate()
+    {
+        let count = counts.get(cluster_index).copied().unwrap_or_default();
+        if count == 0 {
+            output.extend_from_slice(previous_centroid);
+            continue;
+        }
+        let Some(count_f64) = usize_to_f64(count) else {
+            return Vec::new();
+        };
+        let offset = cluster_index.saturating_mul(dimensions);
+        let Some(sum_slice) = sums.get(offset..offset + dimensions) else {
+            return Vec::new();
+        };
+        output.extend(sum_slice.iter().map(|value| value / count_f64));
+    }
+
+    output
 }
 
 /// retrieval source별 RRF weight를 반환한다.
@@ -2991,10 +3117,10 @@ mod tests {
 
     use super::{
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
-        aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
-        cosine_similarity, create_content_hash, detect_communities_flat, extract_vault_links_json,
-        hybrid_score_or_nan, is_excluded_path, normalize_entity_name,
-        parse_mention_candidates_json, rank_top_k_pairs, rrf_score_or_nan,
+        aggregate_graph_edges_flat, assign_vector_clusters, bm25_score_pairs, chunk_markdown,
+        chunk_plain_text, cosine_similarity, create_content_hash, detect_communities_flat,
+        extract_vault_links_json, hybrid_score_or_nan, is_excluded_path, normalize_entity_name,
+        parse_mention_candidates_json, rank_top_k_pairs, recompute_centroids, rrf_score_or_nan,
         score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
         token_frequencies_json, tokenize,
     };
@@ -3258,6 +3384,63 @@ mod tests {
                 pair_value(&pairs, offset),
                 expected,
                 "tie order pair mismatch",
+            );
+        }
+    }
+
+    /// ANN cluster assignment는 기존 `TypeScript` IVF build의 nearest-centroid 선택을 보존해야 한다.
+    #[test]
+    fn assign_vector_clusters_matches_typescript_ivf_assignment() {
+        let vectors = [
+            1.0, 0.0, // cluster 0
+            0.0, 1.0, // cluster 1
+            0.8, 0.2, // cluster 0
+            0.0, 0.0, // invalid cosine, TS 기본값 cluster 0
+        ];
+        let centroids = [
+            1.0, 0.0, // cluster 0
+            0.0, 1.0, // cluster 1
+        ];
+
+        let assignments = assign_vector_clusters(&vectors, &centroids, 2);
+
+        assert_eq!(assignments.len(), 4, "4개 vector assignment가 필요하다");
+        for (offset, expected) in [0.0_f64, 1.0, 0.0, 0.0].iter().copied().enumerate() {
+            assert_float_close(
+                pair_value(&assignments, offset),
+                expected,
+                "cluster assignment mismatch",
+            );
+        }
+    }
+
+    /// ANN centroid recompute는 빈 cluster의 이전 centroid 보존 계약을 유지해야 한다.
+    #[test]
+    fn recompute_centroids_preserves_empty_clusters() {
+        let vectors = [
+            1.0, 0.0, // cluster 0
+            0.5, 0.5, // cluster 0
+            0.0, 1.0, // cluster 2
+        ];
+        let assignments = [0_u32, 0, 2];
+        let previous_centroids = [
+            9.0, 9.0, // overwritten by average
+            8.0, 8.0, // preserved because cluster 1 is empty
+            7.0, 7.0, // overwritten by average
+        ];
+
+        let centroids = recompute_centroids(&vectors, &assignments, &previous_centroids, 2);
+
+        assert_eq!(centroids.len(), 6, "3개 centroid의 flat matrix가 필요하다");
+        for (offset, expected) in [0.75_f64, 0.25, 8.0, 8.0, 0.0, 1.0]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            assert_float_close(
+                pair_value(&centroids, offset),
+                expected,
+                "recomputed centroid mismatch",
             );
         }
     }

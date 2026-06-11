@@ -22,6 +22,24 @@ export function aggregate_graph_edges_flat(source_indices, target_indices, confi
 }
 
 /**
+ * flattened vector matrix의 각 row를 가장 가까운 centroid index로 배정한다.
+ * @param {Float64Array} vectors
+ * @param {Float64Array} centroids
+ * @param {number} dimensions
+ * @returns {Float64Array}
+ */
+export function assign_vector_clusters(vectors, centroids, dimensions) {
+    const ptr0 = passArrayF64ToWasm0(vectors, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(centroids, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.assign_vector_clusters(ptr0, len0, ptr1, len1, dimensions);
+    var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v3;
+}
+
+/**
  * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
  * @param {Uint32Array} term_offsets
  * @param {Uint32Array} doc_indices
@@ -273,6 +291,27 @@ export function rank_top_k_pairs(query, vectors, dimensions, top_k) {
     var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v3;
+}
+
+/**
+ * flattened vector matrix와 cluster assignment로 centroid matrix를 다시 계산한다.
+ * @param {Float64Array} vectors
+ * @param {Uint32Array} assignments
+ * @param {Float64Array} previous_centroids
+ * @param {number} dimensions
+ * @returns {Float64Array}
+ */
+export function recompute_centroids(vectors, assignments, previous_centroids, dimensions) {
+    const ptr0 = passArrayF64ToWasm0(vectors, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(assignments, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(previous_centroids, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.recompute_centroids(ptr0, len0, ptr1, len1, ptr2, len2, dimensions);
+    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v4;
 }
 
 /**

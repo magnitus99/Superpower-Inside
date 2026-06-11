@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assignVectorClustersRust,
   calculateHybridScoreRust,
   calculateRrfScoreRust,
   createContentHashRust,
@@ -15,6 +16,7 @@ import {
   normalizeEntityNameRust,
   parseMentionCandidatesRust,
   rankTopKPairsRust,
+  recomputeCentroidsRust,
   scoreEntityMatchRust,
   scoreBm25Rust,
   selectDiverseIndicesRust,
@@ -74,6 +76,45 @@ describe('Rust WASM RAG core bridge', () => {
       { index: 1, score: 1 },
       { index: 2, score: 0.6 },
       { index: 0, score: 0 },
+    ]);
+  });
+
+  it('assigns ANN vectors to nearest centroids through Rust', () => {
+    const assignments = assignVectorClustersRust(
+      [
+        [1, 0],
+        [0, 1],
+        [0.8, 0.2],
+        [0, 0],
+      ],
+      [
+        [1, 0],
+        [0, 1],
+      ],
+    );
+
+    expect(assignments).toEqual([0, 1, 0, 0]);
+  });
+
+  it('recomputes ANN centroids through Rust while preserving empty clusters', () => {
+    const centroids = recomputeCentroidsRust(
+      [
+        [1, 0],
+        [0.5, 0.5],
+        [0, 1],
+      ],
+      [0, 0, 2],
+      [
+        [9, 9],
+        [8, 8],
+        [7, 7],
+      ],
+    );
+
+    expect(centroids).toEqual([
+      [0.75, 0.25],
+      [8, 8],
+      [0, 1],
     ]);
   });
 
