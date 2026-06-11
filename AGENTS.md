@@ -70,7 +70,7 @@
 | 채팅 UI                  | `src/chat/view.ts`                                   | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨                |
 | 채팅 저장/로드           | `src/chat/persistence.ts`                            | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원             |
 | 채팅 참조 확장           | `src/chat/context-expansion.ts`                      | Rust/WASM link extraction, Obsidian metadata/vault resolve fallback       |
-| 멘션 처리                | `src/chat/mention-parser.ts` + `src/chat/context.ts` | `@server`, `@file.md`, `@[path with spaces.md]`, 폴더 멘션                |
+| 멘션 처리                | `src/chat/mention-parser.ts` + `src/chat/context.ts` | Rust/WASM mention candidate extraction, TS resolver classification        |
 | 멘션 테스트              | `src/chat/mention-parser.test.ts`                    | 현재 유일한 Vitest 테스트                                                 |
 | 세션 히스토리 모달       | `src/chat/session-modal.ts`                          | `FuzzySuggestModal`, 채팅 메타 로드                                       |
 | MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
@@ -102,7 +102,8 @@
 | `RAGQueryEngine`                | class     | `src/rag/query.ts`                | 임베딩 → 코사인 유사도 → 컨텍스트                                   |
 | `ChatView`                      | class     | `src/chat/view.ts`                | 사이드바 채팅 ItemView, 스트리밍, MCP 도구, 출처 UI                 |
 | `buildChatContext`              | function  | `src/chat/context.ts`             | 자동 RAG + 파일/폴더/MCP 멘션 컨텍스트 생성                         |
-| `parseMentions`                 | function  | `src/chat/mention-parser.ts`      | `@...` 멘션 파싱과 중복 제거                                        |
+| `parseMentionCandidatesRust`    | function  | `src/rag/rust-core.ts`            | 채팅 raw mention 후보 추출 Rust bridge                              |
+| `parseMentions`                 | function  | `src/chat/mention-parser.ts`      | Rust 우선 mention 후보 추출과 TS resolver 분류                      |
 | `saveChat` / `loadChat`         | function  | `src/chat/persistence.ts`         | 채팅 세션 Markdown 저장/복원                                        |
 | `MCPClientManager`              | class     | `src/mcp/client.ts`               | MCP SDK Client + stdio transport                                    |
 | `MCPRegistry`                   | class     | `src/mcp/registry.ts`             | MCP 서버 설정/클라이언트/연결 상태 관리                             |

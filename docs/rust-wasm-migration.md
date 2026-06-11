@@ -126,6 +126,14 @@
 - embedding provider 호출, ontology schema filtering, best match 선택, pending merge 저장은 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 실패 또는 invalid score 반환 시 기존 TypeScript score 수식을 그대로 사용한다.
 
+## 현재 열여섯 번째 slice
+
+- 채팅 mention 후보 추출을 Rust/WASM에 추가했다.
+- `parseMentions()`는 raw mention 후보 추출과 case-insensitive dedupe를 `parseMentionCandidatesRust()`에 먼저 맡긴 뒤, server/file/folder/entity 판정만 TypeScript `MentionResolver`에서 수행한다.
+- Rust/WASM은 `@[path with spaces.md]`, `@server`, `@file.md`, `@entity:name` 후보 추출과 bracket-first/word-second 순서를 기존 TypeScript regex 계약과 같게 보존한다.
+- Obsidian `Vault` file/folder resolve, MCP server lookup, KnowledgeGraph entity lookup은 host state 접근이므로 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript mention 후보 추출로 fallback한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.
