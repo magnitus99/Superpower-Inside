@@ -4,11 +4,24 @@ import type { GraphRagIndexingProgress } from '../graph/indexing-runner';
 // ── 타입 ────────────────────────────────────────────────────────────
 
 /** 새로고침 이벤트를 발행할 수 있는 도메인 */
-export type RefreshDomain = 'rag' | 'mcp' | 'models' | 'sessions' | 'exclude-counts' | 'graph-progress';
+export type RefreshDomain =
+  | 'rag'
+  | 'mcp'
+  | 'models'
+  | 'sessions'
+  | 'exclude-counts'
+  | 'graph-progress'
+  | 'graph-data';
 
 /** graph-progress 도메인 전용 페이로드 */
 export interface GraphProgressResult extends RefreshResult {
+  runId?: number;
   progress?: GraphRagIndexingProgress;
+}
+
+export interface GraphDataResult extends RefreshResult {
+  runId?: number;
+  source?: 'graph-run' | 'graph-cleanup';
 }
 
 /** RefreshBus에서 사용하는 이벤트 핸들러 */

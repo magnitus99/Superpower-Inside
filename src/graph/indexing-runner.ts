@@ -47,6 +47,7 @@ export interface GraphRagIndexingResult {
   cancelled: boolean;
   startedAt: number;
   finishedAt: number;
+  runId: number;
 }
 
 export interface GraphRagIndexingProgress {
@@ -55,6 +56,7 @@ export interface GraphRagIndexingProgress {
   skippedFiles: number;
   failedFiles: number;
   selectedFiles: number;
+  runId: number;
 }
 
 export interface GraphRagCommunityBuildResult {
@@ -73,6 +75,8 @@ export class GraphRagIndexingRunner {
   private readonly extractionModelKey: string;
   private readonly maxFilesPerRun: number;
   private readonly isProcessableFilePath: GraphRagFilePathPredicate | undefined;
+  private runSequence = 0;
+  private lastRunId = 0;
   private failedFilePaths = new Set<string>();
   private running = false;
   private communityBuildRunning = false;
@@ -83,6 +87,7 @@ export class GraphRagIndexingRunner {
     skippedFiles: 0,
     failedFiles: 0,
     selectedFiles: 0,
+    runId: 0,
   };
   private lastResult: GraphRagIndexingResult | null = null;
 
@@ -123,6 +128,10 @@ export class GraphRagIndexingRunner {
 
   getProgress(): GraphRagIndexingProgress {
     return { ...this.progress };
+  }
+
+  getLastRunId(): number {
+    return this.lastRunId;
   }
 
   getLastResult(): GraphRagIndexingResult | null {
@@ -212,13 +221,17 @@ export class GraphRagIndexingRunner {
       throw new Error('onlyFailedFiles and onlyStaleFiles cannot be true at the same time.');
     }
 
+    const runId = ++this.runSequence;
+    this.lastRunId = runId;
+
     this.running = true;
     const startedAt = Date.now();
     await this.pruneUnsupportedGraphFiles();
     const candidateFilePaths = await this.getCandidateFilePaths(options);
     const selectedFilePaths = candidateFilePaths.slice(0, this.maxFilesPerRun);
-    const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length);
+    const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length, runId);
     this.progress = {
+      runId,
       currentFile: null,
       processedFiles: 0,
       skippedFiles: 0,
@@ -257,9 +270,11 @@ export class GraphRagIndexingRunner {
           result.skippedFiles += 1;
           this.progress.skippedFiles = result.skippedFiles;
         }
+        this.onProgress?.(this.getProgress());
       }
     } finally {
       this.progress.currentFile = null;
+      this.onProgress?.(this.getProgress());
       this.running = false;
       result.finishedAt = Date.now();
       this.lastResult = { ...result };
@@ -410,6 +425,7 @@ function createEmptyResult(
   startedAt: number,
   totalCandidateFiles: number,
   selectedFiles: number,
+  runId: number,
 ): GraphRagIndexingResult {
   return {
     totalCandidateFiles,
@@ -423,6 +439,7 @@ function createEmptyResult(
     cancelled: false,
     startedAt,
     finishedAt: startedAt,
+    runId,
   };
 }
 

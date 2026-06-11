@@ -390,6 +390,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           cancelled: result.cancelled,
         },
       });
+      this.emitGraphDataRefresh('graph-run', result.runId);
       return result;
     } catch (err) {
       this.getLogger().error('GraphRAG indexing operation failed.', {
@@ -431,6 +432,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'graph.indexing',
         data: { processedFiles: result.processedFiles, failedFiles: result.failedFiles },
       });
+      this.emitGraphDataRefresh('graph-run', result.runId);
       new Notice(`GraphRAG ${presentation.label}: ${presentation.description}`);
       return result;
     } catch (err) {
@@ -456,12 +458,24 @@ export default class SuperpowerInsidePlugin extends Plugin {
       source: 'graph.community',
       data: result,
     });
+    this.emitGraphDataRefresh('graph-run');
     return result;
   }
 
   private async cleanupGraphRagForDeletedFiles(filePaths: string[]): Promise<void> {
     if (!this.knowledgeGraphStore) return;
     await this.knowledgeGraphStore.pruneByFilePaths(filePaths);
+    if (filePaths.length > 0) {
+      this.emitGraphDataRefresh('graph-cleanup');
+    }
+  }
+
+  private emitGraphDataRefresh(source: 'graph-run' | 'graph-cleanup', runId?: number): void {
+    this.refreshBus?.emit('graph-data', {
+      status: 'success',
+      runId,
+      source,
+    });
   }
 
   private async computeAndEmitRagStats(): Promise<void> {
@@ -1210,11 +1224,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
                   processedFiles: progress.processedFiles,
                   failedFiles: progress.failedFiles,
                   selectedFiles: progress.selectedFiles,
+                  runId: progress.runId,
                 },
               });
               this.refreshBus.emit('graph-progress', {
                 status: 'partial',
                 detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
+                runId: progress.runId,
                 progress,
               });
             },

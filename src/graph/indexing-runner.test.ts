@@ -9,6 +9,7 @@ import type {
 import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
+import type { GraphRagIndexingProgress } from './indexing-runner';
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -211,6 +212,31 @@ describe('GraphRagIndexingRunner', () => {
     await runner.run({ signal: controller.signal });
 
     expect(provider.chatSignals).toEqual([controller.signal]);
+  });
+
+  it('각 GraphRAG 실행은 고유 runId를 부여한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('a.md', 'hash-a'),
+      createEntry('b.md', 'hash-b'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const seenRunIds: number[] = [];
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner({
+      ...makeRunnerOptions({ vectorStore, graphStore, provider }),
+      onProgress: (progress: GraphRagIndexingProgress) => {
+        seenRunIds.push(progress.runId);
+      },
+    });
+
+    const firstResult = await runner.run();
+    const secondResult = await runner.run();
+
+    expect(firstResult.runId).toBe(1);
+    expect(runner.getLastRunId()).toBe(secondResult.runId);
+    expect(secondResult.runId).toBe(2);
+    expect(new Set(seenRunIds)).toEqual(new Set([firstResult.runId, secondResult.runId]));
   });
 
   it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {

@@ -11,6 +11,8 @@ export interface RefreshResult {
   progress?: import('../graph/indexing-runner').GraphRagIndexingProgress;
   status: 'success' | 'partial' | 'error';
   detail?: string;
+  runId?: number;
+  source?: 'graph-run' | 'graph-cleanup';
 }
 
 /** RefreshAction 생성 옵션 */

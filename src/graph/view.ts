@@ -1,6 +1,7 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
 import type SuperpowerInsidePlugin from '../../main';
 import { t } from '../i18n';
+import type { GraphDataResult, GraphProgressResult } from '../utils/refresh-bus';
 import type {
   GraphEntityRecord,
   GraphRelationRecord,
@@ -73,10 +74,13 @@ export class GraphRagView extends ItemView {
   private minConfidence = 0;
   private detailEntity: GraphEntityRecord | null = null;
   private progressUnsubscriber: (() => void) | null = null;
+  private graphDataUnsubscriber: (() => void) | null = null;
   private progressEl: HTMLElement | null = null;
   private progressTextEl: HTMLElement | null = null;
   private progressBarEl: HTMLElement | null = null;
   private searchDebounceTimer: number | null = null;
+  private graphDataDebounceTimer: number | null = null;
+  private lastGraphProgressRunId = 0;
   private renderedItemLimit = LOAD_MORE_CHUNK;
 
   constructor(leaf: WorkspaceLeaf, plugin: SuperpowerInsidePlugin) {
@@ -134,16 +138,10 @@ export class GraphRagView extends ItemView {
     const bus = this.plugin.refreshBus;
     if (bus) {
       this.progressUnsubscriber = bus.on('graph-progress', (result: unknown) => {
-        this.showProgress(
-          result as {
-            progress?: {
-              processedFiles: number;
-              failedFiles: number;
-              selectedFiles: number;
-              currentFile: string | null;
-            };
-          },
-        );
+        this.showProgress(result as GraphProgressResult);
+      });
+      this.graphDataUnsubscriber = bus.on('graph-data', (result: unknown) => {
+        void this.refreshGraphData(result as GraphDataResult);
       });
     }
 
@@ -199,6 +197,12 @@ export class GraphRagView extends ItemView {
     await Promise.resolve();
     this.progressUnsubscriber?.();
     this.progressUnsubscriber = null;
+    this.graphDataUnsubscriber?.();
+    this.graphDataUnsubscriber = null;
+    if (this.graphDataDebounceTimer !== null) {
+      clearTimeout(this.graphDataDebounceTimer);
+      this.graphDataDebounceTimer = null;
+    }
   }
 
   private addLoadMoreButton(total: number, shown: number): void {
@@ -816,15 +820,19 @@ export class GraphRagView extends ItemView {
     this.renderContent();
   }
 
-  private showProgress(result: {
-    progress?: {
-      processedFiles: number;
-      failedFiles: number;
-      selectedFiles: number;
-      currentFile: string | null;
-    };
-  }): void {
+  private showProgress(result: GraphProgressResult): void {
     if (!this.progressEl || !this.progressTextEl || !this.progressBarEl) return;
+
+    const runId = result.runId ?? result.progress?.runId;
+    if (runId !== undefined && runId > 0) {
+      if (this.lastGraphProgressRunId > 0 && runId < this.lastGraphProgressRunId) {
+        return;
+      }
+      if (runId > this.lastGraphProgressRunId) {
+        this.lastGraphProgressRunId = runId;
+      }
+    }
+
     const progress = result.progress;
     if (!progress) {
       setHidden(this.progressEl, true);
@@ -844,5 +852,39 @@ export class GraphRagView extends ItemView {
       '#superpower-inside-graph-progress-fill',
     );
     fill?.setCssProps({ [GRAPH_PROGRESS_WIDTH_VAR]: `${pct}%` });
+  }
+
+  private refreshGraphData(result: GraphDataResult): void {
+    const runId = result.runId;
+    if (
+      runId !== undefined &&
+      runId > 0 &&
+      this.lastGraphProgressRunId > 0 &&
+      runId < this.lastGraphProgressRunId
+    ) {
+      return;
+    }
+
+    if (runId !== undefined && runId > this.lastGraphProgressRunId) {
+      this.lastGraphProgressRunId = runId;
+    }
+
+    const detailEntityId = this.detailEntity?.id;
+    if (this.graphDataDebounceTimer !== null) {
+      clearTimeout(this.graphDataDebounceTimer);
+    }
+    this.graphDataDebounceTimer = window.setTimeout(() => {
+      void (async () => {
+        this.graphDataDebounceTimer = null;
+        await this.loadData();
+        this.detailEntity = detailEntityId
+          ? this.allEntities.find((entity) => entity.id === detailEntityId) ?? null
+          : this.detailEntity;
+        this.renderTabs();
+        this.renderContent();
+      })().catch(() => {
+        // 상태 동기화 실패는 UI 업데이트에서 표시되지 않으므로 무시
+      });
+    }, 120);
   }
 }
