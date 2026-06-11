@@ -42,6 +42,8 @@ const MMR_RELEVANCE_WEIGHT: f64 = 0.72;
 const SAME_FILE_DIVERSITY_PENALTY: f64 = 0.12;
 /// 같은 heading 후보를 연속 선택하지 않기 위한 추가 penalty.
 const SAME_HEADING_DIVERSITY_PENALTY: f64 = 0.06;
+/// `TypeScript`에서 알 수 없는 graph reference index를 표현하는 sentinel.
+const GRAPH_PRUNE_UNKNOWN_INDEX: u32 = u32::MAX;
 
 /// `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
 #[must_use]
@@ -505,6 +507,17 @@ pub fn aggregate_graph_edges_flat(
     encode_aggregated_graph_edges(&edges)
 }
 
+/// `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn prune_graph_indexes_json(config: &[u32], indices: &[u32], wire_values: &str) -> String {
+    let Some(input) = parse_graph_prune_input(config, indices, wire_values) else {
+        return String::new();
+    };
+    let plan = compute_graph_prune_plan(&input);
+    serialize_graph_prune_plan_json(&plan)
+}
+
 /// `GraphRAG` local/evidence-first evidence score pair를 계산한다.
 #[must_use]
 #[wasm_bindgen]
@@ -930,6 +943,199 @@ struct LocalEvidenceScore {
     sequence: usize,
 }
 
+/// `GraphRAG` store pruning 계산 입력.
+struct GraphPruneInput<'a> {
+    /// 삭제 대상 file path.
+    file_paths: Vec<&'a str>,
+    /// evidence file path 목록.
+    evidence_file_paths: Vec<&'a str>,
+    /// evidence entry id 목록.
+    evidence_entry_ids: Vec<&'a str>,
+    /// entity ontology schema id 목록.
+    entity_schema_ids: Vec<&'a str>,
+    /// entity별 evidence offset.
+    entity_evidence_offsets: &'a [u32],
+    /// entity별 evidence index.
+    entity_evidence_indices: &'a [u32],
+    /// relation ontology schema id 목록.
+    relation_schema_ids: Vec<&'a str>,
+    /// relation source entity index 목록.
+    relation_source_entity_indices: &'a [u32],
+    /// relation target entity index 목록.
+    relation_target_entity_indices: &'a [u32],
+    /// relation별 evidence offset.
+    relation_evidence_offsets: &'a [u32],
+    /// relation별 evidence index.
+    relation_evidence_indices: &'a [u32],
+    /// claim별 entity offset.
+    claim_entity_offsets: &'a [u32],
+    /// claim별 entity index.
+    claim_entity_indices: &'a [u32],
+    /// claim별 relation offset.
+    claim_relation_offsets: &'a [u32],
+    /// claim별 relation index.
+    claim_relation_indices: &'a [u32],
+    /// claim별 evidence offset.
+    claim_evidence_offsets: &'a [u32],
+    /// claim별 evidence index.
+    claim_evidence_indices: &'a [u32],
+    /// community ontology schema id 목록.
+    community_schema_ids: Vec<&'a str>,
+    /// community별 entity offset.
+    community_entity_offsets: &'a [u32],
+    /// community별 entity index.
+    community_entity_indices: &'a [u32],
+    /// community별 relation offset.
+    community_relation_offsets: &'a [u32],
+    /// community별 relation index.
+    community_relation_indices: &'a [u32],
+    /// community별 claim offset.
+    community_claim_offsets: &'a [u32],
+    /// community별 claim index.
+    community_claim_indices: &'a [u32],
+    /// rejected fact file path 목록.
+    rejected_fact_file_paths: Vec<&'a str>,
+    /// rejected fact entry id 목록.
+    rejected_fact_entry_ids: Vec<&'a str>,
+    /// extraction cache entry id 목록.
+    extraction_cache_entry_ids: Vec<&'a str>,
+    /// pending merge existing entity index 목록.
+    pending_merge_existing_entity_indices: &'a [u32],
+    /// pending merge candidate entity index 목록.
+    pending_merge_candidate_entity_indices: &'a [u32],
+}
+
+/// `GraphRAG` store pruning index 결과.
+#[derive(Default)]
+struct GraphPrunePlan {
+    /// 삭제할 evidence index.
+    deleted_evidence: Vec<usize>,
+    /// 삭제할 entity index.
+    deleted_entities: Vec<usize>,
+    /// evidenceIds만 갱신할 entity index.
+    updated_entities: Vec<usize>,
+    /// 삭제할 relation index.
+    deleted_relations: Vec<usize>,
+    /// evidenceIds만 갱신할 relation index.
+    updated_relations: Vec<usize>,
+    /// 삭제할 claim index.
+    deleted_claims: Vec<usize>,
+    /// entity/relation/evidence reference를 갱신할 claim index.
+    updated_claims: Vec<usize>,
+    /// 삭제할 community index.
+    deleted_communities: Vec<usize>,
+    /// 삭제할 rejected fact index.
+    deleted_rejected_facts: Vec<usize>,
+    /// 삭제할 extraction cache index.
+    deleted_extraction_cache: Vec<usize>,
+    /// 삭제할 pending merge index.
+    deleted_pending_merges: Vec<usize>,
+}
+
+/// Graph prune wire config count 묶음.
+struct GraphPruneCounts {
+    /// 삭제 대상 file path 수.
+    file_paths: usize,
+    /// evidence record 수.
+    evidence: usize,
+    /// entity record 수.
+    entities: usize,
+    /// entity evidence flat reference 수.
+    entity_evidence_refs: usize,
+    /// relation record 수.
+    relations: usize,
+    /// relation evidence flat reference 수.
+    relation_evidence_refs: usize,
+    /// claim record 수.
+    claims: usize,
+    /// claim entity flat reference 수.
+    claim_entity_refs: usize,
+    /// claim relation flat reference 수.
+    claim_relation_refs: usize,
+    /// claim evidence flat reference 수.
+    claim_evidence_refs: usize,
+    /// community record 수.
+    communities: usize,
+    /// community entity flat reference 수.
+    community_entity_refs: usize,
+    /// community relation flat reference 수.
+    community_relation_refs: usize,
+    /// community claim flat reference 수.
+    community_claim_refs: usize,
+    /// rejected fact record 수.
+    rejected_facts: usize,
+    /// extraction cache record 수.
+    extraction_cache: usize,
+    /// pending merge record 수.
+    pending_merges: usize,
+}
+
+/// Graph prune wire string section 묶음.
+struct GraphPruneStrings<'a> {
+    /// 삭제 대상 file path.
+    file_paths: Vec<&'a str>,
+    /// evidence file path.
+    evidence_files: Vec<&'a str>,
+    /// evidence entry id.
+    evidence_entries: Vec<&'a str>,
+    /// entity schema id.
+    entity_schemas: Vec<&'a str>,
+    /// relation schema id.
+    relation_schemas: Vec<&'a str>,
+    /// community schema id.
+    community_schemas: Vec<&'a str>,
+    /// rejected fact file path.
+    rejected_files: Vec<&'a str>,
+    /// rejected fact entry id.
+    rejected_entries: Vec<&'a str>,
+    /// extraction cache entry id.
+    cache_entries: Vec<&'a str>,
+}
+
+/// Graph prune flattened index section 묶음.
+struct GraphPruneIndexSlices<'a> {
+    /// entity evidence offsets.
+    entity_evidence_offsets: &'a [u32],
+    /// entity evidence refs.
+    entity_evidence: &'a [u32],
+    /// relation source entity refs.
+    relation_sources: &'a [u32],
+    /// relation target entity refs.
+    relation_targets: &'a [u32],
+    /// relation evidence offsets.
+    relation_evidence_offsets: &'a [u32],
+    /// relation evidence refs.
+    relation_evidence: &'a [u32],
+    /// claim entity offsets.
+    claim_entity_offsets: &'a [u32],
+    /// claim entity refs.
+    claim_entities: &'a [u32],
+    /// claim relation offsets.
+    claim_relation_offsets: &'a [u32],
+    /// claim relation refs.
+    claim_relations: &'a [u32],
+    /// claim evidence offsets.
+    claim_evidence_offsets: &'a [u32],
+    /// claim evidence refs.
+    claim_evidence: &'a [u32],
+    /// community entity offsets.
+    community_entity_offsets: &'a [u32],
+    /// community entity refs.
+    community_entities: &'a [u32],
+    /// community relation offsets.
+    community_relation_offsets: &'a [u32],
+    /// community relation refs.
+    community_relations: &'a [u32],
+    /// community claim offsets.
+    community_claim_offsets: &'a [u32],
+    /// community claim refs.
+    community_claims: &'a [u32],
+    /// pending merge existing entity refs.
+    pending_existing_entities: &'a [u32],
+    /// pending merge candidate entity refs.
+    pending_candidate_entities: &'a [u32],
+}
+
 /// 채팅 mention 후보.
 struct MentionCandidate {
     /// 원문 mention 문자열.
@@ -1197,6 +1403,277 @@ fn parse_local_evidence_input<'a>(
     })
 }
 
+/// `GraphRAG` pruning wire input을 parsing한다.
+fn parse_graph_prune_input<'a>(
+    config: &[u32],
+    indices: &'a [u32],
+    wire_values: &'a str,
+) -> Option<GraphPruneInput<'a>> {
+    let counts = parse_graph_prune_counts(config)?;
+    let strings = parse_graph_prune_strings(&counts, wire_values)?;
+    let index_slices = parse_graph_prune_index_slices(&counts, indices)?;
+
+    if !are_graph_prune_offsets_valid(&counts, &index_slices)
+        || !are_graph_prune_indices_in_range(&counts, &index_slices)
+    {
+        return None;
+    }
+
+    Some(GraphPruneInput {
+        file_paths: strings.file_paths,
+        evidence_file_paths: strings.evidence_files,
+        evidence_entry_ids: strings.evidence_entries,
+        entity_schema_ids: strings.entity_schemas,
+        entity_evidence_offsets: index_slices.entity_evidence_offsets,
+        entity_evidence_indices: index_slices.entity_evidence,
+        relation_schema_ids: strings.relation_schemas,
+        relation_source_entity_indices: index_slices.relation_sources,
+        relation_target_entity_indices: index_slices.relation_targets,
+        relation_evidence_offsets: index_slices.relation_evidence_offsets,
+        relation_evidence_indices: index_slices.relation_evidence,
+        claim_entity_offsets: index_slices.claim_entity_offsets,
+        claim_entity_indices: index_slices.claim_entities,
+        claim_relation_offsets: index_slices.claim_relation_offsets,
+        claim_relation_indices: index_slices.claim_relations,
+        claim_evidence_offsets: index_slices.claim_evidence_offsets,
+        claim_evidence_indices: index_slices.claim_evidence,
+        community_schema_ids: strings.community_schemas,
+        community_entity_offsets: index_slices.community_entity_offsets,
+        community_entity_indices: index_slices.community_entities,
+        community_relation_offsets: index_slices.community_relation_offsets,
+        community_relation_indices: index_slices.community_relations,
+        community_claim_offsets: index_slices.community_claim_offsets,
+        community_claim_indices: index_slices.community_claims,
+        rejected_fact_file_paths: strings.rejected_files,
+        rejected_fact_entry_ids: strings.rejected_entries,
+        extraction_cache_entry_ids: strings.cache_entries,
+        pending_merge_existing_entity_indices: index_slices.pending_existing_entities,
+        pending_merge_candidate_entity_indices: index_slices.pending_candidate_entities,
+    })
+}
+
+/// Graph prune config를 count 구조로 변환한다.
+fn parse_graph_prune_counts(config: &[u32]) -> Option<GraphPruneCounts> {
+    if config.len() != 17 {
+        return None;
+    }
+    Some(GraphPruneCounts {
+        file_paths: u32_config_to_usize(config, 0)?,
+        evidence: u32_config_to_usize(config, 1)?,
+        entities: u32_config_to_usize(config, 2)?,
+        entity_evidence_refs: u32_config_to_usize(config, 3)?,
+        relations: u32_config_to_usize(config, 4)?,
+        relation_evidence_refs: u32_config_to_usize(config, 5)?,
+        claims: u32_config_to_usize(config, 6)?,
+        claim_entity_refs: u32_config_to_usize(config, 7)?,
+        claim_relation_refs: u32_config_to_usize(config, 8)?,
+        claim_evidence_refs: u32_config_to_usize(config, 9)?,
+        communities: u32_config_to_usize(config, 10)?,
+        community_entity_refs: u32_config_to_usize(config, 11)?,
+        community_relation_refs: u32_config_to_usize(config, 12)?,
+        community_claim_refs: u32_config_to_usize(config, 13)?,
+        rejected_facts: u32_config_to_usize(config, 14)?,
+        extraction_cache: u32_config_to_usize(config, 15)?,
+        pending_merges: u32_config_to_usize(config, 16)?,
+    })
+}
+
+/// Graph prune wire 문자열을 타입 안전한 구조로 분리한다.
+fn parse_graph_prune_strings<'a>(
+    counts: &GraphPruneCounts,
+    wire_values: &'a str,
+) -> Option<GraphPruneStrings<'a>> {
+    let sections = split_graph_prune_wire_sections(wire_values)?;
+    let file_paths = sections.first()?;
+    let evidence_file_paths = sections.get(1)?;
+    let evidence_entry_ids = sections.get(2)?;
+    let entity_schema_ids = sections.get(3)?;
+    let relation_schema_ids = sections.get(4)?;
+    let community_schema_ids = sections.get(5)?;
+    let rejected_fact_file_paths = sections.get(6)?;
+    let rejected_fact_entry_ids = sections.get(7)?;
+    let extraction_cache_entry_ids = sections.get(8)?;
+
+    if file_paths.len() != counts.file_paths
+        || evidence_file_paths.len() != counts.evidence
+        || evidence_entry_ids.len() != counts.evidence
+        || entity_schema_ids.len() != counts.entities
+        || relation_schema_ids.len() != counts.relations
+        || community_schema_ids.len() != counts.communities
+        || rejected_fact_file_paths.len() != counts.rejected_facts
+        || rejected_fact_entry_ids.len() != counts.rejected_facts
+        || extraction_cache_entry_ids.len() != counts.extraction_cache
+    {
+        return None;
+    }
+
+    Some(GraphPruneStrings {
+        file_paths: file_paths.clone(),
+        evidence_files: evidence_file_paths.clone(),
+        evidence_entries: evidence_entry_ids.clone(),
+        entity_schemas: entity_schema_ids.clone(),
+        relation_schemas: relation_schema_ids.clone(),
+        community_schemas: community_schema_ids.clone(),
+        rejected_files: rejected_fact_file_paths.clone(),
+        rejected_entries: rejected_fact_entry_ids.clone(),
+        cache_entries: extraction_cache_entry_ids.clone(),
+    })
+}
+
+/// Graph prune flattened 인덱스 배열을 offset/indices 섹션으로 분리한다.
+fn parse_graph_prune_index_slices<'a>(
+    counts: &GraphPruneCounts,
+    indices: &'a [u32],
+) -> Option<GraphPruneIndexSlices<'a>> {
+    let mut index_offset = 0_usize;
+    let entity_evidence_offsets = take_slice(
+        indices,
+        &mut index_offset,
+        counts.entities.saturating_add(1),
+    )?;
+    let entity_evidence = take_slice(indices, &mut index_offset, counts.entity_evidence_refs)?;
+    let relation_sources = take_slice(indices, &mut index_offset, counts.relations)?;
+    let relation_targets = take_slice(indices, &mut index_offset, counts.relations)?;
+    let relation_evidence_offsets = take_slice(
+        indices,
+        &mut index_offset,
+        counts.relations.saturating_add(1),
+    )?;
+    let relation_evidence = take_slice(indices, &mut index_offset, counts.relation_evidence_refs)?;
+    let claim_entity_offsets =
+        take_slice(indices, &mut index_offset, counts.claims.saturating_add(1))?;
+    let claim_entities = take_slice(indices, &mut index_offset, counts.claim_entity_refs)?;
+    let claim_relation_offsets =
+        take_slice(indices, &mut index_offset, counts.claims.saturating_add(1))?;
+    let claim_relations = take_slice(indices, &mut index_offset, counts.claim_relation_refs)?;
+    let claim_evidence_offsets =
+        take_slice(indices, &mut index_offset, counts.claims.saturating_add(1))?;
+    let claim_evidence = take_slice(indices, &mut index_offset, counts.claim_evidence_refs)?;
+    let community_entity_offsets = take_slice(
+        indices,
+        &mut index_offset,
+        counts.communities.saturating_add(1),
+    )?;
+    let community_entities = take_slice(indices, &mut index_offset, counts.community_entity_refs)?;
+    let community_relation_offsets = take_slice(
+        indices,
+        &mut index_offset,
+        counts.communities.saturating_add(1),
+    )?;
+    let community_relations =
+        take_slice(indices, &mut index_offset, counts.community_relation_refs)?;
+    let community_claim_offsets = take_slice(
+        indices,
+        &mut index_offset,
+        counts.communities.saturating_add(1),
+    )?;
+    let community_claims = take_slice(indices, &mut index_offset, counts.community_claim_refs)?;
+    let pending_merge_existing_entity_indices =
+        take_slice(indices, &mut index_offset, counts.pending_merges)?;
+    let pending_merge_candidate_entity_indices =
+        take_slice(indices, &mut index_offset, counts.pending_merges)?;
+    if index_offset != indices.len() {
+        return None;
+    }
+
+    Some(GraphPruneIndexSlices {
+        entity_evidence_offsets,
+        entity_evidence,
+        relation_sources,
+        relation_targets,
+        relation_evidence_offsets,
+        relation_evidence,
+        claim_entity_offsets,
+        claim_entities,
+        claim_relation_offsets,
+        claim_relations,
+        claim_evidence_offsets,
+        claim_evidence,
+        community_entity_offsets,
+        community_entities,
+        community_relation_offsets,
+        community_relations,
+        community_claim_offsets,
+        community_claims,
+        pending_existing_entities: pending_merge_existing_entity_indices,
+        pending_candidate_entities: pending_merge_candidate_entity_indices,
+    })
+}
+
+/// Graph prune offset 배열을 기본 유효성 규칙으로 검증한다.
+fn are_graph_prune_offsets_valid(
+    counts: &GraphPruneCounts,
+    slices: &GraphPruneIndexSlices<'_>,
+) -> bool {
+    are_offsets_valid(
+        slices.entity_evidence_offsets,
+        counts.entities,
+        counts.entity_evidence_refs,
+    ) && are_offsets_valid(
+        slices.relation_evidence_offsets,
+        counts.relations,
+        counts.relation_evidence_refs,
+    ) && are_offsets_valid(
+        slices.claim_entity_offsets,
+        counts.claims,
+        counts.claim_entity_refs,
+    ) && are_offsets_valid(
+        slices.claim_relation_offsets,
+        counts.claims,
+        counts.claim_relation_refs,
+    ) && are_offsets_valid(
+        slices.claim_evidence_offsets,
+        counts.claims,
+        counts.claim_evidence_refs,
+    ) && are_offsets_valid(
+        slices.community_entity_offsets,
+        counts.communities,
+        counts.community_entity_refs,
+    ) && are_offsets_valid(
+        slices.community_relation_offsets,
+        counts.communities,
+        counts.community_relation_refs,
+    ) && are_offsets_valid(
+        slices.community_claim_offsets,
+        counts.communities,
+        counts.community_claim_refs,
+    )
+}
+
+/// Graph prune 인덱스 값들을 범위 및 unknown sentinel 규칙으로 검증한다.
+fn are_graph_prune_indices_in_range(
+    counts: &GraphPruneCounts,
+    slices: &GraphPruneIndexSlices<'_>,
+) -> bool {
+    are_known_or_unknown_indices_in_range(slices.entity_evidence, counts.evidence)
+        && are_known_or_unknown_indices_in_range(slices.relation_sources, counts.entities)
+        && are_known_or_unknown_indices_in_range(slices.relation_targets, counts.entities)
+        && are_known_or_unknown_indices_in_range(slices.relation_evidence, counts.evidence)
+        && are_known_or_unknown_indices_in_range(slices.claim_entities, counts.entities)
+        && are_known_or_unknown_indices_in_range(slices.claim_relations, counts.relations)
+        && are_known_or_unknown_indices_in_range(slices.claim_evidence, counts.evidence)
+        && are_known_or_unknown_indices_in_range(slices.community_entities, counts.entities)
+        && are_known_or_unknown_indices_in_range(slices.community_relations, counts.relations)
+        && are_known_or_unknown_indices_in_range(slices.community_claims, counts.claims)
+        && are_known_or_unknown_indices_in_range(slices.pending_existing_entities, counts.entities)
+        && are_known_or_unknown_indices_in_range(slices.pending_candidate_entities, counts.entities)
+}
+
+/// Graph prune wire string을 section/value 배열로 분리한다.
+fn split_graph_prune_wire_sections(wire_values: &str) -> Option<Vec<Vec<&str>>> {
+    let sections = wire_values
+        .split('\u{1f}')
+        .map(|section| {
+            if section.is_empty() {
+                Vec::new()
+            } else {
+                section.split('\0').collect::<Vec<_>>()
+            }
+        })
+        .collect::<Vec<_>>();
+    (sections.len() == 9).then_some(sections)
+}
+
 /// config의 `u32` 값을 `usize`로 변환한다.
 fn u32_config_to_usize(config: &[u32], index: usize) -> Option<usize> {
     usize::try_from(config.get(index).copied()?).ok()
@@ -1238,6 +1715,13 @@ fn are_indices_in_range(indices: &[u32], max_exclusive: usize) -> bool {
         .iter()
         .copied()
         .all(|index| bounded_u32_index(index, max_exclusive).is_some())
+}
+
+/// 모든 index가 범위 안에 있거나 unknown sentinel인지 확인한다.
+fn are_known_or_unknown_indices_in_range(indices: &[u32], max_exclusive: usize) -> bool {
+    indices.iter().copied().all(|index| {
+        index == GRAPH_PRUNE_UNKNOWN_INDEX || bounded_u32_index(index, max_exclusive).is_some()
+    })
 }
 
 /// `u32` index를 `usize`로 바꾸고 범위를 확인한다.
@@ -1720,6 +2204,397 @@ fn encode_aggregated_graph_edges(edges: &[AggregatedGraphEdge]) -> Box<[f64]> {
         output.push(edge.weight);
     }
     output.into_boxed_slice()
+}
+
+/// Graph store snapshot에서 prune index plan을 계산한다.
+fn compute_graph_prune_plan(input: &GraphPruneInput<'_>) -> GraphPrunePlan {
+    let mut plan = GraphPrunePlan::default();
+    let mut removed_evidence = vec![false; input.evidence_file_paths.len()];
+    let mut removed_entry_ids = Vec::<&str>::new();
+    let mut affected_schema_ids = Vec::<&str>::new();
+
+    collect_removed_evidence(
+        input,
+        &mut plan,
+        &mut removed_evidence,
+        &mut removed_entry_ids,
+    );
+    let deleted_entities = collect_pruned_entities(
+        input,
+        &removed_evidence,
+        &mut affected_schema_ids,
+        &mut plan,
+    );
+    let deleted_relations = collect_pruned_relations(
+        input,
+        &removed_evidence,
+        &deleted_entities,
+        &mut affected_schema_ids,
+        &mut plan,
+    );
+    let deleted_claims = collect_pruned_claims(
+        input,
+        &removed_evidence,
+        &deleted_entities,
+        &deleted_relations,
+        &mut plan,
+    );
+    collect_pruned_communities(
+        input,
+        &affected_schema_ids,
+        &deleted_entities,
+        &deleted_relations,
+        &deleted_claims,
+        &mut plan,
+    );
+    collect_pruned_rejected_facts(input, &mut removed_entry_ids, &mut plan);
+    collect_pruned_extraction_cache(input, &removed_entry_ids, &mut plan);
+    collect_pruned_pending_merges(input, &deleted_entities, &mut plan);
+
+    plan
+}
+
+/// 삭제 대상 file path에 속한 evidence를 수집한다.
+fn collect_removed_evidence<'a>(
+    input: &GraphPruneInput<'a>,
+    plan: &mut GraphPrunePlan,
+    removed_evidence: &mut [bool],
+    removed_entry_ids: &mut Vec<&'a str>,
+) {
+    for (evidence_index, file_path) in input.evidence_file_paths.iter().copied().enumerate() {
+        if !contains_str(&input.file_paths, file_path) {
+            continue;
+        }
+        plan.deleted_evidence.push(evidence_index);
+        if let Some(slot) = removed_evidence.get_mut(evidence_index) {
+            *slot = true;
+        }
+        if let Some(entry_id) = input.evidence_entry_ids.get(evidence_index).copied() {
+            push_unique_str(removed_entry_ids, entry_id);
+        }
+    }
+}
+
+/// 삭제/갱신할 entity를 수집한다.
+fn collect_pruned_entities<'a>(
+    input: &GraphPruneInput<'a>,
+    removed_evidence: &[bool],
+    affected_schema_ids: &mut Vec<&'a str>,
+    plan: &mut GraphPrunePlan,
+) -> Vec<bool> {
+    let mut deleted_entities = vec![false; input.entity_schema_ids.len()];
+
+    for entity_index in 0..input.entity_schema_ids.len() {
+        let evidence_change = reference_range_contains_removed(
+            input.entity_evidence_offsets,
+            input.entity_evidence_indices,
+            entity_index,
+            removed_evidence,
+        );
+        if !evidence_change {
+            continue;
+        }
+        if let Some(schema_id) = input.entity_schema_ids.get(entity_index).copied() {
+            push_unique_str(affected_schema_ids, schema_id);
+        }
+        if reference_range_remaining_count(
+            input.entity_evidence_offsets,
+            input.entity_evidence_indices,
+            entity_index,
+            removed_evidence,
+        ) == 0
+        {
+            plan.deleted_entities.push(entity_index);
+            if let Some(slot) = deleted_entities.get_mut(entity_index) {
+                *slot = true;
+            }
+        } else {
+            plan.updated_entities.push(entity_index);
+        }
+    }
+
+    deleted_entities
+}
+
+/// 삭제/갱신할 relation을 수집한다.
+fn collect_pruned_relations<'a>(
+    input: &GraphPruneInput<'a>,
+    removed_evidence: &[bool],
+    deleted_entities: &[bool],
+    affected_schema_ids: &mut Vec<&'a str>,
+    plan: &mut GraphPrunePlan,
+) -> Vec<bool> {
+    let mut deleted_relations = vec![false; input.relation_schema_ids.len()];
+
+    for relation_index in 0..input.relation_schema_ids.len() {
+        let evidence_change = reference_range_contains_removed(
+            input.relation_evidence_offsets,
+            input.relation_evidence_indices,
+            relation_index,
+            removed_evidence,
+        );
+        let has_deleted_endpoint = index_points_to_removed(
+            input
+                .relation_source_entity_indices
+                .get(relation_index)
+                .copied()
+                .unwrap_or(GRAPH_PRUNE_UNKNOWN_INDEX),
+            deleted_entities,
+        ) || index_points_to_removed(
+            input
+                .relation_target_entity_indices
+                .get(relation_index)
+                .copied()
+                .unwrap_or(GRAPH_PRUNE_UNKNOWN_INDEX),
+            deleted_entities,
+        );
+        if !evidence_change && !has_deleted_endpoint {
+            continue;
+        }
+        if let Some(schema_id) = input.relation_schema_ids.get(relation_index).copied() {
+            push_unique_str(affected_schema_ids, schema_id);
+        }
+        if has_deleted_endpoint
+            || reference_range_remaining_count(
+                input.relation_evidence_offsets,
+                input.relation_evidence_indices,
+                relation_index,
+                removed_evidence,
+            ) == 0
+        {
+            plan.deleted_relations.push(relation_index);
+            if let Some(slot) = deleted_relations.get_mut(relation_index) {
+                *slot = true;
+            }
+        } else {
+            plan.updated_relations.push(relation_index);
+        }
+    }
+
+    deleted_relations
+}
+
+/// 삭제/갱신할 claim을 수집한다.
+fn collect_pruned_claims(
+    input: &GraphPruneInput<'_>,
+    removed_evidence: &[bool],
+    deleted_entities: &[bool],
+    deleted_relations: &[bool],
+    plan: &mut GraphPrunePlan,
+) -> Vec<bool> {
+    let mut deleted_claims = vec![false; input.claim_evidence_offsets.len().saturating_sub(1)];
+
+    for claim_index in 0..deleted_claims.len() {
+        let evidence_change = reference_range_contains_removed(
+            input.claim_evidence_offsets,
+            input.claim_evidence_indices,
+            claim_index,
+            removed_evidence,
+        );
+        let entity_change = reference_range_contains_removed(
+            input.claim_entity_offsets,
+            input.claim_entity_indices,
+            claim_index,
+            deleted_entities,
+        );
+        let relation_change = reference_range_contains_removed(
+            input.claim_relation_offsets,
+            input.claim_relation_indices,
+            claim_index,
+            deleted_relations,
+        );
+        if !evidence_change && !entity_change && !relation_change {
+            continue;
+        }
+        if reference_range_remaining_count(
+            input.claim_evidence_offsets,
+            input.claim_evidence_indices,
+            claim_index,
+            removed_evidence,
+        ) == 0
+        {
+            plan.deleted_claims.push(claim_index);
+            if let Some(slot) = deleted_claims.get_mut(claim_index) {
+                *slot = true;
+            }
+        } else {
+            plan.updated_claims.push(claim_index);
+        }
+    }
+
+    deleted_claims
+}
+
+/// 삭제할 community를 수집한다.
+fn collect_pruned_communities(
+    input: &GraphPruneInput<'_>,
+    affected_schema_ids: &[&str],
+    deleted_entities: &[bool],
+    deleted_relations: &[bool],
+    deleted_claims: &[bool],
+    plan: &mut GraphPrunePlan,
+) {
+    for community_index in 0..input.community_schema_ids.len() {
+        let affected_schema = input
+            .community_schema_ids
+            .get(community_index)
+            .copied()
+            .is_some_and(|schema_id| contains_str(affected_schema_ids, schema_id));
+        let deleted_reference = reference_range_contains_removed(
+            input.community_entity_offsets,
+            input.community_entity_indices,
+            community_index,
+            deleted_entities,
+        ) || reference_range_contains_removed(
+            input.community_relation_offsets,
+            input.community_relation_indices,
+            community_index,
+            deleted_relations,
+        ) || reference_range_contains_removed(
+            input.community_claim_offsets,
+            input.community_claim_indices,
+            community_index,
+            deleted_claims,
+        );
+        if affected_schema || deleted_reference {
+            plan.deleted_communities.push(community_index);
+        }
+    }
+}
+
+/// 삭제할 rejected fact를 수집하고 cache invalidation용 removed entry id에 추가한다.
+fn collect_pruned_rejected_facts<'a>(
+    input: &GraphPruneInput<'a>,
+    removed_entry_ids: &mut Vec<&'a str>,
+    plan: &mut GraphPrunePlan,
+) {
+    for (index, file_path) in input.rejected_fact_file_paths.iter().copied().enumerate() {
+        if !contains_str(&input.file_paths, file_path) {
+            continue;
+        }
+        plan.deleted_rejected_facts.push(index);
+        if let Some(entry_id) = input.rejected_fact_entry_ids.get(index).copied() {
+            push_unique_str(removed_entry_ids, entry_id);
+        }
+    }
+}
+
+/// 삭제할 extraction cache entry를 수집한다.
+fn collect_pruned_extraction_cache(
+    input: &GraphPruneInput<'_>,
+    removed_entry_ids: &[&str],
+    plan: &mut GraphPrunePlan,
+) {
+    for (index, entry_id) in input.extraction_cache_entry_ids.iter().copied().enumerate() {
+        if contains_str(removed_entry_ids, entry_id)
+            || input
+                .file_paths
+                .iter()
+                .copied()
+                .any(|file_path| entry_id_matches_file_path(entry_id, file_path))
+        {
+            plan.deleted_extraction_cache.push(index);
+        }
+    }
+}
+
+/// 삭제할 pending entity merge를 수집한다.
+fn collect_pruned_pending_merges(
+    input: &GraphPruneInput<'_>,
+    deleted_entities: &[bool],
+    plan: &mut GraphPrunePlan,
+) {
+    for index in 0..input.pending_merge_existing_entity_indices.len() {
+        let existing_deleted = index_points_to_removed(
+            input
+                .pending_merge_existing_entity_indices
+                .get(index)
+                .copied()
+                .unwrap_or(GRAPH_PRUNE_UNKNOWN_INDEX),
+            deleted_entities,
+        );
+        let candidate_deleted = index_points_to_removed(
+            input
+                .pending_merge_candidate_entity_indices
+                .get(index)
+                .copied()
+                .unwrap_or(GRAPH_PRUNE_UNKNOWN_INDEX),
+            deleted_entities,
+        );
+        if existing_deleted || candidate_deleted {
+            plan.deleted_pending_merges.push(index);
+        }
+    }
+}
+
+/// offset range 안에 삭제된 참조가 하나라도 있는지 확인한다.
+fn reference_range_contains_removed(
+    offsets: &[u32],
+    indices: &[u32],
+    item_index: usize,
+    removed: &[bool],
+) -> bool {
+    let Some(range) = offset_range(offsets, item_index, indices.len()) else {
+        return false;
+    };
+    indices.get(range).is_some_and(|values| {
+        values
+            .iter()
+            .copied()
+            .any(|index| index_points_to_removed(index, removed))
+    })
+}
+
+/// offset range 안에서 삭제되지 않은 참조 수를 계산한다.
+fn reference_range_remaining_count(
+    offsets: &[u32],
+    indices: &[u32],
+    item_index: usize,
+    removed: &[bool],
+) -> usize {
+    let Some(range) = offset_range(offsets, item_index, indices.len()) else {
+        return 0;
+    };
+    indices
+        .get(range)
+        .map(|values| {
+            values
+                .iter()
+                .copied()
+                .filter(|index| !index_points_to_removed(*index, removed))
+                .count()
+        })
+        .unwrap_or_default()
+}
+
+/// index가 삭제된 항목을 가리키는지 확인한다. unknown sentinel은 삭제되지 않은 것으로 취급한다.
+fn index_points_to_removed(index: u32, removed: &[bool]) -> bool {
+    if index == GRAPH_PRUNE_UNKNOWN_INDEX {
+        return false;
+    }
+    bounded_u32_index(index, removed.len())
+        .and_then(|value| removed.get(value).copied())
+        .unwrap_or(false)
+}
+
+/// 문자열 배열에 값이 있는지 확인한다.
+fn contains_str(values: &[&str], target: &str) -> bool {
+    values.iter().copied().any(|value| value == target)
+}
+
+/// 문자열 배열에 값이 없을 때만 추가한다.
+fn push_unique_str<'a>(values: &mut Vec<&'a str>, target: &'a str) {
+    if !contains_str(values, target) {
+        values.push(target);
+    }
+}
+
+/// cache entry id가 file path 자체 또는 chunk id prefix에 매칭되는지 확인한다.
+fn entry_id_matches_file_path(entry_id: &str, file_path: &str) -> bool {
+    entry_id == file_path
+        || entry_id
+            .strip_prefix(file_path)
+            .is_some_and(|suffix| suffix.starts_with("::"))
 }
 
 /// Louvain-style local move pass로 community assignment를 계산한다.
@@ -2796,6 +3671,34 @@ fn serialize_mention_candidates_json(candidates: &[MentionCandidate]) -> String 
     format!("[{body}]")
 }
 
+/// Graph prune plan을 JSON 문자열로 serialize한다.
+fn serialize_graph_prune_plan_json(plan: &GraphPrunePlan) -> String {
+    format!(
+        "{{\"deletedEvidenceIndices\":{},\"deletedEntityIndices\":{},\"updatedEntityIndices\":{},\"deletedRelationIndices\":{},\"updatedRelationIndices\":{},\"deletedClaimIndices\":{},\"updatedClaimIndices\":{},\"deletedCommunityIndices\":{},\"deletedRejectedFactIndices\":{},\"deletedExtractionCacheIndices\":{},\"deletedPendingMergeIndices\":{}}}",
+        serialize_usize_array_json(&plan.deleted_evidence),
+        serialize_usize_array_json(&plan.deleted_entities),
+        serialize_usize_array_json(&plan.updated_entities),
+        serialize_usize_array_json(&plan.deleted_relations),
+        serialize_usize_array_json(&plan.updated_relations),
+        serialize_usize_array_json(&plan.deleted_claims),
+        serialize_usize_array_json(&plan.updated_claims),
+        serialize_usize_array_json(&plan.deleted_communities),
+        serialize_usize_array_json(&plan.deleted_rejected_facts),
+        serialize_usize_array_json(&plan.deleted_extraction_cache),
+        serialize_usize_array_json(&plan.deleted_pending_merges),
+    )
+}
+
+/// usize 배열을 JSON number array로 serialize한다.
+fn serialize_usize_array_json(values: &[usize]) -> String {
+    let body = values
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{body}]")
+}
+
 /// token frequency payload를 JSON 문자열로 serialize한다.
 fn serialize_token_frequencies_json(
     total_tokens: usize,
@@ -3120,9 +4023,9 @@ mod tests {
         aggregate_graph_edges_flat, assign_vector_clusters, bm25_score_pairs, chunk_markdown,
         chunk_plain_text, cosine_similarity, create_content_hash, detect_communities_flat,
         extract_vault_links_json, hybrid_score_or_nan, is_excluded_path, normalize_entity_name,
-        parse_mention_candidates_json, rank_top_k_pairs, recompute_centroids, rrf_score_or_nan,
-        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
-        token_frequencies_json, tokenize,
+        parse_mention_candidates_json, prune_graph_indexes_json, rank_top_k_pairs,
+        recompute_centroids, rrf_score_or_nan, score_entity_match_or_nan,
+        score_local_evidence_pairs, select_diverse_indices, token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -3588,6 +4491,71 @@ mod tests {
                 "aggregated edge triple mismatch",
             );
         }
+    }
+
+    /// Graph store pruning은 삭제/업데이트할 record index를 기존 TypeScript 계약과 같이 계산해야 한다.
+    #[test]
+    fn prune_graph_indexes_json_matches_store_pruning_contract() {
+        let config = [
+            1_u32, // file paths
+            2,     // evidence
+            3,     // entities
+            4,     // entity evidence refs
+            2,     // relations
+            3,     // relation evidence refs
+            2,     // claims
+            4,     // claim entity refs
+            3,     // claim relation refs
+            3,     // claim evidence refs
+            2,     // communities
+            2,     // community entity refs
+            1,     // community relation refs
+            1,     // community claim refs
+            2,     // rejected facts
+            2,     // extraction cache
+            2,     // pending merges
+        ];
+        let indices = [
+            0, 1, 3, 4, // entity evidence offsets
+            0, 0, 1, 1, // entity evidence indices
+            0, 1, // relation source entities
+            1, 2, // relation target entities
+            0, 1, 3, // relation evidence offsets
+            0, 0, 1, // relation evidence indices
+            0, 1, 4, // claim entity offsets
+            0, 0, 1, 2, // claim entity indices
+            0, 1, 3, // claim relation offsets
+            0, 0, 1, // claim relation indices
+            0, 1, 3, // claim evidence offsets
+            0, 0, 1, // claim evidence indices
+            0, 1, 2, // community entity offsets
+            0, 2, // community entity indices
+            0, 1, 1, // community relation offsets
+            0, // community relation indices
+            0, 1, 1, // community claim offsets
+            0, // community claim indices
+            0, 2, // pending existing entity indices
+            2, 1, // pending candidate entity indices
+        ];
+        let wire_values = [
+            "old.md",
+            "old.md\0keep.md",
+            "old.md::0\0keep.md::0",
+            "default\0default\0default",
+            "default\0default",
+            "default\0other",
+            "old.md\0keep.md",
+            "old.md::0\0keep.md::0",
+            "old.md::0\0keep.md::0",
+        ]
+        .join("\u{1f}");
+
+        let plan = prune_graph_indexes_json(&config, &indices, &wire_values);
+
+        assert_eq!(
+            plan,
+            "{\"deletedEvidenceIndices\":[0],\"deletedEntityIndices\":[0],\"updatedEntityIndices\":[1],\"deletedRelationIndices\":[0],\"updatedRelationIndices\":[1],\"deletedClaimIndices\":[0],\"updatedClaimIndices\":[1],\"deletedCommunityIndices\":[0],\"deletedRejectedFactIndices\":[0],\"deletedExtractionCacheIndices\":[0],\"deletedPendingMergeIndices\":[0]}",
+        );
     }
 
     /// `GraphRAG` local evidence scoring은 entity/relation/claim evidence 점수를 보존해야 한다.

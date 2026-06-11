@@ -14,6 +14,7 @@ import {
   isExcludedPathRust,
   isRustCoreAvailable,
   normalizeEntityNameRust,
+  planGraphPruneRust,
   parseMentionCandidatesRust,
   rankTopKPairsRust,
   recomputeCentroidsRust,
@@ -205,6 +206,46 @@ describe('Rust WASM RAG core bridge', () => {
       { sourceIndex: 0, targetIndex: 2, weight: 0.2 },
       { sourceIndex: 0, targetIndex: 3, weight: 0.9 },
     ]);
+  });
+
+  it('plans GraphRAG pruning indexes through Rust', () => {
+    const plan = planGraphPruneRust({
+      filePaths: ['old.md'],
+      evidenceFilePaths: ['old.md', 'keep.md'],
+      evidenceEntryIds: ['old.md::0', 'keep.md::0'],
+      entitySchemaIds: ['default', 'default', 'default'],
+      entityEvidenceIndices: [[0], [0, 1], [1]],
+      relationSchemaIds: ['default', 'default'],
+      relationSourceEntityIndices: [0, 1],
+      relationTargetEntityIndices: [1, 2],
+      relationEvidenceIndices: [[0], [0, 1]],
+      claimEntityIndices: [[0], [0, 1, 2]],
+      claimRelationIndices: [[0], [0, 1]],
+      claimEvidenceIndices: [[0], [0, 1]],
+      communitySchemaIds: ['default', 'other'],
+      communityEntityIndices: [[0], [2]],
+      communityRelationIndices: [[0], []],
+      communityClaimIndices: [[0], []],
+      rejectedFactFilePaths: ['old.md', 'keep.md'],
+      rejectedFactEntryIds: ['old.md::0', 'keep.md::0'],
+      extractionCacheEntryIds: ['old.md::0', 'keep.md::0'],
+      pendingMergeExistingEntityIndices: [0, 2],
+      pendingMergeCandidateEntityIndices: [2, 1],
+    });
+
+    expect(plan).toEqual({
+      deletedEvidenceIndices: [0],
+      deletedEntityIndices: [0],
+      updatedEntityIndices: [1],
+      deletedRelationIndices: [0],
+      updatedRelationIndices: [1],
+      deletedClaimIndices: [0],
+      updatedClaimIndices: [1],
+      deletedCommunityIndices: [0],
+      deletedRejectedFactIndices: [0],
+      deletedExtractionCacheIndices: [0],
+      deletedPendingMergeIndices: [0],
+    });
   });
 
   it('extracts vault links through Rust with normalization and dedupe', () => {

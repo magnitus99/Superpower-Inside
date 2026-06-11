@@ -1,4 +1,10 @@
 import Dexie from 'dexie';
+import {
+  RUST_GRAPH_PRUNE_UNKNOWN_INDEX,
+  planGraphPruneRust,
+  type RustGraphPruneInput,
+  type RustGraphPrunePlan,
+} from '../rag/rust-core';
 
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
@@ -588,7 +594,162 @@ interface PrunedGraphSnapshot {
   deletedPendingMergeIds: string[];
 }
 
+function createRustGraphPruneInput(
+  filePaths: readonly string[],
+  snapshot: GraphStoreSnapshot,
+): RustGraphPruneInput {
+  const evidenceIndexById = new Map(snapshot.evidence.map((record, index) => [record.id, index]));
+  const entityIndexById = new Map(snapshot.entities.map((record, index) => [record.id, index]));
+  const relationIndexById = new Map(
+    snapshot.relations.map((record, index) => [record.id, index]),
+  );
+  const claimIndexById = new Map(snapshot.claims.map((record, index) => [record.id, index]));
+  const toEvidenceIndex = (id: string): number => toRustGraphIndex(evidenceIndexById, id);
+  const toEntityIndex = (id: string): number => toRustGraphIndex(entityIndexById, id);
+  const toRelationIndex = (id: string): number => toRustGraphIndex(relationIndexById, id);
+  const toClaimIndex = (id: string): number => toRustGraphIndex(claimIndexById, id);
+
+  return {
+    filePaths,
+    evidenceFilePaths: snapshot.evidence.map((record) => record.filePath),
+    evidenceEntryIds: snapshot.evidence.map((record) => record.entryId),
+    entitySchemaIds: snapshot.entities.map((record) => record.ontologySchemaId),
+    entityEvidenceIndices: snapshot.entities.map((record) =>
+      record.evidenceIds.map(toEvidenceIndex),
+    ),
+    relationSchemaIds: snapshot.relations.map((record) => record.ontologySchemaId),
+    relationSourceEntityIndices: snapshot.relations.map((record) =>
+      toEntityIndex(record.sourceEntityId),
+    ),
+    relationTargetEntityIndices: snapshot.relations.map((record) =>
+      toEntityIndex(record.targetEntityId),
+    ),
+    relationEvidenceIndices: snapshot.relations.map((record) =>
+      record.evidenceIds.map(toEvidenceIndex),
+    ),
+    claimEntityIndices: snapshot.claims.map((record) => record.entityIds.map(toEntityIndex)),
+    claimRelationIndices: snapshot.claims.map((record) =>
+      record.relationIds.map(toRelationIndex),
+    ),
+    claimEvidenceIndices: snapshot.claims.map((record) => record.evidenceIds.map(toEvidenceIndex)),
+    communitySchemaIds: snapshot.communities.map((record) => record.ontologySchemaId),
+    communityEntityIndices: snapshot.communities.map((record) =>
+      record.entityIds.map(toEntityIndex),
+    ),
+    communityRelationIndices: snapshot.communities.map((record) =>
+      record.relationIds.map(toRelationIndex),
+    ),
+    communityClaimIndices: snapshot.communities.map((record) =>
+      record.claimIds.map(toClaimIndex),
+    ),
+    rejectedFactFilePaths: snapshot.rejectedFacts.map((record) => record.filePath),
+    rejectedFactEntryIds: snapshot.rejectedFacts.map((record) => record.entryId),
+    extractionCacheEntryIds: snapshot.extractionCache.map((record) => record.entryId),
+    pendingMergeExistingEntityIndices: snapshot.pendingEntityMerges.map((record) =>
+      toEntityIndex(record.existingEntityId),
+    ),
+    pendingMergeCandidateEntityIndices: snapshot.pendingEntityMerges.map((record) =>
+      toEntityIndex(record.candidateEntityId),
+    ),
+  };
+}
+
+function toRustGraphIndex(indexById: ReadonlyMap<string, number>, id: string): number {
+  return indexById.get(id) ?? RUST_GRAPH_PRUNE_UNKNOWN_INDEX;
+}
+
+function createPrunedGraphSnapshotFromRustPlan(
+  snapshot: GraphStoreSnapshot,
+  plan: RustGraphPrunePlan,
+): PrunedGraphSnapshot {
+  const deletedEvidence = selectByIndex(snapshot.evidence, plan.deletedEvidenceIndices);
+  const removedEvidenceIds = new Set(deletedEvidence.map((record) => record.id));
+  const deletedEntities = selectByIndex(snapshot.entities, plan.deletedEntityIndices);
+  const deletedEntityIds = deletedEntities.map((record) => record.id);
+  const deletedEntityIdSet = new Set(deletedEntityIds);
+  const deletedRelations = selectByIndex(snapshot.relations, plan.deletedRelationIndices);
+  const deletedRelationIds = deletedRelations.map((record) => record.id);
+  const deletedRelationIdSet = new Set(deletedRelationIds);
+  const deletedClaims = selectByIndex(snapshot.claims, plan.deletedClaimIndices);
+  const deletedClaimIds = deletedClaims.map((record) => record.id);
+  const deletedCommunities = selectByIndex(snapshot.communities, plan.deletedCommunityIndices);
+  const deletedRejectedFacts = selectByIndex(
+    snapshot.rejectedFacts,
+    plan.deletedRejectedFactIndices,
+  );
+  const deletedExtractionCache = selectByIndex(
+    snapshot.extractionCache,
+    plan.deletedExtractionCacheIndices,
+  );
+  const deletedPendingMerges = selectByIndex(
+    snapshot.pendingEntityMerges,
+    plan.deletedPendingMergeIndices,
+  );
+  const updatedEntities = selectByIndex(snapshot.entities, plan.updatedEntityIndices).map(
+    (entity) => ({
+      ...copyEntity(entity),
+      evidenceIds: withoutRemovedEvidence(entity.evidenceIds, removedEvidenceIds),
+    }),
+  );
+  const updatedRelations = selectByIndex(snapshot.relations, plan.updatedRelationIndices).map(
+    (relation) => ({
+      ...copyRelation(relation),
+      evidenceIds: withoutRemovedEvidence(relation.evidenceIds, removedEvidenceIds),
+    }),
+  );
+  const updatedClaims = selectByIndex(snapshot.claims, plan.updatedClaimIndices).map((claim) => ({
+    ...copyClaim(claim),
+    entityIds: claim.entityIds.filter((id) => !deletedEntityIdSet.has(id)),
+    relationIds: claim.relationIds.filter((id) => !deletedRelationIdSet.has(id)),
+    evidenceIds: withoutRemovedEvidence(claim.evidenceIds, removedEvidenceIds),
+  }));
+
+  return {
+    result: {
+      evidence: deletedEvidence.length,
+      entities: deletedEntities.length,
+      relations: deletedRelations.length,
+      claims: deletedClaims.length,
+      communities: deletedCommunities.length,
+      extractionCache: deletedExtractionCache.length,
+      rejectedFacts: deletedRejectedFacts.length,
+      pendingEntityMerges: deletedPendingMerges.length,
+    },
+    deletedEvidenceIds: deletedEvidence.map((record) => record.id),
+    deletedEntityIds,
+    updatedEntities,
+    deletedRelationIds,
+    updatedRelations,
+    deletedClaimIds,
+    updatedClaims,
+    deletedCommunityIds: deletedCommunities.map((record) => record.id),
+    deletedRejectedFactIds: deletedRejectedFacts.map((record) => record.id),
+    deletedExtractionCacheEntryIds: deletedExtractionCache.map((record) => record.entryId),
+    deletedPendingMergeIds: deletedPendingMerges.map((record) => record.id),
+  };
+}
+
+function selectByIndex<T>(records: readonly T[], indices: readonly number[]): T[] {
+  const selected: T[] = [];
+  for (const index of indices) {
+    const record = records[index];
+    if (record !== undefined) selected.push(record);
+  }
+  return selected;
+}
+
 function createPrunedGraphSnapshot(
+  filePaths: readonly string[],
+  snapshot: GraphStoreSnapshot,
+): PrunedGraphSnapshot {
+  const rustPlan = planGraphPruneRust(createRustGraphPruneInput(filePaths, snapshot));
+  if (rustPlan !== null) {
+    return createPrunedGraphSnapshotFromRustPlan(snapshot, rustPlan);
+  }
+  return createPrunedGraphSnapshotWithTypeScript(filePaths, snapshot);
+}
+
+function createPrunedGraphSnapshotWithTypeScript(
   filePaths: readonly string[],
   snapshot: GraphStoreSnapshot,
 ): PrunedGraphSnapshot {

@@ -275,6 +275,32 @@ export function parse_mention_candidates_json(content) {
 }
 
 /**
+ * `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
+ * @param {Uint32Array} config
+ * @param {Uint32Array} indices
+ * @param {string} wire_values
+ * @returns {string}
+ */
+export function prune_graph_indexes_json(config, indices, wire_values) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passArray32ToWasm0(config, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(wire_values, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.prune_graph_indexes_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors

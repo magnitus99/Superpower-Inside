@@ -14,6 +14,7 @@ import {
   is_excluded_path,
   normalize_entity_name,
   parse_mention_candidates_json,
+  prune_graph_indexes_json,
   rank_top_k_pairs,
   recompute_centroids,
   rrf_score_or_nan,
@@ -109,6 +110,46 @@ export interface RustMentionCandidate {
   raw: string;
   name: string;
 }
+
+export interface RustGraphPruneInput {
+  filePaths: readonly string[];
+  evidenceFilePaths: readonly string[];
+  evidenceEntryIds: readonly string[];
+  entitySchemaIds: readonly string[];
+  entityEvidenceIndices: readonly (readonly number[])[];
+  relationSchemaIds: readonly string[];
+  relationSourceEntityIndices: readonly number[];
+  relationTargetEntityIndices: readonly number[];
+  relationEvidenceIndices: readonly (readonly number[])[];
+  claimEntityIndices: readonly (readonly number[])[];
+  claimRelationIndices: readonly (readonly number[])[];
+  claimEvidenceIndices: readonly (readonly number[])[];
+  communitySchemaIds: readonly string[];
+  communityEntityIndices: readonly (readonly number[])[];
+  communityRelationIndices: readonly (readonly number[])[];
+  communityClaimIndices: readonly (readonly number[])[];
+  rejectedFactFilePaths: readonly string[];
+  rejectedFactEntryIds: readonly string[];
+  extractionCacheEntryIds: readonly string[];
+  pendingMergeExistingEntityIndices: readonly number[];
+  pendingMergeCandidateEntityIndices: readonly number[];
+}
+
+export interface RustGraphPrunePlan {
+  deletedEvidenceIndices: number[];
+  deletedEntityIndices: number[];
+  updatedEntityIndices: number[];
+  deletedRelationIndices: number[];
+  updatedRelationIndices: number[];
+  deletedClaimIndices: number[];
+  updatedClaimIndices: number[];
+  deletedCommunityIndices: number[];
+  deletedRejectedFactIndices: number[];
+  deletedExtractionCacheIndices: number[];
+  deletedPendingMergeIndices: number[];
+}
+
+export const RUST_GRAPH_PRUNE_UNKNOWN_INDEX = 0xffffffff;
 
 let initialized = false;
 let unavailable = false;
@@ -463,6 +504,97 @@ export function aggregateGraphEdgesRust(
   return decodeGraphEdgeTriples(values, normalizedNodeCount);
 }
 
+export function planGraphPruneRust(input: RustGraphPruneInput): RustGraphPrunePlan | null {
+  if (!isValidGraphPruneInput(input)) return null;
+  if (!ensureRustCore()) return null;
+
+  const entityEvidence = encodeNestedUint32Arrays(input.entityEvidenceIndices);
+  const relationEvidence = encodeNestedUint32Arrays(input.relationEvidenceIndices);
+  const claimEntity = encodeNestedUint32Arrays(input.claimEntityIndices);
+  const claimRelation = encodeNestedUint32Arrays(input.claimRelationIndices);
+  const claimEvidence = encodeNestedUint32Arrays(input.claimEvidenceIndices);
+  const communityEntity = encodeNestedUint32Arrays(input.communityEntityIndices);
+  const communityRelation = encodeNestedUint32Arrays(input.communityRelationIndices);
+  const communityClaim = encodeNestedUint32Arrays(input.communityClaimIndices);
+  if (
+    entityEvidence === null ||
+    relationEvidence === null ||
+    claimEntity === null ||
+    claimRelation === null ||
+    claimEvidence === null ||
+    communityEntity === null ||
+    communityRelation === null ||
+    communityClaim === null
+  ) {
+    return null;
+  }
+
+  const config = new Uint32Array([
+    input.filePaths.length,
+    input.evidenceFilePaths.length,
+    input.entitySchemaIds.length,
+    entityEvidence.flat.length,
+    input.relationSchemaIds.length,
+    relationEvidence.flat.length,
+    input.claimEvidenceIndices.length,
+    claimEntity.flat.length,
+    claimRelation.flat.length,
+    claimEvidence.flat.length,
+    input.communitySchemaIds.length,
+    communityEntity.flat.length,
+    communityRelation.flat.length,
+    communityClaim.flat.length,
+    input.rejectedFactFilePaths.length,
+    input.extractionCacheEntryIds.length,
+    input.pendingMergeExistingEntityIndices.length,
+  ]);
+  const indices = new Uint32Array([
+    ...entityEvidence.offsets,
+    ...entityEvidence.flat,
+    ...input.relationSourceEntityIndices,
+    ...input.relationTargetEntityIndices,
+    ...relationEvidence.offsets,
+    ...relationEvidence.flat,
+    ...claimEntity.offsets,
+    ...claimEntity.flat,
+    ...claimRelation.offsets,
+    ...claimRelation.flat,
+    ...claimEvidence.offsets,
+    ...claimEvidence.flat,
+    ...communityEntity.offsets,
+    ...communityEntity.flat,
+    ...communityRelation.offsets,
+    ...communityRelation.flat,
+    ...communityClaim.offsets,
+    ...communityClaim.flat,
+    ...input.pendingMergeExistingEntityIndices,
+    ...input.pendingMergeCandidateEntityIndices,
+  ]);
+  const wireValues = [
+    input.filePaths,
+    input.evidenceFilePaths,
+    input.evidenceEntryIds,
+    input.entitySchemaIds,
+    input.relationSchemaIds,
+    input.communitySchemaIds,
+    input.rejectedFactFilePaths,
+    input.rejectedFactEntryIds,
+    input.extractionCacheEntryIds,
+  ]
+    .map((section) => section.join('\0'))
+    .join('\u{1f}');
+
+  try {
+    const raw = prune_graph_indexes_json(config, indices, wireValues);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphPrunePlan(parsed, input)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function scoreLocalEvidenceRust(input: RustLocalEvidenceInput): RustVectorScore[] | null {
   if (input.entityCount <= 0 || input.evidenceCount <= 0) return [];
   if (!ensureRustCore()) return null;
@@ -763,6 +895,133 @@ function decodeVectorMatrix(
     rows.push(row);
   }
   return rows;
+}
+
+interface EncodedNestedUint32Arrays {
+  offsets: number[];
+  flat: number[];
+}
+
+function encodeNestedUint32Arrays(
+  rows: readonly (readonly number[])[],
+): EncodedNestedUint32Arrays | null {
+  const offsets = [0];
+  const flat: number[] = [];
+  for (const row of rows) {
+    for (const value of row) {
+      if (!isValidUint32(value)) return null;
+      flat.push(value);
+    }
+    if (!isValidUint32(flat.length)) return null;
+    offsets.push(flat.length);
+  }
+  return { offsets, flat };
+}
+
+function isValidGraphPruneInput(input: RustGraphPruneInput): boolean {
+  const evidenceCount = input.evidenceFilePaths.length;
+  const entityCount = input.entitySchemaIds.length;
+  const relationCount = input.relationSchemaIds.length;
+  const claimCount = input.claimEvidenceIndices.length;
+  const communityCount = input.communitySchemaIds.length;
+  const rejectedFactCount = input.rejectedFactFilePaths.length;
+  const pendingMergeCount = input.pendingMergeExistingEntityIndices.length;
+
+  return (
+    isDelimiterSafeStringArray(input.filePaths) &&
+    isDelimiterSafeStringArray(input.evidenceFilePaths) &&
+    isDelimiterSafeStringArray(input.evidenceEntryIds) &&
+    isDelimiterSafeStringArray(input.entitySchemaIds) &&
+    isDelimiterSafeStringArray(input.relationSchemaIds) &&
+    isDelimiterSafeStringArray(input.communitySchemaIds) &&
+    isDelimiterSafeStringArray(input.rejectedFactFilePaths) &&
+    isDelimiterSafeStringArray(input.rejectedFactEntryIds) &&
+    isDelimiterSafeStringArray(input.extractionCacheEntryIds) &&
+    input.evidenceEntryIds.length === evidenceCount &&
+    input.entityEvidenceIndices.length === entityCount &&
+    input.relationSourceEntityIndices.length === relationCount &&
+    input.relationTargetEntityIndices.length === relationCount &&
+    input.relationEvidenceIndices.length === relationCount &&
+    input.claimEntityIndices.length === claimCount &&
+    input.claimRelationIndices.length === claimCount &&
+    input.communityEntityIndices.length === communityCount &&
+    input.communityRelationIndices.length === communityCount &&
+    input.communityClaimIndices.length === communityCount &&
+    input.rejectedFactEntryIds.length === rejectedFactCount &&
+    input.pendingMergeCandidateEntityIndices.length === pendingMergeCount &&
+    input.entityEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
+    input.relationSourceEntityIndices.every((index) =>
+      isValidGraphPruneIndex(index, entityCount),
+    ) &&
+    input.relationTargetEntityIndices.every((index) =>
+      isValidGraphPruneIndex(index, entityCount),
+    ) &&
+    input.relationEvidenceIndices.every((row) =>
+      isValidGraphPruneIndexArray(row, evidenceCount),
+    ) &&
+    input.claimEntityIndices.every((row) => isValidGraphPruneIndexArray(row, entityCount)) &&
+    input.claimRelationIndices.every((row) => isValidGraphPruneIndexArray(row, relationCount)) &&
+    input.claimEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
+    input.communityEntityIndices.every((row) => isValidGraphPruneIndexArray(row, entityCount)) &&
+    input.communityRelationIndices.every((row) =>
+      isValidGraphPruneIndexArray(row, relationCount),
+    ) &&
+    input.communityClaimIndices.every((row) => isValidGraphPruneIndexArray(row, claimCount)) &&
+    input.pendingMergeExistingEntityIndices.every((index) =>
+      isValidGraphPruneIndex(index, entityCount),
+    ) &&
+    input.pendingMergeCandidateEntityIndices.every((index) =>
+      isValidGraphPruneIndex(index, entityCount),
+    )
+  );
+}
+
+function isDelimiterSafeStringArray(values: readonly string[]): boolean {
+  return values.every(
+    (value) =>
+      typeof value === 'string' && !value.includes('\0') && !value.includes('\u{1f}'),
+  );
+}
+
+function isValidGraphPruneIndexArray(values: readonly number[], maxExclusive: number): boolean {
+  return values.every((value) => isValidGraphPruneIndex(value, maxExclusive));
+}
+
+function isValidGraphPruneIndex(value: number, maxExclusive: number): boolean {
+  return (
+    value === RUST_GRAPH_PRUNE_UNKNOWN_INDEX ||
+    (Number.isSafeInteger(value) && value >= 0 && value < maxExclusive)
+  );
+}
+
+function isGraphPrunePlan(value: unknown, input: RustGraphPruneInput): value is RustGraphPrunePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphPrunePlan>;
+  return (
+    isBoundedIndexArray(plan.deletedEvidenceIndices, input.evidenceFilePaths.length) &&
+    isBoundedIndexArray(plan.deletedEntityIndices, input.entitySchemaIds.length) &&
+    isBoundedIndexArray(plan.updatedEntityIndices, input.entitySchemaIds.length) &&
+    isBoundedIndexArray(plan.deletedRelationIndices, input.relationSchemaIds.length) &&
+    isBoundedIndexArray(plan.updatedRelationIndices, input.relationSchemaIds.length) &&
+    isBoundedIndexArray(plan.deletedClaimIndices, input.claimEvidenceIndices.length) &&
+    isBoundedIndexArray(plan.updatedClaimIndices, input.claimEvidenceIndices.length) &&
+    isBoundedIndexArray(plan.deletedCommunityIndices, input.communitySchemaIds.length) &&
+    isBoundedIndexArray(plan.deletedRejectedFactIndices, input.rejectedFactFilePaths.length) &&
+    isBoundedIndexArray(plan.deletedExtractionCacheIndices, input.extractionCacheEntryIds.length) &&
+    isBoundedIndexArray(
+      plan.deletedPendingMergeIndices,
+      input.pendingMergeExistingEntityIndices.length,
+    )
+  );
+}
+
+function isBoundedIndexArray(value: unknown, maxExclusive: number): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (index) => Number.isSafeInteger(index) && index >= 0 && index < maxExclusive,
+    )
+  );
 }
 
 function isValidBm25Posting(posting: RustBm25Posting): boolean {

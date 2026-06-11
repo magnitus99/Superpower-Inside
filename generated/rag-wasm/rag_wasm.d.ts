@@ -72,6 +72,11 @@ export function normalize_entity_name(name: string): string;
 export function parse_mention_candidates_json(content: string): string;
 
 /**
+ * `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
+ */
+export function prune_graph_indexes_json(config: Uint32Array, indices: Uint32Array, wire_values: string): string;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
@@ -129,6 +134,7 @@ export interface InitOutput {
     readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
     readonly normalize_entity_name: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
+    readonly prune_graph_indexes_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
