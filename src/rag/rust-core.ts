@@ -12,6 +12,7 @@ import {
   initSync,
   is_excluded_path,
   normalize_entity_name,
+  parse_mention_candidates_json,
   rank_top_k_pairs,
   rrf_score_or_nan,
   score_entity_match_or_nan,
@@ -100,6 +101,11 @@ export interface RustEntityMatchInput {
   existingEvidenceIds: readonly string[];
   sameType: boolean;
   embeddingScore: number;
+}
+
+export interface RustMentionCandidate {
+  raw: string;
+  name: string;
 }
 
 let initialized = false;
@@ -513,6 +519,19 @@ export function extractVaultLinksRust(content: string): string[] | null {
   }
 }
 
+export function parseMentionCandidatesRust(content: string): RustMentionCandidate[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(parse_mention_candidates_json(content));
+    if (!Array.isArray(parsed) || !parsed.every(isMentionCandidate)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function isExcludedPathRust(filePath: string, patterns: readonly string[]): boolean | null {
   if (!ensureRustCore()) return null;
   return is_excluded_path(filePath, patterns.join('\0'));
@@ -662,6 +681,12 @@ function isValidUint32(value: number): boolean {
 
 function isStringValue(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isMentionCandidate(value: unknown): value is RustMentionCandidate {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RustMentionCandidate>;
+  return typeof candidate.raw === 'string' && typeof candidate.name === 'string';
 }
 
 function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {

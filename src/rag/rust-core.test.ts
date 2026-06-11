@@ -13,6 +13,7 @@ import {
   isExcludedPathRust,
   isRustCoreAvailable,
   normalizeEntityNameRust,
+  parseMentionCandidatesRust,
   rankTopKPairsRust,
   scoreEntityMatchRust,
   scoreBm25Rust,
@@ -219,6 +220,20 @@ describe('Rust WASM RAG core bridge', () => {
     expect(partialScore).not.toBeNull();
     expect(partialScore).toBeGreaterThanOrEqual(0.72);
     expect(partialScore).toBeLessThan(1);
+  });
+
+  it('extracts chat mention candidates through Rust', () => {
+    const candidates = parseMentionCandidatesRust(
+      '@browser @[Project Plan.md] @[Project Plan.md] @[entity: Paul] @Notes/today.md @missing',
+    );
+
+    expect(candidates).toEqual([
+      { raw: '@[Project Plan.md]', name: 'Project Plan.md' },
+      { raw: '@[entity: Paul]', name: 'entity: Paul' },
+      { raw: '@browser', name: 'browser' },
+      { raw: '@Notes/today.md', name: 'Notes/today.md' },
+      { raw: '@missing', name: 'missing' },
+    ]);
   });
 
   it('returns GraphRAG local evidence scores from numeric graph inputs', () => {

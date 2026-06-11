@@ -1,3 +1,5 @@
+import { parseMentionCandidatesRust, type RustMentionCandidate } from '../rag/rust-core';
+
 export interface ParsedMention {
   raw: string;
   type: 'file' | 'server' | 'folder' | 'entity';
@@ -13,13 +15,9 @@ export interface MentionResolver {
 
 export function parseMentions(text: string, resolver: MentionResolver): ParsedMention[] {
   const mentions: ParsedMention[] = [];
-  const seen = new Set<string>();
+  const candidates = parseMentionCandidatesRust(text) ?? extractMentionCandidatesWithTypeScript(text);
 
   const addMention = (raw: string, name: string): void => {
-    const key = name.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-
     if (name.startsWith('entity:')) {
       const entityName = name.slice(7).trim();
       if (entityName && resolver.isEntity(entityName)) {
@@ -38,20 +36,38 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
     }
   };
 
+  for (const candidate of candidates) {
+    addMention(candidate.raw, candidate.name);
+  }
+
+  return mentions;
+}
+
+function extractMentionCandidatesWithTypeScript(text: string): RustMentionCandidate[] {
+  const candidates: RustMentionCandidate[] = [];
+  const seen = new Set<string>();
+
+  const addCandidate = (raw: string, name: string): void => {
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ raw, name });
+  };
+
   const bracketRegex = /@\[([^\]]+)\]/g;
   let bracketMatch: RegExpExecArray | null;
   while ((bracketMatch = bracketRegex.exec(text)) !== null) {
-    addMention(bracketMatch[0], bracketMatch[1].trim());
+    addCandidate(bracketMatch[0], bracketMatch[1].trim());
   }
 
   const textWithoutBracketMentions = text.replace(bracketRegex, ' ');
   const wordRegex = /@([^\s\n@]+)/g;
   let wordMatch: RegExpExecArray | null;
   while ((wordMatch = wordRegex.exec(textWithoutBracketMentions)) !== null) {
-    addMention(wordMatch[0], wordMatch[1].trim());
+    addCandidate(wordMatch[0], wordMatch[1].trim());
   }
 
-  return mentions;
+  return candidates;
 }
 
 export function shouldUseAutoRagForMentions(mentions: ParsedMention[]): boolean {

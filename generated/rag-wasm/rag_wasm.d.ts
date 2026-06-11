@@ -62,6 +62,11 @@ export function is_excluded_path(file_path: string, patterns: string): boolean;
 export function normalize_entity_name(name: string): string;
 
 /**
+ * 채팅 입력의 raw mention 후보를 추출하고 `JSON` 문자열로 반환한다.
+ */
+export function parse_mention_candidates_json(content: string): string;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
@@ -112,6 +117,7 @@ export interface InitOutput {
     readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
     readonly normalize_entity_name: (a: number, b: number) => [number, number];
+    readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly score_entity_match_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;

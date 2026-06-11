@@ -237,6 +237,26 @@ export function normalize_entity_name(name) {
 }
 
 /**
+ * 채팅 입력의 raw mention 후보를 추출하고 `JSON` 문자열로 반환한다.
+ * @param {string} content
+ * @returns {string}
+ */
+export function parse_mention_candidates_json(content) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.parse_mention_candidates_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors

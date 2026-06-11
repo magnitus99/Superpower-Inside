@@ -504,6 +504,14 @@ pub fn extract_vault_links_json(content: &str) -> String {
     serialize_string_array_json(&links)
 }
 
+/// 채팅 입력의 raw mention 후보를 추출하고 `JSON` 문자열로 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn parse_mention_candidates_json(content: &str) -> String {
+    let candidates = parse_mention_candidates(content);
+    serialize_mention_candidates_json(&candidates)
+}
+
 /// vault path가 제외 pattern 목록에 매칭되는지 확인한다.
 #[must_use]
 #[wasm_bindgen]
@@ -794,6 +802,14 @@ struct LocalEvidenceScore {
     score: f64,
     /// 생성 순서. 같은 score tie에서 기존 순서를 보존한다.
     sequence: usize,
+}
+
+/// 채팅 mention 후보.
+struct MentionCandidate {
+    /// 원문 mention 문자열.
+    raw: String,
+    /// resolver에 넘길 mention 이름.
+    name: String,
 }
 
 /// parsed input으로 local evidence score list를 계산한다.
@@ -1926,6 +1942,118 @@ fn extract_vault_links(content: &str) -> Vec<String> {
     links
 }
 
+/// 채팅 입력에서 mention 후보를 추출한다.
+fn parse_mention_candidates(content: &str) -> Vec<MentionCandidate> {
+    let mut candidates = Vec::<MentionCandidate>::new();
+    let mut seen = Vec::<String>::new();
+    let text_without_brackets =
+        collect_bracket_mention_candidates(content, &mut candidates, &mut seen);
+    collect_word_mention_candidates(&text_without_brackets, &mut candidates, &mut seen);
+    candidates
+}
+
+/// bracket mention 후보를 추출하고, 해당 구간을 공백으로 치환한 텍스트를 반환한다.
+fn collect_bracket_mention_candidates(
+    content: &str,
+    candidates: &mut Vec<MentionCandidate>,
+    seen: &mut Vec<String>,
+) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut offset = 0_usize;
+
+    while offset < content.len() {
+        if content
+            .get(offset..)
+            .is_some_and(|tail| tail.starts_with("@["))
+        {
+            let name_start = offset.saturating_add(2);
+            if let Some(name_tail) = content.get(name_start..)
+                && let Some(close_offset) = name_tail.find(']')
+            {
+                let close_index = name_start.saturating_add(close_offset);
+                if let (Some(raw), Some(name)) = (
+                    content.get(offset..=close_index),
+                    content.get(name_start..close_index),
+                ) {
+                    push_mention_candidate(raw, name.trim(), candidates, seen);
+                    output.push(' ');
+                    offset = close_index.saturating_add(1);
+                    continue;
+                }
+            }
+        }
+
+        let Some(character) = content.get(offset..).and_then(|tail| tail.chars().next()) else {
+            break;
+        };
+        output.push(character);
+        offset = offset.saturating_add(character.len_utf8());
+    }
+
+    output
+}
+
+/// word mention 후보를 추출한다.
+fn collect_word_mention_candidates(
+    content: &str,
+    candidates: &mut Vec<MentionCandidate>,
+    seen: &mut Vec<String>,
+) {
+    let mut offset = 0_usize;
+
+    while offset < content.len() {
+        let Some(character) = content.get(offset..).and_then(|tail| tail.chars().next()) else {
+            break;
+        };
+        if character != '@' {
+            offset = offset.saturating_add(character.len_utf8());
+            continue;
+        }
+
+        let raw_start = offset;
+        offset = offset.saturating_add(character.len_utf8());
+        let name_start = offset;
+
+        while offset < content.len() {
+            let Some(next) = content.get(offset..).and_then(|tail| tail.chars().next()) else {
+                break;
+            };
+            if next == '@' || next.is_whitespace() {
+                break;
+            }
+            offset = offset.saturating_add(next.len_utf8());
+        }
+
+        if offset == name_start {
+            continue;
+        }
+        if let (Some(raw), Some(name)) = (
+            content.get(raw_start..offset),
+            content.get(name_start..offset),
+        ) {
+            push_mention_candidate(raw, name.trim(), candidates, seen);
+        }
+    }
+}
+
+/// mention 후보를 기존 `TypeScript` dedupe 순서와 같게 추가한다.
+fn push_mention_candidate(
+    raw: &str,
+    name: &str,
+    candidates: &mut Vec<MentionCandidate>,
+    seen: &mut Vec<String>,
+) {
+    let key = name.to_lowercase();
+    if seen.iter().any(|item| item == &key) {
+        return;
+    }
+    seen.push(key);
+    candidates.push(MentionCandidate {
+        raw: raw.to_owned(),
+        name: name.to_owned(),
+    });
+}
+
 /// path가 제외 pattern 목록에 매칭되는지 확인한다.
 fn is_vault_path_excluded<'a>(
     file_path: &str,
@@ -2526,6 +2654,22 @@ fn serialize_string_array_json(values: &[String]) -> String {
     format!("[{body}]")
 }
 
+/// mention 후보 배열을 `JSON` 문자열로 serialize한다.
+fn serialize_mention_candidates_json(candidates: &[MentionCandidate]) -> String {
+    let body = candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{{\"raw\":\"{}\",\"name\":\"{}\"}}",
+                escape_json_string(&candidate.raw),
+                escape_json_string(&candidate.name),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{body}]")
+}
+
 /// token frequency payload를 JSON 문자열로 serialize한다.
 fn serialize_token_frequencies_json(
     total_tokens: usize,
@@ -2849,9 +2993,10 @@ mod tests {
         BM25_B, BM25_K1, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR,
         aggregate_graph_edges_flat, bm25_score_pairs, chunk_markdown, chunk_plain_text,
         cosine_similarity, create_content_hash, detect_communities_flat, extract_vault_links_json,
-        hybrid_score_or_nan, is_excluded_path, normalize_entity_name, rank_top_k_pairs,
-        rrf_score_or_nan, score_entity_match_or_nan, score_local_evidence_pairs,
-        select_diverse_indices, token_frequencies_json, tokenize,
+        hybrid_score_or_nan, is_excluded_path, normalize_entity_name,
+        parse_mention_candidates_json, rank_top_k_pairs, rrf_score_or_nan,
+        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
+        token_frequencies_json, tokenize,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -2969,6 +3114,19 @@ mod tests {
         assert_eq!(
             links, "[\"제품 개념 정리\",\"Monithub의 가치.md\",\"../제품 개념 정리.md\"]",
             "vault link JSON은 기존 TypeScript 추출 계약과 같아야 한다",
+        );
+    }
+
+    /// 채팅 mention 후보 추출은 bracket 우선, word 후순위, case-insensitive dedupe를 보존해야 한다.
+    #[test]
+    fn parse_mention_candidates_json_preserves_typescript_order_and_dedupe() {
+        let candidates = parse_mention_candidates_json(
+            "@browser @[Project Plan.md] @[Project Plan.md] @[entity: Paul] @Notes/today.md @missing",
+        );
+
+        assert_eq!(
+            candidates,
+            "[{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"},{\"raw\":\"@[entity: Paul]\",\"name\":\"entity: Paul\"},{\"raw\":\"@browser\",\"name\":\"browser\"},{\"raw\":\"@Notes/today.md\",\"name\":\"Notes/today.md\"},{\"raw\":\"@missing\",\"name\":\"missing\"}]",
         );
     }
 
