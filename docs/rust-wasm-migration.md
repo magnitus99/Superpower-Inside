@@ -134,6 +134,15 @@
 - Obsidian `Vault` file/folder resolve, MCP server lookup, KnowledgeGraph entity lookup은 host state 접근이므로 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 JSON 검증 실패 시 기존 TypeScript mention 후보 추출로 fallback한다.
 
+## 현재 열일곱 번째 slice
+
+- ANN vector retrieval의 IVF index build 계산을 Rust/WASM에 추가했다.
+- `assignClusters()`는 entry vector row와 centroid matrix를 `assignVectorClustersRust()`에 넘겨 nearest centroid assignment를 먼저 계산한다.
+- `recomputeCentroids()`는 cluster별 vector 평균과 empty cluster의 previous centroid 보존을 `recomputeCentroidsRust()`에 먼저 맡긴다.
+- `IvfVectorIndex.query()`는 centroid probe ranking도 기존 `rankTopKPairsRust()`를 사용한다.
+- `VectorEntry` 객체 보관, vector store I/O, provider timeout/diagnostic, candidate object assembly는 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 matrix/wire-format 검증 실패 시 기존 TypeScript assignment/recompute/probe loop로 fallback한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.

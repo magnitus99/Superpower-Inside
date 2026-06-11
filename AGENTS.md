@@ -66,6 +66,7 @@
 | LLM/임베딩 연결 테스트   | `src/llm/validation.ts`                              | 설정 UI의 연결 검증과 연결됨                                              |
 | RAG 청킹/인덱싱          | `src/rag/indexer.ts`                                 | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트         |
 | RAG 저장소/파일 필터     | `src/rag/store.ts` + `src/utils/vault.ts`            | vector JSON 저장소, Rust/WASM exclude path matching, vault file filtering |
+| RAG retrieval pipeline   | `src/rag/retrieval-pipeline.ts`                      | exact/ANN/BM25/structural 후보 병합, Rust/WASM ANN cluster 계산           |
 | RAG 질의/컨텍스트        | `src/rag/query.ts` + `src/chat/context.ts`           | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감                |
 | 채팅 UI                  | `src/chat/view.ts`                                   | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨                |
 | 채팅 저장/로드           | `src/chat/persistence.ts`                            | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원             |
@@ -115,6 +116,11 @@
 | `scoreBm25Rust`                 | function  | `src/rag/rust-core.ts`            | TS BM25 posting 배열과 Rust score pair bridge                       |
 | `rank_top_k_pairs`              | function  | `crates/rag-wasm/src/lib.rs`      | flattened vector matrix의 top-k index/score 계산                    |
 | `rankTopKPairsRust`             | function  | `src/rag/rust-core.ts`            | TS entry 배열과 Rust row index/score bridge                         |
+| `assign_vector_clusters`        | function  | `crates/rag-wasm/src/lib.rs`      | ANN vector row를 nearest centroid index로 배정                      |
+| `assignVectorClustersRust`      | function  | `src/rag/rust-core.ts`            | IVF index build의 cluster assignment Rust bridge                    |
+| `recompute_centroids`           | function  | `crates/rag-wasm/src/lib.rs`      | ANN cluster assignment 기반 centroid matrix 재계산                  |
+| `recomputeCentroidsRust`        | function  | `src/rag/rust-core.ts`            | IVF index build의 centroid recompute Rust bridge                    |
+| `IvfVectorCandidateProvider`    | class     | `src/rag/retrieval-pipeline.ts`   | ANN 후보 조회, Rust 우선 centroid probe/build 계산                  |
 | `rankGlobalCommunitiesWithRust` | function  | `src/graph/query-engine.ts`       | GraphRAG community summary vector top-k Rust bridge 사용            |
 | `rrf_score_or_nan`              | function  | `crates/rag-wasm/src/lib.rs`      | RAG retrieval source rank fusion score 계산                         |
 | `calculateRrfScoreRust`         | function  | `src/rag/rust-core.ts`            | TS source rank map과 Rust RRF bridge                                |
