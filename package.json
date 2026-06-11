@@ -13,6 +13,7 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "wasm:build": "fish scripts/build-rag-wasm.fish",
     "rust:security": "fish scripts/check-rust-security.fish",
+    "security:full": "npm run lint && npm run typecheck && npm run test && npm run rust:security",
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {

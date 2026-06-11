@@ -73,9 +73,7 @@ npm run dev
 검증은 다음 순서를 기본으로 합니다.
 
 ```fish
-npm run lint
-npm run typecheck
-npm run test
+npm run security:full
 npm run build
 ```
 
@@ -258,9 +256,7 @@ await Dexie.delete('SuperpowerInsideEmbeddingCache');
 
 ```fish
 npm ci
-npm run lint
-npm run typecheck
-npm run test
+npm run security:full
 npm run build
 ```
 

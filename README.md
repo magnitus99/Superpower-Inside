@@ -19,6 +19,7 @@ Superpower Inside is built for people who use Obsidian as a working knowledge ba
 
 > [!IMPORTANT]
 > Superpower Inside is **desktop-only**. It depends on desktop Obsidian features such as MCP stdio servers, local Ollama support, and local runtime path handling. Mobile Obsidian is not supported.
+> The plugin is designed as a free and open-source project; there is no premium tier, lock-in feature, or revenue-based product wall in plugin code.
 
 ## 🧭 Quick Look
 
@@ -139,6 +140,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 
 > [!IMPORTANT]
 > Superpower Inside는 **데스크톱 전용**입니다. MCP stdio 서버, 로컬 Ollama, 데스크톱 런타임 경로 처리를 사용하므로 모바일 Obsidian은 지원하지 않습니다.
+> 본 플러그인은 무료 오픈소스 프로젝트를 전제로 유지되며, 유료 구독/기능 잠금 같은 수익화 경로를 플러그인 코드에 추가하지 않습니다.
 
 ## ✨ 주요 기능
 

@@ -42,17 +42,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Test
-        run: npm run test
-
-      - name: Rust security gate
-        run: npm run rust:security
+      - name: Security hardening gate
+        run: npm run security:full
 
       - name: Obsidian review gate
         run: npm run review -- --tag "$GITHUB_REF_NAME"

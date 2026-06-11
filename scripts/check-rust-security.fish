@@ -3,7 +3,21 @@
 set -l REPO_ROOT (realpath (dirname (status -f))/..)
 cd "$REPO_ROOT"; or exit 1
 
-set -l TOOLCHAIN 1.96.0
+set -l REQUIRED_TOOLCHAIN 1.96.0
+set -l TOOLCHAIN_FILE "$REPO_ROOT/rust-toolchain.toml"
+set -l TOOLCHAIN "$REQUIRED_TOOLCHAIN"
+
+if test -f "$TOOLCHAIN_FILE"
+    set -l FILE_TOOLCHAIN (sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$TOOLCHAIN_FILE" | string trim)
+    if test -n "$FILE_TOOLCHAIN"
+        if test "$FILE_TOOLCHAIN" != "$REQUIRED_TOOLCHAIN"
+            echo "ERROR: rust-toolchain.toml is '$FILE_TOOLCHAIN'. This project requires '$REQUIRED_TOOLCHAIN'."
+            exit 1
+        end
+        set TOOLCHAIN "$FILE_TOOLCHAIN"
+    end
+end
+
 set -l HOST (rustc -vV | string match -r '^host: .*' | string replace 'host: ' '')
 set -l RUSTUP_PREFIX /opt/homebrew/opt/rustup/bin
 set -l RUSTUP_BIN "$RUSTUP_PREFIX/rustup"
@@ -14,6 +28,11 @@ set -l TOOLCHAIN_RUSTDOC "$TOOLCHAIN_DIR/bin/rustdoc"
 
 if not test -x "$CARGO_BIN"
     set CARGO_BIN cargo
+end
+
+if not command -sq npm
+    echo "ERROR: npm 명령을 찾을 수 없습니다. Node.js가 설치되어 있는지 확인하세요."
+    exit 1
 end
 
 if test -x "$RUSTUP_BIN"
@@ -74,6 +93,10 @@ or exit $status
 
 echo "==> cargo-geiger"
 cargo geiger --manifest-path "$REPO_ROOT/crates/rag-wasm/Cargo.toml" --all-features --all-targets --locked --forbid-only --output-format Ratio
+or exit $status
+
+echo "==> npm audit (critical)"
+npm audit --audit-level=critical
 or exit $status
 
 echo "==> wasm bindings"

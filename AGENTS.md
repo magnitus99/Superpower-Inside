@@ -16,9 +16,9 @@
 - 실패하는 검증을 우회하지 않는다. `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `as any`, clippy allow, 무근거 fallback, generated 파일 수동 수정으로 통과시키지 않는다.
 - 새 기능/버그 수정/리팩터링은 기본적으로 테스트를 먼저 추가하거나 기존 테스트 계약을 확장한다. 순수 함수로 분리 가능한 로직은 Vitest 또는 Rust unit test로 고정한다.
 - 검증 결과를 말할 때는 실제 실행한 명령과 exit 0 근거가 있어야 한다. 추측으로 “될 것”이라고 말하지 않는다.
-- 코드 변경 후 기본 순서는 `npm run lint` → `npm run typecheck` → `npm run test` → `npm run rust:security`(Rust 변경 시) → `npm run build` → `npm run review -- --tag <manifest-version> --built`다.  
+- 코드 변경 후 기본 순서는 `npm run security:full` → `npm run build` → `npm run review -- --tag <manifest-version> --built`다.  
   검증이 통과되지 않으면 다음 단계로 진행하지 않는다.
-- Rust/WASM 변경은 반드시 `npm run rust:security`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, generated WASM 최신성 검사를 포함한다.
+- Rust/WASM 변경은 반드시 `npm run security:full`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, npm audit, generated WASM 최신성 검사를 포함한다.
 - UI/DOM/CSS 변경은 Obsidian community review 규칙까지 검증한다. 런타임 TS에서 inline style, `innerHTML`, heading direct create 같은 review error 패턴을 만들지 않는다.
 
 ## JS/TS ROLE BOUNDARY
@@ -117,6 +117,8 @@
 | `tokenize`                      | function  | `crates/rag-wasm/src/lib.rs`      | TypeScript BM25 토크나이저와 같은 검색 토큰 생성                    |
 | `token_frequencies_json`        | function  | `crates/rag-wasm/src/lib.rs`      | BM25 문서 term frequency JSON 생성                                  |
 | `bm25TermFrequenciesRust`       | function  | `src/rag/rust-core.ts`            | BM25 문서 frequency bridge                                          |
+| `count_keyword_matches`         | function  | `crates/rag-wasm/src/lib.rs`      | query 토큰과 텍스트 간 substring 매칭 수를 Rust에서 계산             |
+| `countKeywordMatchesRust`       | function  | `src/rag/rust-core.ts`            | RAG 조회에서 keyword-matching score를 WASM으로 산출                  |
 | `bm25_score_pairs`              | function  | `crates/rag-wasm/src/lib.rs`      | BM25 posting list의 doc index/score 계산                            |
 | `scoreBm25Rust`                 | function  | `src/rag/rust-core.ts`            | TS BM25 posting 배열과 Rust score pair bridge                       |
 | `rank_top_k_pairs`              | function  | `crates/rag-wasm/src/lib.rs`      | flattened vector matrix의 top-k index/score 계산                    |
@@ -196,11 +198,7 @@ npm run dev
 검증 순서:
 
 ```fish
-npm run lint
-npm run typecheck
-npm run test
-npm run check:i18n
-npm run rust:security
+npm run security:full
 npm run build
 npm run review -- --tag <manifest-version> --built
 ```
@@ -215,7 +213,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - 성능 민감 순수 계산은 Rust/WASM으로 옮긴다. RAG 해시/토큰화/청킹/BM25, vector score/top-k, GraphRAG ranking/layout 계산, 대용량 metadata diff/검증이 우선 대상이다.
 - Rust 코어는 deterministic input/output 계약을 가져야 하며, Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않는다.
 - 실시간성은 snapshot id/revision id로 보장한다. UI는 최신 revision만 반영하고, 오래된 Rust worker 결과는 폐기한다.
-- Rust 변경은 `npm run rust:security`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, generated WASM 최신성 검사를 실행한다.
+- Rust 변경은 `npm run security:full`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, npm audit, generated WASM 최신성 검사를 실행한다.
 - `npm run build`와 `npm run dev`는 `npm run wasm:build`를 먼저 실행한다. generated glue/base64를 손으로 고치지 않는다.
 - 세부 전환 계획은 `docs/rust-wasm-migration.md`를 기준으로 삼는다.
 
@@ -225,7 +223,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - `versions.json`은 플러그인 버전을 키로, 해당 버전의 최소 Obsidian 버전을 값으로 기록한다. 예: `"1.0.0": "0.15.0"`.
 - Obsidian 커뮤니티 제출/배포는 `manifest.json.version`과 **완전히 같은 이름의 GitHub Release 태그**를 찾는다. `manifest.json.version`이 `1.0.0`이면 태그도 반드시 `1.0.0`이어야 하며, `v1.0.0`만 만들면 커뮤니티 제출 화면에서 릴리스를 찾지 못한다.
 - GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
-- 릴리스 전 검증은 `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run rust:security`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
+- 릴리스 전 검증은 `npm ci`, `npm run security:full`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
 - 릴리스 전후에는 `npm run review -- --tag <version> --built`를 실행해 release asset 기준 Obsidian review gate를 통과시킨다.
 - `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
 - Obsidian 플러그인 스토어 출시와 업데이트는 별도 릴리스 브랜치나 PR 브랜치를 만들지 않고 `main` 브랜치에서 직접 준비한다.
@@ -285,12 +283,8 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 
 ```fish
 npm run dev        # esbuild watch, 개발 중 main.js 자동 재빌드
-npm run lint       # ESLint: src/, main.ts
-npm run typecheck  # tsc --noEmit
-npm run test       # Vitest
-npm run check:i18n # 런타임 한글 문자열이 src/i18n.ts 밖에 남았는지 검사
+npm run security:full # 전체 보안·정합성 게이트
 npm run wasm:build # Rust/WASM glue와 embedded bytes 생성
-npm run rust:security # Rust/WASM fmt, lint, test, wasm build, supply-chain/security gate
 npm run build      # production 번들(minify, no sourcemap)
 npm run format     # Prettier --write src/ main.ts
 ```
