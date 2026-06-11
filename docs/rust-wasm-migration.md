@@ -143,6 +143,14 @@
 - `VectorEntry` 객체 보관, vector store I/O, provider timeout/diagnostic, candidate object assembly는 TypeScript 경계에 남긴다.
 - Rust/WASM 초기화 또는 matrix/wire-format 검증 실패 시 기존 TypeScript assignment/recompute/probe loop로 fallback한다.
 
+## 현재 열여덟 번째 slice
+
+- GraphRAG store pruning diff 계산을 Rust/WASM에 추가했다.
+- `pruneByFilePaths()`는 graph snapshot을 numeric index/wire string 입력으로 바꾼 뒤 `planGraphPruneRust()`를 우선 호출한다.
+- Rust/WASM은 삭제할 evidence/entity/relation/claim/community/rejected fact/extraction cache/pending merge index와 업데이트할 entity/relation/claim index를 계산한다.
+- `IndexedDbKnowledgeGraphStore`와 `InMemoryKnowledgeGraphStore`의 Dexie/Map mutation, record copy, ID 문자열 필터링 적용은 TypeScript 경계에 남긴다.
+- Rust/WASM 초기화 또는 wire-format 검증 실패 시 기존 TypeScript pruning diff 계산으로 fallback한다.
+
 ## 실시간성 개선 방향
 
 - Rust 코어는 입력 snapshot id와 출력 revision을 명시적으로 받는다. UI는 오래된 revision 결과를 버린다.

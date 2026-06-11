@@ -10,6 +10,7 @@
 
 ## NON-NEGOTIABLE QUALITY BAR
 
+- 수익화 관련 기능은 보류한다. 플러그인은 완전 무료/오픈소스로 유지한다.
 - 사용자는 모든 코드에 대해 매우 엄격한 검사를 요구한다. 작은 변경도 lint, typecheck, test, security, build, review gate 중 해당되는 검증을 피하지 않는다.
 - 실패하는 검증을 우회하지 않는다. `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `as any`, clippy allow, 무근거 fallback, generated 파일 수동 수정으로 통과시키지 않는다.
 - 새 기능/버그 수정/리팩터링은 기본적으로 테스트를 먼저 추가하거나 기존 테스트 계약을 확장한다. 순수 함수로 분리 가능한 로직은 Vitest 또는 Rust unit test로 고정한다.
@@ -25,6 +26,7 @@
 - 새 순수 계산 로직을 TS에 추가해야 한다면 먼저 Rust/WASM 이전 가능성을 검토하고, TS에 남기는 이유가 host API, DOM, 네트워크, 저장소 I/O처럼 명확해야 한다.
 - Rust 코어는 deterministic input/output만 다룬다. Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않는다.
 - TS fallback은 WASM 초기화 실패나 wire-format 검증 실패를 위한 안전장치다. 새 성능 경로의 기본 실행 경로는 Rust/WASM이어야 한다.
+- JS는 UI/호스트 경계만 담당하고, 상태 계산/벡터 계산/그룹 분석/스코어링 같은 성능 경로는 Rust/WASM으로 처리한다.
 
 ## STRUCTURE
 
@@ -77,6 +79,7 @@
 | MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
 | 활성 플러그인 탐지       | `src/utils/obsidian-compat.ts`                       | 비공식 Obsidian API 접근이므로 try/catch 유지                             |
+| GraphRAG 저장소          | `src/graph/store.ts`                                 | Dexie/Memory mutation, Rust/WASM pruning index plan                       |
 | GraphRAG community 감지  | `src/graph/community-detector.ts`                    | Rust/WASM edge aggregation과 community detection fallback                 |
 | GraphRAG entity resolve  | `src/graph/entity-resolver.ts`                       | Rust/WASM entity name normalization과 merge score fallback                |
 | Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
@@ -131,6 +134,10 @@
 | `aggregate_graph_edges_flat`    | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG relation edge confidence를 무방향 endpoint pair별로 집계   |
 | `aggregateGraphEdgesRust`       | function  | `src/rag/rust-core.ts`            | TS entity id index 배열과 Rust edge aggregation bridge              |
 | `buildEdges`                    | function  | `src/graph/community-detector.ts` | GraphRAG relation filtering, id mapping, Rust 우선 edge aggregation |
+| `prune_graph_indexes_json`      | function  | `crates/rag-wasm/src/lib.rs`      | GraphRAG store pruning 삭제/업데이트 index plan 계산                |
+| `planGraphPruneRust`            | function  | `src/rag/rust-core.ts`            | Graph store snapshot을 Rust pruning plan으로 bridge                 |
+| `IndexedDbKnowledgeGraphStore`  | class     | `src/graph/store.ts`              | Dexie graph persistence, Rust plan 적용 후 bulk mutation            |
+| `InMemoryKnowledgeGraphStore`   | class     | `src/graph/store.ts`              | 테스트/런타임 memory graph store, Rust plan 적용 후 Map mutation    |
 | `extract_vault_links_json`      | function  | `crates/rag-wasm/src/lib.rs`      | Obsidian wikilink/Markdown link target 추출 JSON 생성               |
 | `extractVaultLinksRust`         | function  | `src/rag/rust-core.ts`            | 채팅 참조 확장의 Rust link extraction bridge                        |
 | `extractVaultLinks`             | function  | `src/chat/context-expansion.ts`   | Rust 우선 vault link extraction과 TypeScript fallback               |
