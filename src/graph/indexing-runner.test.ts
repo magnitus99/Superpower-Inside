@@ -214,6 +214,55 @@ describe('GraphRagIndexingRunner', () => {
     expect(provider.chatSignals).toEqual([controller.signal]);
   });
 
+  it('resetState는 run 식별자와 진행 상태를 초기화한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
+    const provider = new FakeProvider();
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
+      vectorStore,
+      graphStore,
+      provider,
+      maxFilesPerRun: 1,
+    }));
+
+    const result = await runner.run();
+    const progressBefore = runner.getProgress();
+
+    expect(result.runId).toBe(1);
+    expect(runner.getLastResult()).toEqual({
+      totalCandidateFiles: 2,
+      selectedFiles: 1,
+      processedFiles: 1,
+      skippedFiles: 0,
+      failedFiles: 0,
+      processedChunks: expect.any(Number),
+      skippedChunks: 0,
+      failedChunks: 0,
+      cancelled: false,
+      startedAt: expect.any(Number),
+      finishedAt: expect.any(Number),
+      runId: 1,
+    });
+    expect(progressBefore.runId).toBe(1);
+    expect(runner.getLastRunId()).toBe(1);
+
+    runner.resetState();
+
+    expect(runner.getLastResult()).toBeNull();
+    expect(runner.getLastCommunityResult()).toBeNull();
+    expect(runner.getFailedFileCount()).toBe(0);
+    expect(runner.getLastRunId()).toBe(0);
+    expect(runner.getProgress()).toEqual({
+      currentFile: null,
+      processedFiles: 0,
+      skippedFiles: 0,
+      failedFiles: 0,
+      selectedFiles: 0,
+      runId: 0,
+    });
+  });
+
   it('각 GraphRAG 실행은 고유 runId를 부여한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([

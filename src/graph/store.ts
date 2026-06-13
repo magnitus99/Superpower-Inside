@@ -145,6 +145,7 @@ export interface KnowledgeGraphStore {
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
   pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult>;
+  clear(): Promise<void>;
   replaceCommunities(
     ontologySchemaId: string,
     records: readonly GraphCommunityRecord[],
@@ -392,6 +393,34 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
       },
     );
   }
+
+  async clear(): Promise<void> {
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.graphEntities,
+        this.db.graphRelations,
+        this.db.graphClaims,
+        this.db.graphEvidence,
+        this.db.graphCommunities,
+        this.db.graphRejectedFacts,
+        this.db.graphExtractionCache,
+        this.db.graphPendingEntityMerges,
+      ],
+      async () => {
+        await Promise.all([
+          this.db.graphEntities.clear(),
+          this.db.graphRelations.clear(),
+          this.db.graphClaims.clear(),
+          this.db.graphEvidence.clear(),
+          this.db.graphCommunities.clear(),
+          this.db.graphRejectedFacts.clear(),
+          this.db.graphExtractionCache.clear(),
+          this.db.graphPendingEntityMerges.clear(),
+        ]);
+      },
+    );
+  }
 }
 
 export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
@@ -578,6 +607,18 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     for (const id of snapshot.deletedPendingMergeIds) this.pendingEntityMerges.delete(id);
 
     return Promise.resolve(snapshot.result);
+  }
+
+  clear(): Promise<void> {
+    this.evidence.clear();
+    this.entities.clear();
+    this.relations.clear();
+    this.claims.clear();
+    this.communities.clear();
+    this.rejectedFacts.clear();
+    this.extractionCache.clear();
+    this.pendingEntityMerges.clear();
+    return Promise.resolve();
   }
 }
 

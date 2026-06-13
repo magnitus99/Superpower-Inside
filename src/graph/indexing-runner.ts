@@ -151,6 +151,22 @@ export class GraphRagIndexingRunner {
     return this.failedFilePaths.size;
   }
 
+  resetState(): void {
+    this.failedFilePaths.clear();
+    this.lastResult = null;
+    this.lastCommunityResult = null;
+    this.lastRunId = 0;
+    this.runSequence = 0;
+    this.progress = {
+      currentFile: null,
+      processedFiles: 0,
+      skippedFiles: 0,
+      failedFiles: 0,
+      selectedFiles: 0,
+      runId: 0,
+    };
+  }
+
   async buildCommunities(signal?: AbortSignal): Promise<GraphRagCommunityBuildResult> {
     if (this.communityBuildRunning) {
       throw new Error('Community build is already running.');

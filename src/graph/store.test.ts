@@ -36,6 +36,38 @@ describe('KnowledgeGraphStore contract', () => {
   it('IndexedDbKnowledgeGraphStore가 파일 단위 graph pruning 계약을 만족한다', async () => {
     await expectGraphPruningContract(createIndexedDbStore());
   });
+
+  it('InMemoryKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await fillGraphStoreForClearTest(store);
+
+    await store.clear();
+
+    await expectClearTables(store);
+  });
+
+  it('IndexedDbKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
+    const store = createIndexedDbStore();
+    await fillGraphStoreForClearTest(store);
+
+    await store.clear();
+
+    await expectClearTables(store);
+  });
+
+  it('InMemoryKnowledgeGraphStore clear()는 비어 있는 상태에서도 예외 없이 성공합니다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+
+    await expect(store.clear()).resolves.toBeUndefined();
+    await expectClearTables(store);
+  });
+
+  it('IndexedDbKnowledgeGraphStore clear()는 비어 있는 상태에서도 예외 없이 성공합니다', async () => {
+    const store = createIndexedDbStore();
+
+    await expect(store.clear()).resolves.toBeUndefined();
+    await expectClearTables(store);
+  });
 });
 
 describe('IndexedDbKnowledgeGraphStore', () => {
@@ -169,6 +201,59 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
       ontologyVersion: 1,
     }),
   ).resolves.toBe(true);
+}
+
+async function fillGraphStoreForClearTest(store: KnowledgeGraphStore): Promise<void> {
+  await store.addEvidence(createEvidence({ id: 'ev-clear' }));
+  await store.upsertEntity(createEntity({ id: 'entity-clear', evidenceIds: ['ev-clear'] }));
+  await store.addRelation(createRelation({ id: 'rel-clear', evidenceIds: ['ev-clear'] }));
+  await store.addClaim(createClaim({ id: 'claim-clear', evidenceIds: ['ev-clear'] }));
+  await store.addCommunity(createCommunity({ id: 'community-clear' }));
+  await store.addRejectedFact({
+    id: 'reject-clear',
+    filePath: 'note.md',
+    entryId: 'note.md::0',
+    reason: 'schema',
+    rawFact: { bad: true },
+    updatedAt: 1000,
+  });
+  await store.addPendingEntityMerge({
+    id: 'merge-clear',
+    ontologySchemaId: 'default',
+    existingEntityId: 'entity-clear',
+    candidateEntityId: 'entity-other',
+    mergeScore: 0.9,
+    reason: 'merge test',
+    updatedAt: 1000,
+  });
+  await store.markExtractionCached({
+    entryId: 'note.md::0',
+    contentHash: 'hash-clear',
+    extractionModelKey: 'openai:gpt-4.1-mini',
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    updatedAt: 1000,
+  });
+}
+
+async function expectClearTables(store: KnowledgeGraphStore): Promise<void> {
+  await expect(store.getEvidence()).resolves.toEqual([]);
+  await expect(store.getEntities()).resolves.toEqual([]);
+  await expect(store.getRelations()).resolves.toEqual([]);
+  await expect(store.getClaims()).resolves.toEqual([]);
+  await expect(store.getCommunities()).resolves.toEqual([]);
+  await expect(store.getRejectedFacts()).resolves.toEqual([]);
+  await expect(store.getPendingEntityMerges()).resolves.toEqual([]);
+  await expect(store.getExtractionCacheRecords()).resolves.toEqual([]);
+  await expect(
+    store.isExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-clear',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+    }),
+  ).resolves.toBe(false);
 }
 
 async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<void> {
