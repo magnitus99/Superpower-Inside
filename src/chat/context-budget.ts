@@ -1,3 +1,4 @@
+import { planContextBudgetAppendRust } from '../rag/rust-core';
 import type { SourceCitation } from './types';
 
 export interface ContextBlock {
@@ -22,11 +23,15 @@ export function createContextBudget(maxChars: number): ContextBudget {
   return {
     append(block: ContextBlock): boolean {
       if (remainingChars <= 0) return false;
-      const text =
-        block.text.length > remainingChars ? block.text.slice(0, remainingChars) : block.text;
-      blocks.push({ ...block, text });
-      remainingChars -= text.length;
-      return text.length === block.text.length;
+      const plan = planContextBudgetAppendRust(remainingChars, block.text);
+      if (!plan) {
+        remainingChars = 0;
+        return false;
+      }
+      remainingChars = plan.remainingChars;
+      if (!plan.appended) return false;
+      blocks.push({ ...block, text: plan.text });
+      return plan.complete;
     },
     getBlocks(): AppendedContextBlock[] {
       return blocks;

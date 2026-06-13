@@ -1,3 +1,5 @@
+import { getMcpConnectionStateRust } from '../rag/rust-core';
+
 export const MCP_STATUS_CHANGE_EVENT = 'superpower-inside:mcp-status-change';
 
 export type MCPServerConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -11,6 +13,14 @@ export interface MCPConnectionSummaryInput {
 }
 
 export function getMcpConnectionState(input: MCPConnectionSummaryInput): MCPConnectionState {
+  const rustState = getMcpConnectionStateRust(
+    input.totalCount,
+    input.connectedCount,
+    input.failedCount,
+    input.isConnecting,
+  );
+  if (rustState !== null) return rustState;
+
   if (input.totalCount === 0) {
     return 'idle';
   }

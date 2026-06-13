@@ -1,14 +1,13 @@
 import { t } from '../i18n';
+import {
+  planSourceReferencesRust,
+  planSourceValidationInputsRust,
+  planSourceValidationWarningsRust,
+} from '../rag/rust-core';
 import type { SourceCitation, SourceValidationWarning } from './types';
 
 export interface SourceReferenceResolver {
   exists(path: string): boolean;
-}
-
-interface ExtractedReference {
-  label: string;
-  target: string;
-  kind: 'wikilink' | 'markdown-link' | 'source-id';
 }
 
 export function validateAnswerSources(
@@ -16,91 +15,31 @@ export function validateAnswerSources(
   citations: SourceCitation[],
   resolver: SourceReferenceResolver,
 ): SourceValidationWarning[] {
-  const verifiedCitationIds = new Set(
-    citations.filter((citation) => citation.status === 'verified').map((citation) => citation.id),
+  const references = planSourceReferencesRust(content) ?? [];
+  const validationInputs = planSourceValidationInputsRust(
+    references,
+    citations.map((citation) => citation.id),
+    citations.map((citation) => citation.filePath),
+    citations.map((citation) => citation.status ?? ''),
   );
-  const verifiedPaths = new Set(
-    citations
-      .filter((citation) => citation.status === 'verified')
-      .flatMap((citation) => pathAliases(citation.filePath)),
-  );
-  const warnings: SourceValidationWarning[] = [];
-  const seen = new Set<string>();
-
-  for (const reference of extractSourceReferences(content)) {
-    if (reference.kind === 'source-id') {
-      if (verifiedCitationIds.has(reference.target)) continue;
-      addWarning(warnings, seen, {
-        id: `source:${reference.target}`,
-        label: reference.label,
-        detail: t('sourceUnverifiedIdWarning'),
-        kind: 'unverified-source',
-      });
-      continue;
+  const existingAliases: string[] = [];
+  for (const alias of validationInputs?.aliasCandidates ?? []) {
+    if (resolver.exists(alias)) {
+      existingAliases.push(alias);
     }
-
-    const aliases = pathAliases(reference.target);
-    const isVerified = aliases.some((alias) => verifiedPaths.has(alias));
-    const exists = aliases.some((alias) => resolver.exists(alias));
-    if (isVerified || exists) continue;
-
-    addWarning(warnings, seen, {
-      id: `link:${reference.target}`,
-      label: reference.label,
-      detail: t('sourceMissingVaultLinkWarning'),
-      kind: 'missing-link',
-    });
   }
+  const warnings = planSourceValidationWarningsRust(
+    references,
+    validationInputs?.verifiedCitationIds ?? [],
+    validationInputs?.verifiedPaths ?? [],
+    existingAliases,
+  );
 
-  return warnings;
-}
-
-export function extractSourceReferences(content: string): ExtractedReference[] {
-  const references: ExtractedReference[] = [];
-  const wikiRegex = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
-  let wikiMatch: RegExpExecArray | null;
-  while ((wikiMatch = wikiRegex.exec(content)) !== null) {
-    const target = wikiMatch[1].trim();
-    if (target) references.push({ label: wikiMatch[0], target, kind: 'wikilink' });
-  }
-
-  const markdownRegex = /\[[^\]]+\]\(([^)\s]+\.md(?:#[^)]+)?)\)/g;
-  let markdownMatch: RegExpExecArray | null;
-  while ((markdownMatch = markdownRegex.exec(content)) !== null) {
-    const target = decodeURIComponent(markdownMatch[1].split('#')[0] ?? '').trim();
-    if (target) references.push({ label: markdownMatch[0], target, kind: 'markdown-link' });
-  }
-
-  const sourceRegex = /\bSource\s+(rag-\d+|file-\d+|folder-\d+)\b/gi;
-  let sourceMatch: RegExpExecArray | null;
-  while ((sourceMatch = sourceRegex.exec(content)) !== null) {
-    references.push({
-      label: sourceMatch[0],
-      target: sourceMatch[1],
-      kind: 'source-id',
-    });
-  }
-
-  return references;
-}
-
-function addWarning(
-  warnings: SourceValidationWarning[],
-  seen: Set<string>,
-  warning: SourceValidationWarning,
-): void {
-  if (seen.has(warning.id)) return;
-  seen.add(warning.id);
-  warnings.push(warning);
-}
-
-function pathAliases(path: string): string[] {
-  const withoutHeading = path.split('#')[0] ?? path;
-  const normalized = withoutHeading.replace(/^\/+/, '');
-  const withoutExtension = normalized.replace(/\.md$/i, '');
-  const fileName = normalized.split('/').pop() ?? normalized;
-  const basename = fileName.replace(/\.md$/i, '');
-  return [
-    ...new Set([normalized, `${normalized}.md`, withoutExtension, fileName, basename]),
-  ].filter(Boolean);
+  return (warnings ?? []).map((warning) => ({
+    ...warning,
+    detail:
+      warning.kind === 'unverified-source'
+        ? t('sourceUnverifiedIdWarning')
+        : t('sourceMissingVaultLinkWarning'),
+  }));
 }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MCPRegistryLike } from './mcp-tool-execution';
 import {
   executeMcpToolCalls,
+  findServerForTool,
   parseToolArguments,
   prepareToolCallsForExecution,
 } from './mcp-tool-execution';
@@ -168,6 +169,30 @@ describe('MCP 툴 실행 결과 반영', () => {
     expect(parseToolArguments('대추방울토마토 영양성분')).toEqual({
       input: '대추방울토마토 영양성분',
     });
+  });
+
+  it('서버 후보 순서와 tool name matching은 Rust plan을 따른다', async () => {
+    const serperClient = createClient({ content: [{ type: 'text', text: '검색 결과' }] });
+    const filesystemClient = createClient(
+      { content: [{ type: 'text', text: '파일 내용' }] },
+      ['read_file'],
+    );
+    const clients = new Map([
+      ['serper', serperClient],
+      ['filesystem', filesystemClient],
+    ]);
+    const registry: MCPRegistryLike = {
+      getConnectionStatus: (name) =>
+        name === 'serper' || name === 'filesystem' ? 'connected' : 'disconnected',
+      getEnabledServers: () => [{ name: 'filesystem' }, { name: 'serper' }, { name: 'context7' }],
+      getClient: (name) => clients.get(name),
+    };
+
+    await expect(
+      findServerForTool(registry, 'read_file', ['context7', 'serper', 'serper']),
+    ).resolves.toBe('filesystem');
+    expect(serperClient.listTools).toHaveBeenCalledTimes(1);
+    expect(filesystemClient.listTools).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -59,6 +59,31 @@ describe('expandReferencedVaultFiles', () => {
     expect(result.references[0]?.file.path).toBe('제품문서/Monithub의 가치.md');
   });
 
+  it('상대 경로 Markdown 링크를 Rust path candidate plan으로 resolve한다', async () => {
+    const source = createFile(
+      '제품문서/고객 입장에서의 제품/데모 및 제품 기획.md',
+      '[기획](../제품 개념 정리.md)',
+    );
+    const reference = createFile('제품문서/제품 개념 정리.md', '상위 폴더 참조');
+    const app = createApp([source, reference]);
+
+    const result = await expandReferencedVaultFiles(source, source.content, app);
+
+    expect(result.references[0]?.file.path).toBe('제품문서/제품 개념 정리.md');
+    expect(result.references[0]?.content).toBe('상위 폴더 참조');
+  });
+
+  it('metadata/path 후보가 실패하면 Rust basename fallback index로 resolve한다', async () => {
+    const source = createFile('제품문서/데모.md', '[[Romans]]');
+    const reference = createFile('Archive/Romans.md', 'fallback 참조');
+    const app = createApp([source, reference]);
+
+    const result = await expandReferencedVaultFiles(source, source.content, app);
+
+    expect(result.references[0]?.file).toBe(reference);
+    expect(result.references[0]?.content).toBe('fallback 참조');
+  });
+
   it('깨진 링크는 warning으로 남긴다', async () => {
     const source = createFile('제품문서/데모 및 제품 기획.md', '[[없는 문서]]');
     const app = createApp([source]);
@@ -67,6 +92,26 @@ describe('expandReferencedVaultFiles', () => {
 
     expect(result.references).toEqual([]);
     expect(result.warnings).toEqual(['참조 문서를 찾을 수 없습니다: 없는 문서']);
+  });
+
+  it('자기 자신과 중복 참조는 Rust selection plan으로 제외한다', async () => {
+    const source = createFile(
+      '제품문서/데모 및 제품 기획.md',
+      ['[[데모 및 제품 기획]]', '[[제품 개념 정리]]', '[[제품 개념 정리]]'].join('\n'),
+    );
+    const reference = createFile('제품문서/제품 개념 정리.md', '참조 내용');
+    const app = createApp([source, reference]);
+
+    const result = await expandReferencedVaultFiles(source, source.content, app);
+
+    expect(result.references).toEqual([
+      expect.objectContaining({
+        file: reference,
+        requestedPath: '제품 개념 정리',
+        content: '참조 내용',
+      }),
+    ]);
+    expect(result.warnings).toEqual([]);
   });
 });
 

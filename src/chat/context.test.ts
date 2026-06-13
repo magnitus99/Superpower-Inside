@@ -1,5 +1,6 @@
-import { TFile, type App } from 'obsidian';
+import { TFile, TFolder, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
+import type { GraphEntityRecord, GraphRelationRecord, KnowledgeGraphStore } from '../graph/store';
 import { createContentHash } from '../rag/hash';
 import type { QueryResult } from '../rag/query';
 import { buildChatContext, type RagQueryLike } from './context';
@@ -113,9 +114,85 @@ describe('buildChatContext RAG 출처 검증', () => {
       expect.objectContaining({ type: 'rag', status: 'attached', sourceIds: ['rag-1'] }),
     );
   });
+
+  it('entity mention은 GraphRAG entity와 relation context를 첨부한다', async () => {
+    const app = createApp(new Map());
+    const graphStore = createGraphStore(
+      [
+        createEntity('entity::paul', 'Paul', ['Apostle'], '사도 바울'),
+        createEntity('entity::barnabas', 'Barnabas', [], '동역자'),
+        createEntity('entity::mark', 'Mark', [], '마가'),
+      ],
+      [
+        createRelation('relation::paul-barnabas', 'entity::paul', 'entity::barnabas', 'worked_with'),
+        createRelation('relation::mark-barnabas', 'entity::mark', 'entity::barnabas', 'worked_with'),
+      ],
+    );
+
+    const context = await buildChatContext('@[entity: Apostle] 관계를 알려줘', {
+      app,
+      knowledgeGraphStore: graphStore,
+    });
+
+    expect(context.systemPrompt).toContain('[Graph Knowledge Context]');
+    expect(context.systemPrompt).toContain('- [person] Paul (aka Apostle)');
+    expect(context.systemPrompt).toContain('- Paul → [worked_with] → Barnabas');
+    expect(context.systemPrompt).not.toContain('Mark → [worked_with] → Barnabas');
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'graph-rag',
+          status: 'attached',
+          sourceIds: ['graph-1'],
+        }),
+      ]),
+    );
+    expect(context.citations).toEqual([
+      expect.objectContaining({
+        id: 'graph-1',
+        filePath: 'graph://entities',
+        graphType: 'entity',
+      }),
+    ]);
+  });
 });
 
 describe('buildChatContext 참조 문서 확장', () => {
+  it('폴더 멘션 파일 선택과 partial 여부는 Rust folder plan을 따른다', async () => {
+    const folder = createFolder('제품문서');
+    const first = createFile('제품문서/a.md', '첫 문서', 1000);
+    const second = createFile('제품문서/nested/b.md', '둘째 문서', 1000);
+    const outside = createFile('제품문서-extra/c.md', '외부 문서', 1000);
+    const app = createApp(
+      new Map([
+        [first.path, first],
+        [second.path, second],
+        [outside.path, outside],
+      ]),
+      new Map([[folder.path, folder]]),
+    );
+
+    const context = await buildChatContext('@[제품문서] 정리', {
+      app,
+      maxFolderFiles: 1,
+    });
+
+    expect(context.systemPrompt).toContain('[Folder File: 제품문서/a.md]');
+    expect(context.systemPrompt).toContain('첫 문서');
+    expect(context.systemPrompt).not.toContain('둘째 문서');
+    expect(context.systemPrompt).not.toContain('외부 문서');
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'folder',
+          name: '제품문서',
+          status: 'partial',
+          sourceIds: ['folder-1'],
+        }),
+      ]),
+    );
+  });
+
   it('명시 파일 안의 wikilink 참조 문서를 Vault Context에 포함한다', async () => {
     const source = createFile(
       '제품문서/고객 입장에서의 제품/데모 및 제품 기획.md',
@@ -252,10 +329,20 @@ function createFile(path: string, content: string, mtime: number): TFile & { con
   }) as TFile & { content: string };
 }
 
-function createApp(files: Map<string, TFile & { content: string }>): App {
+function createFolder(path: string): TFolder & { path: string } {
+  return Object.assign(Object.create(TFolder.prototype), {
+    path,
+    name: path.split('/').pop() ?? path,
+  }) as TFolder & { path: string };
+}
+
+function createApp(
+  files: Map<string, TFile & { content: string }>,
+  folders = new Map<string, TFolder & { path: string }>(),
+): App {
   return {
     vault: {
-      getAbstractFileByPath: (path: string) => files.get(path) ?? null,
+      getAbstractFileByPath: (path: string) => files.get(path) ?? folders.get(path) ?? null,
       cachedRead: (file: TFile & { content: string }) => Promise.resolve(file.content),
       getMarkdownFiles: () => [...files.values()],
       getFiles: () => [...files.values()],
@@ -277,4 +364,61 @@ function createApp(files: Map<string, TFile & { content: string }>): App {
       },
     },
   } as unknown as App;
+}
+
+function createGraphStore(
+  entities: GraphEntityRecord[],
+  relations: GraphRelationRecord[],
+): KnowledgeGraphStore {
+  return {
+    getEntities: () => Promise.resolve(entities),
+    getRelations: () => Promise.resolve(relations),
+    getClaims: () => Promise.resolve([]),
+    getEvidence: () => Promise.resolve([]),
+    getCommunities: () => Promise.resolve([]),
+  } as unknown as KnowledgeGraphStore;
+}
+
+function createEntity(
+  id: string,
+  canonicalName: string,
+  aliases: string[],
+  description: string,
+): GraphEntityRecord {
+  return {
+    id,
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    typeId: 'person',
+    canonicalName,
+    aliases,
+    description,
+    properties: {},
+    confidence: 1,
+    evidenceIds: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function createRelation(
+  id: string,
+  sourceEntityId: string,
+  targetEntityId: string,
+  relationTypeId: string,
+): GraphRelationRecord {
+  return {
+    id,
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    relationTypeId,
+    sourceEntityId,
+    targetEntityId,
+    description: '',
+    properties: {},
+    confidence: 1,
+    evidenceIds: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
 }

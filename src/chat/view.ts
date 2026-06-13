@@ -32,7 +32,7 @@ import {
   type ParsedMention,
   type RagQueryLike,
 } from './context';
-import { normalizeToolResult } from './mcp-tools';
+import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
 import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
@@ -3474,7 +3474,7 @@ export class ChatView extends ItemView {
       }
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : String(err);
-      const friendlyMsg = this.normalizeToolError(rawMsg);
+      const friendlyMsg = classifyMcpToolError(rawMsg, 'view');
       if (messageId) {
         this.updateToolCallInMessage(messageId, toolName, {
           result: friendlyMsg,
@@ -3516,24 +3516,6 @@ export class ChatView extends ItemView {
       message.reasoning,
       toolCalls.map((toolCall) => ({ ...toolCall })),
     );
-  }
-
-  private normalizeToolError(rawMsg: string): string {
-    if (rawMsg.includes('Input validation error')) {
-      const match = rawMsg.match(/does not match '(.+?)'/);
-      if (match) {
-        return t('mcpValidationPattern', { pattern: match[1] });
-      }
-      const fieldMatch = rawMsg.match(/'([^']+)'/);
-      if (fieldMatch) {
-        return t('mcpValidationField', { field: fieldMatch[1] });
-      }
-      return t('mcpValidationSchemaFailed');
-    }
-    if (rawMsg.includes('required')) {
-      return t('mcpValidationRequiredMissing');
-    }
-    return rawMsg;
   }
 
   /** LLM API 에러 발생 시 진단 정보를 포함한 상세 메시지 생성 */

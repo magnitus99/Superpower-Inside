@@ -1,4 +1,4 @@
-import { parseMentionCandidatesRust, type RustMentionCandidate } from '../rag/rust-core';
+import { parseMentionCandidatesRust, planChatContextMentionsRust } from '../rag/rust-core';
 
 export interface ParsedMention {
   raw: string;
@@ -15,7 +15,7 @@ export interface MentionResolver {
 
 export function parseMentions(text: string, resolver: MentionResolver): ParsedMention[] {
   const mentions: ParsedMention[] = [];
-  const candidates = parseMentionCandidatesRust(text) ?? extractMentionCandidatesWithTypeScript(text);
+  const candidates = parseMentionCandidatesRust(text) ?? [];
 
   const addMention = (raw: string, name: string): void => {
     if (name.startsWith('entity:')) {
@@ -43,37 +43,6 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
   return mentions;
 }
 
-function extractMentionCandidatesWithTypeScript(text: string): RustMentionCandidate[] {
-  const candidates: RustMentionCandidate[] = [];
-  const seen = new Set<string>();
-
-  const addCandidate = (raw: string, name: string): void => {
-    const key = name.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    candidates.push({ raw, name });
-  };
-
-  const bracketRegex = /@\[([^\]]+)\]/g;
-  let bracketMatch: RegExpExecArray | null;
-  while ((bracketMatch = bracketRegex.exec(text)) !== null) {
-    addCandidate(bracketMatch[0], bracketMatch[1].trim());
-  }
-
-  const textWithoutBracketMentions = text.replace(bracketRegex, ' ');
-  const wordRegex = /@([^\s\n@]+)/g;
-  let wordMatch: RegExpExecArray | null;
-  while ((wordMatch = wordRegex.exec(textWithoutBracketMentions)) !== null) {
-    addCandidate(wordMatch[0], wordMatch[1].trim());
-  }
-
-  return candidates;
-}
-
 export function shouldUseAutoRagForMentions(mentions: ParsedMention[]): boolean {
-  const hasServerMention = mentions.some((mention) => mention.type === 'server');
-  const hasVaultMention = mentions.some(
-    (mention) => mention.type === 'file' || mention.type === 'folder',
-  );
-  return !hasServerMention || hasVaultMention;
+  return planChatContextMentionsRust(mentions.map((mention) => mention.type))?.useAutoRag ?? false;
 }

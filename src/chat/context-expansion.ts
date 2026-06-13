@@ -1,6 +1,12 @@
 import { TFile, type App } from 'obsidian';
 import { t } from '../i18n';
-import { extractVaultLinksRust } from '../rag/rust-core';
+import {
+  extractVaultLinksRust,
+  planReferenceFileIndicesRust,
+  planVaultLinkCandidatesRust,
+  planVaultLinkFallbackIndexRust,
+} from '../rag/rust-core';
+import { selectByRustIndices } from '../utils/rust-index-plan';
 
 export interface ReferencedVaultFile {
   file: TFile;
@@ -17,36 +23,7 @@ const DEFAULT_MAX_REFERENCES = 6;
 
 export function extractVaultLinks(content: string): string[] {
   const rustLinks = extractVaultLinksRust(content);
-  if (rustLinks !== null) return rustLinks;
-  return extractVaultLinksWithTypeScript(content);
-}
-
-function extractVaultLinksWithTypeScript(content: string): string[] {
-  const links: string[] = [];
-  const seen = new Set<string>();
-
-  const addLink = (raw: string): void => {
-    const normalized = normalizeLinkTarget(raw);
-    if (!normalized || shouldIgnoreLinkTarget(normalized)) return;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    links.push(normalized);
-  };
-
-  const wikiRegex = /!?\[\[([^\]]+)\]\]/g;
-  let wikiMatch: RegExpExecArray | null;
-  while ((wikiMatch = wikiRegex.exec(content)) !== null) {
-    addLink(wikiMatch[1]);
-  }
-
-  const markdownRegex = /\[[^\]]+\]\(([^)]+)\)/g;
-  let markdownMatch: RegExpExecArray | null;
-  while ((markdownMatch = markdownRegex.exec(content)) !== null) {
-    addLink(markdownMatch[1]);
-  }
-
-  return links;
+  return rustLinks ?? [];
 }
 
 export async function expandReferencedVaultFiles(
@@ -57,6 +34,7 @@ export async function expandReferencedVaultFiles(
 ): Promise<ReferenceExpansionResult> {
   const references: ReferencedVaultFile[] = [];
   const warnings: string[] = [];
+  const candidates: Array<{ file: TFile; requestedPath: string }> = [];
 
   for (const requestedPath of extractVaultLinks(sourceContent).slice(0, maxReferences)) {
     const file = resolveVaultLink(app, sourceFile.path, requestedPath);
@@ -64,18 +42,28 @@ export async function expandReferencedVaultFiles(
       warnings.push(t('referenceMissingWarning', { path: requestedPath }));
       continue;
     }
-    if (file.path === sourceFile.path) continue;
-    if (references.some((reference) => reference.file.path === file.path)) continue;
+    candidates.push({ file, requestedPath });
+  }
 
+  const selectedIndices =
+    planReferenceFileIndicesRust(
+      sourceFile.path,
+      candidates.map((candidate) => candidate.file.path),
+    ) ?? [];
+  const selectedCandidates = selectByRustIndices(candidates, selectedIndices, { dedupe: true });
+  for (const candidate of selectedCandidates) {
     try {
       references.push({
-        file,
-        requestedPath,
-        content: await app.vault.cachedRead(file),
+        file: candidate.file,
+        requestedPath: candidate.requestedPath,
+        content: await app.vault.cachedRead(candidate.file),
       });
     } catch (err) {
       warnings.push(
-        t('referenceReadFailedWarning', { path: file.path, error: stringifyError(err) }),
+        t('referenceReadFailedWarning', {
+          path: candidate.file.path,
+          error: stringifyError(err),
+        }),
       );
     }
   }
@@ -84,79 +72,26 @@ export async function expandReferencedVaultFiles(
 }
 
 function resolveVaultLink(app: App, sourcePath: string, rawTarget: string): TFile | null {
-  const target = normalizeVaultPath(rawTarget);
-  const metadataResolved = app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+  const plan = planVaultLinkCandidatesRust(sourcePath, rawTarget);
+  if (!plan) return null;
+
+  const metadataResolved = app.metadataCache.getFirstLinkpathDest(
+    plan.candidates[0] ?? rawTarget,
+    sourcePath,
+  );
   if (metadataResolved instanceof TFile) return metadataResolved;
 
-  for (const candidate of createPathCandidates(sourcePath, target)) {
+  for (const candidate of plan.candidates) {
     const file = app.vault.getAbstractFileByPath(candidate);
     if (file instanceof TFile) return file;
   }
 
-  return (
-    app.vault
-      .getMarkdownFiles()
-      .find(
-        (file) => file.basename === stripMarkdownExtension(target.split('/').pop() ?? target),
-      ) ?? null
+  const markdownFiles = app.vault.getMarkdownFiles();
+  const fallbackIndex = planVaultLinkFallbackIndexRust(
+    plan.fallbackBasename,
+    markdownFiles.map((file) => file.basename),
   );
-}
-
-function createPathCandidates(sourcePath: string, target: string): string[] {
-  const sourceFolder = sourcePath.split('/').slice(0, -1).join('/');
-  const candidates = [target, ensureMarkdownExtension(target)];
-  if (sourceFolder) {
-    candidates.push(
-      normalizeVaultPath(`${sourceFolder}/${target}`),
-      normalizeVaultPath(`${sourceFolder}/${ensureMarkdownExtension(target)}`),
-    );
-  }
-  return [...new Set(candidates.filter(Boolean))];
-}
-
-function normalizeLinkTarget(raw: string): string {
-  const withoutAlias = raw.split('|')[0] ?? '';
-  const withoutHeading = withoutAlias.split('#')[0] ?? '';
-  const withoutBlock = withoutHeading.split('^')[0] ?? '';
-  return decodeUriSafely(withoutBlock.trim());
-}
-
-function normalizeVaultPath(path: string): string {
-  const parts: string[] = [];
-  for (const part of path.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      parts.pop();
-      continue;
-    }
-    parts.push(part);
-  }
-  return parts.join('/');
-}
-
-function shouldIgnoreLinkTarget(target: string): boolean {
-  return (
-    target === '' ||
-    target.startsWith('#') ||
-    /^[a-z][a-z0-9+.-]*:/i.test(target) ||
-    target.startsWith('mailto:')
-  );
-}
-
-function ensureMarkdownExtension(path: string): string {
-  return path.endsWith('.md') ? path : `${path}.md`;
-}
-
-function stripMarkdownExtension(path: string): string {
-  return path.endsWith('.md') ? path.slice(0, -3) : path;
-}
-
-function decodeUriSafely(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
+  return fallbackIndex === null ? null : markdownFiles[fallbackIndex] ?? null;
 }
 
 function stringifyError(err: unknown): string {

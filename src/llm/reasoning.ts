@@ -1,3 +1,9 @@
+import {
+  extractStructuredReasoningRust,
+  normalizeReasoningChunkRust,
+  splitReasoningTagsRust,
+} from '../rag/rust-core';
+
 export interface ReasoningExtractor {
   name: string;
   extract(delta: Record<string, unknown>): string | undefined;
@@ -8,10 +14,11 @@ export interface NormalizedReasoningChunk {
   reasoning?: string;
 }
 
-const REASONING_TAGS = ['think', 'thinking', 'reasoning', 'thought'];
-const REASONING_TAG_PATTERN = REASONING_TAGS.join('|');
-
 export function extractStructuredReasoning(delta: Record<string, unknown>): string | undefined {
+  const rustReasoning = extractStructuredReasoningRust(delta);
+  if (rustReasoning !== null) {
+    return rustReasoning;
+  }
   for (const key of ['reasoning', 'reasoning_content', 'thinking']) {
     const value = delta[key];
     if (typeof value === 'string' && value.length > 0) return value;
@@ -20,8 +27,15 @@ export function extractStructuredReasoning(delta: Record<string, unknown>): stri
 }
 
 export function splitReasoningTags(content: string): NormalizedReasoningChunk {
+  const rustChunk = splitReasoningTagsRust(content);
+  if (rustChunk !== null) {
+    return rustChunk;
+  }
   const trimmed = content.trim();
   if (!trimmed) return { content: '' };
+
+  const REASONING_TAGS = ['think', 'thinking', 'reasoning', 'thought'];
+  const REASONING_TAG_PATTERN = REASONING_TAGS.join('|');
 
   const pairedTag = new RegExp(
     `<(${REASONING_TAG_PATTERN})\\b[^>]*>([\\s\\S]*?)<\\/\\1>`,
@@ -72,6 +86,13 @@ export function normalizeReasoningChunk(input: {
   content?: string;
   reasoning?: string;
 }): NormalizedReasoningChunk {
+  const rustChunk = normalizeReasoningChunkRust({
+    content: input.content,
+    reasoning: input.reasoning,
+  });
+  if (rustChunk !== null) {
+    return rustChunk;
+  }
   const split = splitReasoningTags(input.content ?? '');
   const reasoning = [input.reasoning, split.reasoning].filter(Boolean).join('\n\n');
   return {

@@ -1,9 +1,13 @@
 import type { MCPServerConnectionStatus } from '../mcp/connection-state';
 import type { MCPServerConfig } from '../settings';
 import { t } from '../i18n';
+import { isMcpToolAvailableRust, planMcpServerCandidatesRust } from '../rag/rust-core';
 import {
   createToolExecutionPolicy,
+  classifyMcpToolError,
+  isMcpToolResultEmpty,
   normalizeToolResult,
+  parseToolArguments as parseMcpToolArguments,
   shouldAutoExecuteToolCall,
 } from './mcp-tools';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
@@ -87,14 +91,15 @@ export async function executeMcpToolCalls(
 
     try {
       const result = await client.callTool(toolCall.name, parseToolArguments(toolCall.arguments));
-      assertMcpContentIsNotEmpty(toolCall.name, result);
       const isErrorResult =
         typeof result === 'object' &&
         result !== null &&
         'isError' in result &&
         result.isError === true;
       const normalized = normalizeToolResult(result);
-      assertNonEmptyToolResult(toolCall.name, normalized.displayText, normalized.modelText);
+      if (isMcpToolResultEmpty(result, normalized)) {
+        throw new Error(t('mcpToolEmptyResult', { tool: toolCall.name }));
+      }
       toolCall.result = normalized.displayText;
       toolCall.resultSummary = normalized.displayText;
       toolCall.normalizedResult = normalized.modelText;
@@ -119,23 +124,23 @@ export async function findServerForTool(
 ): Promise<string | null> {
   if (!registry) return null;
 
-  const preferred = preferredServerNames.filter(
-    (serverName) => registry.getConnectionStatus(serverName) === 'connected',
-  );
-  const fallback = registry
-    .getEnabledServers()
-    .map((server) => server.name)
-    .filter(
-      (serverName) =>
-        registry.getConnectionStatus(serverName) === 'connected' && !preferred.includes(serverName),
-    );
+  const enabledServerNames = registry.getEnabledServers().map((server) => server.name);
+  const connectionStatuses: Record<string, string> = {};
+  for (const serverName of preferredServerNames) {
+    connectionStatuses[serverName] = registry.getConnectionStatus(serverName);
+  }
+  for (const serverName of enabledServerNames) {
+    connectionStatuses[serverName] = registry.getConnectionStatus(serverName);
+  }
+  const candidateServerNames =
+    planMcpServerCandidatesRust(preferredServerNames, enabledServerNames, connectionStatuses) ?? [];
 
-  for (const serverName of [...preferred, ...fallback]) {
+  for (const serverName of candidateServerNames) {
     const client = registry.getClient(serverName);
     if (!client) continue;
     try {
       const tools = await client.listTools();
-      if (tools.some((tool) => tool.name === toolName)) {
+      if (isMcpToolAvailableRust(toolName, tools.map((tool) => tool.name)) === true) {
         return serverName;
       }
     } catch {
@@ -147,54 +152,9 @@ export async function findServerForTool(
 }
 
 export function parseToolArguments(argumentsText: string): Record<string, unknown> {
-  const trimmed = argumentsText.trim();
-  if (!trimmed) return {};
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return { input: parsed };
-  } catch {
-    return { input: argumentsText };
-  }
-}
-
-function assertNonEmptyToolResult(toolName: string, displayText: string, modelText: string): void {
-  if (displayText.trim().length === 0 || modelText.trim().length === 0) {
-    throw new Error(t('mcpToolEmptyResult', { tool: toolName }));
-  }
-}
-
-function assertMcpContentIsNotEmpty(toolName: string, result: unknown): void {
-  if (!isRecord(result) || !Array.isArray(result.content)) return;
-  const hasContent = result.content.some((item) => {
-    if (!isRecord(item)) return false;
-    if (item.type === 'text') {
-      return typeof item.text === 'string' && item.text.trim().length > 0;
-    }
-    return Object.keys(item).length > 0;
-  });
-  if (!hasContent) {
-    throw new Error(t('mcpToolEmptyResult', { tool: toolName }));
-  }
+  return parseMcpToolArguments(argumentsText);
 }
 
 function normalizeToolError(rawMsg: string): string {
-  if (rawMsg.includes('Input validation error')) {
-    const match = rawMsg.match(/does not match '(.+?)'/);
-    if (match) {
-      return t('mcpValidationPattern', { pattern: match[1] });
-    }
-    const fieldMatch = rawMsg.match(/'([^']+)'/);
-    if (fieldMatch) {
-      return t('mcpValidationField', { field: fieldMatch[1] });
-    }
-    return t('mcpValidationGeneric');
-  }
-  return rawMsg;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return classifyMcpToolError(rawMsg);
 }

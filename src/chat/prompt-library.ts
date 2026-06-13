@@ -1,6 +1,11 @@
 import { t } from '../i18n';
 import type { SuperpowerInsideSettings } from '../settings';
 import type { ChatMessage } from '../llm/providers';
+import {
+  planPromptLibrarySummaryRust,
+  type RustPromptLibrarySummary,
+  type RustPromptLibrarySummaryInput,
+} from '../rag/rust-core';
 import type { VectorEntry } from '../rag/store';
 
 export type PromptLibrarySource = 'default' | 'user' | 'generated';
@@ -225,41 +230,68 @@ export function summarizeVectorEntries(entries: VectorEntry[], maxChars = 12_000
     return t('promptNoEmbeddedVaultEntries');
   }
 
-  const fileCounts = new Map<string, number>();
-  const folderCounts = new Map<string, number>();
-  const headingCounts = new Map<string, number>();
-  for (const entry of entries) {
-    const path = entry.metadata.filePath;
-    fileCounts.set(path, (fileCounts.get(path) ?? 0) + 1);
-    const folder = path.includes('/') ? path.split('/').slice(0, -1).join('/') : '(root)';
-    folderCounts.set(folder, (folderCounts.get(folder) ?? 0) + 1);
-    const heading = entry.metadata.heading?.trim();
-    if (heading) headingCounts.set(heading, (headingCounts.get(heading) ?? 0) + 1);
+  const summaryInputs: RustPromptLibrarySummaryInput[] = entries.map((entry) => ({
+    filePath: entry.metadata.filePath,
+    heading: entry.metadata.heading ?? '',
+    text: entry.metadata.text,
+  }));
+
+  const summary = planPromptLibrarySummaryRust(summaryInputs);
+  if (!summary) {
+    const fallback = [
+      t('promptSummaryTotalChunks', { count: entries.length }),
+      '',
+      t('promptSummaryTopFolders'),
+      t('promptSummaryNone'),
+      '',
+      t('promptSummaryTopFiles'),
+      t('promptSummaryNone'),
+      '',
+      t('promptSummaryTopHeadings'),
+      t('promptSummaryNone'),
+      '',
+      t('promptSummaryRepresentativeSamples'),
+      t('promptSummaryNone'),
+    ].join('\n');
+
+    return fallback.length > maxChars ? fallback.slice(0, maxChars) : fallback;
   }
 
-  const samples = selectRepresentativeEntries(entries, 24).map((entry, index) => {
-    const heading = entry.metadata.heading ? ` # ${entry.metadata.heading}` : '';
-    const preview = compactWhitespace(entry.metadata.text).slice(0, 320);
-    return `${index + 1}. ${entry.metadata.filePath}${heading}\n${preview}`;
-  });
-
   const text = [
-    t('promptSummaryTotalChunks', { count: entries.length }),
+    t('promptSummaryTotalChunks', { count: summary.totalChunks }),
     '',
     t('promptSummaryTopFolders'),
-    formatTopCounts(folderCounts, 12),
+    formatTopCountsFromRust(summary.topFolders),
     '',
     t('promptSummaryTopFiles'),
-    formatTopCounts(fileCounts, 16),
+    formatTopCountsFromRust(summary.topFiles),
     '',
     t('promptSummaryTopHeadings'),
-    formatTopCounts(headingCounts, 18),
+    formatTopCountsFromRust(summary.topHeadings),
     '',
     t('promptSummaryRepresentativeSamples'),
-    samples.join('\n\n'),
+    formatSamplesFromRust(summary),
   ].join('\n');
 
   return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function formatTopCountsFromRust(counts: RustPromptLibrarySummary['topFolders']): string {
+  return (
+    counts
+      .map((row) => `- ${row.label}: ${row.count}`)
+      .filter((line) => line)
+      .join('\n') || t('promptSummaryNone')
+  );
+}
+
+function formatSamplesFromRust(summary: RustPromptLibrarySummary): string {
+  return summary.samples
+    .map((sample, index) => {
+      const heading = sample.heading ? ` # ${sample.heading}` : '';
+      return `${index + 1}. ${sample.filePath}${heading}\n${sample.preview}`;
+    })
+    .join('\n\n');
 }
 
 function normalizePromptEntry(value: unknown): PromptLibraryEntry | null {
@@ -283,31 +315,4 @@ function normalizePromptEntry(value: unknown): PromptLibraryEntry | null {
     createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
     updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
   };
-}
-
-function selectRepresentativeEntries(entries: VectorEntry[], limit: number): VectorEntry[] {
-  if (entries.length <= limit) return entries;
-  const selected: VectorEntry[] = [];
-  const used = new Set<number>();
-  const step = Math.max(1, Math.floor(entries.length / limit));
-  for (let index = 0; index < entries.length && selected.length < limit; index += step) {
-    selected.push(entries[index]);
-    used.add(index);
-  }
-  for (let index = 0; index < entries.length && selected.length < limit; index++) {
-    if (!used.has(index)) selected.push(entries[index]);
-  }
-  return selected;
-}
-
-function formatTopCounts(counts: Map<string, number>, limit: number): string {
-  const rows = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
-    .slice(0, limit)
-    .map(([name, count]) => `- ${name}: ${count}`);
-  return rows.length > 0 ? rows.join('\n') : t('promptSummaryNone');
-}
-
-function compactWhitespace(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
 }

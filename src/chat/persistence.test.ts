@@ -2,7 +2,7 @@ import type { DataAdapter, Vault } from 'obsidian';
 import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
-import { loadChat, saveChat } from './persistence';
+import { listChats, loadChat, saveChat } from './persistence';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -16,6 +16,18 @@ vi.mock('obsidian', () => {
 });
 
 describe('chat persistence', () => {
+  it('저장된 채팅 목록은 Rust folder plan으로 폴더 내부 Markdown만 고른다', () => {
+    const vault = createVault();
+    vault.writeFile('Chats/a.md', 'a');
+    vault.writeFile('Chats/Nested/b.md', 'b');
+    vault.writeFile('Chats-extra/c.md', 'c');
+
+    expect(listChats(vault, 'Chats').map((file) => file.path)).toEqual([
+      'Chats/a.md',
+      'Chats/Nested/b.md',
+    ]);
+  });
+
   it('base64 블록으로 저장해 sentinel 문자열이 포함된 메시지를 온전히 복원한다', async () => {
     const vault = createVault();
     const content = [

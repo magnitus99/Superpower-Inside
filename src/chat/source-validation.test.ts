@@ -45,4 +45,41 @@ describe('validateAnswerSources', () => {
       }),
     ]);
   });
+
+  it('source validation input plan은 verified citation과 alias probe를 Rust에서 만든다', () => {
+    const citations: SourceCitation[] = [
+      {
+        id: 'rag-1',
+        filePath: 'Notes/Existing.md',
+        status: 'verified',
+        preview: '내용',
+      },
+      {
+        id: 'rag-2',
+        filePath: 'Draft.md',
+        status: 'missing',
+        preview: '',
+      },
+    ];
+    const checkedPaths: string[] = [];
+
+    const warnings = validateAnswerSources(
+      '참고 [[Existing]] 및 [[Missing]] Source rag-2',
+      citations,
+      {
+        exists: (path) => {
+          checkedPaths.push(path);
+          return path === 'Existing.md' || path === 'Missing.md';
+        },
+      },
+    );
+
+    expect(checkedPaths).toEqual(['Existing', 'Existing.md', 'Missing', 'Missing.md']);
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        label: 'Source rag-2',
+        kind: 'unverified-source',
+      }),
+    ]);
+  });
 });
