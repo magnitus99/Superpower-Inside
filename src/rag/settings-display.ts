@@ -92,6 +92,7 @@ export type GraphRagActionId =
   | 'resumeFailed'
   | 'syncStale'
   | 'buildCommunities'
+  | 'resetGraphRag'
   | 'openExplorer';
 
 export interface GraphRagActionDefinition {
@@ -115,6 +116,7 @@ export interface GraphRagActionGroupInput {
   controls: GraphRagControlState;
   syncStale: RagIndexingButtonState;
   buildCommunities: RagIndexingButtonState;
+  resetGraphRag: RagIndexingButtonState;
   openExplorer: RagIndexingButtonState;
   totalCandidateFiles: number;
   maxFilesPerRun: number;
@@ -372,22 +374,32 @@ export function buildGraphRagActionGroups(input: GraphRagActionGroupInput): Grap
         },
       ],
     },
-    {
-      id: 'maintain',
-      label: t('graphRagMaintain'),
-      actions: [
-        {
-          id: 'buildCommunities',
-          groupId: 'maintain',
-          groupLabel: t('graphRagMaintain'),
-          label: t('graphRagBuildCommunities'),
-          description: t('graphRagBuildCommunitiesDesc'),
-          iconName: 'git-fork',
-          state: input.buildCommunities,
-          tone: 'normal',
-        },
-      ],
-    },
+      {
+        id: 'maintain',
+        label: t('graphRagMaintain'),
+        actions: [
+          {
+            id: 'buildCommunities',
+            groupId: 'maintain',
+            groupLabel: t('graphRagMaintain'),
+            label: t('graphRagBuildCommunities'),
+            description: t('graphRagBuildCommunitiesDesc'),
+            iconName: 'git-fork',
+            state: input.buildCommunities,
+            tone: 'normal',
+          },
+          {
+            id: 'resetGraphRag',
+            groupId: 'maintain',
+            groupLabel: t('graphRagMaintain'),
+            label: t('graphRagResetData'),
+            description: t('graphRagResetDataDesc'),
+            iconName: 'trash-2',
+            state: input.resetGraphRag,
+            tone: 'danger',
+          },
+        ],
+      },
     {
       id: 'inspect',
       label: t('graphRagInspect'),

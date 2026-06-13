@@ -1235,7 +1235,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       presentation.tone,
     );
     this.createRagStatusItem(grid, t('settingsAuto035'), String(total));
-    this.createRagStatusItem(grid, t('settingsAuto036'), String(done));
+    this.createRagStatusItemWithDesc(
+      grid,
+      t('settingsAuto036'),
+      String(done),
+      t('settingsAuto036Desc'),
+      'success',
+    );
     this.createRagStatusItemWithDesc(
       grid,
       t('settingsAuto037'),
@@ -1447,11 +1453,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
     const hasData = done > 0;
     const detailButtonState = { disabled: !hasData, reason: hasData ? null : t('settingsAuto066') };
+    const resetGraphRagState = {
+      disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
+      reason: !rag.graphRagEnabled
+        ? t('settingsAuto062')
+        : this.plugin.isGraphRagIndexing()
+          ? t('settingsAuto065')
+          : null,
+    };
     this.renderGraphRagActions(actions, {
       controls,
       syncButtonState,
       communityButtonState,
       detailButtonState,
+      resetGraphRag: resetGraphRagState,
       cost,
       totalCandidateFiles: total,
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
@@ -1562,7 +1577,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         presentation.tone,
       );
       this.createRagStatusItem(this.graphRagStatusGrid, t('settingsAuto035'), String(total));
-      this.createRagStatusItem(this.graphRagStatusGrid, t('settingsAuto036'), String(done));
+      this.createRagStatusItemWithDesc(
+        this.graphRagStatusGrid,
+        t('settingsAuto036'),
+        String(done),
+        t('settingsAuto036Desc'),
+        'success',
+      );
       this.createRagStatusItemWithDesc(
         this.graphRagStatusGrid,
         t('settingsAuto037'),
@@ -1627,11 +1648,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         disabled: !hasDetailData,
         reason: hasDetailData ? null : t('settingsAuto066'),
       };
+      const resetGraphRagState = {
+        disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
+        reason: !rag.graphRagEnabled
+          ? t('settingsAuto062')
+          : this.plugin.isGraphRagIndexing()
+            ? t('settingsAuto065')
+            : null,
+      };
       this.renderGraphRagActions(this.graphRagActionsGroup, {
         controls,
         syncButtonState,
         communityButtonState,
         detailButtonState: detailState,
+        resetGraphRag: resetGraphRagState,
         cost,
         totalCandidateFiles: total,
         maxFilesPerRun: rag.graphRagMaxFilesPerRun,
@@ -1645,6 +1675,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     input: {
       controls: ReturnType<typeof getGraphRagControlState>;
       syncButtonState: {
+        disabled: boolean;
+        reason: string | null;
+      };
+      resetGraphRag: {
         disabled: boolean;
         reason: string | null;
       };
@@ -1670,6 +1704,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       controls: input.controls,
       syncStale: input.syncButtonState,
       buildCommunities: input.communityButtonState,
+      resetGraphRag: input.resetGraphRag,
       openExplorer: input.detailButtonState,
       totalCandidateFiles: input.totalCandidateFiles,
       maxFilesPerRun: input.maxFilesPerRun,
@@ -1762,11 +1797,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       case 'openExplorer':
         this.plugin.openGraphRagView();
         return;
+      case 'resetGraphRag': {
+        if (!this.confirmGraphRagReset()) {
+          return;
+        }
+        try {
+          await this.plugin.resetGraphRagData();
+          new Notice(t('graphRagResetDataDone'));
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          new Notice(t('graphRagResetDataFailed', { v0: message }));
+        }
+        this.updateGraphRagStats();
+        return;
+      }
     }
   }
   private confirmGraphRagRemoteRun(cost: { costLabel: string }): boolean {
     if (cost.costLabel !== t('settingsAuto070')) return true;
     return confirm(t('settingsAuto071'));
+  }
+
+  private confirmGraphRagReset(): boolean {
+    return confirm(t('graphRagResetDataConfirm'));
   }
   private showGraphRagResult(result: GraphRagIndexingResult | null): void {
     if (!result) {

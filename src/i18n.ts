@@ -411,12 +411,14 @@ export interface I18nKeys {
   settingsAuto028: string;
   settingsAuto029: string;
   settingsAuto030: string;
+  settingsAuto030Desc: string;
   settingsAuto031: string;
   settingsAuto032: string;
   settingsAuto033: string;
   settingsAuto034: string;
   settingsAuto035: string;
   settingsAuto036: string;
+  settingsAuto036Desc: string;
   settingsAuto037: string;
   settingsAuto038: string;
   settingsAuto039: string;
@@ -806,6 +808,11 @@ export interface I18nKeys {
   graphRagMaintain: string;
   graphRagBuildCommunities: string;
   graphRagBuildCommunitiesDesc: string;
+  graphRagResetData: string;
+  graphRagResetDataDesc: string;
+  graphRagResetDataConfirm: string;
+  graphRagResetDataDone: string;
+  graphRagResetDataFailed: string;
   graphRagInspect: string;
   graphRagOpenExplorer: string;
   graphRagOpenExplorerDesc: string;
@@ -1525,13 +1532,15 @@ const ko: I18nKeys = {
   settingsAuto027: 'RAG 상태',
   settingsAuto028: '상태 계산 중...',
   settingsAuto029: 'GraphRAG 운영',
-  settingsAuto030: '전체 {v0}개 파일 중 {v1}개 처리 완료{v2}{v3}',
+  settingsAuto030: '전체 {v0}개 파일 대상에서 {v1}개 증거 항목 처리 완료{v2}{v3}',
+  settingsAuto030Desc: 'GraphRAG의 처리 완료 수치는 파일 수가 아닌 증거 단위의 개수입니다.',
   settingsAuto031: ', {v0}개 실패',
   settingsAuto032: ', {v0}개 동기화 필요',
   settingsAuto033: 'RAG 인덱싱 대상 파일이 없습니다.',
   settingsAuto034: '상태',
   settingsAuto035: '전체 파일',
-  settingsAuto036: '처리 완료',
+  settingsAuto036: '처리 완료(증거)',
+  settingsAuto036Desc: '이 값은 추출된 증거 항목 수로, 파일 수와 동일하지 않을 수 있습니다.',
   settingsAuto037: '실패 파일',
   settingsAuto038: '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.',
   settingsAuto039: '실패한 파일이 없습니다.',
@@ -1963,6 +1972,12 @@ const ko: I18nKeys = {
   graphRagBuildCommunities: '커뮤니티 다시 빌드',
   graphRagBuildCommunitiesDesc:
     '이미 추출된 엔티티/관계로 커뮤니티 요약을 다시 계산합니다. 파일 재추출은 하지 않습니다.',
+  graphRagResetData: 'GraphRAG 데이터 초기화',
+  graphRagResetDataDesc:
+    '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
+  graphRagResetDataConfirm: 'GraphRAG 추출 데이터 전체를 삭제하고 상태를 초기화하시겠습니까?',
+  graphRagResetDataDone: 'GraphRAG 데이터가 초기화되었습니다.',
+  graphRagResetDataFailed: 'GraphRAG 데이터 초기화 실패: {v0}',
   graphRagInspect: '결과 확인',
   graphRagOpenExplorer: '탐색기 열기',
   graphRagOpenExplorerDesc: '엔티티, 관계, 증거, 거부된 응답과 오류 코드를 확인합니다.',
@@ -2715,13 +2730,15 @@ const en: I18nKeys = {
   settingsAuto027: 'RAG status',
   settingsAuto028: 'Calculating status...',
   settingsAuto029: 'GraphRAG operations',
-  settingsAuto030: 'Processed {v1} of {v0} files{v2}{v3}',
+  settingsAuto030: 'Processed {v1} evidence items of {v0} files{v2}{v3}',
+  settingsAuto030Desc: 'This processed count is the number of extracted evidence units, not file count.',
   settingsAuto031: ', {v0} failed',
   settingsAuto032: ', {v0} need sync',
   settingsAuto033: 'No files are eligible for RAG indexing.',
   settingsAuto034: 'Status',
   settingsAuto035: 'Total files',
-  settingsAuto036: 'Processed',
+  settingsAuto036: 'Processed (evidence)',
+  settingsAuto036Desc: 'This is the number of extracted evidence items, which can differ from file count.',
   settingsAuto037: 'Failed files',
   settingsAuto038: 'Use the resume button to retry only failed files.',
   settingsAuto039: 'No failed files.',
@@ -3162,6 +3179,12 @@ const en: I18nKeys = {
   graphRagBuildCommunities: 'Rebuild communities',
   graphRagBuildCommunitiesDesc:
     'Recalculate community summaries from already extracted entities and relations without re-extracting files.',
+  graphRagResetData: 'Reset GraphRAG data',
+  graphRagResetDataDesc:
+    'Delete extracted evidence, entities, relations, claims, communities, and cache, then reset processing state.',
+  graphRagResetDataConfirm: 'Delete all GraphRAG extraction data and reset state? Continue?',
+  graphRagResetDataDone: 'GraphRAG data has been reset.',
+  graphRagResetDataFailed: 'GraphRAG data reset failed: {v0}',
   graphRagInspect: 'Inspect results',
   graphRagOpenExplorer: 'Open explorer',
   graphRagOpenExplorerDesc:

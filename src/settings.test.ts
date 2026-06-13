@@ -286,6 +286,7 @@ describe('RAG 설정 표시 헬퍼', () => {
       },
       syncStale: { disabled: false, reason: null },
       buildCommunities: { disabled: false, reason: null },
+      resetGraphRag: { disabled: false, reason: null },
       openExplorer: { disabled: false, reason: null },
       totalCandidateFiles: 50,
       maxFilesPerRun: 20,
@@ -300,11 +301,104 @@ describe('RAG 설정 표시 헬퍼', () => {
       '실패만 재시도 (3)',
       '변경분 동기화 (7)',
       '커뮤니티 다시 빌드',
+      'GraphRAG 데이터 초기화',
       '탐색기 열기',
     ]);
     expect(groups[0]?.actions[0]?.description).toContain('대상 50개 중 최대 20개');
     expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
+    expect(groups[1]?.actions[1]?.description).toContain('증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.');
     expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
+  });
+
+  it('resetGraphRag 액션은 확인창 승인 시 plugin.resetGraphRagData를 호출하고 상태 갱신합니다', async () => {
+    const refreshSpy = vi.fn();
+    const plugin = {
+      app: {} as never,
+      settings: {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          graphRagEnabled: true,
+          graphRagModel: 'openai:gpt-4.1-mini',
+          graphRagMaxFilesPerRun: 10,
+        },
+      },
+      graphRagStatus: null,
+      knowledgeGraphStore: null,
+      vectorStore: null,
+      saveSettings: vi.fn(),
+      saveSettingsLight: vi.fn(),
+      reconnectMCP: vi.fn(),
+      setupAutoUpdate: vi.fn(),
+      isGraphRagIndexing: vi.fn(() => false),
+      cancelGraphRagIndexing: vi.fn(),
+      runGraphRagIndexing: vi.fn(),
+      resumeGraphRagIndexing: vi.fn(),
+      syncStaleGraphRag: vi.fn(),
+      buildGraphRagCommunities: vi.fn(),
+      resetGraphRagData: vi.fn(() => Promise.resolve()),
+      hasGraphRagRunner: vi.fn(() => true),
+      openGraphRagView: vi.fn(),
+      eventDrivenRagStats: null,
+      initRAG: vi.fn(),
+      isRagIndexing: vi.fn(),
+      cancelRagIndexing: vi.fn(),
+      runRagIndexing: vi.fn(),
+      resumeRagIndexing: vi.fn(),
+      getRagPerformanceGuardState: vi.fn(),
+      createIndexedDbName: vi.fn(),
+      mcpRegistry: null,
+      refreshBus: {
+        on: vi.fn(() => refreshSpy),
+        emit: vi.fn(),
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        notice: vi.fn(),
+      },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const spy = vi.spyOn(tab as never, 'updateGraphRagStats').mockImplementation(() => {
+      return;
+    });
+    const action = {
+      id: 'resetGraphRag' as const,
+      groupId: 'maintain',
+      groupLabel: '그래프 정리',
+      label: 'GraphRAG 데이터 초기화',
+      description: '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
+      iconName: 'trash-2',
+      state: { disabled: false, reason: null },
+      tone: 'danger' as const,
+    };
+    const globalWindow = globalThis as { confirm?: () => boolean };
+    const originalConfirm = globalWindow.confirm;
+    const confirmSpy = vi.fn(() => true);
+    globalWindow.confirm = confirmSpy;
+
+    try {
+      await (tab as unknown as {
+        handleGraphRagAction: (
+          action: {
+            id: 'resetGraphRag';
+          },
+          cost: { costLabel: string },
+        ) => Promise<void>;
+      }).handleGraphRagAction(action, { costLabel: 'local' });
+
+      expect(confirmSpy).toHaveBeenCalledOnce();
+      expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      if (originalConfirm === undefined) {
+        delete globalWindow.confirm;
+      } else {
+        globalWindow.confirm = originalConfirm;
+      }
+      spy.mockRestore();
+    }
   });
 
   it('GraphRAG 추출 모델이 없으면 provider 상태보다 모델 선택 안내를 먼저 표시한다', () => {
