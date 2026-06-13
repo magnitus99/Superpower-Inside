@@ -99,14 +99,48 @@ echo "==> npm audit (critical)"
 npm audit --audit-level=critical
 or exit $status
 
+set -l GENERATED_SNAPSHOT (mktemp -d)
+or exit $status
+set -l GENERATED_PATHS generated/rag-wasm src/rag/rag-wasm-bytes.ts
+
+for path in $GENERATED_PATHS
+    set -l source "$REPO_ROOT/$path"
+    set -l target "$GENERATED_SNAPSHOT/$path"
+    mkdir -p (dirname "$target")
+    or begin
+        set -l MKDIR_STATUS $status
+        rm -rf "$GENERATED_SNAPSHOT"
+        exit $MKDIR_STATUS
+    end
+
+    if test -e "$source"
+        cp -R "$source" "$target"
+        or begin
+            set -l COPY_STATUS $status
+            rm -rf "$GENERATED_SNAPSHOT"
+            exit $COPY_STATUS
+        end
+    end
+end
+
 echo "==> wasm bindings"
 fish scripts/build-rag-wasm.fish
-or exit $status
+or begin
+    set -l BUILD_STATUS $status
+    rm -rf "$GENERATED_SNAPSHOT"
+    exit $BUILD_STATUS
+end
 
-if command -sq git
-    git diff --exit-code -- generated/rag-wasm src/rag/rag-wasm-bytes.ts
+for path in $GENERATED_PATHS
+    set -l before "$GENERATED_SNAPSHOT/$path"
+    set -l after "$REPO_ROOT/$path"
+    diff -qr "$before" "$after" >/dev/null
     or begin
+        diff -ru "$before" "$after" | sed -n '1,240p'
+        rm -rf "$GENERATED_SNAPSHOT"
         echo "ERROR: Rust/WASM generated files are out of date. Run npm run wasm:build and commit the result."
         exit 1
     end
 end
+
+rm -rf "$GENERATED_SNAPSHOT"
