@@ -1,13 +1,36 @@
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import type { RAGConfig } from '../settings';
-import { createContentHash } from '../rag/hash';
 import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
 import {
-  filterProcessableGraphRagFilePaths,
+  planGraphRagStatusEntryLookupsRust,
+  planGraphRagStatusEntryLookupsFallback,
+  planGraphRagStatusEntrySnapshotRust,
+  planGraphRagStatusEntrySnapshotFallback,
+  planGraphRagStatusFileSnapshotRust,
+  planGraphRagStatusFileSnapshotFallback,
+  planGraphRagStatusFallback,
+  planGraphRagStatusRust,
+  type RustGraphRagRunFilePathInput,
+  type RustGraphRagStatusCacheInput,
+  type RustGraphRagStatusEntryInput,
+  type RustGraphRagStatusEntrySnapshotInput,
+  type RustGraphRagStatusEntrySnapshotPlan,
+  type RustGraphRagStatusEvidenceInput,
+  type RustGraphRagStatusFileRecordInput,
+  type RustGraphRagStatusFileSnapshotPlan,
+  type RustGraphRagStatusFileSnapshotRecordInput,
+  type RustGraphRagStatusInput,
+} from '../rag/rust-core';
+import {
   isProcessableGraphRagFilePath,
   type GraphRagFilePathPredicate,
 } from './file-paths';
-import type { KnowledgeGraphStore } from './store';
+import { selectByRustIndices } from '../utils/rust-index-plan';
+import type {
+  GraphEvidenceRecord,
+  GraphExtractionCacheRecord,
+  KnowledgeGraphStore,
+} from './store';
 
 export type GraphRagIndexState =
   | 'disabled'
@@ -45,24 +68,16 @@ export interface GraphRagStatusSummary {
 export async function calculateGraphRagStatus(
   input: GraphRagStatusInput,
 ): Promise<GraphRagStatusSummary> {
-  const fileIndexRecords = await getFileIndexRecords(
+  const fileSnapshot = await getGraphRagStatusFileSnapshot(
     input.vectorStore,
     input.isProcessableFilePath,
   );
-  const totalCandidateFiles = await getTotalCandidateFiles(
-    input.vectorStore,
-    input.isProcessableFilePath,
-    fileIndexRecords,
-  );
-  const maxFilesPerRun = Math.max(1, Math.floor(input.ragConfig.graphRagMaxFilesPerRun));
-  if (!input.ragConfig.graphRagEnabled) {
-    return emptyStatus('disabled', totalCandidateFiles, maxFilesPerRun);
-  }
-  if (input.schemaErrors.length > 0) {
-    return emptyStatus('schema-error', totalCandidateFiles, maxFilesPerRun);
-  }
-  if (input.isRunning) {
-    return emptyStatus('building', totalCandidateFiles, maxFilesPerRun);
+  const fileIndexRecords = fileSnapshot.fileIndexRecords;
+  const totalCandidateFiles = fileSnapshot.totalCandidateFiles;
+  if (!input.ragConfig.graphRagEnabled || input.schemaErrors.length > 0 || input.isRunning) {
+    return requireGraphRagStatusPlan(
+      createGraphRagStatusInput(input, fileIndexRecords, totalCandidateFiles),
+    );
   }
 
   const [evidence, rejectedFacts, pendingMerges, cacheRecords] = await Promise.all([
@@ -71,155 +86,235 @@ export async function calculateGraphRagStatus(
     input.graphStore.getPendingEntityMerges(),
     input.graphStore.getExtractionCacheRecords(),
   ]);
-  const graphEvidenceCount = evidence.length;
-  if (graphEvidenceCount === 0) {
-    return {
-      ...emptyStatus('not-built', totalCandidateFiles, maxFilesPerRun),
-      rejectedFactCount: rejectedFacts.length,
-      failedFileCount: countUnique(rejectedFacts.map((fact) => fact.filePath)),
+  const entryIds =
+    evidence.length === 0
+      ? []
+      : requireGraphRagStatusEntryLookups(
+          evidence.map((record) => record.entryId),
+          cacheRecords.map((record) => record.entryId),
+        );
+  const entries =
+    entryIds.length === 0
+      ? []
+      : getGraphRagStatusEntries(
+          await input.vectorStore.getEntriesByIds(entryIds),
+          input.isProcessableFilePath,
+        );
+  return requireGraphRagStatusPlan(
+    createGraphRagStatusInput(input, fileIndexRecords, totalCandidateFiles, {
+      evidence,
+      rejectedFactFilePaths: rejectedFacts.map((fact) => fact.filePath),
       pendingMergeCount: pendingMerges.length,
-    };
-  }
-
-  const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
-  const cacheByEntryId = new Map(cacheRecords.map((record) => [record.entryId, record]));
-  const vectorFilePaths = new Set(fileIndexRecords.map((record) => record.filePath));
-  const staleFiles = new Set<string>();
-  for (const record of evidence) {
-    if (
-      !isProcessableGraphRagFilePath(record.filePath, input.isProcessableFilePath) ||
-      !vectorFilePaths.has(record.filePath)
-    ) {
-      staleFiles.add(record.filePath);
-    }
-  }
-
-  const relevantEntryIds = [
-    ...new Set([...evidence.map((record) => record.entryId), ...cacheRecords.map((record) => record.entryId)]),
-  ];
-  const entries = filterProcessableGraphRagEntries(
-    await input.vectorStore.getEntriesByIds(relevantEntryIds),
-    input.isProcessableFilePath,
+      cacheRecords,
+      entries,
+    }),
   );
-  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
-  const freshCacheCountByFilePath = new Map<string, number>();
+}
 
-  for (const record of cacheRecords) {
-    const entry = entriesById.get(record.entryId);
-    if (!entry) {
-      staleFiles.add(getFilePathForMissingEntry(record.entryId, evidence));
-    }
-  }
-  for (const record of evidence) {
-    const entry = entriesById.get(record.entryId);
-    if (!entry) {
-      staleFiles.add(record.filePath);
-      continue;
-    }
-    const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
-    if (
-      record.contentHash !== contentHash ||
-      record.extractionModelKey !== input.ragConfig.graphRagModel
-    ) {
-      staleFiles.add(record.filePath);
-    }
-  }
-  for (const entry of entries) {
-    const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
-    const cache = cacheByEntryId.get(entry.id);
-    if (
-      cache?.contentHash !== contentHash ||
-      cache.extractionModelKey !== input.ragConfig.graphRagModel ||
-      cache.ontologySchemaId !== ontologySchema.id ||
-      cache.ontologyVersion !== ontologySchema.version
-    ) {
-      staleFiles.add(entry.metadata.filePath);
-      continue;
-    }
-    freshCacheCountByFilePath.set(
-      entry.metadata.filePath,
-      (freshCacheCountByFilePath.get(entry.metadata.filePath) ?? 0) + 1,
-    );
-  }
-  for (const record of fileIndexRecords) {
-    const freshCacheCount = freshCacheCountByFilePath.get(record.filePath) ?? 0;
-    if (freshCacheCount < record.vectorCount) {
-      staleFiles.add(record.filePath);
-    }
-  }
+interface GraphRagStatusFileSnapshot {
+  fileIndexRecords: FileIndexRecord[];
+  totalCandidateFiles: number;
+}
 
-  const failedFileCount = countUnique(rejectedFacts.map((fact) => fact.filePath));
-  const state: GraphRagIndexState =
-    staleFiles.size > 0 ? 'stale' : failedFileCount > 0 ? 'partial' : 'ready';
+async function getGraphRagStatusFileSnapshot(
+  vectorStore: VectorStore,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): Promise<GraphRagStatusFileSnapshot> {
+  const [fileIndexRecords, indexedFilePaths] = await Promise.all([
+    vectorStore.getFileIndexRecords(),
+    vectorStore.getIndexedFilePaths(),
+  ]);
+  const plan = requireGraphRagStatusFileSnapshot(
+    fileIndexRecords.map((record) =>
+      toGraphRagStatusFileSnapshotRecordInput(record, isProcessableFilePath),
+    ),
+    indexedFilePaths.map((filePath) =>
+      toGraphRagStatusIndexedFilePathInput(filePath, isProcessableFilePath),
+    ),
+  );
   return {
-    state,
-    totalCandidateFiles,
-    graphEvidenceCount,
-    rejectedFactCount: rejectedFacts.length,
-    failedFileCount,
-    pendingMergeCount: pendingMerges.length,
-    staleFileCount: staleFiles.size,
-    staleFilePaths: [...staleFiles].sort(),
-    maxFilesPerRun,
+    fileIndexRecords: selectGraphRagStatusFileRecords(fileIndexRecords, plan.fileRecordIndices),
+    totalCandidateFiles: plan.totalCandidateFiles,
   };
 }
 
-async function getTotalCandidateFiles(
-  vectorStore: VectorStore,
-  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
-  fileIndexRecords: readonly FileIndexRecord[],
-): Promise<number> {
-  const records = fileIndexRecords;
-  if (records.length > 0) return records.length;
-  return filterProcessableGraphRagFilePaths(
-    await vectorStore.getIndexedFilePaths(),
-    isProcessableFilePath,
-  ).length;
-}
-
-async function getFileIndexRecords(
-  vectorStore: VectorStore,
-  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
-): Promise<FileIndexRecord[]> {
-  return (await vectorStore.getFileIndexRecords()).filter((record) =>
-    isProcessableGraphRagFilePath(record.filePath, isProcessableFilePath),
-  );
-}
-
-function filterProcessableGraphRagEntries(
+function getGraphRagStatusEntries(
   entries: readonly VectorEntry[],
   isProcessableFilePath: GraphRagFilePathPredicate | undefined,
 ): VectorEntry[] {
-  return entries.filter((entry) =>
-    isProcessableGraphRagFilePath(entry.metadata.filePath, isProcessableFilePath),
+  const plan = requireGraphRagStatusEntrySnapshot(
+    entries.map((entry) => toGraphRagStatusEntrySnapshotInput(entry, isProcessableFilePath)),
   );
+  return selectGraphRagStatusEntries(entries, plan.entryIndices);
 }
 
-function emptyStatus(
-  state: GraphRagIndexState,
+interface GraphRagStatusSnapshot {
+  evidence?: readonly GraphEvidenceRecord[];
+  rejectedFactFilePaths?: readonly string[];
+  pendingMergeCount?: number;
+  cacheRecords?: readonly GraphExtractionCacheRecord[];
+  entries?: readonly VectorEntry[];
+}
+
+function createGraphRagStatusInput(
+  input: GraphRagStatusInput,
+  fileIndexRecords: readonly FileIndexRecord[],
   totalCandidateFiles: number,
-  maxFilesPerRun: number,
-): GraphRagStatusSummary {
+  snapshot: GraphRagStatusSnapshot = {},
+): RustGraphRagStatusInput {
+  const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
   return {
-    state,
+    graphRagEnabled: input.ragConfig.graphRagEnabled,
+    isRunning: input.isRunning,
+    schemaErrorCount: input.schemaErrors.length,
     totalCandidateFiles,
-    graphEvidenceCount: 0,
-    rejectedFactCount: 0,
-    failedFileCount: 0,
-    pendingMergeCount: 0,
-    staleFileCount: 0,
-    staleFilePaths: [],
-    maxFilesPerRun,
+    graphRagMaxFilesPerRun: input.ragConfig.graphRagMaxFilesPerRun,
+    graphRagModel: input.ragConfig.graphRagModel,
+    ontologySchemaId: ontologySchema.id,
+    ontologyVersion: ontologySchema.version,
+    fileRecords: fileIndexRecords.map(toGraphRagStatusFileRecordInput),
+    evidence: (snapshot.evidence ?? []).map((record) =>
+      toGraphRagStatusEvidenceInput(record, input.isProcessableFilePath),
+    ),
+    rejectedFactFilePaths: snapshot.rejectedFactFilePaths ?? [],
+    pendingMergeCount: snapshot.pendingMergeCount ?? 0,
+    cacheRecords: (snapshot.cacheRecords ?? []).map(toGraphRagStatusCacheInput),
+    entries: (snapshot.entries ?? []).map(toGraphRagStatusEntryInput),
   };
 }
 
-function countUnique(values: readonly string[]): number {
-  return new Set(values).size;
+function requireGraphRagStatusEntryLookups(
+  evidenceEntryIds: readonly string[],
+  cacheEntryIds: readonly string[],
+): string[] {
+  const entryIds = planGraphRagStatusEntryLookupsRust(evidenceEntryIds, cacheEntryIds);
+  if (entryIds === null) {
+    return planGraphRagStatusEntryLookupsFallback(evidenceEntryIds, cacheEntryIds);
+  }
+  return entryIds;
 }
 
-function getFilePathForMissingEntry(
-  entryId: string,
-  evidence: readonly { entryId: string; filePath: string }[],
-): string {
-  return evidence.find((record) => record.entryId === entryId)?.filePath ?? entryId.split('::')[0] ?? entryId;
+function requireGraphRagStatusFileSnapshot(
+  fileRecords: readonly RustGraphRagStatusFileSnapshotRecordInput[],
+  indexedFilePaths: readonly RustGraphRagRunFilePathInput[],
+): RustGraphRagStatusFileSnapshotPlan {
+  const plan = planGraphRagStatusFileSnapshotRust(fileRecords, indexedFilePaths);
+  if (plan === null) {
+    return planGraphRagStatusFileSnapshotFallback(fileRecords, indexedFilePaths);
+  }
+  return plan;
+}
+
+function requireGraphRagStatusEntrySnapshot(
+  entries: readonly RustGraphRagStatusEntrySnapshotInput[],
+): RustGraphRagStatusEntrySnapshotPlan {
+  const plan = planGraphRagStatusEntrySnapshotRust(entries);
+  if (plan === null) {
+    return planGraphRagStatusEntrySnapshotFallback(entries);
+  }
+  return plan;
+}
+
+function requireGraphRagStatusPlan(input: RustGraphRagStatusInput): GraphRagStatusSummary {
+  const plan = planGraphRagStatusRust(input);
+  if (plan === null) {
+    return planGraphRagStatusFallback(input);
+  }
+  return plan;
+}
+
+function toGraphRagStatusFileRecordInput(
+  record: FileIndexRecord,
+): RustGraphRagStatusFileRecordInput {
+  return {
+    filePath: record.filePath,
+    vectorCount: record.vectorCount,
+  };
+}
+
+function toGraphRagStatusFileSnapshotRecordInput(
+  record: FileIndexRecord,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): RustGraphRagStatusFileSnapshotRecordInput {
+  return {
+    filePath: record.filePath,
+    vectorCount: record.vectorCount,
+    processable: isHostProcessableGraphRagFilePath(record.filePath, isProcessableFilePath),
+  };
+}
+
+function toGraphRagStatusIndexedFilePathInput(
+  filePath: string,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): RustGraphRagRunFilePathInput {
+  return {
+    filePath,
+    processable: isHostProcessableGraphRagFilePath(filePath, isProcessableFilePath),
+  };
+}
+
+function toGraphRagStatusEvidenceInput(
+  record: GraphEvidenceRecord,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): RustGraphRagStatusEvidenceInput {
+  return {
+    filePath: record.filePath,
+    entryId: record.entryId,
+    contentHash: record.contentHash,
+    extractionModelKey: record.extractionModelKey,
+    processable: isProcessableGraphRagFilePath(record.filePath, isProcessableFilePath),
+  };
+}
+
+function toGraphRagStatusCacheInput(
+  record: GraphExtractionCacheRecord,
+): RustGraphRagStatusCacheInput {
+  return {
+    entryId: record.entryId,
+    contentHash: record.contentHash,
+    extractionModelKey: record.extractionModelKey,
+    ontologySchemaId: record.ontologySchemaId,
+    ontologyVersion: record.ontologyVersion,
+  };
+}
+
+function toGraphRagStatusEntryInput(entry: VectorEntry): RustGraphRagStatusEntryInput {
+  return {
+    id: entry.id,
+    filePath: entry.metadata.filePath,
+    contentHash: entry.metadata.contentHash,
+    text: entry.metadata.text,
+  };
+}
+
+function toGraphRagStatusEntrySnapshotInput(
+  entry: VectorEntry,
+  isProcessableFilePath: GraphRagFilePathPredicate | undefined,
+): RustGraphRagStatusEntrySnapshotInput {
+  return {
+    id: entry.id,
+    filePath: entry.metadata.filePath,
+    processable: isHostProcessableGraphRagFilePath(entry.metadata.filePath, isProcessableFilePath),
+  };
+}
+
+function selectGraphRagStatusFileRecords(
+  records: readonly FileIndexRecord[],
+  indices: readonly number[],
+): FileIndexRecord[] {
+  return selectByRustIndices(records, indices, { dedupe: true });
+}
+
+function selectGraphRagStatusEntries(
+  entries: readonly VectorEntry[],
+  indices: readonly number[],
+): VectorEntry[] {
+  return selectByRustIndices(entries, indices, { dedupe: true });
+}
+
+function isHostProcessableGraphRagFilePath(
+  filePath: string,
+  predicate: GraphRagFilePathPredicate | undefined,
+): boolean {
+  return predicate?.(filePath) ?? true;
 }

@@ -1,9 +1,26 @@
 import type { LLMProvider } from '../llm/providers';
 import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
-import { EntityResolver, normalizeEntityName, type EntityResolverOptions } from './entity-resolver';
+import {
+  createGraphIdRust,
+  normalizeGraphConfidenceRust,
+  normalizeGraphNameRust,
+  planGraphClaimEntityIdsRust,
+  planGraphExtractionTypeValidationRust,
+  planGraphRelationEndpointIndicesRust,
+  parseExtractedGraphPayloadRust,
+  type RustExtractedGraphClaim as ExtractedClaim,
+  type RustExtractedGraphEntity as ExtractedEntity,
+  type RustExtractedGraphPayload as ExtractedGraphPayload,
+  type RustExtractedGraphPayloadParseResult,
+  type RustExtractedGraphRelation as ExtractedRelation,
+  type RustGraphClaimEntityLookupRecord,
+  type RustGraphRelationEndpointInput,
+  type RustGraphRelationEndpointLookupRecord,
+  type RustGraphRelationEndpointPlan,
+} from '../rag/rust-core';
+import { EntityResolver, type EntityResolverOptions } from './entity-resolver';
 import {
   type GraphClaimRecord,
-  type GraphClaimStance,
   type GraphEntityRecord,
   type GraphEvidenceRecord,
   type GraphRejectedFactRecord,
@@ -29,39 +46,9 @@ export interface GraphExtractionChunkInput {
   signal?: AbortSignal;
 }
 
-interface ExtractedGraphPayload {
-  entities: ExtractedEntity[];
-  relations: ExtractedRelation[];
-  claims: ExtractedClaim[];
-}
-
-interface ExtractedEntity {
-  name: string;
-  typeId: string;
-  description?: string;
-  aliases?: string[];
-  confidence?: number;
-}
-
-interface ExtractedRelation {
-  source: string;
-  target: string;
-  relationTypeId: string;
-  description?: string;
-  confidence?: number;
-}
-
-interface ExtractedClaim {
-  text: string;
-  claimTypeId: string;
-  entityNames?: string[];
-  stance?: GraphClaimStance;
-  confidence?: number;
-}
-
 type GraphPayloadParseResult =
-  | { ok: true; payload: ExtractedGraphPayload }
-  | { ok: false; reason: 'invalid-json' | 'schema-shape-mismatch'; rawFact: unknown };
+  | RustExtractedGraphPayloadParseResult
+  | { ok: false; reason: 'extraction-error'; rawFact: unknown };
 
 export class GraphExtractionIndexer {
   private provider: LLMProvider;
@@ -120,10 +107,18 @@ export class GraphExtractionIndexer {
     payload: ExtractedGraphPayload,
   ): Promise<void> {
     const now = Date.now();
-    const entitiesByName = new Map<string, GraphEntityRecord>();
+    const entityRecords: GraphEntityRecord[] = [];
+    const claimEntityLookupRecords: RustGraphClaimEntityLookupRecord[] = [];
+    const relationEndpointLookupRecords: RustGraphRelationEndpointLookupRecord[] = [];
+    const typeValidationPlan = planGraphExtractionTypeValidationRust(
+      payload.entities.map((entity) => entity.typeId),
+      payload.claims.map((claim) => claim.claimTypeId),
+      input.ontologySchema.entityTypes.map((entityType) => entityType.id),
+      input.ontologySchema.claimTypes.map((claimType) => claimType.id),
+    );
 
-    for (const entity of payload.entities) {
-      if (!isKnownEntityType(input.ontologySchema, entity.typeId)) {
+    for (const [entityPayloadIndex, entity] of payload.entities.entries()) {
+      if (typeValidationPlan?.entityTypeKnown[entityPayloadIndex] !== true) {
         await this.reject(input, 'unknown-entity-type', entity);
         continue;
       }
@@ -136,17 +131,52 @@ export class GraphExtractionIndexer {
         evidenceIds: [evidence.id],
       });
       const record = createEntityRecord(input, evidence.id, entity, resolution.entityId, now);
-      entitiesByName.set(normalizeName(entity.name), record);
+      const entityIndex = entityRecords.length;
+      entityRecords.push(record);
+      claimEntityLookupRecords.push({ name: entity.name, entityId: record.id });
+      relationEndpointLookupRecords.push({ name: entity.name, entityIndex });
       for (const alias of entity.aliases ?? []) {
-        entitiesByName.set(normalizeName(alias), record);
+        claimEntityLookupRecords.push({ name: alias, entityId: record.id });
+        relationEndpointLookupRecords.push({ name: alias, entityIndex });
       }
       await this.store.upsertEntity(record);
     }
 
+    const relationEndpointPlan =
+      planGraphRelationEndpointIndicesRust(
+        payload.relations.map(
+          (relation): RustGraphRelationEndpointInput => ({
+            source: relation.source,
+            target: relation.target,
+          }),
+        ),
+        relationEndpointLookupRecords,
+        entityRecords.length,
+      ) ??
+      planGraphRelationEndpointIndicesFallback(payload.relations, relationEndpointLookupRecords, entityRecords.length);
+
     const relationIdsByKey = new Map<string, string>();
-    for (const relation of payload.relations) {
-      const source = entitiesByName.get(normalizeName(relation.source));
-      const target = entitiesByName.get(normalizeName(relation.target));
+    for (const [relationIndex, relation] of payload.relations.entries()) {
+      const endpointPair = relationEndpointPlan?.pairs[relationIndex] ?? null;
+      if (endpointPair === null) {
+        await this.reject(input, 'unknown-relation-entity', relation);
+        continue;
+      }
+      const sourceEntityIndex = endpointPair.sourceEntityIndex;
+      const targetEntityIndex = endpointPair.targetEntityIndex;
+      if (
+        !Number.isInteger(sourceEntityIndex) ||
+        !Number.isInteger(targetEntityIndex) ||
+        sourceEntityIndex < 0 ||
+        targetEntityIndex < 0 ||
+        sourceEntityIndex >= entityRecords.length ||
+        targetEntityIndex >= entityRecords.length
+      ) {
+        await this.reject(input, 'unknown-relation-entity', relation);
+        continue;
+      }
+      const source = entityRecords[sourceEntityIndex];
+      const target = entityRecords[targetEntityIndex];
       if (!source || !target) {
         await this.reject(input, 'unknown-relation-entity', relation);
         continue;
@@ -170,14 +200,13 @@ export class GraphExtractionIndexer {
       await this.store.addRelation(record);
     }
 
-    for (const claim of payload.claims) {
-      if (!isKnownClaimType(input.ontologySchema, claim.claimTypeId)) {
+    for (const [claimIndex, claim] of payload.claims.entries()) {
+      if (typeValidationPlan?.claimTypeKnown[claimIndex] !== true) {
         await this.reject(input, 'unknown-claim-type', claim);
         continue;
       }
-      const entityIds = (claim.entityNames ?? [])
-        .map((name) => entitiesByName.get(normalizeName(name))?.id)
-        .filter((id): id is string => typeof id === 'string');
+      const entityIds =
+        planGraphClaimEntityIdsRust(claim.entityNames ?? [], claimEntityLookupRecords) ?? [];
       const record = createClaimRecord(
         evidence.id,
         claim,
@@ -207,233 +236,56 @@ export class GraphExtractionIndexer {
 }
 
 function parseExtractedGraphPayload(rawResponse: string): GraphPayloadParseResult {
-  const jsonText = extractJsonObject(rawResponse);
-  if (!jsonText) return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
-  try {
-    const parsed = JSON.parse(jsonText) as unknown;
-    const normalized = normalizeExtractedGraphPayload(parsed);
-    if (!normalized) {
-      return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
+  return (
+    parseExtractedGraphPayloadRust(rawResponse) ?? {
+      ok: false,
+      reason: 'extraction-error',
+      rawFact: rawResponse,
+    }
+  );
+}
+
+function planGraphRelationEndpointIndicesFallback(
+  relations: readonly ExtractedRelation[],
+  lookupRecords: readonly RustGraphRelationEndpointLookupRecord[],
+  entityCount: number,
+): RustGraphRelationEndpointPlan | null {
+  if (!Number.isSafeInteger(entityCount) || entityCount < 0) {
+    return null;
+  }
+
+  const entityIndexByName = new Map<string, number>();
+  for (const record of lookupRecords) {
+    if (
+      !Number.isSafeInteger(record.entityIndex) ||
+      record.entityIndex < 0 ||
+      record.entityIndex >= entityCount
+    ) {
+      continue;
     }
 
-    const { payload, rawFactCount } = normalized;
-    const { entities, relations, claims } = payload;
-    const validFactCount = entities.length + relations.length + claims.length;
-    if (rawFactCount > 0 && validFactCount === 0) {
-      return { ok: false, reason: 'schema-shape-mismatch', rawFact: parsed };
+    const normalizedName = normalizeName(record.name);
+    if (normalizedName.length === 0) continue;
+    if (entityIndexByName.has(normalizedName)) continue;
+    entityIndexByName.set(normalizedName, record.entityIndex);
+  }
+
+  const pairs = relations.map((relation) => {
+    const sourceName = normalizeName(relation.source);
+    const targetName = normalizeName(relation.target);
+    const sourceEntityIndex = entityIndexByName.get(sourceName);
+    const targetEntityIndex = entityIndexByName.get(targetName);
+    if (sourceEntityIndex === undefined || targetEntityIndex === undefined) {
+      return null;
     }
+
     return {
-      ok: true,
-      payload: {
-        entities,
-        relations,
-        claims,
-      },
+      sourceEntityIndex,
+      targetEntityIndex,
     };
-  } catch {
-    return { ok: false, reason: 'invalid-json', rawFact: rawResponse };
-  }
-}
+  });
 
-function normalizeExtractedGraphPayload(
-  value: unknown,
-): { payload: ExtractedGraphPayload; rawFactCount: number } | null {
-  if (!isRecord(value)) return null;
-
-  const entityItems = collectEntityItems(value);
-  const relationItems = collectRecordItems(value.relations);
-  const claimItems = collectRecordItems(value.claims);
-  const hasKnownShape =
-    'entities' in value ||
-    'relations' in value ||
-    'claims' in value ||
-    entityItems.inferredFromTopLevel;
-
-  if (!hasKnownShape) return null;
-
-  const entities = entityItems.items
-    .map((item) => normalizeExtractedEntity(item.value, item.fallbackName))
-    .filter((entity): entity is ExtractedEntity => entity !== null);
-  const relations = relationItems
-    .map((item) => normalizeExtractedRelation(item.value))
-    .filter((relation): relation is ExtractedRelation => relation !== null);
-  const claims = claimItems
-    .map((item) => normalizeExtractedClaim(item.value))
-    .filter((claim): claim is ExtractedClaim => claim !== null);
-
-  return {
-    payload: { entities, relations, claims },
-    rawFactCount: entityItems.items.length + relationItems.length + claimItems.length,
-  };
-}
-
-function collectEntityItems(payload: Record<string, unknown>): {
-  items: { value: unknown; fallbackName?: string }[];
-  inferredFromTopLevel: boolean;
-} {
-  if ('entities' in payload) {
-    return { items: collectRecordItems(payload.entities), inferredFromTopLevel: false };
-  }
-
-  const items = Object.entries(payload)
-    .filter(
-      ([, value]) =>
-        isRecord(value) &&
-        getStringField(value, ['typeId', 'type_id', 'entityTypeId', 'entity_type', 'type']) !==
-          undefined,
-    )
-    .map(([key, value]) => ({ value, fallbackName: key }));
-  return { items, inferredFromTopLevel: items.length > 0 };
-}
-
-function collectRecordItems(value: unknown): { value: unknown; fallbackName?: string }[] {
-  if (Array.isArray(value)) {
-    return (value as readonly unknown[]).map((item) => ({ value: item }));
-  }
-  if (!isRecord(value)) return [];
-  return Object.entries(value).map(([key, item]) => ({ value: item, fallbackName: key }));
-}
-
-function normalizeExtractedEntity(value: unknown, fallbackName?: string): ExtractedEntity | null {
-  if (!isRecord(value)) return null;
-  const name = getStringField(value, ['name', 'canonicalName', 'label', 'id']) ?? fallbackName;
-  const typeId = getStringField(value, [
-    'typeId',
-    'type_id',
-    'entityTypeId',
-    'entity_type',
-    'type',
-  ]);
-  if (!name || !typeId) return null;
-  return {
-    name,
-    typeId,
-    description: getStringField(value, ['description', 'desc']),
-    aliases: getStringArrayField(value, ['aliases', 'alias']),
-    confidence: getNumberField(value, ['confidence', 'score']),
-  };
-}
-
-function normalizeExtractedRelation(value: unknown): ExtractedRelation | null {
-  if (!isRecord(value)) return null;
-  const source = getStringField(value, ['source', 'from', 'subject']);
-  const target = getStringField(value, ['target', 'to', 'object']);
-  const relationTypeId = getStringField(value, [
-    'relationTypeId',
-    'relation_type_id',
-    'relationType',
-    'relation_type',
-    'typeId',
-    'type',
-    'relation',
-  ]);
-  if (!source || !target || !relationTypeId) return null;
-  return {
-    source,
-    target,
-    relationTypeId,
-    description: getStringField(value, ['description', 'desc']),
-    confidence: getNumberField(value, ['confidence', 'score']),
-  };
-}
-
-function normalizeExtractedClaim(value: unknown): ExtractedClaim | null {
-  if (!isRecord(value)) return null;
-  const text = getStringField(value, ['text', 'claim', 'statement']);
-  const claimTypeId = getStringField(value, [
-    'claimTypeId',
-    'claim_type_id',
-    'claimType',
-    'claim_type',
-    'typeId',
-    'type',
-  ]);
-  if (!text || !claimTypeId) return null;
-  return {
-    text,
-    claimTypeId,
-    entityNames: getClaimEntityNames(value),
-    stance: getGraphClaimStance(value.stance),
-    confidence: getNumberField(value, ['confidence', 'score']),
-  };
-}
-
-function getClaimEntityNames(value: Record<string, unknown>): string[] | undefined {
-  const direct = getStringArrayField(value, ['entityNames', 'entity_names', 'entities']);
-  const names = direct ?? [];
-  for (const key of ['entity', 'subject', 'source', 'object', 'target']) {
-    const candidate = getStringField(value, [key]);
-    if (candidate) names.push(candidate);
-  }
-  return names.length > 0 ? [...new Set(names)] : undefined;
-}
-
-function getStringField(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): string | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim();
-  }
-  return undefined;
-}
-
-function getStringArrayField(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): string[] | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return [candidate.trim()];
-    }
-    if (Array.isArray(candidate)) {
-      const strings = candidate
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter(Boolean);
-      if (strings.length > 0) return strings;
-    }
-  }
-  return undefined;
-}
-
-function getNumberField(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): number | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-function getGraphClaimStance(value: unknown): GraphClaimStance | undefined {
-  return value === 'supports' ||
-    value === 'opposes' ||
-    value === 'neutral' ||
-    value === 'interprets'
-    ? value
-    : undefined;
-}
-
-function extractJsonObject(rawResponse: string): string | null {
-  const trimmed = rawResponse.trim();
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    return trimmed;
-  }
-
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1]?.trim();
-  if (fenced?.startsWith('{') && fenced.endsWith('}')) {
-    return fenced;
-  }
-
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  return trimmed.slice(start, end + 1);
+  return { pairs };
 }
 
 function buildExtractionSystemPrompt(schema: OntologySchema): string {
@@ -553,18 +405,6 @@ function createClaimRecord(
   };
 }
 
-function isKnownEntityType(schema: OntologySchema, typeId: string): boolean {
-  return schema.entityTypes.some((entityType) => entityType.id === typeId);
-}
-
-function isKnownClaimType(schema: OntologySchema, typeId: string): boolean {
-  return schema.claimTypes.some((claimType) => claimType.id === typeId);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function throwIfGraphExtractionAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('GraphRAG extraction cancelled', 'AbortError');
@@ -572,22 +412,13 @@ function throwIfGraphExtractionAborted(signal?: AbortSignal): void {
 }
 
 function normalizeName(name: string): string {
-  return normalizeEntityName(name);
+  return normalizeGraphNameRust(name) ?? '';
 }
 
 function normalizeConfidence(confidence: unknown): number {
-  return typeof confidence === 'number' && Number.isFinite(confidence)
-    ? Math.max(0, Math.min(1, confidence))
-    : 0.5;
+  return normalizeGraphConfidenceRust(confidence) ?? 0.5;
 }
 
 function createId(...parts: string[]): string {
-  return parts.map(sanitizeIdPart).join('::');
-}
-
-function sanitizeIdPart(part: string): string {
-  return part
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9가-힣_.:-]+/giu, '-');
+  return createGraphIdRust(parts) ?? '';
 }

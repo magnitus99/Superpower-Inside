@@ -2,9 +2,14 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import type { OntologySchema } from '../ontology/schema';
 import {
   cosineSimilarityRust,
+  createEntityIdRust,
+  createPendingEntityMergeIdRust,
+  createEntityIdFallback,
   normalizeEntityNameRust,
+  planEntityResolutionRust,
   scoreEntityMatchRust,
   type RustEntityMatchInput,
+  type RustEntityResolutionCandidate,
 } from '../rag/rust-core';
 import type {
   GraphEntityRecord,
@@ -45,62 +50,44 @@ export class EntityResolver {
   async resolve(input: EntityResolutionInput): Promise<EntityResolutionResult> {
     const candidateId = createEntityId(input.ontologySchema.id, input.typeId, input.canonicalName);
     const entities = await this.store.getEntities();
-    const compatibleEntities = entities.filter(
-      (entity) =>
-        entity.ontologySchemaId === input.ontologySchema.id && entity.typeId === input.typeId,
+    const candidates = await createScoredResolutionCandidates(
+      entities,
+      input,
+      this.options.embeddingProvider,
     );
-
-    let bestMatch: { entity: GraphEntityRecord; score: number } | null = null;
-    for (const entity of compatibleEntities) {
-      const score = await scoreEntityMatch(entity, input, this.options.embeddingProvider);
-      if (!bestMatch || score > bestMatch.score) {
-        bestMatch = { entity, score };
-      }
-    }
-
-    if (bestMatch && bestMatch.score >= this.options.autoMergeThreshold) {
-      return {
-        status: 'auto-merge',
-        entityId: bestMatch.entity.id,
-        matchedEntityId: bestMatch.entity.id,
-        mergeScore: bestMatch.score,
-      };
-    }
-
-    if (bestMatch && bestMatch.score >= this.options.pendingMergeThreshold) {
-      await this.store.addPendingEntityMerge(
-        createPendingMergeRecord(input.ontologySchema.id, bestMatch.entity.id, candidateId, bestMatch.score),
-      );
-      return {
-        status: 'pending-merge',
-        entityId: candidateId,
-        matchedEntityId: bestMatch.entity.id,
-        mergeScore: bestMatch.score,
-      };
-    }
-
-    return {
+    const resolutionPlan = planEntityResolutionRust({
+      ontologySchemaId: input.ontologySchema.id,
+      typeId: input.typeId,
+      candidateEntityId: candidateId,
+      autoMergeThreshold: this.options.autoMergeThreshold,
+      pendingMergeThreshold: this.options.pendingMergeThreshold,
+      candidates,
+    });
+    const safePlan: EntityResolutionResult = resolutionPlan ?? {
       status: 'new',
       entityId: candidateId,
-      mergeScore: bestMatch?.score ?? 0,
-      matchedEntityId: bestMatch?.entity.id,
+      mergeScore: 0,
+      matchedEntityId: undefined,
     };
+    if (safePlan.status === 'pending-merge' && safePlan.matchedEntityId) {
+      await this.store.addPendingEntityMerge(
+        createPendingMergeRecord(
+          input.ontologySchema.id,
+          safePlan.matchedEntityId,
+          candidateId,
+          safePlan.mergeScore,
+        ),
+      );
+      return safePlan;
+    }
+
+    return safePlan;
   }
 }
 
 export function normalizeEntityName(name: string): string {
   const rustResult = normalizeEntityNameRust(name);
-  if (rustResult !== null) return rustResult;
-  return normalizeEntityNameWithTypeScript(name);
-}
-
-function normalizeEntityNameWithTypeScript(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[_/\\|()[\]{}"'「」『』【】《》.,;:!?]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  return rustResult ?? '';
 }
 
 export function createEntityId(
@@ -108,7 +95,35 @@ export function createEntityId(
   typeId: string,
   canonicalName: string,
 ): string {
-  return `entity::${ontologySchemaId}::${typeId}::${normalizeEntityName(canonicalName).replaceAll(' ', '-')}`;
+  const rustResult = createEntityIdRust(ontologySchemaId, typeId, canonicalName);
+  if (rustResult !== null) {
+    const parts = rustResult.split('::');
+    if (parts.length >= 4 && parts[0] === 'entity') {
+      return rustResult;
+    }
+  }
+  return createEntityIdFallback(ontologySchemaId, typeId, canonicalName);
+}
+
+async function createScoredResolutionCandidates(
+  entities: readonly GraphEntityRecord[],
+  input: EntityResolutionInput,
+  embeddingProvider?: EmbeddingProvider,
+): Promise<RustEntityResolutionCandidate[]> {
+  const candidates: RustEntityResolutionCandidate[] = [];
+  for (const entity of entities) {
+    const score =
+      entity.ontologySchemaId === input.ontologySchema.id && entity.typeId === input.typeId
+        ? await scoreEntityMatch(entity, input, embeddingProvider)
+        : 0;
+    candidates.push({
+      entityId: entity.id,
+      ontologySchemaId: entity.ontologySchemaId,
+      typeId: entity.typeId,
+      score,
+    });
+  }
+  return candidates;
 }
 
 async function scoreEntityMatch(
@@ -119,7 +134,7 @@ async function scoreEntityMatch(
   const rustInput = createRustEntityMatchInput(entity, input, 0);
   const rustScoreWithoutEmbedding = scoreEntityMatchRust(rustInput);
   if (rustScoreWithoutEmbedding === 1 || !embeddingProvider) {
-    if (rustScoreWithoutEmbedding !== null) return rustScoreWithoutEmbedding;
+    return rustScoreWithoutEmbedding ?? 0;
   }
 
   const embeddingScore = await embeddingSimilarityScore(entity, input, embeddingProvider);
@@ -127,9 +142,7 @@ async function scoreEntityMatch(
     ...rustInput,
     embeddingScore,
   });
-  if (rustScore !== null) return rustScore;
-
-  return scoreEntityMatchWithTypeScript(entity, input, embeddingScore);
+  return rustScore ?? 0;
 }
 
 function createRustEntityMatchInput(
@@ -149,90 +162,6 @@ function createRustEntityMatchInput(
   };
 }
 
-function scoreEntityMatchWithTypeScript(
-  entity: GraphEntityRecord,
-  input: EntityResolutionInput,
-  embeddingScore: number,
-): number {
-  const candidateNames = new Set([
-    normalizeEntityNameWithTypeScript(input.canonicalName),
-    ...input.aliases.map(normalizeEntityNameWithTypeScript),
-  ]);
-  const existingNames = new Set([
-    normalizeEntityNameWithTypeScript(entity.canonicalName),
-    ...entity.aliases.map(normalizeEntityNameWithTypeScript),
-  ]);
-
-  const hasExactNameOrAlias = hasIntersection(candidateNames, existingNames);
-  if (hasExactNameOrAlias) return 1;
-
-  const nameScore = maxNameSimilarity(candidateNames, existingNames);
-  const aliasScore = maxAliasContainmentScore(candidateNames, existingNames);
-  const descriptionScore = jaccardTokenScore(
-    `${entity.canonicalName} ${entity.description}`,
-    `${input.canonicalName} ${input.description}`,
-  );
-  const evidenceScore = sharedEvidenceScore(entity.evidenceIds, input.evidenceIds ?? []);
-  const ontologyTypeScore = entity.typeId === input.typeId ? 1 : 0;
-  const semanticScore = Math.max(descriptionScore, embeddingScore);
-
-  const weightedScore = clampScore(
-    0.42 * nameScore +
-      0.18 * aliasScore +
-      0.22 * semanticScore +
-      0.18 * evidenceScore +
-      0.08 * ontologyTypeScore,
-  );
-  const semanticBoost =
-    ontologyTypeScore === 1 && embeddingScore >= 0.92 && descriptionScore >= 0.5 ? 0.74 : 0;
-  return Math.max(weightedScore, semanticBoost);
-}
-
-function maxNameSimilarity(left: Set<string>, right: Set<string>): number {
-  let best = 0;
-  for (const leftName of left) {
-    for (const rightName of right) {
-      best = Math.max(best, nameSimilarity(leftName, rightName));
-    }
-  }
-  return best;
-}
-
-function nameSimilarity(left: string, right: string): number {
-  if (!left || !right) return 0;
-  if (left === right) return 1;
-  const leftTokens = removeWeakNameTokens(tokenize(left));
-  const rightTokens = removeWeakNameTokens(tokenize(right));
-  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
-  const intersection = leftTokens.filter((token) => rightTokens.includes(token)).length;
-  const overlap = intersection / Math.min(leftTokens.length, rightTokens.length);
-  return Math.max(jaccardTokenScore(left, right), overlap);
-}
-
-function maxAliasContainmentScore(left: Set<string>, right: Set<string>): number {
-  let best = 0;
-  for (const leftName of left) {
-    for (const rightName of right) {
-      best = Math.max(best, containmentScore(leftName, rightName));
-    }
-  }
-  return best;
-}
-
-function containmentScore(left: string, right: string): number {
-  if (!left || !right || left === right) return left === right ? 1 : 0;
-  const shorter = left.length <= right.length ? left : right;
-  const longer = left.length > right.length ? left : right;
-  if (!longer.includes(shorter)) return 0;
-  return Math.max(0.72, shorter.length / longer.length);
-}
-
-function sharedEvidenceScore(left: readonly string[], right: readonly string[]): number {
-  if (left.length === 0 || right.length === 0) return 0;
-  const rightSet = new Set(right);
-  return left.some((evidenceId) => rightSet.has(evidenceId)) ? 1 : 0;
-}
-
 async function embeddingSimilarityScore(
   entity: GraphEntityRecord,
   input: EntityResolutionInput,
@@ -244,62 +173,15 @@ async function embeddingSimilarityScore(
       `${entity.canonicalName}\n${entity.description}`.trim(),
       `${input.canonicalName}\n${input.description}`.trim(),
     ]);
-    return cosineSimilarity(left, right);
+    return cosineSimilarityFromRust(left, right);
   } catch {
     return 0;
   }
 }
 
-function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
+function cosineSimilarityFromRust(left: readonly number[], right: readonly number[]): number {
   const rustScore = cosineSimilarityRust(left, right);
-  if (rustScore !== null) return rustScore;
-  return cosineSimilarityWithTypeScript(left, right);
-}
-
-function cosineSimilarityWithTypeScript(left: readonly number[], right: readonly number[]): number {
-  const dimensions = Math.min(left.length, right.length);
-  if (dimensions === 0) return 0;
-  let dot = 0;
-  let normLeft = 0;
-  let normRight = 0;
-  for (let index = 0; index < dimensions; index++) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    normLeft += leftValue * leftValue;
-    normRight += rightValue * rightValue;
-  }
-  if (normLeft === 0 || normRight === 0) return 0;
-  return dot / (Math.sqrt(normLeft) * Math.sqrt(normRight));
-}
-
-function removeWeakNameTokens(tokens: readonly string[]): string[] {
-  return tokens.filter((token) => !/^(the|of|a|an)$/iu.test(token));
-}
-
-function clampScore(score: number): number {
-  if (!Number.isFinite(score)) return 0;
-  return Math.max(0, Math.min(1, score));
-}
-
-function jaccardTokenScore(left: string, right: string): number {
-  const leftTokens = new Set(tokenize(left));
-  const rightTokens = new Set(tokenize(right));
-  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
-  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  return intersection / union;
-}
-
-function tokenize(text: string): string[] {
-  return normalizeEntityName(text).split(' ').filter(Boolean);
-}
-
-function hasIntersection(left: Set<string>, right: Set<string>): boolean {
-  for (const value of left) {
-    if (right.has(value)) return true;
-  }
-  return false;
+  return rustScore ?? 0;
 }
 
 function createPendingMergeRecord(
@@ -308,8 +190,9 @@ function createPendingMergeRecord(
   candidateEntityId: string,
   mergeScore: number,
 ): PendingEntityMergeRecord {
+  const pendingMergeId = createPendingEntityMergeIdRust(existingEntityId, candidateEntityId);
   return {
-    id: `pending-entity-merge::${existingEntityId}::${candidateEntityId}`,
+    id: pendingMergeId ?? `pending-entity-merge::${existingEntityId}::${candidateEntityId}`,
     ontologySchemaId,
     existingEntityId,
     candidateEntityId,

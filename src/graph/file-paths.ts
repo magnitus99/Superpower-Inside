@@ -1,7 +1,9 @@
+import { planGraphRagMarkdownFilePathsRust } from '../rag/rust-core';
+
 export type GraphRagFilePathPredicate = (filePath: string) => boolean;
 
 export function isGraphRagMarkdownFilePath(filePath: string): boolean {
-  return filePath.toLowerCase().endsWith('.md');
+  return planGraphRagMarkdownFilePathsRust([filePath])?.length === 1;
 }
 
 export function isProcessableGraphRagFilePath(
@@ -12,7 +14,7 @@ export function isProcessableGraphRagFilePath(
 }
 
 export function filterGraphRagMarkdownFilePaths(filePaths: readonly string[]): string[] {
-  return filePaths.filter(isGraphRagMarkdownFilePath);
+  return planGraphRagMarkdownFilePathsRust(filePaths) ?? [];
 }
 
 export function filterProcessableGraphRagFilePaths(

@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
-import { EntityResolver, normalizeEntityName } from './entity-resolver';
+import { createEntityId, EntityResolver, normalizeEntityName } from './entity-resolver';
 import { InMemoryKnowledgeGraphStore, type GraphEntityRecord } from './store';
 
 describe('EntityResolver', () => {
   it('canonical name을 비교 가능한 형태로 정규화한다', () => {
     expect(normalizeEntityName('  Saul / Paul  ')).toBe('saul paul');
+  });
+
+  it('createEntityId에서 특수문자는 규칙대로 치환한다', () => {
+    expect(createEntityId('Def@ult', 'type/1', 'Paul & the apostle')).toBe(
+      'entity::def-ult::type-1::paul---the-apostle',
+    );
   });
 
   it('기존 entity alias와 exact match되면 자동 merge 대상으로 resolve한다', async () => {
@@ -72,6 +78,7 @@ describe('EntityResolver', () => {
       expect.objectContaining({
         existingEntityId: 'entity::default::person::paul-the-apostle',
         candidateEntityId: 'entity::default::person::paul-apostle',
+        id: 'pending-entity-merge::entity::default::person::paul-the-apostle::entity::default::person::paul-apostle',
       }),
     ]);
   });

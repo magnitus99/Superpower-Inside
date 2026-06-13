@@ -29,18 +29,18 @@ describe('GraphExtractionIndexer', () => {
           ],
           relations: [
             {
-              source: 'Paul',
+              source: 'Saul',
               target: 'Romans',
               relationTypeId: 'authored',
-              description: 'Paul authored Romans',
+              description: 'Saul authored Romans',
               confidence: 0.82,
             },
           ],
           claims: [
             {
-              text: 'Paul authored Romans.',
+              text: 'Saul authored Romans.',
               claimTypeId: 'factual_claim',
-              entityNames: ['Paul', 'Romans'],
+              entityNames: ['Saul', 'Romans'],
               stance: 'neutral',
               confidence: 0.8,
             },
@@ -51,7 +51,7 @@ describe('GraphExtractionIndexer', () => {
     });
 
     await indexer.extractChunk({
-      chunkText: 'Paul authored Romans.',
+      chunkText: 'Saul authored Romans.',
       filePath: 'Romans.md',
       entryId: 'Romans.md::1::0',
       startLine: 1,
@@ -65,25 +65,27 @@ describe('GraphExtractionIndexer', () => {
       expect.objectContaining({
         filePath: 'Romans.md',
         entryId: 'Romans.md::1::0',
-        quote: 'Paul authored Romans.',
+        quote: 'Saul authored Romans.',
       }),
     ]);
-    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual([
-      'Paul',
-      'Romans',
-    ]);
+    const entities = await store.getEntities();
+    expect(entities.map((entity) => entity.canonicalName)).toEqual(['Paul', 'Romans']);
     expect(await store.getRelations()).toEqual([
       expect.objectContaining({
         relationTypeId: 'authored',
-        description: 'Paul authored Romans',
+        sourceEntityId: entities[0]?.id,
+        targetEntityId: entities[1]?.id,
+        description: 'Saul authored Romans',
       }),
     ]);
-    expect(await store.getClaims()).toEqual([
+    const claims = await store.getClaims();
+    expect(claims).toEqual([
       expect.objectContaining({
-        text: 'Paul authored Romans.',
+        text: 'Saul authored Romans.',
         stance: 'neutral',
       }),
     ]);
+    expect(claims[0]?.entityIds).toEqual(entities.map((entity) => entity.id));
     expect(await store.getRejectedFacts()).toEqual([]);
   });
 
@@ -143,6 +145,34 @@ describe('GraphExtractionIndexer', () => {
       expect.objectContaining({ reason: 'invalid-json' }),
     ]);
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+  });
+
+  it('raw 후보가 있지만 유효 fact가 없으면 schema mismatch로 rejected fact를 저장한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [{ name: 'Missing type' }],
+          relations: [],
+          claims: [],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('Invalid entity shape.'));
+
+    expect(await store.getEntities()).toEqual([]);
+    expect(await store.getRejectedFacts()).toEqual([
+      expect.objectContaining({
+        reason: 'schema-shape-mismatch',
+        rawFact: {
+          entities: [{ name: 'Missing type' }],
+          relations: [],
+          claims: [],
+        },
+      }),
+    ]);
   });
 
   it('JSON 파싱 실패 chunk는 캐시하지 않아 같은 chunk를 다시 추출할 수 있다', async () => {
@@ -245,6 +275,38 @@ describe('GraphExtractionIndexer', () => {
     expect(await store.getRejectedFacts()).toEqual([
       expect.objectContaining({
         reason: 'unknown-entity-type',
+      }),
+    ]);
+  });
+
+  it('알 수 없는 claim type은 rejected fact로 저장하고 claim으로 저장하지 않는다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [{ name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.8 }],
+          relations: [],
+          claims: [
+            {
+              text: 'Paul made an unsupported classification.',
+              claimTypeId: 'unknown_claim',
+              entityNames: ['Paul'],
+              stance: 'neutral',
+              confidence: 0.8,
+            },
+          ],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('Paul made an unsupported classification.'));
+
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+    expect(await store.getClaims()).toEqual([]);
+    expect(await store.getRejectedFacts()).toEqual([
+      expect.objectContaining({
+        reason: 'unknown-claim-type',
       }),
     ]);
   });

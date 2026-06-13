@@ -1,5 +1,14 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider, ChatMessage } from '../llm/providers';
+import {
+  createGraphIdRust,
+  planGraphCommunitySummaryGroupsRust,
+  planGraphCommunitySummaryGroupsFallback,
+  type RustGraphCommunityAssignmentInput,
+  type RustGraphCommunitySummaryClaimInput,
+  type RustGraphCommunitySummaryGroupsPlan,
+  type RustGraphCommunitySummaryRelationInput,
+} from '../rag/rust-core';
 import type {
   GraphCommunityRecord,
   GraphEntityRecord,
@@ -7,6 +16,7 @@ import type {
   GraphClaimRecord,
   KnowledgeGraphStore,
 } from './store';
+import { selectByRustIndices } from '../utils/rust-index-plan';
 
 export interface CommunitySummarizerOptions {
   provider: LLMProvider;
@@ -41,6 +51,64 @@ function formatClaimSummary(claim: GraphClaimRecord, entityMap: Map<string, Grap
   return `[${claim.claimTypeId}] ${entityNames}: ${claim.text}`;
 }
 
+function requireCommunitySummaryGroups(
+  communityAssignment: ReadonlyMap<string, number>,
+  entities: readonly GraphEntityRecord[],
+  relations: readonly GraphRelationRecord[],
+  claims: readonly GraphClaimRecord[],
+  communityIds: readonly number[],
+): RustGraphCommunitySummaryGroupsPlan {
+  const plan = planGraphCommunitySummaryGroupsRust(
+    [...communityAssignment].map(
+      ([entityId, communityId]): RustGraphCommunityAssignmentInput => ({
+        entityId,
+        communityId,
+      }),
+    ),
+    entities.map((entity) => entity.id),
+    relations.map(
+      (relation): RustGraphCommunitySummaryRelationInput => ({
+        sourceEntityId: relation.sourceEntityId,
+        targetEntityId: relation.targetEntityId,
+      }),
+    ),
+    claims.map(
+      (claim): RustGraphCommunitySummaryClaimInput => ({
+        entityIds: claim.entityIds,
+      }),
+    ),
+    communityIds,
+  );
+  if (plan === null) {
+    return planGraphCommunitySummaryGroupsFallback(
+      [...communityAssignment].map(
+        ([entityId, communityId]): RustGraphCommunityAssignmentInput => ({
+          entityId,
+          communityId,
+        }),
+      ),
+      entities.map((entity) => entity.id),
+      relations.map(
+        (relation): RustGraphCommunitySummaryRelationInput => ({
+          sourceEntityId: relation.sourceEntityId,
+          targetEntityId: relation.targetEntityId,
+        }),
+      ),
+      claims.map(
+        (claim): RustGraphCommunitySummaryClaimInput => ({
+          entityIds: claim.entityIds,
+        }),
+      ),
+      communityIds,
+    );
+  }
+  return plan;
+}
+
+function selectByIndex<T>(items: readonly T[], indices: readonly number[]): T[] {
+  return selectByRustIndices(items, indices, { dedupe: true });
+}
+
 export class CommunitySummarizer {
   private provider: LLMProvider;
   private embeddingProvider: EmbeddingProvider;
@@ -65,49 +133,25 @@ export class CommunitySummarizer {
       this.store.getClaims(),
     ]);
 
-    const entityMap = new Map(allEntities.map((e) => [e.id, e]));
-    const groupedEntities = new Map<number, GraphEntityRecord[]>();
-    for (const [entityId, communityId] of communityAssignment) {
-      const entity = entityMap.get(entityId);
-      if (entity) {
-        const list = groupedEntities.get(communityId) ?? [];
-        list.push(entity);
-        groupedEntities.set(communityId, list);
-      }
-    }
-
-    const communityRelations = new Map<number, GraphRelationRecord[]>();
-    const communityClaims = new Map<number, GraphClaimRecord[]>();
-
-    for (const relation of allRelations) {
-      const sourceCommunity = communityAssignment.get(relation.sourceEntityId);
-      const targetCommunity = communityAssignment.get(relation.targetEntityId);
-      if (sourceCommunity === undefined || targetCommunity === undefined) continue;
-      if (sourceCommunity !== targetCommunity) continue;
-      const list = communityRelations.get(sourceCommunity) ?? [];
-      list.push(relation);
-      communityRelations.set(sourceCommunity, list);
-    }
-
-    for (const claim of allClaims) {
-      for (const entityId of claim.entityIds) {
-        const communityId = communityAssignment.get(entityId);
-        if (communityId !== undefined) {
-          const list = communityClaims.get(communityId) ?? [];
-          list.push(claim);
-          communityClaims.set(communityId, list);
-          break;
-        }
-      }
-    }
+    const groupingPlan = requireCommunitySummaryGroups(
+      communityAssignment,
+      allEntities,
+      allRelations,
+      allClaims,
+      communityIds,
+    );
 
     const communities: GraphCommunityRecord[] = [];
-    for (const communityId of communityIds) {
+    for (const [communityIndex, communityId] of communityIds.entries()) {
       if (signal?.aborted) break;
 
-      const entities = groupedEntities.get(communityId) ?? [];
-      const relations = communityRelations.get(communityId) ?? [];
-      const claims = communityClaims.get(communityId) ?? [];
+      const group = groupingPlan.groups[communityIndex];
+      if (group === undefined) {
+        continue;
+      }
+      const entities = selectByIndex(allEntities, group.entityIndices);
+      const relations = selectByIndex(allRelations, group.relationIndices);
+      const claims = selectByIndex(allClaims, group.claimIndices);
 
       if (entities.length === 0) continue;
 
@@ -127,9 +171,17 @@ export class CommunitySummarizer {
       const relationIds = relations.map((r) => r.id);
       const claimIds = claims.map((c) => c.id);
       const entityIds = entities.map((e) => e.id);
+      const communityRecordId = createGraphIdRust([
+        'community',
+        this.ontologySchemaId,
+        String(communityId),
+        entityNames.replaceAll(' ', '-').slice(0, 80),
+      ]);
 
       communities.push({
-        id: `community::${this.ontologySchemaId}::${communityId}::${entityNames.replaceAll(' ', '-').slice(0, 80)}`,
+        id:
+          communityRecordId ??
+          `community::${this.ontologySchemaId}::${communityId}::${entityNames.replaceAll(' ', '-').slice(0, 80)}`,
         ontologySchemaId: this.ontologySchemaId,
         title,
         entityIds,

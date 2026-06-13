@@ -2,14 +2,19 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import type { OntologySchema } from '../ontology/schema';
 import { createContentHash } from '../rag/hash';
+import {
+  planGraphRagRunFileSelectionRust,
+  planGraphRagUnsupportedPrunePathsRust,
+  type RustGraphRagRunFilePathInput,
+  type RustGraphRagRunFileSelectionMode,
+  type RustGraphRagRunFileSelectionPlan,
+} from '../rag/rust-core';
 import type { VectorEntry, VectorStore } from '../rag/store';
 import { buildEdges, detectCommunities } from './community-detector';
 import { CommunitySummarizer } from './community-summarizer';
 import { GraphExtractionIndexer } from './extraction';
 import type { EntityResolverOptions } from './entity-resolver';
 import {
-  filterGraphRagMarkdownFilePaths,
-  filterProcessableGraphRagFilePaths,
   isProcessableGraphRagFilePath,
   type GraphRagFilePathPredicate,
 } from './file-paths';
@@ -227,8 +232,9 @@ export class GraphRagIndexingRunner {
     this.running = true;
     const startedAt = Date.now();
     await this.pruneUnsupportedGraphFiles();
-    const candidateFilePaths = await this.getCandidateFilePaths(options);
-    const selectedFilePaths = candidateFilePaths.slice(0, this.maxFilesPerRun);
+    const fileSelection = await this.getFileSelection(options);
+    const candidateFilePaths = fileSelection.candidateFilePaths;
+    const selectedFilePaths = fileSelection.selectedFilePaths;
     const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length, runId);
     this.progress = {
       runId,
@@ -286,24 +292,52 @@ export class GraphRagIndexingRunner {
     return result;
   }
 
-  private async getCandidateFilePaths(options: GraphRagRunOptions): Promise<string[]> {
-    if (options.onlyFailedFiles === true) {
-      return filterGraphRagMarkdownFilePaths([...this.failedFilePaths]).sort();
+  private async getFileSelection(
+    options: GraphRagRunOptions,
+  ): Promise<RustGraphRagRunFileSelectionPlan> {
+    const mode = getGraphRagRunFileSelectionMode(options);
+    const recordFilePaths: RustGraphRagRunFilePathInput[] = [];
+    const indexedFilePaths: RustGraphRagRunFilePathInput[] = [];
+
+    if (mode === 'full') {
+      const records = await this.vectorStore.getFileIndexRecords();
+      if (records.length > 0) {
+        recordFilePaths.push(
+          ...records.map((record) => this.toGraphRagRunFilePathInput(record.filePath)),
+        );
+      } else {
+        indexedFilePaths.push(
+          ...(await this.vectorStore.getIndexedFilePaths()).map((filePath) =>
+            this.toGraphRagRunFilePathInput(filePath),
+          ),
+        );
+      }
     }
-    if (options.onlyStaleFiles === true && options.staleFilePaths) {
-      return filterGraphRagMarkdownFilePaths([...options.staleFilePaths]).sort();
-    }
-    const records = await this.vectorStore.getFileIndexRecords();
-    if (records.length > 0) {
-      return filterProcessableGraphRagFilePaths(
-        records.map((record) => record.filePath),
-        this.isProcessableFilePath,
-      ).sort();
-    }
-    return filterProcessableGraphRagFilePaths(
-      await this.vectorStore.getIndexedFilePaths(),
-      this.isProcessableFilePath,
-    ).sort();
+
+    return (
+      planGraphRagRunFileSelectionRust({
+        mode,
+        failedFilePaths: [...this.failedFilePaths],
+        staleFilePaths: options.staleFilePaths ?? [],
+        recordFilePaths,
+        indexedFilePaths,
+        maxFilesPerRun: this.maxFilesPerRun,
+      }) ?? { candidateFilePaths: [], selectedFilePaths: [] }
+    );
+  }
+
+  private toGraphRagRunFilePathInput(filePath: string): RustGraphRagRunFilePathInput {
+    return {
+      filePath,
+      processable: this.isProcessableFilePath?.(filePath) ?? true,
+    };
+  }
+
+  private toGraphRagUnsupportedFilePathInput(filePath: string): RustGraphRagRunFilePathInput {
+    return {
+      filePath,
+      processable: this.isProcessable(filePath),
+    };
   }
 
   private isProcessable(filePath: string): boolean {
@@ -409,15 +443,13 @@ export class GraphRagIndexingRunner {
       this.graphStore.getEvidence(),
       this.graphStore.getRejectedFacts(),
     ]);
-    const unsupportedFilePaths = new Set<string>();
-    for (const record of evidence) {
-      if (!this.isProcessable(record.filePath)) unsupportedFilePaths.add(record.filePath);
-    }
-    for (const record of rejectedFacts) {
-      if (!this.isProcessable(record.filePath)) unsupportedFilePaths.add(record.filePath);
-    }
-    if (unsupportedFilePaths.size === 0) return;
-    await this.graphStore.pruneByFilePaths([...unsupportedFilePaths]);
+    const unsupportedFilePaths =
+      planGraphRagUnsupportedPrunePathsRust(
+        evidence.map((record) => this.toGraphRagUnsupportedFilePathInput(record.filePath)),
+        rejectedFacts.map((record) => this.toGraphRagUnsupportedFilePathInput(record.filePath)),
+      ) ?? [];
+    if (unsupportedFilePaths.length === 0) return;
+    await this.graphStore.pruneByFilePaths(unsupportedFilePaths);
   }
 }
 
@@ -441,6 +473,14 @@ function createEmptyResult(
     finishedAt: startedAt,
     runId,
   };
+}
+
+function getGraphRagRunFileSelectionMode(
+  options: GraphRagRunOptions,
+): RustGraphRagRunFileSelectionMode {
+  if (options.onlyFailedFiles === true) return 'failed';
+  if (options.onlyStaleFiles === true) return 'stale';
+  return 'full';
 }
 
 function createChunkFailureRecord(

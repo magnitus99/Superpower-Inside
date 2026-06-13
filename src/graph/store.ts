@@ -1,10 +1,17 @@
 import Dexie from 'dexie';
 import {
   RUST_GRAPH_PRUNE_UNKNOWN_INDEX,
+  isGraphExtractionCacheHitRust,
+  planGraphCommunityReplacementDeleteIdsRust,
+  planGraphDeletionIndicesRust,
+  planGraphEntityMergeRust,
   planGraphPruneRust,
+  type RustGraphExtractionCacheKey,
+  type RustGraphEntityMergeInput,
   type RustGraphPruneInput,
   type RustGraphPrunePlan,
 } from '../rag/rust-core';
+import { selectByRustIndices } from '../utils/rust-index-plan';
 
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
@@ -182,12 +189,7 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = await this.db.graphExtractionCache.get(input.entryId);
-    return (
-      cached?.contentHash === input.contentHash &&
-      cached.extractionModelKey === input.extractionModelKey &&
-      cached.ontologySchemaId === input.ontologySchemaId &&
-      cached.ontologyVersion === input.ontologyVersion
-    );
+    return requireGraphExtractionCacheHit(cached, input);
   }
 
   async markExtractionCached(record: GraphExtractionCacheRecord): Promise<void> {
@@ -291,29 +293,38 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   async removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
-    const pathSet = new Set(filePaths);
     const evidence = await this.db.graphEvidence.toArray();
-    const toDelete = evidence.filter((e) => pathSet.has(e.filePath));
+    const toDelete = selectGraphRecordsForDeletion(
+      evidence,
+      evidence.map((record) => record.filePath),
+      filePaths,
+    );
     if (toDelete.length === 0) return 0;
-    await this.db.graphEvidence.bulkDelete(toDelete.map((e) => e.id));
+    await this.db.graphEvidence.bulkDelete(toDelete.map((record) => record.id));
     return toDelete.length;
   }
 
   async removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number> {
-    const idSet = new Set(entryIds);
     const cache = await this.db.graphExtractionCache.toArray();
-    const toDelete = cache.filter((c) => idSet.has(c.entryId));
+    const toDelete = selectGraphRecordsForDeletion(
+      cache,
+      cache.map((record) => record.entryId),
+      entryIds,
+    );
     if (toDelete.length === 0) return 0;
-    await this.db.graphExtractionCache.bulkDelete(toDelete.map((c) => c.entryId));
+    await this.db.graphExtractionCache.bulkDelete(toDelete.map((record) => record.entryId));
     return toDelete.length;
   }
 
   async removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number> {
-    const pathSet = new Set(filePaths);
     const facts = await this.db.graphRejectedFacts.toArray();
-    const toDelete = facts.filter((f) => pathSet.has(f.filePath));
+    const toDelete = selectGraphRecordsForDeletion(
+      facts,
+      facts.map((record) => record.filePath),
+      filePaths,
+    );
     if (toDelete.length === 0) return 0;
-    await this.db.graphRejectedFacts.bulkDelete(toDelete.map((f) => f.id));
+    await this.db.graphRejectedFacts.bulkDelete(toDelete.map((record) => record.id));
     return toDelete.length;
   }
 
@@ -395,12 +406,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
-    return Promise.resolve(
-      cached?.contentHash === input.contentHash &&
-        cached.extractionModelKey === input.extractionModelKey &&
-        cached.ontologySchemaId === input.ontologySchemaId &&
-        cached.ontologyVersion === input.ontologyVersion,
-    );
+    return Promise.resolve(requireGraphExtractionCacheHit(cached, input));
   }
 
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void> {
@@ -447,10 +453,17 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     ontologySchemaId: string,
     records: readonly GraphCommunityRecord[],
   ): Promise<void> {
-    for (const [id, community] of this.communities) {
-      if (community.ontologySchemaId === ontologySchemaId) {
-        this.communities.delete(id);
-      }
+    const deleteIds = planGraphCommunityReplacementDeleteIdsRust(
+      [...this.communities.values()].map((community) => ({
+        id: community.id,
+        ontologySchemaId: community.ontologySchemaId,
+      })),
+      ontologySchemaId,
+    );
+    if (deleteIds === null) return Promise.resolve();
+
+    for (const id of deleteIds) {
+      this.communities.delete(id);
     }
     for (const record of records) {
       this.communities.set(record.id, copyCommunity(record));
@@ -507,36 +520,36 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
-    const pathSet = new Set(filePaths);
-    let count = 0;
-    for (const [id, evidence] of this.evidence) {
-      if (pathSet.has(evidence.filePath)) {
-        this.evidence.delete(id);
-        count++;
-      }
-    }
-    return Promise.resolve(count);
+    const evidence = [...this.evidence.values()];
+    const toDelete = selectGraphRecordsForDeletion(
+      evidence,
+      evidence.map((record) => record.filePath),
+      filePaths,
+    );
+    for (const record of toDelete) this.evidence.delete(record.id);
+    return Promise.resolve(toDelete.length);
   }
 
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number> {
-    const idSet = new Set(entryIds);
-    let count = 0;
-    for (const id of idSet) {
-      if (this.extractionCache.delete(id)) count++;
-    }
-    return Promise.resolve(count);
+    const cache = [...this.extractionCache.values()];
+    const toDelete = selectGraphRecordsForDeletion(
+      cache,
+      cache.map((record) => record.entryId),
+      entryIds,
+    );
+    for (const record of toDelete) this.extractionCache.delete(record.entryId);
+    return Promise.resolve(toDelete.length);
   }
 
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number> {
-    const pathSet = new Set(filePaths);
-    let count = 0;
-    for (const [id, fact] of this.rejectedFacts) {
-      if (pathSet.has(fact.filePath)) {
-        this.rejectedFacts.delete(id);
-        count++;
-      }
-    }
-    return Promise.resolve(count);
+    const facts = [...this.rejectedFacts.values()];
+    const toDelete = selectGraphRecordsForDeletion(
+      facts,
+      facts.map((record) => record.filePath),
+      filePaths,
+    );
+    for (const record of toDelete) this.rejectedFacts.delete(record.id);
+    return Promise.resolve(toDelete.length);
   }
 
   pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult> {
@@ -663,13 +676,10 @@ function createPrunedGraphSnapshotFromRustPlan(
   plan: RustGraphPrunePlan,
 ): PrunedGraphSnapshot {
   const deletedEvidence = selectByIndex(snapshot.evidence, plan.deletedEvidenceIndices);
-  const removedEvidenceIds = new Set(deletedEvidence.map((record) => record.id));
   const deletedEntities = selectByIndex(snapshot.entities, plan.deletedEntityIndices);
   const deletedEntityIds = deletedEntities.map((record) => record.id);
-  const deletedEntityIdSet = new Set(deletedEntityIds);
   const deletedRelations = selectByIndex(snapshot.relations, plan.deletedRelationIndices);
   const deletedRelationIds = deletedRelations.map((record) => record.id);
-  const deletedRelationIdSet = new Set(deletedRelationIds);
   const deletedClaims = selectByIndex(snapshot.claims, plan.deletedClaimIndices);
   const deletedClaimIds = deletedClaims.map((record) => record.id);
   const deletedCommunities = selectByIndex(snapshot.communities, plan.deletedCommunityIndices);
@@ -686,23 +696,31 @@ function createPrunedGraphSnapshotFromRustPlan(
     plan.deletedPendingMergeIndices,
   );
   const updatedEntities = selectByIndex(snapshot.entities, plan.updatedEntityIndices).map(
-    (entity) => ({
+    (entity, index) => ({
       ...copyEntity(entity),
-      evidenceIds: withoutRemovedEvidence(entity.evidenceIds, removedEvidenceIds),
+      evidenceIds: selectByIndex(
+        entity.evidenceIds,
+        plan.updatedEntityEvidenceIndices[index] ?? [],
+      ),
     }),
   );
   const updatedRelations = selectByIndex(snapshot.relations, plan.updatedRelationIndices).map(
-    (relation) => ({
+    (relation, index) => ({
       ...copyRelation(relation),
-      evidenceIds: withoutRemovedEvidence(relation.evidenceIds, removedEvidenceIds),
+      evidenceIds: selectByIndex(
+        relation.evidenceIds,
+        plan.updatedRelationEvidenceIndices[index] ?? [],
+      ),
     }),
   );
-  const updatedClaims = selectByIndex(snapshot.claims, plan.updatedClaimIndices).map((claim) => ({
-    ...copyClaim(claim),
-    entityIds: claim.entityIds.filter((id) => !deletedEntityIdSet.has(id)),
-    relationIds: claim.relationIds.filter((id) => !deletedRelationIdSet.has(id)),
-    evidenceIds: withoutRemovedEvidence(claim.evidenceIds, removedEvidenceIds),
-  }));
+  const updatedClaims = selectByIndex(snapshot.claims, plan.updatedClaimIndices).map(
+    (claim, index) => ({
+      ...copyClaim(claim),
+      entityIds: selectByIndex(claim.entityIds, plan.updatedClaimEntityIndices[index] ?? []),
+      relationIds: selectByIndex(claim.relationIds, plan.updatedClaimRelationIndices[index] ?? []),
+      evidenceIds: selectByIndex(claim.evidenceIds, plan.updatedClaimEvidenceIndices[index] ?? []),
+    }),
+  );
 
   return {
     result: {
@@ -730,12 +748,7 @@ function createPrunedGraphSnapshotFromRustPlan(
 }
 
 function selectByIndex<T>(records: readonly T[], indices: readonly number[]): T[] {
-  const selected: T[] = [];
-  for (const index of indices) {
-    const record = records[index];
-    if (record !== undefined) selected.push(record);
-  }
-  return selected;
+  return selectByRustIndices(records, indices, { dedupe: true });
 }
 
 function createPrunedGraphSnapshot(
@@ -746,142 +759,33 @@ function createPrunedGraphSnapshot(
   if (rustPlan !== null) {
     return createPrunedGraphSnapshotFromRustPlan(snapshot, rustPlan);
   }
-  return createPrunedGraphSnapshotWithTypeScript(filePaths, snapshot);
+  return noRustPruneResult();
 }
 
-function createPrunedGraphSnapshotWithTypeScript(
-  filePaths: readonly string[],
-  snapshot: GraphStoreSnapshot,
-): PrunedGraphSnapshot {
-  const pathSet = new Set(filePaths);
-  const removedEvidence = snapshot.evidence.filter((record) => pathSet.has(record.filePath));
-  const removedEvidenceIds = new Set(removedEvidence.map((record) => record.id));
-  const removedEntryIds = new Set(removedEvidence.map((record) => record.entryId));
-  const affectedSchemaIds = new Set<string>();
-
-  const deletedEntityIds: string[] = [];
-  const updatedEntities: GraphEntityRecord[] = [];
-  for (const entity of snapshot.entities) {
-    const evidenceIds = withoutRemovedEvidence(entity.evidenceIds, removedEvidenceIds);
-    if (evidenceIds.length !== entity.evidenceIds.length) {
-      affectedSchemaIds.add(entity.ontologySchemaId);
-      if (evidenceIds.length === 0) {
-        deletedEntityIds.push(entity.id);
-      } else {
-        updatedEntities.push({ ...copyEntity(entity), evidenceIds });
-      }
-    }
-  }
-  const deletedEntityIdSet = new Set(deletedEntityIds);
-
-  const deletedRelationIds: string[] = [];
-  const updatedRelations: GraphRelationRecord[] = [];
-  for (const relation of snapshot.relations) {
-    const evidenceIds = withoutRemovedEvidence(relation.evidenceIds, removedEvidenceIds);
-    const hasDeletedEndpoint =
-      deletedEntityIdSet.has(relation.sourceEntityId) ||
-      deletedEntityIdSet.has(relation.targetEntityId);
-    if (evidenceIds.length !== relation.evidenceIds.length || hasDeletedEndpoint) {
-      affectedSchemaIds.add(relation.ontologySchemaId);
-      if (evidenceIds.length === 0 || hasDeletedEndpoint) {
-        deletedRelationIds.push(relation.id);
-      } else {
-        updatedRelations.push({ ...copyRelation(relation), evidenceIds });
-      }
-    }
-  }
-  const deletedRelationIdSet = new Set(deletedRelationIds);
-
-  const deletedClaimIds: string[] = [];
-  const updatedClaims: GraphClaimRecord[] = [];
-  for (const claim of snapshot.claims) {
-    const evidenceIds = withoutRemovedEvidence(claim.evidenceIds, removedEvidenceIds);
-    const entityIds = claim.entityIds.filter((id) => !deletedEntityIdSet.has(id));
-    const relationIds = claim.relationIds.filter((id) => !deletedRelationIdSet.has(id));
-    const changed =
-      evidenceIds.length !== claim.evidenceIds.length ||
-      entityIds.length !== claim.entityIds.length ||
-      relationIds.length !== claim.relationIds.length;
-    if (!changed) continue;
-    if (evidenceIds.length === 0) {
-      deletedClaimIds.push(claim.id);
-    } else {
-      updatedClaims.push({ ...copyClaim(claim), entityIds, relationIds, evidenceIds });
-    }
-  }
-  const deletedClaimIdSet = new Set(deletedClaimIds);
-
-  const deletedCommunityIds = snapshot.communities
-    .filter(
-      (community) =>
-        affectedSchemaIds.has(community.ontologySchemaId) ||
-        community.entityIds.some((id) => deletedEntityIdSet.has(id)) ||
-        community.relationIds.some((id) => deletedRelationIdSet.has(id)) ||
-        community.claimIds.some((id) => deletedClaimIdSet.has(id)),
-    )
-    .map((community) => community.id);
-
-  const deletedRejectedFactIds = snapshot.rejectedFacts
-    .filter((record) => pathSet.has(record.filePath))
-    .map((record) => {
-      removedEntryIds.add(record.entryId);
-      return record.id;
-    });
-
-  const deletedExtractionCacheEntryIds = snapshot.extractionCache
-    .filter((record) => shouldRemoveCacheRecord(record, pathSet, removedEntryIds))
-    .map((record) => record.entryId);
-
-  const deletedPendingMergeIds = snapshot.pendingEntityMerges
-    .filter(
-      (record) =>
-        deletedEntityIdSet.has(record.existingEntityId) ||
-        deletedEntityIdSet.has(record.candidateEntityId),
-    )
-    .map((record) => record.id);
-
+function noRustPruneResult(): PrunedGraphSnapshot {
   return {
     result: {
-      evidence: removedEvidence.length,
-      entities: deletedEntityIds.length,
-      relations: deletedRelationIds.length,
-      claims: deletedClaimIds.length,
-      communities: deletedCommunityIds.length,
-      extractionCache: deletedExtractionCacheEntryIds.length,
-      rejectedFacts: deletedRejectedFactIds.length,
-      pendingEntityMerges: deletedPendingMergeIds.length,
+      evidence: 0,
+      entities: 0,
+      relations: 0,
+      claims: 0,
+      communities: 0,
+      extractionCache: 0,
+      rejectedFacts: 0,
+      pendingEntityMerges: 0,
     },
-    deletedEvidenceIds: [...removedEvidenceIds],
-    deletedEntityIds,
-    updatedEntities,
-    deletedRelationIds,
-    updatedRelations,
-    deletedClaimIds,
-    updatedClaims,
-    deletedCommunityIds,
-    deletedRejectedFactIds,
-    deletedExtractionCacheEntryIds,
-    deletedPendingMergeIds,
+    deletedEvidenceIds: [],
+    deletedEntityIds: [],
+    updatedEntities: [],
+    deletedRelationIds: [],
+    updatedRelations: [],
+    deletedClaimIds: [],
+    updatedClaims: [],
+    deletedCommunityIds: [],
+    deletedRejectedFactIds: [],
+    deletedExtractionCacheEntryIds: [],
+    deletedPendingMergeIds: [],
   };
-}
-
-function withoutRemovedEvidence(
-  evidenceIds: readonly string[],
-  removedEvidenceIds: ReadonlySet<string>,
-): string[] {
-  return evidenceIds.filter((id) => !removedEvidenceIds.has(id));
-}
-
-function shouldRemoveCacheRecord(
-  record: GraphExtractionCacheRecord,
-  pathSet: ReadonlySet<string>,
-  removedEntryIds: ReadonlySet<string>,
-): boolean {
-  if (removedEntryIds.has(record.entryId)) return true;
-  for (const path of pathSet) {
-    if (record.entryId === path || record.entryId.startsWith(`${path}::`)) return true;
-  }
-  return false;
 }
 
 function emptyPruneResult(): GraphPruneResult {
@@ -897,14 +801,123 @@ function emptyPruneResult(): GraphPruneResult {
   };
 }
 
-function mergeEntity(existing: GraphEntityRecord, next: GraphEntityRecord): GraphEntityRecord {
+function selectGraphRecordsForDeletion<T>(
+  records: readonly T[],
+  recordKeys: readonly string[],
+  requestedKeys: readonly string[],
+): T[] {
+  const indices = planGraphDeletionIndicesRust(recordKeys, requestedKeys);
+  if (indices === null) {
+    const requested = new Set(requestedKeys);
+    const selected: T[] = [];
+    const maxIndex = Math.min(records.length, recordKeys.length);
+    for (let index = 0; index < maxIndex; index++) {
+      if (requested.has(recordKeys[index])) {
+        const record = records[index];
+        if (record !== undefined) {
+          selected.push(record);
+        }
+      }
+    }
+    return selected;
+  }
+  return selectByIndex(records, indices);
+}
+
+function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): GraphEntityRecord {
+  const plan = planGraphEntityMergeRust(
+    toRustGraphEntityMergeInput(existing),
+    toRustGraphEntityMergeInput(incoming),
+  );
+  if (plan === null) {
+    return {
+      ...existing,
+      aliases: mergeOrderedStrings(existing.aliases, incoming.aliases),
+      description:
+        incoming.description.length === 0 ? existing.description : incoming.description,
+      confidence: Math.max(existing.confidence, incoming.confidence),
+      evidenceIds: mergeOrderedStrings(existing.evidenceIds, incoming.evidenceIds),
+      updatedAt: incoming.updatedAt,
+    };
+  }
   return {
     ...existing,
-    aliases: [...new Set([...existing.aliases, ...next.aliases])],
-    description: next.description || existing.description,
-    confidence: Math.max(existing.confidence, next.confidence),
-    evidenceIds: [...new Set([...existing.evidenceIds, ...next.evidenceIds])],
-    updatedAt: next.updatedAt,
+    aliases: plan.aliases,
+    description: plan.description,
+    confidence: plan.confidence,
+    evidenceIds: plan.evidenceIds,
+    updatedAt: plan.updatedAt,
+  };
+}
+
+function toRustGraphEntityMergeInput(record: GraphEntityRecord): RustGraphEntityMergeInput {
+  return {
+    aliases: record.aliases,
+    description: record.description,
+    confidence: record.confidence,
+    evidenceIds: record.evidenceIds,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function requireGraphExtractionCacheHit(
+  cached: GraphExtractionCacheRecord | undefined,
+  input: Omit<GraphExtractionCacheRecord, 'updatedAt'>,
+): boolean {
+  const hit = isGraphExtractionCacheHitRust(
+    cached ? toRustGraphExtractionCacheKey(cached) : null,
+    toRustGraphExtractionCacheKey(input),
+  );
+  if (hit === null) {
+    return isGraphExtractionCacheHitFallback(cached ? toRustGraphExtractionCacheKey(cached) : null, input);
+  }
+  return hit;
+}
+
+function mergeOrderedStrings(left: readonly string[], right: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const value of left) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  for (const value of right) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  return merged;
+}
+
+function isGraphExtractionCacheHitFallback(
+  cachedRecord: RustGraphExtractionCacheKey | null,
+  input: Omit<GraphExtractionCacheRecord, 'updatedAt'>,
+): boolean {
+  if (cachedRecord === null) {
+    return false;
+  }
+  const inputKey = toRustGraphExtractionCacheKey(input);
+  return (
+    cachedRecord.entryId === inputKey.entryId &&
+    cachedRecord.contentHash === inputKey.contentHash &&
+    cachedRecord.extractionModelKey === inputKey.extractionModelKey &&
+    cachedRecord.ontologySchemaId === inputKey.ontologySchemaId &&
+    cachedRecord.ontologyVersion === inputKey.ontologyVersion
+  );
+}
+
+function toRustGraphExtractionCacheKey(
+  record: Omit<GraphExtractionCacheRecord, 'updatedAt'>,
+): RustGraphExtractionCacheKey {
+  return {
+    entryId: record.entryId,
+    contentHash: record.contentHash,
+    extractionModelKey: record.extractionModelKey,
+    ontologySchemaId: record.ontologySchemaId,
+    ontologyVersion: record.ontologyVersion,
   };
 }
 
