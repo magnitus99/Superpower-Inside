@@ -31,7 +31,9 @@ export interface PromptDirectionPreset {
 
 export const DEFAULT_OBSIDIAN_PROMPT_ID = 'default-obsidian-knowledge-work';
 
-export const DEFAULT_OBSIDIAN_SYSTEM_PROMPT = t('defaultObsidianSystemPrompt');
+export function getDefaultObsidianSystemPrompt(): string {
+  return t('defaultObsidianSystemPrompt');
+}
 
 export function getPromptDirectionPresets(): PromptDirectionPreset[] {
   return [
@@ -62,8 +64,6 @@ export function getPromptDirectionPresets(): PromptDirectionPreset[] {
     },
   ];
 }
-
-export const PROMPT_DIRECTION_PRESETS: PromptDirectionPreset[] = getPromptDirectionPresets();
 
 export function createDefaultPromptEntry(now = new Date().toISOString()): PromptLibraryEntry {
   return {
@@ -130,7 +130,7 @@ export function normalizePromptLibrary(
 
   const legacyPrompt = legacySystemPrompt?.trim();
   let legacyEntryId: string | null = null;
-  if (legacyPrompt && legacyPrompt !== DEFAULT_OBSIDIAN_SYSTEM_PROMPT) {
+  if (legacyPrompt && legacyPrompt !== getDefaultObsidianSystemPrompt()) {
     legacyEntryId = 'legacy-user-system-prompt';
     pushEntry({
       id: legacyEntryId,

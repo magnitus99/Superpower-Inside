@@ -1,4 +1,4 @@
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import type { RAGConfig } from '../settings';
 import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
 import {
@@ -21,16 +21,9 @@ import {
   type RustGraphRagStatusFileSnapshotRecordInput,
   type RustGraphRagStatusInput,
 } from '../rag/rust-core';
-import {
-  isProcessableGraphRagFilePath,
-  type GraphRagFilePathPredicate,
-} from './file-paths';
+import { isProcessableGraphRagFilePath, type GraphRagFilePathPredicate } from './file-paths';
 import { selectByRustIndices } from '../utils/rust-index-plan';
-import type {
-  GraphEvidenceRecord,
-  GraphExtractionCacheRecord,
-  KnowledgeGraphStore,
-} from './store';
+import type { GraphEvidenceRecord, GraphExtractionCacheRecord, KnowledgeGraphStore } from './store';
 
 export type GraphRagIndexState =
   | 'disabled'
@@ -42,10 +35,7 @@ export type GraphRagIndexState =
   | 'schema-error';
 
 export interface GraphRagStatusInput {
-  ragConfig: Pick<
-    RAGConfig,
-    'graphRagEnabled' | 'graphRagModel' | 'graphRagMaxFilesPerRun'
-  >;
+  ragConfig: Pick<RAGConfig, 'graphRagEnabled' | 'graphRagModel' | 'graphRagMaxFilesPerRun'>;
   graphStore: KnowledgeGraphStore;
   vectorStore: VectorStore;
   isRunning: boolean;
@@ -162,7 +152,7 @@ function createGraphRagStatusInput(
   totalCandidateFiles: number,
   snapshot: GraphRagStatusSnapshot = {},
 ): RustGraphRagStatusInput {
-  const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+  const ontologySchema = buildDefaultOntologySchema();
   return {
     graphRagEnabled: input.ragConfig.graphRagEnabled,
     isRunning: input.isRunning,

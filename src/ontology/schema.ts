@@ -83,110 +83,114 @@ export type OntologyRelationValidationResult =
 
 const ANY_ENTITY_TYPE = 'any';
 
-const baseEntityTypes: OntologyEntityType[] = [
-  entityType('person', 'Person', t('ontologyEntityPersonDesc'), ['Paul', 'Augustine']),
-  entityType('organization', 'Organization', t('ontologyEntityOrganizationDesc'), [
-    'University',
-    'Council',
-  ]),
-  entityType('place', 'Place', t('ontologyEntityPlaceDesc'), ['Jerusalem', 'Rome']),
-  entityType('work', 'Work', t('ontologyEntityWorkDesc'), ['Romans', 'A research paper']),
-  entityType('concept', 'Concept', t('ontologyEntityConceptDesc'), ['Grace', 'Covenant']),
-  entityType('event', 'Event', t('ontologyEntityEventDesc'), ['Council meeting']),
-  entityType('argument', 'Argument', t('ontologyEntityArgumentDesc'), ['A theological argument']),
-  entityType('evidence', 'Evidence', t('ontologyEntityEvidenceDesc'), ['A quoted passage']),
-];
+function buildBaseEntityTypes(): OntologyEntityType[] {
+  return [
+    entityType('person', 'Person', t('ontologyEntityPersonDesc'), ['Paul', 'Augustine']),
+    entityType('organization', 'Organization', t('ontologyEntityOrganizationDesc'), [
+      'University',
+      'Council',
+    ]),
+    entityType('place', 'Place', t('ontologyEntityPlaceDesc'), ['Jerusalem', 'Rome']),
+    entityType('work', 'Work', t('ontologyEntityWorkDesc'), ['Romans', 'A research paper']),
+    entityType('concept', 'Concept', t('ontologyEntityConceptDesc'), ['Grace', 'Covenant']),
+    entityType('event', 'Event', t('ontologyEntityEventDesc'), ['Council meeting']),
+    entityType('argument', 'Argument', t('ontologyEntityArgumentDesc'), ['A theological argument']),
+    entityType('evidence', 'Evidence', t('ontologyEntityEvidenceDesc'), ['A quoted passage']),
+  ];
+}
 
-export const DEFAULT_ONTOLOGY_SCHEMA: OntologySchema = {
-  id: 'default',
-  name: 'Default',
-  version: 1,
-  locale: 'mixed',
-  description: t('ontologyDefaultDescription'),
-  entityTypes: baseEntityTypes,
-  relationTypes: [
-    relationType('authored', 'Authored', ['person'], ['work'], t('ontologyRelationAuthoredDesc')),
-    relationType(
-      'mentions',
-      'Mentions',
-      [ANY_ENTITY_TYPE],
-      [ANY_ENTITY_TYPE],
-      t('ontologyRelationMentionsDesc'),
-    ),
-    relationType(
-      'supports',
-      'Supports',
-      ['evidence', 'argument'],
-      ['argument', 'concept'],
-      t('ontologyRelationSupportsDesc'),
-    ),
-    relationType(
-      'opposes',
-      'Opposes',
-      ['argument'],
-      ['argument', 'concept'],
-      t('ontologyRelationOpposesDesc'),
-    ),
-    relationType(
-      'collaborated_with',
-      'Collaborated With',
-      [ANY_ENTITY_TYPE],
-      [ANY_ENTITY_TYPE],
-      t('ontologyRelationCollaboratedDesc'),
-      { symmetric: true },
-    ),
-    relationType(
-      'causes',
-      'Causes',
-      ['event', 'concept'],
-      ['event', 'concept'],
-      t('ontologyRelationCausesDesc'),
-    ),
-    relationType(
-      'influences',
-      'Influences',
-      [ANY_ENTITY_TYPE],
-      [ANY_ENTITY_TYPE],
-      t('ontologyRelationInfluencesDesc'),
-    ),
-    relationType(
-      'part_of',
-      'Part Of',
-      [ANY_ENTITY_TYPE],
-      [ANY_ENTITY_TYPE],
-      t('ontologyRelationPartOfDesc'),
-    ),
-    relationType(
-      'located_in',
-      'Located In',
-      ['event', 'organization'],
-      ['place'],
-      t('ontologyRelationLocatedInDesc'),
-    ),
-    relationType(
-      'interprets',
-      'Interprets',
-      ['argument'],
-      ['work', 'concept'],
-      t('ontologyRelationInterpretsDesc'),
-    ),
-  ],
-  claimTypes: [
-    claimType('factual_claim', 'Factual Claim', t('ontologyClaimFactualDesc')),
-    claimType('interpretive_claim', 'Interpretive Claim', t('ontologyClaimInterpretiveDesc')),
-    claimType('evaluative_claim', 'Evaluative Claim', t('ontologyClaimEvaluativeDesc')),
-  ],
-  aliasRules: [{ id: 'case-fold-trim', description: t('ontologyAliasRuleDesc') }],
-  mergeRules: [
-    {
-      id: 'default-name-alias-merge',
-      description: t('ontologyMergeRuleDesc'),
-      autoMergeThreshold: 0.88,
-      pendingMergeThreshold: 0.72,
-    },
-  ],
-  extractionGuidelines: t('ontologyExtractionGuidelines'),
-};
+export function buildDefaultOntologySchema(): OntologySchema {
+  return {
+    id: 'default',
+    name: 'Default',
+    version: 1,
+    locale: 'mixed',
+    description: t('ontologyDefaultDescription'),
+    entityTypes: buildBaseEntityTypes(),
+    relationTypes: [
+      relationType('authored', 'Authored', ['person'], ['work'], t('ontologyRelationAuthoredDesc')),
+      relationType(
+        'mentions',
+        'Mentions',
+        [ANY_ENTITY_TYPE],
+        [ANY_ENTITY_TYPE],
+        t('ontologyRelationMentionsDesc'),
+      ),
+      relationType(
+        'supports',
+        'Supports',
+        ['evidence', 'argument'],
+        ['argument', 'concept'],
+        t('ontologyRelationSupportsDesc'),
+      ),
+      relationType(
+        'opposes',
+        'Opposes',
+        ['argument'],
+        ['argument', 'concept'],
+        t('ontologyRelationOpposesDesc'),
+      ),
+      relationType(
+        'collaborated_with',
+        'Collaborated With',
+        [ANY_ENTITY_TYPE],
+        [ANY_ENTITY_TYPE],
+        t('ontologyRelationCollaboratedDesc'),
+        { symmetric: true },
+      ),
+      relationType(
+        'causes',
+        'Causes',
+        ['event', 'concept'],
+        ['event', 'concept'],
+        t('ontologyRelationCausesDesc'),
+      ),
+      relationType(
+        'influences',
+        'Influences',
+        [ANY_ENTITY_TYPE],
+        [ANY_ENTITY_TYPE],
+        t('ontologyRelationInfluencesDesc'),
+      ),
+      relationType(
+        'part_of',
+        'Part Of',
+        [ANY_ENTITY_TYPE],
+        [ANY_ENTITY_TYPE],
+        t('ontologyRelationPartOfDesc'),
+      ),
+      relationType(
+        'located_in',
+        'Located In',
+        ['event', 'organization'],
+        ['place'],
+        t('ontologyRelationLocatedInDesc'),
+      ),
+      relationType(
+        'interprets',
+        'Interprets',
+        ['argument'],
+        ['work', 'concept'],
+        t('ontologyRelationInterpretsDesc'),
+      ),
+    ],
+    claimTypes: [
+      claimType('factual_claim', 'Factual Claim', t('ontologyClaimFactualDesc')),
+      claimType('interpretive_claim', 'Interpretive Claim', t('ontologyClaimInterpretiveDesc')),
+      claimType('evaluative_claim', 'Evaluative Claim', t('ontologyClaimEvaluativeDesc')),
+    ],
+    aliasRules: [{ id: 'case-fold-trim', description: t('ontologyAliasRuleDesc') }],
+    mergeRules: [
+      {
+        id: 'default-name-alias-merge',
+        description: t('ontologyMergeRuleDesc'),
+        autoMergeThreshold: 0.88,
+        pendingMergeThreshold: 0.72,
+      },
+    ],
+    extractionGuidelines: t('ontologyExtractionGuidelines'),
+  };
+}
 
 export function validateOntologySchema(schema: OntologySchema): string[] {
   const plan = validateOntologySchemaRust(schema);

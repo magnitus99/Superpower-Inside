@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { createEntityId, EntityResolver, normalizeEntityName } from './entity-resolver';
 import { InMemoryKnowledgeGraphStore, type GraphEntityRecord } from './store';
 
@@ -24,7 +24,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'person',
       canonicalName: 'Saul',
       aliases: [],
@@ -45,7 +45,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'place',
       canonicalName: 'Jordan',
       aliases: [],
@@ -65,7 +65,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'person',
       canonicalName: 'Paul Apostle',
       aliases: [],
@@ -85,18 +85,20 @@ describe('EntityResolver', () => {
 
   it('alias 부분 일치와 설명 토큰으로 중복 가능성이 높은 entity를 pending merge로 남긴다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
-    await store.upsertEntity(createEntity({
-      canonicalName: 'Paul',
-      aliases: ['Saul'],
-      description: 'Apostle missionary',
-    }));
+    await store.upsertEntity(
+      createEntity({
+        canonicalName: 'Paul',
+        aliases: ['Saul'],
+        description: 'Apostle missionary',
+      }),
+    );
     const resolver = new EntityResolver(store, {
       autoMergeThreshold: 0.88,
       pendingMergeThreshold: 0.5,
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'person',
       canonicalName: 'Saul of Tarsus',
       aliases: [],
@@ -109,17 +111,19 @@ describe('EntityResolver', () => {
 
   it('공통 evidence가 있으면 이름 순서가 다른 entity를 더 강한 병합 후보로 본다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
-    await store.upsertEntity(createEntity({
-      canonicalName: 'Paul the Apostle',
-      evidenceIds: ['evidence::acts'],
-    }));
+    await store.upsertEntity(
+      createEntity({
+        canonicalName: 'Paul the Apostle',
+        evidenceIds: ['evidence::acts'],
+      }),
+    );
     const resolver = new EntityResolver(store, {
       autoMergeThreshold: 0.88,
       pendingMergeThreshold: 0.72,
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'person',
       canonicalName: 'Apostle Paul',
       aliases: [],
@@ -133,11 +137,13 @@ describe('EntityResolver', () => {
 
   it('선택적 임베딩 유사도가 높으면 의미상 가까운 entity를 pending merge로 남긴다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
-    await store.upsertEntity(createEntity({
-      canonicalName: 'Grace',
-      typeId: 'concept',
-      description: 'divine favor and mercy',
-    }));
+    await store.upsertEntity(
+      createEntity({
+        canonicalName: 'Grace',
+        typeId: 'concept',
+        description: 'divine favor and mercy',
+      }),
+    );
     const resolver = new EntityResolver(store, {
       autoMergeThreshold: 0.92,
       pendingMergeThreshold: 0.72,
@@ -145,7 +151,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
       typeId: 'concept',
       canonicalName: 'Divine Mercy',
       aliases: [],
@@ -183,8 +189,11 @@ function createEntity(input: {
 
 function createEmbeddingProvider(): EmbeddingProvider {
   return {
-    embed: (text: string) => Promise.resolve(text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1]),
+    embed: (text: string) =>
+      Promise.resolve(text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1]),
     embedBatch: (texts: string[]) =>
-      Promise.resolve(texts.map((text) => (text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1]))),
+      Promise.resolve(
+        texts.map((text) => (text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1])),
+      ),
   };
 }

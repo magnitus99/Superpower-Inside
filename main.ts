@@ -51,7 +51,7 @@ import {
 import { GraphRagQueryEngine, LLMGraphQueryPlanner } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
-import { DEFAULT_ONTOLOGY_SCHEMA, validateOntologySchema } from './src/ontology/schema';
+import { buildDefaultOntologySchema, validateOntologySchema } from './src/ontology/schema';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
   RAGIndexingScheduler,
@@ -1195,7 +1195,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         }
       : undefined;
 
-    const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+    const ontologySchema = buildDefaultOntologySchema();
     const graphProvider =
       rag.graphRagEnabled && rag.graphRagModel.trim()
         ? this.createProviderForModel(rag.graphRagModel)
@@ -1527,7 +1527,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.graphRagStatus = null;
       return;
     }
-    const ontologySchema = DEFAULT_ONTOLOGY_SCHEMA;
+    const ontologySchema = buildDefaultOntologySchema();
     const schemaErrors = validateOntologySchema(ontologySchema);
     const previousStatus = this.graphRagStatus;
     const nextStatus = await calculateGraphRagStatus({

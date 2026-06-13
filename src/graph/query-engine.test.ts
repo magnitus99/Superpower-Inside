@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import {
   GraphRagCandidateProvider,
@@ -19,7 +19,7 @@ import {
 describe('GraphRagQueryEngine', () => {
   it('factual 질문은 local graph traversal로 관련 evidence 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas는 어떤 관계야?',
@@ -27,16 +27,14 @@ describe('GraphRagQueryEngine', () => {
       candidateLimit: 5,
     });
 
-    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual([
-      'Acts.md',
-    ]);
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(['Acts.md']);
     expect(candidates[0]?.source).toBe('graph-local');
     expect(candidates[0]?.reason).toBe('local-entity-neighborhood');
   });
 
   it('근거를 묻는 질문은 evidence-first 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas 관계 근거가 어디에 있어?',
@@ -79,7 +77,7 @@ describe('GraphRagQueryEngine', () => {
       createVectorEntry('low.md::0', 'low.md'),
       createVectorEntry('high.md::0', 'high.md'),
     ]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: '근거를 보여줘',
@@ -109,7 +107,7 @@ describe('GraphRagQueryEngine', () => {
       level: 0,
       updatedAt: 1,
     });
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: '반복되는 핵심 주제는?',
@@ -123,7 +121,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 local이면 thematic 질문도 evidence 후보만 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryMode: 'local',
     });
 
@@ -139,7 +137,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 global이면 relational 질문도 community summary 후보만 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryMode: 'global',
     });
 
@@ -155,7 +153,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 hybrid이면 local evidence와 global summary를 함께 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryMode: 'hybrid',
     });
 
@@ -196,7 +194,7 @@ describe('GraphRagQueryEngine', () => {
       level: 0,
       updatedAt: 1,
     });
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryMode: 'hybrid',
     });
 
@@ -218,7 +216,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('auto mode의 comparative 질문은 local evidence와 global summary를 함께 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas의 차이를 비교해줘',
@@ -233,7 +231,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('한국어 alias와 planner entity hint로 local evidence 후보를 찾는다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryPlanner: {
         plan: () =>
           Promise.resolve({
@@ -272,7 +270,7 @@ describe('GraphRagQueryEngine', () => {
     });
     await graphStore.upsertEntity(createEntity('A', [], ['evidence::short']));
     await vectorStore.add([createVectorEntry('short.md::0', 'short.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: 'Apostle에 대해 알려줘',
@@ -313,7 +311,7 @@ describe('GraphRagQueryEngine', () => {
       updatedAt: 1,
     });
     await vectorStore.add([createVectorEntry('Mark.md::0', 'Mark.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA, {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
       queryPlanner: {
         plan: () =>
           Promise.resolve({
@@ -335,8 +333,12 @@ describe('GraphRagQueryEngine', () => {
     expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
       expect.arrayContaining(['Acts.md', 'Mark.md']),
     );
-    expect(candidates.find((candidate) => candidate.entry.metadata.filePath === 'Acts.md')?.sourceScore)
-      .toBeGreaterThan(candidates.find((candidate) => candidate.entry.metadata.filePath === 'Mark.md')?.sourceScore ?? 0);
+    expect(
+      candidates.find((candidate) => candidate.entry.metadata.filePath === 'Acts.md')?.sourceScore,
+    ).toBeGreaterThan(
+      candidates.find((candidate) => candidate.entry.metadata.filePath === 'Mark.md')
+        ?.sourceScore ?? 0,
+    );
   });
 });
 
@@ -344,7 +346,7 @@ describe('GraphRagCandidateProvider', () => {
   it('retrieval pipeline candidate provider로 graph 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     const provider = new GraphRagCandidateProvider(
-      new GraphRagQueryEngine(graphStore, vectorStore, DEFAULT_ONTOLOGY_SCHEMA),
+      new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema()),
     );
 
     const candidates = await provider.getCandidates({
@@ -366,7 +368,7 @@ describe('LLMGraphQueryPlanner', () => {
       ),
     );
 
-    await expect(planner.plan('평범한 질문', DEFAULT_ONTOLOGY_SCHEMA)).resolves.toEqual({
+    await expect(planner.plan('평범한 질문', buildDefaultOntologySchema())).resolves.toEqual({
       type: 'relational',
       queryMode: 'hybrid',
       traversalDepth: 2,
@@ -377,7 +379,7 @@ describe('LLMGraphQueryPlanner', () => {
     const fallbackPlanner = new LLMGraphQueryPlanner(createPlannerProvider('not-json'));
 
     await expect(
-      fallbackPlanner.plan('근거가 어디에 있어?', DEFAULT_ONTOLOGY_SCHEMA),
+      fallbackPlanner.plan('근거가 어디에 있어?', buildDefaultOntologySchema()),
     ).resolves.toEqual(
       expect.objectContaining({
         type: 'source-seeking',

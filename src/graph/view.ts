@@ -9,7 +9,7 @@ import type {
   GraphEvidenceRecord,
   GraphRejectedFactRecord,
 } from './store';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
 
 export const GRAPH_RAG_VIEW_TYPE = 'superpower-inside-graph-rag';
@@ -162,7 +162,7 @@ export class GraphRagView extends ItemView {
     });
     filterBar.createSpan({
       cls: 'superpower-inside-graph-view-schema-version',
-      text: `Ontology v${DEFAULT_ONTOLOGY_SCHEMA.version}`,
+      text: `Ontology v${buildDefaultOntologySchema().version}`,
     });
 
     this.tabBarEl = container.createDiv({ cls: 'superpower-inside-graph-view-tabs' });
@@ -230,7 +230,7 @@ export class GraphRagView extends ItemView {
       return;
     }
 
-    const schema = DEFAULT_ONTOLOGY_SCHEMA;
+    const schema = buildDefaultOntologySchema();
     this.entityTypeInfoMap.clear();
     for (const et of schema.entityTypes) {
       this.entityTypeInfoMap.set(et.id, { id: et.id, label: et.label });
@@ -878,7 +878,7 @@ export class GraphRagView extends ItemView {
         this.graphDataDebounceTimer = null;
         await this.loadData();
         this.detailEntity = detailEntityId
-          ? this.allEntities.find((entity) => entity.id === detailEntityId) ?? null
+          ? (this.allEntities.find((entity) => entity.id === detailEntityId) ?? null)
           : this.detailEntity;
         this.renderTabs();
         this.renderContent();

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -58,9 +58,9 @@ describe('GraphExtractionIndexer Rust relation endpoint guard', () => {
     await indexer.extractChunk(createInput('Saul authored Romans.'));
 
     expect(await store.getRelations()).toEqual([]);
-    expect(await store.getRejectedFacts().then((facts) => facts.map((fact) => fact.reason))).toContain(
-      'unknown-relation-entity',
-    );
+    expect(
+      await store.getRejectedFacts().then((facts) => facts.map((fact) => fact.reason)),
+    ).toContain('unknown-relation-entity');
   });
 
   it('plan이 null일 때는 기존 relation 매칭 경로를 따른다', async () => {
@@ -122,7 +122,7 @@ function createInput(
     endLine: 1,
     contentHash: 'hash-1',
     extractionModelKey: 'openai:gpt-4o-mini',
-    ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+    ontologySchema: buildDefaultOntologySchema(),
   };
 }
 

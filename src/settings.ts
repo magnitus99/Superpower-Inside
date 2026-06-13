@@ -140,51 +140,53 @@ export interface EmbeddingModelInfo {
   dimensions: number;
   description: string;
 }
-export const EMBEDDING_MODELS: Record<BuiltInEmbeddingProviderKey, EmbeddingModelInfo[]> = {
-  openai: [
-    {
-      id: 'text-embedding-3-small',
-      name: 'text-embedding-3-small',
-      dimensions: 1536,
-      description: t('settingsAuto001'),
-    },
-    {
-      id: 'text-embedding-3-large',
-      name: 'text-embedding-3-large',
-      dimensions: 3072,
-      description: t('settingsAuto002'),
-    },
-  ],
-  openRouter: [
-    {
-      id: 'openai/text-embedding-3-small',
-      name: 'OpenAI text-embedding-3-small (via OpenRouter)',
-      dimensions: 1536,
-      description: t('settingsAuto003'),
-    },
-    {
-      id: 'baai/bge-m3',
-      name: 'BAAI bge-m3',
-      dimensions: 1024,
-      description: t('settingsAuto004'),
-    },
-    {
-      id: 'qwen/qwen3-embedding-8b',
-      name: 'Qwen3 Embedding 8B',
-      dimensions: 1024,
-      description: t('settingsAuto005'),
-    },
-  ],
-  ollama: [
-    {
-      id: 'nomic-embed-text',
-      name: 'nomic-embed-text',
-      dimensions: 768,
-      description: t('settingsAuto006'),
-    },
-  ],
-  other: [],
-};
+export function buildEmbeddingModels(): Record<BuiltInEmbeddingProviderKey, EmbeddingModelInfo[]> {
+  return {
+    openai: [
+      {
+        id: 'text-embedding-3-small',
+        name: 'text-embedding-3-small',
+        dimensions: 1536,
+        description: t('settingsAuto001'),
+      },
+      {
+        id: 'text-embedding-3-large',
+        name: 'text-embedding-3-large',
+        dimensions: 3072,
+        description: t('settingsAuto002'),
+      },
+    ],
+    openRouter: [
+      {
+        id: 'openai/text-embedding-3-small',
+        name: 'OpenAI text-embedding-3-small (via OpenRouter)',
+        dimensions: 1536,
+        description: t('settingsAuto003'),
+      },
+      {
+        id: 'baai/bge-m3',
+        name: 'BAAI bge-m3',
+        dimensions: 1024,
+        description: t('settingsAuto004'),
+      },
+      {
+        id: 'qwen/qwen3-embedding-8b',
+        name: 'Qwen3 Embedding 8B',
+        dimensions: 1024,
+        description: t('settingsAuto005'),
+      },
+    ],
+    ollama: [
+      {
+        id: 'nomic-embed-text',
+        name: 'nomic-embed-text',
+        dimensions: 768,
+        description: t('settingsAuto006'),
+      },
+    ],
+    other: [],
+  };
+}
 export const EMBEDDING_PROVIDER_LABELS: Record<BuiltInEmbeddingProviderKey, string> = {
   openai: 'OpenAI',
   ollama: 'Ollama (Local)',
@@ -422,17 +424,19 @@ export interface PluginLike {
 }
 // 탭 타입 및 설정
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
-const TABS: {
+export function buildSettingsTabs(): {
   id: SettingsTabId;
   label: string;
-}[] = [
-  { id: 'general', label: t('tabGeneral') },
-  { id: 'providers', label: t('tabProviders') },
-  { id: 'rag', label: t('tabRag') },
-  { id: 'chat', label: t('tabChat') },
-  { id: 'mcp', label: t('tabMcp') },
-  { id: 'advanced', label: t('tabAdvanced') },
-];
+}[] {
+  return [
+    { id: 'general', label: t('tabGeneral') },
+    { id: 'providers', label: t('tabProviders') },
+    { id: 'rag', label: t('tabRag') },
+    { id: 'chat', label: t('tabChat') },
+    { id: 'mcp', label: t('tabMcp') },
+    { id: 'advanced', label: t('tabAdvanced') },
+  ];
+}
 interface ProviderValidationCache {
   [key: string]: {
     valid: boolean;
@@ -607,7 +611,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     warning.setText(t('securityWarning'));
     // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'superpower-inside-settings-tabs' });
-    TABS.forEach((tab) => {
+    const tabs = buildSettingsTabs();
+    tabs.forEach((tab) => {
       const button = tabBar.createEl('button', {
         text: tab.label,
         cls: 'superpower-inside-settings-tab',
@@ -619,7 +624,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const tabContentContainer = containerEl.createDiv({
       cls: 'superpower-inside-settings-tab-panels',
     });
-    TABS.forEach((tab) => {
+    tabs.forEach((tab) => {
       const panel = tabContentContainer.createDiv({
         cls: 'superpower-inside-settings-tab-content',
       });
@@ -1930,7 +1935,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const builtInProvider = isCustomOpenAIEmbeddingProviderKey(effectiveProvider)
       ? null
       : effectiveProvider;
-    const modelsForProvider = builtInProvider ? EMBEDDING_MODELS[builtInProvider] : [];
+    const embeddingModels = buildEmbeddingModels();
+    const modelsForProvider = builtInProvider ? embeddingModels[builtInProvider] : [];
     const isOther = effectiveProvider === 'other';
     const providerModels = isOther ? [] : this.getEmbeddingProviderModels(effectiveProvider);
     const modelOptions = isOther
@@ -1966,7 +1972,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               ? null
               : nextProvider;
             const nextModels = buildEmbeddingModelOptions(
-              nextBuiltInProvider ? EMBEDDING_MODELS[nextBuiltInProvider] : [],
+              nextBuiltInProvider ? embeddingModels[nextBuiltInProvider] : [],
               this.getEmbeddingProviderModels(nextProvider),
               '',
             );

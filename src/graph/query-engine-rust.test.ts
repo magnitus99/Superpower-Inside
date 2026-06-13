@@ -12,7 +12,7 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
   };
 });
 
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore } from '../rag/store';
 import { GraphRagQueryEngine } from './query-engine';
 import {
@@ -45,7 +45,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      DEFAULT_ONTOLOGY_SCHEMA,
+      buildDefaultOntologySchema(),
       { queryMode: 'global' },
     );
 
@@ -71,23 +71,18 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     planGraphQueryExecutionRustMock.mockReturnValueOnce(null);
 
-    const engine = new GraphRagQueryEngine(
-      graphStore,
-      vectorStore,
-      DEFAULT_ONTOLOGY_SCHEMA,
-      {
-        queryPlanner: {
-          plan: () =>
-            Promise.resolve({
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+      queryPlanner: {
+        plan: () =>
+          Promise.resolve({
             type: 'factual',
             queryMode: 'local',
             traversalDepth: 1,
             evidenceFirst: false,
             entityHints: ['Paul', 'Barnabas'],
-            }),
-        },
+          }),
       },
-    );
+    });
 
     const candidates = await engine.query({
       question: '임의의 질문',
@@ -110,7 +105,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      DEFAULT_ONTOLOGY_SCHEMA,
+      buildDefaultOntologySchema(),
       { queryMode: 'global' },
     );
 
@@ -120,7 +115,14 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
       candidateLimit: 2,
     });
 
-    expect(rankTopKPairsRustMock).toHaveBeenCalledWith([1, 0], [[1, 0], [0, 1]], 2);
+    expect(rankTopKPairsRustMock).toHaveBeenCalledWith(
+      [1, 0],
+      [
+        [1, 0],
+        [0, 1],
+      ],
+      2,
+    );
     expect(candidates.map((candidate) => candidate.entry.id)).toEqual([
       'community::second',
       'community::first',
@@ -140,7 +142,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      DEFAULT_ONTOLOGY_SCHEMA,
+      buildDefaultOntologySchema(),
       { queryMode: 'global' },
     );
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -58,7 +58,7 @@ describe('GraphExtractionIndexer', () => {
       endLine: 1,
       contentHash: 'hash-1',
       extractionModelKey: 'openai:gpt-4o-mini',
-      ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+      ontologySchema: buildDefaultOntologySchema(),
     });
 
     expect(await store.getEvidence()).toEqual([
@@ -438,7 +438,7 @@ function createInput(
     endLine: 1,
     contentHash: 'hash-1',
     extractionModelKey: 'openai:gpt-4o-mini',
-    ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+    ontologySchema: buildDefaultOntologySchema(),
   };
 }
 

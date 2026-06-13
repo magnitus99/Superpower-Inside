@@ -2,7 +2,7 @@ import type { DataAdapter, TFile } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphRagQueryEngine } from '../graph/query-engine';
 import {
   InMemoryKnowledgeGraphStore,
@@ -225,7 +225,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,
@@ -251,7 +251,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3);
 
     const graphEnabledEngine = new RAGQueryEngine(
@@ -284,7 +284,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,
@@ -310,7 +310,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, DEFAULT_ONTOLOGY_SCHEMA);
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,

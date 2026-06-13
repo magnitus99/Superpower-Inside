@@ -7,7 +7,7 @@ import type {
   ToolDefinition,
 } from '../llm/providers';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import type { GraphRagIndexingProgress } from './indexing-runner';
 import { GraphRagIndexingRunner } from './indexing-runner';
@@ -34,7 +34,7 @@ function makeRunnerOptions(overrides: {
     graphStore: overrides.graphStore,
     provider: overrides.provider,
     embeddingProvider: new FakeEmbeddingProvider(),
-    ontologySchema: DEFAULT_ONTOLOGY_SCHEMA,
+    ontologySchema: buildDefaultOntologySchema(),
     extractionModelKey: 'openai:gpt-4.1-mini',
     maxFilesPerRun: overrides.maxFilesPerRun ?? 10,
   };
@@ -58,12 +58,14 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-      maxFilesPerRun: 2,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+        maxFilesPerRun: 2,
+      }),
+    );
 
     const result = await runner.run();
 
@@ -82,11 +84,13 @@ describe('GraphRagIndexingRunner', () => {
     ]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run();
 
@@ -139,11 +143,13 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     await runner.run();
 
@@ -152,20 +158,19 @@ describe('GraphRagIndexingRunner', () => {
 
   it('chunk 실패는 rejected fact로 기록하고 다음 파일을 계속 처리한다', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([
-      createEntry('bad.md', 'hash-bad'),
-      createEntry('ok.md', 'hash-ok'),
-    ]);
+    await vectorStore.add([createEntry('bad.md', 'hash-bad'), createEntry('ok.md', 'hash-ok')]);
     const provider = new FakeProvider([
       throwResponse(),
       textResponse(graphPayload()),
       textResponse(graphPayload()),
     ]);
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore: new InMemoryKnowledgeGraphStore(),
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+      }),
+    );
 
     await runner.run();
     const resumed = await runner.resumeFailed();
@@ -178,18 +183,17 @@ describe('GraphRagIndexingRunner', () => {
 
   it('AbortSignal이 중단되면 partial 결과를 반환한다', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([
-      createEntry('a.md', 'hash-a'),
-      createEntry('b.md', 'hash-b'),
-    ]);
+    await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
     const controller = new AbortController();
     const provider = new FakeProvider();
     provider.onCall = () => controller.abort();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore: new InMemoryKnowledgeGraphStore(),
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+      }),
+    );
 
     const result = await runner.run({ signal: controller.signal });
 
@@ -203,11 +207,13 @@ describe('GraphRagIndexingRunner', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a')]);
     const controller = new AbortController();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore: new InMemoryKnowledgeGraphStore(),
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+      }),
+    );
 
     await runner.run({ signal: controller.signal });
 
@@ -219,12 +225,14 @@ describe('GraphRagIndexingRunner', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
     const provider = new FakeProvider();
     const graphStore = new InMemoryKnowledgeGraphStore();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-      maxFilesPerRun: 1,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+        maxFilesPerRun: 1,
+      }),
+    );
 
     const result = await runner.run();
     const progressBefore = runner.getProgress();
@@ -265,10 +273,7 @@ describe('GraphRagIndexingRunner', () => {
 
   it('각 GraphRAG 실행은 고유 runId를 부여한다', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([
-      createEntry('a.md', 'hash-a'),
-      createEntry('b.md', 'hash-b'),
-    ]);
+    await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const seenRunIds: number[] = [];
     const provider = new FakeProvider();
@@ -290,10 +295,7 @@ describe('GraphRagIndexingRunner', () => {
 
   it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([
-      createEntry('a.md', 'hash-a'),
-      createEntry('b.md', 'hash-b'),
-    ]);
+    await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addCommunity({
       id: 'community::default::old',
@@ -310,11 +312,13 @@ describe('GraphRagIndexingRunner', () => {
     const controller = new AbortController();
     const provider = new FakeProvider();
     provider.onCall = () => controller.abort();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({ signal: controller.signal });
 
@@ -361,14 +365,14 @@ describe('GraphRagIndexingRunner', () => {
       ontologyVersion: 1,
       updatedAt: 1000,
     });
-    const provider = new FakeProvider([
-      textResponse(graphPayload('Fresh Paul')),
-    ]);
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const provider = new FakeProvider([textResponse(graphPayload('Fresh Paul'))]);
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
 
@@ -419,11 +423,13 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
 
@@ -464,11 +470,13 @@ describe('GraphRagIndexingRunner', () => {
       textResponse(graphPayload('Fresh Cached Chunk')),
       textResponse(graphPayload('Fresh Miss Chunk')),
     ]);
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['note.md'] });
 
@@ -517,11 +525,13 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore: new MemoryVectorStore(),
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore: new MemoryVectorStore(),
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['deleted.md'] });
 
@@ -529,13 +539,15 @@ describe('GraphRagIndexingRunner', () => {
     expect(provider.calls).toBe(0);
     expect(await graphStore.getEvidence()).toEqual([]);
     expect(await graphStore.getEntities()).toEqual([]);
-    await expect(graphStore.isExtractionCached({
-      entryId: 'deleted.md::0',
-      contentHash: 'hash-deleted',
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
-      ontologyVersion: 1,
-    })).resolves.toBe(false);
+    await expect(
+      graphStore.isExtractionCached({
+        entryId: 'deleted.md::0',
+        contentHash: 'hash-deleted',
+        extractionModelKey: 'openai:gpt-4.1-mini',
+        ontologySchemaId: 'default',
+        ontologyVersion: 1,
+      }),
+    ).resolves.toBe(false);
   });
 
   it('community rebuild 결과가 0개이면 기존 community를 비운다', async () => {
@@ -552,11 +564,13 @@ describe('GraphRagIndexingRunner', () => {
       level: 0,
       updatedAt: 1000,
     });
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore: new MemoryVectorStore(),
-      graphStore,
-      provider: new FakeProvider(),
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore: new MemoryVectorStore(),
+        graphStore,
+        provider: new FakeProvider(),
+      }),
+    );
 
     const result = await runner.buildCommunities();
 
@@ -653,7 +667,6 @@ function graphPayload(entityName = 'Paul'): string {
   });
 }
 
-
 describe('GraphRagIndexingRunner stale-only', () => {
   it('onlyStaleFiles=true이면 staleFilePaths만 candidate로 선택한다', async () => {
     const vectorStore = new MemoryVectorStore();
@@ -664,11 +677,13 @@ describe('GraphRagIndexingRunner stale-only', () => {
     ]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({
       onlyStaleFiles: true,
@@ -685,11 +700,13 @@ describe('GraphRagIndexingRunner stale-only', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     const result = await runner.run({
       onlyStaleFiles: true,
@@ -706,11 +723,13 @@ describe('GraphRagIndexingRunner stale-only', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(makeRunnerOptions({
-      vectorStore,
-      graphStore,
-      provider,
-    }));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
 
     await expect(
       runner.run({

@@ -15,11 +15,7 @@ function collectTypeScriptFiles(dir, files = []) {
       collectTypeScriptFiles(current, files);
       continue;
     }
-    if (
-      current.endsWith('.ts') &&
-      !current.endsWith('.d.ts') &&
-      !current.endsWith('.test.ts')
-    ) {
+    if (current.endsWith('.ts') && !current.endsWith('.d.ts') && !current.endsWith('.test.ts')) {
       files.push(current);
     }
   }
@@ -37,6 +33,22 @@ for (const file of collectTypeScriptFiles(root)) {
   if (allowedKoreanFiles.has(file)) continue;
   const sourceText = fs.readFileSync(file, 'utf8');
   const sourceFile = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true);
+  const topLevelDeclarations = new Set(
+    sourceFile.statements
+      .filter(ts.isVariableStatement)
+      .flatMap((statement) => Array.from(statement.declarationList.declarations)),
+  );
+
+  function containsTranslationCall(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 't'
+    ) {
+      return true;
+    }
+    return ts.forEachChild(node, containsTranslationCall) === true;
+  }
 
   function visit(node) {
     const isTextLiteral =
@@ -46,6 +58,16 @@ for (const file of collectTypeScriptFiles(root)) {
     if (isTextLiteral && hangul.test(node.getText(sourceFile))) {
       violations.push(
         `${path.relative(root, file)}:${lineAndColumn(sourceFile, node.getStart(sourceFile))}`,
+      );
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      topLevelDeclarations.has(node) &&
+      node.initializer &&
+      containsTranslationCall(node.initializer)
+    ) {
+      violations.push(
+        `${path.relative(root, file)}:${lineAndColumn(sourceFile, node.getStart(sourceFile))} module-level t() freezes the language at import time`,
       );
     }
     ts.forEachChild(node, visit);
@@ -79,7 +101,9 @@ if (!englishInitializer) {
 }
 
 if (violations.length > 0) {
-  console.error('i18n guard failed. User-facing Korean text must live in src/i18n.ts with English translations.');
+  console.error(
+    'i18n guard failed. User-facing Korean text must live in src/i18n.ts with English translations.',
+  );
   for (const violation of violations) {
     console.error(`- ${violation}`);
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({
   App: class {},
@@ -23,6 +23,7 @@ import {
   shouldShowProviderApiKey,
 } from './rag/settings-display';
 import {
+  buildSettingsTabs,
   buildEmbeddingProviderOptions,
   buildMcpJsonEditorValue,
   buildChatModelOptions,
@@ -33,7 +34,21 @@ import {
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
 
+afterEach(() => {
+  setLanguage('ko');
+});
+
 describe('RAG 설정 표시 헬퍼', () => {
+  it('설정 탭 라벨은 현재 언어로 매번 다시 계산한다', () => {
+    setLanguage('ko');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('프로바이더');
+
+    setLanguage('en');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('Providers');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'chat')?.label).toBe('Chat');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'advanced')?.label).toBe('Advanced');
+  });
+
   it('선택된 벡터 저장소 라벨을 반환한다', () => {
     expect(getVectorStoreLabel('json')).toBe('JSON File');
     expect(getVectorStoreLabel('indexeddb')).toBe('IndexedDB');
@@ -306,7 +321,9 @@ describe('RAG 설정 표시 헬퍼', () => {
     ]);
     expect(groups[0]?.actions[0]?.description).toContain('대상 50개 중 최대 20개');
     expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
-    expect(groups[1]?.actions[1]?.description).toContain('증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.');
+    expect(groups[1]?.actions[1]?.description).toContain(
+      '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
+    );
     expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
   });
 
@@ -360,15 +377,18 @@ describe('RAG 설정 표시 헬퍼', () => {
       },
     };
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const spy = vi.spyOn(tab as never, 'updateGraphRagStats').mockImplementation(() => {
-      return;
-    });
+    const spy = vi
+      .spyOn(tab as unknown as { updateGraphRagStats: () => void }, 'updateGraphRagStats')
+      .mockImplementation(() => {
+        return;
+      });
     const action = {
       id: 'resetGraphRag' as const,
       groupId: 'maintain',
       groupLabel: '그래프 정리',
       label: 'GraphRAG 데이터 초기화',
-      description: '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
+      description:
+        '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
       iconName: 'trash-2',
       state: { disabled: false, reason: null },
       tone: 'danger' as const,
@@ -379,14 +399,16 @@ describe('RAG 설정 표시 헬퍼', () => {
     globalWindow.confirm = confirmSpy;
 
     try {
-      await (tab as unknown as {
-        handleGraphRagAction: (
-          action: {
-            id: 'resetGraphRag';
-          },
-          cost: { costLabel: string },
-        ) => Promise<void>;
-      }).handleGraphRagAction(action, { costLabel: 'local' });
+      await (
+        tab as unknown as {
+          handleGraphRagAction: (
+            action: {
+              id: 'resetGraphRag';
+            },
+            cost: { costLabel: string },
+          ) => Promise<void>;
+        }
+      ).handleGraphRagAction(action, { costLabel: 'local' });
 
       expect(confirmSpy).toHaveBeenCalledOnce();
       expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
