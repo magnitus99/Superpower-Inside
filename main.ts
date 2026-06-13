@@ -462,6 +462,48 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return result;
   }
 
+  async resetGraphRagData(): Promise<void> {
+    if (!this.knowledgeGraphStore) {
+      this.getLogger().warn('GraphRAG data reset skipped because graph store is not initialized.', {
+        source: 'graph.indexing',
+      });
+      return;
+    }
+    try {
+      this.getLogger().info('GraphRAG data reset started.', { source: 'graph.indexing' });
+      this.cancelGraphRagIndexing();
+      if (this.graphRagAbortController) {
+        const cancelled = await this.awaitGraphRagCancellation();
+        if (!cancelled) {
+          this.getLogger().warn('GraphRAG indexing did not stop within timeout during reset.', {
+            source: 'graph.indexing',
+          });
+        }
+      }
+      await this.knowledgeGraphStore.clear();
+      if (this.graphRagIndexingRunner) {
+        this.graphRagIndexingRunner.resetState();
+      }
+      await this.computeAndEmitGraphRagStatus();
+      this.emitGraphDataRefresh('graph-cleanup');
+      this.getLogger().notice('GraphRAG data reset completed.', { source: 'graph.indexing' });
+    } catch (err) {
+      this.getLogger().error('GraphRAG data reset failed.', {
+        source: 'graph.indexing',
+        error: err,
+      });
+      throw err;
+    }
+  }
+
+  private async awaitGraphRagCancellation(timeoutMs = 2000): Promise<boolean> {
+    const startedAt = Date.now();
+    while (this.graphRagAbortController !== null && Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return this.graphRagAbortController === null;
+  }
+
   private async cleanupGraphRagForDeletedFiles(filePaths: string[]): Promise<void> {
     if (!this.knowledgeGraphStore) return;
     await this.knowledgeGraphStore.pruneByFilePaths(filePaths);

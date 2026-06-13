@@ -400,6 +400,7 @@ export interface PluginLike {
   resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
   syncStaleGraphRag(): Promise<GraphRagIndexingResult | null>;
   buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null>;
+  resetGraphRagData(): Promise<void>;
   hasGraphRagRunner(): boolean;
   openGraphRagView(): void;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
