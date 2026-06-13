@@ -2,6 +2,12 @@ import type { TFile, Vault } from 'obsidian';
 import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
+import {
+  planRagStatusFallback,
+  planRagStatusRust,
+  type RustRagStatusFileInput,
+  type RustRagStatusRecordInput,
+} from './rust-core';
 import type { FileIndexRecord, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
@@ -24,11 +30,6 @@ export interface RagStatusSummary {
   totalVectors: number;
   lastCalculatedAt: number;
   updateRequiredDocuments: RagDocumentUpdate[];
-}
-
-interface FileIndexState {
-  status: RagDocumentStatus;
-  reason: string;
 }
 
 export async function getIncludedRagFiles(
@@ -54,110 +55,47 @@ export async function calculateRagStatus(
   const fileIndexRecords = await vectorStore.getFileIndexRecords();
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const recordsByPath = new Map(fileIndexRecords.map((record) => [record.filePath, record]));
+  const input = {
+    includedFiles: includedFiles.map(toRagStatusFileInput),
+    records: fileIndexRecords.map(toRagStatusRecordInput),
+    totalVaultFiles: allFiles.length,
+    embeddingProvider: ragConfig.embeddingProvider,
+    embeddingModel: ragConfig.embeddingModel,
+    reasons: {
+      missing: t('ragStatusMissingReason'),
+      legacy: t('ragStatusLegacyReason'),
+      staleFile: t('ragStatusStaleFileReason'),
+      embeddingChanged: t('ragStatusEmbeddingChangedReason'),
+    },
+  };
+  const plan = planRagStatusRust(input) ?? planRagStatusFallback(input);
 
-  const updateRequiredDocuments: RagDocumentUpdate[] = [];
-  let healthyDocuments = 0;
-  let missingDocuments = 0;
-  let staleDocuments = 0;
-  let unknownDocuments = 0;
-
-  for (const file of includedFiles) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-    const state = getFileIndexState(file, recordsByPath.get(file.path) ?? null, ragConfig, signal);
-    if (state.status === 'healthy') {
-      healthyDocuments++;
-      continue;
-    }
-
-    if (state.status === 'missing') missingDocuments++;
-    if (state.status === 'stale') staleDocuments++;
-    if (state.status === 'unknown') unknownDocuments++;
-
-    updateRequiredDocuments.push({
-      path: file.path,
-      status: state.status,
-      reason: state.reason,
-      mtime: file.stat.mtime,
-      size: file.stat.size,
-    });
-  }
-
-  updateRequiredDocuments.sort((a, b) => {
-    const statusOrder = statusSortOrder(a.status) - statusSortOrder(b.status);
-    if (statusOrder !== 0) return statusOrder;
-    return a.path.localeCompare(b.path);
-  });
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   return {
-    totalDocuments: includedFiles.length,
-    healthyDocuments,
-    missingDocuments,
-    staleDocuments,
-    unknownDocuments,
-    excludedDocuments: Math.max(0, allFiles.length - includedFiles.length),
-    totalVectors: fileIndexRecords.reduce((total, record) => total + record.vectorCount, 0),
+    ...plan,
     lastCalculatedAt: Date.now(),
-    updateRequiredDocuments,
   };
 }
 
-/**
- * 파일의 인덱스 상태를 확인합니다.
- *
- * 최적화: mtime과 size가 모두 일치하면 파일 내용 해시 확인을 건너뜁니다.
- * mtime/size가 동일한데 내용이 달라진 극히 드문 케이스는 건강한 것으로 간주하며,
- * 다음 인덱싱 시점에 다시 확인합니다.
- */
-function getFileIndexState(
-  file: TFile,
-  record: FileIndexRecord | null,
-  ragConfig: RAGConfig,
-  signal?: AbortSignal,
-): FileIndexState {
-  if (!record || record.vectorCount === 0) {
-    return { status: 'missing', reason: t('ragStatusMissingReason') };
-  }
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  const isLegacyRecord =
-    record.hasCompleteMetadata !== true ||
-    typeof record.sourceMtime !== 'number' ||
-    typeof record.sourceSize !== 'number' ||
-    typeof record.contentHash !== 'string' ||
-    typeof record.indexedAt !== 'number' ||
-    typeof record.embeddingProvider !== 'string' ||
-    typeof record.embeddingModel !== 'string';
-  if (isLegacyRecord) {
-    return {
-      status: 'unknown',
-      reason: t('ragStatusLegacyReason'),
-    };
-  }
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // mtime/size가 달라졌으면 stale (내용 읽기 불필요)
-  if (record.sourceMtime !== file.stat.mtime || record.sourceSize !== file.stat.size) {
-    return { status: 'stale', reason: t('ragStatusStaleFileReason') };
-  }
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // mtime/size가 같으면 내용 해시 확인 생략 (극히 드문 충돌은 건강한 것으로 간주)
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  if (
-    record.embeddingProvider !== ragConfig.embeddingProvider ||
-    record.embeddingModel !== ragConfig.embeddingModel
-  ) {
-    return { status: 'stale', reason: t('ragStatusEmbeddingChangedReason') };
-  }
-
-  return { status: 'healthy', reason: t('ragStatusHealthyReason') };
+function toRagStatusFileInput(file: TFile): RustRagStatusFileInput {
+  return {
+    path: file.path,
+    mtime: file.stat.mtime,
+    size: file.stat.size,
+  };
 }
 
-function statusSortOrder(status: Exclude<RagDocumentStatus, 'healthy'>): number {
-  if (status === 'missing') return 0;
-  if (status === 'stale') return 1;
-  return 2;
+function toRagStatusRecordInput(record: FileIndexRecord): RustRagStatusRecordInput {
+  return {
+    filePath: record.filePath,
+    sourceMtime: record.sourceMtime,
+    sourceSize: record.sourceSize,
+    contentHash: record.contentHash,
+    indexedAt: record.indexedAt,
+    embeddingProvider: record.embeddingProvider,
+    embeddingModel: record.embeddingModel,
+    hasCompleteMetadata: record.hasCompleteMetadata,
+    vectorCount: record.vectorCount,
+  };
 }

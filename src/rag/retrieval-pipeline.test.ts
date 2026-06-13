@@ -181,6 +181,33 @@ describe('RagRetrievalPipeline', () => {
     expect(store.requestedIds).toEqual([[keyword.id]]);
   });
 
+  it('BM25CandidateProvider는 stale doc id를 source file path로 복구한다', async () => {
+    const store = new PathLookupStore();
+    const currentEntry = createEntry('keyword.md', [0, 1], 'renamed specialterm 문서', 42);
+    await store.add([currentEntry]);
+    const bm25 = await createBm25([
+      ['stale-keyword-chunk', 'specialterm specialterm', currentEntry.metadata.filePath],
+    ]);
+    const provider = new BM25CandidateProvider(store, bm25);
+
+    const candidates = await provider.getCandidates({
+      ...createRequest([1, 0], 5),
+      question: 'specialterm',
+    });
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        entry: currentEntry,
+        source: 'bm25',
+        sourceScore: 1,
+        reason: 'keyword-match',
+      }),
+    ]);
+    expect(store.getEntriesCalls).toBe(0);
+    expect(store.requestedIds).toEqual([['stale-keyword-chunk']]);
+    expect(store.requestedPaths).toEqual([[currentEntry.metadata.filePath]]);
+  });
+
   it('StructuralGraphCandidateProvider는 seed 파일의 링크와 백링크 파일 후보를 추가한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

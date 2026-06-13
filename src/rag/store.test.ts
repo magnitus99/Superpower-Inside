@@ -147,6 +147,38 @@ describe('VectorStore contract', () => {
   it('IndexedDbVectorStore가 공통 저장소 계약을 만족한다', async () => {
     await expectVectorStoreContract(createStore());
   });
+
+  it('MemoryVectorStore 파일 인덱스 메타는 Rust plan으로 complete/incomplete를 구분한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('complete.md', 0, [1, 0], 'a'),
+      createEntry('complete.md', 10, [0.8, 0.2], 'b'),
+      createEntryWithoutEmbeddingModel('incomplete.md', 0, [0, 1], 'c'),
+    ]);
+
+    const records = await store.getFileIndexRecords();
+    expect(records).toEqual([
+      expect.objectContaining({
+        filePath: 'complete.md',
+        contentHash: 'a',
+        hasCompleteMetadata: true,
+        vectorCount: 2,
+      }),
+      {
+        filePath: 'incomplete.md',
+        sourceMtime: undefined,
+        sourceSize: undefined,
+        contentHash: undefined,
+        indexedAt: undefined,
+        embeddingProvider: undefined,
+        embeddingModel: undefined,
+        hasCompleteMetadata: false,
+        vectorCount: 1,
+        updated: records[1]?.updated,
+      },
+    ]);
+    expect(records[1]?.updated).toEqual(expect.any(Number));
+  });
 });
 
 describe('JsonFileVectorStore load state', () => {
@@ -202,6 +234,17 @@ function createEntry(
       embeddingModel: 'text-embedding-3-small',
     },
   };
+}
+
+function createEntryWithoutEmbeddingModel(
+  filePath: string,
+  startLine: number,
+  vector: number[],
+  text: string,
+): VectorEntry {
+  const entry = createEntry(filePath, startLine, vector, text);
+  delete entry.metadata.embeddingModel;
+  return entry;
 }
 
 async function expectVectorStoreContract(store: VectorStore): Promise<void> {

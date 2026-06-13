@@ -1,7 +1,27 @@
 import type { JsonFileBM25Index } from './bm25';
 import type { VectorEntry, VectorStore } from './store';
 import type { CachedMetadata, TFile } from 'obsidian';
-import { assignVectorClustersRust, rankTopKPairsRust, recomputeCentroidsRust } from './rust-core';
+import {
+  collectCandidateReasonsRust,
+  createEntriesFingerprintRust,
+  assignVectorClustersRust,
+  buildInitialCentroidsRust,
+  calculateRecallAtKRust,
+  planBm25CandidateResolutionRust,
+  planBm25HitLookupRust,
+  planBm25SourceLookupsRust,
+  planMergedRetrievalCandidatesByEntryIdRust,
+  planStructuralHeadingNeighborsRust,
+  planStructuralLinkedPathsRust,
+  rankTopKPairsRust,
+  recomputeCentroidsRust,
+  type RustBm25EntryInput,
+  type RustStructuralEntryInput,
+  type RustStructuralHeadingInput,
+  type RustStructuralHeadingSeed,
+  type RustStructuralLinkEdge,
+  type RustMergedRetrievalCandidatePlan,
+} from './rust-core';
 
 export type RetrievalCandidateSource =
   | 'vector'
@@ -126,8 +146,8 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfAborted(signal);
-    const entries = (await this.vectorStore.getEntries()).filter((entry) =>
-      request.isEntryCompatible?.(entry) ?? true,
+    const entries = (await this.vectorStore.getEntries()).filter(
+      (entry) => request.isEntryCompatible?.(entry) ?? true,
     );
     throwIfAborted(signal);
     if (entries.length < this.options.minEntryCount) {
@@ -161,14 +181,14 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
       probeCount: Math.max(1, Math.min(this.options.probeCount, index.clusterCount)),
       lastQueriedAt: Date.now(),
     };
-    return index.query(request.queryVector, request.candidateLimit, this.options.probeCount, signal).map(
-      ({ entry, score }) => ({
+    return index
+      .query(request.queryVector, request.candidateLimit, this.options.probeCount, signal)
+      .map(({ entry, score }) => ({
         entry,
         source: this.source,
         sourceScore: score,
         reason: 'ivf',
-      }),
-    );
+      }));
   }
 
   private getOrBuildIndex(entries: readonly VectorEntry[], signal?: AbortSignal): IvfVectorIndex {
@@ -212,41 +232,79 @@ export class BM25CandidateProvider implements CandidateProvider {
     const scores = this.bm25Index.search(request.question);
     if (scores.size === 0) return [];
 
-    const docIds = [...scores.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, request.candidateLimit * 4)
-      .map(([docId]) => docId);
-    const maxScore = Math.max(...docIds.map((docId) => scores.get(docId) ?? 0), 1);
-    const entriesById = new Map(
-      (await this.vectorStore.getEntriesByIds(docIds)).map((entry) => [entry.id, entry]),
+    const hitPlan = planBm25HitLookupRust(
+      [...scores.entries()].map(([docId, score]) => ({
+        docId,
+        sourcePath: this.bm25Index.getDocumentSource(docId) ?? docId,
+        score,
+      })),
+      request.candidateLimit,
+      4,
     );
+    if (hitPlan === null || hitPlan.hits.length === 0) return [];
+
+    const foundEntries = await this.vectorStore.getEntriesByIds(hitPlan.lookupDocIds);
     throwIfAborted(signal);
-    const foundEntries = docIds
-      .map((docId) => entriesById.get(docId))
-      .filter((entry): entry is VectorEntry =>
-        entry !== undefined && (request.isEntryCompatible?.(entry) ?? true),
-      );
-    const missingSources = docIds
-      .filter((docId) => !entriesById.has(docId))
-      .map((docId) => this.bm25Index.getDocumentSource(docId) ?? docId);
-    const fallbackEntries =
-      missingSources.length > 0
-        ? await this.vectorStore.getEntriesByFilePaths([...new Set(missingSources)])
+    const sourceLookupPaths = planBm25SourceLookupsRust(
+      hitPlan.hits,
+      foundEntries.map((entry) => entry.id),
+    );
+    if (sourceLookupPaths === null) return [];
+
+    const pathEntries =
+      sourceLookupPaths.length > 0
+        ? await this.vectorStore.getEntriesByFilePaths(sourceLookupPaths)
         : [];
     throwIfAborted(signal);
 
-    return [...foundEntries, ...fallbackEntries]
-      .filter((entry) => request.isEntryCompatible?.(entry) ?? true)
-      .filter((entry) => scores.has(entry.id) || scores.has(entry.metadata.filePath))
-      .map((entry) => ({
+    const plan = planBm25CandidateResolutionRust({
+      hits: hitPlan.hits,
+      foundEntries: foundEntries.map((entry) => toBm25EntryInput(entry, request)),
+      pathEntries: pathEntries.map((entry) => toBm25EntryInput(entry, request)),
+      candidateLimit: request.candidateLimit,
+      maxScore: hitPlan.maxScore,
+    });
+    if (plan === null) return [];
+
+    const candidates: RetrievalCandidate[] = [];
+    for (const item of plan) {
+      const entry = item.entrySet === 'found' ? foundEntries[item.entryIndex] : pathEntries[item.entryIndex];
+      if (!entry) {
+        continue;
+      }
+      candidates.push({
         entry,
-        source: 'bm25' as const,
-        sourceScore:
-          (scores.get(entry.id) ?? scores.get(entry.metadata.filePath) ?? 0) / maxScore,
+        source: 'bm25',
+        sourceScore: item.sourceScore,
         reason: 'keyword-match',
-      }))
-      .slice(0, request.candidateLimit);
+      });
+    }
+    return candidates;
   }
+}
+
+function toBm25EntryInput(
+  entry: VectorEntry,
+  request: RagRetrievalRequest,
+): RustBm25EntryInput {
+  return {
+    id: entry.id,
+    filePath: entry.metadata.filePath,
+    compatible: request.isEntryCompatible?.(entry) ?? true,
+  };
+}
+
+function toStructuralEntryInput(
+  entry: VectorEntry,
+  request: RagRetrievalRequest,
+): RustStructuralEntryInput {
+  return {
+    id: entry.id,
+    filePath: entry.metadata.filePath,
+    startLine: entry.metadata.startLine,
+    ...(entry.metadata.heading ? { heading: entry.metadata.heading } : {}),
+    compatible: request.isEntryCompatible?.(entry) ?? true,
+  };
 }
 
 export interface StructuralMetadataContext {
@@ -284,15 +342,17 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     if (seedEntries.length === 0) return [];
 
     const seedIds = new Set(seedEntries.map((entry) => entry.id));
-    const targetPaths = new Set<string>();
-    for (const seedEntry of seedEntries) {
-      this.addLinkedFilePaths(seedEntry.metadata.filePath, targetPaths);
-    }
+    const targetPaths = new Set(
+      planStructuralLinkedPathsRust(
+        seedEntries.map((entry) => entry.metadata.filePath),
+        this.collectStructuralLinkEdges(seedEntries),
+      ) ?? [],
+    );
 
     const linkedEntries =
       targetPaths.size > 0 ? await this.vectorStore.getEntriesByFilePaths([...targetPaths]) : [];
     throwIfAborted(signal);
-    const headingEntries = await this.getHeadingNeighborEntries(seedEntries);
+    const headingEntries = await this.collectStructuralHeadingEntries(seedEntries, request);
     const candidatesById = new Map<string, RetrievalCandidate>();
 
     for (const entry of [...linkedEntries, ...headingEntries]) {
@@ -302,91 +362,93 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
         entry,
         source: this.source,
         sourceScore: 1,
-        reason: targetPaths.has(entry.metadata.filePath) ? 'link-neighborhood' : 'heading-neighborhood',
+        reason: targetPaths.has(entry.metadata.filePath)
+          ? 'link-neighborhood'
+          : 'heading-neighborhood',
       });
     }
 
     return [...candidatesById.values()].slice(0, request.candidateLimit);
   }
 
-  private addLinkedFilePaths(sourcePath: string, targetPaths: Set<string>): void {
-    const outgoingLinks = this.metadata.resolvedLinks[sourcePath] ?? {};
-    for (const targetPath of Object.keys(outgoingLinks)) {
-      if (targetPath !== sourcePath) {
-        targetPaths.add(targetPath);
+  private collectStructuralLinkEdges(
+    seedEntries: readonly VectorEntry[],
+  ): RustStructuralLinkEdge[] {
+    const edges: RustStructuralLinkEdge[] = [];
+    for (const [sourcePath, links] of Object.entries(this.metadata.resolvedLinks)) {
+      for (const targetPath of Object.keys(links)) {
+        edges.push({ sourcePath, targetPath });
       }
     }
 
-    for (const [candidateSourcePath, links] of Object.entries(this.metadata.resolvedLinks)) {
-      if (candidateSourcePath !== sourcePath && Object.hasOwn(links, sourcePath)) {
-        targetPaths.add(candidateSourcePath);
+    for (const seedEntry of seedEntries) {
+      const sourcePath = seedEntry.metadata.filePath;
+      const sourceFile = this.metadata.getFileByPath(sourcePath);
+      if (!sourceFile) continue;
+
+      const cache = this.metadata.getFileCache(sourceFile);
+      for (const link of cache?.links ?? []) {
+        const targetFile = this.metadata.getFirstLinkpathDest(link.link, sourcePath);
+        if (targetFile) edges.push({ sourcePath, targetPath: targetFile.path });
       }
     }
-
-    const sourceFile = this.metadata.getFileByPath(sourcePath);
-    if (!sourceFile) return;
-
-    const cache = this.metadata.getFileCache(sourceFile);
-    for (const link of cache?.links ?? []) {
-      const targetFile = this.metadata.getFirstLinkpathDest(link.link, sourcePath);
-      if (targetFile && targetFile.path !== sourcePath) {
-        targetPaths.add(targetFile.path);
-      }
-    }
+    return edges;
   }
 
-  private async getHeadingNeighborEntries(seedEntries: readonly VectorEntry[]): Promise<VectorEntry[]> {
+  private async collectStructuralHeadingEntries(
+    seedEntries: readonly VectorEntry[],
+    request: RagRetrievalRequest,
+  ): Promise<VectorEntry[]> {
     const paths = [...new Set(seedEntries.map((entry) => entry.metadata.filePath))];
     if (paths.length === 0) return [];
 
     const entries = await this.vectorStore.getEntriesByFilePaths(paths);
-    const seedIds = new Set(seedEntries.map((entry) => entry.id));
-    const headingRangesByPath = new Map<
-      string,
-      Array<{ startLine: number; endLine?: number; heading?: string }>
-    >();
-
-    for (const seedEntry of seedEntries) {
-      const sourceFile = this.metadata.getFileByPath(seedEntry.metadata.filePath);
-      if (!sourceFile) continue;
-
-      const cache = this.metadata.getFileCache(sourceFile);
-      const headingRanges = cache?.headings
-        ? getHeadingRanges(cache.headings).filter((range) =>
-            isLineInRange(seedEntry.metadata.startLine, range.startLine, range.endLine),
-          )
-        : [];
-
-      const ranges =
-        headingRanges.length > 0
-          ? headingRanges.map((range) => ({ ...range, heading: seedEntry.metadata.heading }))
-          : seedEntry.metadata.heading
-            ? [
-                {
-                  startLine: seedEntry.metadata.startLine,
-                  endLine: seedEntry.metadata.endLine,
-                  heading: seedEntry.metadata.heading,
-                },
-              ]
-            : [];
-      if (ranges.length === 0) continue;
-
-      const existing = headingRangesByPath.get(seedEntry.metadata.filePath) ?? [];
-      existing.push(...ranges);
-      headingRangesByPath.set(seedEntry.metadata.filePath, existing);
-    }
-
-    return entries.filter((entry) => {
-      if (seedIds.has(entry.id)) return false;
-      const ranges = headingRangesByPath.get(entry.metadata.filePath) ?? [];
-      return ranges.some(
-        (range) =>
-          (!range.heading ||
-            !entry.metadata.heading ||
-            entry.metadata.heading === range.heading) &&
-          isLineInRange(entry.metadata.startLine, range.startLine, range.endLine),
-      );
+    const plan = planStructuralHeadingNeighborsRust({
+      seeds: this.collectStructuralHeadingSeeds(seedEntries),
+      entries: entries.map((entry) => toStructuralEntryInput(entry, request)),
+      headings: this.collectStructuralHeadingRows(paths),
     });
+    if (plan === null) return [];
+
+    const selected: VectorEntry[] = [];
+    for (const entryIndex of plan) {
+      const entry = entries[entryIndex];
+      if (entry) selected.push(entry);
+    }
+    return selected;
+  }
+
+  private collectStructuralHeadingSeeds(
+    seedEntries: readonly VectorEntry[],
+  ): RustStructuralHeadingSeed[] {
+    const seeds: RustStructuralHeadingSeed[] = [];
+    for (const entry of seedEntries) {
+      if (!this.metadata.getFileByPath(entry.metadata.filePath)) continue;
+      seeds.push({
+        id: entry.id,
+        filePath: entry.metadata.filePath,
+        startLine: entry.metadata.startLine,
+        endLine: entry.metadata.endLine ?? entry.metadata.startLine,
+        ...(entry.metadata.heading ? { heading: entry.metadata.heading } : {}),
+      });
+    }
+    return seeds;
+  }
+
+  private collectStructuralHeadingRows(paths: readonly string[]): RustStructuralHeadingInput[] {
+    const headings: RustStructuralHeadingInput[] = [];
+    for (const path of paths) {
+      const file = this.metadata.getFileByPath(path);
+      if (!file) continue;
+      for (const heading of this.metadata.getFileCache(file)?.headings ?? []) {
+        headings.push({
+          filePath: path,
+          startLine: heading.position.start.line,
+          level: heading.level,
+        });
+      }
+    }
+    return headings;
   }
 }
 
@@ -446,27 +508,6 @@ export class RagRetrievalPipeline {
   }
 }
 
-function getHeadingRanges(
-  headings: NonNullable<CachedMetadata['headings']>,
-): Array<{ startLine: number; endLine?: number }> {
-  return headings.map((heading, index) => {
-    const nextSameOrHigher = headings
-      .slice(index + 1)
-      .find((candidate) => candidate.level <= heading.level);
-    return {
-      startLine: heading.position.start.line,
-      endLine:
-        nextSameOrHigher && nextSameOrHigher.position.start.line > heading.position.start.line
-          ? nextSameOrHigher.position.start.line - 1
-          : undefined,
-    };
-  });
-}
-
-function isLineInRange(line: number, startLine: number, endLine?: number): boolean {
-  return line >= startLine && (typeof endLine !== 'number' || line <= endLine);
-}
-
 function scoreVectorEntries(
   entries: readonly VectorEntry[],
   vector: readonly number[],
@@ -483,20 +524,87 @@ function scoreVectorEntries(
     throwIfAborted(signal);
     const selected: Array<{ entry: VectorEntry; score: number }> = [];
     for (const result of rustScores) {
-      const entry = entries[result.index];
+      const resultIndex = result.index;
+      if (!Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex >= entries.length) {
+        continue;
+      }
+      const entry = entries[resultIndex];
       if (entry) selected.push({ entry, score: result.score });
     }
     return selected;
   }
 
-  const scored: Array<{ entry: VectorEntry; score: number }> = [];
-  for (const entry of entries) {
-    throwIfAborted(signal);
-    const score = cosineSimilarity(vector, entry.vector);
-    if (score === null) continue;
-    scored.push({ entry, score });
+  return [];
+}
+
+export function mergeRetrievalCandidateGroupsByEntryId(
+  candidates: readonly RetrievalCandidate[],
+): RustMergedRetrievalCandidatePlan[] {
+  if (candidates.length === 0) return [];
+
+  const rustPlan = planMergedRetrievalCandidatesByEntryIdRust(
+    candidates.map((candidate) => ({
+      entryId: candidate.entry.id,
+      source: candidate.source,
+      sourceScore: candidate.sourceScore,
+      rank: candidate.rank,
+    })),
+  );
+  if (rustPlan !== null) return rustPlan;
+
+  const groups: RustMergedRetrievalCandidatePlan[] = [];
+  const groupByEntryId = new Map<string, number>();
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!candidate) continue;
+
+    const existingGroupIndex = groupByEntryId.get(candidate.entry.id);
+    if (existingGroupIndex === undefined) {
+      groupByEntryId.set(candidate.entry.id, groups.length);
+      groups.push({
+        entryIndex: index,
+        firstCandidateIndex: index,
+        candidateIndexes: [index],
+        sources: [
+          {
+            source: candidate.source,
+            sourceScore: candidate.sourceScore,
+            rank: candidate.rank,
+          },
+        ],
+      });
+      continue;
+    }
+
+    const group = groups[existingGroupIndex];
+    if (!group) continue;
+    group.candidateIndexes.push(index);
+    const source = group.sources.find((item) => item.source === candidate.source);
+    if (!source) {
+      group.sources.push({
+        source: candidate.source,
+        sourceScore: candidate.sourceScore,
+        rank: candidate.rank,
+      });
+      continue;
+    }
+
+    const candidateScore = candidate.sourceScore;
+    if (Number.isFinite(candidateScore ?? Number.NaN)) {
+      source.sourceScore = candidateScore;
+    }
+    const candidateRank = candidate.rank;
+    if (Number.isFinite(candidateRank ?? Number.NaN)) {
+      const nextRank = candidateRank as number;
+      const existingRank = source.rank;
+      source.rank = Number.isFinite(existingRank ?? Number.NaN)
+        ? Math.min(existingRank as number, nextRank)
+        : nextRank;
+    }
   }
-  return scored.sort((a, b) => b.score - a.score).slice(0, topK);
+
+  return groups;
 }
 
 export function calculateRecallAtK(
@@ -504,55 +612,62 @@ export function calculateRecallAtK(
   approximateIds: readonly string[],
   k: number,
 ): number {
-  const limit = Math.max(0, k);
-  if (limit === 0) return 0;
-
-  const exactTopK = new Set(exactIds.slice(0, limit));
-  if (exactTopK.size === 0) return 0;
-
-  const approximateTopK = approximateIds.slice(0, limit);
-  const hits = approximateTopK.filter((id) => exactTopK.has(id)).length;
-  return hits / exactTopK.size;
+  return calculateRecallAtKRust(exactIds, approximateIds, k) ?? 0;
 }
 
 function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetrievalCandidate[] {
-  const byId = new Map<string, MergedRetrievalCandidate>();
+  if (candidates.length === 0) return [];
 
-  for (const candidate of candidates) {
-    const existing = byId.get(candidate.entry.id);
-    if (existing) {
-      if (!existing.sources.includes(candidate.source)) {
-        existing.sources.push(candidate.source);
-      }
-      if (typeof candidate.sourceScore === 'number') {
-        existing.sourceScores[candidate.source] = candidate.sourceScore;
-      }
-      if (typeof candidate.rank === 'number') {
-        existing.sourceRanks[candidate.source] = Math.min(
-          existing.sourceRanks[candidate.source] ?? candidate.rank,
-          candidate.rank,
-        );
-      }
-      if (candidate.reason && !existing.reasons.includes(candidate.reason)) {
-        existing.reasons.push(candidate.reason);
-      }
+  const plan = mergeRetrievalCandidateGroupsByEntryId(candidates);
+
+  const merged: MergedRetrievalCandidate[] = [];
+  for (const group of plan) {
+    const representative = candidates[group.firstCandidateIndex];
+    if (!representative) {
       continue;
     }
-
-    byId.set(candidate.entry.id, {
-      entry: candidate.entry,
-      sources: [candidate.source],
-      sourceScores:
-        typeof candidate.sourceScore === 'number'
-          ? { [candidate.source]: candidate.sourceScore }
-          : {},
-      sourceRanks:
-        typeof candidate.rank === 'number' ? { [candidate.source]: candidate.rank } : {},
-      reasons: candidate.reason ? [candidate.reason] : [],
+    const sources: RetrievalCandidateSource[] = [];
+    const sourceScores: Partial<Record<RetrievalCandidateSource, number>> = {};
+    const sourceRanks: Partial<Record<RetrievalCandidateSource, number>> = {};
+    for (const source of group.sources) {
+      const candidateSource = toRetrievalCandidateSource(source.source);
+      if (!candidateSource) {
+        continue;
+      }
+      sources.push(candidateSource);
+      if (source.sourceScore !== undefined) sourceScores[candidateSource] = source.sourceScore;
+      if (source.rank !== undefined) sourceRanks[candidateSource] = source.rank;
+    }
+    if (sources.length === 0) {
+      continue;
+    }
+    merged.push({
+      entry: representative.entry,
+      sources,
+      sourceScores,
+      sourceRanks,
+      reasons: collectCandidateReasonsRust(
+        candidates.map((candidate) => candidate.reason),
+        group.candidateIndexes,
+      ) ?? [],
     });
   }
+  return merged;
+}
 
-  return [...byId.values()];
+function toRetrievalCandidateSource(source: string): RetrievalCandidateSource | null {
+  if (
+    source === 'vector' ||
+    source === 'bm25' ||
+    source === 'ann' ||
+    source === 'structural' ||
+    source === 'graph-local' ||
+    source === 'graph-global' ||
+    source === 'evidence'
+  ) {
+    return source;
+  }
+  return null;
 }
 
 class IvfVectorIndex {
@@ -572,8 +687,13 @@ class IvfVectorIndex {
   ): IvfVectorIndex {
     if (entries.length === 0) return new IvfVectorIndex([], []);
 
-    const clusterCount = resolveClusterCount(entries.length, requestedClusterCount);
-    let centroids = createInitialCentroids(entries, clusterCount);
+    let centroids = buildInitialCentroidsRust(
+      entries.map((entry) => entry.vector),
+      requestedClusterCount,
+    );
+    if (centroids === null || centroids.length === 0) {
+      return new IvfVectorIndex([], []);
+    }
     let clusters = assignClusters(entries, centroids, signal);
 
     for (let iteration = 0; iteration < 4; iteration++) {
@@ -595,42 +715,17 @@ class IvfVectorIndex {
 
     const resolvedProbeCount = Math.max(1, Math.min(probeCount, this.centroids.length));
     const rustCentroidScores = rankTopKPairsRust(vector, this.centroids, resolvedProbeCount);
-    const centroidIndexes =
-      rustCentroidScores !== null
-        ? rustCentroidScores.map((candidate) => candidate.index)
-        : this.centroids
-            .map((centroid, index) => ({
-              index,
-              score: cosineSimilarity(vector, centroid),
-            }))
-            .filter(
-              (candidate): candidate is { index: number; score: number } =>
-                candidate.score !== null,
-            )
-            .sort((a, b) => b.score - a.score)
-            .slice(0, resolvedProbeCount)
-            .map((candidate) => candidate.index);
+    if (rustCentroidScores === null) return [];
+    const centroidIndexes = rustCentroidScores
+      .map((candidate) => candidate.index)
+      .filter(
+        (index): index is number => Number.isInteger(index) && index >= 0 && index < this.clusters.length,
+      );
 
     const candidates = centroidIndexes.flatMap((index) => this.clusters[index] ?? []);
     throwIfAborted(signal);
     return scoreVectorEntries(candidates, vector, topK, signal);
   }
-}
-
-function resolveClusterCount(entryCount: number, requestedClusterCount: number): number {
-  if (requestedClusterCount > 0) {
-    return Math.max(1, Math.min(requestedClusterCount, entryCount));
-  }
-  return Math.max(1, Math.min(128, Math.round(Math.sqrt(entryCount))));
-}
-
-function createInitialCentroids(entries: readonly VectorEntry[], clusterCount: number): number[][] {
-  if (clusterCount === 1) return [[...entries[0].vector]];
-
-  return Array.from({ length: clusterCount }, (_, index) => {
-    const entryIndex = Math.floor((index * (entries.length - 1)) / (clusterCount - 1));
-    return [...entries[entryIndex].vector];
-  });
 }
 
 function assignClusters(
@@ -643,29 +738,17 @@ function assignClusters(
     entries.map((entry) => entry.vector),
     centroids,
   );
-  if (rustAssignments !== null && rustAssignments.length === entries.length) {
-    for (let index = 0; index < entries.length; index++) {
-      throwIfAborted(signal);
-      const clusterIndex = rustAssignments[index] ?? 0;
-      const entry = entries[index];
-      if (entry) clusters[clusterIndex]?.push(entry);
-    }
+  if (rustAssignments === null || rustAssignments.length !== entries.length) {
     return clusters;
   }
-
-  for (const entry of entries) {
+  for (let index = 0; index < entries.length; index++) {
     throwIfAborted(signal);
-    let bestIndex = 0;
-    let bestScore = Number.NEGATIVE_INFINITY;
-    for (let index = 0; index < centroids.length; index++) {
-      const score = cosineSimilarity(entry.vector, centroids[index]);
-      if (score === null) continue;
-      if (score > bestScore) {
-        bestIndex = index;
-        bestScore = score;
-      }
+    const clusterIndex = rustAssignments[index];
+    if (!Number.isInteger(clusterIndex) || clusterIndex < 0 || clusterIndex >= clusters.length) {
+      continue;
     }
-    clusters[bestIndex].push(entry);
+    const entry = entries[index];
+    if (entry) clusters[clusterIndex]?.push(entry);
   }
   return clusters;
 }
@@ -686,35 +769,7 @@ function recomputeCentroids(
 
   const rustCentroids = recomputeCentroidsRust(vectors, assignments, previousCentroids);
   if (rustCentroids !== null) return rustCentroids;
-
-  return clusters.map((cluster, index) => {
-    if (cluster.length === 0) return [...previousCentroids[index]];
-
-    const dimensions = cluster[0].vector.length;
-    const centroid = Array.from({ length: dimensions }, () => 0);
-    for (const entry of cluster) {
-      for (let dimension = 0; dimension < dimensions; dimension++) {
-        centroid[dimension] += entry.vector[dimension] ?? 0;
-      }
-    }
-    return centroid.map((value) => value / cluster.length);
-  });
-}
-
-function cosineSimilarity(a: readonly number[], b: readonly number[]): number | null {
-  if (a.length === 0 || a.length !== b.length) return null;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    const aValue = a[i] ?? 0;
-    const bValue = b[i] ?? 0;
-    dot += aValue * bValue;
-    normA += aValue * aValue;
-    normB += bValue * bValue;
-  }
-  if (normA === 0 || normB === 0) return null;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return [];
 }
 
 function withProviderDeadline<T>(
@@ -744,13 +799,17 @@ class ProviderTimeoutError extends Error {
 }
 
 function createEntriesFingerprint(entries: readonly VectorEntry[]): string {
-  return entries
-    .map((entry) => {
-      const contentHash = entry.metadata.contentHash ?? '';
-      const indexedAt = entry.metadata.indexedAt ?? 0;
-      return `${entry.id}:${contentHash}:${indexedAt}:${entry.vector.length}`;
-    })
-    .join('|');
+  const fingerprint = createEntriesFingerprintRust(
+    entries.map((entry) => ({
+      id: entry.id,
+      vector: entry.vector,
+      metadata: {
+        indexedAt: entry.metadata.indexedAt ?? 0,
+        contentHash: entry.metadata.contentHash ?? '',
+      },
+    })),
+  );
+  return fingerprint ?? '';
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

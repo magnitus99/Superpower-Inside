@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   chunkMarkdown,
   chunkPlainText,
@@ -11,6 +11,15 @@ import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
 import { JsonFileBM25Index } from './bm25';
+import { planIndexPendingFilesRust } from './rust-core';
+
+vi.mock('./rust-core', async () => {
+  const actual = await vi.importActual<typeof import('./rust-core')>('./rust-core');
+  return {
+    ...actual,
+    planIndexPendingFilesRust: vi.fn(actual.planIndexPendingFilesRust),
+  };
+});
 
 describe('chunkMarkdown + buildSearchText Ollama context length scenario', () => {
   it('chunkSize 1000으로 큰 파일을 청킹하면 buildSearchText 결과가 Ollama 안전 문자수(3000자)를 초과할 수 있다', () => {
@@ -314,6 +323,78 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect([...bm25.search('alpha').keys()].length).toBeGreaterThan(0);
     expect([...bm25.search('beta').keys()].length).toBeGreaterThan(0);
     expect([...bm25.search('gamma').keys()].length).toBeGreaterThan(0);
+  });
+
+  it('Rust pending plan의 잘못된 인덱스가 있어도 인덱싱이 중단되지 않는다', async () => {
+    const fileA = createFile('a.md', 1000, 120);
+    const fileB = createFile('b.md', 1000, 120);
+    const vault = createVault(
+      new Map([
+        [fileA.path, 'alpha 문서'],
+        [fileB.path, 'bravo 문서'],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    vi.mocked(planIndexPendingFilesRust).mockReturnValueOnce({
+      fileIndices: [0, 999],
+      skipped: 1,
+    });
+
+    const result = await indexer.indexPending({ maxEmbeddingBatchSize: 5 });
+
+    expect(result.indexed).toBe(1);
+    expect(result.vectors).toBeGreaterThan(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.documents).toEqual(['a.md']);
+  });
+
+  it('Rust pending plan의 중복/음수 인덱스는 중복 없이 안정적으로 처리된다', async () => {
+    const fileA = createFile('a.md', 1000, 120);
+    const fileB = createFile('b.md', 1000, 120);
+    const fileC = createFile('c.md', 1000, 120);
+    const vault = createVault(
+      new Map([
+        [fileA.path, 'alpha 문서'],
+        [fileB.path, 'bravo 문서'],
+        [fileC.path, 'charlie 문서'],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    vi.mocked(planIndexPendingFilesRust).mockReturnValueOnce({
+      fileIndices: [0, 0, 1, -1, 5],
+      skipped: 3,
+    });
+
+    const result = await indexer.indexPending({ maxEmbeddingBatchSize: 5 });
+
+    expect(result.indexed).toBe(2);
+    expect(result.vectors).toBeGreaterThan(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.documents).toEqual(['a.md', 'b.md']);
   });
 });
 

@@ -1,11 +1,8 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
-import { JsonFileBM25Index, tokenize } from './bm25';
-import {
-  GraphRagCandidateProvider,
-  type GraphRagQueryEngine,
-} from '../graph/query-engine';
+import { JsonFileBM25Index } from './bm25';
+import { GraphRagCandidateProvider, type GraphRagQueryEngine } from '../graph/query-engine';
 import {
   BM25CandidateProvider,
   ExactVectorCandidateProvider,
@@ -17,25 +14,21 @@ import {
   type StructuralMetadataContext,
 } from './retrieval-pipeline';
 import {
-  calculateHybridScoreRust,
-  calculateRrfScoreRust,
   countKeywordMatchesRust,
   cosineSimilarityRust,
-  selectDiverseIndicesRust,
+  planDiverseResultIndicesRust,
+  planQueryResultScoreRust,
+  planRerankMessagesRust,
+  selectRelevantResultIndicesRust,
+  planRerankResponseRust,
+  planRerankResultOrderRust,
+  tokenizeRust,
 } from './rust-core';
+import { selectByRustIndices } from '../utils/rust-index-plan';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
-const RRF_K = 60;
-const VECTOR_SCORE_WEIGHT = 0.35;
-const RRF_SCORE_WEIGHT = 0.55;
-const SOURCE_PRIOR_WEIGHT = 0.1;
-const MMR_RELEVANCE_WEIGHT = 0.72;
-const SAME_FILE_DIVERSITY_PENALTY = 0.12;
-const SAME_HEADING_DIVERSITY_PENALTY = 0.06;
 const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
 const DEFAULT_RERANK_TIMEOUT_MS = 2500;
-const STRONG_EVIDENCE_SCORE_FLOOR = 0.58;
-const STRONG_EVIDENCE_SCORE_CAP = 0.88;
 
 export interface RAGResultReranker {
   rerank(
@@ -43,23 +36,6 @@ export interface RAGResultReranker {
     results: readonly QueryResult[],
     signal?: AbortSignal,
   ): Promise<readonly string[]>;
-}
-
-function cosineSimilarity(a: number[], b: number[]): number | null {
-  const rustScore = cosineSimilarityRust(a, b);
-  if (rustScore !== null) return rustScore;
-
-  if (a.length === 0 || a.length !== b.length) return null;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) return null;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 export interface QueryResult {
@@ -71,6 +47,8 @@ export interface QueryResult {
   retrievalSources?: string[];
   sourceEvidenceScore?: number;
   bestEvidenceRank?: number;
+  hasGraphOrStructuralEvidence?: boolean;
+  hasStrongGraphOrStructuralEvidence?: boolean;
   sourcePath: string;
   chunkRange: {
     startLine: number;
@@ -135,7 +113,9 @@ export class RAGQueryEngine {
       providers.push(new BM25CandidateProvider(vectorStore, bm25Index));
     }
     if (options.structuralGraphEnabled === true && options.structuralMetadataContext) {
-      providers.push(new StructuralGraphCandidateProvider(vectorStore, options.structuralMetadataContext));
+      providers.push(
+        new StructuralGraphCandidateProvider(vectorStore, options.structuralMetadataContext),
+      );
     }
     if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
       providers.push(new GraphRagCandidateProvider(options.graphRagQueryEngine));
@@ -155,41 +135,40 @@ export class RAGQueryEngine {
         : undefined,
     });
     this.lastRetrievalDiagnostics = retrieval.diagnostics;
-    const queryTokens = [...new Set(tokenize(question))];
+    const queryTokens = tokenizeRust(question) ?? [];
 
     const scored: QueryResult[] = [];
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
-      const cosineScore = cosineSimilarity(qVector, entry.vector);
+      const cosineScore = cosineSimilarityRust(qVector, entry.vector);
       if (cosineScore === null) {
         continue;
       }
       const bm25 = candidate.sourceScores.bm25 ?? 0;
-      const sourceEvidenceScore = getSourceEvidenceScore(candidate.sourceScores);
-      const bestEvidenceRank = getBestEvidenceRank(candidate.sourceRanks);
-      const combinedBase = this.bm25Index?.isReady
-        ? (1 - this.bm25Weight) * cosineScore + this.bm25Weight * bm25
-        : cosineScore;
-      const rrfScore = calculateRrfScore(candidate.sourceRanks, this.bm25Weight);
-      const sourcePrior = getRetrievalSourcePrior(candidate.sourceScores);
-      const combined = calculateHybridScore({
-        combinedBase,
-        rrfScore,
-        sourcePrior,
-        sourceEvidenceScore,
-        bestEvidenceRank,
+      const scorePlan = planQueryResultScoreRust({
+        cosineScore,
+        bm25Score: bm25,
+        bm25Weight: this.bm25Weight,
+        hasBm25: this.bm25Index?.isReady ?? false,
+        sourceScores: candidate.sourceScores,
+        sourceRanks: candidate.sourceRanks,
         retrievalSources: candidate.sources,
       });
+      if (!scorePlan) {
+        continue;
+      }
       scored.push({
         entry,
-        score: combined,
+        score: scorePlan.combinedScore,
         vectorScore: cosineScore,
         bm25Score: bm25,
-        combinedScore: combined,
+        combinedScore: scorePlan.combinedScore,
         retrievalSources: [...candidate.sources],
-        sourceEvidenceScore,
-        bestEvidenceRank,
+        sourceEvidenceScore: scorePlan.sourceEvidenceScore,
+        bestEvidenceRank: scorePlan.bestEvidenceRank,
+        hasGraphOrStructuralEvidence: scorePlan.hasGraphOrStructuralEvidence,
+        hasStrongGraphOrStructuralEvidence: scorePlan.hasStrongGraphOrStructuralEvidence,
         sourcePath: entry.metadata.filePath,
         chunkRange: {
           startLine: entry.metadata.startLine,
@@ -201,17 +180,11 @@ export class RAGQueryEngine {
         await yieldToEventLoop();
       }
     }
-    scored.sort((a, b) => b.score - a.score);
-
-    const bestScore = scored[0]?.score ?? 0;
-    const relativeThreshold = Math.max(threshold, bestScore - 0.18);
-
-    const relevantResults = scored.filter((r) => {
-      const sourceAwareThreshold = hasGraphOrStructuralEvidence(r)
-        ? Math.max(threshold, bestScore - 0.45)
-        : relativeThreshold;
-      return isRelevantResult(r, sourceAwareThreshold, this.bm25Index?.isReady ?? false);
-    });
+    const relevantResults = selectRelevantResults(
+      scored,
+      threshold,
+      this.bm25Index?.isReady ?? false,
+    );
     if (this.reranker && relevantResults.length > 1) {
       const diversePool = selectDiverseResults(
         relevantResults,
@@ -261,7 +234,13 @@ export class RAGQueryEngine {
     const candidates = results.slice(0, this.rerankCandidateLimit);
     try {
       const rankedIds = await this.reranker.rerank(question, candidates);
-      return applyRerankOrder(results, rankedIds);
+      const order = planRerankResultOrderRust(
+        results.map((result) => result.entry.id),
+        rankedIds,
+      );
+      if (!order || order.length !== results.length) return [...results];
+      const reranked = selectByRustIndices(results, order, { dedupe: true });
+      return reranked.length === results.length ? reranked : [...results];
     } catch {
       return [...results];
     }
@@ -280,103 +259,48 @@ export class LLMRAGResultReranker implements RAGResultReranker {
     signal?: AbortSignal,
   ): Promise<readonly string[]> {
     if (results.length === 0) return [];
+    const messagePlan = planRerankMessagesRust(
+      question,
+      results.map((result) => ({
+        id: result.entry.id,
+        sourcePath: result.sourcePath,
+        heading: result.entry.metadata.heading ?? '',
+        text: result.entry.metadata.text,
+      })),
+      700,
+    );
+    if (!messagePlan) return [];
     const response = await withTimeout(
-      this.provider.chat(buildRerankMessages(question, results), 0, undefined, { signal }),
+      this.provider.chat(
+        [
+          {
+            role: 'system' as const,
+            content: messagePlan.systemContent,
+          },
+          {
+            role: 'user' as const,
+            content: messagePlan.userContent,
+          },
+        ],
+        0,
+        undefined,
+        { signal },
+      ),
       this.timeoutMs,
       signal,
     );
-    return parseRerankResponse(response, new Set(results.map((result) => result.entry.id)));
+    return planRerankResponseRust(
+      response,
+      results.map((result) => result.entry.id),
+    ) ?? [];
   }
 }
 
 function countKeywordMatches(queryTokens: string[], text: string): number {
-  const rustCount = countKeywordMatchesRust(queryTokens, text);
-  if (rustCount !== null) return rustCount;
-
-  if (queryTokens.length === 0) return 0;
-  const haystack = text.toLowerCase();
-  return queryTokens.filter((token) => haystack.includes(token.toLowerCase())).length;
+  return countKeywordMatchesRust(queryTokens, text) ?? 0;
 }
 
-function applyRerankOrder(
-  results: readonly QueryResult[],
-  rankedIds: readonly string[],
-): QueryResult[] {
-  if (rankedIds.length === 0) return [...results];
-
-  const byId = new Map(results.map((result) => [result.entry.id, result]));
-  const seen = new Set<string>();
-  const ordered: QueryResult[] = [];
-
-  for (const id of rankedIds) {
-    const result = byId.get(id);
-    if (!result || seen.has(id)) continue;
-    ordered.push(result);
-    seen.add(id);
-  }
-
-  if (ordered.length === 0) return [...results];
-  for (const result of results) {
-    if (!seen.has(result.entry.id)) ordered.push(result);
-  }
-  return ordered;
-}
-
-function buildRerankMessages(question: string, results: readonly QueryResult[]) {
-  const candidates = results.map((result, index) => ({
-    id: result.entry.id,
-    index,
-    sourcePath: result.sourcePath,
-    heading: result.entry.metadata.heading ?? '',
-    text: truncateForRerank(result.entry.metadata.text, 700),
-  }));
-
-  return [
-    {
-      role: 'system' as const,
-      content:
-        'You rerank retrieval candidates for an Obsidian RAG answer. Return JSON only: {"rankedIds":["candidate-id"]}. Rank candidates by direct usefulness as answer evidence. Do not invent ids.',
-    },
-    {
-      role: 'user' as const,
-      content: JSON.stringify({ question, candidates }),
-    },
-  ];
-}
-
-function parseRerankResponse(response: string, allowedIds: ReadonlySet<string>): string[] {
-  const parsed = parseJsonObject(response);
-  const rankedIds = Array.isArray(parsed?.rankedIds) ? parsed.rankedIds : [];
-  return rankedIds.filter((id): id is string => typeof id === 'string' && allowedIds.has(id));
-}
-
-function parseJsonObject(response: string): Record<string, unknown> | null {
-  const trimmed = response.trim();
-  const jsonText =
-    trimmed.startsWith('{') && trimmed.endsWith('}')
-      ? trimmed
-      : trimmed.match(/\{[\s\S]*\}/u)?.[0];
-  if (!jsonText) return null;
-  try {
-    const parsed = JSON.parse(jsonText) as unknown;
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function truncateForRerank(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars).trim()}...`;
-}
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   if (timeoutMs <= 0 && !signal) return promise;
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -414,232 +338,42 @@ function withTimeout<T>(
   });
 }
 
-function isRelevantResult(result: QueryResult, threshold: number, hasBm25: boolean): boolean {
-  if (!Number.isFinite(result.combinedScore) || !Number.isFinite(result.vectorScore)) {
-    return false;
-  }
-  if (hasStrongGraphOrStructuralEvidence(result)) return true;
-  if (result.combinedScore < threshold) return false;
-  if (hasGraphOrStructuralEvidence(result)) return true;
-  if (!hasBm25) return result.vectorScore >= Math.max(0.62, threshold);
-  if (result.bm25Score > 0 && result.keywordMatches > 0) return true;
-  return result.vectorScore >= Math.max(0.62, threshold + 0.08);
-}
-
-interface HybridScoreInput {
-  combinedBase: number;
-  rrfScore: number;
-  sourcePrior: number;
-  sourceEvidenceScore: number;
-  bestEvidenceRank?: number;
-  retrievalSources: readonly string[];
-}
-
-function calculateHybridScore(input: HybridScoreInput): number {
-  const rustScore = calculateHybridScoreRust(input);
-  if (rustScore !== null) return rustScore;
-
-  const baseScore =
-    VECTOR_SCORE_WEIGHT * input.combinedBase +
-    RRF_SCORE_WEIGHT * input.rrfScore +
-    SOURCE_PRIOR_WEIGHT * input.sourcePrior;
-  if (!hasGraphEvidenceSource(input.retrievalSources)) {
-    return baseScore;
-  }
-  if (!isStrongEvidence(input.sourceEvidenceScore, input.bestEvidenceRank)) {
-    return baseScore;
-  }
-
-  const evidenceScore = Math.max(0, Math.min(1, input.sourceEvidenceScore));
-  const evidenceAwareScore =
-    STRONG_EVIDENCE_SCORE_FLOOR + evidenceScore * 0.25 + input.rrfScore * 0.08;
-  return Math.max(baseScore, Math.min(STRONG_EVIDENCE_SCORE_CAP, evidenceAwareScore));
-}
-
-function hasStrongGraphOrStructuralEvidence(result: QueryResult): boolean {
-  if (!hasGraphOrStructuralEvidence(result)) return false;
-  const evidenceScore = result.sourceEvidenceScore ?? 0;
-  const rank = result.bestEvidenceRank ?? Number.POSITIVE_INFINITY;
-  return isStrongEvidence(evidenceScore, rank);
-}
-
-function hasGraphOrStructuralEvidence(result: QueryResult): boolean {
-  const sources = result.retrievalSources ?? [];
-  return hasGraphOrStructuralSource(sources);
-}
-
-function hasGraphOrStructuralSource(sources: readonly string[]): boolean {
-  return sources.some(
-    (source) =>
-      source === 'structural' ||
-      source === 'graph-local' ||
-      source === 'graph-global' ||
-      source === 'evidence',
+function selectRelevantResults(
+  results: readonly QueryResult[],
+  threshold: number,
+  hasBm25: boolean,
+): QueryResult[] {
+  const indexes = selectRelevantResultIndicesRust(
+    results.map((result) => ({
+      score: result.score,
+      vectorScore: result.vectorScore,
+      bm25Score: result.bm25Score,
+      keywordMatches: result.keywordMatches,
+      retrievalSources: result.retrievalSources ?? [],
+      sourceEvidenceScore: result.sourceEvidenceScore ?? 0,
+      bestEvidenceRank: result.bestEvidenceRank,
+    })),
+    threshold,
+    hasBm25,
   );
-}
-
-function hasGraphEvidenceSource(sources: readonly string[]): boolean {
-  return sources.some(
-    (source) =>
-      source === 'graph-local' ||
-      source === 'graph-global' ||
-      source === 'evidence',
-  );
-}
-
-function isStrongEvidence(evidenceScore: number, rank?: number): boolean {
-  return evidenceScore >= 0.7 || (rank ?? Number.POSITIVE_INFINITY) <= 2;
-}
-
-function calculateRrfScore(
-  sourceRanks: Partial<Record<string, number>>,
-  bm25Weight: number,
-): number {
-  const rustScore = calculateRrfScoreRust(sourceRanks, bm25Weight);
-  if (rustScore !== null) return rustScore;
-
-  let weightedScore = 0;
-  let totalWeight = 0;
-
-  for (const [source, rank] of Object.entries(sourceRanks)) {
-    if (typeof rank !== 'number' || rank < 1) continue;
-    const weight = getRrfSourceWeight(source, bm25Weight);
-    weightedScore += weight * (1 / (RRF_K + rank));
-    totalWeight += weight * (1 / (RRF_K + 1));
-  }
-
-  if (totalWeight === 0) return 0;
-  return weightedScore / totalWeight;
-}
-
-function getRrfSourceWeight(source: string, bm25Weight: number): number {
-  if (source === 'bm25') return Math.max(0.05, bm25Weight);
-  if (source === 'vector' || source === 'ann') return Math.max(0.05, 1 - bm25Weight);
-  if (source === 'graph-local' || source === 'graph-global' || source === 'evidence') return 0.2;
-  if (source === 'structural') return 0.12;
-  return 0.05;
-}
-
-function getRetrievalSourcePrior(
-  sourceScores: Partial<Record<string, number>>,
-): number {
-  const graphScore = Math.max(
-    sourceScores['graph-local'] ?? 0,
-    sourceScores['graph-global'] ?? 0,
-    sourceScores.evidence ?? 0,
-  );
-  const graphPrior = graphScore > 0 ? Math.min(0.35, 0.12 + graphScore * 0.2) : 0;
-  const structuralPrior =
-    typeof sourceScores.structural === 'number' ? Math.min(0.18, sourceScores.structural * 0.12) : 0;
-  const annPrior = typeof sourceScores.ann === 'number' ? Math.min(0.08, sourceScores.ann * 0.05) : 0;
-  return Math.max(graphPrior, structuralPrior, annPrior);
-}
-
-function getSourceEvidenceScore(sourceScores: Partial<Record<string, number>>): number {
-  return Math.max(
-    sourceScores['graph-local'] ?? 0,
-    sourceScores['graph-global'] ?? 0,
-    sourceScores.evidence ?? 0,
-    sourceScores.structural ?? 0,
-  );
-}
-
-function getBestEvidenceRank(sourceRanks: Partial<Record<string, number>>): number | undefined {
-  const ranks = [
-    sourceRanks['graph-local'],
-    sourceRanks['graph-global'],
-    sourceRanks.evidence,
-    sourceRanks.structural,
-  ].filter((rank): rank is number => typeof rank === 'number' && rank >= 1);
-  if (ranks.length === 0) return undefined;
-  return Math.min(...ranks);
+  if (indexes === null) return [];
+  return selectByRustIndices(results, indexes, { dedupe: true });
 }
 
 function selectDiverseResults(results: QueryResult[], topK: number): QueryResult[] {
   if (topK <= 0 || results.length <= topK) return results.slice(0, topK);
 
-  const rustSelected = selectDiverseResultsWithRust(results, topK);
-  if (rustSelected) return rustSelected;
-
-  const selected: QueryResult[] = [];
-  const remaining = [...results];
-
-  while (selected.length < topK && remaining.length > 0) {
-    let bestIndex = 0;
-    let bestSelectionScore = Number.NEGATIVE_INFINITY;
-    for (let index = 0; index < remaining.length; index++) {
-      const candidate = remaining[index];
-      const diversityPenalty = calculateDiversityPenalty(candidate, selected);
-      const maxSimilarity = selected.reduce(
-        (max, selectedResult) =>
-          Math.max(max, cosineSimilarity(candidate.entry.vector, selectedResult.entry.vector) ?? 0),
-        0,
-      );
-      const selectionScore =
-        MMR_RELEVANCE_WEIGHT * candidate.score -
-        (1 - MMR_RELEVANCE_WEIGHT) * maxSimilarity -
-        diversityPenalty;
-      if (selectionScore > bestSelectionScore) {
-        bestSelectionScore = selectionScore;
-        bestIndex = index;
-      }
-    }
-    const [next] = remaining.splice(bestIndex, 1);
-    selected.push(next);
-  }
-
-  return selected;
-}
-
-function selectDiverseResultsWithRust(
-  results: readonly QueryResult[],
-  topK: number,
-): QueryResult[] | null {
-  const sourceKeys = new Map<string, number>();
-  const headingKeys = new Map<string, number>();
-  const indexes = selectDiverseIndicesRust(
+  const indexes = planDiverseResultIndicesRust(
     results.map((result) => ({
       score: result.score,
       vector: result.entry.vector,
-      sourceKey: getOrCreateNumericKey(sourceKeys, result.sourcePath),
-      headingKey: result.entry.metadata.heading
-        ? getOrCreateNumericKey(headingKeys, result.entry.metadata.heading)
-        : 0,
+      sourcePath: result.sourcePath,
+      heading: result.entry.metadata.heading,
     })),
     topK,
   );
-  if (indexes === null) return null;
-
-  const selected: QueryResult[] = [];
-  for (const index of indexes) {
-    const result = results[index];
-    if (!result) return null;
-    selected.push(result);
-  }
-  return selected;
-}
-
-function getOrCreateNumericKey(keys: Map<string, number>, value: string): number {
-  const existing = keys.get(value);
-  if (existing !== undefined) return existing;
-  const nextKey = keys.size + 1;
-  keys.set(value, nextKey);
-  return nextKey;
-}
-
-function calculateDiversityPenalty(candidate: QueryResult, selected: readonly QueryResult[]): number {
-  let penalty = 0;
-  for (const selectedResult of selected) {
-    if (candidate.sourcePath !== selectedResult.sourcePath) continue;
-    penalty = Math.max(penalty, SAME_FILE_DIVERSITY_PENALTY);
-    if (
-      candidate.entry.metadata.heading &&
-      candidate.entry.metadata.heading === selectedResult.entry.metadata.heading
-    ) {
-      penalty = Math.max(penalty, SAME_FILE_DIVERSITY_PENALTY + SAME_HEADING_DIVERSITY_PENALTY);
-    }
-  }
-  return penalty;
+  if (indexes === null || indexes.length === 0) return [];
+  return selectByRustIndices(results, indexes, { dedupe: true });
 }
 
 function yieldToEventLoop(): Promise<void> {

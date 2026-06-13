@@ -1,7 +1,19 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { writeJsonToVault, readJsonFromVault } from '../utils/vault';
-import { rankTopKPairsRust } from './rust-core';
+import {
+  planFileIndexRecordsRust,
+  planVectorStoreAddRust,
+  planVectorStoreLookupByFilePathsRust,
+  planVectorStoreLookupByIdsRust,
+  planVectorStoreRemoveFileRust,
+  planVectorStoreReplaceFileRust,
+  planVectorStoreStatsRust,
+  rankTopKPairsRust,
+  type RustVectorStoreMutationPlan,
+  type RustFileIndexEntryInput,
+} from './rust-core';
+import { selectByRustIndices } from '../utils/rust-index-plan';
 
 export interface VectorEntry {
   id: string;
@@ -79,29 +91,13 @@ class VectorStoreDB extends Dexie {
   }
 }
 
-function cosineSimilarity(a: number[], b: number[]): number | null {
-  if (a.length === 0 || a.length !== b.length) return null;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) return null;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-const QUERY_YIELD_INTERVAL = 256;
-
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('Aborted', 'AbortError');
   }
 }
 
-async function scoredQuery(
+function scoredQuery(
   entries: VectorEntry[],
   vector: number[],
   topK: number,
@@ -117,29 +113,17 @@ async function scoredQuery(
     throwIfAborted(signal);
     const selected: VectorEntry[] = [];
     for (const result of rustScores) {
-      const entry = entries[result.index];
+      const resultIndex = result.index;
+      if (!Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex >= entries.length) {
+        continue;
+      }
+      const entry = entries[resultIndex];
       if (entry) selected.push(entry);
     }
-    return selected;
+    return Promise.resolve(selected);
   }
 
-  const scored: Array<{ entry: VectorEntry; score: number }> = [];
-  for (let index = 0; index < entries.length; index++) {
-    throwIfAborted(signal);
-    const entry = entries[index];
-    const score = cosineSimilarity(vector, entry.vector);
-    if (score === null) continue;
-    scored.push({
-      entry,
-      score,
-    });
-    if (index > 0 && index % QUERY_YIELD_INTERVAL === 0) {
-      await yieldToEventLoop();
-    }
-  }
-  throwIfAborted(signal);
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK).map((s) => s.entry);
+  return Promise.resolve([]);
 }
 
 /** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
@@ -159,7 +143,7 @@ export class IndexedDbVectorStore implements VectorStore {
       updated: now,
     }));
     await this.db.vectors.bulkPut(records);
-    await this.upsertFileIndexRecords(groupEntriesByFilePath(newEntries), now);
+    await this.upsertFileIndexRecords(newEntries, now);
     this.entriesCache = null;
   }
 
@@ -177,7 +161,12 @@ export class IndexedDbVectorStore implements VectorStore {
       }
     });
     if (entries.length > 0) {
-      await this.db.fileIndex.put(createFileIndexRecord(filePath, entries, now));
+      const [record] = fileIndexRecordsFromRust(entries, now);
+      if (record) {
+        await this.db.fileIndex.put(record);
+      } else {
+        await this.db.fileIndex.delete(filePath);
+      }
     } else {
       await this.db.fileIndex.delete(filePath);
     }
@@ -288,12 +277,10 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   private async upsertFileIndexRecords(
-    entriesByPath: Map<string, VectorEntry[]>,
+    entries: readonly VectorEntry[],
     updated: number,
   ): Promise<void> {
-    const records = [...entriesByPath.entries()].map(([filePath, entries]) =>
-      createFileIndexRecord(filePath, entries, updated),
-    );
+    const records = fileIndexRecordsFromRust(entries, updated);
     if (records.length > 0) {
       await this.db.fileIndex.bulkPut(records);
     }
@@ -301,14 +288,7 @@ export class IndexedDbVectorStore implements VectorStore {
 
   private async rebuildFileIndexFromVectors(): Promise<void> {
     const records = await this.db.vectors.toArray();
-    const grouped = groupEntriesByFilePath(records);
-    const fileRecords = [...grouped.entries()].map(([filePath, entries]) =>
-      createFileIndexRecord(
-        filePath,
-        entries,
-        entries.reduce((latest, entry) => Math.max(latest, entry.updated), 0),
-      ),
-    );
+    const fileRecords = fileIndexRecordsFromRust(records, 0);
     if (fileRecords.length > 0) {
       await this.db.fileIndex.bulkPut(fileRecords);
     }
@@ -335,31 +315,44 @@ export class JsonFileVectorStore implements VectorStore {
 
   async add(newEntries: VectorEntry[]): Promise<void> {
     await this.loadIfNeeded();
-    const seen = new Set(this.entries.map((e) => e.id));
-    for (const entry of newEntries) {
-      if (seen.has(entry.id)) {
-        const idx = this.entries.findIndex((e) => e.id === entry.id);
-        if (idx !== -1) this.entries[idx] = entry;
-      } else {
-        this.entries.push(entry);
-        seen.add(entry.id);
-      }
-    }
+    this.entries = applyVectorStoreMutationPlan(
+      this.entries,
+      newEntries,
+      planVectorStoreAddRust(
+        this.entries.map((entry) => entry.id),
+        newEntries.map((entry) => entry.id),
+      ),
+      { mode: 'add' },
+    );
     await this.persistIfNeeded();
   }
 
   async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
     await this.loadIfNeeded();
-    this.entries = this.entries.filter((entry) => entry.metadata.filePath !== filePath);
-    this.entries.push(...entries);
+    this.entries = applyVectorStoreMutationPlan(
+      this.entries,
+      entries,
+      planVectorStoreReplaceFileRust(
+        this.entries.map((entry) => entry.metadata.filePath),
+        filePath,
+        entries.length,
+      ),
+      { mode: 'replace', filePath },
+    );
     await this.persistIfNeeded();
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
     await this.loadIfNeeded();
-    const before = this.entries.length;
-    this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
-    const removed = before - this.entries.length;
+    const plan = planVectorStoreRemoveFileRust(
+      this.entries.map((entry) => entry.metadata.filePath),
+      filePath,
+    );
+    const removed = plan?.removedCount ?? countEntriesForFilePath(this.entries, filePath);
+    this.entries = applyVectorStoreMutationPlan(this.entries, [], plan, {
+      mode: 'remove',
+      filePath,
+    });
     if (removed > 0) {
       await this.persistIfNeeded();
     }
@@ -423,37 +416,34 @@ export class JsonFileVectorStore implements VectorStore {
 
   async getStats(): Promise<VectorStoreStats> {
     await this.loadIfNeeded();
-    const uniqueFiles = new Set(this.entries.map((e) => e.metadata.filePath));
-    const totalFiles = uniqueFiles.size;
+    const stats = vectorStoreStatsFromRust(this.entries);
     return {
-      totalEntries: this.entries.length,
-      totalFiles,
-      totalVectors: this.entries.length,
-      averageVectorsPerFile: totalFiles > 0 ? this.entries.length / totalFiles : 0,
-      lastUpdated: this.entries.length > 0 ? Date.now() : null,
+      totalEntries: stats.totalEntries,
+      totalFiles: stats.totalFiles,
+      totalVectors: stats.totalVectors,
+      averageVectorsPerFile: stats.averageVectorsPerFile,
+      lastUpdated: stats.lastUpdated,
     };
   }
 
   async getIndexedFilePaths(): Promise<string[]> {
     await this.loadIfNeeded();
-    return [...new Set(this.entries.map((e) => e.metadata.filePath))];
+    return vectorStoreStatsFromRust(this.entries).indexedFilePaths;
   }
 
   async getFileIndexRecords(): Promise<FileIndexRecord[]> {
     await this.loadIfNeeded();
-    return createFileIndexRecordsFromEntries(this.entries, Date.now());
+    return fileIndexRecordsFromRust(this.entries, Date.now());
   }
 
   async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    const allowed = new Set(filePaths);
-    return copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath)));
+    return copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByFilePaths(this.entries, filePaths)));
   }
 
   async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
-    return copyEntries(ids.map((id) => byId.get(id)).filter((entry): entry is VectorEntry => entry !== undefined));
+    return copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByIds(this.entries, ids)));
   }
 
   async getEntries(): Promise<VectorEntry[]> {
@@ -471,29 +461,43 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
-    const seen = new Set(this.entries.map((e) => e.id));
-    for (const entry of newEntries) {
-      if (seen.has(entry.id)) {
-        const idx = this.entries.findIndex((e) => e.id === entry.id);
-        if (idx !== -1) this.entries[idx] = entry;
-      } else {
-        this.entries.push(entry);
-        seen.add(entry.id);
-      }
-    }
+    this.entries = applyVectorStoreMutationPlan(
+      this.entries,
+      newEntries,
+      planVectorStoreAddRust(
+        this.entries.map((entry) => entry.id),
+        newEntries.map((entry) => entry.id),
+      ),
+      { mode: 'add' },
+    );
     await this.persist();
   }
 
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
-    this.entries = this.entries.filter((entry) => entry.metadata.filePath !== filePath);
-    this.entries.push(...entries);
+    this.entries = applyVectorStoreMutationPlan(
+      this.entries,
+      entries,
+      planVectorStoreReplaceFileRust(
+        this.entries.map((entry) => entry.metadata.filePath),
+        filePath,
+        entries.length,
+      ),
+      { mode: 'replace', filePath },
+    );
     return Promise.resolve();
   }
 
   removeByFilePath(filePath: string): Promise<number> {
-    const before = this.entries.length;
-    this.entries = this.entries.filter((e) => e.metadata.filePath !== filePath);
-    return Promise.resolve(before - this.entries.length);
+    const plan = planVectorStoreRemoveFileRust(
+      this.entries.map((entry) => entry.metadata.filePath),
+      filePath,
+    );
+    const removed = plan?.removedCount ?? countEntriesForFilePath(this.entries, filePath);
+    this.entries = applyVectorStoreMutationPlan(this.entries, [], plan, {
+      mode: 'remove',
+      filePath,
+    });
+    return Promise.resolve(removed);
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
@@ -514,34 +518,33 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   getStats(): Promise<VectorStoreStats> {
-    const uniqueFiles = new Set(this.entries.map((e) => e.metadata.filePath));
-    const totalFiles = uniqueFiles.size;
+    const stats = vectorStoreStatsFromRust(this.entries);
     return Promise.resolve({
-      totalEntries: this.entries.length,
-      totalFiles,
-      totalVectors: this.entries.length,
-      averageVectorsPerFile: totalFiles > 0 ? this.entries.length / totalFiles : 0,
-      lastUpdated: this.entries.length > 0 ? Date.now() : null,
+      totalEntries: stats.totalEntries,
+      totalFiles: stats.totalFiles,
+      totalVectors: stats.totalVectors,
+      averageVectorsPerFile: stats.averageVectorsPerFile,
+      lastUpdated: stats.lastUpdated,
     });
   }
 
   getIndexedFilePaths(): Promise<string[]> {
-    return Promise.resolve([...new Set(this.entries.map((e) => e.metadata.filePath))]);
+    return Promise.resolve(vectorStoreStatsFromRust(this.entries).indexedFilePaths);
   }
 
   getFileIndexRecords(): Promise<FileIndexRecord[]> {
-    return Promise.resolve(createFileIndexRecordsFromEntries(this.entries, Date.now()));
+    return Promise.resolve(fileIndexRecordsFromRust(this.entries, Date.now()));
   }
 
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
-    const allowed = new Set(filePaths);
-    return Promise.resolve(copyEntries(this.entries.filter((entry) => allowed.has(entry.metadata.filePath))));
+    return Promise.resolve(
+      copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByFilePaths(this.entries, filePaths))),
+    );
   }
 
   getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
-    const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
     return Promise.resolve(
-      copyEntries(ids.map((id) => byId.get(id)).filter((entry): entry is VectorEntry => entry !== undefined)),
+      copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByIds(this.entries, ids))),
     );
   }
 
@@ -550,57 +553,285 @@ export class MemoryVectorStore implements VectorStore {
   }
 }
 
-function groupEntriesByFilePath<T extends VectorEntry>(entries: readonly T[]): Map<string, T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const entry of entries) {
-    const path = entry.metadata.filePath;
-    const existing = grouped.get(path);
-    if (existing) {
-      existing.push(entry);
-    } else {
-      grouped.set(path, [entry]);
+function fileIndexRecordsFromRust(entries: readonly VectorEntry[], updated: number): FileIndexRecord[] {
+  const records = planFileIndexRecordsRust(
+    entries.map((entry) => {
+      const indexedRecord = entry as VectorEntry & { updated?: number };
+      return {
+        filePath: entry.metadata.filePath,
+        sourceMtime: entry.metadata.sourceMtime,
+        sourceSize: entry.metadata.sourceSize,
+        contentHash: entry.metadata.contentHash,
+        indexedAt: entry.metadata.indexedAt,
+        endLine: entry.metadata.endLine,
+        embeddingProvider: entry.metadata.embeddingProvider,
+        embeddingModel: entry.metadata.embeddingModel,
+        updated: indexedRecord.updated,
+      } satisfies RustFileIndexEntryInput;
+    }),
+    updated,
+  );
+  if (records === null) return [];
+
+  return records.map((record) => ({
+    filePath: record.filePath,
+    sourceMtime: record.sourceMtime,
+    sourceSize: record.sourceSize,
+    contentHash: record.contentHash,
+    indexedAt: record.indexedAt,
+    embeddingProvider: record.embeddingProvider,
+    embeddingModel: record.embeddingModel,
+    hasCompleteMetadata: record.hasCompleteMetadata,
+    vectorCount: record.vectorCount,
+    updated: record.updated,
+  }));
+}
+
+function applyVectorStoreMutationPlan(
+  existingEntries: readonly VectorEntry[],
+  incomingEntries: readonly VectorEntry[],
+  plan: RustVectorStoreMutationPlan | null,
+  options?: { mode: VectorStoreMutationMode; filePath?: string },
+): VectorEntry[] {
+  if (plan === null) {
+    return applyVectorStoreMutationPlanFallback(existingEntries, incomingEntries, options);
+  }
+
+  const nextEntries: VectorEntry[] = [];
+  for (const source of plan.sources) {
+    const sourceEntries = source.source === 'existing' ? existingEntries : incomingEntries;
+    const sourceIndex = source.index;
+    if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= sourceEntries.length) {
+      continue;
+    }
+    const entry = sourceEntries[sourceIndex];
+    if (entry !== undefined) {
+      nextEntries.push(entry);
     }
   }
-  return grouped;
+  return copyEntries(nextEntries);
 }
 
-function createFileIndexRecordsFromEntries(
-  entries: readonly VectorEntry[],
-  updated: number,
-): FileIndexRecord[] {
-  return [...groupEntriesByFilePath(entries).entries()].map(([filePath, fileEntries]) =>
-    createFileIndexRecord(filePath, fileEntries, updated),
+function vectorStoreStatsFromRust(entries: readonly VectorEntry[]): VectorStoreStats & {
+  indexedFilePaths: string[];
+} {
+  const plan = planVectorStoreStatsRust(
+    entries.map((entry) => entry.metadata.filePath),
+    Date.now(),
   );
+  if (plan === null) {
+    return vectorStoreStatsFallback(entries);
+  }
+  return plan;
 }
 
-function createFileIndexRecord(
-  filePath: string,
+function vectorStoreLookupByFilePaths(
   entries: readonly VectorEntry[],
-  updated: number,
-): FileIndexRecord {
-  const first = entries[0];
-  const hasCompleteMetadata = entries.every(
-    (entry) =>
-      typeof entry.metadata.sourceMtime === 'number' &&
-      typeof entry.metadata.sourceSize === 'number' &&
-      typeof entry.metadata.contentHash === 'string' &&
-      typeof entry.metadata.indexedAt === 'number' &&
-      typeof entry.metadata.endLine === 'number' &&
-      typeof entry.metadata.embeddingProvider === 'string' &&
-      typeof entry.metadata.embeddingModel === 'string',
+  filePaths: readonly string[],
+): number[] {
+  const plan = planVectorStoreLookupByFilePathsRust(
+    entries.map((entry) => entry.metadata.filePath),
+    filePaths,
   );
+  if (plan === null) {
+    return vectorStoreLookupByFilePathsFallback(
+      entries.map((entry) => entry.metadata.filePath),
+      filePaths,
+    );
+  }
+  return plan;
+}
+
+function vectorStoreLookupByIds(entries: readonly VectorEntry[], ids: readonly string[]): number[] {
+  const plan = planVectorStoreLookupByIdsRust(
+    entries.map((entry) => entry.id),
+    ids,
+  );
+  if (plan === null) {
+    return vectorStoreLookupByIdsFallback(
+      entries.map((entry) => entry.id),
+      ids,
+    );
+  }
+  return plan;
+}
+
+function selectEntriesByIndexPlan(
+  entries: readonly VectorEntry[],
+  indexes: readonly number[],
+): VectorEntry[] {
+  return selectByRustIndices(entries, indexes, { dedupe: true });
+}
+
+type VectorStoreMutationMode = 'add' | 'replace' | 'remove';
+
+function applyVectorStoreMutationPlanFallback(
+  existingEntries: readonly VectorEntry[],
+  incomingEntries: readonly VectorEntry[],
+  options?: { mode: VectorStoreMutationMode; filePath?: string },
+): VectorEntry[] {
+  if (!options) {
+    return addEntriesFallback(existingEntries, incomingEntries);
+  }
+
+  if (options.mode === 'replace') {
+    return replaceFileEntriesFallback(existingEntries, incomingEntries, options.filePath);
+  }
+  if (options.mode === 'remove') {
+    return removeFileEntriesFallback(existingEntries, options.filePath ?? '');
+  }
+  return addEntriesFallback(existingEntries, incomingEntries);
+}
+
+function addEntriesFallback(
+  existingEntries: readonly VectorEntry[],
+  incomingEntries: readonly VectorEntry[],
+): VectorEntry[] {
+  const latestIncomingIndexById = new Map<string, number>();
+  for (let index = 0; index < incomingEntries.length; index++) {
+    const incoming = incomingEntries[index];
+    if (incoming === undefined) {
+      continue;
+    }
+    latestIncomingIndexById.set(incoming.id, index);
+  }
+
+  const existingIdSet = new Set(existingEntries.map((entry) => entry.id));
+  const usedIncomingIndices = new Set<number>();
+  const nextEntries: VectorEntry[] = [];
+  for (let index = 0; index < existingEntries.length; index++) {
+    const existingEntry = existingEntries[index];
+    if (!existingEntry) {
+      continue;
+    }
+    const incomingIndex = latestIncomingIndexById.get(existingEntry.id);
+    if (incomingIndex === undefined) {
+      nextEntries.push(existingEntry);
+      continue;
+    }
+    const incomingEntry = incomingEntries[incomingIndex];
+    if (!incomingEntry) {
+      nextEntries.push(existingEntry);
+      continue;
+    }
+    usedIncomingIndices.add(incomingIndex);
+    nextEntries.push(incomingEntry);
+  }
+
+  for (let index = 0; index < incomingEntries.length; index++) {
+    const incomingEntry = incomingEntries[index];
+    if (!incomingEntry) {
+      continue;
+    }
+    const incomingId = incomingEntry.id;
+    const isLatestForId = latestIncomingIndexById.get(incomingId) === index;
+    if (!isLatestForId || existingIdSet.has(incomingId) || usedIncomingIndices.has(index)) {
+      continue;
+    }
+    usedIncomingIndices.add(index);
+    nextEntries.push(incomingEntry);
+  }
+  return copyEntries(nextEntries);
+}
+
+function replaceFileEntriesFallback(
+  existingEntries: readonly VectorEntry[],
+  incomingEntries: readonly VectorEntry[],
+  filePath?: string,
+): VectorEntry[] {
+  const fallbackFilePath = filePath ?? '';
+  const nextEntries: VectorEntry[] = [];
+  let incomingIndex = 0;
+  for (let index = 0; index < existingEntries.length; index++) {
+    const existingEntry = existingEntries[index];
+    if (!existingEntry) {
+      continue;
+    }
+    if (existingEntry.metadata.filePath === fallbackFilePath) {
+      if (incomingIndex < incomingEntries.length) {
+        const incomingEntry = incomingEntries[incomingIndex];
+        if (incomingEntry) {
+          nextEntries.push(incomingEntry);
+        }
+        incomingIndex += 1;
+      }
+    } else {
+      nextEntries.push(existingEntry);
+    }
+  }
+  while (incomingIndex < incomingEntries.length) {
+    const incomingEntry = incomingEntries[incomingIndex];
+    if (incomingEntry) {
+      nextEntries.push(incomingEntry);
+    }
+    incomingIndex += 1;
+  }
+  return copyEntries(nextEntries);
+}
+
+function removeFileEntriesFallback(existingEntries: readonly VectorEntry[], filePath: string): VectorEntry[] {
+  return copyEntries(existingEntries.filter((entry) => entry.metadata.filePath !== filePath));
+}
+
+function countEntriesForFilePath(existingEntries: readonly VectorEntry[], filePath: string): number {
+  let removedCount = 0;
+  for (let index = 0; index < existingEntries.length; index++) {
+    const entry = existingEntries[index];
+    if (entry.metadata.filePath === filePath) {
+      removedCount++;
+    }
+  }
+  return removedCount;
+}
+
+function vectorStoreStatsFallback(entries: readonly VectorEntry[]): VectorStoreStats & {
+  indexedFilePaths: string[];
+} {
+  const filePaths = entries.map((entry) => entry.metadata.filePath);
+  const indexedFilePaths = [...new Set(filePaths)].sort();
   return {
-    filePath,
-    sourceMtime: hasCompleteMetadata ? first?.metadata.sourceMtime : undefined,
-    sourceSize: hasCompleteMetadata ? first?.metadata.sourceSize : undefined,
-    contentHash: hasCompleteMetadata ? first?.metadata.contentHash : undefined,
-    indexedAt: hasCompleteMetadata ? first?.metadata.indexedAt : undefined,
-    embeddingProvider: hasCompleteMetadata ? first?.metadata.embeddingProvider : undefined,
-    embeddingModel: hasCompleteMetadata ? first?.metadata.embeddingModel : undefined,
-    hasCompleteMetadata,
-    vectorCount: entries.length,
-    updated,
+    totalEntries: filePaths.length,
+    totalFiles: indexedFilePaths.length,
+    totalVectors: filePaths.length,
+    averageVectorsPerFile:
+      indexedFilePaths.length > 0 ? filePaths.length / indexedFilePaths.length : 0,
+    lastUpdated: indexedFilePaths.length > 0 ? Date.now() : null,
+    indexedFilePaths,
   };
+}
+
+function vectorStoreLookupByFilePathsFallback(
+  entryFilePaths: readonly string[],
+  requestedFilePaths: readonly string[],
+): number[] {
+  const requested = new Set(requestedFilePaths);
+  const indexes: number[] = [];
+  for (let index = 0; index < entryFilePaths.length; index++) {
+    const entryPath = entryFilePaths[index];
+    if (entryPath !== undefined && requested.has(entryPath)) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+function vectorStoreLookupByIdsFallback(entryIds: readonly string[], requestedIds: readonly string[]): number[] {
+  const locationById = new Map<string, number>();
+  for (let index = 0; index < entryIds.length; index++) {
+    const entryId = entryIds[index];
+    if (!locationById.has(entryId)) {
+      locationById.set(entryId, index);
+    }
+  }
+
+  const indexes: number[] = [];
+  for (const requestedId of requestedIds) {
+    const found = locationById.get(requestedId);
+    if (found !== undefined) {
+      indexes.push(found);
+    }
+  }
+  return indexes;
 }
 
 function copyEntries(entries: readonly VectorEntry[]): VectorEntry[] {
@@ -609,10 +840,4 @@ function copyEntries(entries: readonly VectorEntry[]): VectorEntry[] {
     vector: [...entry.vector],
     metadata: { ...entry.metadata },
   }));
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
 }

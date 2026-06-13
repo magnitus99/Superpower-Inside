@@ -12,9 +12,10 @@ import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { JsonFileBM25Index } from './bm25';
 import { createContentHash } from './hash';
-import { chunkMarkdownRust, chunkPlainTextRust } from './rust-core';
+import { chunkMarkdownRust, chunkPlainTextRust, planIndexPendingFilesRust } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
+import { normalizeRustIndices } from '../utils/rust-index-plan';
 
 export class IndexingCancelledError extends Error {
   constructor() {
@@ -91,6 +92,24 @@ async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
+function buildPendingPlanFromUpdatePaths(
+  filePaths: readonly string[],
+  updatePaths: readonly string[],
+): { fileIndices: number[]; skipped: number } {
+  const updatePathSet = new Set(updatePaths);
+  const fileIndices: number[] = [];
+  for (let index = 0; index < filePaths.length; index++) {
+    const filePath = filePaths[index];
+    if (filePath !== undefined && updatePathSet.has(filePath)) {
+      fileIndices.push(index);
+    }
+  }
+  return {
+    fileIndices,
+    skipped: Math.max(filePaths.length - fileIndices.length, 0),
+  };
+}
+
 export interface Chunk {
   text: string;
   metadata: {
@@ -101,274 +120,16 @@ export interface Chunk {
   };
 }
 
-interface TextSegment {
-  text: string;
-  startLine: number;
-  endLine: number;
-}
-
-function splitTextToSegments(
-  text: string,
-  initialLine: number,
-  maxChunkSize: number,
-): TextSegment[] {
-  const maxSize = Math.max(1, Math.floor(maxChunkSize));
-  const lines = text.split('\n');
-  const segments: TextSegment[] = [];
-  let currentLines: string[] = [];
-  let currentStartLine = initialLine;
-  let currentLength = 0;
-
-  const flush = (endLine: number): void => {
-    const segmentText = currentLines.join('\n').trim();
-    if (segmentText) {
-      segments.push({
-        text: segmentText,
-        startLine: currentStartLine,
-        endLine,
-      });
-    }
-    currentLines = [];
-    currentLength = 0;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lineNumber = initialLine + i;
-
-    if (line.length > maxSize) {
-      flush(lineNumber - 1);
-      for (let offset = 0; offset < line.length; offset += maxSize) {
-        const piece = line.slice(offset, offset + maxSize).trim();
-        if (!piece) continue;
-        segments.push({
-          text: piece,
-          startLine: lineNumber,
-          endLine: lineNumber,
-        });
-      }
-      currentStartLine = lineNumber + 1;
-      continue;
-    }
-
-    const nextLength = currentLines.length === 0 ? line.length : currentLength + 1 + line.length;
-    if (currentLines.length > 0 && nextLength > maxSize) {
-      flush(lineNumber - 1);
-      currentStartLine = lineNumber;
-    }
-
-    currentLines.push(line);
-    currentLength = currentLines.length === 1 ? line.length : currentLength + 1 + line.length;
-  }
-
-  if (currentLines.length > 0) {
-    flush(initialLine + lines.length - 1);
-  }
-
-  return segments;
-}
-
-function enforceChunkSize(chunks: Chunk[], maxChunkSize: number): Chunk[] {
-  return chunks.flatMap((chunk) => {
-    if (chunk.text.length <= maxChunkSize) return [chunk];
-    return splitTextToSegments(chunk.text, chunk.metadata.startLine, maxChunkSize).map(
-      (segment) => ({
-        ...chunk,
-        text: segment.text,
-        metadata: {
-          ...chunk.metadata,
-          startLine: segment.startLine,
-          endLine: segment.endLine,
-        },
-      }),
-    );
-  });
-}
-
-function getTrailingOverlap(text: string, maxChars: number): string {
-  if (maxChars <= 0) return '';
-  if (text.length <= maxChars) return text.trim();
-
-  const tail = text.slice(-maxChars);
-  const firstNewline = tail.indexOf('\n');
-  if (firstNewline > 0 && firstNewline < tail.length - 1) {
-    return tail.slice(firstNewline + 1).trim();
-  }
-  return tail.trim();
-}
-
-function applyLineOverlap(chunks: Chunk[], overlapChars: number, maxChunkSize: number): Chunk[] {
-  if (overlapChars <= 0 || chunks.length <= 1) return chunks;
-
-  return chunks.map((chunk, index) => {
-    if (index === 0) return chunk;
-    const previous = chunks[index - 1];
-    const maxOverlapChars = Math.min(overlapChars, maxChunkSize - chunk.text.length - 1);
-    const overlapText = getTrailingOverlap(previous.text, maxOverlapChars);
-    if (!overlapText) return chunk;
-
-    const overlapLineCount = overlapText.split('\n').length;
-    const startLine = Math.max(
-      previous.metadata.startLine,
-      chunk.metadata.startLine - overlapLineCount,
-    );
-    return {
-      ...chunk,
-      text: `${overlapText}\n${chunk.text}`.trim(),
-      metadata: {
-        ...chunk.metadata,
-        startLine,
-      },
-    };
-  });
-}
-
-function finalizeChunks(chunks: Chunk[], maxChunkSize: number, overlapChars: number): Chunk[] {
-  const sizedChunks = enforceChunkSize(chunks, maxChunkSize);
-  return applyLineOverlap(sizedChunks, overlapChars, maxChunkSize);
-}
-
 /** 마크다운을 헤딩/코드블록/단락을 존중하며 청킹합니다. */
 export function chunkMarkdown(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
   const rustChunks = chunkMarkdownRust(content, maxChunkSize, overlapChars);
-  if (rustChunks !== null) return rustChunks;
-
-  const lines = content.split('\n');
-  const chunks: Chunk[] = [];
-  let currentLines: string[] = [];
-  let currentHeading: string | undefined;
-  let startLine = 0;
-  let inCodeBlock = false;
-
-  const flush = (endLine: number) => {
-    const text = currentLines.join('\n').trim();
-    if (!text) return;
-    chunks.push({
-      text,
-      metadata: {
-        filePath: '',
-        heading: currentHeading,
-        startLine,
-        endLine,
-      },
-    });
-    currentLines = [];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      currentLines.push(line);
-      if (!inCodeBlock) {
-        const chunkText = currentLines.join('\n');
-        if (chunkText.length > maxChunkSize) {
-          flush(i);
-          startLine = i + 1;
-        }
-      }
-      continue;
-    }
-
-    if (!inCodeBlock && line.startsWith('#')) {
-      if (currentLines.length > 0) {
-        flush(i - 1);
-      }
-      currentHeading = line.replace(/^#+\s*/, '').trim();
-      startLine = i;
-      currentLines = [line];
-      continue;
-    }
-
-    currentLines.push(line);
-    const chunkText = currentLines.join('\n');
-
-    if (!inCodeBlock && chunkText.length >= maxChunkSize) {
-      const lastParaBreak = chunkText.lastIndexOf('\n\n');
-      if (lastParaBreak > maxChunkSize * 0.5) {
-        const splitIdx = currentLines.findIndex((_, idx) => {
-          const partial = currentLines.slice(0, idx + 1).join('\n');
-          return partial.length >= lastParaBreak;
-        });
-        if (splitIdx !== -1) {
-          const part = currentLines.slice(0, splitIdx + 1);
-          const rest = currentLines.slice(splitIdx + 1);
-          currentLines = part;
-          flush(i);
-          currentLines = rest;
-          startLine = i - rest.length + 1;
-        } else {
-          flush(i);
-          startLine = i + 1;
-        }
-      } else {
-        flush(i);
-        startLine = i + 1;
-      }
-    }
-  }
-
-  if (currentLines.length > 0) {
-    flush(lines.length - 1);
-  }
-
-  return finalizeChunks(chunks, maxChunkSize, overlapChars);
+  return rustChunks ?? [];
 }
 
 /** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
 export function chunkPlainText(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
   const rustChunks = chunkPlainTextRust(content, maxChunkSize, overlapChars);
-  if (rustChunks !== null) return rustChunks;
-
-  const lines = content.split('\n');
-  const chunks: Chunk[] = [];
-  let currentLines: string[] = [];
-  let startLine = 0;
-
-  const flush = (endLine: number): void => {
-    const text = currentLines.join('\n').trim();
-    if (!text) return;
-    chunks.push({
-      text,
-      metadata: {
-        filePath: '',
-        startLine,
-        endLine,
-      },
-    });
-    currentLines = [];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    currentLines.push(lines[i]);
-    const chunkText = currentLines.join('\n');
-    if (chunkText.length < maxChunkSize) continue;
-
-    const lastBlankLine = currentLines
-      .map((line, index) => ({ line, index }))
-      .filter((item) => item.line.trim() === '')
-      .at(-1)?.index;
-
-    if (lastBlankLine !== undefined && lastBlankLine > 0) {
-      const part = currentLines.slice(0, lastBlankLine + 1);
-      const rest = currentLines.slice(lastBlankLine + 1);
-      currentLines = part;
-      flush(i - rest.length);
-      currentLines = rest;
-      startLine = i - rest.length + 1;
-      continue;
-    }
-
-    flush(i);
-    startLine = i + 1;
-  }
-
-  if (currentLines.length > 0) {
-    flush(lines.length - 1);
-  }
-
-  return finalizeChunks(chunks, maxChunkSize, overlapChars);
+  return rustChunks ?? [];
 }
 
 export function buildSearchText(file: TFile, chunk: Chunk): string {
@@ -570,7 +331,6 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
-    const filesByPath = new Map(files.map((file) => [file.path, file]));
     const status = await calculateRagStatus(
       this.vault,
       this.vectorStore,
@@ -579,23 +339,35 @@ export class VaultIndexer {
       options.signal,
     );
     throwIfIndexingCancelled(options.signal);
-    const updatePaths = new Set(status.updateRequiredDocuments.map((document) => document.path));
+    const candidatePaths = files.map((file) => file.path);
+    const requiredPaths = status.updateRequiredDocuments.map((document) => document.path);
+    const pendingPlan =
+      planIndexPendingFilesRust(candidatePaths, requiredPaths) ??
+      buildPendingPlanFromUpdatePaths(candidatePaths, requiredPaths);
+
+    const normalizedPendingPlanFileIndices = normalizeRustIndices(
+      [...new Set(pendingPlan.fileIndices)],
+      files.length,
+      {
+        dedupe: true,
+      },
+    );
+    const normalizedPendingPlan = {
+      fileIndices: normalizedPendingPlanFileIndices,
+      skipped: Math.max(candidatePaths.length - normalizedPendingPlanFileIndices.length, 0),
+    };
 
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      for (let i = 0; i < files.length; i++) {
+      batchResult.skipped = normalizedPendingPlan.skipped;
+      for (let i = 0; i < normalizedPendingPlan.fileIndices.length; i++) {
         throwIfIndexingCancelled(options.signal);
-        const file = files[i];
-        if (!updatePaths.has(file.path)) {
-          batchResult.skipped++;
+        const file = files[normalizedPendingPlan.fileIndices[i]];
+        if (!file) {
+          batchResult.skipped += 1;
           continue;
         }
-        const targetFile = filesByPath.get(file.path);
-        if (!targetFile) {
-          batchResult.skipped++;
-          continue;
-        }
-        const fileResult = await this.indexFile(targetFile, options);
+        const fileResult = await this.indexFile(file, options);
         throwIfIndexingCancelled(options.signal);
         batchResult.indexed += fileResult.indexed;
         batchResult.vectors += fileResult.vectors;

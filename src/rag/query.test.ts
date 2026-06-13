@@ -1,6 +1,7 @@
 import type { DataAdapter, TFile } from 'obsidian';
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
+import type { LLMProvider } from '../llm/providers';
 import { DEFAULT_ONTOLOGY_SCHEMA } from '../ontology/schema';
 import { GraphRagQueryEngine } from '../graph/query-engine';
 import {
@@ -10,7 +11,7 @@ import {
   type GraphRelationRecord,
 } from '../graph/store';
 import { JsonFileBM25Index } from './bm25';
-import { RAGQueryEngine } from './query';
+import { LLMRAGResultReranker, RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 describe('RAGQueryEngine', () => {
@@ -48,6 +49,30 @@ describe('RAGQueryEngine', () => {
     const results = await engine.query('Paul과 Barnabas 관계', 1);
 
     expect(results[0]?.entry.metadata.filePath).toBe('semantic.md');
+  });
+
+  it('LLM 재랭커 응답의 JSON 추출, 외부 id 제거, 중복 제거, 최종 순서 계획은 Rust bridge를 따른다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
+      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
+      createEntry('tail.md', [0.97, 0.24], '나머지 관련 근거'),
+    ]);
+    const provider = createRerankProvider(
+      '결과입니다.\n```json\n{"rankedIds":["direct.md::0","missing.md::0","semantic.md::0","direct.md::0"]}\n```',
+    );
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      reranker: new LLMRAGResultReranker(provider),
+      rerankCandidateLimit: 20,
+    });
+
+    const results = await engine.query('Paul과 Barnabas 관계', 3);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'direct.md',
+      'semantic.md',
+      'tail.md',
+    ]);
   });
 
   it('벡터 상위 후보 밖의 BM25 전용 후보도 최종 후보에 포함한다', async () => {
@@ -398,6 +423,13 @@ function createEntry(path: string, vector: number[], text: string, startLine = 0
       embeddingProvider: 'openai',
       embeddingModel: 'text-embedding-3-small',
     },
+  };
+}
+
+function createRerankProvider(response: string): LLMProvider {
+  return {
+    chat: () => Promise.resolve(response),
+    streamChat: () => Promise.resolve(),
   };
 }
 
