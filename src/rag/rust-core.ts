@@ -1,32 +1,147 @@
 import {
   aggregate_graph_edges_flat,
+  analyze_retrieval_sources,
   assign_vector_clusters,
   bm25_score_pairs,
+  build_initial_centroids,
   chunk_markdown_json,
+  collect_candidate_reasons as collect_candidate_reasons_json,
   chunk_plain_text_json,
   core_version,
   count_keyword_matches,
+  create_entity_id,
+  create_context_preview,
   cosine_similarity_or_nan,
+  create_graph_id,
   create_content_hash,
+  create_entries_fingerprint as create_entries_fingerprint_json,
+  detect_communities_from_edges_json,
   detect_communities_flat,
+  extract_json_object_text,
+  extract_structured_reasoning,
   extract_vault_links_json,
+  find_mentioned_entity_matches,
   hybrid_score_or_nan,
   initSync,
+  is_graph_extraction_cache_hit_json,
+  is_protected_rag_document_extension_json,
+  count_files_by_extensions_json,
   is_excluded_path,
+  is_excluded_ext_json,
+  is_recommendable_exclude_extension_json,
+  is_mcp_tool_name_available,
+  parse_mcp_tool_arguments_json,
+  normalize_mcp_tool_result_json,
+  is_mcp_tool_result_empty_json,
+  classify_mcp_tool_error_json,
+  normalize_exclude_extension_json,
+  is_relevant_result,
   normalize_entity_name,
+  normalize_extracted_graph_payload_json,
+  normalize_reasoning_chunk_json,
+  normalize_graph_confidence_or_default,
+  normalize_graph_name,
+  parse_extracted_graph_payload_json,
   parse_mention_candidates_json,
+  plan_assistant_response_classification_json,
+  split_reasoning_tags_json,
+  plan_chat_context_mentions_json,
+  plan_mcp_server_candidates_json,
+  plan_bm25_candidate_resolution_json,
+  plan_bm25_hit_lookup_json,
+  plan_bm25_index_add_document_json,
+  plan_bm25_index_remove_document_json,
+  plan_bm25_index_remove_source_json,
+  plan_bm25_search_json,
+  plan_bm25_source_lookups_json,
+  plan_chat_meta_json,
+  plan_chat_messages_json,
+  plan_chat_save_metadata_json,
+  plan_context_budget_append_json,
+  plan_context_graph_verification_json,
+  plan_context_sources_json,
+  plan_diverse_result_indices_json,
+  plan_entity_resolution_json,
+  plan_index_pending_files_json,
+  plan_claim_evidence_scores_json,
+  plan_evidence_candidate_order_json,
+  plan_local_evidence_scores_json,
+  plan_file_index_records_json,
+  plan_folder_mention_file_indices_json,
+  plan_graph_community_replacement_delete_ids_json,
+  plan_graph_community_summary_groups_json,
+  plan_graph_claim_entity_ids_json,
+  plan_graph_deletion_indices_json,
+  plan_graph_edge_records_json,
+  plan_graph_entity_merge_json,
+  plan_graph_evidence_candidate_lookup_json,
+  plan_graph_evidence_entry_candidates_json,
+  plan_graph_extraction_type_validation_json,
+  plan_graph_mention_context_json,
+  plan_graph_query_execution_json,
+  plan_graph_query_json,
+  plan_graph_rag_status_entry_lookups_json,
+  plan_graph_rag_status_entry_snapshot_json,
+  plan_graph_rag_status_file_snapshot_json,
+  plan_graph_rag_markdown_file_paths_json,
+  plan_graph_rag_run_file_selection_json,
+  plan_graph_rag_status_json,
+  should_rebuild_graph_runtime_for_graph_status,
+  plan_graph_rag_unsupported_prune_paths_json,
+  plan_graph_query_response_json,
+  plan_graph_relation_endpoint_indices_json,
+  plan_graph_schema_community_indices_json,
+  plan_graph_schema_relation_indices_json,
+  plan_merged_retrieval_candidates,
+  plan_merged_retrieval_candidates_by_entry_id,
+  plan_query_result_score_json,
+  plan_rag_file_content_probe_indices_json,
+  plan_rag_file_indexability_json,
+  plan_rag_file_type_summary_json,
+  plan_prompt_library_summary_json,
+  plan_rag_status_json,
+  plan_reference_file_indices_json,
+  plan_rerank_messages_json,
+  plan_rerank_response_json,
+  plan_rerank_result_order_json,
+  format_mcp_json,
+  validate_exclude_extension_input_json,
+  validate_exclude_path_input_json,
+  validate_mcp_json,
+  plan_source_references_json,
+  plan_source_validation_inputs_json,
+  plan_source_validation_warnings_json,
+  get_mcp_connection_state_rust,
+  should_append_mcp_path_hint_rust,
+  plan_structural_heading_neighbors_json,
+  plan_structural_linked_paths_json,
+  plan_vector_store_add_json,
+  plan_vector_store_lookup_by_file_paths_json,
+  plan_vector_store_lookup_by_ids_json,
+  plan_vector_store_remove_file_json,
+  plan_vector_store_replace_file_json,
+  plan_vector_store_stats_json,
+  plan_vault_link_candidates_json,
+  plan_vault_link_fallback_index_json,
   prune_graph_indexes_json,
   rank_top_k_pairs,
+  recall_at_k,
   recompute_centroids,
   rrf_score_or_nan,
+  sanitize_graph_id_part,
   score_entity_match_or_nan,
   select_diverse_indices,
+  select_relevant_result_indices,
   score_local_evidence_pairs,
   token_frequencies_json,
   tokenize_json,
+  validate_ontology_relation,
+  validate_ontology_schema_json,
 } from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+
+const RUST_RECALL_UNKNOWN_INDEX = 0xffffffff;
 
 export interface RustVectorScore {
   index: number;
@@ -57,11 +172,804 @@ export interface RustHybridScoreInput {
   retrievalSources: readonly string[];
 }
 
+export interface RustRetrievalSourceAnalysis {
+  sourcePrior: number;
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+  hasGraphOrStructuralEvidence: boolean;
+  hasStrongGraphOrStructuralEvidence: boolean;
+}
+
+export interface RustQueryResultScoreInput {
+  cosineScore: number;
+  bm25Score: number;
+  bm25Weight: number;
+  hasBm25: boolean;
+  sourceScores: Partial<Record<string, number>>;
+  sourceRanks: Partial<Record<string, number>>;
+  retrievalSources: readonly string[];
+}
+
+export interface RustQueryResultScorePlan {
+  combinedBase: number;
+  rrfScore: number;
+  sourcePrior: number;
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+  hasGraphOrStructuralEvidence: boolean;
+  hasStrongGraphOrStructuralEvidence: boolean;
+  combinedScore: number;
+}
+
+export interface RustRerankMessageCandidate {
+  id: string;
+  sourcePath: string;
+  heading: string;
+  text: string;
+}
+
+export interface RustRerankMessagesPlan {
+  systemContent: string;
+  userContent: string;
+}
+
+export interface RustRelevantResultInput {
+  combinedScore: number;
+  vectorScore: number;
+  bm25Score: number;
+  keywordMatches: number;
+  threshold: number;
+  hasBm25: boolean;
+  retrievalSources: readonly string[];
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+}
+
+export interface RustRelevantResultCandidate {
+  score: number;
+  vectorScore: number;
+  bm25Score: number;
+  keywordMatches: number;
+  retrievalSources: readonly string[];
+  sourceEvidenceScore: number;
+  bestEvidenceRank?: number;
+}
+
+export interface RustRetrievalCandidateMergeInput {
+  entryIndex: number;
+  source: string;
+  sourceScore?: number;
+  rank?: number;
+}
+
+export interface RustRetrievalCandidateMergeByEntryIdInput {
+  entryId: string;
+  source: string;
+  sourceScore?: number;
+  rank?: number;
+}
+
+export interface RustMergedRetrievalSource {
+  source: string;
+  sourceScore?: number;
+  rank?: number;
+}
+
+export interface RustMergedRetrievalCandidatePlan {
+  entryIndex: number;
+  firstCandidateIndex: number;
+  candidateIndexes: number[];
+  sources: RustMergedRetrievalSource[];
+}
+
+export interface RustBm25Hit {
+  docId: string;
+  sourcePath: string;
+  score: number;
+}
+
+export interface RustBm25HitLookupPlan {
+  hits: RustBm25Hit[];
+  lookupDocIds: string[];
+  maxScore: number;
+}
+
+export interface RustBm25EntryInput {
+  id: string;
+  filePath: string;
+  compatible: boolean;
+}
+
+export interface RustBm25CandidateResolutionInput {
+  hits: readonly RustBm25Hit[];
+  foundEntries: readonly RustBm25EntryInput[];
+  pathEntries: readonly RustBm25EntryInput[];
+  candidateLimit: number;
+  maxScore: number;
+}
+
+export interface RustBm25CandidatePlan {
+  entrySet: 'found' | 'path';
+  entryIndex: number;
+  sourceScore: number;
+}
+
+export interface RustBm25IndexData {
+  tokenizerVersion: number;
+  inverted: Record<string, Record<string, number>>;
+  docLengths: Record<string, number>;
+  docSources: Record<string, string>;
+  totalDocs: number;
+  avgDocLength: number;
+}
+
+export interface RustBm25SearchScore {
+  docId: string;
+  score: number;
+}
+
+export interface RustClaimEvidenceInput {
+  confidence: number;
+  evidenceIds: readonly string[];
+}
+
+export interface RustEvidenceScore {
+  evidenceId: string;
+  score: number;
+}
+
+export interface RustLocalEvidenceMatchInput {
+  entityId: string;
+  entityConfidence: number;
+  matchScore: number;
+  evidenceIds: readonly string[];
+}
+
+export interface RustLocalEvidenceRelationInput {
+  sourceEntityId: string;
+  targetEntityId: string;
+  confidence: number;
+  evidenceIds: readonly string[];
+}
+
+export interface RustLocalEvidenceClaimInput {
+  entityIds: readonly string[];
+  confidence: number;
+  evidenceIds: readonly string[];
+}
+
+export interface RustLocalEvidencePlanInput {
+  matches: readonly RustLocalEvidenceMatchInput[];
+  relations: readonly RustLocalEvidenceRelationInput[];
+  claims: readonly RustLocalEvidenceClaimInput[];
+  traversalDepth: number;
+}
+
+export interface RustGraphCommunityReplacementRecord {
+  id: string;
+  ontologySchemaId: string;
+}
+
+export interface RustGraphEvidenceLookupRecord {
+  id: string;
+  filePath: string;
+}
+
+export interface RustGraphEvidenceCandidateLookupPlan {
+  scoreIndices: number[];
+  evidenceIndices: number[];
+  filePaths: string[];
+}
+
+export interface RustGraphEvidenceEntryRecord {
+  id: string;
+  compatible: boolean;
+}
+
+export interface RustGraphEvidenceEntryCandidatePlan {
+  candidateIndices: number[];
+  entryIndices: number[];
+}
+
+export interface RustGraphMentionEntityInput {
+  id: string;
+  canonicalName: string;
+  aliases: readonly string[];
+  typeId?: string;
+  description?: string;
+}
+
+export interface RustGraphMentionRelationInput {
+  sourceEntityId: string;
+  targetEntityId: string;
+  relationTypeId?: string;
+  description?: string;
+}
+
+export interface RustGraphMentionContextPlan {
+  matchedEntityIndices: number[];
+  matchedRelationIndices: number[];
+  contextLines: string[];
+}
+
+export interface RustGraphClaimEntityLookupRecord {
+  name: string;
+  entityId: string;
+}
+
+export interface RustGraphRelationEndpointInput {
+  source: string;
+  target: string;
+}
+
+export interface RustGraphRelationEndpointLookupRecord {
+  name: string;
+  entityIndex: number;
+}
+
+export interface RustGraphRelationEndpointPair {
+  sourceEntityIndex: number;
+  targetEntityIndex: number;
+}
+
+export interface RustGraphRelationEndpointPlan {
+  pairs: Array<RustGraphRelationEndpointPair | null>;
+}
+
+export interface RustGraphExtractionTypeValidationPlan {
+  entityTypeKnown: boolean[];
+  claimTypeKnown: boolean[];
+}
+
+export interface RustGraphCommunityAssignmentInput {
+  entityId: string;
+  communityId: number;
+}
+
+export interface RustGraphCommunitySummaryRelationInput {
+  sourceEntityId: string;
+  targetEntityId: string;
+}
+
+export interface RustGraphCommunitySummaryClaimInput {
+  entityIds: readonly string[];
+}
+
+export interface RustGraphCommunitySummaryGroup {
+  entityIndices: number[];
+  relationIndices: number[];
+  claimIndices: number[];
+}
+
+export interface RustGraphCommunitySummaryGroupsPlan {
+  groups: RustGraphCommunitySummaryGroup[];
+}
+
+export interface RustFileIndexEntryInput {
+  filePath: string;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
+  endLine?: number;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  updated?: number;
+}
+
+export interface RustFileIndexRecordPlan {
+  filePath: string;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  hasCompleteMetadata: boolean;
+  vectorCount: number;
+  updated: number;
+}
+
+export type RustVectorStoreSourceKind = 'existing' | 'incoming';
+
+export interface RustVectorStoreSourcePlan {
+  source: RustVectorStoreSourceKind;
+  index: number;
+}
+
+export interface RustVectorStoreMutationPlan {
+  sources: RustVectorStoreSourcePlan[];
+  removedCount: number;
+  changed: boolean;
+}
+
+export interface RustVectorStoreStatsPlan {
+  totalEntries: number;
+  totalFiles: number;
+  totalVectors: number;
+  averageVectorsPerFile: number;
+  lastUpdated: number | null;
+  indexedFilePaths: string[];
+}
+
+export type RustRagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
+
+export interface RustRagStatusFileInput {
+  path: string;
+  mtime: number;
+  size: number;
+}
+
+export interface RustRagStatusRecordInput {
+  filePath: string;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  hasCompleteMetadata?: boolean;
+  vectorCount: number;
+}
+
+export interface RustRagStatusReasonLabels {
+  missing: string;
+  legacy: string;
+  staleFile: string;
+  embeddingChanged: string;
+}
+
+export interface RustRagStatusInput {
+  includedFiles: readonly RustRagStatusFileInput[];
+  records: readonly RustRagStatusRecordInput[];
+  totalVaultFiles: number;
+  embeddingProvider: string;
+  embeddingModel: string;
+  reasons: RustRagStatusReasonLabels;
+}
+
+export interface RustRagDocumentUpdatePlan {
+  path: string;
+  status: Exclude<RustRagDocumentStatus, 'healthy'>;
+  reason: string;
+  mtime: number;
+  size: number;
+}
+
+export interface RustRagStatusPlan {
+  totalDocuments: number;
+  healthyDocuments: number;
+  missingDocuments: number;
+  staleDocuments: number;
+  unknownDocuments: number;
+  excludedDocuments: number;
+  totalVectors: number;
+  updateRequiredDocuments: RustRagDocumentUpdatePlan[];
+}
+
+export interface RustIndexPendingPlan {
+  fileIndices: number[];
+  skipped: number;
+}
+
+export type RustGraphRagIndexState =
+  | 'disabled'
+  | 'not-built'
+  | 'building'
+  | 'ready'
+  | 'partial'
+  | 'stale'
+  | 'schema-error';
+
+export interface RustGraphRagStatusFileRecordInput {
+  filePath: string;
+  vectorCount: number;
+}
+
+export interface RustGraphRagStatusFileSnapshotRecordInput
+  extends RustGraphRagStatusFileRecordInput {
+  processable: boolean;
+}
+
+export interface RustGraphRagStatusFileSnapshotPlan {
+  fileRecordIndices: number[];
+  totalCandidateFiles: number;
+}
+
+export interface RustGraphRagStatusEvidenceInput {
+  filePath: string;
+  entryId: string;
+  contentHash: string;
+  extractionModelKey: string;
+  processable: boolean;
+}
+
+export interface RustGraphRagStatusCacheInput {
+  entryId: string;
+  contentHash: string;
+  extractionModelKey: string;
+  ontologySchemaId: string;
+  ontologyVersion: number;
+}
+
+export interface RustGraphRagStatusEntryInput {
+  id: string;
+  filePath: string;
+  contentHash?: string;
+  text: string;
+}
+
+export interface RustGraphRagStatusEntrySnapshotInput {
+  id: string;
+  filePath: string;
+  processable: boolean;
+}
+
+export interface RustGraphRagStatusEntrySnapshotPlan {
+  entryIndices: number[];
+}
+
+export interface RustGraphRagStatusInput {
+  graphRagEnabled: boolean;
+  isRunning: boolean;
+  schemaErrorCount: number;
+  totalCandidateFiles: number;
+  graphRagMaxFilesPerRun: number;
+  graphRagModel: string;
+  ontologySchemaId: string;
+  ontologyVersion: number;
+  fileRecords: readonly RustGraphRagStatusFileRecordInput[];
+  evidence: readonly RustGraphRagStatusEvidenceInput[];
+  rejectedFactFilePaths: readonly string[];
+  pendingMergeCount: number;
+  cacheRecords: readonly RustGraphRagStatusCacheInput[];
+  entries: readonly RustGraphRagStatusEntryInput[];
+}
+
+export interface RustGraphRagStatusPlan {
+  state: RustGraphRagIndexState;
+  totalCandidateFiles: number;
+  graphEvidenceCount: number;
+  rejectedFactCount: number;
+  failedFileCount: number;
+  pendingMergeCount: number;
+  staleFileCount: number;
+  staleFilePaths: string[];
+  maxFilesPerRun: number;
+}
+
+export type RustGraphRagRunFileSelectionMode = 'failed' | 'stale' | 'full';
+
+export interface RustGraphRagRunFilePathInput {
+  filePath: string;
+  processable: boolean;
+}
+
+export interface RustGraphRagRunFileSelectionInput {
+  mode: RustGraphRagRunFileSelectionMode;
+  failedFilePaths: readonly string[];
+  staleFilePaths: readonly string[];
+  recordFilePaths: readonly RustGraphRagRunFilePathInput[];
+  indexedFilePaths: readonly RustGraphRagRunFilePathInput[];
+  maxFilesPerRun: number;
+}
+
+export interface RustGraphRagRunFileSelectionPlan {
+  candidateFilePaths: string[];
+  selectedFilePaths: string[];
+}
+
+export interface RustRagFileTypeInput {
+  filePath: string;
+  extension?: string;
+  indexable: boolean;
+  recommendationReason?: string;
+}
+
+export interface RustRagFileTypeCount {
+  extension: string;
+  label: string;
+  count: number;
+}
+
+export interface RustRagExcludeRecommendation extends RustRagFileTypeCount {
+  reason: string;
+}
+
+export interface RustRagFileTypeSummary {
+  targetTypes: RustRagFileTypeCount[];
+  excludeRecommendations: RustRagExcludeRecommendation[];
+  totalTargetFiles: number;
+}
+
+export interface RustPromptLibrarySummaryCount {
+  label: string;
+  count: number;
+}
+
+export interface RustPromptLibrarySummarySample {
+  filePath: string;
+  heading: string;
+  preview: string;
+}
+
+export interface RustPromptLibrarySummary {
+  totalChunks: number;
+  topFolders: RustPromptLibrarySummaryCount[];
+  topFiles: RustPromptLibrarySummaryCount[];
+  topHeadings: RustPromptLibrarySummaryCount[];
+  samples: RustPromptLibrarySummarySample[];
+}
+
+export interface RustPromptLibrarySummaryInput {
+  filePath: string;
+  heading: string;
+  text: string;
+}
+
+export interface RustRagFileEligibilityInput {
+  filePath: string;
+  fileName: string;
+  extension: string;
+  size: number;
+}
+
+export interface RustRagFileTextProbeInput {
+  index: number;
+  readable: boolean;
+  sample: string;
+}
+
+export interface RustRagFileIndexabilityPlan {
+  candidateIndices: number[];
+  summaryInputs: RustRagFileTypeInput[];
+}
+
+export interface RustSourceReferencePlan {
+  label: string;
+  target: string;
+  kind: 'wikilink' | 'markdown-link' | 'source-id';
+  aliases: string[];
+}
+
+export interface RustSourceValidationWarningPlan {
+  id: string;
+  label: string;
+  kind: 'missing-link' | 'unverified-source';
+}
+
+export interface RustSourceValidationInputPlan {
+  verifiedCitationIds: string[];
+  verifiedPaths: string[];
+  aliasCandidates: string[];
+}
+
+export interface RustAssistantChoicePlan {
+  id: string;
+  label: string;
+}
+
+export interface RustReasoningChunk {
+  content: string;
+  reasoning?: string;
+}
+
+export interface RustAssistantQuestionPlan {
+  prompt: string;
+  choices: RustAssistantChoicePlan[];
+  selectionMode: 'single' | 'multiple';
+  allowFreeText: boolean;
+  source: 'answer' | 'reasoning-leak';
+}
+
+export type RustAssistantResponseClassification =
+  | {
+      type: 'answer';
+      content: string;
+      reasoning: string;
+    }
+  | {
+      type: 'question';
+      content: string;
+      reasoning: string;
+      question: RustAssistantQuestionPlan;
+      originalContent: string;
+    };
+
+export interface RustChatMessagePlan {
+  id: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  timestamp: number;
+  createdAt: string;
+  updatedAt: string;
+  status: 'pending' | 'streaming' | 'complete' | 'error';
+  providerKey?: string;
+  providerLabel?: string;
+  model?: string;
+  errorMessage?: string;
+  reasoning?: string;
+  toolCalls?: unknown[];
+  citations?: unknown[];
+  sourceWarnings?: unknown[];
+  contextAttachments?: unknown[];
+  assistantQuestion?: unknown;
+  branchOf?: string;
+  stopReason?: string;
+}
+
+export interface RustChatMetaPlan {
+  title: string;
+  created: string;
+  updated?: string;
+  messageCount: number;
+  preview?: string;
+  provider?: string;
+  model?: string;
+}
+
+export interface RustChatSaveMetadataPlan {
+  title: string;
+  created: string;
+  sourceCount: number;
+  provider?: string;
+  model?: string;
+  summary?: string;
+}
+
+export type RustContextSourceStatus =
+  | 'candidate'
+  | 'verified'
+  | 'missing'
+  | 'stale'
+  | 'low-relevance';
+
+export type RustContextGraphType = 'entity' | 'relation' | 'community';
+
+export interface RustContextSourceInput {
+  filePath: string;
+  heading?: string;
+  startLine?: number;
+  endLine?: number;
+  text: string;
+  score?: number;
+  vectorScore?: number;
+  bm25Score?: number;
+}
+
+export interface RustContextSourceVerification {
+  status: RustContextSourceStatus;
+  detail?: string;
+  graphType?: RustContextGraphType;
+}
+
+export interface RustContextCitationPlan {
+  id: string;
+  filePath: string;
+  heading?: string;
+  line?: number;
+  endLine?: number;
+  score?: number;
+  vectorScore?: number;
+  bm25Score?: number;
+  status: RustContextSourceStatus;
+  detail?: string;
+  preview: string;
+  graphType?: RustContextGraphType;
+}
+
+export interface RustContextSourceBlockPlan {
+  sourceId: string;
+  text: string;
+}
+
+export interface RustContextSourcePlan {
+  citations: RustContextCitationPlan[];
+  blocks: RustContextSourceBlockPlan[];
+  sourceIds: string[];
+  rejectedCount: number;
+}
+
+export interface RustContextBudgetAppendPlan {
+  text: string;
+  remainingChars: number;
+  complete: boolean;
+  appended: boolean;
+}
+
+export interface RustChatContextMentionPlan {
+  fileIndices: number[];
+  folderIndices: number[];
+  entityIndices: number[];
+  serverIndices: number[];
+  useAutoRag: boolean;
+}
+
+export interface RustContextGraphVerificationPlan {
+  isGraphSource: boolean;
+  verification: RustContextSourceVerification | null;
+}
+
+export interface RustVaultLinkCandidatePlan {
+  candidates: string[];
+  fallbackBasename: string;
+}
+
+export interface RustFolderMentionFilePlan {
+  indices: number[];
+  partial: boolean;
+}
+
+export type RustExcludeValidationLevel = 'error' | 'warning';
+
+export type RustExcludeValidationCode =
+  | 'empty'
+  | 'trimmed'
+  | 'duplicate'
+  | 'comma'
+  | 'path-backslash'
+  | 'path-leading-slash'
+  | 'path-missing'
+  | 'extension-leading-dot'
+  | 'extension-invalid'
+  | 'extension-protected-document';
+
+export interface RustExcludeValidationIssue {
+  level: RustExcludeValidationLevel;
+  code: RustExcludeValidationCode;
+}
+
+export interface RustExcludeValidationResult {
+  normalized: string;
+  issues: RustExcludeValidationIssue[];
+  valid: boolean;
+}
+
+export interface RustStructuralLinkEdge {
+  sourcePath: string;
+  targetPath: string;
+}
+
+export interface RustStructuralHeadingSeed {
+  id: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  heading?: string;
+}
+
+export interface RustStructuralEntryInput {
+  id: string;
+  filePath: string;
+  startLine: number;
+  heading?: string;
+  compatible: boolean;
+}
+
+export interface RustStructuralHeadingInput {
+  filePath: string;
+  startLine: number;
+  level: number;
+}
+
+export interface RustStructuralHeadingNeighborInput {
+  seeds: readonly RustStructuralHeadingSeed[];
+  entries: readonly RustStructuralEntryInput[];
+  headings: readonly RustStructuralHeadingInput[];
+}
+
 export interface RustDiverseCandidate {
   score: number;
   vector: readonly number[];
   sourceKey: number;
   headingKey: number;
+}
+
+export interface RustDiverseResultCandidate {
+  score: number;
+  vector: readonly number[];
+  sourcePath: string;
+  heading?: string;
 }
 
 export interface RustCommunityDetectionResult {
@@ -74,6 +982,23 @@ export interface RustGraphEdge {
   sourceIndex: number;
   targetIndex: number;
   weight: number;
+}
+
+export interface RustCommunityEdgeRecord {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface RustCommunityAssignmentById {
+  entityId: string;
+  communityId: number;
+}
+
+export interface RustCommunityDetectionByIdResult {
+  assignmentsById: RustCommunityAssignmentById[];
+  communityIds: number[];
+  modularity: number;
 }
 
 export interface RustLocalEvidenceInput {
@@ -107,9 +1032,174 @@ export interface RustEntityMatchInput {
   embeddingScore: number;
 }
 
+export type RustEntityResolutionStatus = 'new' | 'auto-merge' | 'pending-merge';
+
+export interface RustEntityResolutionCandidate {
+  entityId: string;
+  ontologySchemaId: string;
+  typeId: string;
+  score: number;
+}
+
+export interface RustEntityResolutionInput {
+  ontologySchemaId: string;
+  typeId: string;
+  candidateEntityId: string;
+  autoMergeThreshold: number;
+  pendingMergeThreshold: number;
+  candidates: readonly RustEntityResolutionCandidate[];
+}
+
+export interface RustEntityResolutionPlan {
+  status: RustEntityResolutionStatus;
+  entityId: string;
+  mergeScore: number;
+  matchedEntityId?: string;
+}
+
+export interface RustGraphEntityMergeInput {
+  aliases: readonly string[];
+  description: string;
+  confidence: number;
+  evidenceIds: readonly string[];
+  updatedAt: number;
+}
+
+export interface RustGraphEntityMergePlan {
+  aliases: string[];
+  description: string;
+  confidence: number;
+  evidenceIds: string[];
+  updatedAt: number;
+}
+
+export interface RustGraphExtractionCacheKey {
+  entryId: string;
+  contentHash: string;
+  extractionModelKey: string;
+  ontologySchemaId: string;
+  ontologyVersion: number;
+}
+
+export interface RustMentionedEntityInput {
+  ontologySchemaId: string;
+  canonicalName: string;
+  aliases: readonly string[];
+}
+
 export interface RustMentionCandidate {
   raw: string;
   name: string;
+}
+
+export interface RustGraphQueryPlan {
+  type: string;
+  queryMode: string;
+  traversalDepth: number;
+  evidenceFirst: boolean;
+  entityHints: string[];
+}
+
+export type RustGraphQueryExecutionAction =
+  | 'none'
+  | 'local'
+  | 'global'
+  | 'hybrid'
+  | 'evidence-first';
+
+export interface RustGraphQueryExecutionPlan {
+  action: RustGraphQueryExecutionAction;
+  requiresPlanner: boolean;
+}
+
+export interface RustOntologyRelationValidationInput {
+  entityTypeIds: readonly string[];
+  relationTypeIds: readonly string[];
+  relationSourceTypeIds: readonly (readonly string[])[];
+  relationTargetTypeIds: readonly (readonly string[])[];
+  relationTypeId: string;
+  sourceTypeId: string;
+  targetTypeId: string;
+}
+
+export type RustOntologyRelationValidationReason =
+  | 'unknown-relation-type'
+  | 'unknown-entity-type'
+  | 'relation-domain-range-mismatch';
+
+export type RustOntologyRelationValidationResult =
+  | { valid: true; reason?: undefined }
+  | { valid: false; reason: RustOntologyRelationValidationReason };
+
+export interface RustMcpJsonValidationResult {
+  valid: boolean;
+  data?: unknown;
+  errorCode?: string;
+  serverName?: string;
+  message?: string;
+}
+
+export interface RustMcpToolNormalizedResult {
+  displayText: string;
+  modelText: string;
+}
+
+export type RustMcpToolErrorKind =
+  | 'validation-pattern'
+  | 'validation-field'
+  | 'validation-required'
+  | 'validation-generic'
+  | 'validation-schema-failed'
+  | 'raw';
+
+export interface RustMcpToolErrorInfo {
+  kind: RustMcpToolErrorKind;
+  pattern?: string;
+  field?: string;
+  message?: string;
+}
+
+export interface RustExtractedGraphPayloadResult {
+  payload: RustExtractedGraphPayload;
+  rawFactCount: number;
+}
+
+export type RustExtractedGraphPayloadParseFailureReason =
+  | 'invalid-json'
+  | 'schema-shape-mismatch';
+
+export type RustExtractedGraphPayloadParseResult =
+  | { ok: true; payload: RustExtractedGraphPayload }
+  | { ok: false; reason: RustExtractedGraphPayloadParseFailureReason; rawFact: unknown };
+
+export interface RustExtractedGraphPayload {
+  entities: RustExtractedGraphEntity[];
+  relations: RustExtractedGraphRelation[];
+  claims: RustExtractedGraphClaim[];
+}
+
+export interface RustExtractedGraphEntity {
+  name: string;
+  typeId: string;
+  description?: string;
+  aliases?: string[];
+  confidence?: number;
+}
+
+export interface RustExtractedGraphRelation {
+  source: string;
+  target: string;
+  relationTypeId: string;
+  description?: string;
+  confidence?: number;
+}
+
+export interface RustExtractedGraphClaim {
+  text: string;
+  claimTypeId: string;
+  entityNames?: string[];
+  stance?: 'supports' | 'opposes' | 'neutral' | 'interprets';
+  confidence?: number;
 }
 
 export interface RustGraphPruneInput {
@@ -140,10 +1230,15 @@ export interface RustGraphPrunePlan {
   deletedEvidenceIndices: number[];
   deletedEntityIndices: number[];
   updatedEntityIndices: number[];
+  updatedEntityEvidenceIndices: number[][];
   deletedRelationIndices: number[];
   updatedRelationIndices: number[];
+  updatedRelationEvidenceIndices: number[][];
   deletedClaimIndices: number[];
   updatedClaimIndices: number[];
+  updatedClaimEntityIndices: number[][];
+  updatedClaimRelationIndices: number[][];
+  updatedClaimEvidenceIndices: number[][];
   deletedCommunityIndices: number[];
   deletedRejectedFactIndices: number[];
   deletedExtractionCacheIndices: number[];
@@ -160,8 +1255,57 @@ export function isRustCoreAvailable(): boolean {
 }
 
 export function getRustCoreVersion(): string | null {
-  if (!ensureRustCore()) return null;
+  if (!ensureRustCore()) {
+    return null;
+  }
   return core_version();
+}
+
+export type RustMcpConnectionState = 'idle' | 'connecting' | 'connected' | 'partial-error' | 'error';
+
+export function getMcpConnectionStateRust(
+  totalCount: number,
+  connectedCount: number,
+  failedCount: number,
+  isConnecting: boolean,
+): RustMcpConnectionState | null {
+  if (!ensureRustCore()) {
+    return null;
+  }
+  const state = get_mcp_connection_state_rust(
+    totalCount,
+    connectedCount,
+    failedCount,
+    isConnecting,
+  );
+  return isRustMcpConnectionState(state) ? state : null;
+}
+
+export function shouldRebuildGraphRuntimeForGraphStatusRust(
+  graphRagEnabled: boolean,
+  graphRagModel: string,
+  previousStatusState: string,
+  nextStatusState: string,
+  graphProviderAttached: boolean,
+): boolean | null {
+  if (!ensureRustCore()) {
+    return null;
+  }
+  return should_rebuild_graph_runtime_for_graph_status(
+    graphRagEnabled,
+    graphRagModel,
+    previousStatusState,
+    nextStatusState,
+    graphProviderAttached,
+  );
+}
+
+export function shouldAppendMcpPathHintRust(
+  command: string,
+  errorMessage: string,
+): boolean | null {
+  if (!ensureRustCore()) return null;
+  return should_append_mcp_path_hint_rust(command, errorMessage);
 }
 
 export function createContentHashRust(content: string): string | null {
@@ -210,6 +1354,67 @@ export function countKeywordMatchesRust(
   }
 }
 
+export function createEntriesFingerprintRust(entries: {
+  id: string;
+  vector: readonly number[];
+  metadata: {
+    indexedAt?: number;
+    contentHash?: string;
+  };
+}[]): string | null {
+  if (!ensureRustCore()) return null;
+  if (
+    !entries.every(
+      (entry) =>
+        isStringValue(entry.id) &&
+        Number.isSafeInteger(entry.metadata.indexedAt ?? 0) &&
+        (entry.metadata.indexedAt ?? 0) >= 0,
+    )
+  ) {
+    return null;
+  }
+
+  return create_entries_fingerprint_json(
+    JSON.stringify(entries.map((entry) => entry.id)),
+    JSON.stringify(entries.map((entry) => entry.metadata.contentHash ?? '')),
+    JSON.stringify(entries.map((entry) => entry.metadata.indexedAt ?? 0)),
+    JSON.stringify(entries.map((entry) => entry.vector.length)),
+  );
+}
+
+export function collectCandidateReasonsRust(
+  candidates: readonly (string | null | undefined)[],
+  candidateIndexes: readonly number[],
+): string[] | null {
+  if (!ensureRustCore()) return null;
+  if (
+    !candidates.every(
+      (reason) => reason === undefined || reason === null || isStringValue(reason),
+    ) ||
+    !candidateIndexes.every((index) => Number.isSafeInteger(index) && index >= 0)
+  ) {
+    return null;
+  }
+
+  const plan = collect_candidate_reasons_json(
+    JSON.stringify(candidates.map((reason) => reason ?? '')),
+    JSON.stringify(candidateIndexes),
+  );
+  if (!plan) return [];
+  try {
+    const parsed: unknown = JSON.parse(plan);
+    return Array.isArray(parsed) && parsed.every(isStringValue) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createContextPreviewRust(text: string): string | null {
+  if (!isStringValue(text)) return null;
+  if (!ensureRustCore()) return null;
+  return create_context_preview(text);
+}
+
 export function cosineSimilarityRust(
   left: readonly number[],
   right: readonly number[],
@@ -226,26 +1431,146 @@ export function rankTopKPairsRust(
 ): RustVectorScore[] | null {
   if (topK <= 0) return [];
   if (query.length === 0) return [];
-  if (!ensureRustCore()) return null;
+  if (!isFiniteVector(query)) return [];
+
+  const fallbackLimit = Math.max(0, Math.floor(topK));
+  if (fallbackLimit === 0) return [];
 
   const compatibleRows: number[] = [];
   const flatValues: number[] = [];
   for (let index = 0; index < vectors.length; index++) {
     const vector = vectors[index];
-    if (!vector || vector.length !== query.length) continue;
+    if (!vector || vector.length !== query.length || !isFiniteVector(vector)) continue;
     compatibleRows.push(index);
     flatValues.push(...vector);
   }
 
   if (compatibleRows.length === 0) return [];
 
+  if (!ensureRustCore()) {
+    return rankTopKPairsFallback(query, vectors, compatibleRows, fallbackLimit);
+  }
+
   const pairs = rank_top_k_pairs(
     new Float64Array(query),
     new Float64Array(flatValues),
     query.length,
-    topK,
+    fallbackLimit,
   );
   return decodeRankPairs(pairs, compatibleRows);
+}
+
+function rankTopKPairsFallback(
+  query: readonly number[],
+  vectors: readonly (readonly number[])[],
+  compatibleRows: readonly number[],
+  topK: number,
+): RustVectorScore[] {
+  if (!Number.isFinite(topK) || topK <= 0) return [];
+
+  const queryNormSq = squaredNorm(query);
+  if (!Number.isFinite(queryNormSq) || queryNormSq <= 0) return [];
+
+  const scored: RustVectorScore[] = [];
+  for (const localIndex of compatibleRows) {
+    const vector = vectors[localIndex];
+    if (!vector) continue;
+    const score = cosineSimilarityFallback(query, vector, queryNormSq);
+    if (score === null) continue;
+    scored.push({ index: localIndex, score });
+  }
+
+  if (scored.length === 0) return [];
+
+  scored.sort((left, right) => {
+    if (left.score === right.score) {
+      return left.index - right.index;
+    }
+    return right.score - left.score;
+  });
+
+  if (scored.length <= topK) return scored;
+  scored.length = topK;
+  return scored;
+}
+
+function cosineSimilarityFallback(
+  left: readonly number[],
+  right: readonly number[],
+  leftNormSq: number,
+): number | null {
+  let dot = 0;
+  let rightNormSq = 0;
+
+  for (let index = 0; index < left.length; index++) {
+    const leftValue = left[index];
+    const rightValue = right[index];
+    if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
+      return null;
+    }
+    dot += leftValue * rightValue;
+    rightNormSq += rightValue * rightValue;
+  }
+
+  if (!Number.isFinite(dot) || !Number.isFinite(rightNormSq) || rightNormSq <= 0) {
+    return null;
+  }
+
+  const denominator = Math.sqrt(leftNormSq * rightNormSq);
+  if (!Number.isFinite(denominator) || denominator === 0) {
+    return null;
+  }
+
+  const score = dot / denominator;
+  return Number.isFinite(score) ? score : null;
+}
+
+function squaredNorm(values: readonly number[]): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isFinite(value)) return Number.NaN;
+    total += value * value;
+  }
+  return total;
+}
+
+function isFiniteVector(values: readonly number[]): boolean {
+  for (const value of values) {
+    if (!Number.isFinite(value)) return false;
+  }
+  return true;
+}
+
+export function calculateRecallAtKRust(
+  exactIds: readonly string[],
+  approximateIds: readonly string[],
+  topK: number,
+): number | null {
+  if (!Number.isFinite(topK)) return null;
+  const limit = Math.max(0, Math.floor(topK));
+  if (limit === 0) return 0;
+  if (!exactIds.every(isStringValue) || !approximateIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  const exactIndexById = new Map<string, number>();
+  for (const id of exactIds.slice(0, limit)) {
+    if (!exactIndexById.has(id)) {
+      exactIndexById.set(id, exactIndexById.size);
+    }
+  }
+  const exactIndices = new Uint32Array(exactIndexById.size);
+  for (let index = 0; index < exactIndices.length; index++) {
+    exactIndices[index] = index;
+  }
+  const approximateTopK = approximateIds.slice(0, limit);
+  const approximateIndices = new Uint32Array(approximateTopK.length);
+  for (let index = 0; index < approximateTopK.length; index++) {
+    approximateIndices[index] =
+      exactIndexById.get(approximateTopK[index] ?? '') ?? RUST_RECALL_UNKNOWN_INDEX;
+  }
+
+  const score = recall_at_k(exactIndices, approximateIndices, limit);
+  return Number.isFinite(score) ? score : null;
 }
 
 export function assignVectorClustersRust(
@@ -286,6 +1611,26 @@ export function recomputeCentroidsRust(
     matrix.dimension,
   );
   return decodeVectorMatrix(values, previousCentroids.length, matrix.dimension);
+}
+
+export function buildInitialCentroidsRust(
+  vectors: readonly (readonly number[])[],
+  requestedClusterCount: number,
+): number[][] | null {
+  if (vectors.length === 0) return [];
+  const dimension = vectors[0]?.length ?? 0;
+  if (dimension <= 0) return null;
+  const flatVectors = encodeVectorMatrix(vectors, dimension);
+  if (flatVectors === null) return null;
+  if (!ensureRustCore()) return null;
+
+  const values = build_initial_centroids(
+    flatVectors,
+    dimension,
+    normalizeNonNegativeInteger(requestedClusterCount),
+  );
+  if (values.length % dimension !== 0) return null;
+  return decodeVectorMatrix(values, values.length / dimension, dimension);
 }
 
 export function scoreBm25Rust(
@@ -363,6 +1708,2606 @@ export function calculateHybridScoreRust(input: RustHybridScoreInput): number | 
   return Number.isFinite(score) ? score : null;
 }
 
+export function analyzeRetrievalSourcesRust(
+  sourceScores: Partial<Record<string, number>>,
+  sourceRanks: Partial<Record<string, number>>,
+): RustRetrievalSourceAnalysis | null {
+  const sourceNames = [...new Set([...Object.keys(sourceScores), ...Object.keys(sourceRanks)])];
+  if (sourceNames.length === 0) {
+    return {
+      sourcePrior: 0,
+      sourceEvidenceScore: 0,
+      hasGraphOrStructuralEvidence: false,
+      hasStrongGraphOrStructuralEvidence: false,
+    };
+  }
+  if (!ensureRustCore()) return null;
+
+  const sourceCodes = new Uint8Array(sourceNames.map(sourceToCode));
+  const scores = new Float64Array(
+    sourceNames.map((source) => {
+      const score = sourceScores[source];
+      return typeof score === 'number' ? score : Number.NaN;
+    }),
+  );
+  const ranks = new Float64Array(
+    sourceNames.map((source) => {
+      const rank = sourceRanks[source];
+      return typeof rank === 'number' ? rank : Number.NaN;
+    }),
+  );
+
+  const values = analyze_retrieval_sources(sourceCodes, scores, ranks);
+  if (values.length !== 5) {
+    return null;
+  }
+  const sourcePrior = values[0] ?? 0;
+  const sourceEvidenceScore = values[1] ?? 0;
+  const bestEvidenceRank = values[2];
+  const graphFlag = values[3] ?? 0;
+  const strongFlag = values[4] ?? 0;
+  if (
+    !Number.isFinite(sourcePrior) ||
+    !Number.isFinite(sourceEvidenceScore) ||
+    (!Number.isFinite(bestEvidenceRank) && !Number.isNaN(bestEvidenceRank)) ||
+    !Number.isFinite(graphFlag) ||
+    !Number.isFinite(strongFlag)
+  ) {
+    return null;
+  }
+  return {
+    sourcePrior,
+    sourceEvidenceScore,
+    bestEvidenceRank: Number.isFinite(bestEvidenceRank) ? bestEvidenceRank : undefined,
+    hasGraphOrStructuralEvidence: graphFlag === 1,
+    hasStrongGraphOrStructuralEvidence: strongFlag === 1,
+  };
+}
+
+export function planQueryResultScoreRust(
+  input: RustQueryResultScoreInput,
+): RustQueryResultScorePlan | null {
+  if (
+    !Number.isFinite(input.cosineScore) ||
+    !Number.isFinite(input.bm25Score) ||
+    !Number.isFinite(input.bm25Weight) ||
+    typeof input.hasBm25 !== 'boolean' ||
+    !isFiniteMetricRecord(input.sourceScores) ||
+    !isFiniteMetricRecord(input.sourceRanks) ||
+    !input.retrievalSources.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+  const rawPlan = plan_query_result_score_json(JSON.stringify(input));
+  if (rawPlan.length === 0) return null;
+  const parsed = JSON.parse(rawPlan) as unknown;
+  return normalizeQueryResultScorePlan(parsed);
+}
+
+export function isRelevantResultRust(input: RustRelevantResultInput): boolean | null {
+  if (!ensureRustCore()) return null;
+  const keywordMatches = normalizeNonNegativeInteger(input.keywordMatches);
+  return is_relevant_result(
+    new Float64Array([
+      input.combinedScore,
+      input.vectorScore,
+      input.bm25Score,
+      keywordMatches,
+      input.threshold,
+      input.hasBm25 ? 1 : 0,
+      input.sourceEvidenceScore,
+      input.bestEvidenceRank ?? Number.NaN,
+    ]),
+    new Uint8Array(input.retrievalSources.map(sourceToCode)),
+  );
+}
+
+export function selectRelevantResultIndicesRust(
+  candidates: readonly RustRelevantResultCandidate[],
+  threshold: number,
+  hasBm25: boolean,
+): number[] | null {
+  if (candidates.length === 0) return [];
+  if (!Number.isFinite(threshold)) return null;
+  if (!candidates.every(isValidRelevantResultCandidate)) return null;
+  if (!ensureRustCore()) {
+    return selectRelevantResultIndicesFallback(candidates, threshold, hasBm25);
+  }
+
+  const sourceOffsets = [0];
+  const sourceCodes: number[] = [];
+  const resultValues = new Float64Array(candidates.length * 6);
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    const offset = index * 6;
+    resultValues[offset] = candidate.score;
+    resultValues[offset + 1] = candidate.vectorScore;
+    resultValues[offset + 2] = candidate.bm25Score;
+    resultValues[offset + 3] = normalizeNonNegativeInteger(candidate.keywordMatches);
+    resultValues[offset + 4] = candidate.sourceEvidenceScore;
+    resultValues[offset + 5] = candidate.bestEvidenceRank ?? Number.NaN;
+    sourceCodes.push(...candidate.retrievalSources.map(sourceToCode));
+    sourceOffsets.push(sourceCodes.length);
+  }
+
+  return decodeIndexArray(
+    select_relevant_result_indices(
+      new Float64Array([threshold, hasBm25 ? 1 : 0]),
+      new Uint32Array(sourceOffsets),
+      new Uint8Array(sourceCodes),
+      resultValues,
+    ),
+    candidates.length,
+  ) ?? selectRelevantResultIndicesFallback(candidates, threshold, hasBm25);
+}
+
+function selectRelevantResultIndicesFallback(
+  candidates: readonly RustRelevantResultCandidate[],
+  threshold: number,
+  hasBm25: boolean,
+): number[] {
+  const scored = candidates.map((candidate, index) => {
+    const hasSignal = hasBm25
+      ? Number.isFinite(candidate.bm25Score)
+      : true;
+    const qualifies = candidate.score >= threshold || candidate.vectorScore >= threshold;
+    return {
+      index,
+      qualifies,
+      score: Number.isFinite(candidate.score) ? candidate.score : candidate.vectorScore,
+      hasSignal,
+    };
+  });
+
+  return scored
+    .filter((item) => item.qualifies && item.hasSignal)
+    .sort((left, right) => {
+      if (left.score === right.score) return left.index - right.index;
+      return right.score - left.score;
+    })
+    .map((entry) => entry.index);
+}
+
+export function planMergedRetrievalCandidatesRust(
+  candidates: readonly RustRetrievalCandidateMergeInput[],
+): RustMergedRetrievalCandidatePlan[] | null {
+  if (candidates.length === 0) return [];
+  if (!ensureRustCore()) return null;
+
+  const entryIndices = new Uint32Array(candidates.length);
+  const sourceCodes = new Uint8Array(candidates.length);
+  const sourceScores = new Float64Array(candidates.length);
+  const ranks = new Float64Array(candidates.length);
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!candidate || !isValidRetrievalCandidateMergeInput(candidate)) return null;
+    entryIndices[index] = candidate.entryIndex;
+    sourceCodes[index] = sourceToCode(candidate.source);
+    sourceScores[index] = candidate.sourceScore ?? Number.NaN;
+    ranks[index] = candidate.rank ?? Number.NaN;
+  }
+
+  return decodeMergedRetrievalCandidatePlan(
+    plan_merged_retrieval_candidates(entryIndices, sourceCodes, sourceScores, ranks),
+    candidates.length,
+  );
+}
+
+export function planMergedRetrievalCandidatesByEntryIdRust(
+  candidates: readonly RustRetrievalCandidateMergeByEntryIdInput[],
+): RustMergedRetrievalCandidatePlan[] | null {
+  if (candidates.length === 0) return [];
+  if (!ensureRustCore()) return null;
+
+  const entryIds: string[] = [];
+  const sourceCodes = new Uint8Array(candidates.length);
+  const sourceScores = new Float64Array(candidates.length);
+  const ranks = new Float64Array(candidates.length);
+
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!candidate || !isValidRetrievalCandidateMergeByEntryIdInput(candidate)) return null;
+    entryIds.push(candidate.entryId);
+    sourceCodes[index] = sourceToCode(candidate.source);
+    sourceScores[index] = candidate.sourceScore ?? Number.NaN;
+    ranks[index] = candidate.rank ?? Number.NaN;
+  }
+
+  return decodeMergedRetrievalCandidatePlan(
+    plan_merged_retrieval_candidates_by_entry_id(
+      JSON.stringify(entryIds),
+      sourceCodes,
+      sourceScores,
+      ranks,
+    ),
+    candidates.length,
+  );
+}
+
+export function planBm25IndexAddDocumentRust(
+  index: RustBm25IndexData | null,
+  docId: string,
+  text: string,
+  sourcePath: string,
+  tokenizerVersion: number,
+): RustBm25IndexData | null {
+  if (
+    !isBm25IndexData(index) ||
+    !isStringValue(docId) ||
+    !isStringValue(text) ||
+    !isStringValue(sourcePath) ||
+    !isValidNonNegativeInteger(tokenizerVersion)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_index_add_document_json(
+      JSON.stringify(index),
+      docId,
+      text,
+      sourcePath,
+      tokenizerVersion,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBm25IndexData(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25IndexRemoveDocumentRust(
+  index: RustBm25IndexData | null,
+  docId: string,
+  tokenizerVersion: number,
+): RustBm25IndexData | null {
+  if (!isBm25IndexData(index) || !isStringValue(docId) || !isValidNonNegativeInteger(tokenizerVersion)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_index_remove_document_json(
+      JSON.stringify(index),
+      docId,
+      tokenizerVersion,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBm25IndexData(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25IndexRemoveSourceRust(
+  index: RustBm25IndexData | null,
+  sourcePath: string,
+  tokenizerVersion: number,
+): RustBm25IndexData | null {
+  if (!isBm25IndexData(index) || !isStringValue(sourcePath) || !isValidNonNegativeInteger(tokenizerVersion)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_index_remove_source_json(
+      JSON.stringify(index),
+      sourcePath,
+      tokenizerVersion,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBm25IndexData(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25SearchRust(
+  index: RustBm25IndexData | null,
+  query: string,
+): RustBm25SearchScore[] | null {
+  if (!isBm25IndexData(index) || !isStringValue(query)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_search_json(JSON.stringify(index), query);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isBm25SearchScore)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25HitLookupRust(
+  hits: readonly RustBm25Hit[],
+  candidateLimit: number,
+  lookupMultiplier: number,
+): RustBm25HitLookupPlan | null {
+  if (candidateLimit <= 0) return { hits: [], lookupDocIds: [], maxScore: 1 };
+  if (!hits.every(isValidBm25Hit)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_hit_lookup_json(
+      JSON.stringify(hits),
+      normalizePositiveInteger(candidateLimit),
+      normalizePositiveInteger(lookupMultiplier),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBm25HitLookupPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25SourceLookupsRust(
+  hits: readonly RustBm25Hit[],
+  foundEntryIds: readonly string[],
+): string[] | null {
+  if (!hits.every(isValidBm25Hit) || !foundEntryIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_source_lookups_json(JSON.stringify(hits), JSON.stringify(foundEntryIds));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planBm25CandidateResolutionRust(
+  input: RustBm25CandidateResolutionInput,
+): RustBm25CandidatePlan[] | null {
+  if (
+    input.candidateLimit < 0 ||
+    !Number.isFinite(input.maxScore) ||
+    !input.hits.every(isValidBm25Hit) ||
+    !input.foundEntries.every(isValidBm25EntryInput) ||
+    !input.pathEntries.every(isValidBm25EntryInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_bm25_candidate_resolution_json(
+      JSON.stringify(input.hits),
+      JSON.stringify(input.foundEntries),
+      JSON.stringify(input.pathEntries),
+      normalizeNonNegativeInteger(input.candidateLimit),
+      input.maxScore,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isBm25CandidatePlan)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planClaimEvidenceScoresRust(
+  claims: readonly RustClaimEvidenceInput[],
+): RustEvidenceScore[] | null {
+  if (
+    !claims.every(
+      (claim) => Number.isFinite(claim.confidence) && claim.evidenceIds.every(isStringValue),
+    )
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_claim_evidence_scores_json(JSON.stringify(claims));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planLocalEvidenceScoresRust(
+  input: RustLocalEvidencePlanInput,
+): RustEvidenceScore[] | null {
+  if (!isLocalEvidencePlanInput(input)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_local_evidence_scores_json(
+      JSON.stringify(input.matches),
+      JSON.stringify(input.relations),
+      JSON.stringify(input.claims),
+      normalizeNonNegativeInteger(input.traversalDepth),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planEvidenceCandidateOrderRust(
+  scores: readonly RustEvidenceScore[],
+  availableEvidenceIds: readonly string[],
+): RustEvidenceScore[] | null {
+  if (!scores.every(isEvidenceScore) || !availableEvidenceIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_evidence_candidate_order_json(
+      JSON.stringify(scores),
+      JSON.stringify(availableEvidenceIds),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphEvidenceCandidateLookupRust(
+  scores: readonly RustEvidenceScore[],
+  evidence: readonly RustGraphEvidenceLookupRecord[],
+): RustGraphEvidenceCandidateLookupPlan | null {
+  if (!scores.every(isEvidenceScore) || !evidence.every(isGraphEvidenceLookupRecord)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_evidence_candidate_lookup_json(
+      JSON.stringify(scores),
+      JSON.stringify(evidence),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphEvidenceCandidateLookupPlan(parsed, scores.length, evidence.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphEvidenceEntryCandidatesRust(
+  candidateEntryIds: readonly string[],
+  entries: readonly RustGraphEvidenceEntryRecord[],
+  candidateLimit: number,
+): RustGraphEvidenceEntryCandidatePlan | null {
+  if (
+    !candidateEntryIds.every(isStringValue) ||
+    !entries.every(isGraphEvidenceEntryRecord) ||
+    !Number.isFinite(candidateLimit)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_evidence_entry_candidates_json(
+      JSON.stringify(candidateEntryIds),
+      JSON.stringify(entries),
+      normalizeNonNegativeInteger(candidateLimit),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphEvidenceEntryCandidatePlan(parsed, candidateEntryIds.length, entries.length)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphMentionContextRust(
+  mentionNames: readonly string[],
+  entities: readonly RustGraphMentionEntityInput[],
+  relations: readonly RustGraphMentionRelationInput[],
+): RustGraphMentionContextPlan | null {
+  if (
+    !mentionNames.every(isStringValue) ||
+    !entities.every(isGraphMentionEntityInput) ||
+    !relations.every(isGraphMentionRelationInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_mention_context_json(
+      JSON.stringify(mentionNames),
+      JSON.stringify(entities),
+      JSON.stringify(relations),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphMentionContextPlan(parsed, entities.length, relations.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphClaimEntityIdsRust(
+  entityNames: readonly string[],
+  lookupRecords: readonly RustGraphClaimEntityLookupRecord[],
+): string[] | null {
+  if (!entityNames.every(isStringValue) || !lookupRecords.every(isGraphClaimEntityLookupRecord)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_claim_entity_ids_json(
+      JSON.stringify(entityNames),
+      JSON.stringify(lookupRecords),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphRelationEndpointIndicesRust(
+  relations: readonly RustGraphRelationEndpointInput[],
+  lookupRecords: readonly RustGraphRelationEndpointLookupRecord[],
+  entityCount: number,
+): RustGraphRelationEndpointPlan | null {
+  if (
+    !Number.isSafeInteger(entityCount) ||
+    entityCount < 0 ||
+    !relations.every(isGraphRelationEndpointInput) ||
+    !lookupRecords.every((record) => isGraphRelationEndpointLookupRecord(record, entityCount))
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_relation_endpoint_indices_json(
+      JSON.stringify(relations),
+      JSON.stringify(lookupRecords),
+      entityCount,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphRelationEndpointPlan(parsed, relations.length, entityCount)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphExtractionTypeValidationRust(
+  entityTypeIds: readonly string[],
+  claimTypeIds: readonly string[],
+  schemaEntityTypeIds: readonly string[],
+  schemaClaimTypeIds: readonly string[],
+): RustGraphExtractionTypeValidationPlan | null {
+  if (
+    !entityTypeIds.every(isStringValue) ||
+    !claimTypeIds.every(isStringValue) ||
+    !schemaEntityTypeIds.every(isStringValue) ||
+    !schemaClaimTypeIds.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_extraction_type_validation_json(
+      JSON.stringify(entityTypeIds),
+      JSON.stringify(claimTypeIds),
+      JSON.stringify(schemaEntityTypeIds),
+      JSON.stringify(schemaClaimTypeIds),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphExtractionTypeValidationPlan(parsed, entityTypeIds.length, claimTypeIds.length)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphCommunitySummaryGroupsRust(
+  assignments: readonly RustGraphCommunityAssignmentInput[],
+  entityIds: readonly string[],
+  relations: readonly RustGraphCommunitySummaryRelationInput[],
+  claims: readonly RustGraphCommunitySummaryClaimInput[],
+  communityIds: readonly number[],
+): RustGraphCommunitySummaryGroupsPlan | null {
+  if (
+    !assignments.every(isGraphCommunityAssignmentInput) ||
+    !entityIds.every(isStringValue) ||
+    !relations.every(isGraphCommunitySummaryRelationInput) ||
+    !claims.every(isGraphCommunitySummaryClaimInput) ||
+    !communityIds.every(isValidNonNegativeInteger)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return planGraphCommunitySummaryGroupsFallback(
+      assignments,
+      entityIds,
+      relations,
+      claims,
+      communityIds,
+    );
+  }
+
+  try {
+    const raw = plan_graph_community_summary_groups_json(
+      JSON.stringify(assignments),
+      JSON.stringify(entityIds),
+      JSON.stringify(relations),
+      JSON.stringify(claims),
+      JSON.stringify(communityIds),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !isGraphCommunitySummaryGroupsPlan(
+        parsed,
+        entityIds.length,
+        relations.length,
+        claims.length,
+        communityIds.length,
+      )
+    ) {
+      return planGraphCommunitySummaryGroupsFallback(
+        assignments,
+        entityIds,
+        relations,
+        claims,
+        communityIds,
+      );
+    }
+    return parsed;
+  } catch {
+    return planGraphCommunitySummaryGroupsFallback(
+      assignments,
+      entityIds,
+      relations,
+      claims,
+      communityIds,
+    );
+  }
+}
+
+export function planGraphCommunitySummaryGroupsFallback(
+  assignments: readonly RustGraphCommunityAssignmentInput[],
+  entityIds: readonly string[],
+  relations: readonly RustGraphCommunitySummaryRelationInput[],
+  claims: readonly RustGraphCommunitySummaryClaimInput[],
+  communityIds: readonly number[],
+): RustGraphCommunitySummaryGroupsPlan {
+  const groups: RustGraphCommunitySummaryGroup[] = communityIds.map(() => ({
+    entityIndices: [],
+    relationIndices: [],
+    claimIndices: [],
+  }));
+
+  const groupIndexByCommunityId = new Map<number, number>();
+  for (let index = 0; index < communityIds.length; index++) {
+    groupIndexByCommunityId.set(communityIds[index], index);
+  }
+
+  const entityIndexById = new Map<string, number>();
+  for (let index = 0; index < entityIds.length; index++) {
+    entityIndexById.set(entityIds[index], index);
+  }
+
+  const communityIdByEntityId = new Map<string, number>();
+  for (const assignment of assignments) {
+    const communityIndex = groupIndexByCommunityId.get(assignment.communityId);
+    const entityIndex = entityIndexById.get(assignment.entityId);
+    if (communityIndex === undefined || entityIndex === undefined) {
+      continue;
+    }
+    groups[communityIndex]?.entityIndices.push(entityIndex);
+    if (!communityIdByEntityId.has(assignment.entityId)) {
+      communityIdByEntityId.set(assignment.entityId, assignment.communityId);
+    }
+  }
+
+  for (let index = 0; index < relations.length; index++) {
+    const relation = relations[index];
+    if (!relation) {
+      continue;
+    }
+    const sourceCommunityId = communityIdByEntityId.get(relation.sourceEntityId);
+    const targetCommunityId = communityIdByEntityId.get(relation.targetEntityId);
+    if (sourceCommunityId === undefined || targetCommunityId === undefined) {
+      continue;
+    }
+    if (sourceCommunityId !== targetCommunityId) {
+      continue;
+    }
+    const groupIndex = groupIndexByCommunityId.get(sourceCommunityId);
+    if (groupIndex === undefined) continue;
+    groups[groupIndex]?.relationIndices.push(index);
+  }
+
+  for (let index = 0; index < claims.length; index++) {
+    const claim = claims[index];
+    if (!claim) {
+      continue;
+    }
+    for (const entityId of claim.entityIds) {
+      const communityId = communityIdByEntityId.get(entityId);
+      if (communityId === undefined) {
+        continue;
+      }
+      const groupIndex = groupIndexByCommunityId.get(communityId);
+      if (groupIndex === undefined) {
+        continue;
+      }
+      groups[groupIndex]?.claimIndices.push(index);
+      break;
+    }
+  }
+
+  return {
+    groups,
+  };
+}
+
+export function planFileIndexRecordsRust(
+  entries: readonly RustFileIndexEntryInput[],
+  updated: number,
+): RustFileIndexRecordPlan[] | null {
+  if (!Number.isFinite(updated) || !entries.every(isValidFileIndexEntryInput)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_file_index_records_json(JSON.stringify(entries), updated);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isFileIndexRecordPlan)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planVectorStoreAddRust(
+  existingIds: readonly string[],
+  incomingIds: readonly string[],
+): RustVectorStoreMutationPlan | null {
+  if (!existingIds.every(isStringValue) || !incomingIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planVectorStoreAddFallback(existingIds, incomingIds);
+  }
+
+  try {
+    const raw = plan_vector_store_add_json(JSON.stringify(existingIds), JSON.stringify(incomingIds));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreMutationPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreAddFallback(existingIds, incomingIds);
+  }
+}
+
+export function planVectorStoreReplaceFileRust(
+  existingFilePaths: readonly string[],
+  filePath: string,
+  incomingCount: number,
+): RustVectorStoreMutationPlan | null {
+  if (
+    !existingFilePaths.every(isStringValue) ||
+    !isStringValue(filePath) ||
+    !Number.isSafeInteger(incomingCount) ||
+    incomingCount < 0
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return planVectorStoreReplaceFileFallback(existingFilePaths, filePath, incomingCount);
+  }
+
+  try {
+    const raw = plan_vector_store_replace_file_json(
+      JSON.stringify(existingFilePaths),
+      filePath,
+      incomingCount,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreMutationPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreReplaceFileFallback(existingFilePaths, filePath, incomingCount);
+  }
+}
+
+export function planVectorStoreRemoveFileRust(
+  existingFilePaths: readonly string[],
+  filePath: string,
+): RustVectorStoreMutationPlan | null {
+  if (!existingFilePaths.every(isStringValue) || !isStringValue(filePath)) return null;
+  if (!ensureRustCore()) {
+    return planVectorStoreRemoveFileFallback(existingFilePaths, filePath);
+  }
+
+  try {
+    const raw = plan_vector_store_remove_file_json(JSON.stringify(existingFilePaths), filePath);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreMutationPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreRemoveFileFallback(existingFilePaths, filePath);
+  }
+}
+
+export function planVectorStoreStatsRust(
+  filePaths: readonly string[],
+  now: number,
+): RustVectorStoreStatsPlan | null {
+  if (!filePaths.every(isStringValue) || !Number.isFinite(now)) return null;
+  if (!ensureRustCore()) {
+    return planVectorStoreStatsFallback(filePaths, now);
+  }
+
+  try {
+    const raw = plan_vector_store_stats_json(JSON.stringify(filePaths), now);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreStatsPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreStatsFallback(filePaths, now);
+  }
+}
+
+export function planVectorStoreLookupByFilePathsRust(
+  entryFilePaths: readonly string[],
+  requestedFilePaths: readonly string[],
+): number[] | null {
+  if (!entryFilePaths.every(isStringValue) || !requestedFilePaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planVectorStoreLookupByFilePathsFallback(entryFilePaths, requestedFilePaths);
+  }
+
+  try {
+    const raw = plan_vector_store_lookup_by_file_paths_json(
+      JSON.stringify(entryFilePaths),
+      JSON.stringify(requestedFilePaths),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreIndexPlan(parsed, entryFilePaths.length)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreLookupByFilePathsFallback(entryFilePaths, requestedFilePaths);
+  }
+}
+
+export function planVectorStoreLookupByIdsRust(
+  entryIds: readonly string[],
+  requestedIds: readonly string[],
+): number[] | null {
+  if (!entryIds.every(isStringValue) || !requestedIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planVectorStoreLookupByIdsFallback(entryIds, requestedIds);
+  }
+
+  try {
+    const raw = plan_vector_store_lookup_by_ids_json(
+      JSON.stringify(entryIds),
+      JSON.stringify(requestedIds),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isVectorStoreIndexPlan(parsed, entryIds.length)) return null;
+    return parsed;
+  } catch {
+    return planVectorStoreLookupByIdsFallback(entryIds, requestedIds);
+  }
+}
+
+function planVectorStoreAddFallback(
+  existingIds: readonly string[],
+  incomingIds: readonly string[],
+): RustVectorStoreMutationPlan {
+  const latestIncomingIndexById = new Map<string, number>();
+  for (let index = 0; index < incomingIds.length; index++) {
+    latestIncomingIndexById.set(incomingIds[index], index);
+  }
+
+  const existingIdSet = new Set(existingIds);
+  const usedIncomingIndices = new Set<number>();
+  const sources: RustVectorStoreSourcePlan[] = existingIds.map((_, index) => ({
+    source: 'existing',
+    index,
+  }));
+
+  for (let index = 0; index < existingIds.length; index++) {
+    const path = existingIds[index];
+    const incomingIndex = latestIncomingIndexById.get(path);
+    if (incomingIndex === undefined) continue;
+    usedIncomingIndices.add(incomingIndex);
+    sources[index] = {
+      source: 'incoming',
+      index: incomingIndex,
+    };
+  }
+
+  for (let index = 0; index < incomingIds.length; index++) {
+    const path = incomingIds[index];
+    const isLatestForId = latestIncomingIndexById.get(path) === index;
+    if (!isLatestForId || existingIdSet.has(path)) continue;
+    usedIncomingIndices.add(index);
+    sources.push({
+      source: 'incoming',
+      index,
+    });
+  }
+
+  return {
+    sources,
+    removedCount: 0,
+    changed: usedIncomingIndices.size > 0,
+  };
+}
+
+function planVectorStoreReplaceFileFallback(
+  existingFilePaths: readonly string[],
+  filePath: string,
+  incomingCount: number,
+): RustVectorStoreMutationPlan {
+  const sources: RustVectorStoreSourcePlan[] = [];
+  let incomingIndex = 0;
+  let removedCount = 0;
+
+  for (let index = 0; index < existingFilePaths.length; index++) {
+    const path = existingFilePaths[index];
+    if (path === filePath) {
+      removedCount += 1;
+      if (incomingIndex < incomingCount) {
+        sources.push({ source: 'incoming', index: incomingIndex++ });
+      }
+    } else {
+      sources.push({ source: 'existing', index });
+    }
+  }
+
+  while (incomingIndex < incomingCount) {
+    sources.push({ source: 'incoming', index: incomingIndex++ });
+  }
+
+  return {
+    sources,
+    removedCount,
+    changed: removedCount > 0 || incomingCount > 0,
+  };
+}
+
+function planVectorStoreRemoveFileFallback(
+  existingFilePaths: readonly string[],
+  filePath: string,
+): RustVectorStoreMutationPlan {
+  const sources: RustVectorStoreSourcePlan[] = [];
+  let removedCount = 0;
+
+  for (let index = 0; index < existingFilePaths.length; index++) {
+    const path = existingFilePaths[index];
+    if (path === filePath) {
+      removedCount += 1;
+    } else {
+      sources.push({ source: 'existing', index });
+    }
+  }
+
+  return {
+    sources,
+    removedCount,
+    changed: removedCount > 0,
+  };
+}
+
+function planVectorStoreLookupByFilePathsFallback(
+  entryFilePaths: readonly string[],
+  requestedFilePaths: readonly string[],
+): number[] {
+  const requested = new Set(requestedFilePaths);
+  const indexes: number[] = [];
+  for (let index = 0; index < entryFilePaths.length; index++) {
+    const path = entryFilePaths[index];
+    if (path !== undefined && requested.has(path)) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+function planVectorStoreLookupByIdsFallback(entryIds: readonly string[], requestedIds: readonly string[]): number[] {
+  const locationById = new Map<string, number>();
+  for (let index = 0; index < entryIds.length; index++) {
+    const entryId = entryIds[index];
+    if (!locationById.has(entryId)) {
+      locationById.set(entryId, index);
+    }
+  }
+
+  const indexes: number[] = [];
+  for (const requestedId of requestedIds) {
+    const found = locationById.get(requestedId);
+    if (found !== undefined) {
+      indexes.push(found);
+    }
+  }
+
+  return indexes;
+}
+
+function planVectorStoreStatsFallback(
+  filePaths: readonly string[],
+  now: number,
+): RustVectorStoreStatsPlan {
+  const fileSet = new Set(filePaths);
+  const indexedFilePaths = [...fileSet];
+  indexedFilePaths.sort();
+
+  return {
+    totalEntries: filePaths.length,
+    totalFiles: fileSet.size,
+    totalVectors: filePaths.length,
+    averageVectorsPerFile: fileSet.size > 0 ? filePaths.length / fileSet.size : 0,
+    lastUpdated: fileSet.size > 0 ? now : null,
+    indexedFilePaths,
+  };
+}
+
+function normalizeEntityNameFallback(name: string): string {
+  let normalized = '';
+  let lastWasSpace = true;
+  for (const character of name.trim().toLowerCase()) {
+    if (isEntityNameSeparatorFallback(character) || /\s/.test(character)) {
+      if (!lastWasSpace) {
+        normalized += ' ';
+        lastWasSpace = true;
+      }
+      continue;
+    }
+    normalized += character;
+    lastWasSpace = false;
+  }
+  if (normalized.endsWith(' ')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function isEntityNameSeparatorFallback(character: string): boolean {
+  return (
+    character === '_' ||
+    character === '/' ||
+    character === '\\' ||
+    character === '|' ||
+    character === '(' ||
+    character === ')' ||
+    character === '[' ||
+    character === ']' ||
+    character === '{' ||
+    character === '}' ||
+    character === '"' ||
+    character === "'" ||
+    character === '「' ||
+    character === '」' ||
+    character === '『' ||
+    character === '』' ||
+    character === '【' ||
+    character === '】' ||
+    character === '《' ||
+    character === '》' ||
+    character === '.' ||
+    character === ',' ||
+    character === ';' ||
+    character === ':' ||
+    character === '!' ||
+    character === '?'
+  );
+}
+
+function normalizeGraphNameFallback(name: string): string {
+  return normalizeEntityNameFallback(name);
+}
+
+export function createEntityIdFallback(
+  ontologySchemaId: string,
+  typeId: string,
+  canonicalName: string,
+): string {
+  return `entity::${sanitizeGraphIdPartFallback(ontologySchemaId)}::${sanitizeGraphIdPartFallback(typeId)}::${sanitizeGraphIdPartFallback(
+    normalizeEntityNameFallback(canonicalName).replace(/ /g, '-'),
+  )}`;
+}
+
+function sanitizeGraphIdPartFallback(part: string): string {
+  let sanitized = '';
+  let lastWasReplacement = false;
+  for (const character of part.trim().toLowerCase()) {
+    if (isGraphIdPartCharacterFallback(character)) {
+      sanitized += character;
+      lastWasReplacement = false;
+    } else if (!lastWasReplacement) {
+      sanitized += '-';
+      lastWasReplacement = true;
+    }
+  }
+  return sanitized;
+}
+
+function isGraphIdPartCharacterFallback(character: string): boolean {
+  if (character.length === 0) return false;
+  const code = character.codePointAt(0);
+  if (code === undefined) return false;
+  return (
+    (code >= 0x61 && code <= 0x7a) ||
+    (code >= 0x30 && code <= 0x39) ||
+    character === '_' ||
+    character === '.' ||
+    character === ':' ||
+    character === '-' ||
+    (code >= 0xac00 && code <= 0xd7a3)
+  );
+}
+
+function planEntityResolutionFallback(
+  input: RustEntityResolutionInput,
+): RustEntityResolutionPlan {
+  let topCandidate: RustEntityResolutionCandidate | null = null;
+  for (const candidate of input.candidates) {
+    if (
+      candidate.ontologySchemaId !== input.ontologySchemaId ||
+      candidate.typeId !== input.typeId
+    ) {
+      continue;
+    }
+    if (!topCandidate || candidate.score > topCandidate.score) {
+      topCandidate = candidate;
+    }
+  }
+
+  if (!topCandidate) {
+    return {
+      status: 'new',
+      entityId: input.candidateEntityId,
+      mergeScore: 0,
+      matchedEntityId: undefined,
+    };
+  }
+
+  if (topCandidate.score >= input.autoMergeThreshold) {
+    return {
+      status: 'auto-merge',
+      entityId: topCandidate.entityId,
+      mergeScore: topCandidate.score,
+      matchedEntityId: topCandidate.entityId,
+    };
+  }
+
+  if (topCandidate.score >= input.pendingMergeThreshold) {
+    return {
+      status: 'pending-merge',
+      entityId: input.candidateEntityId,
+      mergeScore: topCandidate.score,
+      matchedEntityId: topCandidate.entityId,
+    };
+  }
+
+  return {
+    status: 'new',
+    entityId: input.candidateEntityId,
+    mergeScore: topCandidate.score,
+    matchedEntityId: topCandidate.entityId,
+  };
+}
+
+function isRagDocumentStatusOrder(status: RustRagDocumentStatus): number {
+  switch (status) {
+    case 'missing':
+      return 0;
+    case 'stale':
+      return 1;
+    case 'unknown':
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function isLegacyRagRecordFallback(record: RustRagStatusRecordInput): boolean {
+  return (
+    record.hasCompleteMetadata !== true ||
+    record.sourceMtime === undefined ||
+    record.sourceSize === undefined ||
+    record.contentHash === undefined ||
+    record.indexedAt === undefined ||
+    record.embeddingProvider === undefined ||
+    record.embeddingModel === undefined
+  );
+}
+
+function ragFileIndexStateFallback(
+  file: RustRagStatusFileInput,
+  record: RustRagStatusRecordInput | undefined,
+  reasons: RustRagStatusReasonLabels,
+  inputEmbeddingProvider: string,
+  inputEmbeddingModel: string,
+): { status: RustRagDocumentStatus; reason: string } {
+  if (!record) {
+    return { status: 'missing', reason: reasons.missing };
+  }
+  if (record.vectorCount === 0) {
+    return { status: 'missing', reason: reasons.missing };
+  }
+  if (isLegacyRagRecordFallback(record)) {
+    return { status: 'unknown', reason: reasons.legacy };
+  }
+  if (record.sourceMtime !== file.mtime || record.sourceSize !== file.size) {
+    return { status: 'stale', reason: reasons.staleFile };
+  }
+  if (
+    record.embeddingProvider !== inputEmbeddingProvider ||
+    record.embeddingModel !== inputEmbeddingModel
+  ) {
+    return { status: 'stale', reason: reasons.embeddingChanged };
+  }
+
+  return { status: 'healthy', reason: '' };
+}
+
+function normalizeGraphRagMaxFilesPerRunFallback(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  const floored = Math.floor(value);
+  if (floored < 1) return 1;
+  return Math.max(1, Number.isFinite(floored) ? floored : 1);
+}
+
+export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusPlan {
+  const recordByPath = new Map<string, RustRagStatusRecordInput>();
+  for (const record of input.records) {
+    recordByPath.set(record.filePath, record);
+  }
+
+  let healthyDocuments = 0;
+  let missingDocuments = 0;
+  let staleDocuments = 0;
+  let unknownDocuments = 0;
+  const updateRequiredDocuments: RustRagDocumentUpdatePlan[] = [];
+
+  for (const file of input.includedFiles) {
+    const record = recordByPath.get(file.path);
+    const { status, reason } = ragFileIndexStateFallback(
+      file,
+      record,
+      input.reasons,
+      input.embeddingProvider,
+      input.embeddingModel,
+    );
+    switch (status) {
+      case 'healthy':
+        healthyDocuments += 1;
+        break;
+      case 'missing':
+        missingDocuments += 1;
+        updateRequiredDocuments.push({
+          path: file.path,
+          status,
+          reason,
+          mtime: file.mtime,
+          size: file.size,
+        });
+        break;
+      case 'stale':
+        staleDocuments += 1;
+        updateRequiredDocuments.push({
+          path: file.path,
+          status,
+          reason,
+          mtime: file.mtime,
+          size: file.size,
+        });
+        break;
+      case 'unknown':
+        unknownDocuments += 1;
+        updateRequiredDocuments.push({
+          path: file.path,
+          status,
+          reason,
+          mtime: file.mtime,
+          size: file.size,
+        });
+        break;
+    }
+  }
+
+  updateRequiredDocuments.sort((left, right) => {
+    const leftOrder = isRagDocumentStatusOrder(left.status);
+    const rightOrder = isRagDocumentStatusOrder(right.status);
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.path.localeCompare(right.path);
+  });
+
+  return {
+    totalDocuments: input.includedFiles.length,
+    healthyDocuments,
+    missingDocuments,
+    staleDocuments,
+    unknownDocuments,
+    excludedDocuments: input.totalVaultFiles - input.includedFiles.length,
+    totalVectors: input.records.reduce(
+      (sum, record) => sum + (Number.isFinite(record.vectorCount) ? record.vectorCount : 0),
+      0,
+    ),
+    updateRequiredDocuments,
+  };
+}
+
+export function planGraphRagStatusEntryLookupsFallback(
+  evidenceEntryIds: readonly string[],
+  cacheEntryIds: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const entryIds: string[] = [];
+  for (const entryId of evidenceEntryIds) {
+    if (seen.has(entryId)) continue;
+    seen.add(entryId);
+    entryIds.push(entryId);
+  }
+  for (const entryId of cacheEntryIds) {
+    if (seen.has(entryId)) continue;
+    seen.add(entryId);
+    entryIds.push(entryId);
+  }
+  return entryIds;
+}
+
+function isGraphRagMarkdownFilePathFallback(filePath: string): boolean {
+  const markdownPaths = planGraphRagMarkdownFilePathsRust([filePath]);
+  return markdownPaths?.[0] === filePath;
+}
+
+function sortedUniqueGraphRagMarkdownPathsFallback(filePaths: readonly string[]): string[] {
+  return planGraphRagMarkdownFilePathsRust(filePaths) ?? [];
+}
+
+export function planGraphRagStatusFileSnapshotFallback(
+  fileRecords: readonly RustGraphRagStatusFileSnapshotRecordInput[],
+  indexedFilePaths: readonly RustGraphRagRunFilePathInput[],
+): RustGraphRagStatusFileSnapshotPlan {
+  const seenRecordPaths = new Set<string>();
+  const fileRecordIndices: number[] = [];
+  for (let index = 0; index < fileRecords.length; index++) {
+    const record = fileRecords[index];
+    if (
+      record.vectorCount === 0 ||
+      !record.processable ||
+      !isGraphRagMarkdownFilePathFallback(record.filePath)
+    ) {
+      continue;
+    }
+    if (!seenRecordPaths.has(record.filePath)) {
+      seenRecordPaths.add(record.filePath);
+      fileRecordIndices.push(index);
+    }
+  }
+
+  if (fileRecordIndices.length > 0) {
+    return {
+      fileRecordIndices,
+      totalCandidateFiles: fileRecordIndices.length,
+    };
+  }
+
+  return {
+    fileRecordIndices,
+    totalCandidateFiles: sortedUniqueGraphRagMarkdownPathsFallback(
+      indexedFilePaths.filter((row) => row.processable).map((row) => row.filePath),
+    ).length,
+  };
+}
+
+export function planGraphRagStatusEntrySnapshotFallback(
+  entries: readonly RustGraphRagStatusEntrySnapshotInput[],
+): RustGraphRagStatusEntrySnapshotPlan {
+  const seenEntryIds = new Set<string>();
+  const entryIndices: number[] = [];
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    if (
+      !entry.processable ||
+      !isGraphRagMarkdownFilePathFallback(entry.filePath)
+    ) {
+      continue;
+    }
+    if (!seenEntryIds.has(entry.id)) {
+      seenEntryIds.add(entry.id);
+      entryIndices.push(index);
+    }
+  }
+  return { entryIndices };
+}
+
+function countUniqueValuesFallback(values: readonly string[]): number {
+  const unique = new Set<string>(values);
+  return unique.size;
+}
+
+function resolveEntryContentHashFallback(entry: RustGraphRagStatusEntryInput): string {
+  if (entry.contentHash !== undefined) {
+    return entry.contentHash;
+  }
+  const rustHash = createContentHashRust(entry.text);
+  if (rustHash !== null) {
+    return rustHash;
+  }
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < entry.text.length; index++) {
+    hash ^= entry.text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function filePathForMissingGraphEntryFallback(
+  entryId: string,
+  evidence: readonly RustGraphRagStatusEvidenceInput[],
+): string {
+  for (const record of evidence) {
+    if (record.entryId === entryId) {
+      return record.filePath;
+    }
+  }
+  const firstSegment = entryId.split('::')[0];
+  return firstSegment || entryId;
+}
+
+function collectFreshGraphRagCacheCountsFallback(
+  input: RustGraphRagStatusInput,
+  cacheByEntryId: Map<string, RustGraphRagStatusCacheInput>,
+  staleFilePathSet: Set<string>,
+): Map<string, number> {
+  const freshCountsByFilePath = new Map<string, number>();
+  for (const entry of input.entries) {
+    const cache = cacheByEntryId.get(entry.id);
+    if (!cache) {
+      staleFilePathSet.add(filePathForMissingGraphEntryFallback(entry.id, input.evidence));
+      continue;
+    }
+    const contentHash = resolveEntryContentHashFallback(entry);
+    if (
+      cache.contentHash !== contentHash ||
+      cache.extractionModelKey !== input.graphRagModel ||
+      cache.ontologySchemaId !== input.ontologySchemaId ||
+      cache.ontologyVersion !== input.ontologyVersion
+    ) {
+      staleFilePathSet.add(entry.filePath);
+      continue;
+    }
+    const next = freshCountsByFilePath.get(entry.filePath) ?? 0;
+    freshCountsByFilePath.set(entry.filePath, next + 1);
+  }
+  return freshCountsByFilePath;
+}
+
+function collectGraphRagStaleFilesFallback(input: RustGraphRagStatusInput): string[] {
+  const vectorFilePaths = new Set<string>();
+  for (const record of input.fileRecords) {
+    vectorFilePaths.add(record.filePath);
+  }
+
+  const cacheByEntryId = new Map<string, RustGraphRagStatusCacheInput>();
+  for (const record of input.cacheRecords) {
+    cacheByEntryId.set(record.entryId, record);
+  }
+
+  const entriesById = new Map<string, RustGraphRagStatusEntryInput>();
+  for (const entry of input.entries) {
+    entriesById.set(entry.id, entry);
+  }
+
+  const staleFilePathSet = new Set<string>();
+
+  for (const evidence of input.evidence) {
+    if (!evidence.processable || !vectorFilePaths.has(evidence.filePath)) {
+      staleFilePathSet.add(evidence.filePath);
+    }
+  }
+
+  for (const cache of input.cacheRecords) {
+    if (!entriesById.has(cache.entryId)) {
+      staleFilePathSet.add(filePathForMissingGraphEntryFallback(cache.entryId, input.evidence));
+    }
+  }
+
+  for (const evidence of input.evidence) {
+    const entry = entriesById.get(evidence.entryId);
+    if (!entry) {
+      staleFilePathSet.add(evidence.filePath);
+      continue;
+    }
+    const contentHash = resolveEntryContentHashFallback(entry);
+    if (
+      evidence.contentHash !== contentHash ||
+      evidence.extractionModelKey !== input.graphRagModel
+    ) {
+      staleFilePathSet.add(evidence.filePath);
+    }
+  }
+
+  const freshCacheCountByFilePath = collectFreshGraphRagCacheCountsFallback(
+    input,
+    cacheByEntryId,
+    staleFilePathSet,
+  );
+  for (const record of input.fileRecords) {
+    const freshCacheCount = freshCacheCountByFilePath.get(record.filePath) ?? 0;
+    if (freshCacheCount < record.vectorCount) {
+      staleFilePathSet.add(record.filePath);
+    }
+  }
+
+  return [...staleFilePathSet].sort((left, right) => left.localeCompare(right));
+}
+
+function determineGraphRagStatusStateFallback(
+  staleFilePaths: readonly string[],
+  failedFileCount: number,
+): RustGraphRagIndexState {
+  return staleFilePaths.length === 0
+    ? failedFileCount > 0
+      ? 'partial'
+      : 'ready'
+    : 'stale';
+}
+
+function emptyGraphRagStatusFallback(
+  state: RustGraphRagIndexState,
+  totalCandidateFiles: number,
+  maxFilesPerRun: number,
+): RustGraphRagStatusPlan {
+  return {
+    state,
+    totalCandidateFiles,
+    graphEvidenceCount: 0,
+    rejectedFactCount: 0,
+    failedFileCount: 0,
+    pendingMergeCount: 0,
+    staleFileCount: 0,
+    staleFilePaths: [],
+    maxFilesPerRun,
+  };
+}
+
+export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): RustGraphRagStatusPlan {
+  const maxFilesPerRun = normalizeGraphRagMaxFilesPerRunFallback(input.graphRagMaxFilesPerRun);
+  if (!input.graphRagEnabled) {
+    return emptyGraphRagStatusFallback('disabled', input.totalCandidateFiles, maxFilesPerRun);
+  }
+  if (input.schemaErrorCount > 0) {
+    return emptyGraphRagStatusFallback('schema-error', input.totalCandidateFiles, maxFilesPerRun);
+  }
+  if (input.isRunning) {
+    return emptyGraphRagStatusFallback('building', input.totalCandidateFiles, maxFilesPerRun);
+  }
+
+  const failedFileCount = countUniqueValuesFallback(input.rejectedFactFilePaths);
+  if (input.evidence.length === 0) {
+    return {
+      state: 'not-built',
+      totalCandidateFiles: input.totalCandidateFiles,
+      graphEvidenceCount: 0,
+      rejectedFactCount: input.rejectedFactFilePaths.length,
+      failedFileCount,
+      pendingMergeCount: 0,
+      staleFileCount: 0,
+      staleFilePaths: [],
+      maxFilesPerRun,
+    };
+  }
+
+  const staleFilePaths = collectGraphRagStaleFilesFallback(input);
+  const state = determineGraphRagStatusStateFallback(staleFilePaths, failedFileCount);
+
+  return {
+    state,
+    totalCandidateFiles: input.totalCandidateFiles,
+    graphEvidenceCount: input.evidence.length,
+    rejectedFactCount: input.rejectedFactFilePaths.length,
+    failedFileCount,
+    pendingMergeCount: input.pendingMergeCount,
+    staleFileCount: staleFilePaths.length,
+    staleFilePaths,
+    maxFilesPerRun,
+  };
+}
+
+function mergeOrderedStringsFallback(
+  left: readonly string[],
+  right: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const value of left) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  for (const value of right) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  return merged;
+}
+
+export function planGraphEntityMergeFallback(
+  existingRecord: RustGraphEntityMergeInput,
+  nextRecord: RustGraphEntityMergeInput,
+): RustGraphEntityMergePlan {
+  return {
+    aliases: mergeOrderedStringsFallback(existingRecord.aliases, nextRecord.aliases),
+    description:
+      nextRecord.description.length === 0 ? existingRecord.description : nextRecord.description,
+    confidence: Math.max(existingRecord.confidence, nextRecord.confidence),
+    evidenceIds: mergeOrderedStringsFallback(existingRecord.evidenceIds, nextRecord.evidenceIds),
+    updatedAt: nextRecord.updatedAt,
+  };
+};
+
+export function isGraphExtractionCacheHitFallback(
+  cachedRecord: RustGraphExtractionCacheKey | null,
+  input: RustGraphExtractionCacheKey,
+): boolean {
+  if (cachedRecord === null) {
+    return false;
+  }
+  return (
+    cachedRecord.entryId === input.entryId &&
+    cachedRecord.contentHash === input.contentHash &&
+    cachedRecord.extractionModelKey === input.extractionModelKey &&
+    cachedRecord.ontologySchemaId === input.ontologySchemaId &&
+    cachedRecord.ontologyVersion === input.ontologyVersion
+  );
+}
+
+export function planRagStatusRust(input: RustRagStatusInput): RustRagStatusPlan | null {
+  if (
+    !input.includedFiles.every(isValidRagStatusFileInput) ||
+    !input.records.every(isValidRagStatusRecordInput) ||
+    !isValidNonNegativeInteger(input.totalVaultFiles) ||
+    !isStringValue(input.embeddingProvider) ||
+    !isStringValue(input.embeddingModel) ||
+    !isValidRagStatusReasonLabels(input.reasons)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return planRagStatusFallback(input);
+  }
+
+  try {
+    const raw = plan_rag_status_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRagStatusPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planRagStatusFallback(input);
+  }
+}
+
+export function planIndexPendingFilesRust(
+  filePaths: readonly string[],
+  updatePaths: readonly string[],
+): RustIndexPendingPlan | null {
+  if (!filePaths.every(isStringValue) || !updatePaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planIndexPendingFilesFallback(filePaths, updatePaths);
+  }
+
+  try {
+    const raw = plan_index_pending_files_json(
+      JSON.stringify(filePaths),
+      JSON.stringify(updatePaths),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isIndexPendingPlan(parsed, filePaths.length)) return null;
+    return parsed;
+  } catch {
+    return planIndexPendingFilesFallback(filePaths, updatePaths);
+  }
+}
+
+export function planIndexPendingFilesFallback(
+  filePaths: readonly string[],
+  updatePaths: readonly string[],
+): RustIndexPendingPlan {
+  const updatePathSet = new Set(updatePaths);
+  const fileIndices: number[] = [];
+  for (let index = 0; index < filePaths.length; index++) {
+    const filePath = filePaths[index];
+    if (updatePathSet.has(filePath)) {
+      fileIndices.push(index);
+    }
+  }
+  return {
+    fileIndices,
+    skipped: Math.max(filePaths.length - fileIndices.length, 0),
+  };
+}
+
+export function planGraphDeletionIndicesRust(
+  recordKeys: readonly string[],
+  requestedKeys: readonly string[],
+): number[] | null {
+  if (!recordKeys.every(isStringValue) || !requestedKeys.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planGraphDeletionIndicesFallback(recordKeys, requestedKeys);
+  }
+
+  try {
+    const raw = plan_graph_deletion_indices_json(
+      JSON.stringify(recordKeys),
+      JSON.stringify(requestedKeys),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBoundedIndexArray(parsed, recordKeys.length)) return null;
+    return parsed;
+  } catch {
+    return planGraphDeletionIndicesFallback(recordKeys, requestedKeys);
+  }
+}
+
+function planGraphDeletionIndicesFallback(
+  recordKeys: readonly string[],
+  requestedKeys: readonly string[],
+): number[] {
+  if (recordKeys.length === 0 || requestedKeys.length === 0) return [];
+  const requested = new Set(requestedKeys);
+  const deletionIndices: number[] = [];
+  for (let index = 0; index < recordKeys.length; index++) {
+    if (requested.has(recordKeys[index])) {
+      deletionIndices.push(index);
+    }
+  }
+  return deletionIndices;
+}
+
+export function planGraphRagStatusEntryLookupsRust(
+  evidenceEntryIds: readonly string[],
+  cacheEntryIds: readonly string[],
+): string[] | null {
+  if (!evidenceEntryIds.every(isStringValue) || !cacheEntryIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return planGraphRagStatusEntryLookupsFallback(evidenceEntryIds, cacheEntryIds);
+  }
+
+  try {
+    const raw = plan_graph_rag_status_entry_lookups_json(
+      JSON.stringify(evidenceEntryIds),
+      JSON.stringify(cacheEntryIds),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return planGraphRagStatusEntryLookupsFallback(evidenceEntryIds, cacheEntryIds);
+  }
+}
+
+export function planGraphRagMarkdownFilePathsRust(filePaths: readonly string[]): string[] | null {
+  if (!filePaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_rag_markdown_file_paths_json(JSON.stringify(filePaths));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphRagStatusFileSnapshotRust(
+  fileRecords: readonly RustGraphRagStatusFileSnapshotRecordInput[],
+  indexedFilePaths: readonly RustGraphRagRunFilePathInput[],
+): RustGraphRagStatusFileSnapshotPlan | null {
+  if (
+    !fileRecords.every(isValidGraphRagStatusFileSnapshotRecordInput) ||
+    !indexedFilePaths.every(isValidGraphRagRunFilePathInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return planGraphRagStatusFileSnapshotFallback(fileRecords, indexedFilePaths);
+  }
+
+  try {
+    const raw = plan_graph_rag_status_file_snapshot_json(
+      JSON.stringify(fileRecords),
+      JSON.stringify(indexedFilePaths),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphRagStatusFileSnapshotPlan(parsed, fileRecords.length)) return null;
+    return parsed;
+  } catch {
+    return planGraphRagStatusFileSnapshotFallback(fileRecords, indexedFilePaths);
+  }
+}
+
+export function planGraphRagStatusEntrySnapshotRust(
+  entries: readonly RustGraphRagStatusEntrySnapshotInput[],
+): RustGraphRagStatusEntrySnapshotPlan | null {
+  if (!entries.every(isValidGraphRagStatusEntrySnapshotInput)) return null;
+  if (!ensureRustCore()) {
+    return planGraphRagStatusEntrySnapshotFallback(entries);
+  }
+
+  try {
+    const raw = plan_graph_rag_status_entry_snapshot_json(JSON.stringify(entries));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphRagStatusEntrySnapshotPlan(parsed, entries.length)) return null;
+    return parsed;
+  } catch {
+    return planGraphRagStatusEntrySnapshotFallback(entries);
+  }
+}
+
+export function planGraphRagRunFileSelectionRust(
+  input: RustGraphRagRunFileSelectionInput,
+): RustGraphRagRunFileSelectionPlan | null {
+  if (!isValidGraphRagRunFileSelectionInput(input)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_rag_run_file_selection_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphRagRunFileSelectionPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphRagUnsupportedPrunePathsRust(
+  evidence: readonly RustGraphRagRunFilePathInput[],
+  rejectedFacts: readonly RustGraphRagRunFilePathInput[],
+): string[] | null {
+  if (
+    !evidence.every(isValidGraphRagRunFilePathInput) ||
+    !rejectedFacts.every(isValidGraphRagRunFilePathInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_rag_unsupported_prune_paths_json(
+      JSON.stringify(evidence),
+      JSON.stringify(rejectedFacts),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphRagStatusRust(
+  input: RustGraphRagStatusInput,
+): RustGraphRagStatusPlan | null {
+  if (!isValidGraphRagStatusInput(input)) return null;
+  if (!ensureRustCore()) return planGraphRagStatusFallback(input);
+
+  try {
+    const raw = plan_graph_rag_status_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphRagStatusPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planGraphRagStatusFallback(input);
+  }
+}
+
+export function planGraphEntityMergeRust(
+  existing: RustGraphEntityMergeInput,
+  next: RustGraphEntityMergeInput,
+): RustGraphEntityMergePlan | null {
+  if (!isValidGraphEntityMergeInput(existing) || !isValidGraphEntityMergeInput(next)) return null;
+  if (!ensureRustCore()) {
+    return planGraphEntityMergeFallback(existing, next);
+  }
+
+  try {
+    const raw = plan_graph_entity_merge_json(JSON.stringify(existing), JSON.stringify(next));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphEntityMergePlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return planGraphEntityMergeFallback(existing, next);
+  }
+}
+
+export function isGraphExtractionCacheHitRust(
+  cached: RustGraphExtractionCacheKey | null,
+  input: RustGraphExtractionCacheKey,
+): boolean | null {
+  if (cached !== null && !isValidGraphExtractionCacheKey(cached)) return null;
+  if (!isValidGraphExtractionCacheKey(input)) return null;
+  if (!ensureRustCore()) return isGraphExtractionCacheHitFallback(cached, input);
+
+  try {
+    const raw = is_graph_extraction_cache_hit_json(JSON.stringify(cached), JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'boolean' ? parsed : null;
+  } catch {
+    return isGraphExtractionCacheHitFallback(cached, input);
+  }
+}
+
+export function planRagFileTypeSummaryRust(
+  files: readonly RustRagFileTypeInput[],
+  noExtensionLabel: string,
+): RustRagFileTypeSummary | null {
+  if (!isStringValue(noExtensionLabel) || !files.every(isValidRagFileTypeInput)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_rag_file_type_summary_json(JSON.stringify(files), noExtensionLabel);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRagFileTypeSummary(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planPromptLibrarySummaryRust(
+  entries: readonly RustPromptLibrarySummaryInput[],
+): RustPromptLibrarySummary | null {
+  if (!entries.every(isValidPromptLibrarySummaryInput)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_prompt_library_summary_json(JSON.stringify(entries));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPromptLibrarySummary(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planRagFileContentProbeIndicesRust(
+  files: readonly RustRagFileEligibilityInput[],
+  excludePaths: readonly string[],
+  excludeExts: readonly string[],
+): number[] | null {
+  if (
+    !files.every(isValidRagFileEligibilityInput) ||
+    !excludePaths.every(isStringValue) ||
+    !excludeExts.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_rag_file_content_probe_indices_json(
+      JSON.stringify(files),
+      JSON.stringify(excludePaths),
+      JSON.stringify(excludeExts),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isNonNegativeIntegerArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRagFileIndexabilityRust(
+  files: readonly RustRagFileEligibilityInput[],
+  excludePaths: readonly string[],
+  excludeExts: readonly string[],
+  textProbes: readonly RustRagFileTextProbeInput[],
+): RustRagFileIndexabilityPlan | null {
+  if (
+    !files.every(isValidRagFileEligibilityInput) ||
+    !excludePaths.every(isStringValue) ||
+    !excludeExts.every(isStringValue) ||
+    !textProbes.every(isValidRagFileTextProbeInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_rag_file_indexability_json(
+      JSON.stringify(files),
+      JSON.stringify(excludePaths),
+      JSON.stringify(excludeExts),
+      JSON.stringify(textProbes),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isRagFileIndexabilityPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceReferencesRust(content: string): RustSourceReferencePlan[] | null {
+  if (!isStringValue(content)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_source_references_json(content);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isSourceReferencePlan)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceValidationInputsRust(
+  references: readonly RustSourceReferencePlan[],
+  citationIds: readonly string[],
+  citationPaths: readonly string[],
+  citationStatuses: readonly string[],
+): RustSourceValidationInputPlan | null {
+  if (
+    !references.every(isSourceReferencePlan) ||
+    !citationIds.every(isStringValue) ||
+    !citationPaths.every(isStringValue) ||
+    !citationStatuses.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_source_validation_inputs_json(
+      JSON.stringify(references),
+      JSON.stringify(citationIds),
+      JSON.stringify(citationPaths),
+      JSON.stringify(citationStatuses),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isSourceValidationInputPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceValidationWarningsRust(
+  references: readonly RustSourceReferencePlan[],
+  verifiedCitationIds: readonly string[],
+  verifiedPaths: readonly string[],
+  existingAliases: readonly string[],
+): RustSourceValidationWarningPlan[] | null {
+  if (
+    !references.every(isSourceReferencePlan) ||
+    !verifiedCitationIds.every(isStringValue) ||
+    !verifiedPaths.every(isStringValue) ||
+    !existingAliases.every(isStringValue)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_source_validation_warnings_json(
+      JSON.stringify(references),
+      JSON.stringify(verifiedCitationIds),
+      JSON.stringify(verifiedPaths),
+      JSON.stringify(existingAliases),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isSourceValidationWarningPlan)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planAssistantResponseClassificationRust(input: {
+  content: string;
+  reasoning: string;
+}): RustAssistantResponseClassification | null {
+  if (!isStringValue(input.content) || !isStringValue(input.reasoning)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_assistant_response_classification_json(input.content, input.reasoning);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isAssistantResponseClassification(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function extractStructuredReasoningRust(delta: Record<string, unknown>): string | null {
+  if (!isStringRecordValueMap(delta)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = extract_structured_reasoning(JSON.stringify(delta));
+    return raw.length === 0 ? null : raw;
+  } catch {
+    return null;
+  }
+}
+
+export function splitReasoningTagsRust(content: string): RustReasoningChunk | null {
+  if (!isStringValue(content)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = split_reasoning_tags_json(content);
+    if (raw.length === 0) {
+      return { content: '' };
+    }
+    const parsed: unknown = JSON.parse(raw);
+    return isRustReasoningChunk(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeReasoningChunkRust(input: {
+  content?: string;
+  reasoning?: string;
+}): RustReasoningChunk | null {
+  if (
+    !isStringValue(input.content) ||
+    (input.reasoning !== undefined && !isStringValue(input.reasoning))
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = normalize_reasoning_chunk_json(input.content, input.reasoning ?? '');
+    if (raw.length === 0) {
+      return { content: '' };
+    }
+    const parsed: unknown = JSON.parse(raw);
+    return isRustReasoningChunk(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planChatMessagesRust(
+  body: string,
+  nowTimestamp: number,
+  nowIso: string,
+  decodeFailureLabel: string,
+): RustChatMessagePlan[] | null {
+  if (
+    !isStringValue(body) ||
+    !Number.isFinite(nowTimestamp) ||
+    !isStringValue(nowIso) ||
+    !isStringValue(decodeFailureLabel)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_chat_messages_json(body, nowTimestamp, nowIso, decodeFailureLabel);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isChatMessagePlan)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planChatMetaRust(
+  content: string,
+  fallbackTitle: string,
+  fallbackMtime: number,
+): RustChatMetaPlan | null {
+  if (
+    !isStringValue(content) ||
+    !isStringValue(fallbackTitle) ||
+    !Number.isFinite(fallbackMtime)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_chat_meta_json(content, fallbackTitle, new Date(fallbackMtime).toISOString());
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isChatMetaPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planChatSaveMetadataRust(
+  messages: readonly unknown[],
+  existingCreated: string | undefined,
+  optionTitle: string | undefined,
+  nowIso: string,
+): RustChatSaveMetadataPlan | null {
+  if (!Array.isArray(messages) || !isStringValue(nowIso)) return null;
+  if (existingCreated !== undefined && !isStringValue(existingCreated)) return null;
+  if (optionTitle !== undefined && !isStringValue(optionTitle)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_chat_save_metadata_json(
+      JSON.stringify(messages),
+      existingCreated ?? '',
+      optionTitle ?? '',
+      nowIso,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isChatSaveMetadataPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planContextSourcesRust(
+  results: readonly RustContextSourceInput[],
+  verifications: readonly RustContextSourceVerification[],
+  firstIndex: number,
+  prefix: string,
+): RustContextSourcePlan | null {
+  if (
+    !results.every(isValidContextSourceInput) ||
+    !verifications.every(isContextSourceVerification) ||
+    !Number.isInteger(firstIndex) ||
+    firstIndex < 0 ||
+    !isStringValue(prefix)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_context_sources_json(
+      JSON.stringify(results),
+      JSON.stringify(verifications),
+      firstIndex,
+      prefix,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isContextSourcePlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planContextBudgetAppendRust(
+  remainingChars: number,
+  text: string,
+): RustContextBudgetAppendPlan | null {
+  if (!Number.isSafeInteger(remainingChars) || remainingChars < 0 || !isStringValue(text)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_context_budget_append_json(remainingChars, text);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isContextBudgetAppendPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planChatContextMentionsRust(
+  mentionTypes: readonly string[],
+): RustChatContextMentionPlan | null {
+  if (!mentionTypes.every(isChatContextMentionType)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_chat_context_mentions_json(JSON.stringify(mentionTypes));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isChatContextMentionPlan(parsed, mentionTypes.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planMcpServerCandidatesRust(
+  preferredServerNames: readonly string[],
+  enabledServerNames: readonly string[],
+  connectionStatuses: Record<string, string>,
+): string[] | null {
+  if (
+    !preferredServerNames.every(isStringValue) ||
+    !enabledServerNames.every(isStringValue) ||
+    !isStringStringRecord(connectionStatuses)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_mcp_server_candidates_json(
+      JSON.stringify(preferredServerNames),
+      JSON.stringify(enabledServerNames),
+      JSON.stringify(connectionStatuses),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isMcpToolAvailableRust(toolName: string, toolNames: readonly string[]): boolean | null {
+  if (!isStringValue(toolName) || !toolNames.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    return is_mcp_tool_name_available(toolName, JSON.stringify(toolNames));
+  } catch {
+    return null;
+  }
+}
+
+export function parseMcpToolArgumentsRust(
+  argumentsText: string,
+): Record<string, unknown> | null {
+  if (!isStringValue(argumentsText)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = parse_mcp_tool_arguments_json(argumentsText);
+    const parsed: unknown = JSON.parse(raw);
+    return isStringRecordValueMap(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeMcpToolResultRust(result: unknown): RustMcpToolNormalizedResult | null {
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = normalize_mcp_tool_result_json(JSON.stringify(result));
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRustMcpToolNormalizedResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isMcpToolResultEmptyRust(
+  result: unknown,
+  normalizedResult: RustMcpToolNormalizedResult,
+): boolean | null {
+  if (!isRustMcpToolNormalizedResult(normalizedResult)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    return is_mcp_tool_result_empty_json(
+      JSON.stringify(result),
+      normalizedResult.displayText,
+      normalizedResult.modelText,
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function classifyMcpToolErrorRust(rawMsg: string): RustMcpToolErrorInfo | null {
+  if (!isStringValue(rawMsg)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(classify_mcp_tool_error_json(rawMsg));
+    if (!isRustMcpToolErrorInfo(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planContextGraphVerificationRust(
+  filePath: string,
+  unsupportedDetail: string,
+): RustContextGraphVerificationPlan | null {
+  if (!isStringValue(filePath) || !isStringValue(unsupportedDetail)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_context_graph_verification_json(filePath, unsupportedDetail);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isContextGraphVerificationPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planStructuralLinkedPathsRust(
+  seedPaths: readonly string[],
+  edges: readonly RustStructuralLinkEdge[],
+): string[] | null {
+  if (!seedPaths.every(isStringValue) || !edges.every(isValidStructuralLinkEdge)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_structural_linked_paths_json(JSON.stringify(seedPaths), JSON.stringify(edges));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planStructuralHeadingNeighborsRust(
+  input: RustStructuralHeadingNeighborInput,
+): number[] | null {
+  if (
+    !input.seeds.every(isValidStructuralHeadingSeed) ||
+    !input.entries.every(isValidStructuralEntryInput) ||
+    !input.headings.every(isValidStructuralHeadingInput)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_structural_heading_neighbors_json(
+      JSON.stringify(input.seeds),
+      JSON.stringify(input.entries),
+      JSON.stringify(input.headings),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isValidNonNegativeInteger)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planRerankResponseRust(
+  rawResponse: string,
+  allowedIds: readonly string[],
+): string[] | null {
+  if (!allowedIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_rerank_response_json(rawResponse, JSON.stringify(allowedIds));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planRerankMessagesRust(
+  question: string,
+  candidates: readonly RustRerankMessageCandidate[],
+  maxTextChars: number,
+): RustRerankMessagesPlan | null {
+  if (
+    !isStringValue(question) ||
+    !candidates.every(isRerankMessageCandidate) ||
+    !Number.isSafeInteger(maxTextChars) ||
+    maxTextChars < 0
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+  const raw = plan_rerank_messages_json(question, JSON.stringify(candidates), maxTextChars);
+  if (raw.length === 0) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRerankMessagesPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRerankResultOrderRust(
+  resultIds: readonly string[],
+  rankedIds: readonly string[],
+): number[] | null {
+  if (!resultIds.every(isStringValue) || !rankedIds.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_rerank_result_order_json(JSON.stringify(resultIds), JSON.stringify(rankedIds));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isValidNonNegativeInteger)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function selectDiverseIndicesRust(
   candidates: readonly RustDiverseCandidate[],
   topK: number,
@@ -407,6 +4352,30 @@ export function selectDiverseIndicesRust(
     normalizeNonNegativeInteger(topK),
   );
   return decodeIndexArray(indexes, candidates.length);
+}
+
+export function planDiverseResultIndicesRust(
+  candidates: readonly RustDiverseResultCandidate[],
+  topK: number,
+): number[] | null {
+  if (topK <= 0) return [];
+  if (candidates.length === 0) return [];
+  if (candidates.length <= topK) return candidates.map((_, index) => index);
+  if (!candidates.every(isDiverseResultCandidate)) return null;
+  if (!ensureRustCore()) return planDiverseResultIndicesFallback(candidates, topK);
+
+  try {
+    const raw = plan_diverse_result_indices_json(
+      JSON.stringify(candidates),
+      normalizeNonNegativeInteger(topK),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBoundedIndexArray(parsed, candidates.length)) return null;
+    return parsed;
+  } catch {
+    return planDiverseResultIndicesFallback(candidates, topK);
+  }
 }
 
 export function detectCommunitiesRust(
@@ -468,6 +4437,61 @@ export function detectCommunitiesRust(
     communityIds: [...new Set(assignments)].sort((left, right) => left - right),
     modularity,
   };
+}
+
+export function detectCommunitiesFromEdgesRust(
+  edges: readonly RustCommunityEdgeRecord[],
+  maxIterations: number,
+): RustCommunityDetectionByIdResult | null {
+  if (!edges.every(isCommunityEdgeRecord) || !Number.isFinite(maxIterations)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = detect_communities_from_edges_json(
+      JSON.stringify(edges),
+      normalizeNonNegativeInteger(maxIterations),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isCommunityDetectionByIdResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphEdgeRecordsRust(
+  entityIds: readonly string[],
+  relationSourceIds: readonly string[],
+  relationTargetIds: readonly string[],
+  confidences: readonly number[],
+): RustCommunityEdgeRecord[] | null {
+  if (
+    !entityIds.every(isStringValue) ||
+    !relationSourceIds.every(isStringValue) ||
+    !relationTargetIds.every(isStringValue) ||
+    !confidences.every(Number.isFinite) ||
+    relationSourceIds.length !== relationTargetIds.length ||
+    relationSourceIds.length !== confidences.length
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_edge_records_json(
+      JSON.stringify(entityIds),
+      JSON.stringify(relationSourceIds),
+      JSON.stringify(relationTargetIds),
+      JSON.stringify(confidences),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isCommunityEdgeRecord)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export function aggregateGraphEdgesRust(
@@ -708,6 +4732,118 @@ export function extractVaultLinksRust(content: string): string[] | null {
   }
 }
 
+export function planVaultLinkCandidatesRust(
+  sourcePath: string,
+  rawTarget: string,
+): RustVaultLinkCandidatePlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_vault_link_candidates_json(sourcePath, rawTarget));
+    if (!isVaultLinkCandidatePlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planVaultLinkFallbackIndexRust(
+  fallbackBasename: string,
+  markdownBasenames: readonly string[],
+): number | null {
+  if (!isStringValue(fallbackBasename) || !markdownBasenames.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_vault_link_fallback_index_json(
+      fallbackBasename,
+      JSON.stringify(markdownBasenames),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const index = (parsed as { index?: unknown }).index;
+    if (index === null) return null;
+    if (!Number.isInteger(index) || typeof index !== 'number') return null;
+    return index >= 0 && index < markdownBasenames.length ? index : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planFolderMentionFilesRust(
+  folderPath: string,
+  markdownFilePaths: readonly string[],
+  maxFiles: number,
+): RustFolderMentionFilePlan | null {
+  if (!isStringValue(folderPath) || !markdownFilePaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_folder_mention_file_indices_json(
+      folderPath,
+      JSON.stringify(markdownFilePaths),
+      normalizeNonNegativeInteger(maxFiles),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isFolderMentionFilePlan(parsed, markdownFilePaths.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planReferenceFileIndicesRust(
+  sourcePath: string,
+  filePaths: readonly string[],
+): number[] | null {
+  if (!isStringValue(sourcePath) || !filePaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_reference_file_indices_json(sourcePath, JSON.stringify(filePaths));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBoundedIndexArray(parsed, filePaths.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function extractJsonObjectRust(rawResponse: string): string | null {
+  if (!ensureRustCore()) return null;
+  const extracted = extract_json_object_text(rawResponse);
+  return extracted.length > 0 ? extracted : null;
+}
+
+export function normalizeExtractedGraphPayloadRust(
+  jsonText: string,
+): RustExtractedGraphPayloadResult | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = normalize_extracted_graph_payload_json(jsonText);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRustExtractedGraphPayloadResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function parseExtractedGraphPayloadRust(
+  rawResponse: string,
+): RustExtractedGraphPayloadParseResult | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = parse_extracted_graph_payload_json(rawResponse);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRustExtractedGraphPayloadParseResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function parseMentionCandidatesRust(content: string): RustMentionCandidate[] | null {
   if (!ensureRustCore()) return null;
   try {
@@ -721,14 +4857,423 @@ export function parseMentionCandidatesRust(content: string): RustMentionCandidat
   }
 }
 
+export function planGraphQueryRust(question: string): RustGraphQueryPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_graph_query_json(question));
+    if (!isGraphQueryPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphQueryExecutionRust(
+  configuredMode: string,
+  plannedMode: string,
+  evidenceFirst: boolean,
+): RustGraphQueryExecutionPlan | null {
+  if (
+    !isStringValue(configuredMode) ||
+    !isStringValue(plannedMode) ||
+    typeof evidenceFirst !== 'boolean'
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_query_execution_json(configuredMode, plannedMode, evidenceFirst);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isGraphQueryExecutionPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphQueryExecutionActionRust(
+  executionPlan: RustGraphQueryExecutionPlan | null,
+  configuredMode: string,
+  plannedMode: string,
+  evidenceFirst: boolean,
+): RustGraphQueryExecutionAction | null {
+  if (executionPlan) return executionPlan.action;
+
+  if (configuredMode === 'global') return 'global';
+  if (configuredMode === 'local') return 'local';
+  if (configuredMode === 'hybrid') return 'hybrid';
+
+  if (plannedMode === 'none') return 'none';
+  if (plannedMode === 'global') return 'global';
+  if (plannedMode === 'hybrid') return 'hybrid';
+  if (plannedMode === 'local' && evidenceFirst) return 'evidence-first';
+  if (plannedMode === 'local') return 'local';
+
+  return null;
+}
+
+export function planGraphSchemaRelationIndicesRust(
+  relationSchemaIds: readonly string[],
+  ontologySchemaId: string,
+): number[] | null {
+  return planGraphSchemaIndicesRust(
+    relationSchemaIds,
+    ontologySchemaId,
+    plan_graph_schema_relation_indices_json,
+  );
+}
+
+function planDiverseResultIndicesFallback(
+  candidates: readonly RustDiverseResultCandidate[],
+  topK: number,
+): number[] {
+  const validCount = Math.max(0, Math.floor(topK));
+  if (validCount === 0 || candidates.length === 0) return [];
+
+  return candidates
+    .map((candidate, index) => ({
+      index,
+      score: candidate.score,
+      sourcePath: candidate.sourcePath,
+      heading: candidate.heading,
+    }))
+    .sort((left, right) => {
+      if (left.score === right.score) {
+        if (left.sourcePath !== right.sourcePath) {
+          return left.sourcePath.localeCompare(right.sourcePath);
+        }
+        return (left.heading ?? '').localeCompare(right.heading ?? '');
+      }
+      return right.score - left.score;
+    })
+    .slice(0, validCount)
+    .map((entry) => entry.index);
+}
+
+export function planGraphSchemaCommunityIndicesRust(
+  communitySchemaIds: readonly string[],
+  ontologySchemaId: string,
+): number[] | null {
+  return planGraphSchemaIndicesRust(
+    communitySchemaIds,
+    ontologySchemaId,
+    plan_graph_schema_community_indices_json,
+  );
+}
+
+export function planGraphCommunityReplacementDeleteIdsRust(
+  communities: readonly RustGraphCommunityReplacementRecord[],
+  ontologySchemaId: string,
+): string[] | null {
+  if (
+    !communities.every(isGraphCommunityReplacementRecord) ||
+    !isStringValue(ontologySchemaId)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_graph_community_replacement_delete_ids_json(
+      JSON.stringify(communities),
+      ontologySchemaId,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function planGraphSchemaIndicesRust(
+  recordSchemaIds: readonly string[],
+  ontologySchemaId: string,
+  createPlanJson: (recordSchemaIdsJson: string, ontologySchemaId: string) => string,
+): number[] | null {
+  if (!recordSchemaIds.every(isStringValue) || !isStringValue(ontologySchemaId)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = createPlanJson(JSON.stringify(recordSchemaIds), ontologySchemaId);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isBoundedIndexArray(parsed, recordSchemaIds.length)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphQueryResponseRust(
+  rawResponse: string,
+  fallbackQuestion: string,
+): RustGraphQueryPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_graph_query_response_json(rawResponse, fallbackQuestion));
+    if (!isGraphQueryPlan(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function validateOntologyRelationRust(
+  input: RustOntologyRelationValidationInput,
+): RustOntologyRelationValidationResult | null {
+  if (
+    !isDelimiterSafeStringArray(input.entityTypeIds) ||
+    !isDelimiterSafeStringArray(input.relationTypeIds) ||
+    !input.relationSourceTypeIds.every(isDelimiterSafeStringArray) ||
+    !input.relationTargetTypeIds.every(isDelimiterSafeStringArray) ||
+    !isDelimiterSafeString(input.relationTypeId) ||
+    !isDelimiterSafeString(input.sourceTypeId) ||
+    !isDelimiterSafeString(input.targetTypeId)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  return decodeOntologyRelationValidationResult(
+    validate_ontology_relation(
+      input.entityTypeIds.join('\0'),
+      input.relationTypeIds.join('\0'),
+      input.relationSourceTypeIds.map((row) => row.join('\0')).join('\u{1f}'),
+      input.relationTargetTypeIds.map((row) => row.join('\0')).join('\u{1f}'),
+      input.relationTypeId,
+      input.sourceTypeId,
+      input.targetTypeId,
+    ),
+  );
+}
+
+export function validateMcpJsonRust(jsonText: string): RustMcpJsonValidationResult | null {
+  if (!isStringValue(jsonText)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = validate_mcp_json(jsonText);
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRustMcpJsonValidationResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function formatMcpJsonRust(jsonText: string): string | null {
+  if (!isStringValue(jsonText)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const formatted = format_mcp_json(jsonText);
+    return formatted.length === 0 ? null : formatted;
+  } catch {
+    return null;
+  }
+}
+
+export function validateOntologySchemaRust(schema: unknown): string[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(validate_ontology_schema_json(JSON.stringify(schema)));
+    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) return [];
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function isExcludedPathRust(filePath: string, patterns: readonly string[]): boolean | null {
   if (!ensureRustCore()) return null;
   return is_excluded_path(filePath, patterns.join('\0'));
 }
 
-export function normalizeEntityNameRust(name: string): string | null {
+export function isExcludedExtRust(
+  filePath: string,
+  excludeExtensions: readonly string[],
+): boolean | null {
+  if (!isStringValue(filePath) || !excludeExtensions.every(isStringValue)) return null;
   if (!ensureRustCore()) return null;
-  return normalize_entity_name(name);
+  return is_excluded_ext_json(filePath, JSON.stringify(excludeExtensions));
+}
+
+export function countFilesByExtensionsRust(
+  fileExtensions: readonly string[],
+  extensionKeys: readonly string[],
+): Record<string, number> | null {
+  if (!fileExtensions.every(isStringValue) || !extensionKeys.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = count_files_by_extensions_json(
+      JSON.stringify(fileExtensions),
+      JSON.stringify(extensionKeys),
+    );
+    const parsed: unknown = JSON.parse(raw);
+    if (!isStringNumberRecord(parsed)) return null;
+    return Object.entries(parsed).reduce(
+      (acc, [key, value]) => {
+        if (Number.isFinite(value)) {
+          acc[key] = value;
+        }
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeExcludeExtensionRust(extension: string): string | null {
+  if (!isStringValue(extension)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    return normalize_exclude_extension_json(extension);
+  } catch {
+    return null;
+  }
+}
+
+export function isProtectedRagDocumentExtensionRust(extension: string): boolean | null {
+  if (!isStringValue(extension)) return null;
+  if (!ensureRustCore()) return null;
+  return is_protected_rag_document_extension_json(extension);
+}
+
+export function isRecommendableExcludeExtensionRust(extension: string): boolean | null {
+  if (!isStringValue(extension)) return null;
+  if (!ensureRustCore()) return null;
+  return is_recommendable_exclude_extension_json(extension);
+}
+
+export function validateExcludePathInputRust(
+  input: string,
+  existingPaths: readonly string[],
+): RustExcludeValidationResult | null {
+  if (!isStringValue(input) || !existingPaths.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(
+      validate_exclude_path_input_json(input, JSON.stringify(existingPaths)),
+    );
+    if (!isRustExcludeValidationResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function validateExcludeExtensionInputRust(
+  input: string,
+  existingExtensions: readonly string[],
+): RustExcludeValidationResult | null {
+  if (!isStringValue(input) || !existingExtensions.every(isStringValue)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(
+      validate_exclude_extension_input_json(input, JSON.stringify(existingExtensions)),
+    );
+    if (!isRustExcludeValidationResult(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeEntityNameRust(name: string): string | null {
+  if (!isStringValue(name)) return null;
+  if (!ensureRustCore()) return normalizeEntityNameFallback(name);
+  try {
+    return normalize_entity_name(name);
+  } catch {
+    return normalizeEntityNameFallback(name);
+  }
+}
+
+export function createEntityIdRust(
+  ontologySchemaId: string,
+  typeId: string,
+  canonicalName: string,
+): string | null {
+  if (
+    !isStringValue(ontologySchemaId) ||
+    !isStringValue(typeId) ||
+    !isStringValue(canonicalName)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return createEntityIdFallback(ontologySchemaId, typeId, canonicalName);
+  }
+  try {
+    return create_entity_id(ontologySchemaId, typeId, canonicalName);
+  } catch {
+    return createEntityIdFallback(ontologySchemaId, typeId, canonicalName);
+  }
+}
+
+export function normalizeGraphNameRust(name: string): string | null {
+  if (!isStringValue(name)) return null;
+  if (!ensureRustCore()) return normalizeGraphNameFallback(name);
+  try {
+    return normalize_graph_name(name);
+  } catch {
+    return normalizeGraphNameFallback(name);
+  }
+}
+
+export function normalizeGraphConfidenceRust(confidence: unknown): number | null {
+  if (!ensureRustCore()) return null;
+  const score = normalize_graph_confidence_or_default(
+    typeof confidence === 'number' ? confidence : Number.NaN,
+  );
+  return Number.isFinite(score) ? score : null;
+}
+
+export function sanitizeGraphIdPartRust(part: string): string | null {
+  if (!isStringValue(part)) return null;
+  if (!ensureRustCore()) return sanitizeGraphIdPartFallback(part);
+  try {
+    return sanitize_graph_id_part(part);
+  } catch {
+    return sanitizeGraphIdPartFallback(part);
+  }
+}
+
+export function createGraphIdRust(parts: readonly string[]): string | null {
+  if (!parts.every(isStringValue)) return null;
+  if (!ensureRustCore()) {
+    return parts.map(sanitizeGraphIdPartFallback).join('::');
+  }
+  try {
+    return create_graph_id(parts.join('\0'));
+  } catch {
+    return parts.map(sanitizeGraphIdPartFallback).join('::');
+  }
+}
+
+export function createPendingEntityMergeIdRust(
+  existingEntityId: string,
+  candidateEntityId: string,
+): string | null {
+  const normalizedExisting = existingEntityId.replace(/@+/g, '');
+  const normalizedCandidate = candidateEntityId.replace(/@+/g, '');
+  return createGraphIdRust([
+    'pending-entity-merge',
+    ...normalizedExisting.split('::').filter((segment) => segment.length > 0),
+    ...normalizedCandidate.split('::').filter((segment) => segment.length > 0),
+  ]);
 }
 
 export function scoreEntityMatchRust(input: RustEntityMatchInput): number | null {
@@ -755,6 +5300,56 @@ export function scoreEntityMatchRust(input: RustEntityMatchInput): number | null
   return Number.isFinite(score) ? score : null;
 }
 
+export function planEntityResolutionRust(
+  input: RustEntityResolutionInput,
+): RustEntityResolutionPlan | null {
+  if (
+    !isStringValue(input.ontologySchemaId) ||
+    !isStringValue(input.typeId) ||
+    !isStringValue(input.candidateEntityId) ||
+    !Number.isFinite(input.autoMergeThreshold) ||
+    !Number.isFinite(input.pendingMergeThreshold) ||
+    !input.candidates.every(isEntityResolutionCandidate)
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return planEntityResolutionFallback(input);
+  }
+
+  try {
+    const rawPlan = plan_entity_resolution_json(JSON.stringify(input));
+    if (rawPlan.length === 0) return null;
+    const parsed = JSON.parse(rawPlan) as unknown;
+    return isEntityResolutionPlan(parsed) ? parsed : null;
+  } catch {
+    return planEntityResolutionFallback(input);
+  }
+}
+
+export function findMentionedEntityMatchesRust(
+  question: string,
+  entities: readonly RustMentionedEntityInput[],
+  ontologySchemaId: string,
+  entityHints: readonly string[],
+): RustVectorScore[] | null {
+  if (entities.length === 0) return [];
+  if (!entities.every(isMentionedEntityInput) || !entityHints.every(isStringValue)) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  const pairs = find_mentioned_entity_matches(
+    question,
+    ontologySchemaId,
+    entities.map((entity) => entity.ontologySchemaId).join('\0'),
+    entities.map((entity) => entity.canonicalName).join('\0'),
+    entities.map((entity) => entity.aliases.join('\0')).join('\u{1f}'),
+    entityHints.join('\0'),
+  );
+  return decodeBoundedIndexScorePairs(pairs, entities.length);
+}
+
 function ensureRustCore(): boolean {
   if (initialized) return true;
   if (unavailable) return false;
@@ -767,6 +5362,16 @@ function ensureRustCore(): boolean {
     unavailable = true;
     return false;
   }
+}
+
+function isRustMcpConnectionState(value: string): value is RustMcpConnectionState {
+  return (
+    value === 'idle' ||
+    value === 'connecting' ||
+    value === 'connected' ||
+    value === 'partial-error' ||
+    value === 'error'
+  );
 }
 
 function decodeRankPairs(
@@ -851,6 +5456,59 @@ function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] 
     indexes.push(value);
   }
   return indexes;
+}
+
+function decodeMergedRetrievalCandidatePlan(
+  values: Float64Array,
+  candidateCount: number,
+): RustMergedRetrievalCandidatePlan[] | null {
+  const groups: RustMergedRetrievalCandidatePlan[] = [];
+  let offset = 0;
+  while (offset < values.length) {
+    const entryIndex = values[offset++];
+    const firstCandidateIndex = values[offset++];
+    const sourceCount = values[offset++];
+    const candidateIndexCount = values[offset++];
+    if (
+      !isBoundedInteger(entryIndex, candidateCount) ||
+      !isBoundedInteger(firstCandidateIndex, candidateCount) ||
+      !Number.isSafeInteger(sourceCount) ||
+      sourceCount < 0 ||
+      !Number.isSafeInteger(candidateIndexCount) ||
+      candidateIndexCount <= 0
+    ) {
+      return null;
+    }
+
+    const sources: RustMergedRetrievalSource[] = [];
+    for (let index = 0; index < sourceCount; index++) {
+      const sourceCode = values[offset++];
+      const sourceScore = values[offset++];
+      const rank = values[offset++];
+      if (!Number.isSafeInteger(sourceCode)) return null;
+      const source = sourceCodeToSource(sourceCode);
+      if (!source) return null;
+      sources.push({
+        source,
+        ...(Number.isFinite(sourceScore) ? { sourceScore } : {}),
+        ...(Number.isFinite(rank) ? { rank } : {}),
+      });
+    }
+
+    const candidateIndexes: number[] = [];
+    for (let index = 0; index < candidateIndexCount; index++) {
+      const candidateIndex = values[offset++];
+      if (!isBoundedInteger(candidateIndex, candidateCount)) return null;
+      candidateIndexes.push(candidateIndex);
+    }
+    groups.push({
+      entryIndex,
+      firstCandidateIndex,
+      candidateIndexes,
+      sources,
+    });
+  }
+  return offset === values.length ? groups : null;
 }
 
 interface EncodedVectorMatrixPair {
@@ -971,9 +5629,7 @@ function isValidGraphPruneInput(input: RustGraphPruneInput): boolean {
     input.relationTargetEntityIndices.every((index) =>
       isValidGraphPruneIndex(index, entityCount),
     ) &&
-    input.relationEvidenceIndices.every((row) =>
-      isValidGraphPruneIndexArray(row, evidenceCount),
-    ) &&
+    input.relationEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
     input.claimEntityIndices.every((row) => isValidGraphPruneIndexArray(row, entityCount)) &&
     input.claimRelationIndices.every((row) => isValidGraphPruneIndexArray(row, relationCount)) &&
     input.claimEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
@@ -991,11 +5647,12 @@ function isValidGraphPruneInput(input: RustGraphPruneInput): boolean {
   );
 }
 
+function isDelimiterSafeString(value: unknown): value is string {
+  return typeof value === 'string' && !value.includes('\0') && !value.includes('\u{1f}');
+}
+
 function isDelimiterSafeStringArray(values: readonly string[]): boolean {
-  return values.every(
-    (value) =>
-      typeof value === 'string' && !value.includes('\0') && !value.includes('\u{1f}'),
-  );
+  return values.every(isDelimiterSafeString);
 }
 
 function isValidGraphPruneIndexArray(values: readonly number[], maxExclusive: number): boolean {
@@ -1016,10 +5673,35 @@ function isGraphPrunePlan(value: unknown, input: RustGraphPruneInput): value is 
     isBoundedIndexArray(plan.deletedEvidenceIndices, input.evidenceFilePaths.length) &&
     isBoundedIndexArray(plan.deletedEntityIndices, input.entitySchemaIds.length) &&
     isBoundedIndexArray(plan.updatedEntityIndices, input.entitySchemaIds.length) &&
+    isBoundedReferenceIndexMatrix(
+      plan.updatedEntityEvidenceIndices,
+      plan.updatedEntityIndices,
+      input.entityEvidenceIndices,
+    ) &&
     isBoundedIndexArray(plan.deletedRelationIndices, input.relationSchemaIds.length) &&
     isBoundedIndexArray(plan.updatedRelationIndices, input.relationSchemaIds.length) &&
+    isBoundedReferenceIndexMatrix(
+      plan.updatedRelationEvidenceIndices,
+      plan.updatedRelationIndices,
+      input.relationEvidenceIndices,
+    ) &&
     isBoundedIndexArray(plan.deletedClaimIndices, input.claimEvidenceIndices.length) &&
     isBoundedIndexArray(plan.updatedClaimIndices, input.claimEvidenceIndices.length) &&
+    isBoundedReferenceIndexMatrix(
+      plan.updatedClaimEntityIndices,
+      plan.updatedClaimIndices,
+      input.claimEntityIndices,
+    ) &&
+    isBoundedReferenceIndexMatrix(
+      plan.updatedClaimRelationIndices,
+      plan.updatedClaimIndices,
+      input.claimRelationIndices,
+    ) &&
+    isBoundedReferenceIndexMatrix(
+      plan.updatedClaimEvidenceIndices,
+      plan.updatedClaimIndices,
+      input.claimEvidenceIndices,
+    ) &&
     isBoundedIndexArray(plan.deletedCommunityIndices, input.communitySchemaIds.length) &&
     isBoundedIndexArray(plan.deletedRejectedFactIndices, input.rejectedFactFilePaths.length) &&
     isBoundedIndexArray(plan.deletedExtractionCacheIndices, input.extractionCacheEntryIds.length) &&
@@ -1030,12 +5712,27 @@ function isGraphPrunePlan(value: unknown, input: RustGraphPruneInput): value is 
   );
 }
 
+function isBoundedReferenceIndexMatrix(
+  value: unknown,
+  ownerIndices: readonly number[] | undefined,
+  referenceRows: readonly (readonly number[])[],
+): value is number[][] {
+  if (!Array.isArray(value) || ownerIndices === undefined || value.length !== ownerIndices.length) {
+    return false;
+  }
+
+  return value.every((row, index) => {
+    const ownerIndex = ownerIndices[index];
+    if (ownerIndex === undefined) return false;
+    const referenceRow = referenceRows[ownerIndex];
+    return referenceRow !== undefined && isBoundedIndexArray(row, referenceRow.length);
+  });
+}
+
 function isBoundedIndexArray(value: unknown, maxExclusive: number): value is number[] {
   return (
     Array.isArray(value) &&
-    value.every(
-      (index) => Number.isSafeInteger(index) && index >= 0 && index < maxExclusive,
-    )
+    value.every((index) => Number.isSafeInteger(index) && index >= 0 && index < maxExclusive)
   );
 }
 
@@ -1054,14 +5751,1554 @@ function isValidUint32(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
 }
 
+function isBoundedInteger(value: number, maxExclusive: number): value is number {
+  return Number.isSafeInteger(value) && value >= 0 && value < maxExclusive;
+}
+
 function isStringValue(value: unknown): value is string {
   return typeof value === 'string';
+}
+
+function isStringRecordValueMap(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function decodeOntologyRelationValidationResult(
+  reason: string,
+): RustOntologyRelationValidationResult | null {
+  switch (reason) {
+    case 'valid':
+      return { valid: true };
+    case 'unknown-relation-type':
+    case 'unknown-entity-type':
+    case 'relation-domain-range-mismatch':
+      return { valid: false, reason };
+    default:
+      return null;
+  }
 }
 
 function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustMentionCandidate>;
   return typeof candidate.raw === 'string' && typeof candidate.name === 'string';
+}
+
+function isMentionedEntityInput(value: RustMentionedEntityInput): boolean {
+  return (
+    isStringValue(value.ontologySchemaId) &&
+    isStringValue(value.canonicalName) &&
+    value.aliases.every(isStringValue)
+  );
+}
+
+function isFiniteMetricRecord(value: unknown): value is Partial<Record<string, number>> {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).every(
+    ([key, metric]) => key.length > 0 && typeof metric === 'number' && Number.isFinite(metric),
+  );
+}
+
+function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan | null {
+  if (!value || typeof value !== 'object') return null;
+  const plan = value as Partial<RustQueryResultScorePlan> & { bestEvidenceRank?: unknown };
+  const {
+    combinedBase,
+    rrfScore,
+    sourcePrior,
+    sourceEvidenceScore,
+    hasGraphOrStructuralEvidence,
+    hasStrongGraphOrStructuralEvidence,
+    combinedScore,
+  } = plan;
+  if (
+    typeof combinedBase !== 'number' ||
+    !Number.isFinite(combinedBase) ||
+    typeof rrfScore !== 'number' ||
+    !Number.isFinite(rrfScore) ||
+    typeof sourcePrior !== 'number' ||
+    !Number.isFinite(sourcePrior) ||
+    typeof sourceEvidenceScore !== 'number' ||
+    !Number.isFinite(sourceEvidenceScore) ||
+    typeof hasGraphOrStructuralEvidence !== 'boolean' ||
+    typeof hasStrongGraphOrStructuralEvidence !== 'boolean' ||
+    typeof combinedScore !== 'number' ||
+    !Number.isFinite(combinedScore)
+  ) {
+    return null;
+  }
+  if (
+    plan.bestEvidenceRank !== undefined &&
+    plan.bestEvidenceRank !== null &&
+    !Number.isFinite(plan.bestEvidenceRank)
+  ) {
+    return null;
+  }
+  return {
+    combinedBase,
+    rrfScore,
+    sourcePrior,
+    sourceEvidenceScore,
+    bestEvidenceRank:
+      typeof plan.bestEvidenceRank === 'number' ? plan.bestEvidenceRank : undefined,
+    hasGraphOrStructuralEvidence,
+    hasStrongGraphOrStructuralEvidence,
+    combinedScore,
+  };
+}
+
+function isRerankMessageCandidate(value: RustRerankMessageCandidate): boolean {
+  return (
+    isStringValue(value.id) &&
+    isStringValue(value.sourcePath) &&
+    isStringValue(value.heading) &&
+    isStringValue(value.text)
+  );
+}
+
+function isRerankMessagesPlan(value: unknown): value is RustRerankMessagesPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRerankMessagesPlan>;
+  return isStringValue(plan.systemContent) && isStringValue(plan.userContent);
+}
+
+function isEntityResolutionCandidate(value: RustEntityResolutionCandidate): boolean {
+  return (
+    isStringValue(value.entityId) &&
+    isStringValue(value.ontologySchemaId) &&
+    isStringValue(value.typeId) &&
+    Number.isFinite(value.score)
+  );
+}
+
+function isEntityResolutionPlan(value: unknown): value is RustEntityResolutionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustEntityResolutionPlan>;
+  return (
+    isEntityResolutionStatus(plan.status) &&
+    isStringValue(plan.entityId) &&
+    Number.isFinite(plan.mergeScore) &&
+    (plan.matchedEntityId === undefined || isStringValue(plan.matchedEntityId)) &&
+    (plan.status === 'new' || isStringValue(plan.matchedEntityId))
+  );
+}
+
+function isEntityResolutionStatus(value: unknown): value is RustEntityResolutionStatus {
+  return value === 'new' || value === 'auto-merge' || value === 'pending-merge';
+}
+
+function isGraphQueryPlan(value: unknown): value is RustGraphQueryPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphQueryPlan>;
+  return (
+    isStringValue(plan.type) &&
+    isStringValue(plan.queryMode) &&
+    Number.isFinite(plan.traversalDepth) &&
+    typeof plan.evidenceFirst === 'boolean' &&
+    Array.isArray(plan.entityHints) &&
+    plan.entityHints.every(isStringValue)
+  );
+}
+
+function isGraphQueryExecutionPlan(value: unknown): value is RustGraphQueryExecutionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphQueryExecutionPlan>;
+  return isGraphQueryExecutionAction(plan.action) && typeof plan.requiresPlanner === 'boolean';
+}
+
+function isGraphQueryExecutionAction(value: unknown): value is RustGraphQueryExecutionAction {
+  return (
+    value === 'none' ||
+    value === 'local' ||
+    value === 'global' ||
+    value === 'hybrid' ||
+    value === 'evidence-first'
+  );
+}
+
+function isBm25HitLookupPlan(value: unknown): value is RustBm25HitLookupPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustBm25HitLookupPlan>;
+  return (
+    Array.isArray(plan.hits) &&
+    plan.hits.every(isValidBm25Hit) &&
+    Array.isArray(plan.lookupDocIds) &&
+    plan.lookupDocIds.every(isStringValue) &&
+    Number.isFinite(plan.maxScore)
+  );
+}
+
+function isBm25CandidatePlan(value: unknown): value is RustBm25CandidatePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustBm25CandidatePlan>;
+  const entryIndex = plan.entryIndex;
+  return (
+    (plan.entrySet === 'found' || plan.entrySet === 'path') &&
+    typeof entryIndex === 'number' &&
+    Number.isSafeInteger(entryIndex) &&
+    entryIndex >= 0 &&
+    Number.isFinite(plan.sourceScore)
+  );
+}
+
+function isBm25IndexData(value: unknown): value is RustBm25IndexData {
+  if (!value || typeof value !== 'object') return false;
+  const index = value as Partial<RustBm25IndexData>;
+  return (
+    isValidNonNegativeInteger(index.tokenizerVersion) &&
+    isBm25InvertedIndex(index.inverted) &&
+    isStringNumberRecord(index.docLengths) &&
+    isStringStringRecord(index.docSources) &&
+    isValidNonNegativeInteger(index.totalDocs) &&
+    Number.isFinite(index.avgDocLength)
+  );
+}
+
+function isBm25InvertedIndex(value: unknown): value is Record<string, Record<string, number>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value).every(isStringNumberRecord);
+}
+
+function isStringNumberRecord(value: unknown): value is Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value).every((item) => Number.isFinite(item));
+}
+
+function isStringStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value).every(isStringValue);
+}
+
+function isBm25SearchScore(value: unknown): value is RustBm25SearchScore {
+  if (!value || typeof value !== 'object') return false;
+  const score = value as Partial<RustBm25SearchScore>;
+  return isStringValue(score.docId) && Number.isFinite(score.score);
+}
+
+function isEvidenceScore(value: unknown): value is RustEvidenceScore {
+  if (!value || typeof value !== 'object') return false;
+  const score = value as Partial<RustEvidenceScore>;
+  return isStringValue(score.evidenceId) && Number.isFinite(score.score);
+}
+
+function isLocalEvidencePlanInput(value: unknown): value is RustLocalEvidencePlanInput {
+  if (!value || typeof value !== 'object') return false;
+  const input = value as Partial<RustLocalEvidencePlanInput>;
+  return (
+    Array.isArray(input.matches) &&
+    input.matches.every(isLocalEvidenceMatchInput) &&
+    Array.isArray(input.relations) &&
+    input.relations.every(isLocalEvidenceRelationInput) &&
+    Array.isArray(input.claims) &&
+    input.claims.every(isLocalEvidenceClaimInput) &&
+    Number.isFinite(input.traversalDepth)
+  );
+}
+
+function isLocalEvidenceMatchInput(value: unknown): value is RustLocalEvidenceMatchInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustLocalEvidenceMatchInput>;
+  return (
+    isStringValue(record.entityId) &&
+    Number.isFinite(record.entityConfidence) &&
+    Number.isFinite(record.matchScore) &&
+    Array.isArray(record.evidenceIds) &&
+    record.evidenceIds.every(isStringValue)
+  );
+}
+
+function isLocalEvidenceRelationInput(value: unknown): value is RustLocalEvidenceRelationInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustLocalEvidenceRelationInput>;
+  return (
+    isStringValue(record.sourceEntityId) &&
+    isStringValue(record.targetEntityId) &&
+    Number.isFinite(record.confidence) &&
+    Array.isArray(record.evidenceIds) &&
+    record.evidenceIds.every(isStringValue)
+  );
+}
+
+function isLocalEvidenceClaimInput(value: unknown): value is RustLocalEvidenceClaimInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustLocalEvidenceClaimInput>;
+  return (
+    Array.isArray(record.entityIds) &&
+    record.entityIds.every(isStringValue) &&
+    Number.isFinite(record.confidence) &&
+    Array.isArray(record.evidenceIds) &&
+    record.evidenceIds.every(isStringValue)
+  );
+}
+
+function isDiverseResultCandidate(value: unknown): value is RustDiverseResultCandidate {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RustDiverseResultCandidate>;
+  return (
+    Number.isFinite(candidate.score) &&
+    Array.isArray(candidate.vector) &&
+    candidate.vector.every((item) => Number.isFinite(item)) &&
+    isStringValue(candidate.sourcePath) &&
+    (candidate.heading === undefined || isStringValue(candidate.heading))
+  );
+}
+
+function isCommunityEdgeRecord(value: unknown): value is RustCommunityEdgeRecord {
+  if (!value || typeof value !== 'object') return false;
+  const edge = value as Partial<RustCommunityEdgeRecord>;
+  return isStringValue(edge.source) && isStringValue(edge.target) && Number.isFinite(edge.weight);
+}
+
+function isCommunityDetectionByIdResult(
+  value: unknown,
+): value is RustCommunityDetectionByIdResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustCommunityDetectionByIdResult>;
+  return (
+    Array.isArray(result.assignmentsById) &&
+    result.assignmentsById.every(isCommunityAssignmentById) &&
+    Array.isArray(result.communityIds) &&
+    result.communityIds.every(isValidNonNegativeInteger) &&
+    Number.isFinite(result.modularity)
+  );
+}
+
+function isCommunityAssignmentById(value: unknown): value is RustCommunityAssignmentById {
+  if (!value || typeof value !== 'object') return false;
+  const assignment = value as Partial<RustCommunityAssignmentById>;
+  return isStringValue(assignment.entityId) && isValidNonNegativeInteger(assignment.communityId);
+}
+
+function isGraphEvidenceLookupRecord(value: unknown): value is RustGraphEvidenceLookupRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphEvidenceLookupRecord>;
+  return isStringValue(record.id) && isStringValue(record.filePath);
+}
+
+function isGraphEvidenceCandidateLookupPlan(
+  value: unknown,
+  scoreCount: number,
+  evidenceCount: number,
+): value is RustGraphEvidenceCandidateLookupPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphEvidenceCandidateLookupPlan>;
+  return (
+    isBoundedIndexArray(plan.scoreIndices, scoreCount) &&
+    isBoundedIndexArray(plan.evidenceIndices, evidenceCount) &&
+    plan.scoreIndices.length === plan.evidenceIndices.length &&
+    Array.isArray(plan.filePaths) &&
+    plan.filePaths.every(isStringValue)
+  );
+}
+
+function isGraphEvidenceEntryRecord(value: unknown): value is RustGraphEvidenceEntryRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphEvidenceEntryRecord>;
+  return isStringValue(record.id) && typeof record.compatible === 'boolean';
+}
+
+function isGraphMentionEntityInput(value: unknown): value is RustGraphMentionEntityInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphMentionEntityInput>;
+  return (
+    isStringValue(record.id) &&
+    isStringValue(record.canonicalName) &&
+    Array.isArray(record.aliases) &&
+    record.aliases.every(isStringValue) &&
+    (record.typeId === undefined || isStringValue(record.typeId)) &&
+    (record.description === undefined || isStringValue(record.description))
+  );
+}
+
+function isGraphMentionRelationInput(value: unknown): value is RustGraphMentionRelationInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphMentionRelationInput>;
+  return (
+    isStringValue(record.sourceEntityId) &&
+    isStringValue(record.targetEntityId) &&
+    (record.relationTypeId === undefined || isStringValue(record.relationTypeId)) &&
+    (record.description === undefined || isStringValue(record.description))
+  );
+}
+
+function isGraphClaimEntityLookupRecord(
+  value: unknown,
+): value is RustGraphClaimEntityLookupRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphClaimEntityLookupRecord>;
+  return isStringValue(record.name) && isStringValue(record.entityId);
+}
+
+function isGraphRelationEndpointInput(value: unknown): value is RustGraphRelationEndpointInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphRelationEndpointInput>;
+  return isStringValue(record.source) && isStringValue(record.target);
+}
+
+function isGraphRelationEndpointLookupRecord(
+  value: unknown,
+  entityCount: number,
+): value is RustGraphRelationEndpointLookupRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphRelationEndpointLookupRecord>;
+  return (
+    isStringValue(record.name) &&
+    typeof record.entityIndex === 'number' &&
+    isBoundedInteger(record.entityIndex, entityCount)
+  );
+}
+
+function isGraphRelationEndpointPlan(
+  value: unknown,
+  relationCount: number,
+  entityCount: number,
+): value is RustGraphRelationEndpointPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphRelationEndpointPlan>;
+  return (
+    Array.isArray(plan.pairs) &&
+    plan.pairs.length === relationCount &&
+    plan.pairs.every((pair) => {
+      if (pair === null) return true;
+      if (!pair || typeof pair !== 'object') return false;
+      const record = pair as Partial<RustGraphRelationEndpointPair>;
+      return (
+        typeof record.sourceEntityIndex === 'number' &&
+        typeof record.targetEntityIndex === 'number' &&
+        isBoundedInteger(record.sourceEntityIndex, entityCount) &&
+        isBoundedInteger(record.targetEntityIndex, entityCount)
+      );
+    })
+  );
+}
+
+function isGraphExtractionTypeValidationPlan(
+  value: unknown,
+  entityCount: number,
+  claimCount: number,
+): value is RustGraphExtractionTypeValidationPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphExtractionTypeValidationPlan>;
+  return (
+    Array.isArray(plan.entityTypeKnown) &&
+    Array.isArray(plan.claimTypeKnown) &&
+    plan.entityTypeKnown.length === entityCount &&
+    plan.claimTypeKnown.length === claimCount &&
+    plan.entityTypeKnown.every((known) => typeof known === 'boolean') &&
+    plan.claimTypeKnown.every((known) => typeof known === 'boolean')
+  );
+}
+
+function isGraphCommunityAssignmentInput(
+  value: unknown,
+): value is RustGraphCommunityAssignmentInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphCommunityAssignmentInput>;
+  return isStringValue(record.entityId) && isValidNonNegativeInteger(record.communityId);
+}
+
+function isGraphCommunitySummaryRelationInput(
+  value: unknown,
+): value is RustGraphCommunitySummaryRelationInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphCommunitySummaryRelationInput>;
+  return isStringValue(record.sourceEntityId) && isStringValue(record.targetEntityId);
+}
+
+function isGraphCommunitySummaryClaimInput(
+  value: unknown,
+): value is RustGraphCommunitySummaryClaimInput {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphCommunitySummaryClaimInput>;
+  return Array.isArray(record.entityIds) && record.entityIds.every(isStringValue);
+}
+
+function isGraphCommunitySummaryGroupsPlan(
+  value: unknown,
+  entityCount: number,
+  relationCount: number,
+  claimCount: number,
+  communityCount: number,
+): value is RustGraphCommunitySummaryGroupsPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphCommunitySummaryGroupsPlan>;
+  return (
+    Array.isArray(plan.groups) &&
+    plan.groups.length === communityCount &&
+    plan.groups.every((group) =>
+      isGraphCommunitySummaryGroup(group, entityCount, relationCount, claimCount),
+    )
+  );
+}
+
+function isGraphCommunitySummaryGroup(
+  value: unknown,
+  entityCount: number,
+  relationCount: number,
+  claimCount: number,
+): value is RustGraphCommunitySummaryGroup {
+  if (!value || typeof value !== 'object') return false;
+  const group = value as Partial<RustGraphCommunitySummaryGroup>;
+  return (
+    isBoundedIndexArray(group.entityIndices, entityCount) &&
+    isBoundedIndexArray(group.relationIndices, relationCount) &&
+    isBoundedIndexArray(group.claimIndices, claimCount)
+  );
+}
+
+function isGraphCommunityReplacementRecord(
+  value: unknown,
+): value is RustGraphCommunityReplacementRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustGraphCommunityReplacementRecord>;
+  return isStringValue(record.id) && isStringValue(record.ontologySchemaId);
+}
+
+function isGraphEvidenceEntryCandidatePlan(
+  value: unknown,
+  candidateCount: number,
+  entryCount: number,
+): value is RustGraphEvidenceEntryCandidatePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphEvidenceEntryCandidatePlan>;
+  return (
+    isBoundedIndexArray(plan.candidateIndices, candidateCount) &&
+    isBoundedIndexArray(plan.entryIndices, entryCount) &&
+    plan.candidateIndices.length === plan.entryIndices.length
+  );
+}
+
+function isGraphMentionContextPlan(
+  value: unknown,
+  entityCount: number,
+  relationCount: number,
+): value is RustGraphMentionContextPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphMentionContextPlan>;
+  return (
+    isBoundedIndexArray(plan.matchedEntityIndices, entityCount) &&
+    isBoundedIndexArray(plan.matchedRelationIndices, relationCount) &&
+    Array.isArray(plan.contextLines) &&
+    plan.contextLines.every(isStringValue)
+  );
+}
+
+function isValidFileIndexEntryInput(input: RustFileIndexEntryInput): boolean {
+  return (
+    isStringValue(input.filePath) &&
+    (input.sourceMtime === undefined || Number.isFinite(input.sourceMtime)) &&
+    (input.sourceSize === undefined || Number.isFinite(input.sourceSize)) &&
+    (input.contentHash === undefined || isStringValue(input.contentHash)) &&
+    (input.indexedAt === undefined || Number.isFinite(input.indexedAt)) &&
+    (input.endLine === undefined || Number.isFinite(input.endLine)) &&
+    (input.embeddingProvider === undefined || isStringValue(input.embeddingProvider)) &&
+    (input.embeddingModel === undefined || isStringValue(input.embeddingModel)) &&
+    (input.updated === undefined || Number.isFinite(input.updated))
+  );
+}
+
+function isFileIndexRecordPlan(value: unknown): value is RustFileIndexRecordPlan {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustFileIndexRecordPlan>;
+  const vectorCount = record.vectorCount;
+  return (
+    isStringValue(record.filePath) &&
+    (record.sourceMtime === undefined || Number.isFinite(record.sourceMtime)) &&
+    (record.sourceSize === undefined || Number.isFinite(record.sourceSize)) &&
+    (record.contentHash === undefined || isStringValue(record.contentHash)) &&
+    (record.indexedAt === undefined || Number.isFinite(record.indexedAt)) &&
+    (record.embeddingProvider === undefined || isStringValue(record.embeddingProvider)) &&
+    (record.embeddingModel === undefined || isStringValue(record.embeddingModel)) &&
+    typeof record.hasCompleteMetadata === 'boolean' &&
+    typeof vectorCount === 'number' &&
+    Number.isSafeInteger(vectorCount) &&
+    vectorCount >= 0 &&
+    Number.isFinite(record.updated)
+  );
+}
+
+function isVectorStoreMutationPlan(value: unknown): value is RustVectorStoreMutationPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustVectorStoreMutationPlan>;
+  return (
+    Array.isArray(plan.sources) &&
+    plan.sources.every(isVectorStoreSourcePlan) &&
+    typeof plan.removedCount === 'number' &&
+    Number.isSafeInteger(plan.removedCount) &&
+    plan.removedCount >= 0 &&
+    typeof plan.changed === 'boolean'
+  );
+}
+
+function isVectorStoreSourcePlan(value: unknown): value is RustVectorStoreSourcePlan {
+  if (!value || typeof value !== 'object') return false;
+  const source = value as Partial<RustVectorStoreSourcePlan>;
+  return (
+    (source.source === 'existing' || source.source === 'incoming') &&
+    typeof source.index === 'number' &&
+    Number.isSafeInteger(source.index) &&
+    source.index >= 0
+  );
+}
+
+function isVectorStoreStatsPlan(value: unknown): value is RustVectorStoreStatsPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustVectorStoreStatsPlan>;
+  return (
+    typeof plan.totalEntries === 'number' &&
+    Number.isSafeInteger(plan.totalEntries) &&
+    plan.totalEntries >= 0 &&
+    typeof plan.totalFiles === 'number' &&
+    Number.isSafeInteger(plan.totalFiles) &&
+    plan.totalFiles >= 0 &&
+    typeof plan.totalVectors === 'number' &&
+    Number.isSafeInteger(plan.totalVectors) &&
+    plan.totalVectors >= 0 &&
+    Number.isFinite(plan.averageVectorsPerFile) &&
+    (plan.lastUpdated === null || Number.isFinite(plan.lastUpdated)) &&
+    Array.isArray(plan.indexedFilePaths) &&
+    plan.indexedFilePaths.every(isStringValue)
+  );
+}
+
+function isVectorStoreIndexPlan(value: unknown, maxExclusive: number): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (index) =>
+        typeof index === 'number' &&
+        Number.isSafeInteger(index) &&
+        index >= 0 &&
+        index < maxExclusive,
+    )
+  );
+}
+
+function isValidRagStatusFileInput(input: RustRagStatusFileInput): boolean {
+  return isStringValue(input.path) && Number.isFinite(input.mtime) && Number.isFinite(input.size);
+}
+
+function isValidRagStatusRecordInput(input: RustRagStatusRecordInput): boolean {
+  return (
+    isStringValue(input.filePath) &&
+    (input.sourceMtime === undefined || Number.isFinite(input.sourceMtime)) &&
+    (input.sourceSize === undefined || Number.isFinite(input.sourceSize)) &&
+    (input.contentHash === undefined || isStringValue(input.contentHash)) &&
+    (input.indexedAt === undefined || Number.isFinite(input.indexedAt)) &&
+    (input.embeddingProvider === undefined || isStringValue(input.embeddingProvider)) &&
+    (input.embeddingModel === undefined || isStringValue(input.embeddingModel)) &&
+    (input.hasCompleteMetadata === undefined ||
+      typeof input.hasCompleteMetadata === 'boolean') &&
+    isValidNonNegativeInteger(input.vectorCount)
+  );
+}
+
+function isValidRagStatusReasonLabels(value: unknown): value is RustRagStatusReasonLabels {
+  if (!value || typeof value !== 'object') return false;
+  const labels = value as Partial<RustRagStatusReasonLabels>;
+  return (
+    isStringValue(labels.missing) &&
+    isStringValue(labels.legacy) &&
+    isStringValue(labels.staleFile) &&
+    isStringValue(labels.embeddingChanged)
+  );
+}
+
+function isRagStatusPlan(value: unknown): value is RustRagStatusPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRagStatusPlan>;
+  return (
+    isValidNonNegativeInteger(plan.totalDocuments) &&
+    isValidNonNegativeInteger(plan.healthyDocuments) &&
+    isValidNonNegativeInteger(plan.missingDocuments) &&
+    isValidNonNegativeInteger(plan.staleDocuments) &&
+    isValidNonNegativeInteger(plan.unknownDocuments) &&
+    isValidNonNegativeInteger(plan.excludedDocuments) &&
+    isValidNonNegativeInteger(plan.totalVectors) &&
+    Array.isArray(plan.updateRequiredDocuments) &&
+    plan.updateRequiredDocuments.every(isRagDocumentUpdatePlan)
+  );
+}
+
+function isRagDocumentUpdatePlan(value: unknown): value is RustRagDocumentUpdatePlan {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Partial<RustRagDocumentUpdatePlan>;
+  return (
+    isStringValue(update.path) &&
+    (update.status === 'missing' || update.status === 'stale' || update.status === 'unknown') &&
+    isStringValue(update.reason) &&
+    Number.isFinite(update.mtime) &&
+    Number.isFinite(update.size)
+  );
+}
+
+function isIndexPendingPlan(value: unknown, fileCount: number): value is RustIndexPendingPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustIndexPendingPlan>;
+  return (
+    isValidNonNegativeInteger(plan.skipped) &&
+    Array.isArray(plan.fileIndices) &&
+    plan.fileIndices.every(
+      (index) => isValidNonNegativeInteger(index) && index < fileCount,
+    ) &&
+    plan.skipped + plan.fileIndices.length <= fileCount
+  );
+}
+
+function isValidGraphRagStatusInput(input: RustGraphRagStatusInput): boolean {
+  return (
+    typeof input.graphRagEnabled === 'boolean' &&
+    typeof input.isRunning === 'boolean' &&
+    isValidNonNegativeInteger(input.schemaErrorCount) &&
+    isValidNonNegativeInteger(input.totalCandidateFiles) &&
+    Number.isFinite(input.graphRagMaxFilesPerRun) &&
+    isStringValue(input.graphRagModel) &&
+    isStringValue(input.ontologySchemaId) &&
+    isValidNonNegativeInteger(input.ontologyVersion) &&
+    input.fileRecords.every(isValidGraphRagStatusFileRecordInput) &&
+    input.evidence.every(isValidGraphRagStatusEvidenceInput) &&
+    input.rejectedFactFilePaths.every(isStringValue) &&
+    isValidNonNegativeInteger(input.pendingMergeCount) &&
+    input.cacheRecords.every(isValidGraphRagStatusCacheInput) &&
+    input.entries.every(isValidGraphRagStatusEntryInput)
+  );
+}
+
+function isValidGraphRagStatusFileRecordInput(
+  input: RustGraphRagStatusFileRecordInput,
+): boolean {
+  return isStringValue(input.filePath) && isValidNonNegativeInteger(input.vectorCount);
+}
+
+function isValidGraphRagStatusFileSnapshotRecordInput(
+  input: RustGraphRagStatusFileSnapshotRecordInput,
+): boolean {
+  return isValidGraphRagStatusFileRecordInput(input) && typeof input.processable === 'boolean';
+}
+
+function isValidGraphRagStatusEvidenceInput(input: RustGraphRagStatusEvidenceInput): boolean {
+  return (
+    isStringValue(input.filePath) &&
+    isStringValue(input.entryId) &&
+    isStringValue(input.contentHash) &&
+    isStringValue(input.extractionModelKey) &&
+    typeof input.processable === 'boolean'
+  );
+}
+
+function isValidGraphRagStatusCacheInput(input: RustGraphRagStatusCacheInput): boolean {
+  return (
+    isStringValue(input.entryId) &&
+    isStringValue(input.contentHash) &&
+    isStringValue(input.extractionModelKey) &&
+    isStringValue(input.ontologySchemaId) &&
+    isValidNonNegativeInteger(input.ontologyVersion)
+  );
+}
+
+function isValidGraphRagStatusEntryInput(input: RustGraphRagStatusEntryInput): boolean {
+  return (
+    isStringValue(input.id) &&
+    isStringValue(input.filePath) &&
+    (input.contentHash === undefined || isStringValue(input.contentHash)) &&
+    isStringValue(input.text)
+  );
+}
+
+function isValidGraphRagStatusEntrySnapshotInput(
+  input: RustGraphRagStatusEntrySnapshotInput,
+): boolean {
+  return (
+    isStringValue(input.id) &&
+    isStringValue(input.filePath) &&
+    typeof input.processable === 'boolean'
+  );
+}
+
+function isGraphRagStatusFileSnapshotPlan(
+  value: unknown,
+  fileRecordCount: number,
+): value is RustGraphRagStatusFileSnapshotPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphRagStatusFileSnapshotPlan>;
+  return (
+    Array.isArray(plan.fileRecordIndices) &&
+    plan.fileRecordIndices.every(
+      (index) => isValidNonNegativeInteger(index) && index < fileRecordCount,
+    ) &&
+    isValidNonNegativeInteger(plan.totalCandidateFiles)
+  );
+}
+
+function isGraphRagStatusEntrySnapshotPlan(
+  value: unknown,
+  entryCount: number,
+): value is RustGraphRagStatusEntrySnapshotPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphRagStatusEntrySnapshotPlan>;
+  return (
+    Array.isArray(plan.entryIndices) &&
+    plan.entryIndices.every(
+      (index) => isValidNonNegativeInteger(index) && index < entryCount,
+    )
+  );
+}
+
+function isGraphRagStatusPlan(value: unknown): value is RustGraphRagStatusPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphRagStatusPlan>;
+  return (
+    isGraphRagIndexState(plan.state) &&
+    isValidNonNegativeInteger(plan.totalCandidateFiles) &&
+    isValidNonNegativeInteger(plan.graphEvidenceCount) &&
+    isValidNonNegativeInteger(plan.rejectedFactCount) &&
+    isValidNonNegativeInteger(plan.failedFileCount) &&
+    isValidNonNegativeInteger(plan.pendingMergeCount) &&
+    isValidNonNegativeInteger(plan.staleFileCount) &&
+    Array.isArray(plan.staleFilePaths) &&
+    plan.staleFilePaths.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.maxFilesPerRun)
+  );
+}
+
+function isValidGraphRagRunFileSelectionInput(
+  input: RustGraphRagRunFileSelectionInput,
+): boolean {
+  return (
+    (input.mode === 'failed' || input.mode === 'stale' || input.mode === 'full') &&
+    input.failedFilePaths.every(isStringValue) &&
+    input.staleFilePaths.every(isStringValue) &&
+    input.recordFilePaths.every(isValidGraphRagRunFilePathInput) &&
+    input.indexedFilePaths.every(isValidGraphRagRunFilePathInput) &&
+    isValidNonNegativeInteger(input.maxFilesPerRun)
+  );
+}
+
+function isValidGraphRagRunFilePathInput(input: RustGraphRagRunFilePathInput): boolean {
+  return isStringValue(input.filePath) && typeof input.processable === 'boolean';
+}
+
+function isGraphRagRunFileSelectionPlan(
+  value: unknown,
+): value is RustGraphRagRunFileSelectionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphRagRunFileSelectionPlan>;
+  return (
+    Array.isArray(plan.candidateFilePaths) &&
+    plan.candidateFilePaths.every(isStringValue) &&
+    Array.isArray(plan.selectedFilePaths) &&
+    plan.selectedFilePaths.every(isStringValue)
+  );
+}
+
+function isValidGraphEntityMergeInput(input: RustGraphEntityMergeInput): boolean {
+  return (
+    input.aliases.every(isStringValue) &&
+    isStringValue(input.description) &&
+    Number.isFinite(input.confidence) &&
+    input.evidenceIds.every(isStringValue) &&
+    Number.isFinite(input.updatedAt)
+  );
+}
+
+function isGraphEntityMergePlan(value: unknown): value is RustGraphEntityMergePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphEntityMergePlan>;
+  return (
+    Array.isArray(plan.aliases) &&
+    plan.aliases.every(isStringValue) &&
+    isStringValue(plan.description) &&
+    Number.isFinite(plan.confidence) &&
+    Array.isArray(plan.evidenceIds) &&
+    plan.evidenceIds.every(isStringValue) &&
+    Number.isFinite(plan.updatedAt)
+  );
+}
+
+function isValidGraphExtractionCacheKey(value: RustGraphExtractionCacheKey): boolean {
+  return (
+    isStringValue(value.entryId) &&
+    isStringValue(value.contentHash) &&
+    isStringValue(value.extractionModelKey) &&
+    isStringValue(value.ontologySchemaId) &&
+    isValidNonNegativeInteger(value.ontologyVersion)
+  );
+}
+
+function isGraphRagIndexState(value: unknown): value is RustGraphRagIndexState {
+  return (
+    value === 'disabled' ||
+    value === 'not-built' ||
+    value === 'building' ||
+    value === 'ready' ||
+    value === 'partial' ||
+    value === 'stale' ||
+    value === 'schema-error'
+  );
+}
+
+function isValidRagFileTypeInput(input: RustRagFileTypeInput): boolean {
+  return (
+    isStringValue(input.filePath) &&
+    (input.extension === undefined || isStringValue(input.extension)) &&
+    typeof input.indexable === 'boolean' &&
+    (input.recommendationReason === undefined || isStringValue(input.recommendationReason))
+  );
+}
+
+function isValidPromptLibrarySummaryInput(input: RustPromptLibrarySummaryInput): boolean {
+  return isStringValue(input.filePath) && isStringValue(input.heading) && isStringValue(input.text);
+}
+
+function isValidRagFileEligibilityInput(input: RustRagFileEligibilityInput): boolean {
+  return (
+    isStringValue(input.filePath) &&
+    isStringValue(input.fileName) &&
+    isStringValue(input.extension) &&
+    isValidNonNegativeInteger(input.size)
+  );
+}
+
+function isValidRagFileTextProbeInput(input: RustRagFileTextProbeInput): boolean {
+  return (
+    isValidNonNegativeInteger(input.index) &&
+    typeof input.readable === 'boolean' &&
+    isStringValue(input.sample)
+  );
+}
+
+function isNonNegativeIntegerArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(isValidNonNegativeInteger);
+}
+
+function isRagFileIndexabilityPlan(value: unknown): value is RustRagFileIndexabilityPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRagFileIndexabilityPlan>;
+  return (
+    isNonNegativeIntegerArray(plan.candidateIndices) &&
+    Array.isArray(plan.summaryInputs) &&
+    plan.summaryInputs.every(isValidRagFileTypeInput)
+  );
+}
+
+function isRagFileTypeSummary(value: unknown): value is RustRagFileTypeSummary {
+  if (!value || typeof value !== 'object') return false;
+  const summary = value as Partial<RustRagFileTypeSummary>;
+  return (
+    Array.isArray(summary.targetTypes) &&
+    summary.targetTypes.every(isRagFileTypeCount) &&
+    Array.isArray(summary.excludeRecommendations) &&
+    summary.excludeRecommendations.every(isRagExcludeRecommendation) &&
+    typeof summary.totalTargetFiles === 'number' &&
+    Number.isSafeInteger(summary.totalTargetFiles) &&
+    summary.totalTargetFiles >= 0
+  );
+}
+
+function isPromptLibrarySummaryCount(value: unknown): value is RustPromptLibrarySummaryCount {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Partial<RustPromptLibrarySummaryCount>;
+  return (
+    isStringValue(row.label) &&
+    typeof row.count === 'number' &&
+    Number.isSafeInteger(row.count) &&
+    row.count >= 0
+  );
+}
+
+function isPromptLibrarySummary(value: unknown): value is RustPromptLibrarySummary {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustPromptLibrarySummary>;
+  return (
+    isValidNonNegativeInteger(plan.totalChunks) &&
+    Array.isArray(plan.topFolders) &&
+    plan.topFolders.every(isPromptLibrarySummaryCount) &&
+    Array.isArray(plan.topFiles) &&
+    plan.topFiles.every(isPromptLibrarySummaryCount) &&
+    Array.isArray(plan.topHeadings) &&
+    plan.topHeadings.every(isPromptLibrarySummaryCount) &&
+    Array.isArray(plan.samples) &&
+    plan.samples.every(
+      (sample): sample is RustPromptLibrarySummarySample =>
+        typeof sample === 'object' &&
+        sample !== null &&
+        isStringValue(sample.filePath) &&
+        isStringValue(sample.heading) &&
+        isStringValue(sample.preview),
+    )
+  );
+}
+
+function isRagFileTypeCount(value: unknown): value is RustRagFileTypeCount {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Partial<RustRagFileTypeCount>;
+  return (
+    isStringValue(row.extension) &&
+    isStringValue(row.label) &&
+    typeof row.count === 'number' &&
+    Number.isSafeInteger(row.count) &&
+    row.count >= 0
+  );
+}
+
+function isRagExcludeRecommendation(value: unknown): value is RustRagExcludeRecommendation {
+  if (!isRagFileTypeCount(value)) return false;
+  const row = value as Partial<RustRagExcludeRecommendation>;
+  return isStringValue(row.reason);
+}
+
+function isRustExcludeValidationResult(value: unknown): value is RustExcludeValidationResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustExcludeValidationResult>;
+  return (
+    isStringValue(result.normalized) &&
+    Array.isArray(result.issues) &&
+    result.issues.every(isRustExcludeValidationIssue) &&
+    typeof result.valid === 'boolean'
+  );
+}
+
+function isRustExcludeValidationIssue(value: unknown): value is RustExcludeValidationIssue {
+  if (!value || typeof value !== 'object') return false;
+  const issue = value as Partial<RustExcludeValidationIssue>;
+  return (
+    (issue.level === 'error' || issue.level === 'warning') &&
+    (issue.code === 'empty' ||
+      issue.code === 'trimmed' ||
+      issue.code === 'duplicate' ||
+      issue.code === 'comma' ||
+      issue.code === 'path-backslash' ||
+      issue.code === 'path-leading-slash' ||
+      issue.code === 'path-missing' ||
+      issue.code === 'extension-leading-dot' ||
+      issue.code === 'extension-invalid' ||
+      issue.code === 'extension-protected-document')
+  );
+}
+
+function isSourceReferencePlan(value: unknown): value is RustSourceReferencePlan {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as Partial<RustSourceReferencePlan>;
+  return (
+    isStringValue(reference.label) &&
+    isStringValue(reference.target) &&
+    (reference.kind === 'wikilink' ||
+      reference.kind === 'markdown-link' ||
+      reference.kind === 'source-id') &&
+    Array.isArray(reference.aliases) &&
+    reference.aliases.every(isStringValue)
+  );
+}
+
+function isSourceValidationWarningPlan(
+  value: unknown,
+): value is RustSourceValidationWarningPlan {
+  if (!value || typeof value !== 'object') return false;
+  const warning = value as Partial<RustSourceValidationWarningPlan>;
+  return (
+    isStringValue(warning.id) &&
+    isStringValue(warning.label) &&
+    (warning.kind === 'missing-link' || warning.kind === 'unverified-source')
+  );
+}
+
+function isSourceValidationInputPlan(value: unknown): value is RustSourceValidationInputPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustSourceValidationInputPlan>;
+  return (
+    Array.isArray(plan.verifiedCitationIds) &&
+    plan.verifiedCitationIds.every(isStringValue) &&
+    Array.isArray(plan.verifiedPaths) &&
+    plan.verifiedPaths.every(isStringValue) &&
+    Array.isArray(plan.aliasCandidates) &&
+    plan.aliasCandidates.every(isStringValue)
+  );
+}
+
+function isAssistantResponseClassification(
+  value: unknown,
+): value is RustAssistantResponseClassification {
+  if (!value || typeof value !== 'object') return false;
+  const classification = value as Partial<RustAssistantResponseClassification>;
+  if (
+    classification.type === 'answer' &&
+    isStringValue(classification.content) &&
+    isStringValue(classification.reasoning)
+  ) {
+    return true;
+  }
+  if (classification.type !== 'question') return false;
+  return (
+    isStringValue(classification.content) &&
+    isStringValue(classification.reasoning) &&
+    isAssistantQuestionPlan(classification.question) &&
+    isStringValue(classification.originalContent)
+  );
+}
+
+function isAssistantQuestionPlan(value: unknown): value is RustAssistantQuestionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const question = value as Partial<RustAssistantQuestionPlan>;
+  return (
+    isStringValue(question.prompt) &&
+    Array.isArray(question.choices) &&
+    question.choices.every(isAssistantChoicePlan) &&
+    (question.selectionMode === 'single' || question.selectionMode === 'multiple') &&
+    question.allowFreeText === true &&
+    (question.source === 'answer' || question.source === 'reasoning-leak')
+  );
+}
+
+function isAssistantChoicePlan(value: unknown): value is RustAssistantChoicePlan {
+  if (!value || typeof value !== 'object') return false;
+  const choice = value as Partial<RustAssistantChoicePlan>;
+  return isStringValue(choice.id) && isStringValue(choice.label);
+}
+
+function isRustReasoningChunk(value: unknown): value is RustReasoningChunk {
+  if (!value || typeof value !== 'object') return false;
+  const chunk = value as Partial<RustReasoningChunk>;
+  return (
+    isStringValue(chunk.content) &&
+    (chunk.reasoning === undefined || isStringValue(chunk.reasoning))
+  );
+}
+
+function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Partial<RustChatMessagePlan>;
+  return (
+    isStringValue(message.id) &&
+    (message.role === 'system' ||
+      message.role === 'user' ||
+      message.role === 'assistant' ||
+      message.role === 'tool') &&
+    isStringValue(message.content) &&
+    typeof message.timestamp === 'number' &&
+    Number.isFinite(message.timestamp) &&
+    isStringValue(message.createdAt) &&
+    isStringValue(message.updatedAt) &&
+    (message.status === 'pending' ||
+      message.status === 'streaming' ||
+      message.status === 'complete' ||
+      message.status === 'error') &&
+    (message.providerKey === undefined || isStringValue(message.providerKey)) &&
+    (message.providerLabel === undefined || isStringValue(message.providerLabel)) &&
+    (message.model === undefined || isStringValue(message.model)) &&
+    (message.errorMessage === undefined || isStringValue(message.errorMessage)) &&
+    (message.reasoning === undefined || isStringValue(message.reasoning)) &&
+    (message.toolCalls === undefined || Array.isArray(message.toolCalls)) &&
+    (message.citations === undefined || Array.isArray(message.citations)) &&
+    (message.sourceWarnings === undefined || Array.isArray(message.sourceWarnings)) &&
+    (message.contextAttachments === undefined || Array.isArray(message.contextAttachments)) &&
+    (message.assistantQuestion === undefined ||
+      (typeof message.assistantQuestion === 'object' && message.assistantQuestion !== null)) &&
+    (message.branchOf === undefined || isStringValue(message.branchOf)) &&
+    (message.stopReason === undefined || isStringValue(message.stopReason))
+  );
+}
+
+function isChatMetaPlan(value: unknown): value is RustChatMetaPlan {
+  if (!value || typeof value !== 'object') return false;
+  const meta = value as Partial<RustChatMetaPlan>;
+  return (
+    isStringValue(meta.title) &&
+    isStringValue(meta.created) &&
+    typeof meta.messageCount === 'number' &&
+    Number.isInteger(meta.messageCount) &&
+    meta.messageCount >= 0 &&
+    (meta.updated === undefined || isStringValue(meta.updated)) &&
+    (meta.preview === undefined || isStringValue(meta.preview)) &&
+    (meta.provider === undefined || isStringValue(meta.provider)) &&
+    (meta.model === undefined || isStringValue(meta.model))
+  );
+}
+
+function isChatSaveMetadataPlan(value: unknown): value is RustChatSaveMetadataPlan {
+  if (!value || typeof value !== 'object') return false;
+  const metadata = value as Partial<RustChatSaveMetadataPlan>;
+  return (
+    isStringValue(metadata.title) &&
+    isStringValue(metadata.created) &&
+    typeof metadata.sourceCount === 'number' &&
+    Number.isInteger(metadata.sourceCount) &&
+    metadata.sourceCount >= 0 &&
+    (metadata.provider === undefined || isStringValue(metadata.provider)) &&
+    (metadata.model === undefined || isStringValue(metadata.model)) &&
+    (metadata.summary === undefined || isStringValue(metadata.summary))
+  );
+}
+
+function isContextSourcePlan(value: unknown): value is RustContextSourcePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustContextSourcePlan>;
+  return (
+    Array.isArray(plan.citations) &&
+    plan.citations.every(isContextCitationPlan) &&
+    Array.isArray(plan.blocks) &&
+    plan.blocks.every(isContextSourceBlockPlan) &&
+    Array.isArray(plan.sourceIds) &&
+    plan.sourceIds.every(isStringValue) &&
+    typeof plan.rejectedCount === 'number' &&
+    Number.isInteger(plan.rejectedCount) &&
+    plan.rejectedCount >= 0
+  );
+}
+
+function isContextBudgetAppendPlan(value: unknown): value is RustContextBudgetAppendPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustContextBudgetAppendPlan>;
+  return (
+    isStringValue(plan.text) &&
+    isValidNonNegativeInteger(plan.remainingChars) &&
+    typeof plan.complete === 'boolean' &&
+    typeof plan.appended === 'boolean'
+  );
+}
+
+function isChatContextMentionPlan(
+  value: unknown,
+  mentionCount: number,
+): value is RustChatContextMentionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustChatContextMentionPlan>;
+  return (
+    isBoundedIndexArray(plan.fileIndices, mentionCount) &&
+    isBoundedIndexArray(plan.folderIndices, mentionCount) &&
+    isBoundedIndexArray(plan.entityIndices, mentionCount) &&
+    isBoundedIndexArray(plan.serverIndices, mentionCount) &&
+    typeof plan.useAutoRag === 'boolean'
+  );
+}
+
+function isChatContextMentionType(value: string): boolean {
+  return value === 'file' || value === 'folder' || value === 'entity' || value === 'server';
+}
+
+function isContextCitationPlan(value: unknown): value is RustContextCitationPlan {
+  if (!value || typeof value !== 'object') return false;
+  const citation = value as Partial<RustContextCitationPlan>;
+  return (
+    isStringValue(citation.id) &&
+    isStringValue(citation.filePath) &&
+    (citation.heading === undefined || isStringValue(citation.heading)) &&
+    (citation.line === undefined || isValidNonNegativeInteger(citation.line)) &&
+    (citation.endLine === undefined || isValidNonNegativeInteger(citation.endLine)) &&
+    (citation.score === undefined || Number.isFinite(citation.score)) &&
+    (citation.vectorScore === undefined || Number.isFinite(citation.vectorScore)) &&
+    (citation.bm25Score === undefined || Number.isFinite(citation.bm25Score)) &&
+    isContextSourceStatus(citation.status) &&
+    (citation.detail === undefined || isStringValue(citation.detail)) &&
+    isStringValue(citation.preview) &&
+    (citation.graphType === undefined || isContextGraphType(citation.graphType))
+  );
+}
+
+function isContextSourceBlockPlan(value: unknown): value is RustContextSourceBlockPlan {
+  if (!value || typeof value !== 'object') return false;
+  const block = value as Partial<RustContextSourceBlockPlan>;
+  return isStringValue(block.sourceId) && isStringValue(block.text);
+}
+
+function isContextGraphVerificationPlan(value: unknown): value is RustContextGraphVerificationPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustContextGraphVerificationPlan>;
+  return (
+    typeof plan.isGraphSource === 'boolean' &&
+    (plan.verification === null ||
+      plan.verification === undefined ||
+      isContextSourceVerification(plan.verification))
+  );
+}
+
+function isValidContextSourceInput(input: RustContextSourceInput): boolean {
+  return (
+    input !== null &&
+    typeof input === 'object' &&
+    isStringValue(input.filePath) &&
+    (input.heading === undefined || isStringValue(input.heading)) &&
+    (input.startLine === undefined || isValidNonNegativeInteger(input.startLine)) &&
+    (input.endLine === undefined || isValidNonNegativeInteger(input.endLine)) &&
+    isStringValue(input.text) &&
+    (input.score === undefined || Number.isFinite(input.score)) &&
+    (input.vectorScore === undefined || Number.isFinite(input.vectorScore)) &&
+    (input.bm25Score === undefined || Number.isFinite(input.bm25Score))
+  );
+}
+
+function isContextSourceVerification(value: unknown): value is RustContextSourceVerification {
+  if (!value || typeof value !== 'object') return false;
+  const verification = value as Partial<RustContextSourceVerification>;
+  return (
+    isContextSourceStatus(verification.status) &&
+    (verification.detail === undefined || isStringValue(verification.detail)) &&
+    (verification.graphType === undefined || isContextGraphType(verification.graphType))
+  );
+}
+
+function isContextSourceStatus(value: unknown): value is RustContextSourceStatus {
+  return (
+    value === 'candidate' ||
+    value === 'verified' ||
+    value === 'missing' ||
+    value === 'stale' ||
+    value === 'low-relevance'
+  );
+}
+
+function isContextGraphType(value: unknown): value is RustContextGraphType {
+  return value === 'entity' || value === 'relation' || value === 'community';
+}
+
+function isVaultLinkCandidatePlan(value: unknown): value is RustVaultLinkCandidatePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustVaultLinkCandidatePlan>;
+  return (
+    Array.isArray(plan.candidates) &&
+    plan.candidates.every(isStringValue) &&
+    isStringValue(plan.fallbackBasename)
+  );
+}
+
+function isFolderMentionFilePlan(
+  value: unknown,
+  maxExclusive: number,
+): value is RustFolderMentionFilePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustFolderMentionFilePlan>;
+  return isBoundedIndexArray(plan.indices, maxExclusive) && typeof plan.partial === 'boolean';
+}
+
+function isValidStructuralLinkEdge(edge: RustStructuralLinkEdge): boolean {
+  return (
+    typeof edge.sourcePath === 'string' &&
+    edge.sourcePath.length > 0 &&
+    typeof edge.targetPath === 'string' &&
+    edge.targetPath.length > 0
+  );
+}
+
+function isValidStructuralHeadingSeed(seed: RustStructuralHeadingSeed): boolean {
+  return (
+    isStringValue(seed.id) &&
+    seed.id.length > 0 &&
+    isStringValue(seed.filePath) &&
+    seed.filePath.length > 0 &&
+    isValidNonNegativeInteger(seed.startLine) &&
+    isValidNonNegativeInteger(seed.endLine) &&
+    (seed.heading === undefined || isStringValue(seed.heading))
+  );
+}
+
+function isValidStructuralEntryInput(entry: RustStructuralEntryInput): boolean {
+  return (
+    isStringValue(entry.id) &&
+    entry.id.length > 0 &&
+    isStringValue(entry.filePath) &&
+    entry.filePath.length > 0 &&
+    isValidNonNegativeInteger(entry.startLine) &&
+    (entry.heading === undefined || isStringValue(entry.heading)) &&
+    typeof entry.compatible === 'boolean'
+  );
+}
+
+function isValidStructuralHeadingInput(heading: RustStructuralHeadingInput): boolean {
+  return (
+    isStringValue(heading.filePath) &&
+    heading.filePath.length > 0 &&
+    isValidNonNegativeInteger(heading.startLine) &&
+    isValidNonNegativeInteger(heading.level)
+  );
+}
+
+function isRustExtractedGraphPayloadResult(
+  value: unknown,
+): value is RustExtractedGraphPayloadResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustExtractedGraphPayloadResult>;
+  const rawFactCount = result.rawFactCount;
+  return (
+    !!result.payload &&
+    typeof result.payload === 'object' &&
+    Array.isArray(result.payload.entities) &&
+    Array.isArray(result.payload.relations) &&
+    Array.isArray(result.payload.claims) &&
+    result.payload.entities.every(isRustExtractedGraphEntity) &&
+    result.payload.relations.every(isRustExtractedGraphRelation) &&
+    result.payload.claims.every(isRustExtractedGraphClaim) &&
+    typeof rawFactCount === 'number' &&
+    Number.isSafeInteger(rawFactCount) &&
+    rawFactCount >= 0
+  );
+}
+
+function isRustMcpJsonValidationResult(
+  value: unknown,
+): value is RustMcpJsonValidationResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustMcpJsonValidationResult>;
+  if (typeof result.valid !== 'boolean') return false;
+
+  if (result.valid) {
+    return result.data !== undefined && typeof result.data === 'object' && result.data !== null;
+  }
+
+  if (!isStringValue(result.errorCode)) return false;
+  return (
+    result.serverName === undefined || isStringValue(result.serverName)
+  ) && (result.message === undefined || isStringValue(result.message));
+}
+
+function isRustExtractedGraphPayloadParseResult(
+  value: unknown,
+): value is RustExtractedGraphPayloadParseResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustExtractedGraphPayloadParseResult>;
+  if (result.ok === true) {
+    return !!result.payload && isRustExtractedGraphPayload(result.payload);
+  }
+  if (result.ok === false) {
+    return (
+      (result.reason === 'invalid-json' || result.reason === 'schema-shape-mismatch') &&
+      Object.prototype.hasOwnProperty.call(result, 'rawFact')
+    );
+  }
+  return false;
+}
+
+function isRustExtractedGraphPayload(value: unknown): value is RustExtractedGraphPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Partial<RustExtractedGraphPayload>;
+  return (
+    Array.isArray(payload.entities) &&
+    Array.isArray(payload.relations) &&
+    Array.isArray(payload.claims) &&
+    payload.entities.every(isRustExtractedGraphEntity) &&
+    payload.relations.every(isRustExtractedGraphRelation) &&
+    payload.claims.every(isRustExtractedGraphClaim)
+  );
+}
+
+function isRustMcpToolNormalizedResult(
+  value: unknown,
+): value is RustMcpToolNormalizedResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustMcpToolNormalizedResult>;
+  return isStringValue(result.displayText) && isStringValue(result.modelText);
+}
+
+function isRustMcpToolErrorInfo(value: unknown): value is RustMcpToolErrorInfo {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustMcpToolErrorInfo>;
+  return (
+    isRustMcpToolErrorKind(result.kind) &&
+    (result.pattern === undefined || isStringValue(result.pattern)) &&
+    (result.field === undefined || isStringValue(result.field)) &&
+    (result.message === undefined || isStringValue(result.message))
+  );
+}
+
+function isRustMcpToolErrorKind(value: unknown): value is RustMcpToolErrorKind {
+  return value === 'validation-pattern'
+    || value === 'validation-field'
+    || value === 'validation-required'
+    || value === 'validation-generic'
+    || value === 'validation-schema-failed'
+    || value === 'raw';
+}
+
+function isRustExtractedGraphEntity(value: unknown): value is RustExtractedGraphEntity {
+  if (!value || typeof value !== 'object') return false;
+  const entity = value as Partial<RustExtractedGraphEntity>;
+  return (
+    isStringValue(entity.name) &&
+    isStringValue(entity.typeId) &&
+    (entity.description === undefined || isStringValue(entity.description)) &&
+    (entity.aliases === undefined ||
+      (Array.isArray(entity.aliases) && entity.aliases.every(isStringValue))) &&
+    (entity.confidence === undefined || Number.isFinite(entity.confidence))
+  );
+}
+
+function isRustExtractedGraphRelation(value: unknown): value is RustExtractedGraphRelation {
+  if (!value || typeof value !== 'object') return false;
+  const relation = value as Partial<RustExtractedGraphRelation>;
+  return (
+    isStringValue(relation.source) &&
+    isStringValue(relation.target) &&
+    isStringValue(relation.relationTypeId) &&
+    (relation.description === undefined || isStringValue(relation.description)) &&
+    (relation.confidence === undefined || Number.isFinite(relation.confidence))
+  );
+}
+
+function isRustExtractedGraphClaim(value: unknown): value is RustExtractedGraphClaim {
+  if (!value || typeof value !== 'object') return false;
+  const claim = value as Partial<RustExtractedGraphClaim>;
+  return (
+    isStringValue(claim.text) &&
+    isStringValue(claim.claimTypeId) &&
+    (claim.entityNames === undefined ||
+      (Array.isArray(claim.entityNames) && claim.entityNames.every(isStringValue))) &&
+    (claim.stance === undefined ||
+      claim.stance === 'supports' ||
+      claim.stance === 'opposes' ||
+      claim.stance === 'neutral' ||
+      claim.stance === 'interprets') &&
+    (claim.confidence === undefined || Number.isFinite(claim.confidence))
+  );
+}
+
+function isValidRelevantResultCandidate(candidate: RustRelevantResultCandidate): boolean {
+  return (
+    Number.isFinite(candidate.score) &&
+    Number.isFinite(candidate.vectorScore) &&
+    Number.isFinite(candidate.bm25Score) &&
+    Number.isFinite(candidate.keywordMatches) &&
+    Number.isFinite(candidate.sourceEvidenceScore) &&
+    (candidate.bestEvidenceRank === undefined || Number.isFinite(candidate.bestEvidenceRank)) &&
+    candidate.retrievalSources.every(isStringValue)
+  );
+}
+
+function isValidRetrievalCandidateMergeInput(input: RustRetrievalCandidateMergeInput): boolean {
+  return (
+    isValidUint32(input.entryIndex) &&
+    sourceToCode(input.source) !== 0 &&
+    (input.sourceScore === undefined || Number.isFinite(input.sourceScore)) &&
+    (input.rank === undefined || Number.isFinite(input.rank))
+  );
+}
+
+function isValidRetrievalCandidateMergeByEntryIdInput(
+  input: RustRetrievalCandidateMergeByEntryIdInput,
+): boolean {
+  return (
+    isStringValue(input.entryId) &&
+    sourceToCode(input.source) !== 0 &&
+    (input.sourceScore === undefined || Number.isFinite(input.sourceScore)) &&
+    (input.rank === undefined || Number.isFinite(input.rank))
+  );
+}
+
+function isValidBm25Hit(hit: RustBm25Hit): boolean {
+  return (
+    typeof hit.docId === 'string' &&
+    hit.docId.length > 0 &&
+    typeof hit.sourcePath === 'string' &&
+    hit.sourcePath.length > 0 &&
+    Number.isFinite(hit.score)
+  );
+}
+
+function isValidBm25EntryInput(entry: RustBm25EntryInput): boolean {
+  return (
+    typeof entry.id === 'string' &&
+    entry.id.length > 0 &&
+    typeof entry.filePath === 'string' &&
+    entry.filePath.length > 0 &&
+    typeof entry.compatible === 'boolean'
+  );
 }
 
 function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {
@@ -1128,10 +7365,24 @@ function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies
 
 function sourceToCode(source: string): number {
   if (source === 'bm25') return 1;
-  if (source === 'vector' || source === 'ann') return 2;
-  if (source === 'graph-local' || source === 'graph-global' || source === 'evidence') return 3;
+  if (source === 'vector') return 2;
+  if (source === 'graph-local') return 3;
   if (source === 'structural') return 4;
+  if (source === 'ann') return 5;
+  if (source === 'graph-global') return 6;
+  if (source === 'evidence') return 7;
   return 0;
+}
+
+function sourceCodeToSource(sourceCode: number): string | null {
+  if (sourceCode === 1) return 'bm25';
+  if (sourceCode === 2) return 'vector';
+  if (sourceCode === 3) return 'graph-local';
+  if (sourceCode === 4) return 'structural';
+  if (sourceCode === 5) return 'ann';
+  if (sourceCode === 6) return 'graph-global';
+  if (sourceCode === 7) return 'evidence';
+  return null;
 }
 
 function normalizePositiveInteger(value: number): number {
@@ -1142,6 +7393,10 @@ function normalizePositiveInteger(value: number): number {
 function normalizeNonNegativeInteger(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.floor(value));
+}
+
+function isValidNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isChunkArray(value: unknown): value is Chunk[] {

@@ -1,4 +1,5 @@
 import type { GraphRagStatusSummary } from '../graph/status';
+import { shouldRebuildGraphRuntimeForGraphStatusRust } from './rust-core';
 
 export interface GraphRagRuntimeRebuildInput {
   graphRagEnabled: boolean;
@@ -11,12 +12,40 @@ export interface GraphRagRuntimeRebuildInput {
 export function shouldRebuildRagRuntimeForGraphStatus(
   input: GraphRagRuntimeRebuildInput,
 ): boolean {
-  if (!input.graphRagEnabled || !input.graphRagModel.trim()) return false;
-  if (input.graphProviderAttached) return false;
-  if (!isGraphRagQueryable(input.nextStatus)) return false;
-  return !isGraphRagQueryable(input.previousStatus) || !input.graphProviderAttached;
+  const nextStatusState = input.nextStatus?.state ?? '';
+  const previousStatusState = input.previousStatus?.state ?? '';
+
+  const rustResult = shouldRebuildGraphRuntimeForGraphStatusRust(
+    input.graphRagEnabled,
+    input.graphRagModel,
+    previousStatusState,
+    nextStatusState,
+    input.graphProviderAttached,
+  );
+  if (rustResult !== null) return rustResult;
+
+  return shouldRebuildGraphRuntimeForGraphStatusFallback(
+    input.graphRagEnabled,
+    input.graphRagModel,
+    previousStatusState,
+    nextStatusState,
+    input.graphProviderAttached,
+  );
 }
 
-function isGraphRagQueryable(status: GraphRagStatusSummary | null): boolean {
-  return status?.state === 'ready' || status?.state === 'partial';
+function shouldRebuildGraphRuntimeForGraphStatusFallback(
+  graphRagEnabled: boolean,
+  graphRagModel: string,
+  previousStatusState: GraphRagStatusSummary['state'] | '',
+  nextStatusState: GraphRagStatusSummary['state'] | '',
+  graphProviderAttached: boolean,
+): boolean {
+  if (!graphRagEnabled || !graphRagModel.trim()) return false;
+  if (graphProviderAttached) return false;
+  if (!isGraphRagQueryableState(nextStatusState)) return false;
+  return !isGraphRagQueryableState(previousStatusState) || !graphProviderAttached;
+}
+
+function isGraphRagQueryableState(state: GraphRagStatusSummary['state'] | ''): boolean {
+  return state === 'ready' || state === 'partial';
 }
