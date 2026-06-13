@@ -1081,12 +1081,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.buildCustomOpenAIProvidersSection(containerEl);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
-    this.buildRagStatusPanel(containerEl);
-    this.buildControlsSection(containerEl);
-    this.buildEmbeddingProviderSection(containerEl);
-    this.buildExcludeOptionsSection(containerEl);
-    this.buildRagAdvancedSection(containerEl);
+    const dashboard = containerEl.createDiv({ cls: 'superpower-inside-rag-dashboard' });
+    this.buildRagStatusPanel(dashboard);
+    this.buildControlsSection(dashboard);
+
+    const coreSettings = containerEl.createDiv({ cls: 'superpower-inside-rag-settings-stack' });
+    this.buildEmbeddingProviderSection(coreSettings);
+    this.buildExcludeOptionsSection(coreSettings);
+
     this.buildGraphRagOperationsSection(containerEl);
+    this.buildRagAdvancedSection(containerEl);
   }
   private buildRagAdvancedSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
@@ -1170,7 +1174,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private buildGraphRagOperationsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-rag-section superpower-inside-rag-graph-panel',
+    });
     this.graphRagSectionContainer = section;
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto029') });
     const rag = this.plugin.settings.rag;
@@ -2705,7 +2711,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
   private buildControlsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-rag-section superpower-inside-rag-controls-panel',
+    });
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto163') });
     const controls = section.createDiv({ cls: 'superpower-inside-rag-controls' });
     const p = this.plugin as unknown as {
@@ -2718,7 +2726,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
     const hasIndexer = !!p.vaultIndexer && !!p.ragIndexingScheduler;
     const isIndexing = this.plugin.isRagIndexing();
-    controls.createEl('button', { text: t('settingsAuto127') }, (btn) => {
+    const primaryControls = controls.createDiv({ cls: 'superpower-inside-rag-controls-group' });
+    primaryControls.createEl('button', { text: t('settingsAuto127') }, (btn) => {
       this.updatePendingButton = btn;
       btn.disabled = true;
       void this.getRagStatus().then((status) => {
@@ -2753,7 +2762,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         })();
       });
     });
-    controls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
+    primaryControls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
       this.reindexAllButton = btn;
       btn.disabled = isIndexing || !hasIndexer;
       btn.addEventListener('click', () => {
@@ -2783,7 +2792,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         })();
       });
     });
-    controls.createEl('button', { text: t('settingsAuto173') }, (btn) => {
+    primaryControls.createEl('button', { text: t('settingsAuto173') }, (btn) => {
       this.cancelIndexingButton = btn;
       btn.disabled = !isIndexing;
       btn.addEventListener('click', () => {
@@ -2791,7 +2800,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.updateRagStats();
       });
     });
-    controls.createEl('button', { text: t('settingsAuto174') }, (btn) => {
+    primaryControls.createEl('button', { text: t('settingsAuto174') }, (btn) => {
       this.resumeIndexingButton = btn;
       btn.disabled = true;
       btn.addEventListener('click', () => {
@@ -2799,11 +2808,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.updateRagStats();
       });
     });
-    this.ragControlsHint = section.createDiv({
+    this.ragControlsHint = controls.createDiv({
       cls: 'superpower-inside-rag-controls-hint',
       text: t('settingsAuto175'),
     });
-    controls.createEl('button', { text: t('settingsAuto176') }, (btn) => {
+    const dangerControls = controls.createDiv({
+      cls: 'superpower-inside-rag-controls-group is-danger',
+    });
+    dangerControls.createEl('button', { text: t('settingsAuto176') }, (btn) => {
       btn.disabled = isIndexing;
       btn.addEventListener('click', () => {
         void (async () => {

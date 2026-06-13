@@ -42,6 +42,41 @@ describe('설정 화면 리디자인 구조', () => {
     expect(emptyIndex).toBeGreaterThan(getStatusIndex);
   });
 
+  it('RAG 탭은 운영 대시보드 흐름으로 핵심 섹션을 배치한다', () => {
+    const methodStart = settingsSource.indexOf('private buildRAGTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildRagAdvancedSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+    const expectedOrder = [
+      'buildRagStatusPanel',
+      'buildControlsSection',
+      'buildEmbeddingProviderSection',
+      'buildExcludeOptionsSection',
+      'buildGraphRagOperationsSection',
+      'buildRagAdvancedSection',
+    ];
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-rag-dashboard');
+    expect(methodSource).toContain('superpower-inside-rag-settings-stack');
+
+    const positions = expectedOrder.map((name) => methodSource.indexOf(name));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('RAG 인덱싱 제어는 실행 버튼과 위험 작업을 시각적으로 분리한다', () => {
+    const methodStart = settingsSource.indexOf('private buildControlsSection');
+    const methodEnd = settingsSource.indexOf('\n  private updateRagControlStates', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-rag-controls-panel');
+    expect(methodSource).toContain('superpower-inside-rag-controls-group');
+    expect(methodSource).toContain('is-danger');
+    expect(styles).toContain('.superpower-inside-rag-controls-panel');
+    expect(styles).toContain('.superpower-inside-rag-dashboard');
+  });
+
   it('통합 로그는 설정 탭이 아니라 별도 Obsidian view/page로 열린다', () => {
     expect(settingsSource).not.toContain("| 'logs'");
     expect(settingsSource).not.toContain("id: 'logs'");

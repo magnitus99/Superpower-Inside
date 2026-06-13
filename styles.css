@@ -963,22 +963,41 @@
 }
 
 /* ── RAG Controls Grouping ── */
+.superpower-inside-rag-dashboard,
+.superpower-inside-rag-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superpower-inside-rag-dashboard > .superpower-inside-rag-section,
+.superpower-inside-rag-settings-stack > .superpower-inside-rag-section {
+  margin-top: 0;
+}
+
+.superpower-inside-rag-controls-panel {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
 .superpower-inside-rag-controls {
   display: flex;
   flex-direction: column;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .superpower-inside-rag-controls-group {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: stretch;
 }
 
 .superpower-inside-rag-controls-group.is-danger {
-  padding-top: 12px;
+  padding-top: 10px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
@@ -987,8 +1006,9 @@
   align-items: center;
   gap: 6px;
   flex: 1 1 auto;
-  min-width: 120px;
-  max-width: 300px;
+  min-width: 150px;
+  max-width: none;
+  white-space: normal;
 }
 
 .superpower-inside-rag-controls-group.is-danger button {
@@ -1164,13 +1184,13 @@
 
 @container (min-width: 321px) and (max-width: 480px) {
   .superpower-inside-rag-status-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
 }
 
 @container (min-width: 481px) {
   .superpower-inside-rag-status-grid {
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
 }
 /* RAG Section */
@@ -1599,9 +1619,10 @@
 
 .superpower-inside-rag-controls button {
   flex: 1 1 auto;
-  min-width: 120px;
-  max-width: 300px;
+  min-width: 150px;
+  max-width: none;
   border-radius: 6px;
+  white-space: normal;
 }
 
 .superpower-inside-mcp-status {
