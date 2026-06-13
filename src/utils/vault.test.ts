@@ -5,6 +5,8 @@ import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
   getRagFileTypeSummary,
+  countFilesByExtensions,
+  isExcludedExt,
   isExcludedPath,
   writeJsonToVault,
 } from './vault';
@@ -190,6 +192,32 @@ describe('RAG 후보 파일', () => {
     const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
 
     expect(summary.excludeRecommendations.map((item) => item.extension)).toEqual(['png']);
+  });
+});
+
+describe('RAG 제외 확장자 판정', () => {
+  it('확장자 키 정규화를 적용해 파일 경로 확장자를 판정한다', () => {
+    expect(isExcludedExt('note.MD', ['MD'])).toBe(true);
+    expect(isExcludedExt('notes/asset.PNG', [' .png ', 'jpg'])).toBe(true);
+    expect(isExcludedExt('notes/.env', ['env'])).toBe(false);
+    expect(isExcludedExt('notes/noext', ['md', 'txt'])).toBe(false);
+  });
+
+  it('카운트 집계는 정규화된 키 기준으로 0 카운트까지 보존한다', () => {
+    const vault = createVault([
+      createFile('note.md'),
+      createFile('notes/main.ts'),
+      createFile('notes/image.PNG'),
+      createFile('notes/.env'),
+      createFile('notes/archive.zip'),
+    ]);
+
+    expect(countFilesByExtensions(vault, ['MD', ' .png ', 'ts', 'env'])).toEqual({
+      md: 1,
+      png: 1,
+      ts: 1,
+      env: 0,
+    });
   });
 });
 

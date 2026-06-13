@@ -1,8 +1,19 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
 import { t } from '../i18n';
-import { isExcludedPathRust } from '../rag/rust-core';
+import {
+  isExcludedPathRust,
+  countFilesByExtensionsRust,
+  isExcludedExtRust,
+  planRagFileContentProbeIndicesRust,
+  planRagFileIndexabilityRust,
+  planRagFileTypeSummaryRust,
+  type RustRagFileEligibilityInput,
+  type RustRagFileIndexabilityPlan,
+  type RustRagFileTextProbeInput,
+  type RustRagFileTypeInput,
+} from '../rag/rust-core';
 import type { RAGConfig, ChatConfig } from '../settings';
-import { isRecommendableExcludeExtension } from './rag-exclude-validation';
+import { normalizeRustIndices, selectByRustIndices } from './rust-index-plan';
 
 export interface RagFileTypeCount {
   extension: string;
@@ -27,61 +38,6 @@ const DEFAULT_EXCLUDE_PATHS = [
   'node_modules',
   'attachments',
 ];
-const SENSITIVE_FILE_NAMES = new Set(['.env']);
-const SENSITIVE_EXTENSIONS = new Set(['env']);
-const TEXT_EXTENSIONS = new Set([
-  'md',
-  'txt',
-  'markdown',
-  'ts',
-  'tsx',
-  'js',
-  'jsx',
-  'mjs',
-  'cjs',
-  'json',
-  'jsonc',
-  'css',
-  'scss',
-  'sass',
-  'less',
-  'html',
-  'htm',
-  'xml',
-  'svg',
-  'py',
-  'java',
-  'go',
-  'rs',
-  'rb',
-  'php',
-  'cs',
-  'cpp',
-  'c',
-  'h',
-  'hpp',
-  'swift',
-  'kt',
-  'kts',
-  'sh',
-  'bash',
-  'zsh',
-  'fish',
-  'ps1',
-  'sql',
-  'csv',
-  'tsv',
-  'yaml',
-  'yml',
-  'toml',
-  'ini',
-  'conf',
-  'config',
-  'log',
-  'gitignore',
-  'dockerignore',
-]);
-
 /**
  * 볼트에서 마크다운 파일 목록을 가져오되, 제외 패턴을 적용합니다.
  */
@@ -96,25 +52,14 @@ export async function getRagCandidateFiles(
   chatConfig: ChatConfig,
 ): Promise<TFile[]> {
   const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
-  const candidates: TFile[] = [];
-
-  for (const file of vault.getFiles()) {
-    if (isExcludedPath(file.path, effectiveExcludePaths)) continue;
-    if (isExcludedExt(file.path, ragConfig.excludeExts)) continue;
-    if (await isRagIndexableFile(vault, file)) {
-      candidates.push(file);
-    }
-  }
-
-  return candidates;
+  const files = vault.getFiles();
+  const plan = await planRagFileIndexability(vault, files, effectiveExcludePaths, ragConfig.excludeExts);
+  return selectByRustIndices(files, plan.candidateIndices, { dedupe: true });
 }
 
 export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boolean> {
-  if (isSensitiveFile(file)) return false;
-  if (file.stat.size === 0) return false;
-  const extension = normalizeExtension(file.extension || getPathExtension(file.path));
-  if (TEXT_EXTENSIONS.has(extension) || isKnownTextFileName(file.name)) return true;
-  return canReadAsText(vault, file);
+  const plan = await planRagFileIndexability(vault, [file], [], []);
+  return selectByRustIndices([file], plan.candidateIndices, { dedupe: true }).length === 1;
 }
 
 export async function getRagFileTypeSummary(
@@ -123,45 +68,21 @@ export async function getRagFileTypeSummary(
   chatConfig: ChatConfig,
 ): Promise<RagFileTypeSummary> {
   const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
-  const targetCounts = new Map<string, number>();
-  const recommendationCounts = new Map<string, { count: number; reason: string }>();
+  const plan = await planRagFileIndexability(
+    vault,
+    vault.getFiles(),
+    effectiveExcludePaths,
+    ragConfig.excludeExts,
+  );
+  const fileTypeInputs = plan.summaryInputs.map(localizeRagFileTypeInputReason);
 
-  for (const file of vault.getFiles()) {
-    if (isExcludedPath(file.path, effectiveExcludePaths)) continue;
-    if (isExcludedExt(file.path, ragConfig.excludeExts)) continue;
-
-    const extension = normalizeExtension(file.extension || getPathExtension(file.path));
-    const key = extension || '(none)';
-    if (await isRagIndexableFile(vault, file)) {
-      targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
-      continue;
+  return (
+    planRagFileTypeSummaryRust(fileTypeInputs, t('noExtensionLabel')) ?? {
+      targetTypes: [],
+      excludeRecommendations: [],
+      totalTargetFiles: 0,
     }
-    if (key !== '(none)' && !isRecommendableExcludeExtension(key)) {
-      continue;
-    }
-
-    const existing = recommendationCounts.get(key);
-    recommendationCounts.set(key, {
-      count: (existing?.count ?? 0) + 1,
-      reason: getExcludeRecommendationReason(file),
-    });
-  }
-
-  const targetTypes = toSortedFileTypeCounts(targetCounts);
-  const excludeRecommendations = [...recommendationCounts.entries()]
-    .map(([extension, item]) => ({
-      extension,
-      label: getExtensionLabel(extension),
-      count: item.count,
-      reason: item.reason,
-    }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-
-  return {
-    targetTypes,
-    excludeRecommendations,
-    totalTargetFiles: targetTypes.reduce((sum, item) => sum + item.count, 0),
-  };
+  );
 }
 
 /**
@@ -174,83 +95,51 @@ export function isExcluded(filePath: string, patterns: string[]): boolean {
 
 export function isExcludedPath(filePath: string, patterns: readonly string[]): boolean {
   const rustResult = isExcludedPathRust(filePath, patterns);
-  if (rustResult !== null) return rustResult;
-  return isExcludedPathWithTypeScript(filePath, patterns);
-}
-
-function isExcludedPathWithTypeScript(filePath: string, patterns: readonly string[]): boolean {
-  const lowerPath = normalizePath(filePath);
-  for (const pattern of patterns) {
-    const p = normalizePath(pattern);
-    if (!p) continue;
-
-    if (p.endsWith('/**')) {
-      if (matchesPathSegment(lowerPath, p.slice(0, -3))) return true;
-      continue;
-    }
-
-    if (p.startsWith('**/')) {
-      if (matchesPathSegment(lowerPath, p.slice(3))) return true;
-      continue;
-    }
-
-    if (p.includes('*')) {
-      if (globToRegExp(p).test(lowerPath)) return true;
-      continue;
-    }
-
-    if (matchesPathSegment(lowerPath, p)) {
-      return true;
-    }
-
-    if (!p.includes('/') && lowerPath.endsWith('.' + p)) {
-      return true;
-    }
-  }
-  return false;
+  return rustResult ?? false;
 }
 
 /**
  * 파일 확장자가 제외 목록에 있는지 확인합니다.
  */
 export function isExcludedExt(filePath: string, excludeExts: string[]): boolean {
-  const ext = normalizeExtension(getPathExtension(filePath));
-  return excludeExts.map((e) => normalizeExtension(e)).includes(ext);
+  const normalizedKeys = excludeExts.map((extension) => extension.trim().toLowerCase().replace(/^\./, ''));
+  const normalizedFilePath = filePath.trim();
+
+  const rustResult = isExcludedExtRust(normalizedFilePath, normalizedKeys);
+  if (rustResult !== null) return rustResult;
+
+  const pathExt = getPathExtension(normalizedFilePath).trim().toLowerCase();
+  const normalizedPathExt = pathExt.startsWith('.') ? pathExt.slice(1) : pathExt;
+  return normalizedKeys.includes(normalizedPathExt);
 }
 
 export function countFilesByExtensions(
   vault: Vault,
   extensions: readonly string[],
 ): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const extension of extensions) {
-    const normalized = normalizeExtension(extension);
-    if (normalized) {
-      counts[normalized] = 0;
-    }
-  }
+  const normalizedKeys = extensions
+    .map((extension) => extension.trim().toLowerCase().replace(/^\./, ''))
+    .filter((extension): extension is string => extension.length > 0);
+  const fileExtensions = vault.getFiles().map((file) => file.extension);
 
-  for (const file of vault.getFiles()) {
-    const extension = normalizeExtension(file.extension);
-    if (extension && Object.hasOwn(counts, extension)) {
-      counts[extension]++;
+  const rustResult = countFilesByExtensionsRust(fileExtensions, normalizedKeys);
+  if (rustResult !== null) return rustResult;
+
+  const counts: Record<string, number> = {};
+  for (const extension of normalizedKeys) {
+    counts[extension] = 0;
+  }
+  for (const fileExtension of fileExtensions) {
+    const normalizedExtension = fileExtension.trim().toLowerCase();
+    const noDot = normalizedExtension.startsWith('.')
+      ? normalizedExtension.slice(1)
+      : normalizedExtension;
+    if (noDot && Object.hasOwn(counts, noDot)) {
+      counts[noDot] += 1;
     }
   }
 
   return counts;
-}
-
-function normalizeExtension(extension: string): string {
-  return extension.trim().replace(/^\./, '').toLowerCase();
-}
-
-function normalizePath(path: string): string {
-  return path
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\.?\//, '')
-    .replace(/^\/+/, '')
-    .toLowerCase();
 }
 
 function getPathExtension(filePath: string): string {
@@ -261,75 +150,61 @@ function getPathExtension(filePath: string): string {
   return fileName.split('.').pop() ?? '';
 }
 
-function matchesPathSegment(filePath: string, pattern: string): boolean {
-  if (!pattern) return false;
-  if (filePath === pattern) return true;
-  if (filePath.startsWith(pattern + '/')) return true;
-  if (filePath.endsWith('/' + pattern)) return true;
-  return filePath.includes('/' + pattern + '/');
-}
-
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '.*');
-  return new RegExp(`(^|/)${escaped.replace(/\*/g, '[^/]*')}($|/)`);
-}
-
-function isKnownTextFileName(fileName: string): boolean {
-  const normalized = fileName.toLowerCase();
-  return TEXT_EXTENSIONS.has(normalized) || TEXT_EXTENSIONS.has(normalized.replace(/^\./, ''));
-}
-
-function isSensitiveFile(file: TFile): boolean {
-  const name = file.name.toLowerCase();
-  const extension = normalizeExtension(file.extension || getPathExtension(file.path));
+async function planRagFileIndexability(
+  vault: Vault,
+  files: readonly TFile[],
+  excludePaths: readonly string[],
+  excludeExts: readonly string[],
+): Promise<RustRagFileIndexabilityPlan> {
+  const inputs = files.map(toRagFileEligibilityInput);
+  const probeIndices = planRagFileContentProbeIndicesRust(inputs, excludePaths, excludeExts) ?? [];
+  const textProbes = await readRagFileTextProbes(vault, files, probeIndices);
   return (
-    SENSITIVE_FILE_NAMES.has(name) ||
-    name.startsWith('.env.') ||
-    (extension !== '' && SENSITIVE_EXTENSIONS.has(extension))
+    planRagFileIndexabilityRust(inputs, excludePaths, excludeExts, textProbes) ?? {
+      candidateIndices: [],
+      summaryInputs: [],
+    }
   );
 }
 
-async function canReadAsText(vault: Vault, file: TFile): Promise<boolean> {
-  try {
-    const content = await vault.cachedRead(file);
-    return isProbablyText(content.slice(0, 4096));
-  } catch {
-    return false;
-  }
-}
-
-function isProbablyText(sample: string): boolean {
-  if (!sample) return false;
-  if (sample.includes('\u0000')) return false;
-  let controlChars = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const code = sample.charCodeAt(i);
-    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
-      controlChars++;
+async function readRagFileTextProbes(
+  vault: Vault,
+  files: readonly TFile[],
+  probeIndices: readonly number[],
+): Promise<RustRagFileTextProbeInput[]> {
+  const probes: RustRagFileTextProbeInput[] = [];
+  const normalizedProbeIndices = normalizeRustIndices(probeIndices, files.length, { dedupe: true });
+  for (const index of normalizedProbeIndices) {
+    const file = files[index];
+    if (!file) continue;
+    try {
+      const content = await vault.cachedRead(file);
+      probes.push({ index, readable: true, sample: content.slice(0, 4096) });
+    } catch {
+      probes.push({ index, readable: false, sample: '' });
     }
   }
-  return controlChars / sample.length < 0.02;
+  return probes;
 }
 
-function getExcludeRecommendationReason(file: TFile): string {
-  if (isSensitiveFile(file)) {
-    return t('ragExcludeSensitiveReason');
-  }
-  return t('ragExcludeUnreadableReason');
+function toRagFileEligibilityInput(file: TFile): RustRagFileEligibilityInput {
+  return {
+    filePath: file.path,
+    fileName: file.name,
+    extension: file.extension,
+    size: file.stat.size,
+  };
 }
 
-function toSortedFileTypeCounts(counts: Map<string, number>): RagFileTypeCount[] {
-  return [...counts.entries()]
-    .map(([extension, count]) => ({
-      extension,
-      label: getExtensionLabel(extension),
-      count,
-    }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-}
-
-function getExtensionLabel(extension: string): string {
-  return extension === '(none)' ? t('noExtensionLabel') : `.${extension}`;
+function localizeRagFileTypeInputReason(input: RustRagFileTypeInput): RustRagFileTypeInput {
+  if (input.indexable || !input.recommendationReason) return input;
+  return {
+    ...input,
+    recommendationReason:
+      input.recommendationReason === 'sensitive'
+        ? t('ragExcludeSensitiveReason')
+        : t('ragExcludeUnreadableReason'),
+  };
 }
 
 /**

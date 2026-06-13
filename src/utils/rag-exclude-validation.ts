@@ -1,3 +1,11 @@
+import {
+  isProtectedRagDocumentExtensionRust,
+  isRecommendableExcludeExtensionRust,
+  normalizeExcludeExtensionRust,
+  validateExcludeExtensionInputRust,
+  validateExcludePathInputRust,
+} from '../rag/rust-core';
+
 export type ExcludeValidationLevel = 'error' | 'warning';
 
 export type ExcludeValidationCode =
@@ -23,22 +31,63 @@ export interface ExcludeValidationResult {
   valid: boolean;
 }
 
-const PROTECTED_RAG_DOCUMENT_EXTENSIONS = new Set(['md', 'markdown']);
-
 export function normalizeExcludeExtension(extension: string): string {
+  const normalized = normalizeExcludeExtensionRust(extension);
+  if (normalized !== null) return normalized;
   return extension.trim().replace(/^\./, '').toLowerCase();
 }
 
 export function isProtectedRagDocumentExtension(extension: string): boolean {
-  return PROTECTED_RAG_DOCUMENT_EXTENSIONS.has(normalizeExcludeExtension(extension));
+  const normalized = normalizeExcludeExtension(extension);
+  const protectedFromRust = isProtectedRagDocumentExtensionRust(normalized);
+  if (protectedFromRust !== null) return protectedFromRust;
+  return new Set(['md', 'markdown']).has(normalized);
 }
 
 export function isRecommendableExcludeExtension(extension: string): boolean {
   const normalized = normalizeExcludeExtension(extension);
+  const recommendableFromRust = isRecommendableExcludeExtensionRust(normalized);
+  if (recommendableFromRust !== null) return recommendableFromRust;
   return normalized.length > 0 && !isProtectedRagDocumentExtension(normalized);
 }
 
 export function validateExcludePathInput(
+  input: string,
+  existingPaths: readonly string[],
+  pathExists?: (path: string) => boolean,
+): ExcludeValidationResult {
+  const result = validateExcludePathInputRust(input, existingPaths);
+  if (result) {
+    const issues = [...result.issues];
+    if (pathExists) {
+      const normalized = result.normalized.trim();
+      if (normalized && !issues.some((issue) => issue.code === 'path-missing') && !pathExists(normalized)) {
+        issues.push({ level: 'warning', code: 'path-missing' });
+      }
+    }
+    return {
+      normalized: result.normalized,
+      issues,
+      valid: issues.every((issue) => issue.level === 'warning'),
+    };
+  }
+
+  return fallbackValidateExcludePathInput(input, existingPaths, pathExists);
+}
+
+export function validateExcludeExtensionInput(
+  input: string,
+  existingExtensions: readonly string[],
+): ExcludeValidationResult {
+  const result = validateExcludeExtensionInputRust(input, existingExtensions);
+  if (result) {
+    return result;
+  }
+
+  return fallbackValidateExcludeExtensionInput(input, existingExtensions);
+}
+
+function fallbackValidateExcludePathInput(
   input: string,
   existingPaths: readonly string[],
   pathExists?: (path: string) => boolean,
@@ -78,7 +127,7 @@ export function validateExcludePathInput(
   return createResult(normalized, issues);
 }
 
-export function validateExcludeExtensionInput(
+function fallbackValidateExcludeExtensionInput(
   input: string,
   existingExtensions: readonly string[],
 ): ExcludeValidationResult {
@@ -119,10 +168,7 @@ export function validateExcludeExtensionInput(
   return createResult(normalized, issues);
 }
 
-function createResult(
-  normalized: string,
-  issues: ExcludeValidationIssue[],
-): ExcludeValidationResult {
+function createResult(normalized: string, issues: ExcludeValidationIssue[]): ExcludeValidationResult {
   return {
     normalized,
     issues,

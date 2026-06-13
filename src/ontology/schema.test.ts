@@ -62,4 +62,39 @@ describe('Ontology schema', () => {
       }),
     ).toEqual({ valid: false, reason: 'unknown-entity-type' });
   });
+
+  it('스키마 유효성 검증은 누락/참조 불일치를 반환한다', () => {
+    expect(
+      validateOntologySchema({
+        id: '',
+        name: 'Invalid',
+        version: 0,
+        locale: 'mixed',
+        description: '',
+        entityTypes: [
+          { id: 'person', label: 'Person', description: '', examples: [], properties: [] },
+        ],
+        relationTypes: [
+          {
+            id: '',
+            label: 'Invalid',
+            description: '',
+            sourceTypeIds: ['person'],
+            targetTypeIds: ['missing'],
+            properties: [],
+            examples: [],
+          },
+        ],
+        claimTypes: [],
+        aliasRules: [],
+        mergeRules: [],
+        extractionGuidelines: '',
+      }),
+    ).toEqual([
+      'schema.id is required',
+      'schema.version must be a positive integer',
+      'relationType.id is required',
+      'unknown relation target type: missing',
+    ]);
+  });
 });

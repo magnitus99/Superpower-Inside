@@ -1,3 +1,6 @@
+import { t } from '../i18n';
+import { validateOntologyRelationRust, validateOntologySchemaRust } from '../rag/rust-core';
+
 export type OntologyLocale = 'ko' | 'en' | 'mixed';
 export type OntologyPropertyValueType = 'string' | 'number' | 'boolean' | 'date' | 'enum';
 
@@ -186,6 +189,11 @@ export const DEFAULT_ONTOLOGY_SCHEMA: OntologySchema = {
 };
 
 export function validateOntologySchema(schema: OntologySchema): string[] {
+  const plan = validateOntologySchemaRust(schema);
+  if (plan !== null) {
+    return plan;
+  }
+
   const errors: string[] = [];
   const entityTypeIds = new Set(schema.entityTypes.map((entityType) => entityType.id));
   const relationTypeIds = new Set(schema.relationTypes.map((relationType) => relationType.id));
@@ -228,21 +236,17 @@ export function validateOntologyRelation(
   schema: OntologySchema,
   input: OntologyRelationValidationInput,
 ): OntologyRelationValidationResult {
-  const entityTypeIds = new Set(schema.entityTypes.map((entityType) => entityType.id));
-  const relationType = schema.relationTypes.find(
-    (candidate) => candidate.id === input.relationTypeId,
+  return (
+    validateOntologyRelationRust({
+      entityTypeIds: schema.entityTypes.map((entityType) => entityType.id),
+      relationTypeIds: schema.relationTypes.map((relationType) => relationType.id),
+      relationSourceTypeIds: schema.relationTypes.map((relationType) => relationType.sourceTypeIds),
+      relationTargetTypeIds: schema.relationTypes.map((relationType) => relationType.targetTypeIds),
+      relationTypeId: input.relationTypeId,
+      sourceTypeId: input.sourceTypeId,
+      targetTypeId: input.targetTypeId,
+    }) ?? { valid: false, reason: 'unknown-relation-type' }
   );
-  if (!relationType) return { valid: false, reason: 'unknown-relation-type' };
-  if (!entityTypeIds.has(input.sourceTypeId) || !entityTypeIds.has(input.targetTypeId)) {
-    return { valid: false, reason: 'unknown-entity-type' };
-  }
-  if (
-    !typeListContains(relationType.sourceTypeIds, input.sourceTypeId) ||
-    !typeListContains(relationType.targetTypeIds, input.targetTypeId)
-  ) {
-    return { valid: false, reason: 'relation-domain-range-mismatch' };
-  }
-  return { valid: true };
 }
 
 function entityType(
@@ -294,8 +298,3 @@ function claimType(id: string, label: string, description: string): OntologyClai
 function isKnownEntityType(entityTypeIds: Set<string>, typeId: string): boolean {
   return typeId === ANY_ENTITY_TYPE || entityTypeIds.has(typeId);
 }
-
-function typeListContains(typeIds: readonly string[], typeId: string): boolean {
-  return typeIds.includes(ANY_ENTITY_TYPE) || typeIds.includes(typeId);
-}
-import { t } from '../i18n';
