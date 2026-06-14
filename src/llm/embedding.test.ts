@@ -260,6 +260,33 @@ describe('CachedEmbeddingProvider', () => {
 
     await second.clearCache();
   });
+
+  it('batch cache hit와 duplicate miss를 입력 순서대로 복원하고 missing unique text만 요청한다', async () => {
+    const calls: string[][] = [];
+    const provider = new CachedEmbeddingProvider(
+      {
+        embed: (text) => Promise.resolve(vectorForText(text)),
+        embedBatch: (texts) => {
+          calls.push([...texts]);
+          return Promise.resolve(texts.map(vectorForText));
+        },
+      },
+      'openai::dedupe-model',
+    );
+    await provider.clearCache();
+    await provider.embedBatch(['cached']);
+    calls.length = 0;
+
+    await expect(provider.embedBatch(['cached', 'missing', 'cached', 'missing'])).resolves.toEqual([
+      [1, 0],
+      [0, 1],
+      [1, 0],
+      [0, 1],
+    ]);
+    expect(calls).toEqual([['missing']]);
+
+    await provider.clearCache();
+  });
 });
 
 function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {
@@ -267,4 +294,8 @@ function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {
     embed: () => Promise.resolve(vector),
     embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => vector)),
   };
+}
+
+function vectorForText(text: string): number[] {
+  return text === 'cached' ? [1, 0] : [0, 1];
 }

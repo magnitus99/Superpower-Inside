@@ -514,11 +514,8 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       throwIfAborted(options?.signal);
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];
-    const missingIndices: number[] = [];
-    const missingTexts: string[] = [];
-
-    const cachedRecords = await db.embeddings.bulkGet(hashes);
-    throwIfAborted(options?.signal);
+    const dbLookupIndices: number[] = [];
+    const dbLookupHashes: string[] = [];
     for (let i = 0; i < texts.length; i++) {
       const hash = hashes[i];
       const mem = this.memoryCache.get(hash);
@@ -526,14 +523,32 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         results[i] = mem;
         continue;
       }
-      const cached = cachedRecords.find((r) => r?.textHash === hash);
+      dbLookupIndices.push(i);
+      dbLookupHashes.push(hash);
+    }
+
+    const cachedRecords = await db.embeddings.bulkGet(dbLookupHashes);
+    throwIfAborted(options?.signal);
+    const missingIndexGroups = new Map<string, number[]>();
+    const missingHashes: string[] = [];
+    const missingTexts: string[] = [];
+    for (let lookupIndex = 0; lookupIndex < dbLookupIndices.length; lookupIndex++) {
+      const originalIndex = dbLookupIndices[lookupIndex];
+      const hash = dbLookupHashes[lookupIndex];
+      const cached = cachedRecords[lookupIndex];
       if (cached) {
         this.setCache(hash, cached.vector);
-        results[i] = cached.vector;
+        results[originalIndex] = cached.vector;
         continue;
       }
-      missingIndices.push(i);
-      missingTexts.push(texts[i]);
+      const existingGroup = missingIndexGroups.get(hash);
+      if (existingGroup) {
+        existingGroup.push(originalIndex);
+        continue;
+      }
+      missingIndexGroups.set(hash, [originalIndex]);
+      missingHashes.push(hash);
+      missingTexts.push(texts[originalIndex]);
     }
 
     if (missingTexts.length > 0) {
@@ -547,10 +562,11 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         updated: number;
       }> = [];
       for (let j = 0; j < missingTexts.length; j++) {
-        const originalIdx = missingIndices[j];
         const vector = newVectors[j];
-        const hash = hashes[originalIdx];
-        results[originalIdx] = vector;
+        const hash = missingHashes[j];
+        for (const originalIdx of missingIndexGroups.get(hash) ?? []) {
+          results[originalIdx] = vector;
+        }
         this.setCache(hash, vector);
         bulkRecords.push({ id: hash, textHash: hash, vector, updated: now });
       }
