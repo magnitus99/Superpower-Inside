@@ -14,6 +14,12 @@ if not test -x "$CARGO_BIN"
     set CARGO_BIN cargo
 end
 
+if not test -x "$RUSTUP_BIN"
+    if command -sq rustup
+        set RUSTUP_BIN rustup
+    end
+end
+
 if test -x "$RUSTUP_BIN"
     "$RUSTUP_BIN" toolchain install "$TOOLCHAIN" --profile minimal
     or exit $status
@@ -34,8 +40,13 @@ set -x PATH "$HOME/.cargo/bin" $PATH
 set -l OUT_DIR "$REPO_ROOT/generated/rag-wasm"
 set -l BINDGEN_DIR "$REPO_ROOT/target/rag-wasm-bindgen"
 set -l WASM_INPUT "$REPO_ROOT/target/wasm32-unknown-unknown/release/superpower_rag_wasm.wasm"
+set -l CARGO_CMD "$CARGO_BIN"
 
-"$CARGO_BIN" +"$TOOLCHAIN" build -p superpower-rag-wasm --target wasm32-unknown-unknown --release
+if command -sq "$RUSTUP_BIN"
+    set CARGO_CMD "$RUSTUP_BIN" run "$TOOLCHAIN" cargo
+end
+
+$CARGO_CMD build -p superpower-rag-wasm --target wasm32-unknown-unknown --release
 or exit $status
 
 rm -rf "$BINDGEN_DIR"

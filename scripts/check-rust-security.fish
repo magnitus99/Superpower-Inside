@@ -30,6 +30,12 @@ if not test -x "$CARGO_BIN"
     set CARGO_BIN cargo
 end
 
+if not test -x "$RUSTUP_BIN"
+    if command -sq rustup
+        set RUSTUP_BIN rustup
+    end
+end
+
 if not command -sq npm
     echo "ERROR: npm 명령을 찾을 수 없습니다. Node.js가 설치되어 있는지 확인하세요."
     exit 1
@@ -54,6 +60,11 @@ if test -x "$TOOLCHAIN_RUSTDOC"
 end
 
 set -x CARGO_TARGET_DIR "$REPO_ROOT/target/rustup-$TOOLCHAIN"
+set -l CARGO_CMD "$CARGO_BIN"
+
+if command -sq "$RUSTUP_BIN"
+    set CARGO_CMD "$RUSTUP_BIN" run "$TOOLCHAIN" cargo
+end
 
 set -l REQUIRED_TOOLS wasm-bindgen cargo-deny cargo-audit cargo-geiger cargo-vet
 for tool in $REQUIRED_TOOLS
@@ -64,19 +75,19 @@ for tool in $REQUIRED_TOOLS
 end
 
 echo "==> rustfmt"
-"$CARGO_BIN" +"$TOOLCHAIN" fmt --all --check
+$CARGO_CMD fmt --all --check
 or exit $status
 
 echo "==> clippy"
-"$CARGO_BIN" +"$TOOLCHAIN" clippy --workspace --all-targets --all-features -- -D warnings
+$CARGO_CMD clippy --workspace --all-targets --all-features -- -D warnings
 or exit $status
 
 echo "==> unit tests"
-"$CARGO_BIN" +"$TOOLCHAIN" test --workspace
+$CARGO_CMD test --workspace
 or exit $status
 
 echo "==> wasm target build"
-"$CARGO_BIN" +"$TOOLCHAIN" build --workspace --target wasm32-unknown-unknown
+$CARGO_CMD build --workspace --target wasm32-unknown-unknown
 or exit $status
 
 echo "==> cargo-deny"
