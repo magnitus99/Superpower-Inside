@@ -4,8 +4,6 @@ import type { CachedMetadata, TFile } from 'obsidian';
 import {
   collectCandidateReasonsRust,
   createEntriesFingerprintRust,
-  assignVectorClustersRust,
-  buildInitialCentroidsRust,
   calculateRecallAtKRust,
   planBm25CandidateResolutionRust,
   planBm25HitLookupRust,
@@ -14,7 +12,8 @@ import {
   planStructuralHeadingNeighborsRust,
   planStructuralLinkedPathsRust,
   rankTopKPairsRust,
-  recomputeCentroidsRust,
+  RustIvfRuntimeIndex,
+  RustVectorRuntimeIndex,
   type RustBm25EntryInput,
   type RustStructuralEntryInput,
   type RustStructuralHeadingInput,
@@ -196,6 +195,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     if (this.index && this.indexedFingerprint === fingerprint) {
       return this.index;
     }
+    this.index?.dispose();
     this.index = IvfVectorIndex.build(entries, this.options.clusterCount, signal);
     this.indexedFingerprint = fingerprint;
     this.state = {
@@ -515,11 +515,15 @@ function scoreVectorEntries(
   signal?: AbortSignal,
 ): Array<{ entry: VectorEntry; score: number }> {
   throwIfAborted(signal);
-  const rustScores = rankTopKPairsRust(
-    vector,
-    entries.map((entry) => entry.vector),
-    topK,
-  );
+  const runtimeIndex = RustVectorRuntimeIndex.build(entries.map((entry) => entry.vector));
+  const rustScores =
+    runtimeIndex?.rankTopK(vector, topK) ??
+    rankTopKPairsRust(
+      vector,
+      entries.map((entry) => entry.vector),
+      topK,
+    );
+  runtimeIndex?.dispose();
   if (rustScores !== null) {
     throwIfAborted(signal);
     const selected: Array<{ entry: VectorEntry; score: number }> = [];
@@ -672,12 +676,12 @@ function toRetrievalCandidateSource(source: string): RetrievalCandidateSource | 
 
 class IvfVectorIndex {
   private constructor(
-    private readonly centroids: number[][],
-    private readonly clusters: VectorEntry[][],
+    private readonly entries: readonly VectorEntry[],
+    private readonly runtimeIndex: RustIvfRuntimeIndex | null,
   ) {}
 
   get clusterCount(): number {
-    return this.centroids.length;
+    return this.runtimeIndex?.clusterCount ?? 0;
   }
 
   static build(
@@ -685,24 +689,18 @@ class IvfVectorIndex {
     requestedClusterCount: number,
     signal?: AbortSignal,
   ): IvfVectorIndex {
-    if (entries.length === 0) return new IvfVectorIndex([], []);
-
-    let centroids = buildInitialCentroidsRust(
+    if (entries.length === 0) return new IvfVectorIndex(entries, null);
+    throwIfAborted(signal);
+    const runtimeIndex = RustIvfRuntimeIndex.build(
       entries.map((entry) => entry.vector),
       requestedClusterCount,
+      4,
     );
-    if (centroids === null || centroids.length === 0) {
-      return new IvfVectorIndex([], []);
-    }
-    let clusters = assignClusters(entries, centroids, signal);
+    return new IvfVectorIndex(entries, runtimeIndex);
+  }
 
-    for (let iteration = 0; iteration < 4; iteration++) {
-      throwIfAborted(signal);
-      centroids = recomputeCentroids(clusters, centroids);
-      clusters = assignClusters(entries, centroids, signal);
-    }
-
-    return new IvfVectorIndex(centroids, clusters);
+  dispose(): void {
+    this.runtimeIndex?.dispose();
   }
 
   query(
@@ -711,65 +709,18 @@ class IvfVectorIndex {
     probeCount: number,
     signal?: AbortSignal,
   ): Array<{ entry: VectorEntry; score: number }> {
-    if (this.centroids.length === 0) return [];
+    if (!this.runtimeIndex || this.runtimeIndex.clusterCount === 0) return [];
 
-    const resolvedProbeCount = Math.max(1, Math.min(probeCount, this.centroids.length));
-    const rustCentroidScores = rankTopKPairsRust(vector, this.centroids, resolvedProbeCount);
-    if (rustCentroidScores === null) return [];
-    const centroidIndexes = rustCentroidScores
-      .map((candidate) => candidate.index)
-      .filter(
-        (index): index is number => Number.isInteger(index) && index >= 0 && index < this.clusters.length,
-      );
-
-    const candidates = centroidIndexes.flatMap((index) => this.clusters[index] ?? []);
     throwIfAborted(signal);
-    return scoreVectorEntries(candidates, vector, topK, signal);
-  }
-}
-
-function assignClusters(
-  entries: readonly VectorEntry[],
-  centroids: readonly (readonly number[])[],
-  signal?: AbortSignal,
-): VectorEntry[][] {
-  const clusters = Array.from({ length: centroids.length }, () => [] as VectorEntry[]);
-  const rustAssignments = assignVectorClustersRust(
-    entries.map((entry) => entry.vector),
-    centroids,
-  );
-  if (rustAssignments === null || rustAssignments.length !== entries.length) {
-    return clusters;
-  }
-  for (let index = 0; index < entries.length; index++) {
-    throwIfAborted(signal);
-    const clusterIndex = rustAssignments[index];
-    if (!Number.isInteger(clusterIndex) || clusterIndex < 0 || clusterIndex >= clusters.length) {
-      continue;
+    const scoredRows = this.runtimeIndex.query(vector, topK, probeCount);
+    if (scoredRows === null) return [];
+    const selected: Array<{ entry: VectorEntry; score: number }> = [];
+    for (const result of scoredRows) {
+      const entry = this.entries[result.index];
+      if (entry) selected.push({ entry, score: result.score });
     }
-    const entry = entries[index];
-    if (entry) clusters[clusterIndex]?.push(entry);
+    return selected;
   }
-  return clusters;
-}
-
-function recomputeCentroids(
-  clusters: readonly (readonly VectorEntry[])[],
-  previousCentroids: readonly (readonly number[])[],
-): number[][] {
-  const vectors: number[][] = [];
-  const assignments: number[] = [];
-  for (let clusterIndex = 0; clusterIndex < clusters.length; clusterIndex++) {
-    const cluster = clusters[clusterIndex] ?? [];
-    for (const entry of cluster) {
-      vectors.push(entry.vector);
-      assignments.push(clusterIndex);
-    }
-  }
-
-  const rustCentroids = recomputeCentroidsRust(vectors, assignments, previousCentroids);
-  if (rustCentroids !== null) return rustCentroids;
-  return [];
 }
 
 function withProviderDeadline<T>(

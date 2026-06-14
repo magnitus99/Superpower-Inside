@@ -105,6 +105,7 @@ import {
   planStructuralLinkedPathsRust,
   planVaultLinkFallbackIndexRust,
   planVaultLinkCandidatesRust,
+  RustIvfRuntimeIndex,
   rankTopKPairsRust,
   classifyMcpToolErrorRust,
   recomputeCentroidsRust,
@@ -671,6 +672,28 @@ describe('Rust WASM RAG core bridge', () => {
     expect(autoCentroids).toHaveLength(4);
     expect(autoCentroids?.[0]).toEqual([0, 1]);
     expect(autoCentroids?.[3]).toEqual([19, 20]);
+  });
+
+  it('queries ANN candidates through the Rust IVF runtime index', () => {
+    const runtime = RustIvfRuntimeIndex.build(
+      [
+        [1, 0],
+        [0.95, 0.05],
+        [0, 1],
+        [0.05, 0.95],
+      ],
+      2,
+      4,
+    );
+
+    expect(runtime).not.toBeNull();
+    expect(runtime?.clusterCount).toBe(2);
+    const scores = runtime?.query([1, 0], 2, 1);
+    runtime?.dispose();
+
+    expect(scores?.[0]).toEqual({ index: 0, score: 1 });
+    expect(scores?.[1]?.index).toBe(1);
+    expect(scores?.[1]?.score).toBeCloseTo(0.9986178);
   });
 
   it('calculates recall@k through Rust', () => {

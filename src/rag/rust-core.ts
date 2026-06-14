@@ -2,6 +2,7 @@ import {
   aggregate_graph_edges_flat,
   analyze_retrieval_sources,
   assign_vector_clusters,
+  Bm25RuntimeIndex,
   bm25_score_pairs,
   build_initial_centroids,
   chunk_markdown_json,
@@ -23,6 +24,7 @@ import {
   find_mentioned_entity_matches,
   hybrid_score_or_nan,
   initSync,
+  IvfRuntimeIndex,
   is_graph_extraction_cache_hit_json,
   is_protected_rag_document_extension_json,
   count_files_by_extensions_json,
@@ -137,6 +139,7 @@ import {
   tokenize_json,
   validate_ontology_relation,
   validate_ontology_schema_json,
+  VectorRuntimeIndex,
 } from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
@@ -306,6 +309,197 @@ export interface RustBm25IndexData {
 export interface RustBm25SearchScore {
   docId: string;
   score: number;
+}
+
+export class RustBm25RuntimeIndex {
+  private constructor(private readonly inner: Bm25RuntimeIndex) {}
+
+  static fromJson(payload: string, tokenizerVersion: number): RustBm25RuntimeIndex | null {
+    if (!isStringValue(payload) || !isValidNonNegativeInteger(tokenizerVersion)) return null;
+    if (!ensureRustCore()) return null;
+    try {
+      return new RustBm25RuntimeIndex(
+        Bm25RuntimeIndex.from_json(payload, tokenizerVersion),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  static empty(tokenizerVersion: number): RustBm25RuntimeIndex | null {
+    if (!isValidNonNegativeInteger(tokenizerVersion)) return null;
+    if (!ensureRustCore()) return null;
+    try {
+      return new RustBm25RuntimeIndex(new Bm25RuntimeIndex(tokenizerVersion));
+    } catch {
+      return null;
+    }
+  }
+
+  dispose(): void {
+    this.inner.free();
+  }
+
+  addDocument(docId: string, text: string, sourcePath: string, tokenizerVersion: number): void {
+    this.inner.add_document(docId, text, sourcePath, tokenizerVersion);
+  }
+
+  removeDocument(docId: string, tokenizerVersion: number): void {
+    this.inner.remove_document(docId, tokenizerVersion);
+  }
+
+  removeSource(sourcePath: string, tokenizerVersion: number): void {
+    this.inner.remove_source(sourcePath, tokenizerVersion);
+  }
+
+  search(query: string): RustBm25SearchScore[] | null {
+    try {
+      const raw = this.inner.search_json(query);
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.every(isBm25SearchScore)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  sourcePathForDoc(docId: string): string | undefined {
+    const value = this.inner.source_path_for_doc(docId);
+    return value.length > 0 ? value : undefined;
+  }
+
+  isReady(): boolean {
+    return this.inner.is_ready();
+  }
+
+  isTokenizerCurrent(tokenizerVersion: number): boolean {
+    return this.inner.is_tokenizer_current(tokenizerVersion);
+  }
+
+  totalDocs(): number {
+    return this.inner.total_docs();
+  }
+
+  toJson(): string {
+    return this.inner.to_json();
+  }
+}
+
+export class RustVectorRuntimeIndex {
+  private constructor(
+    private readonly inner: VectorRuntimeIndex,
+    readonly rowCount: number,
+    readonly dimensions: number,
+  ) {}
+
+  static build(vectors: readonly (readonly number[])[]): RustVectorRuntimeIndex | null {
+    if (vectors.length === 0) return null;
+    const dimension = vectors[0]?.length ?? 0;
+    if (dimension <= 0) return null;
+    const flatVectors = encodeVectorMatrixF32(vectors, dimension);
+    if (flatVectors === null) return null;
+    if (!ensureRustCore()) return null;
+    try {
+      const inner = new VectorRuntimeIndex(flatVectors, dimension);
+      if (inner.row_count() !== vectors.length || inner.dimensions() !== dimension) {
+        inner.free();
+        return null;
+      }
+      return new RustVectorRuntimeIndex(inner, vectors.length, dimension);
+    } catch {
+      return null;
+    }
+  }
+
+  dispose(): void {
+    this.inner.free();
+  }
+
+  rankTopK(query: readonly number[], topK: number): RustVectorScore[] | null {
+    if (topK <= 0) return [];
+    if (query.length !== this.dimensions || !isFiniteVector(query)) return null;
+    const queryValues = new Float32Array(query);
+    const pairs = this.inner.rank_top_k(queryValues, normalizeNonNegativeInteger(topK));
+    return decodeBoundedIndexScorePairs(pairs, this.rowCount);
+  }
+
+  rankTopKFiltered(
+    query: readonly number[],
+    rowIndices: readonly number[],
+    topK: number,
+  ): RustVectorScore[] | null {
+    if (topK <= 0) return [];
+    if (query.length !== this.dimensions || !isFiniteVector(query)) return null;
+    if (!isValidUint32Array(rowIndices, this.rowCount)) return null;
+    const queryValues = new Float32Array(query);
+    const pairs = this.inner.rank_top_k_filtered(
+      queryValues,
+      new Uint32Array(rowIndices),
+      normalizeNonNegativeInteger(topK),
+    );
+    return decodeBoundedIndexScorePairs(pairs, this.rowCount);
+  }
+}
+
+export class RustIvfRuntimeIndex {
+  private constructor(
+    private readonly inner: IvfRuntimeIndex,
+    readonly rowCount: number,
+    readonly dimensions: number,
+    readonly clusterCount: number,
+  ) {}
+
+  static build(
+    vectors: readonly (readonly number[])[],
+    requestedClusterCount: number,
+    iterations: number,
+  ): RustIvfRuntimeIndex | null {
+    if (vectors.length === 0) return null;
+    const dimension = vectors[0]?.length ?? 0;
+    if (dimension <= 0) return null;
+    const flatVectors = encodeVectorMatrixF32(vectors, dimension);
+    if (flatVectors === null) return null;
+    if (!ensureRustCore()) return null;
+    try {
+      const inner = new IvfRuntimeIndex(
+        flatVectors,
+        dimension,
+        normalizeNonNegativeInteger(requestedClusterCount),
+        normalizeNonNegativeInteger(iterations),
+      );
+      if (inner.row_count() !== vectors.length || inner.dimensions() !== dimension) {
+        inner.free();
+        return null;
+      }
+      return new RustIvfRuntimeIndex(
+        inner,
+        vectors.length,
+        dimension,
+        inner.cluster_count(),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  dispose(): void {
+    this.inner.free();
+  }
+
+  query(
+    query: readonly number[],
+    topK: number,
+    probeCount: number,
+  ): RustVectorScore[] | null {
+    if (topK <= 0) return [];
+    if (query.length !== this.dimensions || !isFiniteVector(query)) return null;
+    const pairs = this.inner.query(
+      new Float32Array(query),
+      normalizeNonNegativeInteger(topK),
+      normalizeNonNegativeInteger(probeCount),
+    );
+    return decodeBoundedIndexScorePairs(pairs, this.rowCount);
+  }
 }
 
 export interface RustClaimEvidenceInput {
@@ -5539,6 +5733,23 @@ function encodeVectorMatrix(
   dimension: number,
 ): Float64Array | null {
   const values = new Float64Array(vectors.length * dimension);
+  for (let rowIndex = 0; rowIndex < vectors.length; rowIndex++) {
+    const vector = vectors[rowIndex];
+    if (!vector || vector.length !== dimension) return null;
+    for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
+      const value = vector[dimensionIndex];
+      if (!Number.isFinite(value)) return null;
+      values[rowIndex * dimension + dimensionIndex] = value;
+    }
+  }
+  return values;
+}
+
+function encodeVectorMatrixF32(
+  vectors: readonly (readonly number[])[],
+  dimension: number,
+): Float32Array | null {
+  const values = new Float32Array(vectors.length * dimension);
   for (let rowIndex = 0; rowIndex < vectors.length; rowIndex++) {
     const vector = vectors[rowIndex];
     if (!vector || vector.length !== dimension) return null;

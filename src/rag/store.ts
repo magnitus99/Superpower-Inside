@@ -10,6 +10,7 @@ import {
   planVectorStoreReplaceFileRust,
   planVectorStoreStatsRust,
   rankTopKPairsRust,
+  RustVectorRuntimeIndex,
   type RustVectorStoreMutationPlan,
   type RustFileIndexEntryInput,
 } from './rust-core';
@@ -102,13 +103,16 @@ function scoredQuery(
   vector: number[],
   topK: number,
   signal?: AbortSignal,
+  runtimeIndex?: RustVectorRuntimeIndex | null,
 ): Promise<VectorEntry[]> {
   throwIfAborted(signal);
-  const rustScores = rankTopKPairsRust(
-    vector,
-    entries.map((entry) => entry.vector),
-    topK,
-  );
+  const rustScores =
+    runtimeIndex?.rankTopK(vector, topK) ??
+    rankTopKPairsRust(
+      vector,
+      entries.map((entry) => entry.vector),
+      topK,
+    );
   if (rustScores !== null) {
     throwIfAborted(signal);
     const selected: VectorEntry[] = [];
@@ -130,6 +134,7 @@ function scoredQuery(
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
   private entriesCache: VectorEntry[] | null = null;
+  private runtimeIndex: RustVectorRuntimeIndex | null = null;
 
   constructor(dbName = 'SuperpowerInsideVectorStore') {
     this.db = new VectorStoreDB(dbName);
@@ -144,7 +149,7 @@ export class IndexedDbVectorStore implements VectorStore {
     }));
     await this.db.vectors.bulkPut(records);
     await this.upsertFileIndexRecords(newEntries, now);
-    this.entriesCache = null;
+    this.invalidateRuntimeCache();
   }
 
   async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
@@ -176,6 +181,7 @@ export class IndexedDbVectorStore implements VectorStore {
         ...copyEntries(entries),
       ];
     }
+    this.invalidateRuntimeIndex();
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
@@ -184,12 +190,13 @@ export class IndexedDbVectorStore implements VectorStore {
     if (this.entriesCache) {
       this.entriesCache = this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath);
     }
+    this.invalidateRuntimeIndex();
     return removed;
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
     const entries = await this.getCachedEntries();
-    return scoredQuery(entries, vector, topK, signal);
+    return scoredQuery(entries, vector, topK, signal, this.getRuntimeIndex(entries));
   }
 
   async clear(): Promise<void> {
@@ -198,6 +205,7 @@ export class IndexedDbVectorStore implements VectorStore {
       await this.db.fileIndex.clear();
     });
     this.entriesCache = [];
+    this.invalidateRuntimeIndex();
   }
 
   async persist(): Promise<void> {
@@ -276,6 +284,22 @@ export class IndexedDbVectorStore implements VectorStore {
     return this.entriesCache;
   }
 
+  private getRuntimeIndex(entries: readonly VectorEntry[]): RustVectorRuntimeIndex | null {
+    if (this.runtimeIndex) return this.runtimeIndex;
+    this.runtimeIndex = createVectorRuntimeIndex(entries);
+    return this.runtimeIndex;
+  }
+
+  private invalidateRuntimeCache(): void {
+    this.entriesCache = null;
+    this.invalidateRuntimeIndex();
+  }
+
+  private invalidateRuntimeIndex(): void {
+    this.runtimeIndex?.dispose();
+    this.runtimeIndex = null;
+  }
+
   private async upsertFileIndexRecords(
     entries: readonly VectorEntry[],
     updated: number,
@@ -304,6 +328,7 @@ export class JsonFileVectorStore implements VectorStore {
   private loadingPromise: Promise<void> | null = null;
   private batchDepth = 0;
   private batchDirty = false;
+  private runtimeIndex: RustVectorRuntimeIndex | null = null;
 
   constructor(adapter: DataAdapter, path = '.superpower-inside/vectors.json') {
     this.adapter = adapter;
@@ -324,6 +349,7 @@ export class JsonFileVectorStore implements VectorStore {
       ),
       { mode: 'add' },
     );
+    this.invalidateRuntimeIndex();
     await this.persistIfNeeded();
   }
 
@@ -339,6 +365,7 @@ export class JsonFileVectorStore implements VectorStore {
       ),
       { mode: 'replace', filePath },
     );
+    this.invalidateRuntimeIndex();
     await this.persistIfNeeded();
   }
 
@@ -353,6 +380,7 @@ export class JsonFileVectorStore implements VectorStore {
       mode: 'remove',
       filePath,
     });
+    this.invalidateRuntimeIndex();
     if (removed > 0) {
       await this.persistIfNeeded();
     }
@@ -361,11 +389,12 @@ export class JsonFileVectorStore implements VectorStore {
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
     await this.loadIfNeeded();
-    return scoredQuery(this.entries, vector, topK, signal);
+    return scoredQuery(this.entries, vector, topK, signal, this.getRuntimeIndex());
   }
 
   async clear(): Promise<void> {
     this.entries = [];
+    this.invalidateRuntimeIndex();
     await this.persistIfNeeded();
   }
 
@@ -409,9 +438,21 @@ export class JsonFileVectorStore implements VectorStore {
       } else {
         this.entries = [];
       }
+      this.invalidateRuntimeIndex();
       this.loaded = true;
     })();
     await this.loadingPromise;
+  }
+
+  private getRuntimeIndex(): RustVectorRuntimeIndex | null {
+    if (this.runtimeIndex) return this.runtimeIndex;
+    this.runtimeIndex = createVectorRuntimeIndex(this.entries);
+    return this.runtimeIndex;
+  }
+
+  private invalidateRuntimeIndex(): void {
+    this.runtimeIndex?.dispose();
+    this.runtimeIndex = null;
   }
 
   async getStats(): Promise<VectorStoreStats> {
@@ -455,6 +496,7 @@ export class JsonFileVectorStore implements VectorStore {
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
 export class MemoryVectorStore implements VectorStore {
   private entries: VectorEntry[];
+  private runtimeIndex: RustVectorRuntimeIndex | null = null;
 
   constructor() {
     this.entries = [];
@@ -470,6 +512,7 @@ export class MemoryVectorStore implements VectorStore {
       ),
       { mode: 'add' },
     );
+    this.invalidateRuntimeIndex();
     await this.persist();
   }
 
@@ -484,6 +527,7 @@ export class MemoryVectorStore implements VectorStore {
       ),
       { mode: 'replace', filePath },
     );
+    this.invalidateRuntimeIndex();
     return Promise.resolve();
   }
 
@@ -497,15 +541,17 @@ export class MemoryVectorStore implements VectorStore {
       mode: 'remove',
       filePath,
     });
+    this.invalidateRuntimeIndex();
     return Promise.resolve(removed);
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
-    return scoredQuery(this.entries, vector, topK, signal);
+    return scoredQuery(this.entries, vector, topK, signal, this.getRuntimeIndex());
   }
 
   async clear(): Promise<void> {
     this.entries = [];
+    this.invalidateRuntimeIndex();
     return Promise.resolve();
   }
 
@@ -551,6 +597,21 @@ export class MemoryVectorStore implements VectorStore {
   getEntries(): Promise<VectorEntry[]> {
     return Promise.resolve(copyEntries(this.entries));
   }
+
+  private getRuntimeIndex(): RustVectorRuntimeIndex | null {
+    if (this.runtimeIndex) return this.runtimeIndex;
+    this.runtimeIndex = createVectorRuntimeIndex(this.entries);
+    return this.runtimeIndex;
+  }
+
+  private invalidateRuntimeIndex(): void {
+    this.runtimeIndex?.dispose();
+    this.runtimeIndex = null;
+  }
+}
+
+function createVectorRuntimeIndex(entries: readonly VectorEntry[]): RustVectorRuntimeIndex | null {
+  return RustVectorRuntimeIndex.build(entries.map((entry) => entry.vector));
 }
 
 function fileIndexRecordsFromRust(entries: readonly VectorEntry[], updated: number): FileIndexRecord[] {

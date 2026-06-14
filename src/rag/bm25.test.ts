@@ -69,6 +69,43 @@ describe('JsonFileBM25Index', () => {
     expect(bm25.isTokenizerCurrent).toBe(true);
     expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
   });
+
+  it('legacy BM25 JSON을 읽은 뒤 저장할 때 compact v3 포맷으로 자동 마이그레이션한다', async () => {
+    const inspectable = createInspectableAdapter(
+      JSON.stringify({
+        tokenizerVersion: 2,
+        inverted: {
+          open: { 'api.md::0': 1 },
+          router: { 'api.md::0': 1 },
+        },
+        docLengths: { 'api.md::0': 2 },
+        docSources: { 'api.md::0': 'api.md' },
+        totalDocs: 1,
+        avgDocLength: 2,
+      }),
+    );
+    const bm25 = new JsonFileBM25Index(inspectable.adapter);
+
+    await bm25.load();
+    expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
+
+    bm25.addDocument('new.md::0', 'GraphRAG open router evidence', 'new.md');
+    await bm25.persist();
+
+    const persisted = JSON.parse(
+      inspectable.readRaw('.superpower-inside/bm25-index.json') ?? '{}',
+    ) as unknown;
+    expect(isRecord(persisted)).toBe(true);
+    if (!isRecord(persisted)) {
+      throw new Error('persisted BM25 payload must be a JSON object');
+    }
+    expect(persisted).toMatchObject({
+      schemaVersion: 3,
+      tokenizerVersion: 2,
+    });
+    expect(isCompactBm25Payload(persisted)).toBe(true);
+    expect(Object.hasOwn(persisted, 'inverted')).toBe(false);
+  });
 });
 
 async function createBm25(
@@ -83,11 +120,20 @@ async function createBm25(
 }
 
 function createAdapter(rawJson?: string): DataAdapter {
+  return createInspectableAdapter(rawJson).adapter;
+}
+
+interface InspectableAdapter {
+  adapter: DataAdapter;
+  readRaw(path: string): string | undefined;
+}
+
+function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   const files = new Map<string, string>();
   if (rawJson !== undefined) {
     files.set('.superpower-inside/bm25-index.json', rawJson);
   }
-  return {
+  const adapter = {
     exists: (path: string) => Promise.resolve(files.has(path)),
     read: (path: string) => Promise.resolve(files.get(path) ?? ''),
     write: (path: string, data: string) => {
@@ -108,4 +154,30 @@ function createAdapter(rawJson?: string): DataAdapter {
     },
     mkdir: () => Promise.resolve(),
   } as unknown as DataAdapter;
+  return {
+    adapter,
+    readRaw: (path: string) => files.get(path),
+  };
+}
+
+function isCompactBm25Payload(value: unknown): value is {
+  docs: unknown[];
+  terms: unknown[];
+} {
+  if (!isRecord(value)) return false;
+  const docs = value.docs;
+  const terms = value.terms;
+  if (!Array.isArray(docs) || !Array.isArray(terms)) return false;
+  return docs.every((doc) => {
+    if (!isRecord(doc)) return false;
+    return (
+      typeof doc.id === 'string' &&
+      typeof doc.length === 'number' &&
+      typeof doc.sourcePath === 'string'
+    );
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
 }

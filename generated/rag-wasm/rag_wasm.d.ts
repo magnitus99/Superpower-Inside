@@ -2,6 +2,118 @@
 /* eslint-disable */
 
 /**
+ * JS wrapper가 재사용할 수 있는 BM25 runtime index.
+ */
+export class Bm25RuntimeIndex {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * document 하나를 runtime index에 추가하거나 교체한다.
+     */
+    add_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
+    /**
+     * legacy 또는 compact JSON payload에서 runtime index를 만든다.
+     */
+    static from_json(payload: string, fallback_tokenizer_version: number): Bm25RuntimeIndex;
+    /**
+     * document가 하나 이상 있는지 반환한다.
+     */
+    is_ready(): boolean;
+    /**
+     * tokenizer contract version이 최신인지 반환한다.
+     */
+    is_tokenizer_current(tokenizer_version: number): boolean;
+    /**
+     * 빈 BM25 runtime index를 만든다.
+     */
+    constructor(tokenizer_version: number);
+    /**
+     * document 하나를 runtime index에서 제거한다.
+     */
+    remove_document(doc_id: string, tokenizer_version: number): void;
+    /**
+     * source path에 속한 document들을 runtime index에서 제거한다.
+     */
+    remove_source(source_path: string, tokenizer_version: number): void;
+    /**
+     * query score 목록을 JSON 문자열로 반환한다.
+     */
+    search_json(query: string): string;
+    /**
+     * doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
+     */
+    source_path_for_doc(doc_id: string): string;
+    /**
+     * compact v3 JSON payload로 직렬화한다.
+     */
+    to_json(): string;
+    /**
+     * tokenizer contract version을 반환한다.
+     */
+    tokenizer_version(): number;
+    /**
+     * indexed document 수를 반환한다.
+     */
+    total_docs(): number;
+}
+
+/**
+ * JS wrapper가 재사용할 수 있는 IVF ANN runtime index.
+ */
+export class IvfRuntimeIndex {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * cluster count를 반환한다.
+     */
+    cluster_count(): number;
+    /**
+     * vector dimension을 반환한다.
+     */
+    dimensions(): number;
+    /**
+     * flattened row-major vector matrix로 IVF runtime index를 만든다.
+     */
+    constructor(vectors: Float32Array, dimensions: number, requested_cluster_count: number, iterations: number);
+    /**
+     * centroid probe와 candidate scoring을 Rust 내부에서 수행해 top-k row index/score pair를 반환한다.
+     */
+    query(query: Float32Array, top_k: number, probe_count: number): Float64Array;
+    /**
+     * original row count를 반환한다.
+     */
+    row_count(): number;
+}
+
+/**
+ * JS wrapper가 재사용할 수 있는 normalized vector runtime index.
+ */
+export class VectorRuntimeIndex {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * vector dimension을 반환한다.
+     */
+    dimensions(): number;
+    /**
+     * flattened row-major vector matrix로 runtime index를 만든다.
+     */
+    constructor(vectors: Float32Array, dimensions: number);
+    /**
+     * 모든 valid row에서 top-k row index/score pair를 반환한다.
+     */
+    rank_top_k(query: Float32Array, top_k: number): Float64Array;
+    /**
+     * 지정된 row index 후보 안에서 top-k row index/score pair를 반환한다.
+     */
+    rank_top_k_filtered(query: Float32Array, row_indices: Uint32Array, top_k: number): Float64Array;
+    /**
+     * original row count를 반환한다.
+     */
+    row_count(): number;
+}
+
+/**
  * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
  */
 export function aggregate_graph_edges_flat(source_indices: Uint32Array, target_indices: Uint32Array, confidences: Float64Array, node_count: number): Float64Array;
@@ -691,10 +803,25 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_bm25runtimeindex_free: (a: number, b: number) => void;
+    readonly __wbg_ivfruntimeindex_free: (a: number, b: number) => void;
+    readonly __wbg_vectorruntimeindex_free: (a: number, b: number) => void;
     readonly aggregate_graph_edges_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly analyze_retrieval_sources: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly bm25runtimeindex_add_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
+    readonly bm25runtimeindex_is_ready: (a: number) => number;
+    readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;
+    readonly bm25runtimeindex_new: (a: number) => number;
+    readonly bm25runtimeindex_remove_document: (a: number, b: number, c: number, d: number) => void;
+    readonly bm25runtimeindex_remove_source: (a: number, b: number, c: number, d: number) => void;
+    readonly bm25runtimeindex_search_json: (a: number, b: number, c: number) => [number, number];
+    readonly bm25runtimeindex_source_path_for_doc: (a: number, b: number, c: number) => [number, number];
+    readonly bm25runtimeindex_to_json: (a: number) => [number, number];
+    readonly bm25runtimeindex_tokenizer_version: (a: number) => number;
+    readonly bm25runtimeindex_total_docs: (a: number) => number;
     readonly build_initial_centroids: (a: number, b: number, c: number, d: number) => [number, number];
     readonly chunk_markdown_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly chunk_plain_text_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -726,6 +853,11 @@ export interface InitOutput {
     readonly is_protected_rag_document_extension_json: (a: number, b: number) => number;
     readonly is_recommendable_exclude_extension_json: (a: number, b: number) => number;
     readonly is_relevant_result: (a: number, b: number, c: number, d: number) => number;
+    readonly ivfruntimeindex_cluster_count: (a: number) => number;
+    readonly ivfruntimeindex_dimensions: (a: number) => number;
+    readonly ivfruntimeindex_new: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly ivfruntimeindex_query: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly ivfruntimeindex_row_count: (a: number) => number;
     readonly normalize_entity_name: (a: number, b: number) => [number, number];
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_extracted_graph_payload_json: (a: number, b: number) => [number, number];
@@ -826,6 +958,11 @@ export interface InitOutput {
     readonly validate_mcp_json: (a: number, b: number) => [number, number];
     readonly validate_ontology_relation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number];
     readonly validate_ontology_schema_json: (a: number, b: number) => [number, number];
+    readonly vectorruntimeindex_dimensions: (a: number) => number;
+    readonly vectorruntimeindex_new: (a: number, b: number, c: number) => number;
+    readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly vectorruntimeindex_row_count: (a: number) => number;
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;

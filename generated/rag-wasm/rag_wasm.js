@@ -1,6 +1,322 @@
 /* @ts-self-types="./rag_wasm.d.ts" */
 
 /**
+ * JS wrapper가 재사용할 수 있는 BM25 runtime index.
+ */
+export class Bm25RuntimeIndex {
+    static __wrap(ptr) {
+        const obj = Object.create(Bm25RuntimeIndex.prototype);
+        obj.__wbg_ptr = ptr;
+        Bm25RuntimeIndexFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        Bm25RuntimeIndexFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_bm25runtimeindex_free(ptr, 0);
+    }
+    /**
+     * document 하나를 runtime index에 추가하거나 교체한다.
+     * @param {string} doc_id
+     * @param {string} text
+     * @param {string} source_path
+     * @param {number} tokenizer_version
+     */
+    add_document(doc_id, text, source_path, tokenizer_version) {
+        const ptr0 = passStringToWasm0(doc_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(source_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.bm25runtimeindex_add_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
+    }
+    /**
+     * legacy 또는 compact JSON payload에서 runtime index를 만든다.
+     * @param {string} payload
+     * @param {number} fallback_tokenizer_version
+     * @returns {Bm25RuntimeIndex}
+     */
+    static from_json(payload, fallback_tokenizer_version) {
+        const ptr0 = passStringToWasm0(payload, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.bm25runtimeindex_from_json(ptr0, len0, fallback_tokenizer_version);
+        return Bm25RuntimeIndex.__wrap(ret);
+    }
+    /**
+     * document가 하나 이상 있는지 반환한다.
+     * @returns {boolean}
+     */
+    is_ready() {
+        const ret = wasm.bm25runtimeindex_is_ready(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * tokenizer contract version이 최신인지 반환한다.
+     * @param {number} tokenizer_version
+     * @returns {boolean}
+     */
+    is_tokenizer_current(tokenizer_version) {
+        const ret = wasm.bm25runtimeindex_is_tokenizer_current(this.__wbg_ptr, tokenizer_version);
+        return ret !== 0;
+    }
+    /**
+     * 빈 BM25 runtime index를 만든다.
+     * @param {number} tokenizer_version
+     */
+    constructor(tokenizer_version) {
+        const ret = wasm.bm25runtimeindex_new(tokenizer_version);
+        this.__wbg_ptr = ret;
+        Bm25RuntimeIndexFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * document 하나를 runtime index에서 제거한다.
+     * @param {string} doc_id
+     * @param {number} tokenizer_version
+     */
+    remove_document(doc_id, tokenizer_version) {
+        const ptr0 = passStringToWasm0(doc_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.bm25runtimeindex_remove_document(this.__wbg_ptr, ptr0, len0, tokenizer_version);
+    }
+    /**
+     * source path에 속한 document들을 runtime index에서 제거한다.
+     * @param {string} source_path
+     * @param {number} tokenizer_version
+     */
+    remove_source(source_path, tokenizer_version) {
+        const ptr0 = passStringToWasm0(source_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.bm25runtimeindex_remove_source(this.__wbg_ptr, ptr0, len0, tokenizer_version);
+    }
+    /**
+     * query score 목록을 JSON 문자열로 반환한다.
+     * @param {string} query
+     * @returns {string}
+     */
+    search_json(query) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_search_json(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
+     * @param {string} doc_id
+     * @returns {string}
+     */
+    source_path_for_doc(doc_id) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(doc_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_source_path_for_doc(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * compact v3 JSON payload로 직렬화한다.
+     * @returns {string}
+     */
+    to_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.bm25runtimeindex_to_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * tokenizer contract version을 반환한다.
+     * @returns {number}
+     */
+    tokenizer_version() {
+        const ret = wasm.bm25runtimeindex_tokenizer_version(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * indexed document 수를 반환한다.
+     * @returns {number}
+     */
+    total_docs() {
+        const ret = wasm.bm25runtimeindex_total_docs(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) Bm25RuntimeIndex.prototype[Symbol.dispose] = Bm25RuntimeIndex.prototype.free;
+
+/**
+ * JS wrapper가 재사용할 수 있는 IVF ANN runtime index.
+ */
+export class IvfRuntimeIndex {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        IvfRuntimeIndexFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_ivfruntimeindex_free(ptr, 0);
+    }
+    /**
+     * cluster count를 반환한다.
+     * @returns {number}
+     */
+    cluster_count() {
+        const ret = wasm.ivfruntimeindex_cluster_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * vector dimension을 반환한다.
+     * @returns {number}
+     */
+    dimensions() {
+        const ret = wasm.ivfruntimeindex_dimensions(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * flattened row-major vector matrix로 IVF runtime index를 만든다.
+     * @param {Float32Array} vectors
+     * @param {number} dimensions
+     * @param {number} requested_cluster_count
+     * @param {number} iterations
+     */
+    constructor(vectors, dimensions, requested_cluster_count, iterations) {
+        const ptr0 = passArrayF32ToWasm0(vectors, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.ivfruntimeindex_new(ptr0, len0, dimensions, requested_cluster_count, iterations);
+        this.__wbg_ptr = ret;
+        IvfRuntimeIndexFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * centroid probe와 candidate scoring을 Rust 내부에서 수행해 top-k row index/score pair를 반환한다.
+     * @param {Float32Array} query
+     * @param {number} top_k
+     * @param {number} probe_count
+     * @returns {Float64Array}
+     */
+    query(query, top_k, probe_count) {
+        const ptr0 = passArrayF32ToWasm0(query, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.ivfruntimeindex_query(this.__wbg_ptr, ptr0, len0, top_k, probe_count);
+        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v2;
+    }
+    /**
+     * original row count를 반환한다.
+     * @returns {number}
+     */
+    row_count() {
+        const ret = wasm.ivfruntimeindex_row_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) IvfRuntimeIndex.prototype[Symbol.dispose] = IvfRuntimeIndex.prototype.free;
+
+/**
+ * JS wrapper가 재사용할 수 있는 normalized vector runtime index.
+ */
+export class VectorRuntimeIndex {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        VectorRuntimeIndexFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_vectorruntimeindex_free(ptr, 0);
+    }
+    /**
+     * vector dimension을 반환한다.
+     * @returns {number}
+     */
+    dimensions() {
+        const ret = wasm.vectorruntimeindex_dimensions(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * flattened row-major vector matrix로 runtime index를 만든다.
+     * @param {Float32Array} vectors
+     * @param {number} dimensions
+     */
+    constructor(vectors, dimensions) {
+        const ptr0 = passArrayF32ToWasm0(vectors, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.vectorruntimeindex_new(ptr0, len0, dimensions);
+        this.__wbg_ptr = ret;
+        VectorRuntimeIndexFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * 모든 valid row에서 top-k row index/score pair를 반환한다.
+     * @param {Float32Array} query
+     * @param {number} top_k
+     * @returns {Float64Array}
+     */
+    rank_top_k(query, top_k) {
+        const ptr0 = passArrayF32ToWasm0(query, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.vectorruntimeindex_rank_top_k(this.__wbg_ptr, ptr0, len0, top_k);
+        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v2;
+    }
+    /**
+     * 지정된 row index 후보 안에서 top-k row index/score pair를 반환한다.
+     * @param {Float32Array} query
+     * @param {Uint32Array} row_indices
+     * @param {number} top_k
+     * @returns {Float64Array}
+     */
+    rank_top_k_filtered(query, row_indices, top_k) {
+        const ptr0 = passArrayF32ToWasm0(query, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(row_indices, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.vectorruntimeindex_rank_top_k_filtered(this.__wbg_ptr, ptr0, len0, ptr1, len1, top_k);
+        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v3;
+    }
+    /**
+     * original row count를 반환한다.
+     * @returns {number}
+     */
+    row_count() {
+        const ret = wasm.vectorruntimeindex_row_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) VectorRuntimeIndex.prototype[Symbol.dispose] = VectorRuntimeIndex.prototype.free;
+
+/**
  * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
  * @param {Uint32Array} source_indices
  * @param {Uint32Array} target_indices
@@ -3014,6 +3330,9 @@ export function validate_ontology_schema_json(schema_json) {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_throw_bbadd78c1bac3a77: function(arg0, arg1) {
+            throw new Error(getStringFromWasm0(arg0, arg1));
+        },
         __wbindgen_init_externref_table: function() {
             const table = wasm.__wbindgen_externrefs;
             const offset = table.grow(4);
@@ -3030,9 +3349,27 @@ function __wbg_get_imports() {
     };
 }
 
+const Bm25RuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_bm25runtimeindex_free(ptr, 1));
+const IvfRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_ivfruntimeindex_free(ptr, 1));
+const VectorRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_vectorruntimeindex_free(ptr, 1));
+
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
 }
 
 let cachedFloat64ArrayMemory0 = null;
@@ -3073,6 +3410,13 @@ function passArray32ToWasm0(arg, malloc) {
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
@@ -3155,6 +3499,7 @@ function __wbg_finalize_init(instance, module) {
     wasmInstance = instance;
     wasm = instance.exports;
     wasmModule = module;
+    cachedFloat32ArrayMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;

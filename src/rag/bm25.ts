@@ -1,15 +1,8 @@
 import type { DataAdapter } from 'obsidian';
-import { readJsonFromVault, writeJsonToVault } from '../utils/vault';
 import {
-  planBm25IndexAddDocumentRust,
-  planBm25IndexRemoveDocumentRust,
-  planBm25IndexRemoveSourceRust,
-  planBm25SearchRust,
+  RustBm25RuntimeIndex,
   tokenizeRust,
-  type RustBm25IndexData,
 } from './rust-core';
-
-type BM25Data = RustBm25IndexData;
 
 export interface BM25DocumentInput {
   id: string;
@@ -25,7 +18,7 @@ export function tokenize(text: string): string[] {
 const TOKENIZER_VERSION = 2;
 
 export class JsonFileBM25Index {
-  private data: BM25Data;
+  private runtime: RustBm25RuntimeIndex | null;
   private adapter: DataAdapter;
   private path: string;
   private loaded: boolean;
@@ -35,28 +28,19 @@ export class JsonFileBM25Index {
   constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
     this.adapter = adapter;
     this.path = path;
-    this.data = createEmptyData();
+    this.runtime = null;
     this.loaded = false;
     this.batchDepth = 0;
     this.batchDirty = false;
   }
 
   async load(): Promise<void> {
-    const raw = await readJsonFromVault(this.adapter, this.path);
-    if (raw && typeof raw === 'object' && 'inverted' in (raw as Record<string, unknown>)) {
-      const parsed = raw as Partial<BM25Data>;
-      const docLengths = parsed.docLengths ?? {};
-      this.data = {
-        tokenizerVersion: typeof parsed.tokenizerVersion === 'number' ? parsed.tokenizerVersion : 0,
-        inverted: parsed.inverted ?? {},
-        docLengths,
-        docSources:
-          parsed.docSources ??
-          Object.fromEntries(Object.keys(docLengths).map((docId) => [docId, docId])),
-        totalDocs: parsed.totalDocs ?? Object.keys(docLengths).length,
-        avgDocLength: parsed.avgDocLength ?? 1,
-      };
-    }
+    this.runtime?.dispose();
+    const raw = (await this.adapter.exists(this.path)) ? await this.adapter.read(this.path) : '';
+    this.runtime =
+      raw.trim().length > 0
+        ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
+        : RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     this.loaded = true;
   }
 
@@ -81,12 +65,13 @@ export class JsonFileBM25Index {
   }
 
   private async persistNow(): Promise<void> {
-    await writeJsonToVault(this.adapter, this.path, this.data);
+    await writeTextToVault(this.adapter, this.path, this.runtime?.toJson() ?? createEmptyPayload());
     this.batchDirty = false;
   }
 
   async clear(): Promise<void> {
-    this.data = createEmptyData();
+    this.runtime?.dispose();
+    this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     await this.persist();
   }
 
@@ -101,53 +86,85 @@ export class JsonFileBM25Index {
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
-    this.data =
-      planBm25IndexAddDocumentRust(this.data, docId, text, sourcePath, TOKENIZER_VERSION) ??
-      this.data;
+    this.ensureRuntime().addDocument(docId, text, sourcePath, TOKENIZER_VERSION);
   }
 
   removeDocument(docId: string): void {
-    this.data =
-      planBm25IndexRemoveDocumentRust(this.data, docId, TOKENIZER_VERSION) ?? this.data;
+    this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
   }
 
   removeDocumentsBySource(sourcePath: string): void {
-    this.data =
-      planBm25IndexRemoveSourceRust(this.data, sourcePath, TOKENIZER_VERSION) ?? this.data;
+    this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
   }
 
   search(query: string): Map<string, number> {
     const mappedScores = new Map<string, number>();
-    for (const { docId, score } of planBm25SearchRust(this.data, query) ?? []) {
+    for (const { docId, score } of this.ensureRuntime().search(query) ?? []) {
       mappedScores.set(docId, score);
     }
     return mappedScores;
   }
 
   get isReady(): boolean {
-    return this.loaded && this.data.totalDocs > 0;
+    return this.loaded && (this.runtime?.isReady() ?? false);
   }
 
   get isTokenizerCurrent(): boolean {
-    return this.data.tokenizerVersion === TOKENIZER_VERSION;
+    return this.runtime?.isTokenizerCurrent(TOKENIZER_VERSION) ?? false;
   }
 
   get totalDocs(): number {
-    return this.data.totalDocs;
+    return this.runtime?.totalDocs() ?? 0;
   }
 
   getDocumentSource(docId: string): string | undefined {
-    return this.data.docSources[docId];
+    return this.runtime?.sourcePathForDoc(docId);
+  }
+
+  private ensureRuntime(): RustBm25RuntimeIndex {
+    if (this.runtime === null) {
+      this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    }
+    if (this.runtime === null) {
+      throw new Error('Rust BM25 runtime is unavailable');
+    }
+    return this.runtime;
   }
 }
 
-function createEmptyData(): BM25Data {
-  return {
-    tokenizerVersion: TOKENIZER_VERSION,
-    inverted: {},
-    docLengths: {},
-    docSources: {},
-    totalDocs: 0,
-    avgDocLength: 1,
-  };
+function createEmptyPayload(): string {
+  return (
+    RustBm25RuntimeIndex.empty(TOKENIZER_VERSION)?.toJson() ??
+    '{"schemaVersion":3,"tokenizerVersion":2,"docs":[],"terms":[],"totalDocs":0,"avgDocLength":1}'
+  );
+}
+
+async function writeTextToVault(
+  adapter: DataAdapter,
+  path: string,
+  content: string,
+): Promise<void> {
+  const dir = path.split('/').slice(0, -1).join('/');
+  if (dir) {
+    await adapter.mkdir(dir);
+  }
+  const tmpPath = `${path}.tmp.${Date.now()}`;
+  await adapter.write(tmpPath, content);
+  try {
+    await adapter.rename(tmpPath, path);
+  } catch (renameError) {
+    try {
+      if (await adapter.exists(path)) {
+        await adapter.remove(path);
+      }
+      await adapter.rename(tmpPath, path);
+    } catch (fallbackError) {
+      try {
+        await adapter.remove(tmpPath);
+      } catch {
+        // temp 파일 정리 실패는 무시한다.
+      }
+      throw fallbackError instanceof Error ? fallbackError : renameError;
+    }
+  }
 }

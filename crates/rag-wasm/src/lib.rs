@@ -18,6 +18,8 @@ const FNV_PRIME: u32 = 0x0100_0193;
 const BM25_K1: f64 = 1.2;
 /// 기존 `TypeScript BM25` 검색 경로의 `b` 상수.
 const BM25_B: f64 = 0.75;
+/// compact BM25 저장 포맷 schema version.
+const BM25_COMPACT_SCHEMA_VERSION: u32 = 3;
 /// 기존 `TypeScript RRF` 계산의 rank smoothing 상수.
 const RRF_K: f64 = 60.0;
 /// 기존 hybrid score의 base vector/BM25 component weight.
@@ -206,28 +208,7 @@ pub fn plan_bm25_index_add_document_json(
         return String::new();
     };
     index.tokenizer_version = tokenizer_version;
-    remove_bm25_document(&mut index, doc_id);
-
-    let tokens = tokenize(text);
-    let mut frequencies = BTreeMap::<String, f64>::new();
-    for token in &tokens {
-        let count = frequencies.entry(token.clone()).or_insert(0.0);
-        *count += 1.0;
-    }
-    for (term, frequency) in frequencies {
-        index
-            .inverted
-            .entry(term)
-            .or_default()
-            .insert(doc_id.to_owned(), frequency);
-    }
-    index.doc_lengths.insert(
-        doc_id.to_owned(),
-        usize_to_f64(tokens.len()).unwrap_or_default(),
-    );
-    index
-        .doc_sources
-        .insert(doc_id.to_owned(), source_path.to_owned());
+    add_bm25_document(&mut index, doc_id, text, source_path);
 
     serialize_bm25_index_json(&index)
 }
@@ -320,6 +301,234 @@ pub fn cosine_similarity(left: &[f64], right: &[f64]) -> Option<f64> {
     Some(dot / (norm_left.sqrt() * norm_right.sqrt()))
 }
 
+/// f32 vector를 normalized row로 복사한다.
+fn normalized_f32_row(values: &[f32]) -> Option<Vec<f32>> {
+    if values.is_empty() {
+        return None;
+    }
+    let norm = f32_row_norm(values)?;
+    let mut output = Vec::with_capacity(values.len());
+    for value in values {
+        output.push(*value / norm);
+    }
+    Some(output)
+}
+
+/// f32 row를 output에 normalized 형태로 추가하고 validity를 반환한다.
+fn push_normalized_f32_row(values: &[f32], output: &mut Vec<f32>) -> bool {
+    let Some(norm) = f32_row_norm(values) else {
+        output.resize(output.len().saturating_add(values.len()), 0.0);
+        return false;
+    };
+    for value in values {
+        output.push(*value / norm);
+    }
+    true
+}
+
+/// f32 vector norm을 계산한다.
+fn f32_row_norm(values: &[f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut norm_sq = 0.0_f32;
+    for value in values {
+        if !value.is_finite() {
+            return None;
+        }
+        norm_sq = value.mul_add(*value, norm_sq);
+    }
+    if norm_sq <= 0.0 || !norm_sq.is_finite() {
+        return None;
+    }
+    Some(norm_sq.sqrt())
+}
+
+/// normalized f32 row끼리 dot product를 계산한다.
+fn normalized_f32_dot(left: &[f32], right: &[f32]) -> f64 {
+    let mut dot = 0.0_f32;
+    for (left_value, right_value) in left.iter().zip(right.iter()) {
+        dot = left_value.mul_add(*right_value, dot);
+    }
+    f64::from(dot)
+}
+
+/// wasm-bindgen export getter를 non-const 함수로 유지하기 위한 runtime usize passthrough.
+fn wasm_bridge_usize(value: usize) -> usize {
+    value.to_string().parse::<usize>().unwrap_or(value)
+}
+
+/// wasm-bindgen export getter를 non-const 함수로 유지하기 위한 runtime u32 passthrough.
+fn wasm_bridge_u32(value: u32) -> u32 {
+    value.to_string().parse::<u32>().unwrap_or(value)
+}
+
+/// wasm-bindgen export getter를 non-const 함수로 유지하기 위한 runtime bool passthrough.
+fn wasm_bridge_bool(value: bool) -> bool {
+    value.to_string().parse::<bool>().unwrap_or(value)
+}
+
+/// normalized f32 matrix에서 균등 간격으로 초기 centroid를 고른다.
+fn select_initial_f32_centroids(
+    normalized_vectors: &[f32],
+    dimensions: usize,
+    row_count: usize,
+    cluster_count: usize,
+) -> Vec<f32> {
+    let mut centroids = Vec::with_capacity(cluster_count.saturating_mul(dimensions));
+    if row_count == 0 || cluster_count == 0 {
+        return centroids;
+    }
+    if cluster_count == 1 {
+        if let Some(first_vector) = normalized_vectors.get(0..dimensions) {
+            centroids.extend_from_slice(first_vector);
+        }
+        return centroids;
+    }
+
+    for index in 0..cluster_count {
+        let row_index = index
+            .saturating_mul(row_count.saturating_sub(1))
+            .checked_div(cluster_count.saturating_sub(1))
+            .unwrap_or_default();
+        let offset = row_index.saturating_mul(dimensions);
+        if let Some(vector) = normalized_vectors.get(offset..offset.saturating_add(dimensions)) {
+            centroids.extend_from_slice(vector);
+        }
+    }
+    centroids
+}
+
+/// normalized f32 row들을 가장 가까운 centroid에 배정한다.
+fn assign_f32_vectors_to_centroids(
+    normalized_vectors: &[f32],
+    valid_rows: &[bool],
+    centroids: &[f32],
+    dimensions: usize,
+) -> Vec<usize> {
+    let row_count = normalized_vectors
+        .len()
+        .checked_div(dimensions)
+        .unwrap_or_default();
+    let cluster_count = centroids.len().checked_div(dimensions).unwrap_or_default();
+    let mut assignments = Vec::with_capacity(row_count);
+
+    for row_index in 0..row_count {
+        if !valid_rows.get(row_index).copied().unwrap_or(false) {
+            assignments.push(0);
+            continue;
+        }
+        let offset = row_index.saturating_mul(dimensions);
+        let Some(vector) = normalized_vectors.get(offset..offset.saturating_add(dimensions)) else {
+            assignments.push(0);
+            continue;
+        };
+        assignments.push(assign_f32_vector_to_centroid(
+            vector,
+            centroids,
+            dimensions,
+            cluster_count,
+        ));
+    }
+
+    assignments
+}
+
+/// 단일 normalized f32 row의 nearest centroid index를 계산한다.
+fn assign_f32_vector_to_centroid(
+    vector: &[f32],
+    centroids: &[f32],
+    dimensions: usize,
+    cluster_count: usize,
+) -> usize {
+    let mut best_index = 0_usize;
+    let mut best_score = f64::NEG_INFINITY;
+    for centroid_index in 0..cluster_count {
+        let offset = centroid_index.saturating_mul(dimensions);
+        let Some(centroid) = centroids.get(offset..offset.saturating_add(dimensions)) else {
+            continue;
+        };
+        let score = normalized_f32_dot(vector, centroid);
+        if score > best_score {
+            best_index = centroid_index;
+            best_score = score;
+        }
+    }
+    best_index
+}
+
+/// assignment 기반으로 normalized f32 centroid를 다시 계산한다.
+fn recompute_f32_centroids(
+    normalized_vectors: &[f32],
+    valid_rows: &[bool],
+    assignments: &[usize],
+    previous_centroids: &[f32],
+    dimensions: usize,
+) -> Vec<f32> {
+    let cluster_count = previous_centroids
+        .len()
+        .checked_div(dimensions)
+        .unwrap_or_default();
+    let mut sums = vec![0.0_f32; previous_centroids.len()];
+    let mut counts = vec![0_usize; cluster_count];
+
+    for (row_index, assignment) in assignments.iter().copied().enumerate() {
+        if assignment >= cluster_count || !valid_rows.get(row_index).copied().unwrap_or(false) {
+            continue;
+        }
+        let input_offset = row_index.saturating_mul(dimensions);
+        let output_offset = assignment.saturating_mul(dimensions);
+        let Some(input) =
+            normalized_vectors.get(input_offset..input_offset.saturating_add(dimensions))
+        else {
+            continue;
+        };
+        let Some(output) = sums.get_mut(output_offset..output_offset.saturating_add(dimensions))
+        else {
+            continue;
+        };
+        for (sum, value) in output.iter_mut().zip(input.iter().copied()) {
+            *sum += value;
+        }
+        if let Some(count) = counts.get_mut(assignment) {
+            *count = count.saturating_add(1);
+        }
+    }
+
+    let mut centroids = Vec::with_capacity(previous_centroids.len());
+    for cluster_index in 0..cluster_count {
+        let offset = cluster_index.saturating_mul(dimensions);
+        let Some(previous) = previous_centroids.get(offset..offset.saturating_add(dimensions))
+        else {
+            continue;
+        };
+        let count = counts.get(cluster_index).copied().unwrap_or_default();
+        if count == 0 {
+            centroids.extend_from_slice(previous);
+            continue;
+        }
+        let Some(sum) = sums.get(offset..offset.saturating_add(dimensions)) else {
+            centroids.extend_from_slice(previous);
+            continue;
+        };
+        if !push_normalized_f32_row(sum, &mut centroids) {
+            centroids.extend_from_slice(previous);
+        }
+    }
+    centroids
+}
+
+/// assignment를 cluster별 row index 목록으로 변환한다.
+fn build_f32_clusters(assignments: &[usize], cluster_count: usize) -> Vec<Vec<usize>> {
+    let mut clusters = vec![Vec::<usize>::new(); cluster_count];
+    for (row_index, cluster_index) in assignments.iter().copied().enumerate() {
+        if let Some(cluster) = clusters.get_mut(cluster_index) {
+            cluster.push(row_index);
+        }
+    }
+    clusters
+}
+
 /// `WASM` 호출용 cosine similarity. invalid vector는 `NaN`으로 반환한다.
 #[must_use]
 #[wasm_bindgen]
@@ -340,16 +549,13 @@ pub fn rank_top_k_pairs(
         return Box::default();
     }
 
-    let mut scored = Vec::new();
+    let mut scored = Vec::with_capacity(top_k);
     for (row_index, vector) in vectors.chunks_exact(dimensions).enumerate() {
         let Some(score) = cosine_similarity(query, vector) else {
             continue;
         };
-        scored.push(ScoredRow { row_index, score });
+        push_top_k_scored_row(&mut scored, ScoredRow { row_index, score }, top_k);
     }
-
-    scored.sort_by(compare_scored_rows_descending);
-    scored.truncate(top_k);
 
     let mut pairs = Vec::with_capacity(scored.len() * 2);
     for scored_row in scored {
@@ -4253,6 +4459,436 @@ pub fn plan_graph_query_response_json(raw_response: &str, fallback_question: &st
     serialize_normalized_graph_query_plan_from_object(object)
 }
 
+/// JS wrapper가 재사용할 수 있는 normalized vector runtime index.
+#[wasm_bindgen]
+pub struct VectorRuntimeIndex {
+    /// vector dimension.
+    dimensions: usize,
+    /// original row count.
+    row_count: usize,
+    /// row-major normalized vector matrix.
+    normalized_vectors: Vec<f32>,
+    /// zero/invalid vector를 제외하기 위한 row별 validity flag.
+    valid_rows: Vec<bool>,
+}
+
+#[wasm_bindgen]
+impl VectorRuntimeIndex {
+    /// flattened row-major vector matrix로 runtime index를 만든다.
+    #[must_use]
+    #[wasm_bindgen(constructor)]
+    pub fn new(vectors: &[f32], dimensions: usize) -> Self {
+        let row_count = if dimensions == 0 {
+            0
+        } else {
+            vectors.len().checked_div(dimensions).unwrap_or_default()
+        };
+        if dimensions == 0 || !vectors.len().is_multiple_of(dimensions) {
+            return Self {
+                dimensions: 0,
+                row_count: 0,
+                normalized_vectors: Vec::new(),
+                valid_rows: Vec::new(),
+            };
+        }
+
+        let mut normalized_vectors = Vec::with_capacity(vectors.len());
+        let mut valid_rows = Vec::with_capacity(row_count);
+        for vector in vectors.chunks_exact(dimensions) {
+            let valid = push_normalized_f32_row(vector, &mut normalized_vectors);
+            valid_rows.push(valid);
+        }
+
+        Self {
+            dimensions,
+            row_count,
+            normalized_vectors,
+            valid_rows,
+        }
+    }
+
+    /// original row count를 반환한다.
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        wasm_bridge_usize(self.row_count)
+    }
+
+    /// vector dimension을 반환한다.
+    #[must_use]
+    pub fn dimensions(&self) -> usize {
+        wasm_bridge_usize(self.dimensions)
+    }
+
+    /// 모든 valid row에서 top-k row index/score pair를 반환한다.
+    #[must_use]
+    pub fn rank_top_k(&self, query: &[f32], top_k: usize) -> Box<[f64]> {
+        self.rank_top_k_for_rows(query, None, top_k)
+    }
+
+    /// 지정된 row index 후보 안에서 top-k row index/score pair를 반환한다.
+    #[must_use]
+    pub fn rank_top_k_filtered(
+        &self,
+        query: &[f32],
+        row_indices: &[u32],
+        top_k: usize,
+    ) -> Box<[f64]> {
+        self.rank_top_k_for_rows(query, Some(row_indices), top_k)
+    }
+
+    /// top-k scoring 구현.
+    fn rank_top_k_for_rows(
+        &self,
+        query: &[f32],
+        row_indices: Option<&[u32]>,
+        top_k: usize,
+    ) -> Box<[f64]> {
+        if top_k == 0 || self.dimensions == 0 || query.len() != self.dimensions {
+            return Box::default();
+        }
+        let Some(normalized_query) = normalized_f32_row(query) else {
+            return Box::default();
+        };
+
+        let mut scored = Vec::with_capacity(top_k);
+        match row_indices {
+            Some(indices) => {
+                for row_index_raw in indices.iter().copied() {
+                    let Some(row_index) = bounded_u32_index(row_index_raw, self.row_count) else {
+                        continue;
+                    };
+                    self.push_runtime_score(row_index, &normalized_query, top_k, &mut scored);
+                }
+            }
+            None => {
+                for row_index in 0..self.row_count {
+                    self.push_runtime_score(row_index, &normalized_query, top_k, &mut scored);
+                }
+            }
+        }
+        encode_scored_rows(&scored)
+    }
+
+    /// 단일 row score를 top-k 버퍼에 반영한다.
+    fn push_runtime_score(
+        &self,
+        row_index: usize,
+        normalized_query: &[f32],
+        top_k: usize,
+        scored: &mut Vec<ScoredRow>,
+    ) {
+        if !self.valid_rows.get(row_index).copied().unwrap_or(false) {
+            return;
+        }
+        let offset = row_index.saturating_mul(self.dimensions);
+        let Some(row) = self
+            .normalized_vectors
+            .get(offset..offset.saturating_add(self.dimensions))
+        else {
+            return;
+        };
+        let score = normalized_f32_dot(normalized_query, row);
+        push_top_k_scored_row(scored, ScoredRow { row_index, score }, top_k);
+    }
+}
+
+/// JS wrapper가 재사용할 수 있는 IVF ANN runtime index.
+#[wasm_bindgen]
+pub struct IvfRuntimeIndex {
+    /// vector dimension.
+    dimensions: usize,
+    /// original row count.
+    row_count: usize,
+    /// cluster count.
+    cluster_count: usize,
+    /// row-major normalized vector matrix.
+    normalized_vectors: Vec<f32>,
+    /// zero/invalid vector를 제외하기 위한 row별 validity flag.
+    valid_rows: Vec<bool>,
+    /// row-major normalized centroid matrix.
+    centroids: Vec<f32>,
+    /// cluster별 original row index.
+    clusters: Vec<Vec<usize>>,
+}
+
+#[wasm_bindgen]
+impl IvfRuntimeIndex {
+    /// flattened row-major vector matrix로 IVF runtime index를 만든다.
+    #[must_use]
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        vectors: &[f32],
+        dimensions: usize,
+        requested_cluster_count: usize,
+        iterations: usize,
+    ) -> Self {
+        if dimensions == 0 || vectors.is_empty() || !vectors.len().is_multiple_of(dimensions) {
+            return Self::empty();
+        }
+        let row_count = vectors.len().checked_div(dimensions).unwrap_or_default();
+        let cluster_count = resolve_cluster_count(row_count, requested_cluster_count);
+        if row_count == 0 || cluster_count == 0 {
+            return Self::empty();
+        }
+
+        let mut normalized_vectors = Vec::with_capacity(vectors.len());
+        let mut valid_rows = Vec::with_capacity(row_count);
+        for vector in vectors.chunks_exact(dimensions) {
+            valid_rows.push(push_normalized_f32_row(vector, &mut normalized_vectors));
+        }
+
+        let mut centroids =
+            select_initial_f32_centroids(&normalized_vectors, dimensions, row_count, cluster_count);
+        let mut assignments = assign_f32_vectors_to_centroids(
+            &normalized_vectors,
+            &valid_rows,
+            &centroids,
+            dimensions,
+        );
+        for _ in 0..iterations {
+            centroids = recompute_f32_centroids(
+                &normalized_vectors,
+                &valid_rows,
+                &assignments,
+                &centroids,
+                dimensions,
+            );
+            assignments = assign_f32_vectors_to_centroids(
+                &normalized_vectors,
+                &valid_rows,
+                &centroids,
+                dimensions,
+            );
+        }
+        let clusters = build_f32_clusters(&assignments, cluster_count);
+
+        Self {
+            dimensions,
+            row_count,
+            cluster_count,
+            normalized_vectors,
+            valid_rows,
+            centroids,
+            clusters,
+        }
+    }
+
+    /// 빈 IVF runtime index를 만든다.
+    const fn empty() -> Self {
+        Self {
+            dimensions: 0,
+            row_count: 0,
+            cluster_count: 0,
+            normalized_vectors: Vec::new(),
+            valid_rows: Vec::new(),
+            centroids: Vec::new(),
+            clusters: Vec::new(),
+        }
+    }
+
+    /// original row count를 반환한다.
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        wasm_bridge_usize(self.row_count)
+    }
+
+    /// vector dimension을 반환한다.
+    #[must_use]
+    pub fn dimensions(&self) -> usize {
+        wasm_bridge_usize(self.dimensions)
+    }
+
+    /// cluster count를 반환한다.
+    #[must_use]
+    pub fn cluster_count(&self) -> usize {
+        wasm_bridge_usize(self.cluster_count)
+    }
+
+    /// centroid probe와 candidate scoring을 Rust 내부에서 수행해 top-k row index/score pair를 반환한다.
+    #[must_use]
+    pub fn query(&self, query: &[f32], top_k: usize, probe_count: usize) -> Box<[f64]> {
+        if top_k == 0
+            || self.dimensions == 0
+            || self.cluster_count == 0
+            || query.len() != self.dimensions
+        {
+            return Box::default();
+        }
+        let Some(normalized_query) = normalized_f32_row(query) else {
+            return Box::default();
+        };
+
+        let resolved_probe_count = probe_count.clamp(1, self.cluster_count);
+        let centroid_scores =
+            self.rank_centroids_for_query(&normalized_query, resolved_probe_count);
+        let mut scored = Vec::with_capacity(top_k);
+        for centroid_score in centroid_scores {
+            let Some(row_indices) = self.clusters.get(centroid_score.row_index) else {
+                continue;
+            };
+            for row_index in row_indices {
+                self.push_runtime_score(*row_index, &normalized_query, top_k, &mut scored);
+            }
+        }
+        encode_scored_rows(&scored)
+    }
+
+    /// query와 가장 가까운 centroid를 top-k 버퍼로 고른다.
+    fn rank_centroids_for_query(
+        &self,
+        normalized_query: &[f32],
+        probe_count: usize,
+    ) -> Vec<ScoredRow> {
+        let mut scored = Vec::with_capacity(probe_count);
+        for centroid_index in 0..self.cluster_count {
+            let offset = centroid_index.saturating_mul(self.dimensions);
+            let Some(centroid) = self
+                .centroids
+                .get(offset..offset.saturating_add(self.dimensions))
+            else {
+                continue;
+            };
+            let score = normalized_f32_dot(normalized_query, centroid);
+            push_top_k_scored_row(
+                &mut scored,
+                ScoredRow {
+                    row_index: centroid_index,
+                    score,
+                },
+                probe_count,
+            );
+        }
+        scored
+    }
+
+    /// 단일 row score를 top-k 버퍼에 반영한다.
+    fn push_runtime_score(
+        &self,
+        row_index: usize,
+        normalized_query: &[f32],
+        top_k: usize,
+        scored: &mut Vec<ScoredRow>,
+    ) {
+        if !self.valid_rows.get(row_index).copied().unwrap_or(false) {
+            return;
+        }
+        let offset = row_index.saturating_mul(self.dimensions);
+        let Some(row) = self
+            .normalized_vectors
+            .get(offset..offset.saturating_add(self.dimensions))
+        else {
+            return;
+        };
+        let score = normalized_f32_dot(normalized_query, row);
+        push_top_k_scored_row(scored, ScoredRow { row_index, score }, top_k);
+    }
+}
+
+/// JS wrapper가 재사용할 수 있는 BM25 runtime index.
+#[wasm_bindgen]
+pub struct Bm25RuntimeIndex {
+    /// runtime BM25 index state.
+    index: Bm25IndexData,
+}
+
+#[wasm_bindgen]
+impl Bm25RuntimeIndex {
+    /// 빈 BM25 runtime index를 만든다.
+    #[must_use]
+    #[wasm_bindgen(constructor)]
+    pub fn new(tokenizer_version: u32) -> Self {
+        Self {
+            index: Bm25IndexData::empty(wasm_bridge_u32(tokenizer_version)),
+        }
+    }
+
+    /// legacy 또는 compact JSON payload에서 runtime index를 만든다.
+    #[must_use]
+    pub fn from_json(payload: &str, fallback_tokenizer_version: u32) -> Self {
+        let index = parse_bm25_index_json(payload)
+            .unwrap_or_else(|| Bm25IndexData::empty(fallback_tokenizer_version));
+        Self { index }
+    }
+
+    /// document가 하나 이상 있는지 반환한다.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        !self.index.doc_lengths.is_empty()
+    }
+
+    /// tokenizer contract version을 반환한다.
+    #[must_use]
+    pub fn tokenizer_version(&self) -> u32 {
+        wasm_bridge_u32(self.index.tokenizer_version)
+    }
+
+    /// tokenizer contract version이 최신인지 반환한다.
+    #[must_use]
+    pub fn is_tokenizer_current(&self, tokenizer_version: u32) -> bool {
+        wasm_bridge_bool(self.index.tokenizer_version == tokenizer_version)
+    }
+
+    /// indexed document 수를 반환한다.
+    #[must_use]
+    pub fn total_docs(&self) -> usize {
+        self.index.doc_lengths.len()
+    }
+
+    /// doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
+    #[must_use]
+    pub fn source_path_for_doc(&self, doc_id: &str) -> String {
+        self.index
+            .doc_sources
+            .get(doc_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// document 하나를 runtime index에 추가하거나 교체한다.
+    pub fn add_document(
+        &mut self,
+        doc_id: &str,
+        text: &str,
+        source_path: &str,
+        tokenizer_version: u32,
+    ) {
+        self.index.tokenizer_version = tokenizer_version;
+        add_bm25_document(&mut self.index, doc_id, text, source_path);
+    }
+
+    /// document 하나를 runtime index에서 제거한다.
+    pub fn remove_document(&mut self, doc_id: &str, tokenizer_version: u32) {
+        self.index.tokenizer_version = tokenizer_version;
+        remove_bm25_document(&mut self.index, doc_id);
+    }
+
+    /// source path에 속한 document들을 runtime index에서 제거한다.
+    pub fn remove_source(&mut self, source_path: &str, tokenizer_version: u32) {
+        self.index.tokenizer_version = tokenizer_version;
+        let doc_ids = self
+            .index
+            .doc_sources
+            .iter()
+            .filter_map(|(doc_id, source)| (source == source_path).then_some(doc_id.clone()))
+            .collect::<Vec<_>>();
+        for doc_id in doc_ids {
+            remove_bm25_document(&mut self.index, &doc_id);
+        }
+    }
+
+    /// query score 목록을 JSON 문자열로 반환한다.
+    #[must_use]
+    pub fn search_json(&self, query: &str) -> String {
+        serialize_bm25_search_scores_json(&search_bm25_index(&self.index, query))
+    }
+
+    /// compact v3 JSON payload로 직렬화한다.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serialize_bm25_compact_index_json(&self.index)
+    }
+}
+
 /// vector row와 cosine score.
 struct ScoredRow {
     /// flattened matrix 안의 row index.
@@ -4380,6 +5016,18 @@ struct Bm25IndexData {
     doc_sources: BTreeMap<String, String>,
 }
 
+impl Bm25IndexData {
+    /// 빈 BM25 index data를 만든다.
+    const fn empty(tokenizer_version: u32) -> Self {
+        Self {
+            tokenizer_version,
+            inverted: BTreeMap::new(),
+            doc_lengths: BTreeMap::new(),
+            doc_sources: BTreeMap::new(),
+        }
+    }
+}
+
 /// BM25 search score.
 struct Bm25SearchScore {
     /// BM25 index document id.
@@ -4501,6 +5149,24 @@ fn compare_scored_rows_descending(left: &ScoredRow, right: &ScoredRow) -> std::c
         .score
         .total_cmp(&left.score)
         .then_with(|| left.row_index.cmp(&right.row_index))
+}
+
+/// top-k 버퍼에 score row를 정렬 상태로 삽입한다.
+fn push_top_k_scored_row(rows: &mut Vec<ScoredRow>, row: ScoredRow, top_k: usize) {
+    if top_k == 0 || !row.score.is_finite() {
+        return;
+    }
+    let insert_at = rows
+        .iter()
+        .position(|candidate| compare_scored_rows_descending(&row, candidate).is_lt())
+        .unwrap_or(rows.len());
+    if insert_at >= top_k {
+        return;
+    }
+    rows.insert(insert_at, row);
+    if rows.len() > top_k {
+        rows.truncate(top_k);
+    }
 }
 
 /// BM25 hit 정렬. 높은 score 우선, 같은 score는 검색 결과 원래 순서 우선이다.
@@ -5083,6 +5749,32 @@ fn merge_retrieval_source(
         },
         rank: if rank.is_finite() { rank } else { f64::NAN },
     });
+}
+
+/// BM25 index에 document를 추가하거나 기존 document를 교체한다.
+fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
+    remove_bm25_document(index, doc_id);
+
+    let tokens = tokenize(text);
+    let mut frequencies = BTreeMap::<String, f64>::new();
+    for token in &tokens {
+        let count = frequencies.entry(token.clone()).or_insert(0.0);
+        *count += 1.0;
+    }
+    for (term, frequency) in frequencies {
+        index
+            .inverted
+            .entry(term)
+            .or_default()
+            .insert(doc_id.to_owned(), frequency);
+    }
+    index.doc_lengths.insert(
+        doc_id.to_owned(),
+        usize_to_f64(tokens.len()).unwrap_or_default(),
+    );
+    index
+        .doc_sources
+        .insert(doc_id.to_owned(), source_path.to_owned());
 }
 
 /// BM25 index에서 doc id를 제거하고 빈 posting term을 정리한다.
@@ -10635,6 +11327,7 @@ fn aggregate_graph_edges(
     node_count: usize,
 ) -> Option<Vec<AggregatedGraphEdge>> {
     let mut edges = Vec::<AggregatedGraphEdge>::new();
+    let mut edge_position_by_pair = BTreeMap::<(usize, usize), usize>::new();
 
     for ((source_index, target_index), confidence) in source_indices
         .iter()
@@ -10647,17 +11340,20 @@ fn aggregate_graph_edges(
         let left = source.min(target);
         let right = source.max(target);
 
-        if let Some(edge) = edges
-            .iter_mut()
-            .find(|edge| edge.source_index == left && edge.target_index == right)
-        {
-            edge.weight += confidence;
-        } else {
-            edges.push(AggregatedGraphEdge {
-                source_index: left,
-                target_index: right,
-                weight: confidence,
-            });
+        match edge_position_by_pair.entry((left, right)) {
+            Entry::Occupied(position) => {
+                if let Some(edge) = edges.get_mut(*position.get()) {
+                    edge.weight += confidence;
+                }
+            }
+            Entry::Vacant(position) => {
+                position.insert(edges.len());
+                edges.push(AggregatedGraphEdge {
+                    source_index: left,
+                    target_index: right,
+                    weight: confidence,
+                });
+            }
         }
     }
 
@@ -10828,11 +11524,13 @@ fn encode_aggregated_graph_edges(edges: &[AggregatedGraphEdge]) -> Box<[f64]> {
 fn compute_graph_prune_plan(input: &GraphPruneInput<'_>) -> GraphPrunePlan {
     let mut plan = GraphPrunePlan::default();
     let mut removed_evidence = vec![false; input.evidence_file_paths.len()];
-    let mut removed_entry_ids = Vec::<&str>::new();
-    let mut affected_schema_ids = Vec::<&str>::new();
+    let file_path_set = input.file_paths.iter().copied().collect::<BTreeSet<_>>();
+    let mut removed_entry_ids = BTreeSet::<&str>::new();
+    let mut affected_schema_ids = BTreeSet::<&str>::new();
 
     collect_removed_evidence(
         input,
+        &file_path_set,
         &mut plan,
         &mut removed_evidence,
         &mut removed_entry_ids,
@@ -10865,8 +11563,8 @@ fn compute_graph_prune_plan(input: &GraphPruneInput<'_>) -> GraphPrunePlan {
         &deleted_claims,
         &mut plan,
     );
-    collect_pruned_rejected_facts(input, &mut removed_entry_ids, &mut plan);
-    collect_pruned_extraction_cache(input, &removed_entry_ids, &mut plan);
+    collect_pruned_rejected_facts(input, &file_path_set, &mut removed_entry_ids, &mut plan);
+    collect_pruned_extraction_cache(input, &file_path_set, &removed_entry_ids, &mut plan);
     collect_pruned_pending_merges(input, &deleted_entities, &mut plan);
 
     plan
@@ -10875,12 +11573,13 @@ fn compute_graph_prune_plan(input: &GraphPruneInput<'_>) -> GraphPrunePlan {
 /// 삭제 대상 file path에 속한 evidence를 수집한다.
 fn collect_removed_evidence<'a>(
     input: &GraphPruneInput<'a>,
+    file_path_set: &BTreeSet<&str>,
     plan: &mut GraphPrunePlan,
     removed_evidence: &mut [bool],
-    removed_entry_ids: &mut Vec<&'a str>,
+    removed_entry_ids: &mut BTreeSet<&'a str>,
 ) {
     for (evidence_index, file_path) in input.evidence_file_paths.iter().copied().enumerate() {
-        if !contains_str(&input.file_paths, file_path) {
+        if !file_path_set.contains(file_path) {
             continue;
         }
         plan.deleted_evidence.push(evidence_index);
@@ -10888,7 +11587,7 @@ fn collect_removed_evidence<'a>(
             *slot = true;
         }
         if let Some(entry_id) = input.evidence_entry_ids.get(evidence_index).copied() {
-            push_unique_str(removed_entry_ids, entry_id);
+            removed_entry_ids.insert(entry_id);
         }
     }
 }
@@ -10897,7 +11596,7 @@ fn collect_removed_evidence<'a>(
 fn collect_pruned_entities<'a>(
     input: &GraphPruneInput<'a>,
     removed_evidence: &[bool],
-    affected_schema_ids: &mut Vec<&'a str>,
+    affected_schema_ids: &mut BTreeSet<&'a str>,
     plan: &mut GraphPrunePlan,
 ) -> Vec<bool> {
     let mut deleted_entities = vec![false; input.entity_schema_ids.len()];
@@ -10913,7 +11612,7 @@ fn collect_pruned_entities<'a>(
             continue;
         }
         if let Some(schema_id) = input.entity_schema_ids.get(entity_index).copied() {
-            push_unique_str(affected_schema_ids, schema_id);
+            affected_schema_ids.insert(schema_id);
         }
         if reference_range_remaining_count(
             input.entity_evidence_offsets,
@@ -10946,7 +11645,7 @@ fn collect_pruned_relations<'a>(
     input: &GraphPruneInput<'a>,
     removed_evidence: &[bool],
     deleted_entities: &[bool],
-    affected_schema_ids: &mut Vec<&'a str>,
+    affected_schema_ids: &mut BTreeSet<&'a str>,
     plan: &mut GraphPrunePlan,
 ) -> Vec<bool> {
     let mut deleted_relations = vec![false; input.relation_schema_ids.len()];
@@ -10977,7 +11676,7 @@ fn collect_pruned_relations<'a>(
             continue;
         }
         if let Some(schema_id) = input.relation_schema_ids.get(relation_index).copied() {
-            push_unique_str(affected_schema_ids, schema_id);
+            affected_schema_ids.insert(schema_id);
         }
         if has_deleted_endpoint
             || reference_range_remaining_count(
@@ -11081,7 +11780,7 @@ fn collect_pruned_claims(
 /// 삭제할 community를 수집한다.
 fn collect_pruned_communities(
     input: &GraphPruneInput<'_>,
-    affected_schema_ids: &[&str],
+    affected_schema_ids: &BTreeSet<&str>,
     deleted_entities: &[bool],
     deleted_relations: &[bool],
     deleted_claims: &[bool],
@@ -11092,7 +11791,7 @@ fn collect_pruned_communities(
             .community_schema_ids
             .get(community_index)
             .copied()
-            .is_some_and(|schema_id| contains_str(affected_schema_ids, schema_id));
+            .is_some_and(|schema_id| affected_schema_ids.contains(schema_id));
         let deleted_reference = reference_range_contains_removed(
             input.community_entity_offsets,
             input.community_entity_indices,
@@ -11118,16 +11817,17 @@ fn collect_pruned_communities(
 /// 삭제할 rejected fact를 수집하고 cache invalidation용 removed entry id에 추가한다.
 fn collect_pruned_rejected_facts<'a>(
     input: &GraphPruneInput<'a>,
-    removed_entry_ids: &mut Vec<&'a str>,
+    file_path_set: &BTreeSet<&str>,
+    removed_entry_ids: &mut BTreeSet<&'a str>,
     plan: &mut GraphPrunePlan,
 ) {
     for (index, file_path) in input.rejected_fact_file_paths.iter().copied().enumerate() {
-        if !contains_str(&input.file_paths, file_path) {
+        if !file_path_set.contains(file_path) {
             continue;
         }
         plan.deleted_rejected_facts.push(index);
         if let Some(entry_id) = input.rejected_fact_entry_ids.get(index).copied() {
-            push_unique_str(removed_entry_ids, entry_id);
+            removed_entry_ids.insert(entry_id);
         }
     }
 }
@@ -11135,11 +11835,13 @@ fn collect_pruned_rejected_facts<'a>(
 /// 삭제할 extraction cache entry를 수집한다.
 fn collect_pruned_extraction_cache(
     input: &GraphPruneInput<'_>,
-    removed_entry_ids: &[&str],
+    file_path_set: &BTreeSet<&str>,
+    removed_entry_ids: &BTreeSet<&str>,
     plan: &mut GraphPrunePlan,
 ) {
     for (index, entry_id) in input.extraction_cache_entry_ids.iter().copied().enumerate() {
-        if contains_str(removed_entry_ids, entry_id)
+        if removed_entry_ids.contains(entry_id)
+            || file_path_set.contains(entry_id)
             || input
                 .file_paths
                 .iter()
@@ -11251,18 +11953,6 @@ fn index_points_to_removed(index: u32, removed: &[bool]) -> bool {
     bounded_u32_index(index, removed.len())
         .and_then(|value| removed.get(value).copied())
         .unwrap_or(false)
-}
-
-/// 문자열 배열에 값이 있는지 확인한다.
-fn contains_str(values: &[&str], target: &str) -> bool {
-    values.iter().copied().any(|value| value == target)
-}
-
-/// 문자열 배열에 값이 없을 때만 추가한다.
-fn push_unique_str<'a>(values: &mut Vec<&'a str>, target: &'a str) {
-    if !contains_str(values, target) {
-        values.push(target);
-    }
 }
 
 /// cache entry id가 file path 자체 또는 chunk id prefix에 매칭되는지 확인한다.
@@ -11460,6 +12150,7 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
     let lines = content.split('\n').map(str::to_owned).collect::<Vec<_>>();
     let mut chunks = Vec::new();
     let mut current_lines = Vec::new();
+    let mut current_length = 0_usize;
     let mut current_heading = None;
     let mut start_line = 0_usize;
     let mut in_code_block = false;
@@ -11467,19 +12158,17 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
     for (index, line) in lines.iter().enumerate() {
         if line.starts_with("```") {
             in_code_block = !in_code_block;
-            current_lines.push(line.clone());
-            if !in_code_block {
-                let chunk_text = current_lines.join("\n");
-                if text_len(&chunk_text) > max_chunk_size {
-                    flush_chunk(
-                        &mut chunks,
-                        &mut current_lines,
-                        current_heading.as_ref(),
-                        start_line,
-                        index,
-                    );
-                    start_line = index.saturating_add(1);
-                }
+            push_chunk_line(&mut current_lines, &mut current_length, line);
+            if !in_code_block && current_length > max_chunk_size {
+                flush_chunk(
+                    &mut chunks,
+                    &mut current_lines,
+                    current_heading.as_ref(),
+                    start_line,
+                    index,
+                );
+                current_length = 0;
+                start_line = index.saturating_add(1);
             }
             continue;
         }
@@ -11493,26 +12182,25 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
                     start_line,
                     index.saturating_sub(1),
                 );
+                current_length = 0;
             }
             current_heading = Some(normalize_heading(line));
             start_line = index;
-            current_lines = vec![line.clone()];
+            set_chunk_lines(&mut current_lines, &mut current_length, vec![line.clone()]);
             continue;
         }
 
-        current_lines.push(line.clone());
-        let chunk_text = current_lines.join("\n");
+        push_chunk_line(&mut current_lines, &mut current_length, line);
 
-        if !in_code_block && text_len(&chunk_text) >= max_chunk_size {
-            let last_para_break = chunk_text
-                .rfind("\n\n")
-                .map(|break_index| text_len(&chunk_text[..break_index]));
+        if !in_code_block && current_length >= max_chunk_size {
+            let last_para_break = last_paragraph_break_len(&current_lines);
             if last_para_break
                 .is_some_and(|break_index| break_index.saturating_mul(2) > max_chunk_size)
             {
                 split_at_paragraph_break(
                     &mut chunks,
                     &mut current_lines,
+                    &mut current_length,
                     current_heading.as_ref(),
                     &mut start_line,
                     index,
@@ -11526,6 +12214,7 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
                     start_line,
                     index,
                 );
+                current_length = 0;
                 start_line = index.saturating_add(1);
             }
         }
@@ -11549,12 +12238,12 @@ fn chunk_plain_text(content: &str, max_chunk_size: usize, overlap_chars: usize) 
     let lines = content.split('\n').map(str::to_owned).collect::<Vec<_>>();
     let mut chunks = Vec::new();
     let mut current_lines = Vec::new();
+    let mut current_length = 0_usize;
     let mut start_line = 0_usize;
 
     for (index, line) in lines.iter().enumerate() {
-        current_lines.push(line.clone());
-        let chunk_text = current_lines.join("\n");
-        if text_len(&chunk_text) < max_chunk_size {
+        push_chunk_line(&mut current_lines, &mut current_length, line);
+        if current_length < max_chunk_size {
             continue;
         }
 
@@ -11581,7 +12270,7 @@ fn chunk_plain_text(content: &str, max_chunk_size: usize, overlap_chars: usize) 
                 .skip(last_blank_line.saturating_add(1))
                 .cloned()
                 .collect::<Vec<_>>();
-            current_lines = part;
+            set_chunk_lines(&mut current_lines, &mut current_length, part);
             flush_chunk(
                 &mut chunks,
                 &mut current_lines,
@@ -11589,12 +12278,13 @@ fn chunk_plain_text(content: &str, max_chunk_size: usize, overlap_chars: usize) 
                 start_line,
                 index.saturating_sub(rest.len()),
             );
-            current_lines = rest;
+            set_chunk_lines(&mut current_lines, &mut current_length, rest);
             start_line = index.saturating_sub(current_lines.len()).saturating_add(1);
             continue;
         }
 
         flush_chunk(&mut chunks, &mut current_lines, None, start_line, index);
+        current_length = 0;
         start_line = index.saturating_add(1);
     }
 
@@ -14425,6 +15115,55 @@ fn normalize_heading(line: &str) -> String {
     line.trim_start_matches('#').trim().to_owned()
 }
 
+/// chunk line buffer에 line을 추가하고 joined text의 UTF-16 길이를 누적한다.
+fn push_chunk_line(current_lines: &mut Vec<String>, current_length: &mut usize, line: &str) {
+    if !current_lines.is_empty() {
+        *current_length = current_length.saturating_add(1);
+    }
+    *current_length = current_length.saturating_add(text_len(line));
+    current_lines.push(line.to_owned());
+}
+
+/// chunk line buffer를 교체하고 joined text의 UTF-16 길이를 다시 계산한다.
+fn set_chunk_lines(
+    current_lines: &mut Vec<String>,
+    current_length: &mut usize,
+    lines: Vec<String>,
+) {
+    *current_length = joined_line_text_len(&lines);
+    *current_lines = lines;
+}
+
+/// line 배열을 `\n`으로 join했을 때의 UTF-16 길이를 allocation 없이 계산한다.
+fn joined_line_text_len(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .fold(0_usize, |length, (index, line)| {
+            let newline = usize::from(index > 0);
+            length
+                .saturating_add(newline)
+                .saturating_add(text_len(line))
+        })
+}
+
+/// Markdown paragraph break 후보의 prefix UTF-16 길이를 allocation 없이 찾는다.
+fn last_paragraph_break_len(lines: &[String]) -> Option<usize> {
+    let mut joined_len_before_line = 0_usize;
+    let mut break_len = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 && index.saturating_add(1) < lines.len() && line.is_empty() {
+            break_len = Some(joined_len_before_line);
+        }
+        joined_len_before_line = joined_len_before_line
+            .saturating_add(usize::from(index > 0))
+            .saturating_add(text_len(line));
+    }
+
+    break_len
+}
+
 /// current lines를 chunk로 flush한다.
 fn flush_chunk(
     chunks: &mut Vec<Chunk>,
@@ -14452,26 +15191,21 @@ fn flush_chunk(
 fn split_at_paragraph_break(
     chunks: &mut Vec<Chunk>,
     current_lines: &mut Vec<String>,
+    current_length: &mut usize,
     current_heading: Option<&String>,
     start_line: &mut usize,
     index: usize,
     last_para_break: usize,
 ) {
+    let mut partial_length = 0_usize;
     let split_index = current_lines
         .iter()
         .enumerate()
-        .find_map(|(line_index, _)| {
-            let partial = current_lines
-                .iter()
-                .take(line_index.saturating_add(1))
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            if text_len(&partial) >= last_para_break {
-                Some(line_index)
-            } else {
-                None
-            }
+        .find_map(|(line_index, line)| {
+            partial_length = partial_length
+                .saturating_add(usize::from(line_index > 0))
+                .saturating_add(text_len(line));
+            (partial_length >= last_para_break).then_some(line_index)
         });
 
     if let Some(split_index) = split_index {
@@ -14485,12 +15219,13 @@ fn split_at_paragraph_break(
             .skip(split_index.saturating_add(1))
             .cloned()
             .collect::<Vec<_>>();
-        *current_lines = part;
+        set_chunk_lines(current_lines, current_length, part);
         flush_chunk(chunks, current_lines, current_heading, *start_line, index);
-        *current_lines = rest;
+        set_chunk_lines(current_lines, current_length, rest);
         *start_line = index.saturating_sub(current_lines.len()).saturating_add(1);
     } else {
         flush_chunk(chunks, current_lines, current_heading, *start_line, index);
+        *current_length = 0;
         *start_line = index.saturating_add(1);
     }
 }
@@ -14859,6 +15594,59 @@ fn serialize_bm25_index_json(index: &Bm25IndexData) -> String {
     )
 }
 
+/// BM25 index data를 compact v3 JSON 문자열로 serialize한다.
+fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
+    let mut doc_index_by_id = BTreeMap::<&str, usize>::new();
+    let mut docs = Vec::<String>::new();
+    for (doc_id, length) in &index.doc_lengths {
+        let Some(length_json) = finite_json_number(*length) else {
+            continue;
+        };
+        let doc_index = docs.len();
+        doc_index_by_id.insert(doc_id.as_str(), doc_index);
+        let source_path = index.doc_sources.get(doc_id).unwrap_or(doc_id);
+        docs.push(format!(
+            "{{\"id\":\"{}\",\"sourcePath\":\"{}\",\"length\":{}}}",
+            escape_json_string(doc_id),
+            escape_json_string(source_path),
+            length_json,
+        ));
+    }
+
+    let mut terms = Vec::<String>::new();
+    for (term, posting) in &index.inverted {
+        let mut posting_values = Vec::<String>::new();
+        for (doc_id, frequency) in posting {
+            let Some(doc_index) = doc_index_by_id.get(doc_id.as_str()).copied() else {
+                continue;
+            };
+            let Some(frequency_json) = finite_json_number(*frequency) else {
+                continue;
+            };
+            posting_values.push(doc_index.to_string());
+            posting_values.push(frequency_json);
+        }
+        if posting_values.is_empty() {
+            continue;
+        }
+        terms.push(format!(
+            "{{\"term\":\"{}\",\"postings\":[{}]}}",
+            escape_json_string(term),
+            posting_values.join(","),
+        ));
+    }
+
+    format!(
+        "{{\"schemaVersion\":{},\"tokenizerVersion\":{},\"docs\":[{}],\"terms\":[{}],\"totalDocs\":{},\"avgDocLength\":{}}}",
+        BM25_COMPACT_SCHEMA_VERSION,
+        index.tokenizer_version,
+        docs.join(","),
+        terms.join(","),
+        docs.len(),
+        finite_json_number(bm25_average_doc_length(index)).unwrap_or_else(|| "1".to_owned()),
+    )
+}
+
 /// BM25 inverted index를 JSON 문자열로 serialize한다.
 fn serialize_bm25_inverted_json(inverted: &BTreeMap<String, BTreeMap<String, f64>>) -> String {
     let body = inverted
@@ -14968,6 +15756,14 @@ fn parse_bm25_hits_json(payload: &str) -> Option<Vec<Bm25Hit>> {
 fn parse_bm25_index_json(payload: &str) -> Option<Bm25IndexData> {
     let value = serde_json::from_str::<JsonValue>(payload).ok()?;
     let object = value.as_object()?;
+    if object
+        .get("schemaVersion")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        == Some(BM25_COMPACT_SCHEMA_VERSION)
+    {
+        return parse_bm25_compact_index_object(object);
+    }
     let tokenizer_version = object
         .get("tokenizerVersion")
         .and_then(JsonValue::as_u64)
@@ -14992,6 +15788,76 @@ fn parse_bm25_index_json(payload: &str) -> Option<Bm25IndexData> {
         inverted: parse_bm25_inverted_object(
             object.get("inverted").and_then(JsonValue::as_object)?,
         ),
+        doc_lengths,
+        doc_sources,
+    })
+}
+
+/// compact v3 BM25 index JSON object를 파싱한다.
+fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Option<Bm25IndexData> {
+    let tokenizer_version = object
+        .get("tokenizerVersion")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_default();
+    let docs = object.get("docs")?.as_array()?;
+    let mut doc_ids = Vec::<String>::with_capacity(docs.len());
+    let mut doc_lengths = BTreeMap::<String, f64>::new();
+    let mut doc_sources = BTreeMap::<String, String>::new();
+
+    for doc in docs {
+        let doc_object = doc.as_object()?;
+        let id = doc_object.get("id")?.as_str()?.trim().to_owned();
+        if id.is_empty() {
+            return None;
+        }
+        let length = doc_object.get("length")?.as_f64()?;
+        if !length.is_finite() || length < 0.0 {
+            return None;
+        }
+        let source_path = doc_object
+            .get("sourcePath")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&id)
+            .to_owned();
+        doc_ids.push(id.clone());
+        doc_lengths.insert(id.clone(), length);
+        doc_sources.insert(id, source_path);
+    }
+
+    let mut inverted = BTreeMap::<String, BTreeMap<String, f64>>::new();
+    for term_value in object.get("terms")?.as_array()? {
+        let term_object = term_value.as_object()?;
+        let term = term_object.get("term")?.as_str()?.trim().to_owned();
+        if term.is_empty() {
+            continue;
+        }
+        let postings = term_object.get("postings")?.as_array()?;
+        let mut posting = BTreeMap::<String, f64>::new();
+        for pair in postings.chunks(2) {
+            let [doc_index_value, frequency_value] = pair else {
+                return None;
+            };
+            let doc_index = doc_index_value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())?;
+            let frequency = frequency_value.as_f64()?;
+            if !frequency.is_finite() || frequency <= 0.0 {
+                continue;
+            }
+            let doc_id = doc_ids.get(doc_index)?;
+            posting.insert(doc_id.clone(), frequency);
+        }
+        if !posting.is_empty() {
+            inverted.insert(term, posting);
+        }
+    }
+
+    Some(Bm25IndexData {
+        tokenizer_version,
+        inverted,
         doc_lengths,
         doc_sources,
     })
@@ -16737,15 +17603,15 @@ mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
     use super::{
-        BM25_B, BM25_K1, JsonValue, SOURCE_ANN, SOURCE_BM25, SOURCE_GRAPH_EVIDENCE,
-        SOURCE_STRUCTURAL, SOURCE_VECTOR, aggregate_graph_edges_flat, analyze_retrieval_sources,
-        assign_vector_clusters, bm25_score_pairs, build_initial_centroids, chunk_markdown,
-        chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
-        count_files_by_extensions_json, count_keyword_matches, create_content_hash,
-        create_entity_id, create_graph_id, detect_communities_flat,
-        detect_communities_from_edges_json, extract_json_object_text, extract_vault_links_json,
-        find_mentioned_entity_matches, format_mcp_json, get_mcp_connection_state_rust,
-        hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
+        BM25_B, BM25_K1, Bm25RuntimeIndex, IvfRuntimeIndex, JsonValue, SOURCE_ANN, SOURCE_BM25,
+        SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR, VectorRuntimeIndex,
+        aggregate_graph_edges_flat, analyze_retrieval_sources, assign_vector_clusters,
+        bm25_score_pairs, build_initial_centroids, chunk_markdown, chunk_plain_text,
+        classify_mcp_tool_error_json, cosine_similarity, count_files_by_extensions_json,
+        count_keyword_matches, create_content_hash, create_entity_id, create_graph_id,
+        detect_communities_flat, detect_communities_from_edges_json, extract_json_object_text,
+        extract_vault_links_json, find_mentioned_entity_matches, format_mcp_json,
+        get_mcp_connection_state_rust, hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
         is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
         is_mcp_tool_result_empty_json, is_relevant_result, normalize_entity_name,
         normalize_extracted_graph_payload_json, normalize_graph_confidence_or_default,
@@ -18146,6 +19012,198 @@ mod tests {
         }
     }
 
+    /// vector runtime index는 row normalization을 한 번만 수행하고 top-k 계약을 보존해야 한다.
+    #[test]
+    fn vector_runtime_index_matches_exact_top_k_and_filter_contract() {
+        let vectors = [
+            0.0_f32, 1.0, // index 0, score 0
+            1.0, 0.0, // index 1, score 1
+            0.6, 0.8, // index 2, score 0.6
+            0.0, 0.0, // index 3, invalid zero vector
+        ];
+        let index = VectorRuntimeIndex::new(&vectors, 2);
+
+        assert_eq!(
+            index.row_count(),
+            4,
+            "runtime index should retain row count"
+        );
+        assert_eq!(
+            index.dimensions(),
+            2,
+            "runtime index should expose dimensions"
+        );
+
+        let pairs = index.rank_top_k(&[1.0_f32, 0.0], 3);
+        assert_eq!(pairs.len(), 6, "top 3 rows should produce 3 pairs");
+        assert_float_close(pair_value(&pairs, 0), 1.0, "best row index");
+        assert_float_close(pair_value(&pairs, 1), 1.0, "best score");
+        assert_float_near(pair_value(&pairs, 2), 2.0, "second row index");
+        assert_float_close_f32(pair_value(&pairs, 3), 0.6, "second score");
+        assert_float_close(pair_value(&pairs, 4), 0.0, "third row index");
+        assert_float_close(pair_value(&pairs, 5), 0.0, "third score");
+
+        let filtered = index.rank_top_k_filtered(&[1.0_f32, 0.0], &[2, 0], 4);
+        assert_eq!(
+            filtered.len(),
+            4,
+            "filter should limit candidates to requested rows"
+        );
+        assert_float_close(pair_value(&filtered, 0), 2.0, "filtered best row index");
+        assert_float_close_f32(pair_value(&filtered, 1), 0.6, "filtered best score");
+        assert_float_close(pair_value(&filtered, 2), 0.0, "filtered second row index");
+        assert_float_close(pair_value(&filtered, 3), 0.0, "filtered second score");
+    }
+
+    /// IVF runtime index는 build/probe/scoring을 내부 상태로 처리하고 global row index를 반환해야 한다.
+    #[test]
+    fn ivf_runtime_index_queries_cluster_candidates_with_global_row_indices() {
+        let vectors = [
+            1.0_f32, 0.0, // index 0
+            0.95, 0.05, // index 1
+            0.0, 1.0, // index 2
+            0.05, 0.95, // index 3
+            0.0, 0.0, // index 4, invalid zero vector
+        ];
+        let index = IvfRuntimeIndex::new(&vectors, 2, 2, 4);
+
+        assert_eq!(index.row_count(), 5, "IVF runtime should retain row count");
+        assert_eq!(
+            index.dimensions(),
+            2,
+            "IVF runtime should expose dimensions"
+        );
+        assert_eq!(
+            index.cluster_count(),
+            2,
+            "requested cluster count should be applied"
+        );
+
+        let pairs = index.query(&[1.0_f32, 0.0], 2, 1);
+        assert_eq!(pairs.len(), 4, "top 2 IVF rows should produce 2 pairs");
+        assert_float_close(pair_value(&pairs, 0), 0.0, "best row index");
+        assert_float_close(pair_value(&pairs, 1), 1.0, "best score");
+        assert_float_close(pair_value(&pairs, 2), 1.0, "second row index");
+        assert_float_close_f32(pair_value(&pairs, 3), 0.998_617_8, "second score");
+
+        let wide_probe = index.query(&[0.0_f32, 1.0], 2, 2);
+        assert_eq!(wide_probe.len(), 4, "wide probe should return 2 valid rows");
+        assert_float_close(pair_value(&wide_probe, 0), 2.0, "wide probe best row");
+        assert_float_close(pair_value(&wide_probe, 1), 1.0, "wide probe best score");
+    }
+
+    /// BM25 runtime index는 legacy JSON을 읽고 저장 시 compact v3 포맷으로 마이그레이션해야 한다.
+    #[test]
+    fn bm25_runtime_index_loads_legacy_and_serializes_compact_v3() {
+        let legacy = r#"{"tokenizerVersion":2,"inverted":{"open":{"api.md::0":1},"router":{"api.md::0":1},"ollama":{"local.md::0":1}},"docLengths":{"api.md::0":3,"local.md::0":2},"docSources":{"api.md::0":"api.md","local.md::0":"local.md"},"totalDocs":2,"avgDocLength":2.5}"#;
+        let mut index = Bm25RuntimeIndex::from_json(legacy, 2);
+
+        assert!(
+            index.is_ready(),
+            "legacy payload should hydrate runtime state"
+        );
+        assert_eq!(
+            index.total_docs(),
+            2,
+            "legacy doc count should be preserved"
+        );
+        let before = index.search_json("open router");
+        assert!(
+            before.contains("\"docId\":\"api.md::0\""),
+            "legacy search should find migrated document; got {before}",
+        );
+
+        index.add_document("new.md::0", "GraphRAG open router evidence", "new.md", 2);
+        index.remove_document("local.md::0", 2);
+        let after = index.search_json("graph rag open");
+        assert!(
+            after.contains("\"docId\":\"new.md::0\""),
+            "runtime mutation should affect searches without reloading JSON; got {after}",
+        );
+        assert!(
+            !after.contains("local.md::0"),
+            "removed document should not appear in runtime search; got {after}",
+        );
+
+        let serialized = index.to_json();
+        let parsed = serde_json::from_str::<JsonValue>(&serialized).unwrap_or(JsonValue::Null);
+        assert!(parsed.is_object(), "compact BM25 JSON should parse");
+        assert_eq!(
+            parsed.get("schemaVersion").and_then(JsonValue::as_u64),
+            Some(3),
+            "persisted BM25 payload should use compact v3 schema",
+        );
+        assert!(
+            parsed.get("docs").and_then(JsonValue::as_array).is_some(),
+            "compact v3 payload should contain docs array",
+        );
+        assert!(
+            parsed.get("terms").and_then(JsonValue::as_array).is_some(),
+            "compact v3 payload should contain terms array",
+        );
+        assert!(
+            parsed.get("inverted").is_none(),
+            "compact v3 payload should not persist legacy inverted object",
+        );
+    }
+
+    /// RAG core hot path의 deterministic median benchmark를 출력한다.
+    #[ignore = "manual benchmark: run fish scripts/bench-rag-core.fish"]
+    #[test]
+    fn bench_rag_core_runtime_medians() {
+        let dimensions = 64_usize;
+        let row_count = 2_048_usize;
+        let vectors = fixture_vectors_f32(row_count, dimensions);
+        let query = fixture_query_f32(dimensions);
+        let vector_index = VectorRuntimeIndex::new(&vectors, dimensions);
+        let vector_exact_ns = measure_median_nanos(40, || {
+            std::hint::black_box(vector_index.rank_top_k(&query, 16));
+        });
+
+        let ivf_build_ns = measure_median_nanos(12, || {
+            let index = IvfRuntimeIndex::new(&vectors, dimensions, 32, 4);
+            std::hint::black_box(index.cluster_count());
+        });
+        let ivf_index = IvfRuntimeIndex::new(&vectors, dimensions, 32, 4);
+        let ivf_query_ns = measure_median_nanos(40, || {
+            std::hint::black_box(ivf_index.query(&query, 16, 4));
+        });
+
+        let bm25_add_search_ns = measure_median_nanos(12, || {
+            let mut index = Bm25RuntimeIndex::new(2);
+            for doc_index in 0..1_000_usize {
+                let doc_id = format!("doc-{doc_index}.md::0");
+                let source_path = format!("doc-{doc_index}.md");
+                let group = doc_index
+                    .checked_rem(17)
+                    .map_or_else(|| "0".to_owned(), |value| value.to_string());
+                let text = format!("alpha beta graph rag evidence group-{group} doc-{doc_index}");
+                index.add_document(&doc_id, &text, &source_path, 2);
+            }
+            std::hint::black_box(index.search_json("alpha graph evidence"));
+        });
+
+        let markdown = fixture_markdown_2mb();
+        let markdown_chunk_ns = measure_median_nanos(12, || {
+            std::hint::black_box(chunk_markdown(&markdown, 1_200, 120));
+        });
+
+        let mut stdout = std::io::stdout().lock();
+        if !write_bench_line(&mut stdout, "vector_exact_query", vector_exact_ns) {
+            return;
+        }
+        if !write_bench_line(&mut stdout, "ivf_build", ivf_build_ns) {
+            return;
+        }
+        if !write_bench_line(&mut stdout, "ivf_query", ivf_query_ns) {
+            return;
+        }
+        if !write_bench_line(&mut stdout, "bm25_add_search", bm25_add_search_ns) {
+            return;
+        }
+        let _ = write_bench_line(&mut stdout, "markdown_chunk_2mb", markdown_chunk_ns);
+    }
+
     /// recall@k는 exact top-k unique set 대비 approximate top-k hit 비율을 계산해야 한다.
     #[test]
     fn recall_at_k_preserves_ann_metric_contract() {
@@ -19354,6 +20412,78 @@ mod tests {
             (actual - expected).abs() <= 1.0e-12,
             "{message}; expected {expected}, got {actual}",
         );
+    }
+
+    /// f32 runtime 경로의 부동소수점 근사값을 확인한다.
+    fn assert_float_close_f32(actual: f64, expected: f64, message: &str) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{message}; expected {expected}, got {actual}",
+        );
+    }
+
+    /// 반복 실행 duration median을 nanoseconds로 반환한다.
+    fn measure_median_nanos<F>(sample_count: usize, mut operation: F) -> u128
+    where
+        F: FnMut(),
+    {
+        let mut samples = Vec::with_capacity(sample_count.max(1));
+        for _ in 0..sample_count.max(1) {
+            let started_at = std::time::Instant::now();
+            operation();
+            samples.push(started_at.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        let middle = samples.len().checked_div(2).unwrap_or_default();
+        samples.get(middle).copied().unwrap_or_default()
+    }
+
+    /// benchmark line을 stdout에 기록한다.
+    fn write_bench_line(stdout: &mut std::io::StdoutLock<'_>, name: &str, median_ns: u128) -> bool {
+        use std::io::Write as _;
+
+        writeln!(stdout, "{name}: median_ns={median_ns}").is_ok()
+    }
+
+    /// deterministic f32 vector matrix fixture를 만든다.
+    fn fixture_vectors_f32(row_count: usize, dimensions: usize) -> Vec<f32> {
+        let mut values = Vec::with_capacity(row_count.saturating_mul(dimensions));
+        for row_index in 0..row_count {
+            for dimension_index in 0..dimensions {
+                let seed = row_index
+                    .saturating_mul(131)
+                    .saturating_add(dimension_index.saturating_mul(17));
+                values.push(deterministic_unit_f32(seed));
+            }
+        }
+        values
+    }
+
+    /// deterministic f32 query fixture를 만든다.
+    fn fixture_query_f32(dimensions: usize) -> Vec<f32> {
+        (0..dimensions)
+            .map(|dimension_index| {
+                deterministic_unit_f32(dimension_index.saturating_mul(29).saturating_add(7))
+            })
+            .collect()
+    }
+
+    /// usize seed를 [-1, 1) 범위의 deterministic f32 값으로 변환한다.
+    fn deterministic_unit_f32(seed: usize) -> f32 {
+        let raw = u16::try_from(seed.checked_rem(1_000).unwrap_or_default()).unwrap_or_default();
+        f32::from(raw) / 500.0 - 1.0
+    }
+
+    /// 약 2MB Markdown fixture를 만든다.
+    fn fixture_markdown_2mb() -> String {
+        let segment = "# Heading\nalpha beta graph rag evidence paragraph.\n\n\
+            beta gamma delta with korean 요고49 포인트 페이백 tokens.\n\n\
+            ```ts\nconst value = 42;\n```\n";
+        let mut markdown = String::new();
+        while markdown.len() < 2_000_000 {
+            markdown.push_str(segment);
+        }
+        markdown
     }
 
     /// pair 배열에서 값을 안전하게 읽는다.

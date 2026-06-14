@@ -6,26 +6,32 @@ import {
   mergeRetrievalCandidateGroupsByEntryId,
 } from './retrieval-pipeline';
 
-const rankTopKPairsRustMock = vi.hoisted(() => vi.fn());
+const rustIvfRuntimeBuildMock = vi.hoisted(() => vi.fn());
+const rustIvfRuntimeQueryMock = vi.hoisted(() => vi.fn());
+const rustIvfRuntimeDisposeMock = vi.hoisted(() => vi.fn());
 const planMergedRetrievalCandidatesByEntryIdRustMock = vi.hoisted(() => vi.fn());
 
 vi.mock('./rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./rust-core')>();
   return {
     ...actual,
-    rankTopKPairsRust: rankTopKPairsRustMock,
+    RustIvfRuntimeIndex: {
+      build: rustIvfRuntimeBuildMock,
+    },
     planMergedRetrievalCandidatesByEntryIdRust:
       planMergedRetrievalCandidatesByEntryIdRustMock,
   };
 });
 
 beforeEach(() => {
-  rankTopKPairsRustMock.mockReset();
+  rustIvfRuntimeBuildMock.mockReset();
+  rustIvfRuntimeQueryMock.mockReset();
+  rustIvfRuntimeDisposeMock.mockReset();
   planMergedRetrievalCandidatesByEntryIdRustMock.mockReset();
 });
 
 describe('IvfVectorCandidateProvider Rust bridge guard', () => {
-  it('잘못된 centroid 인덱스는 건너뛰고 유효 클러스터만 검색한다', async () => {
+  it('새 IVF runtime index를 사용하고 잘못된 row 인덱스는 건너뛴다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
       createEntry('entry-0.md', [1, 0], 'seed 0'),
@@ -36,17 +42,16 @@ describe('IvfVectorCandidateProvider Rust bridge guard', () => {
       createEntry('entry-5.md', [0.6, 0.4], 'seed 5'),
     ]);
 
-    rankTopKPairsRustMock
-      .mockReturnValueOnce([
-        { index: -1, score: 0.99 },
-        { index: 100, score: 0.85 },
-        { index: 0, score: 0.70 },
-      ])
-      .mockReturnValueOnce([
-        { index: -1, score: 0.99 },
-        { index: 0, score: 0.88 },
-        { index: 2, score: 0.44 },
-      ]);
+    rustIvfRuntimeQueryMock.mockReturnValueOnce([
+      { index: -1, score: 0.99 },
+      { index: 100, score: 0.85 },
+      { index: 0, score: 0.70 },
+    ]);
+    rustIvfRuntimeBuildMock.mockReturnValueOnce({
+      clusterCount: 2,
+      query: rustIvfRuntimeQueryMock,
+      dispose: rustIvfRuntimeDisposeMock,
+    });
 
     const provider = new IvfVectorCandidateProvider(
       store,
@@ -67,8 +72,9 @@ describe('IvfVectorCandidateProvider Rust bridge guard', () => {
     const candidates = await provider.getCandidates(request);
 
     const paths = candidates.map((candidate) => candidate.entry.metadata.filePath);
-    expect(paths).toEqual(expect.arrayContaining(['entry-0.md']));
-    expect(new Set(paths).size).toBe(paths.length);
+    expect(rustIvfRuntimeBuildMock).toHaveBeenCalledWith(expect.any(Array), 2, 4);
+    expect(rustIvfRuntimeQueryMock).toHaveBeenCalledWith([1, 0], 3, 2);
+    expect(paths).toEqual(['entry-0.md']);
   });
 
   it('mergeRetrievalCandidateGroupsByEntryId는 rust 계획 실패 시 source 병합 규칙을 유지한다', () => {
