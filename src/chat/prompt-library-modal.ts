@@ -7,7 +7,6 @@ import {
   type ProviderKey,
 } from '../settings';
 import { createCustomOpenAIProvider, createProvider, type LLMProvider } from '../llm/providers';
-import type { VectorStore } from '../rag/store';
 import {
   buildVaultPromptGenerationMessages,
   createPromptEntry,
@@ -168,8 +167,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       new Notice(t('promptGenerationModelRequired'));
       return;
     }
-    const vectorStore = (options.plugin as unknown as { vectorStore?: VectorStore | null })
-      .vectorStore;
+    const vectorStore = options.plugin.vectorStore;
     if (!vectorStore) {
       new Notice(t('promptRagStoreMissing'), 7000);
       return;
