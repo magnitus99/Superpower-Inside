@@ -21,6 +21,24 @@
 - Rust/WASM 변경은 반드시 `npm run security:full`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, npm audit, generated WASM 최신성 검사를 포함한다.
 - UI/DOM/CSS 변경은 Obsidian community review 규칙까지 검증한다. 런타임 TS에서 inline style, `innerHTML`, heading direct create 같은 review error 패턴을 만들지 않는다.
 
+## RELEASE NOTES POLICY (GitHub 릴리스)
+
+- 모든 버전 태그(Obsidian 플러그인 버전 포함)는 해당 태그 구간의 커밋 로그를 기준으로 릴리즈 내역을 작성한다.
+- 범위는 `git log <prev-tag>..<current-tag> --oneline` 기준으로 잡는다.
+- PR/Issue 번호를 참조할 수 없으므로, 본문에는 **커밋 단위 변경사항**만 작성한다.
+- 내용 구성은 아래 순서로 정리한다.
+  - 핵심 기능/기능 변경
+  - 버그 수정
+  - 성능/안정성/호환성
+  - 문서/기타 정리
+- “버전 간 변경사항”을 강조해 작성하고, 항목은 메시지에서 유추 가능한 핵심 변경만 1~2줄로 요약한다.
+- `scripts/release-notes.fish`를 실행해 `태그..태그` 구간의 커밋을 자동으로 정리한다.
+  - 사용 예: `./scripts/release-notes.fish v1.2.2 v1.2.1`
+- GitHub Releases에는 태그 생성 시 `--notes` 혹은 수동 붙여넣기로 이 릴리즈 노트 본문을 넣어, 태그 페이지에서 바로 내역이 보이도록 한다.
+- Obsidian/플러그인 버전 관련 릴리즈도 동일 규칙을 적용한다(버전 사이 커밋만 중심).
+- `./scripts/bump-version.fish`는 릴리즈 완료 흐름에 맞춰 `release-notes-<버전>.md`를 자동 생성하고, 가능하면 `gh release create`도 자동 시도한다.
+  - `--no-release` 옵션을 주면 릴리스 생성 단계만 생략하고 노트 생성까지만 수행한다.
+
 ## JS/TS ROLE BOUNDARY
 
 - JS/TS는 프론트엔드와 host integration wrapper다. 허용 범위는 Obsidian API, DOM 렌더링, plugin lifecycle, settings UI, vault adapter I/O, provider fetch/stream transport, MCP stdio transport, IndexedDB/Dexie adapter, WASM bridge 입출력 매핑이다.
