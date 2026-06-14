@@ -1,19 +1,19 @@
 # Superpower Inside
 
-![version](https://img.shields.io/badge/version-1.0.10-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
 ![MCP](https://img.shields.io/badge/MCP-stdio%20tools-f97316)
 
-> **Desktop AI copilot for Obsidian.** Chat with LLMs, search your vault with RAG, call trusted MCP tools, and keep source-aware answers close to your notes.
+> **Desktop AI copilot for Obsidian.** Chat with LLMs, search your vault with RAG and GraphRAG, call trusted MCP tools, and keep source-aware answers close to your notes.
 
 Superpower Inside is built for people who use Obsidian as a working knowledge base, not just a folder of notes.
 
 | What it helps with | How it works |
 | --- | --- |
-| 🔎 Find answers in your vault | Index Markdown notes and attach relevant context to chat |
-| 📌 Work with sources | Show source cards and insert citations back into notes |
+| 🔎 Find answers in your vault | Index Markdown notes, retrieve relevant chunks, and use graph-aware context when enabled |
+| 📌 Work with sources | Show source cards, inspect evidence, and insert citations back into notes |
 | 🧠 Use your preferred model | OpenAI, Claude, Ollama, OpenRouter, or custom OpenAI-compatible providers |
 | 🔌 Extend the assistant | Connect trusted local MCP stdio servers |
 
@@ -26,8 +26,10 @@ Superpower Inside is built for people who use Obsidian as a working knowledge ba
 ```mermaid
 flowchart LR
     A["Your Obsidian vault"] --> B["RAG index"]
+    A --> H["GraphRAG index"]
     C["Chat sidebar"] --> D["LLM provider"]
     B --> C
+    H --> C
     E["Trusted MCP stdio servers"] --> C
     C --> F["Answer with sources"]
     F --> G["Insert or copy citations"]
@@ -38,12 +40,13 @@ flowchart LR
 | Feature | Description |
 | --- | --- |
 | 💬 Chat sidebar | Ask questions without leaving Obsidian. |
-| 🔎 Vault RAG | Search indexed Markdown notes and send relevant chunks as context. |
-| 📎 File and folder mentions | Attach specific notes or folders with `@file.md` or `@[folder/path]`. |
+| 🔎 Vault RAG | Search indexed Markdown notes with vector, keyword, and structural retrieval paths. |
+| 🕸️ GraphRAG | Build a local knowledge graph from your notes for entity, relation, evidence, and community-aware context. |
+| 📎 File and folder mentions | Attach specific notes or folders with `@file.md` or `@[folder/path]`; mention parsing is handled by the local Rust/WASM core. |
 | 🔌 MCP mentions | Use `@server` to let the assistant work with a trusted MCP server. |
 | 📌 Source cards | Open sources, copy Obsidian links, and insert citations into the active note. |
 | 🗂️ Chat history | Save and reopen chat sessions inside your vault. |
-| 🧠 Provider choice | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint. |
+| 🧠 Provider choice | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint for chat, embeddings, and graph extraction. |
 
 ## 🚀 Install
 
@@ -76,7 +79,7 @@ flowchart LR
 
 ### 💬 Chat With Your Vault
 
-Ask natural questions in the sidebar. When RAG is enabled, Superpower Inside searches your indexed Markdown notes and attaches relevant context before the model answers.
+Ask natural questions in the sidebar. When RAG is enabled, Superpower Inside searches your indexed Markdown notes and attaches relevant context before the model answers. When GraphRAG is enabled, graph evidence can also help answer questions about entities, relationships, themes, and source-backed claims.
 
 Examples:
 
@@ -104,12 +107,17 @@ Source cards help you check where an answer came from. You can open the source n
 
 Chats can be saved as Markdown files in your configured chat folder. This keeps research trails, source metadata, and useful answers inside the vault.
 
+### 🧹 Keep Indexes Healthy
+
+The RAG settings dashboard shows index state and maintenance actions in one place. You can reindex the vault when notes change heavily, migrate legacy vector data, and reset GraphRAG data when you want to rebuild graph evidence from a clean state.
+
 <details>
 <summary><strong>Security and data access</strong></summary>
 
 - Settings and API keys are stored in this device's Obsidian local storage and are not newly saved to the synced plugin `data.json` file.
 - Chat messages, selected notes, retrieved RAG chunks, tool arguments, and tool results may be sent to the configured LLM, embedding provider, or MCP server.
-- RAG features enumerate Markdown files in the vault to build and refresh the index.
+- RAG and GraphRAG features enumerate Markdown files in the vault to build and refresh local indexes.
+- Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
 - Citation actions and copy buttons write text to the system clipboard.
 - MCP stdio launches local commands that you configure. Only add MCP servers you trust.
 - When you mention an MCP server with `@server`, Superpower Inside treats that mention as intent to use the trusted server and may auto-run non-destructive model-requested tools from it. Tool arguments and results may be sent back to the configured LLM provider to generate the final answer.
@@ -127,14 +135,14 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 
 ## 한국어 안내
 
-> **Obsidian 데스크톱용 AI 코파일럿.** LLM 채팅, 볼트 RAG 검색, 신뢰한 MCP 도구 호출, 출처 기반 답변을 노트 작업 흐름 안에서 제공합니다.
+> **Obsidian 데스크톱용 AI 코파일럿.** LLM 채팅, 볼트 RAG/GraphRAG 검색, 신뢰한 MCP 도구 호출, 출처 기반 답변을 노트 작업 흐름 안에서 제공합니다.
 
 Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람을 위한 플러그인입니다. 질문하고, 노트를 찾아보고, 출처를 확인하고, 필요한 인용을 다시 노트에 넣는 흐름을 한 화면에서 처리할 수 있게 돕습니다.
 
 | 도움이 되는 일 | 작동 방식 |
 | --- | --- |
-| 🔎 볼트에서 답 찾기 | Markdown 노트를 인덱싱하고 관련 컨텍스트를 채팅에 첨부 |
-| 📌 출처 확인하기 | 답변 아래 출처 카드를 표시하고 노트로 다시 삽입 |
+| 🔎 볼트에서 답 찾기 | Markdown 노트를 인덱싱하고 관련 청크와 graph-aware 컨텍스트를 채팅에 첨부 |
+| 📌 출처 확인하기 | 답변 아래 출처 카드와 evidence를 확인하고 노트로 다시 삽입 |
 | 🧠 원하는 모델 쓰기 | OpenAI, Claude, Ollama, OpenRouter, 커스텀 OpenAI-compatible provider 지원 |
 | 🔌 도구 확장하기 | 신뢰한 로컬 MCP stdio 서버 연결 |
 
@@ -147,12 +155,13 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | 기능 | 설명 |
 | --- | --- |
 | 💬 사이드바 채팅 | Obsidian을 떠나지 않고 AI와 대화합니다. |
-| 🔎 볼트 RAG | Markdown 노트를 검색해 관련 청크를 모델 컨텍스트로 보냅니다. |
-| 📎 파일/폴더 멘션 | `@file.md`, `@[folder/path]`로 특정 노트나 폴더를 붙입니다. |
+| 🔎 볼트 RAG | 벡터, 키워드, 구조 기반 검색으로 Markdown 노트의 관련 청크를 모델 컨텍스트로 보냅니다. |
+| 🕸️ GraphRAG | 노트에서 로컬 지식 그래프를 만들고 entity, relation, evidence, community 기반 컨텍스트를 제공합니다. |
+| 📎 파일/폴더 멘션 | `@file.md`, `@[folder/path]`로 특정 노트나 폴더를 붙입니다. 멘션 파싱은 로컬 Rust/WASM 코어를 사용합니다. |
 | 🔌 MCP 멘션 | `@server`로 신뢰한 MCP 서버를 사용합니다. |
 | 📌 출처 카드 | 출처 열기, Obsidian 링크 복사, 활성 노트에 인용 삽입을 지원합니다. |
 | 🗂️ 채팅 저장 | 채팅 세션을 볼트 안의 Markdown 파일로 저장하고 다시 열 수 있습니다. |
-| 🧠 Provider 선택 | OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, 커스텀 OpenAI-compatible endpoint를 지원합니다. |
+| 🧠 Provider 선택 | 채팅, 임베딩, graph extraction에 OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, 커스텀 OpenAI-compatible endpoint를 사용할 수 있습니다. |
 
 ## 🚀 설치
 
@@ -185,7 +194,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 
 ### 💬 볼트와 대화하기
 
-사이드바에서 자연어로 질문하세요. RAG가 켜져 있으면 Superpower Inside가 인덱싱된 Markdown 노트에서 관련 내용을 찾아 모델 요청에 함께 보냅니다.
+사이드바에서 자연어로 질문하세요. RAG가 켜져 있으면 Superpower Inside가 인덱싱된 Markdown 노트에서 관련 내용을 찾아 모델 요청에 함께 보냅니다. GraphRAG가 켜져 있으면 entity, relation, theme, source-backed claim 질문에 그래프 evidence도 함께 사용할 수 있습니다.
 
 예시:
 
@@ -213,12 +222,17 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 
 채팅은 설정한 저장 폴더에 Markdown 파일로 저장할 수 있습니다. 조사 흐름, 출처 메타데이터, 유용한 답변을 볼트 안에 남길 수 있습니다.
 
+### 🧹 인덱스 관리하기
+
+RAG 설정 화면에서 인덱스 상태와 관리 작업을 한곳에서 확인할 수 있습니다. 노트가 크게 바뀌었을 때는 볼트를 다시 인덱싱하고, 기존 JSON 벡터 데이터는 마이그레이션하며, GraphRAG evidence를 새로 만들고 싶을 때는 GraphRAG 데이터를 초기화할 수 있습니다.
+
 <details>
 <summary><strong>보안과 데이터 접근</strong></summary>
 
 - 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며, 동기화되는 플러그인 `data.json` 파일에는 새로 저장하지 않습니다.
 - 채팅 메시지, 선택된 노트, RAG 청크, 도구 호출 인자와 결과는 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
-- RAG 기능은 인덱스 생성과 갱신을 위해 볼트의 Markdown 파일 목록을 열람합니다.
+- RAG와 GraphRAG 기능은 인덱스 생성과 갱신을 위해 볼트의 Markdown 파일 목록을 열람합니다.
+- 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 저장됩니다.
 - 출처 복사와 메시지 복사 기능은 시스템 클립보드에 텍스트를 씁니다.
 - MCP stdio는 사용자가 설정한 로컬 명령을 실행합니다. 신뢰하는 MCP 서버만 추가하세요.
 - `@server`로 MCP 서버를 멘션하면 Superpower Inside는 해당 멘션을 신뢰한 서버를 사용하겠다는 의사로 보고, 모델이 요청한 non-destructive 툴을 자동 실행할 수 있습니다. 툴 인자와 결과는 최종 답변 생성을 위해 설정한 LLM provider로 다시 전달될 수 있습니다.
