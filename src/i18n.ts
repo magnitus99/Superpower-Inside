@@ -749,6 +749,7 @@ export interface I18nKeys {
   ragStatsFailed: string;
   graphRagAutoSyncStarted: string;
   graphRagAutoSyncDone: string;
+  graphRagStaleSyncStatusNotice: string;
   ragPerformancePaused: string;
   ragPerformanceThrottled: string;
   ragIndexingInProgress: string;
@@ -1902,6 +1903,7 @@ const ko: I18nKeys = {
   ragStatsFailed: '통계 계산 실패',
   graphRagAutoSyncStarted: 'GraphRAG 자동 동기화 시작...',
   graphRagAutoSyncDone: 'GraphRAG 자동 동기화 완료: {processed}개 처리, {failed}개 실패',
+  graphRagStaleSyncStatusNotice: 'GraphRAG {label}: {description}',
   ragPerformancePaused: '성능 보호 대기',
   ragPerformanceThrottled: '속도 조절 중',
   ragIndexingInProgress: '인덱싱 중',
@@ -3107,6 +3109,7 @@ const en: I18nKeys = {
   ragStatsFailed: 'Failed to calculate statistics',
   graphRagAutoSyncStarted: 'GraphRAG auto-sync started...',
   graphRagAutoSyncDone: 'GraphRAG auto-sync complete: processed {processed}, failed {failed}',
+  graphRagStaleSyncStatusNotice: 'GraphRAG {label}: {description}',
   ragPerformancePaused: 'Performance guard paused',
   ragPerformanceThrottled: 'Throttling',
   ragIndexingInProgress: 'Indexing',

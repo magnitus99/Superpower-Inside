@@ -433,7 +433,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         data: { processedFiles: result.processedFiles, failedFiles: result.failedFiles },
       });
       this.emitGraphDataRefresh('graph-run', result.runId);
-      new Notice(`GraphRAG ${presentation.label}: ${presentation.description}`);
+      new Notice(
+        t('graphRagStaleSyncStatusNotice', {
+          label: presentation.label,
+          description: presentation.description,
+        }),
+      );
       return result;
     } catch (err) {
       this.getLogger().error('GraphRAG stale sync failed.', {
