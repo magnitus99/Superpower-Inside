@@ -1,17 +1,27 @@
 #!/usr/bin/env fish
 # 버전을 올리고 Obsidian 커뮤니티 제출 규칙에 맞는 git 태그를 생성한 뒤 푸시하는 스크립트
-# 사용법: ./scripts/bump-version.fish [patch|minor|major]
+# 사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]
 # 기본값: patch
 
-set BUMP_TYPE $argv[1]
-if test -z "$BUMP_TYPE"
-    set BUMP_TYPE patch
-end
+set BUMP_TYPE patch
+set CREATE_RELEASE true
 
-if not contains "$BUMP_TYPE" patch minor major
-    echo "ERROR: 유효하지 않은 버전 타입 '$BUMP_TYPE'"
-    echo "사용법: ./scripts/bump-version.fish [patch|minor|major]"
-    exit 1
+for ARG in $argv
+    switch "$ARG"
+        case patch minor major
+            set BUMP_TYPE "$ARG"
+        case --no-release
+            set CREATE_RELEASE false
+        case -h --help
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]"
+            echo "기본값: patch"
+            echo "옵션: --no-release  (릴리스 생성 단계는 생략)"
+            exit 0
+        case '*'
+            echo "ERROR: 유효하지 않은 인자 '$ARG'"
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]"
+            exit 1
+    end
 end
 
 set CURRENT_BRANCH (git branch --show-current)
@@ -143,12 +153,45 @@ or begin
     exit 1
 end
 
+set RELEASE_NOTE_FILE "release-notes-$NEW_VERSION.md"
+set TAGS (git tag --sort=version:refname --list)
+set TAG_COUNT (count $TAGS)
+set PREV_TAG ""
+if test $TAG_COUNT -gt 1
+    set PREV_TAG $TAGS[(math $TAG_COUNT - 1)]
+    ./scripts/release-notes.fish "$NEW_VERSION" "$PREV_TAG" "$RELEASE_NOTE_FILE"
+    if test $status -ne 0
+        echo "ERROR: release-notes 생성 실패"
+        exit 1
+    end
+else
+    echo "INFO: 이전 태그가 없어 release-notes를 자동 생성하지 않습니다."
+    set RELEASE_NOTE_FILE ""
+end
+
 # 푸시
 git push origin "$CURRENT_BRANCH"
 and git push origin "$NEW_VERSION"
 or begin
     echo "ERROR: git push 실패"
     exit 1
+end
+
+if test -n "$RELEASE_NOTE_FILE"
+    if test "$CREATE_RELEASE" = true
+        if not type gh >/dev/null 2>&1
+            echo "WARN: gh CLI가 없습니다. 수동으로 릴리즈를 생성해 주세요."
+            echo "gh release create \"$NEW_VERSION\" --title \"Release $NEW_VERSION\" --notes-file \"$RELEASE_NOTE_FILE\" --target \"$CURRENT_BRANCH\""
+        else
+            gh release create "$NEW_VERSION" --title "Release $NEW_VERSION" --notes-file "$RELEASE_NOTE_FILE" --target "$CURRENT_BRANCH"
+            if test $status -ne 0
+                echo "WARN: gh release create 실패 (수동으로 다시 실행해 주세요)"
+                echo "gh release create \"$NEW_VERSION\" --title \"Release $NEW_VERSION\" --notes-file \"$RELEASE_NOTE_FILE\" --target \"$CURRENT_BRANCH\""
+            end
+        end
+    else
+        echo "INFO: --no-release 옵션으로 gh 릴리스 생성은 생략합니다."
+    end
 end
 
 echo ""
