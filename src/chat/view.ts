@@ -3197,6 +3197,7 @@ export class ChatView extends ItemView {
     const closeBtn = title.createEl('button', {
       cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
+      attr: { type: 'button', 'aria-label': t('closeLabel') },
     });
     const close = () => overlay.remove();
     closeBtn.addEventListener('click', close);
@@ -3217,7 +3218,10 @@ export class ChatView extends ItemView {
           text: server.name,
         });
         for (const tool of tools) {
-          const item = list.createDiv({ cls: 'superpower-inside-mcp-tool-item' });
+          const item = list.createEl('button', {
+            cls: 'superpower-inside-mcp-tool-item',
+            attr: { type: 'button' },
+          });
           item.createDiv({ cls: 'superpower-inside-mcp-tool-name', text: tool.name });
           if (tool.description) {
             item.createDiv({
@@ -3260,6 +3264,7 @@ export class ChatView extends ItemView {
     const closeBtn = title.createEl('button', {
       cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
+      attr: { type: 'button', 'aria-label': t('closeLabel') },
     });
     const close = () => overlay.remove();
     closeBtn.addEventListener('click', close);

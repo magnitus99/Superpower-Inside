@@ -2906,13 +2906,21 @@
 }
 
 .superpower-inside-mcp-tool-item {
+  display: block;
+  width: 100%;
   padding: 10px 16px;
-  cursor: pointer;
-  transition: background 0.15s ease;
+  border: 0;
   border-left: 3px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background 0.15s ease;
 }
 
-.superpower-inside-mcp-tool-item:hover {
+.superpower-inside-mcp-tool-item:hover,
+.superpower-inside-mcp-tool-item:focus-visible {
   background: var(--background-modifier-hover);
   border-left-color: var(--interactive-accent);
 }

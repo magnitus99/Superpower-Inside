@@ -76,4 +76,16 @@ describe('Obsidian community static review guards', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('does not render MCP tool picker choices as clickable divs', () => {
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(({ line }) => /createDiv\(\{\s*cls:\s*['"]superpower-inside-mcp-tool-item/.test(line))
+        .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
 });
