@@ -727,19 +727,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           : allModels[0].value;
       dropdown.disabled = false;
     }
-    // RefreshBus로 모델 이벤트 발행 (채팅 뷰 동기화)
-    const pluginWithBus = this.plugin as unknown as {
-      refreshBus?: {
-        emit: (
-          domain: string,
-          result: {
-            status: string;
-            detail?: string;
-          },
-        ) => void;
-      };
-    };
-    pluginWithBus.refreshBus?.emit('models', { status: 'success' });
+    this.plugin.refreshBus.emit('models', { status: 'success' });
   }
   private refreshRagTab(): void {
     const ragPanel = this.tabPanels.get('rag');
@@ -4142,19 +4130,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               detail: t('settingsAuto270', { v0: String(errors.length) }),
             };
           }
-          // RefreshBus로 MCP 이벤트 발행 (채팅 뷰 동기화)
-          const pluginWithBus = this.plugin as unknown as {
-            refreshBus?: {
-              emit: (
-                domain: string,
-                result: {
-                  status: string;
-                  detail?: string;
-                },
-              ) => void;
-            };
-          };
-          pluginWithBus.refreshBus?.emit('mcp', { status: 'success' });
+          this.plugin.refreshBus.emit('mcp', { status: 'success' });
           return { status: 'success' };
         }
         return { status: 'error', detail: t('settingsAuto271') };

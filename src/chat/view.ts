@@ -200,28 +200,18 @@ export class ChatView extends ItemView {
   }
 
   private registerRefreshBusEvents(): void {
-    const pluginWithBus = this.plugin as unknown as {
-      refreshBus?: {
-        on: (
-          domain: string,
-          handler: (result: { status: string; detail?: string }) => void,
-        ) => () => void;
-      };
-    };
-    if (!pluginWithBus.refreshBus) return;
-
     this.refreshBusUnsubscribers.push(
-      pluginWithBus.refreshBus.on('mcp', () => {
+      this.plugin.refreshBus.on('mcp', () => {
         this.renderMcpStatusBar();
       }),
     );
     this.refreshBusUnsubscribers.push(
-      pluginWithBus.refreshBus.on('models', () => {
+      this.plugin.refreshBus.on('models', () => {
         this.populateModelSelect();
       }),
     );
     this.refreshBusUnsubscribers.push(
-      pluginWithBus.refreshBus.on('rag', () => {
+      this.plugin.refreshBus.on('rag', () => {
         /* RAG 상태 변경은 채팅 컨텍스트가 다음 질문 시 자동 반영됨 */
       }),
     );
@@ -401,13 +391,7 @@ export class ChatView extends ItemView {
             detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
           };
         }
-        // RefreshBus로 MCP 이벤트 발행 (설정 탭 동기화)
-        const pluginWithBus = this.plugin as unknown as {
-          refreshBus?: {
-            emit: (domain: string, result: { status: string; detail?: string }) => void;
-          };
-        };
-        pluginWithBus.refreshBus?.emit('mcp', { status: 'success' });
+        this.plugin.refreshBus.emit('mcp', { status: 'success' });
         new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
         return { status: 'success' };
       },
@@ -1975,11 +1959,7 @@ export class ChatView extends ItemView {
       );
       this.session.filePath = file.path;
       this.session.isDirty = false;
-      (
-        this.plugin as unknown as {
-          refreshBus?: { emit: (domain: string, result: { status: string }) => void };
-        }
-      ).refreshBus?.emit('sessions', { status: 'success' });
+      this.plugin.refreshBus.emit('sessions', { status: 'success' });
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
@@ -2161,9 +2141,6 @@ export class ChatView extends ItemView {
     this.isStreaming = false;
     this.setLoading(false);
     await this.saveCurrentSession(true);
-    const pluginWithBus = this.plugin as unknown as {
-      refreshBus?: { emit: (domain: string, result: { status: string }) => void };
-    };
     openSessionHistoryModal(
       this.container!,
       this.app,
@@ -2171,7 +2148,7 @@ export class ChatView extends ItemView {
       this.plugin.settings.chat.saveFolder,
       (filePath: string) => void this.loadSession(filePath),
       this.session.filePath,
-      pluginWithBus.refreshBus,
+      this.plugin.refreshBus,
     );
   }
 

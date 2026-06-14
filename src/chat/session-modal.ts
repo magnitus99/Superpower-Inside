@@ -1,5 +1,6 @@
 import type { App, Vault } from 'obsidian';
 import { t } from '../i18n';
+import type { RefreshBus } from '../utils/refresh-bus';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
@@ -46,10 +47,7 @@ export function openSessionHistoryModal(
   saveFolder: string,
   onLoadSession: (filePath: string) => void,
   currentSessionPath?: string | null,
-  sessionsEventBus?: {
-    emit: (domain: string, result: { status: string }) => void;
-    on?: (domain: string, handler: (...args: unknown[]) => void) => () => void;
-  },
+  sessionsEventBus?: Pick<RefreshBus, 'emit' | 'on'>,
 ): void {
   const activeVault = app.vault;
   void vault;
