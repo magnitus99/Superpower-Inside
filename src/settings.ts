@@ -18,7 +18,7 @@ import {
 } from './mcp/connection-state';
 import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
-import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './rag/store';
+import type { VectorStore } from './rag/store';
 import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from './rag/indexer';
 import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
 import type { PerformanceGuardState } from './rag/performance-guard';
@@ -28,12 +28,8 @@ import {
   buildEmbeddingModelOptions,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
-  getVectorStoreTransferNotice,
-  getVectorStoreDescription,
-  getVectorStoreLabel,
   resolveRagPerformanceSettings,
   type RagPerformanceTuningMode,
-  type VectorStoreType,
   shouldShowProviderApiKey,
   buildGraphRagActionGroups,
   getGraphRagStatusPresentation,
@@ -231,7 +227,6 @@ export interface RAGConfig {
   excludeChatFolder: boolean;
   chunkSize: number;
   overlap: number;
-  vectorStoreType: 'json' | 'indexeddb';
   embeddingProvider: EmbeddingProviderKey;
   embeddingModel: string;
   autoUpdateEnabled: boolean;
@@ -331,7 +326,6 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     excludeChatFolder: true,
     chunkSize: 1000,
     overlap: 100,
-    vectorStoreType: 'indexeddb',
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
@@ -1117,7 +1111,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const header = section.createDiv({ cls: 'superpower-inside-rag-status-header' });
     header.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto027') });
-    const rag = this.plugin.settings.rag;
     const statusGrid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
     const actionEl = section.createDiv({ cls: 'superpower-inside-rag-status-action' });
     const detailsEl = section.createDiv({ cls: 'superpower-inside-rag-status-details' });
@@ -1125,8 +1118,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (warning) {
       section.createDiv({ cls: 'superpower-inside-settings-warning', text: warning });
     }
-    const vectorStoreTransferWarningEl = section.createDiv();
-    void this.renderVectorStoreTransferWarning(vectorStoreTransferWarningEl, rag.vectorStoreType);
     const timestampEl = section.createDiv({
       cls: 'superpower-inside-rag-status-timestamp',
       text: t('settingsAuto028'),
@@ -2362,7 +2353,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         v0: String(this.getEmbeddingProviderLabel(rag.embeddingProvider)),
         v1: String(rag.embeddingModel || t('settingsAuto122')),
       }),
-      t('settingsAuto123', { v0: String(getVectorStoreLabel(rag.vectorStoreType)) }),
+      t('settingsAuto123', { v0: 'IndexedDB' }),
       t('settingsAuto124', { v0: String(this.getPerformanceGuardLabel(guardState)) }),
     ];
     const autoUpdateDetail = this.getAutoUpdateDetail();
@@ -2582,44 +2573,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       );
     }
     return this.plugin.eventDrivenRagStats ?? null;
-  }
-  private async renderVectorStoreTransferWarning(
-    containerEl: HTMLElement,
-    selectedType: VectorStoreType,
-  ): Promise<void> {
-    try {
-      const notice = await this.getVectorStoreTransferWarning(selectedType);
-      if (!notice) {
-        containerEl.remove();
-        return;
-      }
-      containerEl.addClass('superpower-inside-settings-warning');
-      containerEl.setText(notice);
-    } catch {
-      containerEl.remove();
-    }
-  }
-  private async getVectorStoreTransferWarning(
-    selectedType: VectorStoreType,
-  ): Promise<string | null> {
-    const [jsonVectorCount, indexedDbVectorCount] = await Promise.all([
-      this.getJsonVectorCount(),
-      this.getIndexedDbVectorCount(),
-    ]);
-    return getVectorStoreTransferNotice(selectedType, jsonVectorCount, indexedDbVectorCount);
-  }
-  private async getJsonVectorCount(): Promise<number> {
-    const store = new JsonFileVectorStore(
-      this.plugin.app.vault.adapter,
-      '.superpower-inside/vectors.json',
-    );
-    const stats = await store.getStats();
-    return stats.totalVectors;
-  }
-  private async getIndexedDbVectorCount(): Promise<number> {
-    const store = new IndexedDbVectorStore(this.plugin.createIndexedDbName('VectorStore'));
-    const stats = await store.getStats();
-    return stats.totalVectors;
   }
   private getEmbeddingProviderConfig(
     providerKey: EmbeddingProviderKey,
@@ -3224,26 +3177,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
       warnEl.setText(t('ragChunkSizeOllamaWarning'));
     }
-    // 벡터 저장소 유형
-    new Setting(section)
-      .setName(t('settingsAuto197'))
-      .setDesc(getVectorStoreDescription())
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('json', 'JSON File')
-          .addOption('indexeddb', 'IndexedDB')
-          .setValue(this.plugin.settings.rag.vectorStoreType)
-          .onChange((value) => {
-            const vectorStoreType = value as VectorStoreType;
-            this.plugin.settings.rag.vectorStoreType = vectorStoreType;
-            this.debouncedSave();
-            void this.getVectorStoreTransferWarning(vectorStoreType)
-              .then((notice) => {
-                if (notice) new Notice(notice);
-              })
-              .catch(() => undefined);
-          }),
-      );
   }
   private buildSearchQualitySection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });

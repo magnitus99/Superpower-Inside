@@ -31,8 +31,12 @@ import {
   createEmbeddingCacheNamespace,
   type EmbeddingProvider,
 } from './src/llm/embedding';
-import { IndexedDbVectorStore, JsonFileVectorStore, type VectorStore } from './src/rag/store';
-import { JsonFileBM25Index } from './src/rag/bm25';
+import {
+  IndexedDbVectorStore,
+  importLegacyJsonVectorStore,
+  type VectorStore,
+} from './src/rag/store';
+import { IndexedDbBM25Index } from './src/rag/bm25';
 import {
   VaultIndexer,
   registerModifyEvent,
@@ -661,12 +665,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
 
     // Migrate old RAG settings (pre-overhaul)
-    const rag = data.rag as Record<string, unknown> | undefined;
-    const hasExplicitVectorStoreType =
-      rag && typeof rag === 'object' && Object.hasOwn(rag, 'vectorStoreType');
-    if (!hasExplicitVectorStoreType && (await this.hasExistingJsonVectors())) {
-      data.rag = { ...(rag ?? {}), vectorStoreType: 'json' };
-    }
     const migratedRag = data.rag as Record<string, unknown> | undefined;
     if (migratedRag && typeof migratedRag === 'object') {
       if (!('embeddingProvider' in migratedRag)) {
@@ -844,18 +842,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (migratedFromLegacyData) {
       saveLocalSettings(this.app, this.settings);
       await this.saveData(this.settings);
-    }
-  }
-
-  private async hasExistingJsonVectors(): Promise<boolean> {
-    const path = '.superpower-inside/vectors.json';
-    try {
-      if (!(await this.app.vault.adapter.exists(path))) return false;
-      const raw = await this.app.vault.adapter.read(path);
-      const parsed = JSON.parse(raw) as unknown;
-      return Array.isArray(parsed) && parsed.length > 0;
-    } catch {
-      return false;
     }
   }
 
@@ -1081,7 +1067,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private async rebuildBM25Index(bm25Index: JsonFileBM25Index): Promise<void> {
+  private async rebuildBM25Index(bm25Index: IndexedDbBM25Index): Promise<void> {
     if (!this.vectorStore) return;
     const entries = await this.vectorStore.getEntries();
     await bm25Index.rebuild(
@@ -1109,7 +1095,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data: {
         embeddingProvider: providerKey,
         embeddingModel: rag.embeddingModel,
-        vectorStoreType: rag.vectorStoreType,
+        vectorStore: 'indexeddb',
         bm25Enabled: rag.enableBM25,
         graphRagEnabled: rag.graphRagEnabled,
       },
@@ -1163,21 +1149,24 @@ export default class SuperpowerInsidePlugin extends Plugin {
     );
 
     // Vector store
-    this.vectorStore =
-      rag.vectorStoreType === 'indexeddb'
-        ? new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'))
-        : new JsonFileVectorStore(this.app.vault.adapter, '.superpower-inside/vectors.json');
+    const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
+    await importLegacyJsonVectorStore(
+      this.app.vault.adapter,
+      vectorStore,
+      '.superpower-inside/vectors.json',
+    );
+    this.vectorStore = vectorStore;
     this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
       this.createIndexedDbName('KnowledgeGraph'),
     );
     await this.computeAndEmitGraphRagStatus();
 
     // BM25 index
-    let bm25Index: JsonFileBM25Index | undefined;
+    let bm25Index: IndexedDbBM25Index | undefined;
     if (rag.enableBM25) {
-      bm25Index = new JsonFileBM25Index(
+      bm25Index = new IndexedDbBM25Index(
+        this.createIndexedDbName('BM25Index'),
         this.app.vault.adapter,
-        '.superpower-inside/bm25-index.json',
       );
       await bm25Index.load();
       if (!bm25Index.isTokenizerCurrent) {

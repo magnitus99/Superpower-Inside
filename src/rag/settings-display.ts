@@ -1,6 +1,5 @@
 import { t } from '../i18n';
 
-export type VectorStoreType = 'json' | 'indexeddb';
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
   | 'openai'
@@ -166,28 +165,6 @@ export function normalizeRagPerformanceTuningMode(value: unknown): RagPerformanc
 function clampInteger(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.floor(value)));
-}
-
-export function getVectorStoreLabel(type: VectorStoreType): string {
-  return type === 'indexeddb' ? 'IndexedDB' : 'JSON File';
-}
-
-export function getVectorStoreDescription(): string {
-  return [t('vectorStoreDescriptionJson'), t('vectorStoreDescriptionIndexedDb')].join(' ');
-}
-
-export function getVectorStoreTransferNotice(
-  selectedType: VectorStoreType,
-  jsonVectorCount: number,
-  indexedDbVectorCount: number,
-): string | null {
-  if (selectedType === 'indexeddb' && indexedDbVectorCount === 0 && jsonVectorCount > 0) {
-    return t('vectorStoreTransferToIndexedDb');
-  }
-  if (selectedType === 'json' && jsonVectorCount === 0 && indexedDbVectorCount > 0) {
-    return t('vectorStoreTransferToJson');
-  }
-  return null;
 }
 
 export function getChatFolderExcludeDescription(saveFolder: string): string {
