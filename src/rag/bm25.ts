@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import {
   RustBm25RuntimeIndex,
@@ -16,18 +17,42 @@ export function tokenize(text: string): string[] {
 }
 
 const TOKENIZER_VERSION = 2;
+const BM25_SNAPSHOT_KEY = 'bm25-runtime-snapshot:v1';
 
-export class JsonFileBM25Index {
+interface BM25MetaRecord {
+  key: string;
+  value: string;
+  updated: number;
+}
+
+class BM25IndexDB extends Dexie {
+  meta!: Dexie.Table<BM25MetaRecord, string>;
+
+  constructor(name: string) {
+    super(name);
+    this.version(1).stores({
+      meta: 'key',
+    });
+  }
+}
+
+export class IndexedDbBM25Index {
   private runtime: RustBm25RuntimeIndex | null;
-  private adapter: DataAdapter;
-  private path: string;
+  private db: BM25IndexDB;
+  private legacyAdapter?: DataAdapter;
+  private legacyPath: string;
   private loaded: boolean;
   private batchDepth: number;
   private batchDirty: boolean;
 
-  constructor(adapter: DataAdapter, path = '.superpower-inside/bm25-index.json') {
-    this.adapter = adapter;
-    this.path = path;
+  constructor(
+    dbName = 'SuperpowerInsideBM25Index',
+    legacyAdapter?: DataAdapter,
+    legacyPath = '.superpower-inside/bm25-index.json',
+  ) {
+    this.db = new BM25IndexDB(dbName);
+    this.legacyAdapter = legacyAdapter;
+    this.legacyPath = legacyPath;
     this.runtime = null;
     this.loaded = false;
     this.batchDepth = 0;
@@ -36,7 +61,7 @@ export class JsonFileBM25Index {
 
   async load(): Promise<void> {
     this.runtime?.dispose();
-    const raw = (await this.adapter.exists(this.path)) ? await this.adapter.read(this.path) : '';
+    const raw = await this.loadSnapshot();
     this.runtime =
       raw.trim().length > 0
         ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
@@ -65,7 +90,11 @@ export class JsonFileBM25Index {
   }
 
   private async persistNow(): Promise<void> {
-    await writeTextToVault(this.adapter, this.path, this.runtime?.toJson() ?? createEmptyPayload());
+    await this.db.meta.put({
+      key: BM25_SNAPSHOT_KEY,
+      value: this.runtime?.toJson() ?? createEmptyPayload(),
+      updated: Date.now(),
+    });
     this.batchDirty = false;
   }
 
@@ -130,6 +159,14 @@ export class JsonFileBM25Index {
     }
     return this.runtime;
   }
+
+  private async loadSnapshot(): Promise<string> {
+    const stored = await this.db.meta.get(BM25_SNAPSHOT_KEY);
+    if (stored?.value) return stored.value;
+    if (!this.legacyAdapter) return '';
+    if (!(await this.legacyAdapter.exists(this.legacyPath))) return '';
+    return this.legacyAdapter.read(this.legacyPath);
+  }
 }
 
 function createEmptyPayload(): string {
@@ -137,34 +174,4 @@ function createEmptyPayload(): string {
     RustBm25RuntimeIndex.empty(TOKENIZER_VERSION)?.toJson() ??
     '{"schemaVersion":3,"tokenizerVersion":2,"docs":[],"terms":[],"totalDocs":0,"avgDocLength":1}'
   );
-}
-
-async function writeTextToVault(
-  adapter: DataAdapter,
-  path: string,
-  content: string,
-): Promise<void> {
-  const dir = path.split('/').slice(0, -1).join('/');
-  if (dir) {
-    await adapter.mkdir(dir);
-  }
-  const tmpPath = `${path}.tmp.${Date.now()}`;
-  await adapter.write(tmpPath, content);
-  try {
-    await adapter.rename(tmpPath, path);
-  } catch (renameError) {
-    try {
-      if (await adapter.exists(path)) {
-        await adapter.remove(path);
-      }
-      await adapter.rename(tmpPath, path);
-    } catch (fallbackError) {
-      try {
-        await adapter.remove(tmpPath);
-      } catch {
-        // temp 파일 정리 실패는 무시한다.
-      }
-      throw fallbackError instanceof Error ? fallbackError : renameError;
-    }
-  }
 }

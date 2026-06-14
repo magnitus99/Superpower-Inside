@@ -1,6 +1,6 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import { writeJsonToVault, readJsonFromVault } from '../utils/vault';
+import { readJsonFromVault } from '../utils/vault';
 import {
   planFileIndexRecordsRust,
   planVectorStoreAddRust,
@@ -10,9 +10,11 @@ import {
   planVectorStoreReplaceFileRust,
   planVectorStoreStatsRust,
   rankTopKPairsRust,
+  RustIvfRuntimeIndex,
   RustVectorRuntimeIndex,
   type RustVectorStoreMutationPlan,
   type RustFileIndexEntryInput,
+  type RustVectorScore,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 
@@ -55,11 +57,35 @@ export interface VectorStoreStats {
   lastUpdated: number | null;
 }
 
+export interface VectorSearchFilter {
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  dimension?: number;
+}
+
+export interface VectorSearchRequest {
+  queryVector: readonly number[];
+  topK: number;
+  filter?: VectorSearchFilter;
+  mode?: 'exact' | 'ann';
+  annMinEntryCount?: number;
+  annClusterCount?: number;
+  annProbeCount?: number;
+  signal?: AbortSignal;
+}
+
+export interface VectorSearchResult {
+  entry: VectorEntry;
+  score: number;
+  mode: 'exact' | 'ann';
+}
+
 export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
   removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]>;
+  search(request: VectorSearchRequest): Promise<VectorSearchResult[]>;
   clear(): Promise<void>;
   persist(): Promise<void>;
   withBatch<T>(operation: () => Promise<T>): Promise<T>;
@@ -71,14 +97,35 @@ export interface VectorStore {
   getEntries(): Promise<VectorEntry[]>;
 }
 
-interface IndexedDbVectorRecord extends VectorEntry {
+export interface LegacyJsonVectorImportResult {
+  imported: number;
+  skipped: boolean;
+}
+
+const LEGACY_JSON_VECTOR_IMPORT_KEY = 'legacy-json-vector-import:v1';
+
+interface IndexedDbVectorRecord {
+  id: string;
+  vectorBuffer?: ArrayBuffer;
+  vector?: number[];
+  dimension: number;
+  metadata: VectorEntry['metadata'];
   filePath: string;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  updated: number;
+}
+
+interface VectorStoreMetaRecord {
+  key: string;
+  value: unknown;
   updated: number;
 }
 
 class VectorStoreDB extends Dexie {
   vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
   fileIndex!: Dexie.Table<FileIndexRecord, string>;
+  meta!: Dexie.Table<VectorStoreMetaRecord, string>;
 
   constructor(name: string) {
     super(name);
@@ -89,6 +136,26 @@ class VectorStoreDB extends Dexie {
       vectors: 'id, filePath, updated',
       fileIndex: 'filePath, updated',
     });
+    this.version(3)
+      .stores({
+        vectors:
+          'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+        fileIndex: 'filePath, updated',
+        meta: 'key',
+      })
+      .upgrade((tx) =>
+        tx.table('vectors').toCollection().modify((record: IndexedDbVectorRecord) => {
+          if (Array.isArray(record.vector)) {
+            record.vectorBuffer = vectorToArrayBuffer(record.vector);
+            record.dimension = record.vector.length;
+            delete record.vector;
+          }
+          record.dimension = record.dimension || vectorFromRecord(record).length;
+          record.filePath = record.filePath || record.metadata.filePath;
+          record.embeddingProvider = record.metadata.embeddingProvider;
+          record.embeddingModel = record.metadata.embeddingModel;
+        }),
+      );
   }
 }
 
@@ -130,11 +197,175 @@ function scoredQuery(
   return Promise.resolve([]);
 }
 
+function scoredSearch(
+  entries: readonly VectorEntry[],
+  request: VectorSearchRequest,
+  runtimeIndex?: RustVectorRuntimeIndex | null,
+  ivfIndex?: RustIvfRuntimeIndex | null,
+): Promise<VectorSearchResult[]> {
+  throwIfAborted(request.signal);
+  const topK = Math.max(0, Math.floor(request.topK));
+  if (topK <= 0) return Promise.resolve([]);
+  const hasFilter = hasVectorSearchFilter(request.filter);
+  const searchEntries = hasFilter
+    ? entries.filter((entry) => matchesVectorSearchFilter(entry, request.filter))
+    : entries;
+  const mode =
+    request.mode === 'ann' && searchEntries.length >= Math.max(1, request.annMinEntryCount ?? 1)
+      ? 'ann'
+      : 'exact';
+  const rustScores = rankSearchEntries(searchEntries, request, topK, mode, runtimeIndex, ivfIndex);
+  if (rustScores === null) return Promise.resolve([]);
+  throwIfAborted(request.signal);
+  const selected: VectorSearchResult[] = [];
+  for (const result of rustScores) {
+    const resultIndex = result.index;
+    if (!Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex >= searchEntries.length) {
+      continue;
+    }
+    const entry = searchEntries[resultIndex];
+    if (entry) {
+      selected.push({ entry, score: result.score, mode });
+    }
+  }
+  return Promise.resolve(selected);
+}
+
+function rankSearchEntries(
+  entries: readonly VectorEntry[],
+  request: VectorSearchRequest,
+  topK: number,
+  mode: 'exact' | 'ann',
+  runtimeIndex?: RustVectorRuntimeIndex | null,
+  ivfIndex?: RustIvfRuntimeIndex | null,
+): RustVectorScore[] | null {
+  if (mode === 'ann') {
+    return (
+      ivfIndex?.query(request.queryVector, topK, request.annProbeCount ?? 4) ??
+      rankTopKPairsRust(
+        request.queryVector,
+        entries.map((entry) => entry.vector),
+        topK,
+      )
+    );
+  }
+  return (
+    runtimeIndex?.rankTopK(request.queryVector, topK) ??
+    rankTopKPairsRust(
+      request.queryVector,
+      entries.map((entry) => entry.vector),
+      topK,
+    )
+  );
+}
+
+function hasVectorSearchFilter(filter?: VectorSearchFilter): boolean {
+  return !!(
+    filter?.embeddingProvider ||
+    filter?.embeddingModel ||
+    typeof filter?.dimension === 'number'
+  );
+}
+
+const VECTOR_SEARCH_ALL_KEY = '__all__';
+
+function vectorSearchFilterKey(filter?: VectorSearchFilter): string {
+  if (!hasVectorSearchFilter(filter)) return VECTOR_SEARCH_ALL_KEY;
+  return [
+    filter?.embeddingProvider ?? '',
+    filter?.embeddingModel ?? '',
+    typeof filter?.dimension === 'number' ? String(filter.dimension) : '',
+  ].join('\u0000');
+}
+
+function matchesVectorSearchFilter(entry: VectorEntry, filter?: VectorSearchFilter): boolean {
+  if (!filter) return true;
+  if (
+    filter.embeddingProvider &&
+    entry.metadata.embeddingProvider &&
+    entry.metadata.embeddingProvider !== filter.embeddingProvider
+  ) {
+    return false;
+  }
+  if (
+    filter.embeddingModel &&
+    entry.metadata.embeddingModel &&
+    entry.metadata.embeddingModel !== filter.embeddingModel
+  ) {
+    return false;
+  }
+  if (typeof filter.dimension === 'number' && entry.vector.length !== filter.dimension) {
+    return false;
+  }
+  return true;
+}
+
+function vectorRecordFromEntry(entry: VectorEntry, updated: number): IndexedDbVectorRecord {
+  return {
+    id: entry.id,
+    vectorBuffer: vectorToArrayBuffer(entry.vector),
+    dimension: entry.vector.length,
+    metadata: { ...entry.metadata },
+    filePath: entry.metadata.filePath,
+    embeddingProvider: entry.metadata.embeddingProvider,
+    embeddingModel: entry.metadata.embeddingModel,
+    updated,
+  };
+}
+
+function vectorEntryFromRecord(record: IndexedDbVectorRecord): VectorEntry {
+  return {
+    id: record.id,
+    vector: vectorFromRecord(record),
+    metadata: { ...record.metadata },
+  };
+}
+
+function vectorEntryFromRecordWithUpdated(record: IndexedDbVectorRecord): VectorEntry & { updated?: number } {
+  return {
+    ...vectorEntryFromRecord(record),
+    updated: record.updated,
+  };
+}
+
+function vectorToArrayBuffer(vector: readonly number[]): ArrayBuffer {
+  const values = new Float32Array(vector.length);
+  values.set(vector);
+  return values.buffer.slice(0);
+}
+
+function vectorFromRecord(record: IndexedDbVectorRecord): number[] {
+  if (record.vectorBuffer instanceof ArrayBuffer) {
+    return Array.from(new Float32Array(record.vectorBuffer));
+  }
+  if (Array.isArray(record.vector)) {
+    return [...record.vector];
+  }
+  return [];
+}
+
+function isVectorEntryLike(value: unknown): value is VectorEntry {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string') return false;
+  if (!Array.isArray(value.vector) || !value.vector.every((item) => typeof item === 'number')) {
+    return false;
+  }
+  const metadata = value.metadata;
+  return isRecord(metadata) && typeof metadata.filePath === 'string' && typeof metadata.startLine === 'number' && typeof metadata.text === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
+}
+
 /** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
   private entriesCache: VectorEntry[] | null = null;
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
+  private searchEntriesCache = new Map<string, VectorEntry[]>();
+  private filteredRuntimeIndexes = new Map<string, RustVectorRuntimeIndex>();
+  private ivfRuntimeIndexes = new Map<string, RustIvfRuntimeIndex>();
 
   constructor(dbName = 'SuperpowerInsideVectorStore') {
     this.db = new VectorStoreDB(dbName);
@@ -142,11 +373,7 @@ export class IndexedDbVectorStore implements VectorStore {
 
   async add(newEntries: VectorEntry[]): Promise<void> {
     const now = Date.now();
-    const records = newEntries.map((entry) => ({
-      ...entry,
-      filePath: entry.metadata.filePath,
-      updated: now,
-    }));
+    const records = newEntries.map((entry) => vectorRecordFromEntry(entry, now));
     await this.db.vectors.bulkPut(records);
     await this.upsertFileIndexRecords(newEntries, now);
     this.invalidateRuntimeCache();
@@ -154,11 +381,7 @@ export class IndexedDbVectorStore implements VectorStore {
 
   async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
     const now = Date.now();
-    const records = entries.map((entry) => ({
-      ...entry,
-      filePath: entry.metadata.filePath,
-      updated: now,
-    }));
+    const records = entries.map((entry) => vectorRecordFromEntry(entry, now));
     await this.db.transaction('rw', this.db.vectors, async () => {
       await this.db.vectors.where('filePath').equals(filePath).delete();
       if (records.length > 0) {
@@ -199,6 +422,18 @@ export class IndexedDbVectorStore implements VectorStore {
     return scoredQuery(entries, vector, topK, signal, this.getRuntimeIndex(entries));
   }
 
+  async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    const key = vectorSearchFilterKey(request.filter);
+    const entries = await this.getSearchEntries(key, request.filter);
+    const mode =
+      request.mode === 'ann' && entries.length >= Math.max(1, request.annMinEntryCount ?? 1)
+        ? 'ann'
+        : 'exact';
+    const runtimeIndex = mode === 'exact' ? this.getRuntimeIndexForKey(key, entries) : null;
+    const ivfIndex = mode === 'ann' ? this.getIvfRuntimeIndexForKey(key, entries, request) : null;
+    return scoredSearch(entries, { ...request, filter: undefined }, runtimeIndex, ivfIndex);
+  }
+
   async clear(): Promise<void> {
     await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
       await this.db.vectors.clear();
@@ -206,6 +441,15 @@ export class IndexedDbVectorStore implements VectorStore {
     });
     this.entriesCache = [];
     this.invalidateRuntimeIndex();
+  }
+
+  async getMetaValue<T>(key: string): Promise<T | undefined> {
+    const record = await this.db.meta.get(key);
+    return record?.value as T | undefined;
+  }
+
+  async setMetaValue(key: string, value: unknown): Promise<void> {
+    await this.db.meta.put({ key, value, updated: Date.now() });
   }
 
   async persist(): Promise<void> {
@@ -250,11 +494,7 @@ export class IndexedDbVectorStore implements VectorStore {
     const uniquePaths = [...new Set(filePaths)];
     if (uniquePaths.length === 0) return [];
     const records = await this.db.vectors.where('filePath').anyOf(uniquePaths).toArray();
-    return records.map(({ id, vector, metadata }) => ({
-      id,
-      vector: [...vector],
-      metadata: { ...metadata },
-    }));
+    return records.map(vectorEntryFromRecord);
   }
 
   async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
@@ -262,11 +502,7 @@ export class IndexedDbVectorStore implements VectorStore {
     const records = await this.db.vectors.bulkGet([...ids]);
     return records
       .filter((record): record is IndexedDbVectorRecord => record !== undefined)
-      .map(({ id, vector, metadata }) => ({
-        id,
-        vector: [...vector],
-        metadata: { ...metadata },
-      }));
+      .map(vectorEntryFromRecord);
   }
 
   async getEntries(): Promise<VectorEntry[]> {
@@ -276,18 +512,57 @@ export class IndexedDbVectorStore implements VectorStore {
   private async getCachedEntries(): Promise<VectorEntry[]> {
     if (this.entriesCache) return this.entriesCache;
     const records = await this.db.vectors.toArray();
-    this.entriesCache = records.map(({ id, vector, metadata }) => ({
-      id,
-      vector: [...vector],
-      metadata: { ...metadata },
-    }));
+    this.entriesCache = records.map(vectorEntryFromRecord);
     return this.entriesCache;
+  }
+
+  private async getSearchEntries(
+    key: string,
+    filter?: VectorSearchFilter,
+  ): Promise<VectorEntry[]> {
+    const cached = this.searchEntriesCache.get(key);
+    if (cached) return cached;
+    const entries = await this.getCachedEntries();
+    const filtered = hasVectorSearchFilter(filter)
+      ? entries.filter((entry) => matchesVectorSearchFilter(entry, filter))
+      : entries;
+    this.searchEntriesCache.set(key, filtered);
+    return filtered;
   }
 
   private getRuntimeIndex(entries: readonly VectorEntry[]): RustVectorRuntimeIndex | null {
     if (this.runtimeIndex) return this.runtimeIndex;
     this.runtimeIndex = createVectorRuntimeIndex(entries);
     return this.runtimeIndex;
+  }
+
+  private getRuntimeIndexForKey(
+    key: string,
+    entries: readonly VectorEntry[],
+  ): RustVectorRuntimeIndex | null {
+    if (key === VECTOR_SEARCH_ALL_KEY) return this.getRuntimeIndex(entries);
+    const cached = this.filteredRuntimeIndexes.get(key);
+    if (cached) return cached;
+    const next = createVectorRuntimeIndex(entries);
+    if (next) this.filteredRuntimeIndexes.set(key, next);
+    return next;
+  }
+
+  private getIvfRuntimeIndexForKey(
+    key: string,
+    entries: readonly VectorEntry[],
+    request: VectorSearchRequest,
+  ): RustIvfRuntimeIndex | null {
+    const indexKey = `${key}::${Math.max(0, Math.floor(request.annClusterCount ?? 0))}`;
+    const cached = this.ivfRuntimeIndexes.get(indexKey);
+    if (cached) return cached;
+    const next = RustIvfRuntimeIndex.build(
+      entries.map((entry) => entry.vector),
+      request.annClusterCount ?? 0,
+      4,
+    );
+    if (next) this.ivfRuntimeIndexes.set(indexKey, next);
+    return next;
   }
 
   private invalidateRuntimeCache(): void {
@@ -298,6 +573,15 @@ export class IndexedDbVectorStore implements VectorStore {
   private invalidateRuntimeIndex(): void {
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
+    for (const index of this.filteredRuntimeIndexes.values()) {
+      index.dispose();
+    }
+    for (const index of this.ivfRuntimeIndexes.values()) {
+      index.dispose();
+    }
+    this.filteredRuntimeIndexes.clear();
+    this.ivfRuntimeIndexes.clear();
+    this.searchEntriesCache.clear();
   }
 
   private async upsertFileIndexRecords(
@@ -312,191 +596,42 @@ export class IndexedDbVectorStore implements VectorStore {
 
   private async rebuildFileIndexFromVectors(): Promise<void> {
     const records = await this.db.vectors.toArray();
-    const fileRecords = fileIndexRecordsFromRust(records, 0);
+    const fileRecords = fileIndexRecordsFromRust(records.map(vectorEntryFromRecordWithUpdated), 0);
     if (fileRecords.length > 0) {
       await this.db.fileIndex.bulkPut(fileRecords);
     }
   }
 }
 
-/** Vault adapter 기반 JSON 파일 벡터 저장소 */
-export class JsonFileVectorStore implements VectorStore {
-  private adapter: DataAdapter;
-  private path: string;
-  private entries: VectorEntry[];
-  private loaded: boolean;
-  private loadingPromise: Promise<void> | null = null;
-  private batchDepth = 0;
-  private batchDirty = false;
-  private runtimeIndex: RustVectorRuntimeIndex | null = null;
-
-  constructor(adapter: DataAdapter, path = '.superpower-inside/vectors.json') {
-    this.adapter = adapter;
-    this.path = path;
-    this.entries = [];
-    this.loaded = false;
-    this.loadingPromise = null;
+export async function importLegacyJsonVectorStore(
+  adapter: DataAdapter,
+  store: IndexedDbVectorStore,
+  path = '.superpower-inside/vectors.json',
+): Promise<LegacyJsonVectorImportResult> {
+  if ((await store.getMetaValue<boolean>(LEGACY_JSON_VECTOR_IMPORT_KEY)) === true) {
+    return { imported: 0, skipped: true };
   }
 
-  async add(newEntries: VectorEntry[]): Promise<void> {
-    await this.loadIfNeeded();
-    this.entries = applyVectorStoreMutationPlan(
-      this.entries,
-      newEntries,
-      planVectorStoreAddRust(
-        this.entries.map((entry) => entry.id),
-        newEntries.map((entry) => entry.id),
-      ),
-      { mode: 'add' },
-    );
-    this.invalidateRuntimeIndex();
-    await this.persistIfNeeded();
+  const data = await readJsonFromVault(adapter, path);
+  const entries = Array.isArray(data)
+    ? data.filter(isVectorEntryLike).map((entry) => ({
+        id: entry.id,
+        vector: [...entry.vector],
+        metadata: { ...entry.metadata },
+      }))
+    : [];
+  if (entries.length > 0) {
+    await store.add(entries);
   }
-
-  async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
-    await this.loadIfNeeded();
-    this.entries = applyVectorStoreMutationPlan(
-      this.entries,
-      entries,
-      planVectorStoreReplaceFileRust(
-        this.entries.map((entry) => entry.metadata.filePath),
-        filePath,
-        entries.length,
-      ),
-      { mode: 'replace', filePath },
-    );
-    this.invalidateRuntimeIndex();
-    await this.persistIfNeeded();
-  }
-
-  async removeByFilePath(filePath: string): Promise<number> {
-    await this.loadIfNeeded();
-    const plan = planVectorStoreRemoveFileRust(
-      this.entries.map((entry) => entry.metadata.filePath),
-      filePath,
-    );
-    const removed = plan?.removedCount ?? countEntriesForFilePath(this.entries, filePath);
-    this.entries = applyVectorStoreMutationPlan(this.entries, [], plan, {
-      mode: 'remove',
-      filePath,
-    });
-    this.invalidateRuntimeIndex();
-    if (removed > 0) {
-      await this.persistIfNeeded();
-    }
-    return removed;
-  }
-
-  async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
-    await this.loadIfNeeded();
-    return scoredQuery(this.entries, vector, topK, signal, this.getRuntimeIndex());
-  }
-
-  async clear(): Promise<void> {
-    this.entries = [];
-    this.invalidateRuntimeIndex();
-    await this.persistIfNeeded();
-  }
-
-  async persist(): Promise<void> {
-    await writeJsonToVault(this.adapter, this.path, this.entries);
-    this.loaded = true;
-    this.batchDirty = false;
-  }
-
-  async withBatch<T>(operation: () => Promise<T>): Promise<T> {
-    this.batchDepth++;
-    try {
-      return await operation();
-    } finally {
-      this.batchDepth--;
-      if (this.batchDepth === 0 && this.batchDirty) {
-        await this.persist();
-      }
-    }
-  }
-
-  private async persistIfNeeded(): Promise<void> {
-    if (this.batchDepth > 0) {
-      this.batchDirty = true;
-      this.loaded = true;
-      return;
-    }
-    await this.persist();
-  }
-
-  private async loadIfNeeded(): Promise<void> {
-    if (this.loaded) return;
-    if (this.loadingPromise) {
-      await this.loadingPromise;
-      return;
-    }
-    this.loadingPromise = (async () => {
-      const data = await readJsonFromVault(this.adapter, this.path);
-      if (Array.isArray(data)) {
-        this.entries = data as VectorEntry[];
-      } else {
-        this.entries = [];
-      }
-      this.invalidateRuntimeIndex();
-      this.loaded = true;
-    })();
-    await this.loadingPromise;
-  }
-
-  private getRuntimeIndex(): RustVectorRuntimeIndex | null {
-    if (this.runtimeIndex) return this.runtimeIndex;
-    this.runtimeIndex = createVectorRuntimeIndex(this.entries);
-    return this.runtimeIndex;
-  }
-
-  private invalidateRuntimeIndex(): void {
-    this.runtimeIndex?.dispose();
-    this.runtimeIndex = null;
-  }
-
-  async getStats(): Promise<VectorStoreStats> {
-    await this.loadIfNeeded();
-    const stats = vectorStoreStatsFromRust(this.entries);
-    return {
-      totalEntries: stats.totalEntries,
-      totalFiles: stats.totalFiles,
-      totalVectors: stats.totalVectors,
-      averageVectorsPerFile: stats.averageVectorsPerFile,
-      lastUpdated: stats.lastUpdated,
-    };
-  }
-
-  async getIndexedFilePaths(): Promise<string[]> {
-    await this.loadIfNeeded();
-    return vectorStoreStatsFromRust(this.entries).indexedFilePaths;
-  }
-
-  async getFileIndexRecords(): Promise<FileIndexRecord[]> {
-    await this.loadIfNeeded();
-    return fileIndexRecordsFromRust(this.entries, Date.now());
-  }
-
-  async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
-    await this.loadIfNeeded();
-    return copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByFilePaths(this.entries, filePaths)));
-  }
-
-  async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
-    await this.loadIfNeeded();
-    return copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByIds(this.entries, ids)));
-  }
-
-  async getEntries(): Promise<VectorEntry[]> {
-    await this.loadIfNeeded();
-    return copyEntries(this.entries);
-  }
+  await store.setMetaValue(LEGACY_JSON_VECTOR_IMPORT_KEY, true);
+  return { imported: entries.length, skipped: false };
 }
 
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
 export class MemoryVectorStore implements VectorStore {
   private entries: VectorEntry[];
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
+  private ivfRuntimeIndexes = new Map<string, RustIvfRuntimeIndex>();
 
   constructor() {
     this.entries = [];
@@ -547,6 +682,19 @@ export class MemoryVectorStore implements VectorStore {
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
     return scoredQuery(this.entries, vector, topK, signal, this.getRuntimeIndex());
+  }
+
+  search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    const mode =
+      request.mode === 'ann' && this.entries.length >= Math.max(1, request.annMinEntryCount ?? 1)
+        ? 'ann'
+        : 'exact';
+    return scoredSearch(
+      this.entries,
+      request,
+      mode === 'exact' ? this.getRuntimeIndex() : null,
+      mode === 'ann' ? this.getIvfRuntimeIndex(request) : null,
+    );
   }
 
   async clear(): Promise<void> {
@@ -607,6 +755,23 @@ export class MemoryVectorStore implements VectorStore {
   private invalidateRuntimeIndex(): void {
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
+    for (const index of this.ivfRuntimeIndexes.values()) {
+      index.dispose();
+    }
+    this.ivfRuntimeIndexes.clear();
+  }
+
+  private getIvfRuntimeIndex(request: VectorSearchRequest): RustIvfRuntimeIndex | null {
+    const key = String(Math.max(0, Math.floor(request.annClusterCount ?? 0)));
+    const cached = this.ivfRuntimeIndexes.get(key);
+    if (cached) return cached;
+    const next = RustIvfRuntimeIndex.build(
+      this.entries.map((entry) => entry.vector),
+      request.annClusterCount ?? 0,
+      4,
+    );
+    if (next) this.ivfRuntimeIndexes.set(key, next);
+    return next;
   }
 }
 

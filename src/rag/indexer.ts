@@ -10,7 +10,7 @@ import {
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
-import { JsonFileBM25Index } from './bm25';
+import type { IndexedDbBM25Index } from './bm25';
 import { createContentHash } from './hash';
 import { chunkMarkdownRust, chunkPlainTextRust, planIndexPendingFilesRust } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
@@ -155,7 +155,7 @@ export class VaultIndexer {
     embeddingProvider: EmbeddingProvider,
     ragConfig: RAGConfig,
     chatConfig: ChatConfig,
-    private bm25Index?: JsonFileBM25Index,
+    private bm25Index?: IndexedDbBM25Index,
     logger?: AppLogger | ScopedLogger,
   ) {
     this.chatConfig = chatConfig;

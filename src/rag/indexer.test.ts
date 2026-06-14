@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   chunkMarkdown,
   chunkPlainText,
@@ -10,8 +12,15 @@ import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
-import { JsonFileBM25Index } from './bm25';
+import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
+
+const bm25DbNames = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
+  bm25DbNames.clear();
+});
 
 vi.mock('./rust-core', async () => {
   const actual = await vi.importActual<typeof import('./rust-core')>('./rust-core');
@@ -239,7 +248,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     const file = createFile('note.md', 1000, 120);
     const vault = createVault(new Map([[file.path, ['specialterm 첫 청크', '', '다른 내용'].join('\n')]]));
     const store = new MemoryVectorStore();
-    const bm25 = new JsonFileBM25Index(createAdapter());
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
     await bm25.load();
     const embeddingProvider: EmbeddingProvider = {
       embed: () => Promise.resolve([1, 0]),
@@ -271,7 +280,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     const file = createFile('current.md', 1000, 80);
     const vault = createVault(new Map([[file.path, '현재 문서 내용']]));
     const store = new MemoryVectorStore();
-    const bm25 = new JsonFileBM25Index(createAdapter());
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
     await bm25.load();
     bm25.addDocument('deleted.md::0', 'staleterm 오래된 문서', 'deleted.md');
     await bm25.persist();
@@ -293,7 +302,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect([...bm25.search('staleterm').keys()]).toEqual([]);
   });
 
-  it('전체 재인덱싱 중 BM25 JSON은 파일마다 저장하지 않고 한 번만 저장한다', async () => {
+  it('전체 재인덱싱 중 BM25는 vault JSON 파일에 저장하지 않는다', async () => {
     const contents = new Map([
       ['a.md', 'alpha 문서 내용'],
       ['b.md', 'beta 문서 내용'],
@@ -302,7 +311,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     const vault = createVault(contents);
     const store = new MemoryVectorStore();
     const adapter = new CountingAdapter();
-    const bm25 = new JsonFileBM25Index(adapter.asDataAdapter());
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), adapter.asDataAdapter());
     await bm25.load();
     const embeddingProvider: EmbeddingProvider = {
       embed: () => Promise.resolve([1, 0]),
@@ -319,7 +328,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
     await indexer.reindexAll();
 
-    expect(adapter.writeCount).toBe(1);
+    expect(adapter.writeCount).toBe(0);
     expect([...bm25.search('alpha').keys()].length).toBeGreaterThan(0);
     expect([...bm25.search('beta').keys()].length).toBeGreaterThan(0);
     expect([...bm25.search('gamma').keys()].length).toBeGreaterThan(0);
@@ -405,7 +414,6 @@ function createRagConfig(): RAGConfig {
     excludeChatFolder: false,
     chunkSize: 100,
     overlap: 0,
-    vectorStoreType: 'indexeddb',
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
     autoUpdateEnabled: false,
@@ -501,6 +509,12 @@ function createAdapter(): DataAdapter {
     },
     mkdir: () => Promise.resolve(),
   } as unknown as DataAdapter;
+}
+
+function createBm25DbName(): string {
+  const dbName = `SuperpowerInsideIndexerBM25Test-${crypto.randomUUID()}`;
+  bm25DbNames.add(dbName);
+  return dbName;
 }
 
 class CountingAdapter {

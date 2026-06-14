@@ -1,9 +1,8 @@
-import type { JsonFileBM25Index } from './bm25';
-import type { VectorEntry, VectorStore } from './store';
+import type { IndexedDbBM25Index } from './bm25';
+import type { VectorEntry, VectorSearchFilter, VectorStore } from './store';
 import type { CachedMetadata, TFile } from 'obsidian';
 import {
   collectCandidateReasonsRust,
-  createEntriesFingerprintRust,
   calculateRecallAtKRust,
   planBm25CandidateResolutionRust,
   planBm25HitLookupRust,
@@ -11,9 +10,6 @@ import {
   planMergedRetrievalCandidatesByEntryIdRust,
   planStructuralHeadingNeighborsRust,
   planStructuralLinkedPathsRust,
-  rankTopKPairsRust,
-  RustIvfRuntimeIndex,
-  RustVectorRuntimeIndex,
   type RustBm25EntryInput,
   type RustStructuralEntryInput,
   type RustStructuralHeadingInput,
@@ -35,6 +31,7 @@ export interface RagRetrievalRequest {
   question: string;
   queryVector: number[];
   candidateLimit: number;
+  vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
 }
 
@@ -90,18 +87,19 @@ export class ExactVectorCandidateProvider implements CandidateProvider {
     request: RagRetrievalRequest,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
-    const entries = request.isEntryCompatible
-      ? scoreVectorEntries(
-          (await this.vectorStore.getEntries()).filter(request.isEntryCompatible),
-          request.queryVector,
-          request.candidateLimit,
-          signal,
-        ).map((result) => result.entry)
-      : await this.vectorStore.query(request.queryVector, request.candidateLimit, signal);
-    return entries.map((entry) => ({
-      entry,
-      source: this.source,
-    }));
+    const results = await this.vectorStore.search({
+      queryVector: request.queryVector,
+      topK: request.candidateLimit,
+      filter: request.vectorFilter,
+      signal,
+    });
+    return results
+      .filter((result) => request.isEntryCompatible?.(result.entry) ?? true)
+      .map((result) => ({
+        entry: result.entry,
+        source: this.source,
+        sourceScore: result.score,
+      }));
   }
 }
 
@@ -123,8 +121,6 @@ export interface IvfVectorCandidateProviderState {
 export class IvfVectorCandidateProvider implements CandidateProvider {
   readonly id = 'ivf-vector';
   readonly source = 'ann';
-  private index: IvfVectorIndex | null = null;
-  private indexedFingerprint = '';
   private state: IvfVectorCandidateProviderState = {
     mode: 'empty',
     entryCount: 0,
@@ -145,66 +141,59 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfAborted(signal);
-    const entries = (await this.vectorStore.getEntries()).filter(
-      (entry) => request.isEntryCompatible?.(entry) ?? true,
-    );
-    throwIfAborted(signal);
-    if (entries.length < this.options.minEntryCount) {
+    const stats = await this.vectorStore.getStats();
+    const shouldUseExact = stats.totalEntries < this.options.minEntryCount;
+    if (shouldUseExact) {
       this.state = {
-        mode: entries.length === 0 ? 'empty' : 'exact',
-        entryCount: entries.length,
+        mode: stats.totalEntries === 0 ? 'empty' : 'exact',
+        entryCount: stats.totalEntries,
         clusterCount: 0,
         probeCount: 0,
         lastBuiltAt: this.state.lastBuiltAt,
         lastQueriedAt: Date.now(),
       };
-      const exactEntries = scoreVectorEntries(
-        entries,
-        request.queryVector,
-        request.candidateLimit,
+      const exactResults = await this.vectorStore.search({
+        queryVector: request.queryVector,
+        topK: request.candidateLimit,
+        filter: request.vectorFilter,
         signal,
-      );
-      return exactEntries.map(({ entry, score }) => ({
-        entry,
-        source: 'vector',
-        sourceScore: score,
-      }));
+      });
+      return exactResults
+        .filter((result) => request.isEntryCompatible?.(result.entry) ?? true)
+        .map(({ entry, score }) => ({
+          entry,
+          source: 'vector',
+          sourceScore: score,
+        }));
     }
 
-    const index = this.getOrBuildIndex(entries, signal);
+    const results = await this.vectorStore.search({
+      queryVector: request.queryVector,
+      topK: request.candidateLimit,
+      filter: request.vectorFilter,
+      mode: 'ann',
+      annMinEntryCount: this.options.minEntryCount,
+      annClusterCount: this.options.clusterCount,
+      annProbeCount: this.options.probeCount,
+      signal,
+    });
+    const clusterCount = this.options.clusterCount > 0 ? this.options.clusterCount : results.length;
     this.state = {
       ...this.state,
       mode: 'ann',
-      entryCount: entries.length,
-      clusterCount: index.clusterCount,
-      probeCount: Math.max(1, Math.min(this.options.probeCount, index.clusterCount)),
+      entryCount: stats.totalEntries,
+      clusterCount,
+      probeCount: Math.max(1, Math.min(this.options.probeCount, Math.max(1, clusterCount))),
       lastQueriedAt: Date.now(),
     };
-    return index
-      .query(request.queryVector, request.candidateLimit, this.options.probeCount, signal)
+    return results
+      .filter((result) => request.isEntryCompatible?.(result.entry) ?? true)
       .map(({ entry, score }) => ({
         entry,
         source: this.source,
         sourceScore: score,
         reason: 'ivf',
       }));
-  }
-
-  private getOrBuildIndex(entries: readonly VectorEntry[], signal?: AbortSignal): IvfVectorIndex {
-    const fingerprint = createEntriesFingerprint(entries);
-    if (this.index && this.indexedFingerprint === fingerprint) {
-      return this.index;
-    }
-    this.index?.dispose();
-    this.index = IvfVectorIndex.build(entries, this.options.clusterCount, signal);
-    this.indexedFingerprint = fingerprint;
-    this.state = {
-      ...this.state,
-      entryCount: entries.length,
-      clusterCount: this.index.clusterCount,
-      lastBuiltAt: Date.now(),
-    };
-    return this.index;
   }
 
   getState(): IvfVectorCandidateProviderState {
@@ -218,7 +207,7 @@ export class BM25CandidateProvider implements CandidateProvider {
 
   constructor(
     private readonly vectorStore: VectorStore,
-    private readonly bm25Index: JsonFileBM25Index,
+    private readonly bm25Index: IndexedDbBM25Index,
     readonly deadlineMs = 80,
   ) {}
 
@@ -331,13 +320,24 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
   ): Promise<RetrievalCandidate[]> {
     const seedLimit = Math.max(1, Math.min(this.seedLimit, request.candidateLimit));
     const seedEntries = request.isEntryCompatible
-      ? scoreVectorEntries(
-          (await this.vectorStore.getEntries()).filter(request.isEntryCompatible),
-          request.queryVector,
-          seedLimit,
-          signal,
-        ).map((result) => result.entry)
-      : await this.vectorStore.query(request.queryVector, seedLimit, signal);
+      ? (
+          await this.vectorStore.search({
+            queryVector: request.queryVector,
+            topK: seedLimit,
+            filter: request.vectorFilter,
+            signal,
+          })
+        )
+          .map((result) => result.entry)
+          .filter(request.isEntryCompatible)
+      : (
+          await this.vectorStore.search({
+            queryVector: request.queryVector,
+            topK: seedLimit,
+            filter: request.vectorFilter,
+            signal,
+          })
+        ).map((result) => result.entry);
     throwIfAborted(signal);
     if (seedEntries.length === 0) return [];
 
@@ -508,39 +508,6 @@ export class RagRetrievalPipeline {
   }
 }
 
-function scoreVectorEntries(
-  entries: readonly VectorEntry[],
-  vector: readonly number[],
-  topK: number,
-  signal?: AbortSignal,
-): Array<{ entry: VectorEntry; score: number }> {
-  throwIfAborted(signal);
-  const runtimeIndex = RustVectorRuntimeIndex.build(entries.map((entry) => entry.vector));
-  const rustScores =
-    runtimeIndex?.rankTopK(vector, topK) ??
-    rankTopKPairsRust(
-      vector,
-      entries.map((entry) => entry.vector),
-      topK,
-    );
-  runtimeIndex?.dispose();
-  if (rustScores !== null) {
-    throwIfAborted(signal);
-    const selected: Array<{ entry: VectorEntry; score: number }> = [];
-    for (const result of rustScores) {
-      const resultIndex = result.index;
-      if (!Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex >= entries.length) {
-        continue;
-      }
-      const entry = entries[resultIndex];
-      if (entry) selected.push({ entry, score: result.score });
-    }
-    return selected;
-  }
-
-  return [];
-}
-
 export function mergeRetrievalCandidateGroupsByEntryId(
   candidates: readonly RetrievalCandidate[],
 ): RustMergedRetrievalCandidatePlan[] {
@@ -674,55 +641,6 @@ function toRetrievalCandidateSource(source: string): RetrievalCandidateSource | 
   return null;
 }
 
-class IvfVectorIndex {
-  private constructor(
-    private readonly entries: readonly VectorEntry[],
-    private readonly runtimeIndex: RustIvfRuntimeIndex | null,
-  ) {}
-
-  get clusterCount(): number {
-    return this.runtimeIndex?.clusterCount ?? 0;
-  }
-
-  static build(
-    entries: readonly VectorEntry[],
-    requestedClusterCount: number,
-    signal?: AbortSignal,
-  ): IvfVectorIndex {
-    if (entries.length === 0) return new IvfVectorIndex(entries, null);
-    throwIfAborted(signal);
-    const runtimeIndex = RustIvfRuntimeIndex.build(
-      entries.map((entry) => entry.vector),
-      requestedClusterCount,
-      4,
-    );
-    return new IvfVectorIndex(entries, runtimeIndex);
-  }
-
-  dispose(): void {
-    this.runtimeIndex?.dispose();
-  }
-
-  query(
-    vector: readonly number[],
-    topK: number,
-    probeCount: number,
-    signal?: AbortSignal,
-  ): Array<{ entry: VectorEntry; score: number }> {
-    if (!this.runtimeIndex || this.runtimeIndex.clusterCount === 0) return [];
-
-    throwIfAborted(signal);
-    const scoredRows = this.runtimeIndex.query(vector, topK, probeCount);
-    if (scoredRows === null) return [];
-    const selected: Array<{ entry: VectorEntry; score: number }> = [];
-    for (const result of scoredRows) {
-      const entry = this.entries[result.index];
-      if (entry) selected.push({ entry, score: result.score });
-    }
-    return selected;
-  }
-}
-
 function withProviderDeadline<T>(
   operation: Promise<T>,
   deadlineMs: number,
@@ -747,20 +665,6 @@ class ProviderTimeoutError extends Error {
   constructor() {
     super('retrieval provider timed out');
   }
-}
-
-function createEntriesFingerprint(entries: readonly VectorEntry[]): string {
-  const fingerprint = createEntriesFingerprintRust(
-    entries.map((entry) => ({
-      id: entry.id,
-      vector: entry.vector,
-      metadata: {
-        indexedAt: entry.metadata.indexedAt ?? 0,
-        contentHash: entry.metadata.contentHash ?? '',
-      },
-    })),
-  );
-  return fingerprint ?? '';
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

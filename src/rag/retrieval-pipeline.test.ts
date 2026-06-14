@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   BM25CandidateProvider,
   ExactVectorCandidateProvider,
@@ -10,9 +12,16 @@ import {
   type RagRetrievalRequest,
   type RetrievalCandidate,
 } from './retrieval-pipeline';
-import { JsonFileBM25Index } from './bm25';
+import { IndexedDbBM25Index } from './bm25';
 import { MemoryVectorStore, type VectorEntry } from './store';
 import type { DataAdapter, TFile } from 'obsidian';
+
+const dbNames = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
+  dbNames.clear();
+});
 
 describe('RagRetrievalPipeline', () => {
   it('ExactVectorCandidateProvider는 저장소의 벡터 후보를 공통 후보 계약으로 반환한다', async () => {
@@ -27,6 +36,35 @@ describe('RagRetrievalPipeline', () => {
 
     expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(['best.md']);
     expect(candidates[0]?.source).toBe('vector');
+  });
+
+  it('ExactVectorCandidateProvider는 embedding 필터가 있어도 전체 entries를 복사하지 않는다', async () => {
+    const best = createEntry('best.md', [1, 0], '가장 가까운 문서');
+    const store = new SearchOnlyStore([best]);
+    const provider = new ExactVectorCandidateProvider(store);
+
+    const candidates = await provider.getCandidates({
+      ...createRequest([1, 0], 1),
+      vectorFilter: {
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        dimension: 2,
+      },
+      isEntryCompatible: () => true,
+    });
+
+    expect(candidates.map((candidate) => candidate.entry.id)).toEqual([best.id]);
+    expect(store.searchCalls).toEqual([
+      expect.objectContaining({
+        topK: 1,
+        filter: {
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+          dimension: 2,
+        },
+      }),
+    ]);
+    expect(store.getEntriesCalls).toBe(0);
   });
 
   it('provider timeout은 전체 retrieval 실패로 전파하지 않고 diagnostic에 기록한다', async () => {
@@ -149,6 +187,39 @@ describe('RagRetrievalPipeline', () => {
     const candidates = await provider.getCandidates(createRequest([1, 0], 1));
 
     expect(candidates[0]?.entry.id).toBe('entry-1.md::1');
+  });
+
+  it('IvfVectorCandidateProvider는 ANN 후보도 저장소 search API로 조회한다', async () => {
+    const best = createEntry('best.md', [1, 0], '가장 가까운 문서');
+    const store = new SearchOnlyStore([best]);
+    const provider = new IvfVectorCandidateProvider(store, {
+      minEntryCount: 1,
+      clusterCount: 2,
+      probeCount: 1,
+    });
+
+    const candidates = await provider.getCandidates({
+      ...createRequest([1, 0], 1),
+      vectorFilter: {
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        dimension: 2,
+      },
+      isEntryCompatible: () => true,
+    });
+
+    expect(candidates.map((candidate) => candidate.entry.id)).toEqual([best.id]);
+    expect(candidates[0]?.source).toBe('ann');
+    expect(store.searchCalls).toEqual([
+      expect.objectContaining({
+        mode: 'ann',
+        topK: 1,
+        annMinEntryCount: 1,
+        annClusterCount: 2,
+        annProbeCount: 1,
+      }),
+    ]);
+    expect(store.getEntriesCalls).toBe(0);
   });
 
   it('calculateRecallAtK는 exact 상위 후보 대비 ANN recall을 계산한다', () => {
@@ -296,8 +367,8 @@ function createEntry(
 
 async function createBm25(
   documents: readonly (readonly [string, string] | readonly [string, string, string])[],
-): Promise<JsonFileBM25Index> {
-  const bm25 = new JsonFileBM25Index(createAdapter());
+): Promise<IndexedDbBM25Index> {
+  const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
   await bm25.load();
   const writableBm25 = bm25 as unknown as {
     addDocument(docId: string, text: string, filePath?: string): void;
@@ -306,6 +377,12 @@ async function createBm25(
     writableBm25.addDocument(id, text, filePath);
   }
   return bm25;
+}
+
+function createDbName(): string {
+  const dbName = `SuperpowerInsideRetrievalBM25Test-${crypto.randomUUID()}`;
+  dbNames.add(dbName);
+  return dbName;
 }
 
 function createAdapter(): DataAdapter {
@@ -340,6 +417,47 @@ class PathLookupStore extends MemoryVectorStore {
   }
 }
 
+class SearchOnlyStore extends MemoryVectorStore {
+  getEntriesCalls = 0;
+  searchCalls: unknown[] = [];
+
+  constructor(private readonly searchEntries: VectorEntry[]) {
+    super();
+  }
+
+  override getEntries(): Promise<VectorEntry[]> {
+    this.getEntriesCalls++;
+    throw new Error('getEntries must not be used for vector candidate search');
+  }
+
+  override getStats(): Promise<{
+    totalEntries: number;
+    totalFiles: number;
+    totalVectors: number;
+    averageVectorsPerFile: number;
+    lastUpdated: number | null;
+  }> {
+    return Promise.resolve({
+      totalEntries: this.searchEntries.length,
+      totalFiles: new Set(this.searchEntries.map((entry) => entry.metadata.filePath)).size,
+      totalVectors: this.searchEntries.length,
+      averageVectorsPerFile: this.searchEntries.length,
+      lastUpdated: 1,
+    });
+  }
+
+  search(request: unknown): Promise<Array<{ entry: VectorEntry; score: number; mode: 'exact' | 'ann' }>> {
+    this.searchCalls.push(request);
+    return Promise.resolve(
+      this.searchEntries.map((entry) => ({
+        entry,
+        score: 1,
+        mode: isRecord(request) && request.mode === 'ann' ? 'ann' : 'exact',
+      })),
+    );
+  }
+}
+
 interface TestMetadataContextInput {
   resolvedLinks?: Record<string, Record<string, number>>;
   fileCaches?: Record<string, { headings?: Array<{ heading: string; level: number; position: { start: { line: number; col: number; offset: number }; end: { line: number; col: number; offset: number } } }>; links?: Array<{ link: string; original: string; position: { start: { line: number; col: number; offset: number }; end: { line: number; col: number; offset: number } } }> }>;
@@ -361,4 +479,8 @@ function createMetadataContext(input: TestMetadataContextInput) {
     getFileCache: (file: TFile) => input.fileCaches?.[file.path] ?? null,
     getFirstLinkpathDest: (linkpath: string) => getFile(linkpath),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
 }

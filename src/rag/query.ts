@@ -1,7 +1,7 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
-import { JsonFileBM25Index } from './bm25';
+import type { IndexedDbBM25Index } from './bm25';
 import { GraphRagCandidateProvider, type GraphRagQueryEngine } from '../graph/query-engine';
 import {
   BM25CandidateProvider,
@@ -73,7 +73,7 @@ export interface RAGQueryEngineOptions {
 
 export class RAGQueryEngine {
   private embeddingProvider: EmbeddingProvider;
-  private bm25Index: JsonFileBM25Index | undefined;
+  private bm25Index: IndexedDbBM25Index | undefined;
   private bm25Weight: number;
   private minScore: number;
   private retrievalPipeline: RagRetrievalPipeline;
@@ -85,7 +85,7 @@ export class RAGQueryEngine {
   constructor(
     vectorStore: VectorStore,
     embeddingProvider: EmbeddingProvider,
-    bm25Index?: JsonFileBM25Index,
+    bm25Index?: IndexedDbBM25Index,
     bm25Weight = 0.3,
     minScore = 0.5,
     options: RAGQueryEngineOptions = {},
@@ -130,6 +130,10 @@ export class RAGQueryEngine {
       question,
       queryVector: qVector,
       candidateLimit: topK * 8,
+      vectorFilter: {
+        embeddingModel: this.embeddingModel,
+        dimension: qVector.length,
+      },
       isEntryCompatible: this.embeddingModel
         ? (entry) => this.isEntryCompatible(entry, qVector)
         : undefined,

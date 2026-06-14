@@ -11,7 +11,6 @@ const baseRagConfig: RAGConfig = {
   excludeChatFolder: false,
   chunkSize: 1000,
   overlap: 100,
-  vectorStoreType: 'json',
   embeddingProvider: 'openai',
   embeddingModel: 'text-embedding-3-small',
   autoUpdateEnabled: false,

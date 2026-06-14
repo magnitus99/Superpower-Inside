@@ -1,5 +1,7 @@
+import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import type { DataAdapter, TFile } from 'obsidian';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import { buildDefaultOntologySchema } from '../ontology/schema';
@@ -10,9 +12,16 @@ import {
   type GraphEvidenceRecord,
   type GraphRelationRecord,
 } from '../graph/store';
-import { JsonFileBM25Index } from './bm25';
+import { IndexedDbBM25Index } from './bm25';
 import { LLMRAGResultReranker, RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
+
+const bm25DbNames = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
+  bm25DbNames.clear();
+});
 
 describe('RAGQueryEngine', () => {
   it('재랭커가 직접 근거로 더 적합한 낮은 점수 후보를 topK 앞으로 올린다', async () => {
@@ -435,13 +444,19 @@ function createRerankProvider(response: string): LLMProvider {
 
 async function createBm25(
   documents: readonly (readonly [string, string])[],
-): Promise<JsonFileBM25Index> {
-  const bm25 = new JsonFileBM25Index(createAdapter());
+): Promise<IndexedDbBM25Index> {
+  const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
   await bm25.load();
   for (const [path, text] of documents) {
     bm25.addDocument(path, text);
   }
   return bm25;
+}
+
+function createBm25DbName(): string {
+  const dbName = `SuperpowerInsideQueryBM25Test-${crypto.randomUUID()}`;
+  bm25DbNames.add(dbName);
+  return dbName;
 }
 
 function createAdapter(): DataAdapter {

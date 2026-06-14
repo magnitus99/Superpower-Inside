@@ -4,7 +4,7 @@ import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   IndexedDbVectorStore,
-  JsonFileVectorStore,
+  importLegacyJsonVectorStore,
   MemoryVectorStore,
   type VectorEntry,
   type VectorStore,
@@ -117,6 +117,56 @@ describe('IndexedDbVectorStore', () => {
     expect(results.map((entry) => entry.id)).toEqual(['a.md::0', 'c.md::0']);
   });
 
+  it('search는 embedding provider/model/dimension 필터에 맞는 벡터만 점수화한다', async () => {
+    const store = createStore();
+    await store.add([
+      createEntry('openai.md', 0, [1, 0], 'openai'),
+      {
+        ...createEntry('ollama.md', 0, [1, 0], 'ollama'),
+        metadata: {
+          ...createEntry('ollama.md', 0, [1, 0], 'ollama').metadata,
+          embeddingProvider: 'ollama',
+        },
+      },
+      createEntry('other-dimension.md', 0, [1, 0, 0], 'other dimension'),
+    ]);
+
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 5,
+      filter: {
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        dimension: 2,
+      },
+    });
+
+    expect(results.map((result) => result.entry.id)).toEqual(['openai.md::0']);
+    expect(results[0]?.score).toBeCloseTo(1);
+    expect(results[0]?.mode).toBe('exact');
+  });
+
+  it('IndexedDB record는 벡터를 ArrayBuffer와 dimension으로 저장한다', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+
+    await store.add([createEntry('typed.md', 0, [0.25, 0.75], 'typed')]);
+
+    const db = new Dexie(dbName);
+    db.version(3).stores({
+      vectors:
+        'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+      fileIndex: 'filePath, updated',
+      meta: 'key',
+    });
+    const raw = await db.table('vectors').get('typed.md::0') as Record<string, unknown> | undefined;
+
+    expect(raw?.vector).toBeUndefined();
+    expect(raw?.vectorBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(raw?.dimension).toBe(2);
+    db.close();
+  });
+
   it('clear로 모든 벡터를 삭제한다', async () => {
     const store = createStore();
     await store.add([createEntry('note.md', 0, [1, 0], 'a')]);
@@ -137,11 +187,6 @@ describe('IndexedDbVectorStore', () => {
 describe('VectorStore contract', () => {
   it('MemoryVectorStore가 공통 저장소 계약을 만족한다', async () => {
     await expectVectorStoreContract(new MemoryVectorStore());
-  });
-
-  it('JsonFileVectorStore가 공통 저장소 계약을 만족한다', async () => {
-    const adapter = new TestJsonAdapter();
-    await expectVectorStoreContract(new JsonFileVectorStore(adapter.asDataAdapter(), 'vectors.json'));
   });
 
   it('IndexedDbVectorStore가 공통 저장소 계약을 만족한다', async () => {
@@ -181,33 +226,48 @@ describe('VectorStore contract', () => {
   });
 });
 
-describe('JsonFileVectorStore load state', () => {
-  it('정상적인 빈 저장소는 반복 호출해도 한 번만 읽는다', async () => {
+describe('legacy JSON vector import', () => {
+  it('기존 JSON 벡터 파일을 IndexedDB로 한 번만 가져온다', async () => {
     const adapter = new TestJsonAdapter();
-    adapter.setRaw('vectors.json', '[]');
-    const store = new JsonFileVectorStore(adapter.asDataAdapter(), 'vectors.json');
+    adapter.setRaw('vectors.json', JSON.stringify([createEntry('legacy.md', 0, [1, 0], 'legacy')]));
+    const store = createStore();
 
-    expect(await store.getEntries()).toEqual([]);
-    expect(await store.getStats()).toMatchObject({ totalEntries: 0, lastUpdated: null });
-    expect(await store.getIndexedFilePaths()).toEqual([]);
+    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+      imported: 1,
+      skipped: false,
+    });
+    expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['legacy.md::0']);
 
-    expect(adapter.readCount).toBe(1);
+    adapter.setRaw('vectors.json', JSON.stringify([createEntry('new.md', 0, [0, 1], 'new')]));
+    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+      imported: 0,
+      skipped: true,
+    });
+    expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['legacy.md::0']);
   });
 
-  it('invalid JSON은 빈 저장소로 고정하고 반복 read를 만들지 않는다', async () => {
+  it('잘못된 JSON 벡터 파일은 빈 이관으로 처리하고 반복 시도하지 않는다', async () => {
     const adapter = new TestJsonAdapter();
     adapter.setRaw('vectors.json', '{ invalid');
-    const store = new JsonFileVectorStore(adapter.asDataAdapter(), 'vectors.json');
+    const store = createStore();
 
+    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+      imported: 0,
+      skipped: false,
+    });
+    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+      imported: 0,
+      skipped: true,
+    });
     expect(await store.getEntries()).toEqual([]);
-    expect(await store.getIndexedFilePaths()).toEqual([]);
-
-    expect(adapter.readCount).toBe(1);
   });
 });
 
-function createStore(): IndexedDbVectorStore {
-  const dbName = `SuperpowerInsideVectorStoreTest-${crypto.randomUUID()}`;
+function createDbName(): string {
+  return `SuperpowerInsideVectorStoreTest-${crypto.randomUUID()}`;
+}
+
+function createStore(dbName = createDbName()): IndexedDbVectorStore {
   dbNames.add(dbName);
   return new IndexedDbVectorStore(dbName);
 }
@@ -330,16 +390,4 @@ describe('VectorStore 파일 단위 교체', () => {
     ]);
   });
 
-  it('JSON 저장소 배치 모드에서는 여러 파일 교체 후 한 번만 persist한다', async () => {
-    const adapter = new TestJsonAdapter();
-    const store = new JsonFileVectorStore(adapter.asDataAdapter(), 'vectors.json');
-
-    await store.withBatch(async () => {
-      await store.replaceFileEntries('a.md', [createEntry('a.md', 0, [1, 0], 'a')]);
-      await store.replaceFileEntries('b.md', [createEntry('b.md', 0, [0, 1], 'b')]);
-    });
-
-    expect(adapter.writeCount).toBe(1);
-    expect((await store.getIndexedFilePaths()).sort()).toEqual(['a.md', 'b.md']);
-  });
 });

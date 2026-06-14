@@ -1,6 +1,15 @@
+import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import { describe, expect, it } from 'vitest';
-import { JsonFileBM25Index, tokenize } from './bm25';
+import { afterEach, describe, expect, it } from 'vitest';
+import { IndexedDbBM25Index, tokenize } from './bm25';
+
+const dbNames = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
+  dbNames.clear();
+});
 
 describe('BM25 tokenizer', () => {
   it('영문 camelCase와 구분자 변형을 같은 키워드로 검색할 수 있게 토큰화한다', () => {
@@ -20,7 +29,7 @@ describe('BM25 tokenizer', () => {
   });
 });
 
-describe('JsonFileBM25Index', () => {
+describe('IndexedDbBM25Index', () => {
   it('반복된 질의 토큰으로 같은 문서 점수를 중복 가산하지 않는다', async () => {
     const bm25 = await createBm25([
       ['doc.md::0', 'specialterm 직접 근거'],
@@ -51,7 +60,7 @@ describe('JsonFileBM25Index', () => {
         avgDocLength: 1,
       }),
     );
-    const bm25 = new JsonFileBM25Index(adapter);
+    const bm25 = new IndexedDbBM25Index(createDbName(), adapter);
 
     await bm25.load();
 
@@ -70,7 +79,7 @@ describe('JsonFileBM25Index', () => {
     expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
   });
 
-  it('legacy BM25 JSON을 읽은 뒤 저장할 때 compact v3 포맷으로 자동 마이그레이션한다', async () => {
+  it('legacy BM25 JSON을 읽은 뒤 저장할 때 IndexedDB snapshot으로 마이그레이션한다', async () => {
     const inspectable = createInspectableAdapter(
       JSON.stringify({
         tokenizerVersion: 2,
@@ -84,7 +93,8 @@ describe('JsonFileBM25Index', () => {
         avgDocLength: 2,
       }),
     );
-    const bm25 = new JsonFileBM25Index(inspectable.adapter);
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, inspectable.adapter);
 
     await bm25.load();
     expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
@@ -92,31 +102,28 @@ describe('JsonFileBM25Index', () => {
     bm25.addDocument('new.md::0', 'GraphRAG open router evidence', 'new.md');
     await bm25.persist();
 
-    const persisted = JSON.parse(
-      inspectable.readRaw('.superpower-inside/bm25-index.json') ?? '{}',
-    ) as unknown;
-    expect(isRecord(persisted)).toBe(true);
-    if (!isRecord(persisted)) {
-      throw new Error('persisted BM25 payload must be a JSON object');
-    }
-    expect(persisted).toMatchObject({
-      schemaVersion: 3,
-      tokenizerVersion: 2,
-    });
-    expect(isCompactBm25Payload(persisted)).toBe(true);
-    expect(Object.hasOwn(persisted, 'inverted')).toBe(false);
+    expect(inspectable.writeCount()).toBe(0);
+    const reopened = new IndexedDbBM25Index(dbName, inspectable.adapter);
+    await reopened.load();
+    expect([...reopened.search('graphrag').keys()]).toEqual(['new.md::0']);
   });
 });
 
 async function createBm25(
   documents: readonly (readonly [string, string])[],
-): Promise<JsonFileBM25Index> {
-  const bm25 = new JsonFileBM25Index(createAdapter());
+): Promise<IndexedDbBM25Index> {
+  const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
   await bm25.load();
   for (const [id, text] of documents) {
     bm25.addDocument(id, text);
   }
   return bm25;
+}
+
+function createDbName(): string {
+  const dbName = `SuperpowerInsideBM25IndexTest-${crypto.randomUUID()}`;
+  dbNames.add(dbName);
+  return dbName;
 }
 
 function createAdapter(rawJson?: string): DataAdapter {
@@ -126,10 +133,12 @@ function createAdapter(rawJson?: string): DataAdapter {
 interface InspectableAdapter {
   adapter: DataAdapter;
   readRaw(path: string): string | undefined;
+  writeCount(): number;
 }
 
 function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   const files = new Map<string, string>();
+  let writes = 0;
   if (rawJson !== undefined) {
     files.set('.superpower-inside/bm25-index.json', rawJson);
   }
@@ -137,6 +146,7 @@ function createInspectableAdapter(rawJson?: string): InspectableAdapter {
     exists: (path: string) => Promise.resolve(files.has(path)),
     read: (path: string) => Promise.resolve(files.get(path) ?? ''),
     write: (path: string, data: string) => {
+      writes += 1;
       files.set(path, data);
       return Promise.resolve();
     },
@@ -157,27 +167,6 @@ function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   return {
     adapter,
     readRaw: (path: string) => files.get(path),
+    writeCount: () => writes,
   };
-}
-
-function isCompactBm25Payload(value: unknown): value is {
-  docs: unknown[];
-  terms: unknown[];
-} {
-  if (!isRecord(value)) return false;
-  const docs = value.docs;
-  const terms = value.terms;
-  if (!Array.isArray(docs) || !Array.isArray(terms)) return false;
-  return docs.every((doc) => {
-    if (!isRecord(doc)) return false;
-    return (
-      typeof doc.id === 'string' &&
-      typeof doc.length === 'number' &&
-      typeof doc.sourcePath === 'string'
-    );
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object';
 }
