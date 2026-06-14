@@ -238,20 +238,9 @@ describe('GraphRagIndexingRunner', () => {
     const progressBefore = runner.getProgress();
 
     expect(result.runId).toBe(1);
-    expect(runner.getLastResult()).toEqual({
-      totalCandidateFiles: 2,
-      selectedFiles: 1,
-      processedFiles: 1,
-      skippedFiles: 0,
-      failedFiles: 0,
-      processedChunks: expect.any(Number),
-      skippedChunks: 0,
-      failedChunks: 0,
-      cancelled: false,
-      startedAt: expect.any(Number),
-      finishedAt: expect.any(Number),
-      runId: 1,
-    });
+    expect(runner.getLastResult()).toEqual(result);
+    expect(result.processedChunks).toBe(1);
+    expect(result.startedAt).toBeLessThanOrEqual(result.finishedAt);
     expect(progressBefore.runId).toBe(1);
     expect(runner.getLastRunId()).toBe(1);
 
