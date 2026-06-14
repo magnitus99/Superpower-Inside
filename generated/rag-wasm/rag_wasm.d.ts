@@ -1,5 +1,4 @@
 /* tslint:disable */
-/* eslint-disable */
 
 /**
  * JS wrapper가 재사용할 수 있는 BM25 runtime index.

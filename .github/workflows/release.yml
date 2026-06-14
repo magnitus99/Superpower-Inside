@@ -29,15 +29,14 @@ jobs:
           components: clippy,rustfmt
           targets: wasm32-unknown-unknown
 
-      - name: Install Rust security tools
+      - name: Install fish
         run: |
           sudo apt-get update
           sudo apt-get install -y fish
-          cargo install wasm-bindgen-cli --version 0.2.123 --locked
-          cargo install cargo-deny --version 0.19.8 --locked
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo install cargo-geiger --version 0.13.0 --locked
-          cargo install cargo-vet --version 0.10.2 --locked
+
+      - name: Install Rust security tools
+        shell: fish {0}
+        run: scripts/install-rust-security-tools.fish
 
       - name: Install dependencies
         run: npm ci

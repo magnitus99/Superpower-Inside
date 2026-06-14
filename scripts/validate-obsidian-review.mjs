@@ -20,6 +20,7 @@ validateTag();
 validateManifestDescription();
 validateReadmeEnglishIntro();
 validateCss();
+validateGeneratedWasmDeclarations();
 validateBuiltAssets();
 
 if (errors.length > 0) {
@@ -121,6 +122,16 @@ function validateBuiltAssets() {
     if (!existsSync(path.join(root, asset))) {
       errors.push(`release asset is missing: ${asset}`);
     }
+  }
+}
+
+function validateGeneratedWasmDeclarations() {
+  const declarationPath = 'generated/rag-wasm/rag_wasm.d.ts';
+  if (!existsSync(path.join(root, declarationPath))) return;
+  const declaration = readText(declarationPath);
+  const eslintDisableLine = findLine(declaration, 'eslint-disable');
+  if (eslintDisableLine !== -1) {
+    errors.push(`${declarationPath} must not include eslint-disable at line ${eslintDisableLine}`);
   }
 }
 
