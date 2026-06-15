@@ -25,8 +25,9 @@ for ARG in $argv
 end
 
 set CURRENT_BRANCH (git branch --show-current)
-if test "$CURRENT_BRANCH" = main
-    echo "ERROR: main 브랜치에서 직접 릴리스 커밋을 만들 수 없습니다. develop 기준 작업 브랜치에서 실행하세요."
+set REQUIRED_RELEASE_BRANCH main
+if test "$CURRENT_BRANCH" != "$REQUIRED_RELEASE_BRANCH"
+    echo "ERROR: 버전 커밋과 릴리스 태그는 $REQUIRED_RELEASE_BRANCH 브랜치에서만 만들 수 있습니다. 현재 브랜치: $CURRENT_BRANCH"
     exit 1
 end
 
