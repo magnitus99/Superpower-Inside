@@ -112,7 +112,7 @@ or exit $status
 
 set -l GENERATED_SNAPSHOT (mktemp -d)
 or exit $status
-set -l GENERATED_PATHS generated/rag-wasm src/rag/rag-wasm-bytes.ts
+set -l GENERATED_PATHS generated/rag-wasm
 
 for path in $GENERATED_PATHS
     set -l source "$REPO_ROOT/$path"
@@ -149,7 +149,7 @@ for path in $GENERATED_PATHS
     or begin
         diff -ru "$before" "$after" | sed -n '1,240p'
         rm -rf "$GENERATED_SNAPSHOT"
-        echo "ERROR: Rust/WASM generated files are out of date. Run npm run wasm:build and commit the result."
+        echo "ERROR: Rust/WASM generated bindings are out of date. Run npm run wasm:build and commit generated/rag-wasm."
         exit 1
     end
 end
