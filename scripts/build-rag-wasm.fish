@@ -39,7 +39,13 @@ set -x PATH "$HOME/.cargo/bin" $PATH
 
 set -l OUT_DIR "$REPO_ROOT/generated/rag-wasm"
 set -l BINDGEN_DIR "$REPO_ROOT/target/rag-wasm-bindgen"
-set -l WASM_INPUT "$REPO_ROOT/target/wasm32-unknown-unknown/release/superpower_rag_wasm.wasm"
+set -l BUILD_TARGET_DIR "$REPO_ROOT/target"
+
+if test -n "$CARGO_TARGET_DIR"
+    set BUILD_TARGET_DIR "$CARGO_TARGET_DIR"
+end
+
+set -l WASM_INPUT "$BUILD_TARGET_DIR/wasm32-unknown-unknown/release/superpower_rag_wasm.wasm"
 set -l CARGO_CMD "$CARGO_BIN"
 
 if command -sq "$RUSTUP_BIN"
