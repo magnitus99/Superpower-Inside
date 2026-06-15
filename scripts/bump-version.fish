@@ -155,11 +155,18 @@ or begin
 end
 
 set RELEASE_NOTE_FILE "release-notes-$NEW_VERSION.md"
-set TAGS (git tag --sort=version:refname --list)
-set TAG_COUNT (count $TAGS)
+set RELEASE_TAGS (git tag --sort=version:refname --list '[0-9]*')
 set PREV_TAG ""
-if test $TAG_COUNT -gt 1
-    set PREV_TAG $TAGS[(math $TAG_COUNT - 1)]
+for index in (seq 1 (count $RELEASE_TAGS))
+    if test "$RELEASE_TAGS[$index]" = "$NEW_VERSION"
+        if test $index -gt 1
+            set PREV_TAG $RELEASE_TAGS[(math $index - 1)]
+        end
+        break
+    end
+end
+
+if test -n "$PREV_TAG"
     ./scripts/release-notes.fish "$NEW_VERSION" "$PREV_TAG" "$RELEASE_NOTE_FILE"
     if test $status -ne 0
         echo "ERROR: release-notes 생성 실패"
