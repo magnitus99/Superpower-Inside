@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,37 +21,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          components: clippy,rustfmt
-          targets: wasm32-unknown-unknown
-
-      - name: Install fish
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fish
-
-      - name: Install Rust security tools
-        shell: fish {0}
-        run: scripts/install-rust-security-tools.fish
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Security hardening gate
-        run: npm run security:full
-
-      - name: Obsidian review gate
-        run: npm run review -- --tag "$GITHUB_REF_NAME"
-
-      - name: Build
-        run: npm run build
-
-      - name: Obsidian review gate for release assets
-        run: npm run review -- --tag "$GITHUB_REF_NAME" --built
+      - name: Verify committed release assets
+        run: node scripts/validate-obsidian-review.mjs --tag "$GITHUB_REF_NAME" --built
 
       - name: Verify manifest version matches tag
         run: |
