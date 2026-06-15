@@ -61,8 +61,8 @@ export class RefreshAction {
     Pick<RefreshActionOptions, 'action'>;
   private state: RefreshState = 'idle';
   private abortController: AbortController | null = null;
-  private throttleTimer: ReturnType<typeof setTimeout> | null = null;
-  private timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  private throttleTimer: number | null = null;
+  private timeoutTimer: number | null = null;
   private originalText = '';
   private btn: HTMLElement | null = null;
 
@@ -118,7 +118,7 @@ export class RefreshAction {
   private readonly handleClick = (): void => {
     if (this.opts.throttleMs > 0) {
       if (this.throttleTimer !== null) return;
-      this.throttleTimer = setTimeout(() => {
+      this.throttleTimer = window.setTimeout(() => {
         this.throttleTimer = null;
       }, this.opts.throttleMs);
     }
@@ -142,7 +142,7 @@ export class RefreshAction {
 
     // 타임아웃 설정
     if (this.opts.timeoutMs > 0) {
-      this.timeoutTimer = setTimeout(() => {
+      this.timeoutTimer = window.setTimeout(() => {
         this.abort();
       }, this.opts.timeoutMs);
     }
@@ -194,7 +194,7 @@ export class RefreshAction {
 
   private clearTimeoutTimer(): void {
     if (this.timeoutTimer !== null) {
-      clearTimeout(this.timeoutTimer);
+      window.clearTimeout(this.timeoutTimer);
       this.timeoutTimer = null;
     }
   }
@@ -240,7 +240,7 @@ export class RefreshAction {
   private cleanup(): void {
     this.abort();
     if (this.throttleTimer !== null) {
-      clearTimeout(this.throttleTimer);
+      window.clearTimeout(this.throttleTimer);
       this.throttleTimer = null;
     }
     if (this.btn) {

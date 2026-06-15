@@ -69,9 +69,9 @@ function throwIfAborted(signal?: AbortSignal): void {
 async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return;
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
+    const timeout = window.setTimeout(resolve, ms);
     const onAbort = (): void => {
-      clearTimeout(timeout);
+      window.clearTimeout(timeout);
       reject(new DOMException('Embedding request cancelled', 'AbortError'));
     };
     if (signal?.aborted) {

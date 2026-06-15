@@ -1,4 +1,4 @@
-import { TFile, type Vault } from 'obsidian';
+import { TFile, type FileManager, type Vault } from 'obsidian';
 import { t } from '../i18n';
 import type { ChatMessage } from '../llm/providers';
 import type {
@@ -287,10 +287,14 @@ export async function renameChat(vault: Vault, oldPath: string, newTitle: string
   return oldPath;
 }
 
-export async function deleteChat(vault: Vault, filePath: string): Promise<void> {
+export async function deleteChat(
+  fileManager: FileManager,
+  vault: Vault,
+  filePath: string,
+): Promise<void> {
   const file = vault.getAbstractFileByPath(filePath);
   if (!file) throw new Error(t('fileNotFoundError', { path: filePath }));
-  await vault.delete(file);
+  await fileManager.trashFile(file);
 }
 
 function formatMessage(message: ChatMessageWithMeta, index: number): string {

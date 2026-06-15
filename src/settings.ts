@@ -321,7 +321,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   },
   customOpenAIProviders: [],
   rag: {
-    excludePaths: ['.git', 'node_modules', '.obsidian', 'attachments'],
+    excludePaths: ['.git', 'node_modules', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
     excludeChatFolder: true,
     chunkSize: 1000,
@@ -465,7 +465,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
   private tabPanels: Map<SettingsTabId, HTMLDivElement> = new Map();
   private validationCache: ProviderValidationCache = {};
-  private saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  private saveTimeout: number | null = null;
   private pendingSave = false;
   private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
   private pendingEmbeddingModel: string | null = null;
@@ -504,9 +504,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     this.pendingSave = true;
     if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+      window.clearTimeout(this.saveTimeout);
     }
-    this.saveTimeout = setTimeout(() => {
+    this.saveTimeout = window.setTimeout(() => {
       this.saveTimeout = null;
       this.pendingSave = false;
       void this.saveSettingsWithFeedback();
@@ -514,7 +514,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   flushSave(): void {
     if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
+      window.clearTimeout(this.saveTimeout);
       this.saveTimeout = null;
     }
     if (this.pendingSave) {
@@ -3529,28 +3529,28 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       cls: 'superpower-inside-mcp-json-editor',
     });
     jsonTextArea.value = defaultJson;
-    let lintTimeout: ReturnType<typeof setTimeout> | null = null;
-    let autoSaveTimeout: ReturnType<typeof setTimeout> | null = null;
+    let lintTimeout: number | null = null;
+    let autoSaveTimeout: number | null = null;
     const runLint = () => {
       lintStatus.setText(t('mcpJsonLinting'));
       lintStatus.removeClass('success');
       lintStatus.removeClass('error');
       if (lintTimeout) {
-        clearTimeout(lintTimeout);
+        window.clearTimeout(lintTimeout);
         lintTimeout = null;
       }
       if (autoSaveTimeout) {
-        clearTimeout(autoSaveTimeout);
+        window.clearTimeout(autoSaveTimeout);
         autoSaveTimeout = null;
       }
-      lintTimeout = setTimeout(() => {
+      lintTimeout = window.setTimeout(() => {
         lintTimeout = null;
         const result = validateMcpJson(jsonTextArea.value);
         if (result.valid) {
           lintStatus.setText('✅ ' + t('mcpJsonLintOk'));
           lintStatus.addClass('success');
           lintStatus.removeClass('error');
-          autoSaveTimeout = setTimeout(() => {
+          autoSaveTimeout = window.setTimeout(() => {
             autoSaveTimeout = null;
             this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
             void (async () => {

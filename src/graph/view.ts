@@ -115,7 +115,7 @@ export class GraphRagView extends ItemView {
     this.searchInputEl.addClass('superpower-inside-graph-view-search');
     this.searchInputEl.addEventListener('input', () => {
       this.searchQuery = this.searchInputEl?.value ?? '';
-      if (this.searchDebounceTimer !== null) clearTimeout(this.searchDebounceTimer);
+      if (this.searchDebounceTimer !== null) window.clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = window.setTimeout(() => {
         this.renderedItemLimit = LOAD_MORE_CHUNK;
         this.renderContent();
@@ -154,7 +154,7 @@ export class GraphRagView extends ItemView {
     confidenceInput.addClass('superpower-inside-graph-view-confidence-filter');
     confidenceInput.addEventListener('input', () => {
       this.minConfidence = Number(confidenceInput.value) / 100;
-      if (this.searchDebounceTimer !== null) clearTimeout(this.searchDebounceTimer);
+      if (this.searchDebounceTimer !== null) window.clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = window.setTimeout(() => {
         this.renderedItemLimit = LOAD_MORE_CHUNK;
         this.renderContent();
@@ -200,7 +200,7 @@ export class GraphRagView extends ItemView {
     this.graphDataUnsubscriber?.();
     this.graphDataUnsubscriber = null;
     if (this.graphDataDebounceTimer !== null) {
-      clearTimeout(this.graphDataDebounceTimer);
+      window.clearTimeout(this.graphDataDebounceTimer);
       this.graphDataDebounceTimer = null;
     }
   }
@@ -871,7 +871,7 @@ export class GraphRagView extends ItemView {
 
     const detailEntityId = this.detailEntity?.id;
     if (this.graphDataDebounceTimer !== null) {
-      clearTimeout(this.graphDataDebounceTimer);
+      window.clearTimeout(this.graphDataDebounceTimer);
     }
     this.graphDataDebounceTimer = window.setTimeout(() => {
       void (async () => {

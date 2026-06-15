@@ -29,7 +29,7 @@ type QueueJob =
 
 export class RAGIndexingScheduler {
   private readonly operations: SchedulerOperations;
-  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private debounceTimers = new Map<string, number>();
   private pendingFiles = new Map<string, TFile>();
   private queue: QueueJob[] = [];
   private running = false;
@@ -60,7 +60,7 @@ export class RAGIndexingScheduler {
     this.cancelled = false;
     const existingTimer = this.debounceTimers.get(file.path);
     if (existingTimer) {
-      clearTimeout(existingTimer);
+      window.clearTimeout(existingTimer);
     }
 
     if (this.operations.debounceMs <= 0) {
@@ -68,7 +68,7 @@ export class RAGIndexingScheduler {
       return;
     }
 
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       this.debounceTimers.delete(file.path);
       this.enqueueFile(file);
     }, this.operations.debounceMs);
@@ -103,7 +103,7 @@ export class RAGIndexingScheduler {
     this.cancelled = true;
     this.abortController?.abort();
     for (const timer of this.debounceTimers.values()) {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
     }
     this.debounceTimers.clear();
     this.pendingFiles.clear();

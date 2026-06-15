@@ -54,6 +54,22 @@ function throwIfIndexingCancelled(signal?: AbortSignal): void {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTFileLike(file: unknown): file is TFile {
+  if (!isRecord(file)) return false;
+  const stat = file.stat;
+  return (
+    typeof file.path === 'string' &&
+    typeof file.name === 'string' &&
+    typeof file.extension === 'string' &&
+    isRecord(stat) &&
+    typeof stat.size === 'number'
+  );
+}
+
 function createEmptyIndexingResult(startedAt: number): IndexingResult {
   return {
     indexed: 0,
@@ -79,9 +95,9 @@ function finishIndexingResult(
 async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return;
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, ms);
+    const timeout = window.setTimeout(resolve, ms);
     const onAbort = (): void => {
-      clearTimeout(timeout);
+      window.clearTimeout(timeout);
       reject(new IndexingCancelledError());
     };
     if (signal?.aborted) {
@@ -487,9 +503,8 @@ export function registerModifyEvent(
   onComplete?: (file: TFile) => void,
 ): () => void {
   const ref = vault.on('modify', async (file) => {
-    if (!(file instanceof Object)) return;
-    if (!('path' in file)) return;
-    const f = file as TFile;
+    if (!isTFileLike(file)) return;
+    const f = file;
     if (!shouldConsiderRagPath(f.path, excludePaths, excludeExts)) return;
     if (!(await isRagIndexableFile(vault, f))) {
       const removed = await indexer.removeByFilePath?.(f.path);
@@ -534,8 +549,8 @@ export function registerRenameEvent(
   onComplete?: (oldPath: string, newPath: string) => void,
 ): () => void {
   const ref = vault.on('rename', async (file, oldPath) => {
-    if (!(file instanceof Object) || !('path' in file)) return;
-    const f = file as TFile;
+    if (!isTFileLike(file)) return;
+    const f = file;
     const newPath = f.path;
     const oldWasIndexable = shouldConsiderRagPath(oldPath, excludePaths, excludeExts);
     const newIsIndexable = await shouldIndexRagFile(vault, f, excludePaths, excludeExts);

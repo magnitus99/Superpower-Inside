@@ -648,16 +648,16 @@ function withProviderDeadline<T>(
 ): Promise<T> {
   if (deadlineMs <= 0) return operation;
 
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timeoutId: number | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
+    timeoutId = window.setTimeout(() => {
       abortController.abort();
       reject(new ProviderTimeoutError());
     }, deadlineMs);
   });
 
   return Promise.race([operation, timeout]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
+    if (timeoutId) window.clearTimeout(timeoutId);
   });
 }
 

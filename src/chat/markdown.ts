@@ -41,7 +41,7 @@ export function enhanceCodeBlocks(container: HTMLElement): void {
       const code = codeEl.textContent ?? '';
       void navigator.clipboard.writeText(code).then(() => {
         copyBtn.setText(t('copied'));
-        setTimeout(() => copyBtn.setText(t('copyCode')), 1500);
+        window.setTimeout(() => copyBtn.setText(t('copyCode')), 1500);
       });
     });
     wrapper.appendChild(copyBtn);

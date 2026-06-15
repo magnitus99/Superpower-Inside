@@ -307,10 +307,10 @@ function countKeywordMatches(queryTokens: string[], text: string): number {
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   if (timeoutMs <= 0 && !signal) return promise;
 
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timeoutId: number | undefined;
   return new Promise<T>((resolve, reject) => {
     const cleanup = (): void => {
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutId) window.clearTimeout(timeoutId);
       signal?.removeEventListener('abort', onAbort);
     };
     const onAbort = (): void => {
@@ -324,7 +324,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSi
     }
     signal?.addEventListener('abort', onAbort, { once: true });
     if (timeoutMs > 0) {
-      timeoutId = setTimeout(() => {
+      timeoutId = window.setTimeout(() => {
         cleanup();
         reject(new Error('RAG reranking timed out'));
       }, timeoutMs);
@@ -382,6 +382,6 @@ function selectDiverseResults(results: QueryResult[], topK: number): QueryResult
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, 0);
+    window.setTimeout(resolve, 0);
   });
 }

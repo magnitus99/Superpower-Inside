@@ -91,7 +91,7 @@ export class ChatView extends ItemView {
   private isStreaming: boolean;
   private autoScroll: boolean;
   private session: SessionState;
-  private autoSaveTimer: ReturnType<typeof setTimeout> | null;
+  private autoSaveTimer: number | null;
 
   private container: HTMLElement | null;
   private headerEl: HTMLElement | null;
@@ -442,7 +442,7 @@ export class ChatView extends ItemView {
       this.renderContextPreview(this.inputArea?.value ?? '');
     });
     this.inputArea.addEventListener('blur', () => {
-      setTimeout(() => this.hideMentionDropdown(), 200);
+      window.setTimeout(() => this.hideMentionDropdown(), 200);
     });
 
     this.sendBtn = inputRow.createEl('button', {
@@ -812,7 +812,7 @@ export class ChatView extends ItemView {
     this.mentionStartIndex = -1;
   }
 
-  private markdownRenderTimer: ReturnType<typeof setTimeout> | null = null;
+  private markdownRenderTimer: number | null = null;
   private static readonly MARKDOWN_RENDER_INTERVAL = 300;
   private pendingMarkdownEl: HTMLElement | null = null;
   private pendingMarkdownContent: string = '';
@@ -1251,7 +1251,7 @@ export class ChatView extends ItemView {
     this.pendingMarkdownContent = content;
 
     if (!this.markdownRenderTimer) {
-      this.markdownRenderTimer = setTimeout(() => {
+      this.markdownRenderTimer = window.setTimeout(() => {
         this.markdownRenderTimer = null;
         if (this.pendingMarkdownEl && this.pendingMarkdownEl.isConnected) {
           const el = this.pendingMarkdownEl;
@@ -1268,7 +1268,7 @@ export class ChatView extends ItemView {
 
   private cancelStreamingMarkdownRender(): void {
     if (this.markdownRenderTimer) {
-      clearTimeout(this.markdownRenderTimer);
+      window.clearTimeout(this.markdownRenderTimer);
       this.markdownRenderTimer = null;
     }
     this.pendingMarkdownEl = null;
@@ -1929,7 +1929,7 @@ export class ChatView extends ItemView {
     this.clearAutoSaveTimer();
     this.isStreaming = false;
     this.setLoading(false);
-    this.autoSaveTimer = setTimeout(() => {
+    this.autoSaveTimer = window.setTimeout(() => {
       this.autoSaveTimer = null;
       void this.saveCurrentSession();
     }, this.plugin.settings.chat.autoSaveDebounceMs);
@@ -1937,7 +1937,7 @@ export class ChatView extends ItemView {
 
   private clearAutoSaveTimer(): void {
     if (!this.autoSaveTimer) return;
-    clearTimeout(this.autoSaveTimer);
+    window.clearTimeout(this.autoSaveTimer);
     this.autoSaveTimer = null;
   }
 

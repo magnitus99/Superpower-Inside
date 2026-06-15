@@ -77,6 +77,57 @@ describe('Obsidian community static review guards', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('uses window timer APIs for popout-compatible runtime scheduling', () => {
+    const timerCallPattern =
+      /(?:^|[^\w.])(setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
+    const timerTypePattern = /typeof\s+(setTimeout|setInterval|clearTimeout|clearInterval)\b/;
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(({ line }) => timerCallPattern.test(line) || timerTypePattern.test(line))
+        .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('uses Vault#configDir instead of hard-coded Obsidian config folders', () => {
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(({ line }) => /['"]\.obsidian['"]/.test(line))
+        .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('narrows TFile values with instanceof instead of type assertions', () => {
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(({ line }) => /\bas\s+TFile\b/.test(line))
+        .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('uses FileManager trash handling instead of permanent vault deletion', () => {
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(({ line }) => /\bvault\.delete\(/.test(line))
+        .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
   it('does not render MCP tool picker choices as clickable divs', () => {
     const offenders = sources.flatMap(({ file, source }) =>
       source

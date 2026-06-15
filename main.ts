@@ -107,19 +107,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
   mcpConnectionState: MCPConnectionState = 'idle';
   mcpLastErrors: string[] = [];
   private mcpConnectionRunId = 0;
-  private mcpRetryTimers = new Map<ReturnType<typeof setTimeout>, () => void>();
+  private mcpRetryTimers = new Map<number, () => void>();
   private modifyCleanup: (() => void) | null = null;
   private deleteCleanup: (() => void) | null = null;
   private renameCleanup: (() => void) | null = null;
-  private autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
-  private ragStatusTimer: ReturnType<typeof setInterval> | null = null;
+  private autoUpdateTimer: number | null = null;
+  private ragStatusTimer: number | null = null;
   private ragIndexAbortController: AbortController | null = null;
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
-  private statsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private statsDebounceTimer: number | null = null;
   refreshBus: RefreshBus = new RefreshBus();
 
   async onload(): Promise<void> {
@@ -251,21 +251,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
-      clearTimeout(this.statsDebounceTimer);
+      window.clearTimeout(this.statsDebounceTimer);
       this.statsDebounceTimer = null;
     }
     if (this.autoUpdateTimer) {
-      clearInterval(this.autoUpdateTimer);
+      window.clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
     }
     if (this.ragStatusTimer) {
-      clearInterval(this.ragStatusTimer);
+      window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
     }
     if (this.mcpRegistry) {
       const disconnectPromise = this.mcpRegistry.disconnectAll();
       const timeoutPromise = new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP disconnect timeout')), 3000),
+        window.setTimeout(() => reject(new Error('MCP disconnect timeout')), 3000),
       );
       void Promise.race([disconnectPromise, timeoutPromise]).catch(() => {
         // MCP 연결 정리 타임아웃 — 강제 종료
@@ -508,7 +508,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async awaitGraphRagCancellation(timeoutMs = 2000): Promise<boolean> {
     const startedAt = Date.now();
     while (this.graphRagAbortController !== null && Date.now() - startedAt < timeoutMs) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
     return this.graphRagAbortController === null;
   }
@@ -1040,9 +1040,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private debouncedRefreshStats(): void {
     if (this.statsDebounceTimer) {
-      clearTimeout(this.statsDebounceTimer);
+      window.clearTimeout(this.statsDebounceTimer);
     }
-    this.statsDebounceTimer = setTimeout(() => {
+    this.statsDebounceTimer = window.setTimeout(() => {
       void this.computeAndEmitRagStats();
       void this.maybeAutoSyncGraphRag();
     }, 500);
@@ -1374,15 +1374,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
-      clearTimeout(this.statsDebounceTimer);
+      window.clearTimeout(this.statsDebounceTimer);
       this.statsDebounceTimer = null;
     }
     if (this.autoUpdateTimer) {
-      clearInterval(this.autoUpdateTimer);
+      window.clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
     }
     if (this.ragStatusTimer) {
-      clearInterval(this.ragStatusTimer);
+      window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
     }
     this.vectorStore = null;
@@ -1503,14 +1503,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
   /** RAG 상태 계산을 30초 간격으로 자동 갱신하고 RefreshBus로 발행 */
   private setupRagStatusTimer(): void {
     if (this.ragStatusTimer) {
-      clearInterval(this.ragStatusTimer);
+      window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
     }
     // 초기 1회 즉시 실행
     void this.computeAndEmitRagStats();
     void this.computeAndEmitGraphRagStatus();
     // 30초 간격 갱신
-    this.ragStatusTimer = setInterval(() => {
+    this.ragStatusTimer = window.setInterval(() => {
       void this.computeAndEmitRagStats();
       void this.computeAndEmitGraphRagStatus();
     }, 30_000);
@@ -1580,13 +1580,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   setupAutoUpdate(): void {
     if (this.autoUpdateTimer) {
-      clearInterval(this.autoUpdateTimer);
+      window.clearInterval(this.autoUpdateTimer);
       this.autoUpdateTimer = null;
     }
     this.nextAutoUpdateAt = null;
     if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
       this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
-      this.autoUpdateTimer = setInterval(() => {
+      this.autoUpdateTimer = window.setInterval(() => {
         void this.autoIndex();
       }, this.settings.rag.autoUpdateIntervalMin * 60000);
     }
@@ -1882,12 +1882,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         resolve(false);
         return;
       }
-      const timer = setTimeout(() => {
+      const timer = window.setTimeout(() => {
         this.mcpRetryTimers.delete(timer);
         resolve(runId === this.mcpConnectionRunId);
       }, delayMs);
       this.mcpRetryTimers.set(timer, () => {
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         this.mcpRetryTimers.delete(timer);
       });
     });

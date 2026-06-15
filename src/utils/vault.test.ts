@@ -57,12 +57,12 @@ const baseChatConfig: ChatConfig = {
 
 describe('RAG 유효 제외 경로', () => {
   it('채팅 폴더 자동 제외는 저장된 채팅 폴더 값을 그대로 사용한다', () => {
-    expect(getEffectiveExcludePaths(baseRagConfig, baseChatConfig)).toEqual([
-      '.obsidian',
+    expect(getEffectiveExcludePaths(baseRagConfig, baseChatConfig, '.config/obsidian')).toEqual([
       '.superpower-inside',
       '.git',
       'node_modules',
       'attachments',
+      '.config/obsidian',
       'Archive',
       'CustomChats',
     ]);
@@ -71,12 +71,12 @@ describe('RAG 유효 제외 경로', () => {
   it('채팅 폴더 자동 제외가 꺼져 있으면 수동 제외 경로만 사용한다', () => {
     const ragConfig = { ...baseRagConfig, excludeChatFolder: false };
 
-    expect(getEffectiveExcludePaths(ragConfig, baseChatConfig)).toEqual([
-      '.obsidian',
+    expect(getEffectiveExcludePaths(ragConfig, baseChatConfig, '.config/obsidian')).toEqual([
       '.superpower-inside',
       '.git',
       'node_modules',
       'attachments',
+      '.config/obsidian',
       'Archive',
     ]);
   });
@@ -84,12 +84,12 @@ describe('RAG 유효 제외 경로', () => {
   it('채팅 폴더가 이미 수동 제외 경로에 있으면 중복 추가하지 않는다', () => {
     const ragConfig = { ...baseRagConfig, excludePaths: ['Archive', 'CustomChats'] };
 
-    expect(getEffectiveExcludePaths(ragConfig, baseChatConfig)).toEqual([
-      '.obsidian',
+    expect(getEffectiveExcludePaths(ragConfig, baseChatConfig, '.config/obsidian')).toEqual([
       '.superpower-inside',
       '.git',
       'node_modules',
       'attachments',
+      '.config/obsidian',
       'Archive',
       'CustomChats',
     ]);
@@ -262,6 +262,7 @@ function createFile(path: string, size = 10): TFile {
 
 function createVault(files: TFile[], contents = new Map<string, string>()): Vault {
   return {
+    configDir: '.config/obsidian',
     getFiles: () => files,
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? 'text'),

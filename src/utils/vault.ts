@@ -32,7 +32,6 @@ export interface RagFileTypeSummary {
 }
 
 const DEFAULT_EXCLUDE_PATHS = [
-  '.obsidian',
   '.superpower-inside',
   '.git',
   'node_modules',
@@ -51,7 +50,7 @@ export async function getRagCandidateFiles(
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
 ): Promise<TFile[]> {
-  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
+  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir);
   const files = vault.getFiles();
   const plan = await planRagFileIndexability(vault, files, effectiveExcludePaths, ragConfig.excludeExts);
   return selectByRustIndices(files, plan.candidateIndices, { dedupe: true });
@@ -67,7 +66,7 @@ export async function getRagFileTypeSummary(
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
 ): Promise<RagFileTypeSummary> {
-  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
+  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir);
   const plan = await planRagFileIndexability(
     vault,
     vault.getFiles(),
@@ -259,8 +258,17 @@ export async function readJsonFromVault(adapter: DataAdapter, path: string): Pro
   }
 }
 
-export function getEffectiveExcludePaths(ragConfig: RAGConfig, chatConfig: ChatConfig): string[] {
-  const paths = [...DEFAULT_EXCLUDE_PATHS, ...ragConfig.excludePaths];
+export function getEffectiveExcludePaths(
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+  configDir?: string,
+): string[] {
+  const paths = [...DEFAULT_EXCLUDE_PATHS];
+  const normalizedConfigDir = configDir?.trim();
+  if (normalizedConfigDir) {
+    paths.push(normalizedConfigDir);
+  }
+  paths.push(...ragConfig.excludePaths);
   if (ragConfig.excludeChatFolder && chatConfig.saveFolder) {
     if (!paths.includes(chatConfig.saveFolder)) {
       paths.push(chatConfig.saveFolder);

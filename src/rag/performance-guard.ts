@@ -118,7 +118,7 @@ export class PerformanceGuard {
     if (!this.options.enabled) return 0;
     const startedAt = performance.now();
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
+      window.setTimeout(resolve, 0);
     });
     const lagMs = Math.max(0, performance.now() - startedAt);
     this.recordEventLoopLag(lagMs);

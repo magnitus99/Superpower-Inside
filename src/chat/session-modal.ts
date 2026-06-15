@@ -241,7 +241,7 @@ export function openSessionHistoryModal(
           }
 
           deleteBtn.disabled = true;
-          void deleteChat(activeVault, meta.filePath).then(
+          void deleteChat(app.fileManager, activeVault, meta.filePath).then(
             () => {
               sessionsEventBus?.emit('sessions', { status: 'success' });
               void loadMetas();

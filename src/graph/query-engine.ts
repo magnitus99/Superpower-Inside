@@ -596,12 +596,12 @@ function isGraphQueryExecutionMode(value: string): value is GraphRagQueryMode | 
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   if (timeoutMs <= 0) return promise;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let timeoutId: number | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('GraphRAG query planning timed out')), timeoutMs);
+    timeoutId = window.setTimeout(() => reject(new Error('GraphRAG query planning timed out')), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
+    if (timeoutId) window.clearTimeout(timeoutId);
   });
 }
 
