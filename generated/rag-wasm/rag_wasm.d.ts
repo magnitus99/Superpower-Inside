@@ -11,6 +11,10 @@ export class Bm25RuntimeIndex {
      */
     add_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
     /**
+     * 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
+     */
+    add_new_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      */
     static from_json(payload: string, fallback_tokenizer_version: number): Bm25RuntimeIndex;
@@ -810,6 +814,7 @@ export interface InitOutput {
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly bm25runtimeindex_add_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;

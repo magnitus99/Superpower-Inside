@@ -344,6 +344,10 @@ export class RustBm25RuntimeIndex {
     this.inner.add_document(docId, text, sourcePath, tokenizerVersion);
   }
 
+  addNewDocument(docId: string, text: string, sourcePath: string, tokenizerVersion: number): void {
+    this.inner.add_new_document(docId, text, sourcePath, tokenizerVersion);
+  }
+
   removeDocument(docId: string, tokenizerVersion: number): void {
     this.inner.remove_document(docId, tokenizerVersion);
   }

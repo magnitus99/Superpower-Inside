@@ -118,10 +118,21 @@ export class IndexedDbBM25Index {
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
     await this.withBatch(async () => {
       await this.clear();
+      const seenDocIds = new Set<string>();
       for (let index = 0; index < documents.length; index++) {
         const document = documents[index];
         if (document === undefined) continue;
-        this.addDocument(document.id, document.text, document.sourcePath);
+        if (seenDocIds.has(document.id)) {
+          this.addDocument(document.id, document.text, document.sourcePath);
+        } else {
+          this.ensureRuntime().addNewDocument(
+            document.id,
+            document.text,
+            document.sourcePath ?? document.id,
+            TOKENIZER_VERSION,
+          );
+          seenDocIds.add(document.id);
+        }
         if (
           index + 1 < documents.length &&
           (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0

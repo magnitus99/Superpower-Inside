@@ -37,6 +37,22 @@ export class Bm25RuntimeIndex {
         wasm.bm25runtimeindex_add_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
     }
     /**
+     * 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
+     * @param {string} doc_id
+     * @param {string} text
+     * @param {string} source_path
+     * @param {number} tokenizer_version
+     */
+    add_new_document(doc_id, text, source_path, tokenizer_version) {
+        const ptr0 = passStringToWasm0(doc_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(source_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.bm25runtimeindex_add_new_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
+    }
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      * @param {string} payload
      * @param {number} fallback_tokenizer_version

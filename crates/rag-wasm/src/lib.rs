@@ -185,13 +185,8 @@ pub fn tokenize_json(text: &str) -> String {
 #[must_use]
 #[wasm_bindgen]
 pub fn token_frequencies_json(text: &str) -> String {
-    let tokens = tokenize(text);
-    let mut frequencies = BTreeMap::<String, usize>::new();
-    for token in &tokens {
-        let count = frequencies.entry(token.clone()).or_insert(0);
-        *count = count.saturating_add(1);
-    }
-    serialize_token_frequencies_json(tokens.len(), &frequencies)
+    let (total_tokens, frequencies) = accumulate_token_frequencies(tokenize(text));
+    serialize_token_frequencies_json(total_tokens, &frequencies)
 }
 
 /// BM25 index에 문서 하나를 추가/교체한 새 index JSON plan을 만든다.
@@ -4856,6 +4851,18 @@ impl Bm25RuntimeIndex {
         add_bm25_document(&mut self.index, doc_id, text, source_path);
     }
 
+    /// 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
+    pub fn add_new_document(
+        &mut self,
+        doc_id: &str,
+        text: &str,
+        source_path: &str,
+        tokenizer_version: u32,
+    ) {
+        self.index.tokenizer_version = tokenizer_version;
+        insert_bm25_document(&mut self.index, doc_id, text, source_path);
+    }
+
     /// document 하나를 runtime index에서 제거한다.
     pub fn remove_document(&mut self, doc_id: &str, tokenizer_version: u32) {
         self.index.tokenizer_version = tokenizer_version;
@@ -5754,14 +5761,16 @@ fn merge_retrieval_source(
 /// BM25 index에 document를 추가하거나 기존 document를 교체한다.
 fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
     remove_bm25_document(index, doc_id);
+    insert_bm25_document(index, doc_id, text, source_path);
+}
 
-    let tokens = tokenize(text);
-    let mut frequencies = BTreeMap::<String, f64>::new();
-    for token in &tokens {
-        let count = frequencies.entry(token.clone()).or_insert(0.0);
-        *count += 1.0;
-    }
+/// BM25 index에 중복 제거가 이미 끝난 document를 삽입한다.
+fn insert_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
+    let (token_count, frequencies) = accumulate_token_frequencies(tokenize(text));
     for (term, frequency) in frequencies {
+        let Some(frequency) = usize_to_f64(frequency) else {
+            continue;
+        };
         index
             .inverted
             .entry(term)
@@ -5770,11 +5779,25 @@ fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source
     }
     index.doc_lengths.insert(
         doc_id.to_owned(),
-        usize_to_f64(tokens.len()).unwrap_or_default(),
+        usize_to_f64(token_count).unwrap_or_default(),
     );
     index
         .doc_sources
         .insert(doc_id.to_owned(), source_path.to_owned());
+}
+
+/// tokenizer output을 소비하면서 total token 수와 token별 frequency를 한 번에 누적한다.
+fn accumulate_token_frequencies(
+    tokens: impl IntoIterator<Item = String>,
+) -> (usize, BTreeMap<String, usize>) {
+    let mut total_tokens = 0_usize;
+    let mut frequencies = BTreeMap::<String, usize>::new();
+    for token in tokens {
+        total_tokens = total_tokens.saturating_add(1);
+        let count = frequencies.entry(token).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    (total_tokens, frequencies)
 }
 
 /// BM25 index에서 doc id를 제거하고 빈 posting term을 정리한다.
@@ -17605,13 +17628,14 @@ mod tests {
     use super::{
         BM25_B, BM25_K1, Bm25RuntimeIndex, IvfRuntimeIndex, JsonValue, SOURCE_ANN, SOURCE_BM25,
         SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR, VectorRuntimeIndex,
-        aggregate_graph_edges_flat, analyze_retrieval_sources, assign_vector_clusters,
-        bm25_score_pairs, build_initial_centroids, chunk_markdown, chunk_plain_text,
-        classify_mcp_tool_error_json, cosine_similarity, count_files_by_extensions_json,
-        count_keyword_matches, create_content_hash, create_entity_id, create_graph_id,
-        detect_communities_flat, detect_communities_from_edges_json, extract_json_object_text,
-        extract_vault_links_json, find_mentioned_entity_matches, format_mcp_json,
-        get_mcp_connection_state_rust, hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
+        accumulate_token_frequencies, aggregate_graph_edges_flat, analyze_retrieval_sources,
+        assign_vector_clusters, bm25_score_pairs, build_initial_centroids, chunk_markdown,
+        chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
+        count_files_by_extensions_json, count_keyword_matches, create_content_hash,
+        create_entity_id, create_graph_id, detect_communities_flat,
+        detect_communities_from_edges_json, extract_json_object_text, extract_vault_links_json,
+        find_mentioned_entity_matches, format_mcp_json, get_mcp_connection_state_rust,
+        hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
         is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
         is_mcp_tool_result_empty_json, is_relevant_result, normalize_entity_name,
         normalize_extracted_graph_payload_json, normalize_graph_confidence_or_default,
@@ -17701,6 +17725,25 @@ mod tests {
             token_frequencies_json("OpenRouter OpenRouter freeLLMApi"),
             "{\"totalTokens\":10,\"frequencies\":{\"api\":1,\"free\":1,\"freellmapi\":1,\"llm\":1,\"open\":2,\"openrouter\":2,\"router\":2}}",
             "frequency JSON은 token별 중복 횟수를 보존해야 한다",
+        );
+    }
+
+    /// BM25 frequency 누적은 total token 수와 token별 중복 횟수를 한 번에 계산해야 한다.
+    #[test]
+    fn accumulate_token_frequencies_counts_total_and_terms() {
+        let (total_tokens, frequencies) =
+            accumulate_token_frequencies(tokenize("OpenRouter OpenRouter freeLLMApi"));
+
+        assert_eq!(total_tokens, 10, "전체 tokenizer output 수를 보존해야 한다");
+        assert_eq!(
+            frequencies.get("openrouter"),
+            Some(&2),
+            "compound token frequency를 보존해야 한다",
+        );
+        assert_eq!(
+            frequencies.get("api"),
+            Some(&1),
+            "camel-case segment frequency를 보존해야 한다",
         );
     }
 
@@ -19147,6 +19190,27 @@ mod tests {
         );
     }
 
+    /// BM25 runtime append 경로는 새 문서를 교체 스캔 없이 추가해 검색 가능하게 해야 한다.
+    #[test]
+    fn bm25_runtime_index_add_new_document_appends_searchable_document() {
+        let mut index = Bm25RuntimeIndex::new(2);
+
+        index.add_new_document("api.md::0", "OpenRouter API access key", "api.md", 2);
+        index.add_new_document("local.md::0", "Ollama local model", "local.md", 2);
+
+        let open_router = index.search_json("open router");
+        assert!(
+            open_router.contains("\"docId\":\"api.md::0\""),
+            "append 경로는 첫 번째 문서를 검색 가능하게 만들어야 한다: {open_router}",
+        );
+
+        let ollama = index.search_json("ollama");
+        assert!(
+            ollama.contains("\"docId\":\"local.md::0\""),
+            "append 경로는 두 번째 문서를 검색 가능하게 만들어야 한다: {ollama}",
+        );
+    }
+
     /// RAG core hot path의 deterministic median benchmark를 출력한다.
     #[ignore = "manual benchmark: run fish scripts/bench-rag-core.fish"]
     #[test]
@@ -19178,7 +19242,7 @@ mod tests {
                     .checked_rem(17)
                     .map_or_else(|| "0".to_owned(), |value| value.to_string());
                 let text = format!("alpha beta graph rag evidence group-{group} doc-{doc_index}");
-                index.add_document(&doc_id, &text, &source_path, 2);
+                index.add_new_document(&doc_id, &text, &source_path, 2);
             }
             std::hint::black_box(index.search_json("alpha graph evidence"));
         });

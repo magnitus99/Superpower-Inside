@@ -165,6 +165,19 @@ describe('IndexedDbBM25Index', () => {
       vi.useRealTimers();
     }
   });
+
+  it('전체 재빌드에서 같은 doc id가 반복되면 마지막 문서로 교체한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+
+    await bm25.rebuild([
+      { id: 'note.md::0', text: 'obsoletealpha', sourcePath: 'note.md' },
+      { id: 'note.md::0', text: 'freshbeta', sourcePath: 'note.md' },
+    ]);
+
+    expect([...bm25.search('obsoletealpha').keys()]).toEqual([]);
+    expect([...bm25.search('freshbeta').keys()]).toEqual(['note.md::0']);
+  });
 });
 
 async function createBm25(
