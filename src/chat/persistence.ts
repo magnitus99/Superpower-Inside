@@ -56,6 +56,7 @@ interface MessagePersistMeta {
   toolRound?: number;
   toolRoundLogs?: ChatMessageWithMeta['toolRoundLogs'];
   contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
+  dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
   errorKind?: ChatMessageWithMeta['errorKind'];
   actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
@@ -361,6 +362,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     toolRound: message.toolRound,
     toolRoundLogs: message.toolRoundLogs,
     contextBudgetSnapshot: message.contextBudgetSnapshot,
+    dataBoundarySnapshot: message.dataBoundarySnapshot,
     errorKind: message.errorKind,
     actionHistory: message.actionHistory,
   };
@@ -490,6 +492,7 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     toolRound: plan.toolRound,
     toolRoundLogs: plan.toolRoundLogs as ChatMessageWithMeta['toolRoundLogs'],
     contextBudgetSnapshot: plan.contextBudgetSnapshot as ChatMessageWithMeta['contextBudgetSnapshot'],
+    dataBoundarySnapshot: plan.dataBoundarySnapshot as ChatMessageWithMeta['dataBoundarySnapshot'],
     errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
     actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],
   };

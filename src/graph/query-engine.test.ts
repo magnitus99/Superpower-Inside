@@ -346,6 +346,39 @@ describe('GraphRagQueryEngine', () => {
         ?.sourceScore ?? 0,
     );
   });
+
+  it('local graph query는 relations/claims/evidence 전체 scan 대신 indexed lookup을 사용한다', async () => {
+    const graphStore = new FullScanFailingKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    const evidence: GraphEvidenceRecord = {
+      id: 'evidence::acts',
+      filePath: 'Acts.md',
+      entryId: 'Acts.md::1::0',
+      startLine: 1,
+      endLine: 4,
+      quote: 'Paul and Barnabas traveled together.',
+      contentHash: 'hash',
+      extractionModelKey: 'model',
+      updatedAt: 1,
+    };
+    await graphStore.addEvidence(evidence);
+    await graphStore.upsertEntity(createEntity('Paul', ['바울'], [evidence.id]));
+    await graphStore.upsertEntity(createEntity('Barnabas', ['바나바'], [evidence.id]));
+    await graphStore.addRelation(createRelation(evidence.id));
+    await graphStore.addClaim(createClaim(evidence.id));
+    await vectorStore.add([createVectorEntry('Acts.md::1::0', 'Acts.md')]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+      queryMode: 'local',
+    });
+
+    const candidates = await engine.query({
+      question: 'Paul과 Barnabas는 어떤 관계야?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates[0]?.entry.metadata.filePath).toBe('Acts.md');
+  });
 });
 
 describe('GraphRagCandidateProvider', () => {
@@ -566,4 +599,18 @@ function createPlannerProvider(response: string): LLMProvider {
     chat: () => Promise.resolve(response),
     streamChat: () => Promise.resolve(),
   };
+}
+
+class FullScanFailingKnowledgeGraphStore extends InMemoryKnowledgeGraphStore {
+  getRelations(): Promise<GraphRelationRecord[]> {
+    return Promise.reject(new Error('전체 relation scan은 local graph query에서 허용되지 않습니다.'));
+  }
+
+  getClaims(): Promise<GraphClaimRecord[]> {
+    return Promise.reject(new Error('전체 claim scan은 local graph query에서 허용되지 않습니다.'));
+  }
+
+  getEvidence(): Promise<GraphEvidenceRecord[]> {
+    return Promise.reject(new Error('전체 evidence scan은 local graph query에서 허용되지 않습니다.'));
+  }
 }

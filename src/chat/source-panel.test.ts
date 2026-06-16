@@ -72,6 +72,7 @@ describe('SourcePanel view model contract', () => {
         className: 'superpower-inside-chat-source-warning unverified-source',
         label: 'Source rag-9',
         detail: '검증된 citation이 없습니다.',
+        repairActionText: '출처 보정',
       },
     ]);
     expect(createContextAttachmentChipViews(attachments)).toEqual([

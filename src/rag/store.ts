@@ -17,6 +17,10 @@ import {
   type RustVectorScore,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import {
+  createPagedVectorMatrix,
+  enforceRuntimePayloadBudget,
+} from './runtime-boundary';
 
 export interface VectorEntry {
   id: string;
@@ -55,6 +59,22 @@ export interface VectorStoreStats {
   totalVectors: number;
   averageVectorsPerFile: number;
   lastUpdated: number | null;
+}
+
+export interface IndexedDbVectorStoreOptions {
+  hydrateAllEntryLimit?: number;
+  pageSize?: number;
+  maxRuntimePayloadBytes?: number;
+  searchCacheLimit?: number;
+  runtimeIndexCacheLimit?: number;
+  ivfRuntimeIndexCacheLimit?: number;
+}
+
+export interface VectorRuntimeCacheStats {
+  entriesCacheLoaded: boolean;
+  searchEntriesCacheSize: number;
+  filteredRuntimeIndexCount: number;
+  ivfRuntimeIndexCount: number;
 }
 
 export interface VectorSearchFilter {
@@ -103,6 +123,12 @@ export interface LegacyJsonVectorImportResult {
 }
 
 const LEGACY_JSON_VECTOR_IMPORT_KEY = 'legacy-json-vector-import:v1';
+const DEFAULT_HYDRATE_ALL_ENTRY_LIMIT = 4096;
+const DEFAULT_VECTOR_SEARCH_PAGE_SIZE = 256;
+const DEFAULT_RUNTIME_PAYLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
+const DEFAULT_SEARCH_CACHE_LIMIT = 4;
+const DEFAULT_RUNTIME_INDEX_CACHE_LIMIT = 2;
+const DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT = 2;
 
 interface IndexedDbVectorRecord {
   id: string;
@@ -300,6 +326,31 @@ function matchesVectorSearchFilter(entry: VectorEntry, filter?: VectorSearchFilt
   return true;
 }
 
+function matchesVectorRecordSearchFilter(
+  record: IndexedDbVectorRecord,
+  filter?: VectorSearchFilter,
+): boolean {
+  if (!filter) return true;
+  if (
+    filter.embeddingProvider &&
+    record.embeddingProvider &&
+    record.embeddingProvider !== filter.embeddingProvider
+  ) {
+    return false;
+  }
+  if (
+    filter.embeddingModel &&
+    record.embeddingModel &&
+    record.embeddingModel !== filter.embeddingModel
+  ) {
+    return false;
+  }
+  if (typeof filter.dimension === 'number' && record.dimension !== filter.dimension) {
+    return false;
+  }
+  return true;
+}
+
 function vectorRecordFromEntry(entry: VectorEntry, updated: number): IndexedDbVectorRecord {
   return {
     id: entry.id,
@@ -358,17 +409,98 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
 }
 
+class BoundedLruCache<K, V> {
+  private readonly limit: number;
+  private readonly onEvict?: (value: V) => void;
+  private readonly values = new Map<K, V>();
+
+  constructor(limit: number, onEvict?: (value: V) => void) {
+    this.limit = Math.max(0, Math.floor(limit));
+    this.onEvict = onEvict;
+  }
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  get(key: K): V | undefined {
+    const value = this.values.get(key);
+    if (value === undefined) return undefined;
+    this.values.delete(key);
+    this.values.set(key, value);
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    const existing = this.values.get(key);
+    if (existing !== undefined) {
+      this.values.delete(key);
+      if (existing !== value) {
+        this.onEvict?.(existing);
+      }
+    }
+    if (this.limit === 0) {
+      this.onEvict?.(value);
+      return;
+    }
+    this.values.set(key, value);
+    while (this.values.size > this.limit) {
+      const oldest = this.values.keys().next();
+      const oldestKey = oldest.value;
+      if (oldestKey === undefined) break;
+      const oldestValue = this.values.get(oldestKey);
+      this.values.delete(oldestKey);
+      if (oldestValue !== undefined) {
+        this.onEvict?.(oldestValue);
+      }
+    }
+  }
+
+  clear(): void {
+    for (const value of this.values.values()) {
+      this.onEvict?.(value);
+    }
+    this.values.clear();
+  }
+}
+
 /** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
   private entriesCache: VectorEntry[] | null = null;
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
-  private searchEntriesCache = new Map<string, VectorEntry[]>();
-  private filteredRuntimeIndexes = new Map<string, RustVectorRuntimeIndex>();
-  private ivfRuntimeIndexes = new Map<string, RustIvfRuntimeIndex>();
+  private searchEntriesCache: BoundedLruCache<string, VectorEntry[]>;
+  private filteredRuntimeIndexes: BoundedLruCache<string, RustVectorRuntimeIndex>;
+  private ivfRuntimeIndexes: BoundedLruCache<string, RustIvfRuntimeIndex>;
+  private readonly hydrateAllEntryLimit: number;
+  private readonly pageSize: number;
+  private readonly maxRuntimePayloadBytes: number;
 
-  constructor(dbName = 'SuperpowerInsideVectorStore') {
+  constructor(
+    dbName = 'SuperpowerInsideVectorStore',
+    options: IndexedDbVectorStoreOptions = {},
+  ) {
     this.db = new VectorStoreDB(dbName);
+    this.hydrateAllEntryLimit = Math.max(
+      1,
+      Math.floor(options.hydrateAllEntryLimit ?? DEFAULT_HYDRATE_ALL_ENTRY_LIMIT),
+    );
+    this.pageSize = Math.max(1, Math.floor(options.pageSize ?? DEFAULT_VECTOR_SEARCH_PAGE_SIZE));
+    this.maxRuntimePayloadBytes = Math.max(
+      4,
+      Math.floor(options.maxRuntimePayloadBytes ?? DEFAULT_RUNTIME_PAYLOAD_BUDGET_BYTES),
+    );
+    this.searchEntriesCache = new BoundedLruCache(
+      options.searchCacheLimit ?? DEFAULT_SEARCH_CACHE_LIMIT,
+    );
+    this.filteredRuntimeIndexes = new BoundedLruCache(
+      options.runtimeIndexCacheLimit ?? DEFAULT_RUNTIME_INDEX_CACHE_LIMIT,
+      (index) => index.dispose(),
+    );
+    this.ivfRuntimeIndexes = new BoundedLruCache(
+      options.ivfRuntimeIndexCacheLimit ?? DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT,
+      (index) => index.dispose(),
+    );
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
@@ -418,11 +550,19 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
-    const entries = await this.getCachedEntries();
-    return scoredQuery(entries, vector, topK, signal, this.getRuntimeIndex(entries));
+    const results = await this.search({
+      queryVector: vector,
+      topK,
+      signal,
+    });
+    return results.map((result) => result.entry);
   }
 
   async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    const totalEntries = await this.db.vectors.count();
+    if (totalEntries > this.hydrateAllEntryLimit) {
+      return this.searchPagedExact(request);
+    }
     const key = vectorSearchFilterKey(request.filter);
     const entries = await this.getSearchEntries(key, request.filter);
     const mode =
@@ -432,6 +572,15 @@ export class IndexedDbVectorStore implements VectorStore {
     const runtimeIndex = mode === 'exact' ? this.getRuntimeIndexForKey(key, entries) : null;
     const ivfIndex = mode === 'ann' ? this.getIvfRuntimeIndexForKey(key, entries, request) : null;
     return scoredSearch(entries, { ...request, filter: undefined }, runtimeIndex, ivfIndex);
+  }
+
+  getRuntimeCacheStats(): VectorRuntimeCacheStats {
+    return {
+      entriesCacheLoaded: this.entriesCache !== null,
+      searchEntriesCacheSize: this.searchEntriesCache.size,
+      filteredRuntimeIndexCount: this.filteredRuntimeIndexes.size,
+      ivfRuntimeIndexCount: this.ivfRuntimeIndexes.size,
+    };
   }
 
   async clear(): Promise<void> {
@@ -530,6 +679,56 @@ export class IndexedDbVectorStore implements VectorStore {
     return filtered;
   }
 
+  private async searchPagedExact(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    throwIfAborted(request.signal);
+    const topK = Math.max(0, Math.floor(request.topK));
+    if (topK <= 0) return [];
+
+    const selected: VectorSearchResult[] = [];
+    let offset = 0;
+    while (true) {
+      throwIfAborted(request.signal);
+      const records = await this.db.vectors
+        .orderBy('id')
+        .offset(offset)
+        .limit(this.pageSize)
+        .toArray();
+      if (records.length === 0) break;
+
+      const entries = records
+        .filter((record) => matchesVectorRecordSearchFilter(record, request.filter))
+        .map(vectorEntryFromRecord);
+      this.enforceRuntimeBoundary(entries);
+      const pageResults = await scoredSearch(
+        entries,
+        {
+          ...request,
+          mode: 'exact',
+          filter: undefined,
+          topK,
+        },
+        null,
+        null,
+      );
+      selected.push(...pageResults);
+      selected.sort((left, right) => right.score - left.score);
+      selected.splice(topK);
+
+      offset += records.length;
+      if (records.length < this.pageSize) break;
+    }
+    return selected;
+  }
+
+  private enforceRuntimeBoundary(entries: readonly VectorEntry[]): void {
+    for (const page of createPagedVectorMatrix(
+      entries.map((entry) => ({ id: entry.id, vector: entry.vector })),
+      { pageSize: this.pageSize },
+    )) {
+      enforceRuntimePayloadBudget(page, this.maxRuntimePayloadBytes);
+    }
+  }
+
   private getRuntimeIndex(entries: readonly VectorEntry[]): RustVectorRuntimeIndex | null {
     if (this.runtimeIndex) return this.runtimeIndex;
     this.runtimeIndex = createVectorRuntimeIndex(entries);
@@ -573,12 +772,6 @@ export class IndexedDbVectorStore implements VectorStore {
   private invalidateRuntimeIndex(): void {
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
-    for (const index of this.filteredRuntimeIndexes.values()) {
-      index.dispose();
-    }
-    for (const index of this.ivfRuntimeIndexes.values()) {
-      index.dispose();
-    }
     this.filteredRuntimeIndexes.clear();
     this.ivfRuntimeIndexes.clear();
     this.searchEntriesCache.clear();
@@ -631,7 +824,10 @@ export async function importLegacyJsonVectorStore(
 export class MemoryVectorStore implements VectorStore {
   private entries: VectorEntry[];
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
-  private ivfRuntimeIndexes = new Map<string, RustIvfRuntimeIndex>();
+  private ivfRuntimeIndexes = new BoundedLruCache<string, RustIvfRuntimeIndex>(
+    DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT,
+    (index) => index.dispose(),
+  );
 
   constructor() {
     this.entries = [];
@@ -755,9 +951,6 @@ export class MemoryVectorStore implements VectorStore {
   private invalidateRuntimeIndex(): void {
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
-    for (const index of this.ivfRuntimeIndexes.values()) {
-      index.dispose();
-    }
     this.ivfRuntimeIndexes.clear();
   }
 

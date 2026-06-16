@@ -86,6 +86,41 @@ describe('RAGIndexingScheduler', () => {
 
     expect(indexedPaths).toEqual(['a.md']);
   });
+
+  it('dirty set 상한을 넘으면 파일별 큐 대신 pending scan으로 backpressure를 건다', async () => {
+    let releaseFirst = (): void => {
+      throw new Error('releaseFirst가 초기화되지 않았습니다.');
+    };
+    const calls: string[] = [];
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      maxDirtyFiles: 2,
+      indexFile: (file) =>
+        new Promise((resolve) => {
+          calls.push(`file:${file.path}`);
+          releaseFirst = () =>
+            resolve(createResult({ indexed: 1, vectors: 1, documents: [file.path] }));
+        }),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => {
+        calls.push('pending');
+        return Promise.resolve(createResult({ indexed: 3, vectors: 3 }));
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+
+    scheduler.scheduleFile(createFile('a.md'), 'modify');
+    await Promise.resolve();
+    scheduler.scheduleFile(createFile('b.md'), 'modify');
+    scheduler.scheduleFile(createFile('c.md'), 'modify');
+    scheduler.scheduleFile(createFile('d.md'), 'modify');
+    expect(scheduler.getStatus().queuedFiles).toBeLessThanOrEqual(2);
+
+    releaseFirst();
+    await scheduler.waitForIdle();
+
+    expect(calls).toEqual(['file:a.md', 'pending']);
+  });
 });
 
 function createFile(path: string, mtime = 1): TFile {

@@ -26,6 +26,8 @@ interface VisualA11yFixture {
   keyboardFlows: string[];
   overflowSamples: string[];
   requiredSelectors: string[];
+  motionTokens: string[];
+  reducedMotionSelectors: string[];
 }
 
 const fixtureRoot = resolve(__dirname, '../../tests/fixtures/chat-ux');
@@ -77,14 +79,37 @@ describe('chat UX fixture gate', () => {
     ]);
     expect(fixture.reducedMotion).toEqual([false, true]);
     expect(fixture.keyboardFlows).toEqual(
-      expect.arrayContaining(['send-with-enter', 'mention-select-with-keyboard', 'tool-approve']),
+      expect.arrayContaining([
+        'send-with-enter',
+        'force-send-with-mod-enter',
+        'cancel-with-escape',
+        'mention-select-with-keyboard',
+        'tool-approve',
+      ]),
     );
     expect(fixture.overflowSamples.length).toBeGreaterThanOrEqual(2);
     expect(fixture.requiredSelectors).toEqual(
       expect.arrayContaining([
         '.superpower-inside-chat-input',
+        '.superpower-inside-chat-readiness',
         '.superpower-inside-chat-message-status',
         '.superpower-inside-chat-citation-card',
+        '.superpower-inside-chat-context-budget',
+        '.superpower-inside-chat-data-boundary',
+      ]),
+    );
+    expect(fixture.motionTokens).toEqual(
+      expect.arrayContaining([
+        '--superpower-inside-motion-fast',
+        '--superpower-inside-motion-normal',
+        '--superpower-inside-motion-slow',
+      ]),
+    );
+    expect(fixture.reducedMotionSelectors).toEqual(
+      expect.arrayContaining([
+        '.superpower-inside-typing-dot',
+        '.superpower-inside-tool-running-dots span',
+        '.superpower-inside-chat-streaming-cursor::after',
       ]),
     );
   });

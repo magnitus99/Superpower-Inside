@@ -19,6 +19,7 @@ import {
 } from '../rag/rust-core';
 import type { ContextAttachment, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
+import { createContextBudgetSnapshot } from './context-composer';
 import { expandReferencedVaultFiles } from './context-expansion';
 import {
   type ParsedMention,
@@ -44,6 +45,7 @@ export interface ContextBuildResult {
   attachments: ContextAttachment[];
   citations: SourceCitation[];
   warnings: string[];
+  contextBudgetSnapshot?: import('./types').ContextBudgetSnapshot;
 }
 
 interface BuildContextOptions {
@@ -187,6 +189,9 @@ export async function buildChatContext(
                 diagnosticsText,
               ])
             : t('contextNoRelevantDocs'),
+        reason: t('contextAutoRagTitle'),
+        estimatedChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
+        actualChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
         sourceIds: sourcePlan.sourceIds,
       });
     } catch (err) {
@@ -239,6 +244,12 @@ export async function buildChatContext(
     attachments,
     citations,
     warnings,
+    contextBudgetSnapshot: createContextBudgetSnapshot({
+      maxChars: maxContextChars,
+      usedChars: maxContextChars - budget.getRemainingChars(),
+      attachments,
+      citations,
+    }),
   };
 }
 
@@ -378,6 +389,10 @@ async function appendFileMention(
       label: file.path,
       status: attachedFully ? 'attached' : 'partial',
       detail: attachedFully ? undefined : t('contextPartialBudget'),
+      reason: t('chatFileMentionChip', { name: file.path }),
+      estimatedChars: content.length,
+      actualChars: content.length,
+      pinned: true,
       sourceIds: [citation.id],
     });
     return { file, content };
@@ -423,6 +438,9 @@ function appendReferenceFile(
     label: file.path,
     status: attachedFully ? 'attached' : 'partial',
     detail: attachedFully ? undefined : t('contextPartialBudget'),
+    reason: t('chatFileMentionChip', { name: file.path }),
+    estimatedChars: content.length,
+    actualChars: content.length,
     sourceIds: [citation.id],
   });
 }
@@ -488,6 +506,9 @@ async function appendFolderMention(
     label: path,
     status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
     detail: partial ? t('contextFolderAttachedLimited', { count: maxFolderFiles }) : undefined,
+    reason: t('chatFolderMentionChip', { name: path }),
+    fileCount: files.length,
+    filteredCount: filePlan?.partial ? Math.max(0, markdownFiles.length - files.length) : 0,
     sourceIds,
   });
 }
@@ -532,6 +553,9 @@ async function appendServerMention(
       label: name,
       status: attachedFully ? 'attached' : 'partial',
       detail: attachedFully ? undefined : t('contextPartialBudget'),
+      reason: t('mcpMentionServers'),
+      estimatedChars: toolList.length,
+      actualChars: toolList.length,
     });
   } catch (err) {
     appLogger.warn('MCP context attachment failed.', {

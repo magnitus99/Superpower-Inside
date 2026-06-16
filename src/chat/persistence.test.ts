@@ -233,9 +233,20 @@ describe('chat persistence', () => {
         contextBudgetSnapshot: {
           maxChars: 12_000,
           usedChars: 4_200,
+          remainingChars: 7_800,
           attachmentCount: 2,
           citationCount: 1,
           truncated: false,
+          includedAttachmentIds: ['rag:auto'],
+          excludedAttachmentIds: ['mcp:search'],
+        },
+        dataBoundarySnapshot: {
+          providerLabel: 'Ollama',
+          model: 'llama3.1',
+          localOnly: ['초안 저장소'],
+          sentToProvider: ['첨부 컨텍스트 1개'],
+          sentToMcp: ['search'],
+          privacyNotes: ['제외된 attachment 1개는 provider 요청에 포함하지 않습니다.'],
         },
         toolRoundLogs: [
           {
@@ -301,9 +312,20 @@ describe('chat persistence', () => {
       contextBudgetSnapshot: {
         maxChars: 12_000,
         usedChars: 4_200,
+        remainingChars: 7_800,
         attachmentCount: 2,
         citationCount: 1,
         truncated: false,
+        includedAttachmentIds: ['rag:auto'],
+        excludedAttachmentIds: ['mcp:search'],
+      },
+      dataBoundarySnapshot: {
+        providerLabel: 'Ollama',
+        model: 'llama3.1',
+        localOnly: ['초안 저장소'],
+        sentToProvider: ['첨부 컨텍스트 1개'],
+        sentToMcp: ['search'],
+        privacyNotes: ['제외된 attachment 1개는 provider 요청에 포함하지 않습니다.'],
       },
       toolRoundLogs: [
         expect.objectContaining({

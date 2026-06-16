@@ -41,9 +41,22 @@ import { validateAnswerSources } from './source-validation';
 import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
 import { classifyChatError, redactDebugDetail } from './chat-error-actions';
-import { createComposerLoadingState } from './chat-composer';
+import {
+  createComposerDraftSnapshot,
+  createComposerLoadingState,
+  resolveComposerKeyAction,
+  type ComposerDraftSnapshot,
+} from './chat-composer';
+import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
 import { createChatMessageMetaItems } from './chat-message-renderer';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
+import { createDataBoundarySnapshot } from './context-composer';
+import {
+  createRegenerationDraft,
+  createVariantComparisonRows,
+  markMessageRegenerated,
+  type RegenerationDraft,
+} from './conversation-variants';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
 import { createProviderWaitStatus } from './provider-wait';
 import { SourcePanel } from './source-panel';
@@ -95,11 +108,15 @@ interface MessageMetaInput {
   contextAttachments?: ContextAttachment[];
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
+  branchRoot?: string;
+  variantOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
   originalContent?: string;
   providerCapability?: ChatMessageWithMeta['providerCapability'];
   turnStage?: ChatTurnStage;
   toolRound?: number;
+  contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
+  dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
   errorKind?: ChatMessageWithMeta['errorKind'];
   actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
@@ -124,6 +141,7 @@ export class ChatView extends ItemView {
   private typingIndicator: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
+  private readinessEl: HTMLElement | null;
   private modelSelectEl: HTMLSelectElement | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
@@ -131,9 +149,12 @@ export class ChatView extends ItemView {
   private mentionSelectedIndex: number;
   private mentionItems: { label: string; value: string; type: 'server' | 'file' | 'folder' }[];
   private mentionStartIndex: number;
+  private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
   private lastUserPrompt: string | null;
   private previousUserQueries: string[];
+  private pendingSubmittedDraft: ComposerDraftSnapshot | null;
+  private pendingRegeneration: RegenerationDraft | null;
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
   private lastStreamingMarkdownAt: number;
@@ -166,6 +187,7 @@ export class ChatView extends ItemView {
     this.typingIndicator = null;
     this.scrollBtn = null;
     this.mcpStatusBar = null;
+    this.readinessEl = null;
     this.modelSelectEl = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
@@ -173,14 +195,20 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
     this.mentionStartIndex = -1;
+    this.mentionDropdownId = `superpower-inside-mention-dropdown-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
     this.abortController = null;
     this.lastUserPrompt = null;
     this.previousUserQueries = [];
+    this.pendingSubmittedDraft = null;
+    this.pendingRegeneration = null;
     this.lastStreamingMarkdownAt = 0;
     this.sourcePanel = new SourcePanel({
       openCitation: (citation) => this.openCitation(citation),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
       insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
+      repairSourceWarning: (warning) => this.repairSourceWarning(warning),
     });
     this.toolCallPanel = new ToolCallPanel({
       approveToolCall: (messageId, toolCallId) => this.approveToolCall(messageId, toolCallId),
@@ -206,7 +234,10 @@ export class ChatView extends ItemView {
     this.buildHeader(root);
     this.buildMcpStatusBar(root);
 
-    this.messagesArea = root.createDiv({ cls: 'superpower-inside-chat-messages' });
+    this.messagesArea = root.createDiv({
+      cls: 'superpower-inside-chat-messages',
+      attr: { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions text' },
+    });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
 
     this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
@@ -236,16 +267,18 @@ export class ChatView extends ItemView {
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('mcp', () => {
         this.renderMcpStatusBar();
+        this.renderChatReadiness();
       }),
     );
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('models', () => {
         this.populateModelSelect();
+        this.renderChatReadiness();
       }),
     );
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('rag', () => {
-        /* RAG 상태 변경은 채팅 컨텍스트가 다음 질문 시 자동 반영됨 */
+        this.renderChatReadiness();
       }),
     );
   }
@@ -365,6 +398,7 @@ export class ChatView extends ItemView {
       });
       connectingLabel.setText(t('mcpConnecting'));
       this.attachMcpRefreshButton();
+      this.renderChatReadiness();
       return;
     }
 
@@ -374,6 +408,7 @@ export class ChatView extends ItemView {
       });
       emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
       this.attachMcpRefreshButton();
+      this.renderChatReadiness();
       return;
     }
 
@@ -400,6 +435,7 @@ export class ChatView extends ItemView {
     }
 
     this.attachMcpRefreshButton();
+    this.renderChatReadiness();
   }
 
   private attachMcpRefreshButton(): void {
@@ -439,6 +475,11 @@ export class ChatView extends ItemView {
   private buildInputArea(container: HTMLElement): void {
     const wrapper = container.createDiv({ cls: 'superpower-inside-chat-input-wrapper' });
 
+    this.readinessEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-readiness',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+
     const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
 
     this.modelSelectEl = toolbar.createEl('select', {
@@ -466,7 +507,12 @@ export class ChatView extends ItemView {
     const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
     this.inputArea = inputRow.createEl('textarea', {
       cls: 'superpower-inside-chat-input',
-      attr: { placeholder: t('chatInputPlaceholder'), rows: '2' },
+      attr: {
+        placeholder: t('chatInputPlaceholder'),
+        rows: '2',
+        'aria-label': t('chatInputPlaceholder'),
+        'aria-controls': this.mentionDropdownId,
+      },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
     this.inputArea.addEventListener('input', () => {
@@ -481,6 +527,7 @@ export class ChatView extends ItemView {
     this.sendBtn = inputRow.createEl('button', {
       cls: 'superpower-inside-chat-send-btn',
       text: t('sendButton'),
+      attr: { type: 'button' },
     });
     this.sendBtn.addEventListener('click', () => {
       if (this.isStreaming) {
@@ -489,6 +536,8 @@ export class ChatView extends ItemView {
       }
       void this.handleSend();
     });
+
+    this.renderChatReadiness();
   }
 
   private focusMessageSearch(): void {
@@ -595,32 +644,125 @@ export class ChatView extends ItemView {
         ? defaultModel
         : allModels[0].value;
     this.modelSelectEl.disabled = false;
+    this.renderChatReadiness();
+  }
+
+  private renderChatReadiness(): void {
+    if (!this.readinessEl) return;
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: this.getEnabledProviderCount(),
+      availableModelCount: this.getAvailableModelCount(),
+      selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+      ragEnabled: Boolean(this.plugin.settings.rag.autoUpdateEnabled || this.plugin.vectorStore),
+      ragReady: Boolean(this.plugin.eventDrivenRagStats || this.plugin.vectorStore),
+      ragIndexing: this.plugin.isRagIndexing(),
+      configuredMcpServerCount: this.plugin.settings.mcpServers.length,
+      connectedMcpServerCount: this.plugin.mcpRegistry?.getConnectedCount() ?? 0,
+      saveFolderConfigured: Boolean(this.plugin.settings.chat.saveFolder.trim()),
+    });
+    this.readinessEl.empty();
+    this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
+    if (this.sendBtn && !this.isStreaming) {
+      this.sendBtn.disabled = snapshot.blocksSend;
+    }
+    this.readinessEl.createSpan({
+      cls: 'superpower-inside-chat-readiness-primary',
+      text: snapshot.primaryText,
+    });
+    if (snapshot.items.length === 0) return;
+    const list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
+    for (const item of snapshot.items.slice(0, 3)) {
+      const row = list.createDiv({
+        cls: `superpower-inside-chat-readiness-item ${item.kind} ${item.severity}`,
+      });
+      row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
+      row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
+      if (item.action) {
+        const action = row.createEl('button', {
+          cls: 'superpower-inside-chat-readiness-action',
+          text: item.label,
+        });
+        action.addEventListener('click', () => this.handleReadinessAction(item));
+      }
+    }
+  }
+
+  private getEnabledProviderCount(): number {
+    const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
+    const custom = this.plugin.settings.customOpenAIProviders.filter((provider) => provider.enabled).length;
+    return builtIn + custom;
+  }
+
+  private getAvailableModelCount(): number {
+    const builtIn = CHAT_PROVIDER_KEYS.reduce(
+      (count, key) =>
+        this.plugin.settings[key].enabled ? count + this.plugin.settings[key].models.length : count,
+      0,
+    );
+    const custom = this.plugin.settings.customOpenAIProviders.reduce(
+      (count, provider) => (provider.enabled ? count + provider.models.length : count),
+      0,
+    );
+    return builtIn + custom;
+  }
+
+  private handleReadinessAction(item: ChatReadinessItem): void {
+    if (item.action === 'reconnect-mcp') {
+      void this.plugin.reconnectMCP().then(() => this.renderMcpStatusBar());
+      return;
+    }
+    if (item.action === 'index-rag') {
+      this.plugin.resumeRagIndexing();
+      this.renderChatReadiness();
+      return;
+    }
+    if (item.action === 'select-model') {
+      this.modelSelectEl?.focus();
+      return;
+    }
+    new Notice(item.detail, 5000);
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
-    if (this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS)) {
-      if (e.key === 'ArrowDown') {
+    const mentionOpen = Boolean(this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS));
+    const action = resolveComposerKeyAction({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+      mentionOpen,
+      isStreaming: this.isStreaming,
+    });
+
+    if (mentionOpen) {
+      if (action === 'select-next') {
         e.preventDefault();
         this.selectMentionItem(this.mentionSelectedIndex + 1);
         return;
       }
-      if (e.key === 'ArrowUp') {
+      if (action === 'select-previous') {
         e.preventDefault();
         this.selectMentionItem(this.mentionSelectedIndex - 1);
         return;
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
+      if (action === 'confirm-mention') {
         e.preventDefault();
         this.confirmMentionSelection();
         return;
       }
-      if (e.key === 'Escape') {
+      if (action === 'close-dropdown') {
+        e.preventDefault();
         this.hideMentionDropdown();
         return;
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (action === 'cancel') {
+      e.preventDefault();
+      this.stopStreaming();
+      return;
+    }
+    if (action === 'send' || action === 'force-send') {
       e.preventDefault();
       void this.handleSend();
     }
@@ -717,6 +859,7 @@ export class ChatView extends ItemView {
     if (!this.mentionDropdown) {
       this.mentionDropdown = this.container.createDiv({
         cls: 'superpower-inside-mention-dropdown',
+        attr: { id: this.mentionDropdownId, role: 'listbox' },
       });
     }
     this.mentionDropdown.empty();
@@ -734,6 +877,8 @@ export class ChatView extends ItemView {
       });
       for (const item of serverItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '🔌' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -748,6 +893,8 @@ export class ChatView extends ItemView {
       });
       for (const item of folderItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon folder', text: '📁' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -762,6 +909,8 @@ export class ChatView extends ItemView {
       });
       for (const item of fileItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '📄' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -806,6 +955,9 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = targetIndex;
     for (let i = 0; i < items.length; i++) {
       items[i].toggleClass('selected', i === targetIndex);
+      if (items[i] instanceof HTMLElement) {
+        items[i].setAttribute('aria-selected', i === targetIndex ? 'true' : 'false');
+      }
     }
   }
 
@@ -913,7 +1065,11 @@ export class ChatView extends ItemView {
       contextAttachments: metaInput?.contextAttachments,
       assistantQuestion: metaInput?.assistantQuestion,
       branchOf: metaInput?.branchOf,
+      branchRoot: metaInput?.branchRoot,
+      variantOf: metaInput?.variantOf,
       stopReason: metaInput?.stopReason,
+      contextBudgetSnapshot: metaInput?.contextBudgetSnapshot,
+      dataBoundarySnapshot: metaInput?.dataBoundarySnapshot,
       errorKind: metaInput?.errorKind,
       actionHistory: metaInput?.actionHistory,
     };
@@ -955,7 +1111,7 @@ export class ChatView extends ItemView {
       });
       void this.renderMarkdownBubble(bubble, content);
     }
-    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.renderMessageContextSections(bubbleContainer, msg);
     this.renderMessageActions(bubbleContainer, msg);
 
     if (this.autoScroll) {
@@ -996,7 +1152,12 @@ export class ChatView extends ItemView {
       message.contextAttachments = metaInput?.contextAttachments ?? message.contextAttachments;
       message.assistantQuestion = metaInput?.assistantQuestion;
       message.branchOf = metaInput?.branchOf ?? message.branchOf;
+      message.branchRoot = metaInput?.branchRoot ?? message.branchRoot;
+      message.variantOf = metaInput?.variantOf ?? message.variantOf;
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
+      message.contextBudgetSnapshot =
+        metaInput?.contextBudgetSnapshot ?? message.contextBudgetSnapshot;
+      message.dataBoundarySnapshot = metaInput?.dataBoundarySnapshot ?? message.dataBoundarySnapshot;
       message.errorKind = metaInput?.errorKind ?? message.errorKind;
       message.actionHistory = metaInput?.actionHistory ?? message.actionHistory;
       if (toolCalls) {
@@ -1020,6 +1181,12 @@ export class ChatView extends ItemView {
         message?.sourceWarnings,
         message?.assistantQuestion,
       );
+      if (message) {
+        const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
+        if (bubbleContainer instanceof HTMLElement) {
+          this.renderMessageContextSections(bubbleContainer, message);
+        }
+      }
       if (this.autoScroll) {
         this.scrollToBottom();
       }
@@ -1040,6 +1207,13 @@ export class ChatView extends ItemView {
         } else {
           void this.renderMarkdownBubble(bubble, content);
         }
+      }
+    }
+
+    if (message) {
+      const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
+      if (bubbleContainer instanceof HTMLElement) {
+        this.renderMessageContextSections(bubbleContainer, message);
       }
     }
 
@@ -1098,7 +1272,9 @@ export class ChatView extends ItemView {
     if (assistantQuestion) {
       this.renderAssistantQuestionCard(bubble, assistantQuestion);
     } else if (content.trim()) {
-      void this.renderMarkdownBubble(bubble, content);
+      void this.renderMarkdownBubble(bubble, content).then(() =>
+        this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, citations ?? []),
+      );
     } else {
       bubble.setText(content);
     }
@@ -1187,7 +1363,9 @@ export class ChatView extends ItemView {
         if (assistantQuestion) {
           this.renderAssistantQuestionCard(bubble, assistantQuestion);
         } else {
-          void this.renderMarkdownBubble(bubble, content);
+          void this.renderMarkdownBubble(bubble, content).then(() =>
+            this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, citations ?? []),
+          );
         }
         if (generatingLabel instanceof HTMLElement) {
           generatingLabel.remove();
@@ -1450,6 +1628,62 @@ export class ChatView extends ItemView {
     }
   }
 
+  private renderMessageContextSections(
+    bubbleContainer: HTMLElement,
+    msg: ChatMessageWithMeta,
+  ): void {
+    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextBudgetSection(bubbleContainer, msg.contextBudgetSnapshot);
+    this.sourcePanel.renderDataBoundarySection(bubbleContainer, msg.dataBoundarySnapshot);
+    this.renderVariantComparisonSection(bubbleContainer, msg);
+    if (msg.role === 'assistant') {
+      this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
+    }
+  }
+
+  private renderVariantComparisonSection(
+    bubbleContainer: HTMLElement,
+    msg: ChatMessageWithMeta,
+  ): void {
+    let section = bubbleContainer.querySelector('.superpower-inside-chat-variant-compare');
+    const rows = createVariantComparisonRows(this.messages, msg.id);
+    if (rows.length < 2) {
+      section?.remove();
+      return;
+    }
+    if (!(section instanceof HTMLElement)) {
+      section = bubbleContainer.createEl('details', {
+        cls: 'superpower-inside-chat-variant-compare',
+      });
+    }
+    section.empty();
+    if (section instanceof HTMLDetailsElement) {
+      section.open = rows.some((row) => row.active && row.id === msg.id);
+    }
+    section.createEl('summary', { text: t('variantCompareTitle') });
+    for (const row of rows) {
+      const item = section.createDiv({
+        cls: `superpower-inside-chat-variant-row ${row.active ? 'active' : ''}`,
+      });
+      item.createSpan({
+        cls: 'superpower-inside-chat-variant-provider',
+        text: t('variantCompareRow', {
+          provider: row.providerText,
+          citations: row.citationCount,
+          warnings: row.sourceWarningCount,
+          tools: row.toolCallCount,
+          contexts: row.contextAttachmentCount,
+        }),
+      });
+      if (row.active) {
+        item.createSpan({
+          cls: 'superpower-inside-chat-variant-active',
+          text: t('variantCompareActive'),
+        });
+      }
+    }
+  }
+
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
     const existing = container.querySelector('.superpower-inside-chat-message-actions');
     existing?.remove();
@@ -1496,6 +1730,14 @@ export class ChatView extends ItemView {
     new Notice(t('sourceWarningIncluded', { count: msg.sourceWarnings.length }), 5000);
   }
 
+  private repairSourceWarning(warning: SourceValidationWarning): void {
+    if (!this.inputArea) return;
+    this.inputArea.value = t('sourceRepairPrompt', { label: warning.label });
+    this.inputArea.focus();
+    this.autoResizeInput();
+    this.renderContextPreview(this.inputArea.value);
+  }
+
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
     const folder = this.plugin.settings.chat.saveFolder || 'SuperpowerInsideChats';
     const title = this.session.title || t('aiAnswerTitle');
@@ -1522,18 +1764,18 @@ export class ChatView extends ItemView {
   }
 
   private async regenerateFromAssistant(messageId: string): Promise<void> {
-    const index = this.messages.findIndex((message) => message.id === messageId);
-    if (index <= 0) return;
-    const previousUser = [...this.messages.slice(0, index)]
-      .reverse()
-      .find((message) => message.role === 'user');
-    if (!previousUser) return;
-    this.messages = this.messages.slice(0, index);
+    const draft = createRegenerationDraft(this.messages, messageId);
+    if (!draft) return;
+    const originalIndex = this.messages.findIndex((message) => message.id === messageId);
+    if (originalIndex >= 0) {
+      this.messages[originalIndex] = markMessageRegenerated(this.messages[originalIndex]);
+    }
+    this.pendingRegeneration = draft;
     this.markDirtyAndAutoSave();
     this.rebuildMessagesDOM();
-    this.inputArea!.value = previousUser.content;
+    this.inputArea!.value = draft.text;
     this.autoResizeInput();
-    this.renderContextPreview(previousUser.content);
+    this.renderContextPreview(draft.text);
     await this.handleSend();
   }
 
@@ -1734,7 +1976,17 @@ export class ChatView extends ItemView {
         sourceWarnings: m.sourceWarnings,
         contextAttachments: m.contextAttachments,
         branchOf: m.branchOf,
+        branchRoot: m.branchRoot,
+        variantOf: m.variantOf,
         stopReason: m.stopReason,
+        providerCapability: m.providerCapability,
+        turnStage: m.turnStage,
+        toolRound: m.toolRound,
+        toolRoundLogs: m.toolRoundLogs,
+        contextBudgetSnapshot: m.contextBudgetSnapshot,
+        dataBoundarySnapshot: m.dataBoundarySnapshot,
+        errorKind: m.errorKind,
+        actionHistory: m.actionHistory,
       }));
       this.sessionSystemPrompt = session.systemPrompt ?? null;
       this.session = {
@@ -1813,7 +2065,7 @@ export class ChatView extends ItemView {
       });
       void this.renderMarkdownBubble(bubble, msg.content);
     }
-    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.renderMessageContextSections(bubbleContainer, msg);
     this.renderMessageActions(bubbleContainer, msg);
   }
 
@@ -1883,6 +2135,11 @@ export class ChatView extends ItemView {
   private async handleSend(): Promise<void> {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
+    const regeneration = this.pendingRegeneration;
+    this.pendingSubmittedDraft = createComposerDraftSnapshot({
+      text,
+      attachmentIds: this.getDraftAttachmentIds(text),
+    });
     this.lastUserPrompt = text;
     this.previousUserQueries.push(text);
     if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
@@ -1957,7 +2214,43 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
+    const mentionedServers = this.getEffectiveMcpServerNames(text);
     const promptContext = await this.buildPromptContext(text, this.previousUserQueries);
+    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
+    const dataBoundarySnapshot = createDataBoundarySnapshot({
+      providerLabel,
+      model: modelName,
+      hasSystemPrompt: Boolean(promptContext.systemPrompt),
+      attachments: promptContext.attachments,
+      citations: promptContext.citations,
+      mcpServerNames: mentionedServers,
+    });
+    const branchOf = regeneration ? (this.session.filePath ?? undefined) : undefined;
+    const userVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
+      regeneration
+        ? {
+            branchOf,
+            branchRoot: regeneration.branchRoot,
+            variantOf: regeneration.previousUserId,
+          }
+        : {};
+    const assistantVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
+      regeneration
+        ? {
+            branchOf,
+            branchRoot: regeneration.branchRoot,
+            variantOf: regeneration.variantOf,
+          }
+        : {};
+    const contextMeta: Pick<
+      MessageMetaInput,
+      'citations' | 'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot'
+    > = {
+      citations: promptContext.citations,
+      contextAttachments: promptContext.attachments,
+      contextBudgetSnapshot,
+      dataBoundarySnapshot,
+    };
     applyTurnEvent({ type: 'context-built' });
     this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
@@ -1966,6 +2259,9 @@ export class ChatView extends ItemView {
       providerCapability,
       status: 'complete',
       contextAttachments: promptContext.attachments,
+      contextBudgetSnapshot,
+      dataBoundarySnapshot,
+      ...userVariantMeta,
     });
     await this.saveCurrentSession(true);
     this.setLoading(true);
@@ -1976,10 +2272,10 @@ export class ChatView extends ItemView {
     let assistantWrapper: HTMLElement | undefined;
     const abortController = new AbortController();
     this.abortController = abortController;
+    let restoreDraft = false;
 
     try {
       const systemPrompt = promptContext.systemPrompt;
-      const mentionedServers = this.getEffectiveMcpServerNames(text);
       const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
       const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
       if (!providerCapability.toolCalling && mentionedServers.length > 0) {
@@ -2002,13 +2298,13 @@ export class ChatView extends ItemView {
         undefined,
         undefined,
         {
-        providerKey: key,
-        providerLabel,
-        model: modelName,
-        providerCapability,
-        ...toTurnMeta(),
-        citations: promptContext.citations,
-        contextAttachments: promptContext.attachments,
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...toTurnMeta(),
+          ...contextMeta,
+          ...assistantVariantMeta,
         },
       );
       assistantWrapper = this.messageEls.get(assistantId);
@@ -2061,8 +2357,8 @@ export class ChatView extends ItemView {
               model: modelName,
               providerCapability,
               ...turnMeta,
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
+              ...contextMeta,
+              ...assistantVariantMeta,
             },
           );
         },
@@ -2095,8 +2391,8 @@ export class ChatView extends ItemView {
             model: modelName,
             providerCapability,
             ...applyTurnEvent({ type: 'complete' }),
-            citations: promptContext.citations,
-            contextAttachments: promptContext.attachments,
+            ...contextMeta,
+            ...assistantVariantMeta,
             assistantQuestion: firstClassification.question,
             originalContent: firstClassification.originalContent,
           },
@@ -2145,8 +2441,8 @@ export class ChatView extends ItemView {
           model: modelName,
           providerCapability,
           ...applyTurnEvent({ type: 'context-built' }),
-          citations: promptContext.citations,
-          contextAttachments: promptContext.attachments,
+          ...contextMeta,
+          ...assistantVariantMeta,
         });
 
         await provider.streamChat(
@@ -2178,8 +2474,8 @@ export class ChatView extends ItemView {
                 model: modelName,
                 providerCapability,
                 ...turnMeta,
-                citations: promptContext.citations,
-                contextAttachments: promptContext.attachments,
+                ...contextMeta,
+                ...assistantVariantMeta,
               },
             );
           },
@@ -2212,8 +2508,8 @@ export class ChatView extends ItemView {
               model: modelName,
               providerCapability,
               ...applyTurnEvent({ type: 'complete' }),
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
+              ...contextMeta,
+              ...assistantVariantMeta,
               assistantQuestion: retryClassification.question,
               originalContent: retryClassification.originalContent,
             },
@@ -2239,9 +2535,9 @@ export class ChatView extends ItemView {
         model: modelName,
         providerCapability,
         ...postProviderTurnMeta,
-        citations: promptContext.citations,
+        ...contextMeta,
+        ...assistantVariantMeta,
         sourceWarnings,
-        contextAttachments: promptContext.attachments,
       });
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
@@ -2262,9 +2558,9 @@ export class ChatView extends ItemView {
             model: modelName,
             providerCapability,
             ...applyTurnEvent({ type: 'await-tool-approval' }),
-            citations: promptContext.citations,
+            ...contextMeta,
+            ...assistantVariantMeta,
             sourceWarnings,
-            contextAttachments: promptContext.attachments,
           });
           new Notice(t('mcpApprovalRequiredNotice'));
         }
@@ -2278,9 +2574,9 @@ export class ChatView extends ItemView {
               type: 'tools-running',
               activeToolCalls: runnableToolCalls.length,
             }),
-            citations: promptContext.citations,
+            ...contextMeta,
+            ...assistantVariantMeta,
             sourceWarnings,
-            contextAttachments: promptContext.attachments,
           });
         }
         toolCalls = await this.executeAssistantToolCalls(
@@ -2303,8 +2599,8 @@ export class ChatView extends ItemView {
             model: modelName,
             providerCapability,
             ...applyTurnEvent({ type: 'tools-complete' }),
-            citations: promptContext.citations,
-            contextAttachments: promptContext.attachments,
+            ...contextMeta,
+            ...assistantVariantMeta,
           },
           mentionedServers,
           initialText: fullText,
@@ -2337,11 +2633,12 @@ export class ChatView extends ItemView {
               model: modelName,
               providerCapability,
               ...applyTurnEvent({ type: 'cancel' }),
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
+              ...contextMeta,
+              ...assistantVariantMeta,
             },
           );
         }
+        restoreDraft = true;
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -2363,8 +2660,8 @@ export class ChatView extends ItemView {
             ...errorTurnMeta,
             errorMessage: errDetail,
             errorKind,
-            citations: promptContext.citations,
-            contextAttachments: promptContext.attachments,
+            ...contextMeta,
+            ...assistantVariantMeta,
           },
         );
         if (assistantWrapper) {
@@ -2392,12 +2689,21 @@ export class ChatView extends ItemView {
             ...errorTurnMeta,
             errorMessage: errDetail,
             errorKind,
+            ...contextMeta,
+            ...assistantVariantMeta,
           },
         );
       }
+      restoreDraft = true;
     } finally {
       if (this.abortController === abortController) {
         this.abortController = null;
+      }
+      if (restoreDraft) {
+        this.restoreSubmittedDraft();
+      } else {
+        this.pendingSubmittedDraft = null;
+        this.pendingRegeneration = null;
       }
       await this.saveCurrentSession(true);
       this.setLoading(false);
@@ -2414,6 +2720,24 @@ export class ChatView extends ItemView {
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
     if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
+    if (!loading) this.renderChatReadiness();
+  }
+
+  private getDraftAttachmentIds(text: string): string[] {
+    return this.parseMentions(text).map((mention) =>
+      mention.type === 'server' ? `mcp:${mention.name}` : `${mention.type}:${mention.name}`,
+    );
+  }
+
+  private restoreSubmittedDraft(): void {
+    const draft = this.pendingSubmittedDraft;
+    if (!draft || !this.inputArea) return;
+    if (this.inputArea.value.trim()) return;
+    this.inputArea.value = draft.text;
+    this.autoResizeInput();
+    this.renderContextPreview(draft.text);
+    this.pendingSubmittedDraft = null;
+    new Notice(t('composerDraftRestoredNotice'), 3000);
   }
 
   private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {

@@ -14258,6 +14258,7 @@ fn parse_chat_message_plan(
     copy_optional_chat_u64(object, &mut message, "toolRound");
     copy_optional_chat_value(object, &mut message, "toolRoundLogs");
     copy_optional_chat_value(object, &mut message, "contextBudgetSnapshot");
+    copy_optional_chat_value(object, &mut message, "dataBoundarySnapshot");
     copy_optional_chat_string(object, &mut message, "errorKind");
     copy_optional_chat_value(object, &mut message, "actionHistory");
 

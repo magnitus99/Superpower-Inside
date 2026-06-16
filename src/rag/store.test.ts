@@ -146,6 +146,74 @@ describe('IndexedDbVectorStore', () => {
     expect(results[0]?.mode).toBe('exact');
   });
 
+  it('large store search는 전체 entries cache를 hydrate하지 않고 page 단위로 점수화한다', async () => {
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 2,
+      pageSize: 2,
+    });
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+      createEntry('d.md', 0, [0.9, 0.1], 'd'),
+    ]);
+
+    const results = await store.search({ queryVector: [1, 0], topK: 2 });
+
+    expect(results.map((result) => result.entry.id)).toEqual(['a.md::0', 'd.md::0']);
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({
+        entriesCacheLoaded: false,
+        searchEntriesCacheSize: 0,
+      }),
+    );
+  });
+
+  it('검색/runtime index cache는 설정한 LRU 예산 안에서만 유지된다', async () => {
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 100,
+      searchCacheLimit: 1,
+      runtimeIndexCacheLimit: 1,
+      ivfRuntimeIndexCacheLimit: 1,
+    });
+    await store.add([
+      createEntry('openai.md', 0, [1, 0], 'openai'),
+      {
+        ...createEntry('ollama.md', 0, [0, 1], 'ollama'),
+        metadata: {
+          ...createEntry('ollama.md', 0, [0, 1], 'ollama').metadata,
+          embeddingProvider: 'ollama',
+        },
+      },
+    ]);
+
+    await store.search({
+      queryVector: [1, 0],
+      topK: 1,
+      filter: { embeddingProvider: 'openai', dimension: 2 },
+    });
+    await store.search({
+      queryVector: [0, 1],
+      topK: 1,
+      filter: { embeddingProvider: 'ollama', dimension: 2 },
+    });
+    await store.search({
+      queryVector: [0, 1],
+      topK: 1,
+      mode: 'ann',
+      annMinEntryCount: 1,
+      annClusterCount: 1,
+    });
+
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({
+        searchEntriesCacheSize: 1,
+        filteredRuntimeIndexCount: 1,
+        ivfRuntimeIndexCount: 1,
+      }),
+    );
+  });
+
   it('IndexedDB record는 벡터를 ArrayBuffer와 dimension으로 저장한다', async () => {
     const dbName = createDbName();
     const store = createStore(dbName);
@@ -267,9 +335,12 @@ function createDbName(): string {
   return `SuperpowerInsideVectorStoreTest-${crypto.randomUUID()}`;
 }
 
-function createStore(dbName = createDbName()): IndexedDbVectorStore {
+function createStore(
+  dbName = createDbName(),
+  options?: ConstructorParameters<typeof IndexedDbVectorStore>[1],
+): IndexedDbVectorStore {
   dbNames.add(dbName);
-  return new IndexedDbVectorStore(dbName);
+  return new IndexedDbVectorStore(dbName, options);
 }
 
 function createEntry(

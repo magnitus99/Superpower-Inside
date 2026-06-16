@@ -132,6 +132,13 @@ export interface KnowledgeGraphStore {
   getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]>;
   getEvidence(limit?: number, offset?: number): Promise<GraphEvidenceRecord[]>;
   getCommunities(limit?: number, offset?: number): Promise<GraphCommunityRecord[]>;
+  getEvidenceByIds(ids: readonly string[]): Promise<GraphEvidenceRecord[]>;
+  getRelationsForEntityIds(
+    entityIds: readonly string[],
+    ontologySchemaId?: string,
+  ): Promise<GraphRelationRecord[]>;
+  getClaimsForEntityIds(entityIds: readonly string[]): Promise<GraphClaimRecord[]>;
+  getCommunitiesBySchema(ontologySchemaId: string): Promise<GraphCommunityRecord[]>;
   addEvidence(record: GraphEvidenceRecord): Promise<void>;
   upsertEntity(record: GraphEntityRecord): Promise<void>;
   addPendingEntityMerge(record: PendingEntityMergeRecord): Promise<void>;
@@ -169,6 +176,19 @@ class KnowledgeGraphDB extends Dexie {
       graphRelations:
         'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
       graphClaims: 'id, claimTypeId, updatedAt',
+      graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
+      graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
+      graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
+      graphExtractionCache:
+        'entryId, contentHash, extractionModelKey, ontologySchemaId, ontologyVersion, updatedAt',
+      graphPendingEntityMerges:
+        'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
+    });
+    this.version(2).stores({
+      graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
+      graphRelations:
+        'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
+      graphClaims: 'id, claimTypeId, *entityIds, updatedAt',
       graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
       graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
       graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
@@ -283,6 +303,41 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     if (offset !== undefined) collection = collection.offset(offset);
     if (limit !== undefined) collection = collection.limit(limit);
     return (await collection.toArray()).map(copyCommunity);
+  }
+
+  async getEvidenceByIds(ids: readonly string[]): Promise<GraphEvidenceRecord[]> {
+    if (ids.length === 0) return [];
+    const records = await this.db.graphEvidence.bulkGet([...new Set(ids)]);
+    return records
+      .filter((record): record is GraphEvidenceRecord => record !== undefined)
+      .map((record) => ({ ...record }));
+  }
+
+  async getRelationsForEntityIds(
+    entityIds: readonly string[],
+    ontologySchemaId?: string,
+  ): Promise<GraphRelationRecord[]> {
+    const uniqueIds = [...new Set(entityIds)];
+    if (uniqueIds.length === 0) return [];
+    const [sourceMatches, targetMatches] = await Promise.all([
+      this.db.graphRelations.where('sourceEntityId').anyOf(uniqueIds).toArray(),
+      this.db.graphRelations.where('targetEntityId').anyOf(uniqueIds).toArray(),
+    ]);
+    return uniqueById([...sourceMatches, ...targetMatches])
+      .filter((record) => !ontologySchemaId || record.ontologySchemaId === ontologySchemaId)
+      .map(copyRelation);
+  }
+
+  async getClaimsForEntityIds(entityIds: readonly string[]): Promise<GraphClaimRecord[]> {
+    const uniqueIds = [...new Set(entityIds)];
+    if (uniqueIds.length === 0) return [];
+    return (await this.db.graphClaims.where('entityIds').anyOf(uniqueIds).toArray()).map(copyClaim);
+  }
+
+  async getCommunitiesBySchema(ontologySchemaId: string): Promise<GraphCommunityRecord[]> {
+    return (await this.db.graphCommunities.where('ontologySchemaId').equals(ontologySchemaId).toArray()).map(
+      copyCommunity,
+    );
   }
 
   async getRejectedFacts(): Promise<GraphRejectedFactRecord[]> {
@@ -537,6 +592,48 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     const all = [...this.communities.values()].map(copyCommunity);
     return Promise.resolve(
       all.slice(offset ?? 0, limit !== undefined ? (offset ?? 0) + limit : undefined),
+    );
+  }
+
+  getEvidenceByIds(ids: readonly string[]): Promise<GraphEvidenceRecord[]> {
+    const selected: GraphEvidenceRecord[] = [];
+    for (const id of new Set(ids)) {
+      const record = this.evidence.get(id);
+      if (record) selected.push({ ...record });
+    }
+    return Promise.resolve(selected);
+  }
+
+  getRelationsForEntityIds(
+    entityIds: readonly string[],
+    ontologySchemaId?: string,
+  ): Promise<GraphRelationRecord[]> {
+    const entityIdSet = new Set(entityIds);
+    return Promise.resolve(
+      [...this.relations.values()]
+        .filter(
+          (record) =>
+            entityIdSet.has(record.sourceEntityId) || entityIdSet.has(record.targetEntityId),
+        )
+        .filter((record) => !ontologySchemaId || record.ontologySchemaId === ontologySchemaId)
+        .map(copyRelation),
+    );
+  }
+
+  getClaimsForEntityIds(entityIds: readonly string[]): Promise<GraphClaimRecord[]> {
+    const entityIdSet = new Set(entityIds);
+    return Promise.resolve(
+      [...this.claims.values()]
+        .filter((record) => record.entityIds.some((entityId) => entityIdSet.has(entityId)))
+        .map(copyClaim),
+    );
+  }
+
+  getCommunitiesBySchema(ontologySchemaId: string): Promise<GraphCommunityRecord[]> {
+    return Promise.resolve(
+      [...this.communities.values()]
+        .filter((record) => record.ontologySchemaId === ontologySchemaId)
+        .map(copyCommunity),
     );
   }
 
@@ -863,6 +960,17 @@ function selectGraphRecordsForDeletion<T>(
     return selected;
   }
   return selectByIndex(records, indices);
+}
+
+function uniqueById<T extends { id: string }>(records: readonly T[]): T[] {
+  const selected: T[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.id)) continue;
+    seen.add(record.id);
+    selected.push(record);
+  }
+  return selected;
 }
 
 function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): GraphEntityRecord {

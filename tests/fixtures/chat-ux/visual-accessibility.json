@@ -7,6 +7,8 @@
   "reducedMotion": [false, true],
   "keyboardFlows": [
     "send-with-enter",
+    "force-send-with-mod-enter",
+    "cancel-with-escape",
     "mention-select-with-keyboard",
     "tool-approve",
     "assistant-question-submit",
@@ -20,10 +22,28 @@
   "requiredSelectors": [
     ".superpower-inside-chat-input",
     ".superpower-inside-chat-send-btn",
+    ".superpower-inside-chat-readiness",
     ".superpower-inside-chat-message-status",
     ".superpower-inside-chat-citation-card",
+    ".superpower-inside-chat-citation-marker",
     ".superpower-inside-chat-source-warning",
+    ".superpower-inside-chat-context-budget",
+    ".superpower-inside-chat-data-boundary",
+    ".superpower-inside-chat-variant-compare",
     ".superpower-inside-tool-call-approve",
     ".superpower-inside-chat-question-submit"
+  ],
+  "motionTokens": [
+    "--superpower-inside-motion-fast",
+    "--superpower-inside-motion-normal",
+    "--superpower-inside-motion-slow",
+    "--superpower-inside-motion-ease",
+    "--superpower-inside-motion-distance"
+  ],
+  "reducedMotionSelectors": [
+    ".superpower-inside-typing-dot",
+    ".superpower-inside-tool-running-dots span",
+    ".superpower-inside-chat-streaming-cursor::after",
+    ".superpower-inside-chat-message-wrapper.assistant.generating::before"
   ]
 }

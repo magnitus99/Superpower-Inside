@@ -1013,6 +1013,7 @@ export interface RustChatMessagePlan {
   toolRound?: number;
   toolRoundLogs?: unknown[];
   contextBudgetSnapshot?: unknown;
+  dataBoundarySnapshot?: unknown;
   errorKind?: string;
   actionHistory?: unknown[];
 }
@@ -7148,6 +7149,9 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.contextBudgetSnapshot === undefined ||
       (typeof message.contextBudgetSnapshot === 'object' &&
         message.contextBudgetSnapshot !== null)) &&
+    (message.dataBoundarySnapshot === undefined ||
+      (typeof message.dataBoundarySnapshot === 'object' &&
+        message.dataBoundarySnapshot !== null)) &&
     (message.errorKind === undefined || isStringValue(message.errorKind)) &&
     (message.actionHistory === undefined || Array.isArray(message.actionHistory))
   );

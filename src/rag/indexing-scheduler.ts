@@ -13,6 +13,7 @@ export interface RagIndexingSchedulerStatus {
 
 interface SchedulerOperations {
   debounceMs: number;
+  maxDirtyFiles?: number;
   indexFile: (file: TFile, options: IndexingOptions) => Promise<IndexingResult>;
   removeFile: (filePath: string) => Promise<number>;
   indexPending: (options: IndexingOptions) => Promise<IndexingResult>;
@@ -27,10 +28,61 @@ type QueueJob =
   | { kind: 'pending'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void }
   | { kind: 'all'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void };
 
+export interface RagDirtySetJournalDrain {
+  files: TFile[];
+  overflowed: boolean;
+}
+
+export class RagDirtySetJournal {
+  private readonly maxDirtyFiles: number;
+  private files = new Map<string, TFile>();
+  private overflowed = false;
+
+  constructor(maxDirtyFiles = 512) {
+    this.maxDirtyFiles = Math.max(1, Math.floor(maxDirtyFiles));
+  }
+
+  get size(): number {
+    return this.files.size;
+  }
+
+  get hasOverflowed(): boolean {
+    return this.overflowed;
+  }
+
+  add(file: TFile): void {
+    if (this.overflowed) return;
+    if (!this.files.has(file.path) && this.files.size >= this.maxDirtyFiles) {
+      this.files.clear();
+      this.overflowed = true;
+      return;
+    }
+    this.files.set(file.path, file);
+  }
+
+  delete(filePath: string): void {
+    this.files.delete(filePath);
+  }
+
+  clear(): void {
+    this.files.clear();
+    this.overflowed = false;
+  }
+
+  drain(): RagDirtySetJournalDrain {
+    const snapshot = {
+      files: [...this.files.values()],
+      overflowed: this.overflowed,
+    };
+    this.clear();
+    return snapshot;
+  }
+}
+
 export class RAGIndexingScheduler {
   private readonly operations: SchedulerOperations;
   private debounceTimers = new Map<string, number>();
-  private pendingFiles = new Map<string, TFile>();
+  private readonly dirtySet: RagDirtySetJournal;
   private queue: QueueJob[] = [];
   private running = false;
   private phase: RagIndexingPhase = 'idle';
@@ -41,13 +93,14 @@ export class RAGIndexingScheduler {
 
   constructor(operations: SchedulerOperations) {
     this.operations = operations;
+    this.dirtySet = new RagDirtySetJournal(operations.maxDirtyFiles);
   }
 
   getStatus(): RagIndexingSchedulerStatus {
     return {
       running: this.running,
       phase: this.phase,
-      queuedFiles: this.pendingFiles.size + this.queue.filter((job) => job.kind === 'file').length,
+      queuedFiles: this.dirtySet.size + this.queue.filter((job) => job.kind === 'file').length,
       lastResult: this.lastResult,
     };
   }
@@ -77,6 +130,7 @@ export class RAGIndexingScheduler {
 
   deleteFile(filePath: string): Promise<number> {
     this.cancelled = false;
+    this.dirtySet.delete(filePath);
     return new Promise((resolve, reject) => {
       this.queue.push({ kind: 'delete', filePath, resolve, reject });
       this.kick();
@@ -86,13 +140,15 @@ export class RAGIndexingScheduler {
   indexPending(): Promise<IndexingResult> {
     this.cancelled = false;
     return new Promise((resolve, reject) => {
-      this.queue.push({ kind: 'pending', resolve, reject });
+      this.enqueuePending(resolve, reject);
       this.kick();
     });
   }
 
   reindexAll(): Promise<IndexingResult> {
     this.cancelled = false;
+    this.dirtySet.clear();
+    this.resolveSupersededIndexJobs();
     return new Promise((resolve, reject) => {
       this.queue.push({ kind: 'all', resolve, reject });
       this.kick();
@@ -106,13 +162,13 @@ export class RAGIndexingScheduler {
       window.clearTimeout(timer);
     }
     this.debounceTimers.clear();
-    this.pendingFiles.clear();
+    this.dirtySet.clear();
     this.queue = this.queue.filter((job) => job.kind !== 'file');
     this.emitStatus();
   }
 
   async waitForIdle(): Promise<void> {
-    if (!this.running && this.queue.length === 0 && this.pendingFiles.size === 0) {
+    if (!this.running && this.queue.length === 0 && this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed) {
       return;
     }
     await new Promise<void>((resolve) => {
@@ -121,7 +177,7 @@ export class RAGIndexingScheduler {
   }
 
   private enqueueFile(file: TFile): void {
-    this.pendingFiles.set(file.path, file);
+    this.dirtySet.add(file);
     this.kick();
   }
 
@@ -156,9 +212,12 @@ export class RAGIndexingScheduler {
   }
 
   private flushPendingFiles(): void {
-    if (this.pendingFiles.size === 0) return;
-    const files = [...this.pendingFiles.values()];
-    this.pendingFiles.clear();
+    if (this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed) return;
+    const { files, overflowed } = this.dirtySet.drain();
+    if (overflowed) {
+      this.enqueuePending(() => undefined, () => undefined);
+      return;
+    }
     for (const file of files) {
       this.queue.push({
         kind: 'file',
@@ -167,6 +226,33 @@ export class RAGIndexingScheduler {
         reject: () => undefined,
       });
     }
+  }
+
+  private enqueuePending(
+    resolve: (result: IndexingResult) => void,
+    reject: (error: unknown) => void,
+  ): void {
+    if (this.queue.some((job) => job.kind === 'pending' || job.kind === 'all')) {
+      resolve(this.lastResult ?? createEmptyIndexingResult());
+      return;
+    }
+    this.queue.push({ kind: 'pending', resolve, reject });
+  }
+
+  private resolveSupersededIndexJobs(): void {
+    const remaining: QueueJob[] = [];
+    for (const job of this.queue) {
+      if (job.kind === 'file') {
+        job.resolve(createEmptyIndexingResult());
+        continue;
+      }
+      if (job.kind === 'pending') {
+        job.resolve(this.lastResult ?? createEmptyIndexingResult());
+        continue;
+      }
+      remaining.push(job);
+    }
+    this.queue = remaining;
   }
 
   private async runJob(job: QueueJob): Promise<void> {
@@ -211,4 +297,14 @@ export class RAGIndexingScheduler {
   private emitStatus(): void {
     this.operations.onStatusChange?.(this.getStatus());
   }
+}
+
+function createEmptyIndexingResult(): IndexingResult {
+  return {
+    indexed: 0,
+    vectors: 0,
+    skipped: 0,
+    documents: [],
+    durationMs: 0,
+  };
 }

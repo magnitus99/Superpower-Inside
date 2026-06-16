@@ -75,6 +75,13 @@ export interface ContextAttachment {
   status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';
   detail?: string;
   sourceIds?: string[];
+  reason?: string;
+  estimatedChars?: number;
+  actualChars?: number;
+  pinned?: boolean;
+  excluded?: boolean;
+  fileCount?: number;
+  filteredCount?: number;
 }
 
 export type ChatAction =
@@ -105,9 +112,21 @@ export interface ToolRoundLog {
 export interface ContextBudgetSnapshot {
   maxChars: number;
   usedChars: number;
+  remainingChars?: number;
   attachmentCount: number;
   citationCount: number;
   truncated: boolean;
+  includedAttachmentIds?: string[];
+  excludedAttachmentIds?: string[];
+}
+
+export interface DataBoundarySnapshot {
+  providerLabel?: string;
+  model?: string;
+  localOnly: string[];
+  sentToProvider: string[];
+  sentToMcp: string[];
+  privacyNotes: string[];
 }
 
 export interface ChatActionHistoryEntry {
@@ -154,6 +173,7 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   toolRound?: number;
   toolRoundLogs?: ToolRoundLog[];
   contextBudgetSnapshot?: ContextBudgetSnapshot;
+  dataBoundarySnapshot?: DataBoundarySnapshot;
   errorKind?: ChatErrorKind;
   actionHistory?: ChatActionHistoryEntry[];
 }

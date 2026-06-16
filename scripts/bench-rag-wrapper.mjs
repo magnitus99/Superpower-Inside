@@ -19,6 +19,15 @@ const wasmBytes = readEmbeddedWasmBytes(path.join(repoRoot, 'src/rag/rag-wasm-by
 
 initSync({ module: wasmBytes });
 
+const PERFORMANCE_BUDGETS_MS = {
+  vector_exact_query_bridge: 25,
+  ivf_build_bridge: 250,
+  ivf_query_bridge: 25,
+  bm25_add_search_bridge: 250,
+  bm25_persist_bridge: 75,
+  markdown_chunk_2mb_bridge: 750,
+};
+
 const dimensions = 64;
 const rowCount = 2048;
 const vectors = fixtureVectors(rowCount, dimensions);
@@ -44,7 +53,13 @@ const results = [
 
 console.log('RAG wrapper benchmark (generated WASM bridge, median ns)');
 for (const [name, median] of results) {
-  console.log(`${name}: median_ns=${median}`);
+  const medianMs = Number(median) / 1_000_000;
+  const budgetMs = PERFORMANCE_BUDGETS_MS[name];
+  const status = budgetMs === undefined || medianMs <= budgetMs ? 'ok' : 'over-budget';
+  console.log(`${name}: median_ns=${median} median_ms=${medianMs.toFixed(3)} budget_ms=${budgetMs ?? 'n/a'} status=${status}`);
+  if (status === 'over-budget') {
+    process.exitCode = 1;
+  }
 }
 
 vectorIndex.free();

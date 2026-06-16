@@ -84,10 +84,32 @@ for (const flow of ['send-with-enter', 'mention-select-with-keyboard', 'tool-app
 }
 for (const selector of [
   '.superpower-inside-chat-input',
+  '.superpower-inside-chat-readiness',
   '.superpower-inside-chat-message-status',
   '.superpower-inside-chat-citation-card',
+  '.superpower-inside-chat-context-budget',
+  '.superpower-inside-chat-data-boundary',
 ]) {
   assert(visualA11y.requiredSelectors.includes(selector), `missing required selector: ${selector}`);
+}
+for (const token of [
+  '--superpower-inside-motion-fast',
+  '--superpower-inside-motion-normal',
+  '--superpower-inside-motion-slow',
+  '--superpower-inside-motion-ease',
+  '--superpower-inside-motion-distance',
+]) {
+  assert(visualA11y.motionTokens.includes(token), `missing motion token: ${token}`);
+}
+for (const selector of [
+  '.superpower-inside-typing-dot',
+  '.superpower-inside-tool-running-dots span',
+  '.superpower-inside-chat-streaming-cursor::after',
+]) {
+  assert(
+    visualA11y.reducedMotionSelectors.includes(selector),
+    `missing reduced motion selector: ${selector}`,
+  );
 }
 assert(
   Array.isArray(visualA11y.overflowSamples) && visualA11y.overflowSamples.length >= 2,

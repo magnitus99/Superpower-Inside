@@ -178,6 +178,13 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
   expect(await store.getRelations()).toEqual([createRelation()]);
   expect(await store.getClaims()).toEqual([createClaim()]);
   expect(await store.getCommunities()).toEqual([createCommunity()]);
+  expect(await store.getEvidenceByIds(['ev-1', 'missing'])).toEqual([createEvidence()]);
+  expect(await store.getRelationsForEntityIds(['entity-paul'])).toEqual([createRelation()]);
+  expect(await store.getRelationsForEntityIds(['entity-corinth'], 'default')).toEqual([
+    createRelation(),
+  ]);
+  expect(await store.getClaimsForEntityIds(['entity-paul'])).toEqual([createClaim()]);
+  expect(await store.getCommunitiesBySchema('default')).toEqual([createCommunity()]);
   expect(await store.getRejectedFacts()).toEqual([
     expect.objectContaining({ id: 'reject-1', reason: 'schema' }),
   ]);

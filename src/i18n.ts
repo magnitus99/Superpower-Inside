@@ -316,6 +316,56 @@ export interface I18nKeys {
   chatAutoRagChip: string;
   chatFolderMentionChip: string;
   chatFileMentionChip: string;
+  chatReadinessProviderMissing: string;
+  chatReadinessProviderMissingDetail: string;
+  chatReadinessModelMissing: string;
+  chatReadinessModelMissingDetail: string;
+  chatReadinessRagIndexing: string;
+  chatReadinessRagIndexingDetail: string;
+  chatReadinessRagNotReady: string;
+  chatReadinessRagNotReadyDetail: string;
+  chatReadinessMcpPartial: string;
+  chatReadinessMcpPartialDetail: string;
+  chatReadinessSaveFolderMissing: string;
+  chatReadinessSaveFolderMissingDetail: string;
+  chatReadinessReady: string;
+  chatReadinessBlocked: string;
+  chatReadinessDegraded: string;
+  composerDraftRestoredNotice: string;
+  contextAttachmentAttached: string;
+  contextAttachmentPartial: string;
+  contextAttachmentMissing: string;
+  contextAttachmentError: string;
+  contextAttachmentLowRelevance: string;
+  contextAttachmentExcluded: string;
+  contextAttachmentChars: string;
+  contextBudgetUsage: string;
+  contextBudgetTruncated: string;
+  contextBudgetIncludedExcluded: string;
+  dataBoundaryTitle: string;
+  dataBoundaryProvider: string;
+  dataBoundaryMcp: string;
+  dataBoundaryLocal: string;
+  dataBoundarySystemPrompt: string;
+  dataBoundaryAttachedContext: string;
+  dataBoundaryCitationPreview: string;
+  dataBoundaryDraftStore: string;
+  dataBoundarySourceCardState: string;
+  dataBoundaryExcludedAttachmentNote: string;
+  sourceStatusVerified: string;
+  sourceStatusCandidate: string;
+  sourceStatusMissing: string;
+  sourceStatusStale: string;
+  sourceStatusLowRelevance: string;
+  sourceRepairAction: string;
+  sourceRepairPrompt: string;
+  sourceGraphEntity: string;
+  sourceGraphRelation: string;
+  sourceGraphCommunity: string;
+  citationMarkerAria: string;
+  variantCompareTitle: string;
+  variantCompareActive: string;
+  variantCompareRow: string;
   chatGenerationStopped: string;
   chatGeneratingResponse: string;
   assistantQuestionReasoningTitle: string;
@@ -1470,6 +1520,57 @@ const ko: I18nKeys = {
   chatAutoRagChip: '자동 RAG',
   chatFolderMentionChip: '폴더 {name}',
   chatFileMentionChip: '파일 {name}',
+  chatReadinessProviderMissing: 'Provider 설정 필요',
+  chatReadinessProviderMissingDetail: '설정에서 최소 하나의 LLM Provider를 활성화해야 전송할 수 있습니다.',
+  chatReadinessModelMissing: '모델 선택 필요',
+  chatReadinessModelMissingDetail: '활성 Provider에 사용할 모델을 하나 이상 등록하세요.',
+  chatReadinessRagIndexing: 'RAG 인덱싱 중',
+  chatReadinessRagIndexingDetail: '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
+  chatReadinessRagNotReady: 'RAG 준비 안 됨',
+  chatReadinessRagNotReadyDetail: '인덱스를 만들거나 갱신하면 자동 컨텍스트 품질이 좋아집니다.',
+  chatReadinessMcpPartial: 'MCP 일부 연결 필요',
+  chatReadinessMcpPartialDetail: '연결됨 {connected}/{total}. 필요한 서버를 재연결하세요.',
+  chatReadinessSaveFolderMissing: '저장 폴더 없음',
+  chatReadinessSaveFolderMissingDetail: '세션 replay와 draft 복구를 위해 채팅 저장 폴더를 설정하세요.',
+  chatReadinessReady: '채팅 준비 완료',
+  chatReadinessBlocked: 'Provider 설정 필요',
+  chatReadinessDegraded: '일부 기능 준비 필요',
+  composerDraftRestoredNotice: '전송이 끝나지 않아 초안을 복원했습니다.',
+  contextAttachmentAttached: '포함됨',
+  contextAttachmentPartial: '일부 포함',
+  contextAttachmentMissing: '누락',
+  contextAttachmentError: '오류',
+  contextAttachmentLowRelevance: '관련 낮음',
+  contextAttachmentExcluded: '제외됨',
+  contextAttachmentChars: '{count}자',
+  contextBudgetUsage: '컨텍스트 {used}/{max}자',
+  contextBudgetTruncated: '일부 컨텍스트가 잘렸습니다.',
+  contextBudgetIncludedExcluded: '포함 {included}개 · 제외 {excluded}개',
+  dataBoundaryTitle: '이번 전송 데이터 경계',
+  dataBoundaryProvider: 'Provider로 전송',
+  dataBoundaryMcp: 'MCP로 전송',
+  dataBoundaryLocal: '로컬에만 유지',
+  dataBoundarySystemPrompt: '시스템 프롬프트',
+  dataBoundaryAttachedContext: '첨부 컨텍스트 {count}개',
+  dataBoundaryCitationPreview: '출처 preview {count}개',
+  dataBoundaryDraftStore: '초안 저장소',
+  dataBoundarySourceCardState: '출처 카드 UI 상태',
+  dataBoundaryExcludedAttachmentNote: '제외된 attachment {count}개는 provider 요청에 포함하지 않습니다.',
+  sourceStatusVerified: '검증됨',
+  sourceStatusCandidate: '후보',
+  sourceStatusMissing: '누락',
+  sourceStatusStale: '오래됨',
+  sourceStatusLowRelevance: '관련 낮음',
+  sourceRepairAction: '출처 보정',
+  sourceRepairPrompt: '{label} 출처를 확인하고 답변을 다시 검증해줘.',
+  sourceGraphEntity: 'GraphRAG entity',
+  sourceGraphRelation: 'GraphRAG relation',
+  sourceGraphCommunity: 'GraphRAG community',
+  citationMarkerAria: '{id} 출처 카드로 이동',
+  variantCompareTitle: '답변 variant 비교',
+  variantCompareActive: '선택됨',
+  variantCompareRow:
+    '{provider} · 출처 {citations}개 · 경고 {warnings}개 · 도구 {tools}개 · 컨텍스트 {contexts}개',
   chatGenerationStopped: '응답 생성이 중단되었습니다.',
   chatGeneratingResponse: '응답 생성 중...',
   assistantQuestionReasoningTitle: '모델의 thinking 출력에서 사용자 질문을 감지했습니다.',
@@ -2704,6 +2805,57 @@ const en: I18nKeys = {
   chatAutoRagChip: 'Auto RAG',
   chatFolderMentionChip: 'Folder {name}',
   chatFileMentionChip: 'File {name}',
+  chatReadinessProviderMissing: 'Provider setup required',
+  chatReadinessProviderMissingDetail: 'Enable at least one LLM provider in settings before sending.',
+  chatReadinessModelMissing: 'Model selection required',
+  chatReadinessModelMissingDetail: 'Add at least one model to an enabled provider.',
+  chatReadinessRagIndexing: 'RAG indexing',
+  chatReadinessRagIndexingDetail: 'You can send now, but some current vault context may be missing.',
+  chatReadinessRagNotReady: 'RAG not ready',
+  chatReadinessRagNotReadyDetail: 'Build or refresh the index to improve automatic context quality.',
+  chatReadinessMcpPartial: 'Some MCP connections need attention',
+  chatReadinessMcpPartialDetail: 'Connected {connected}/{total}. Reconnect the servers you need.',
+  chatReadinessSaveFolderMissing: 'No save folder',
+  chatReadinessSaveFolderMissingDetail: 'Set a chat save folder for session replay and draft recovery.',
+  chatReadinessReady: 'Chat is ready',
+  chatReadinessBlocked: 'Provider setup required',
+  chatReadinessDegraded: 'Some features need attention',
+  composerDraftRestoredNotice: 'The send did not finish, so the draft was restored.',
+  contextAttachmentAttached: 'Included',
+  contextAttachmentPartial: 'Partially included',
+  contextAttachmentMissing: 'Missing',
+  contextAttachmentError: 'Error',
+  contextAttachmentLowRelevance: 'Low relevance',
+  contextAttachmentExcluded: 'Excluded',
+  contextAttachmentChars: '{count} chars',
+  contextBudgetUsage: 'Context {used}/{max} chars',
+  contextBudgetTruncated: 'Some context was truncated.',
+  contextBudgetIncludedExcluded: 'Included {included} · excluded {excluded}',
+  dataBoundaryTitle: 'Data boundary for this turn',
+  dataBoundaryProvider: 'Sent to provider',
+  dataBoundaryMcp: 'Sent to MCP',
+  dataBoundaryLocal: 'Kept local',
+  dataBoundarySystemPrompt: 'System prompt',
+  dataBoundaryAttachedContext: '{count} context attachments',
+  dataBoundaryCitationPreview: '{count} source previews',
+  dataBoundaryDraftStore: 'Draft store',
+  dataBoundarySourceCardState: 'Source card UI state',
+  dataBoundaryExcludedAttachmentNote: '{count} excluded attachments are not sent to the provider.',
+  sourceStatusVerified: 'Verified',
+  sourceStatusCandidate: 'Candidate',
+  sourceStatusMissing: 'Missing',
+  sourceStatusStale: 'Stale',
+  sourceStatusLowRelevance: 'Low relevance',
+  sourceRepairAction: 'Repair source',
+  sourceRepairPrompt: 'Verify the source for {label} and re-check the answer.',
+  sourceGraphEntity: 'GraphRAG entity',
+  sourceGraphRelation: 'GraphRAG relation',
+  sourceGraphCommunity: 'GraphRAG community',
+  citationMarkerAria: 'Jump to source card {id}',
+  variantCompareTitle: 'Compare answer variants',
+  variantCompareActive: 'Selected',
+  variantCompareRow:
+    '{provider} · {citations} sources · {warnings} warnings · {tools} tools · {contexts} contexts',
   chatGenerationStopped: 'Response generation was stopped.',
   chatGeneratingResponse: 'Generating response...',
   assistantQuestionReasoningTitle: 'Detected a user question in the model thinking output.',

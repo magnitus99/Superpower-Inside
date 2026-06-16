@@ -20,14 +20,11 @@ import {
   planGraphQueryExecutionRust,
   planGraphQueryRust,
   planGraphQueryResponseRust,
-  planGraphSchemaCommunityIndicesRust,
-  planGraphSchemaRelationIndicesRust,
   planLocalEvidenceScoresRust,
   rankTopKPairsRust,
   type RustGraphQueryExecutionAction,
   type RustGraphQueryPlan,
 } from '../rag/rust-core';
-import { selectByRustIndices } from '../utils/rust-index-plan';
 import type {
   GraphClaimRecord,
   GraphCommunityRecord,
@@ -72,6 +69,11 @@ interface EntityMatch {
 interface EvidenceScore {
   evidenceId: string;
   score: number;
+}
+
+interface LocalGraphNeighborhood {
+  relations: GraphRelationRecord[];
+  claims: GraphClaimRecord[];
 }
 
 export class GraphRagQueryEngine {
@@ -153,13 +155,13 @@ export class GraphRagQueryEngine {
     );
     if (mentionedMatches.length === 0) return [];
 
-    const [relations, claims] = await Promise.all([
-      this.graphStore.getRelations(),
-      this.graphStore.getClaims(),
-    ]);
+    const { relations, claims } = await this.loadLocalGraphNeighborhood(
+      mentionedMatches,
+      plan?.traversalDepth ?? 1,
+    );
     const evidenceScores = collectLocalEvidenceScores(
       mentionedMatches,
-      selectSchemaRelations(relations, this.ontologySchema.id),
+      relations,
       claims,
       plan?.traversalDepth ?? 1,
     );
@@ -184,17 +186,14 @@ export class GraphRagQueryEngine {
       plan?.entityHints ?? [],
     );
     const mentionedIds = new Set(mentionedMatches.map((match) => match.entity.id));
-    const claims = await this.graphStore.getClaims();
-    const relations = await this.graphStore.getRelations();
     const evidenceScores =
       mentionedIds.size > 0
-        ? collectLocalEvidenceScores(
+        ? collectLocalEvidenceScoresFromNeighborhood(
+            await this.loadLocalGraphNeighborhood(mentionedMatches, 1),
             mentionedMatches,
-            selectSchemaRelations(relations, this.ontologySchema.id),
-            claims,
             1,
           )
-        : collectClaimEvidenceScores(claims);
+        : collectClaimEvidenceScores(await this.graphStore.getClaims());
     return this.evidenceScoresToCandidates(
       evidenceScores,
       'evidence',
@@ -205,10 +204,7 @@ export class GraphRagQueryEngine {
   }
 
   private async queryGlobal(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const schemaCommunities = selectSchemaCommunities(
-      await this.graphStore.getCommunities(),
-      this.ontologySchema.id,
-    );
+    const schemaCommunities = await this.graphStore.getCommunitiesBySchema(this.ontologySchema.id);
     const communities = rankGlobalCommunitiesWithRust(
       schemaCommunities,
       request.queryVector,
@@ -231,12 +227,14 @@ export class GraphRagQueryEngine {
     isEntryCompatible?: (entry: VectorEntry) => boolean,
   ): Promise<RetrievalCandidate[]> {
     if (candidateLimit <= 0) return [];
-    const evidence = await this.graphStore.getEvidence();
     const orderedEvidenceScores = planEvidenceCandidateOrderRust(
       evidenceScores,
-      evidence.map((record) => record.id),
+      evidenceScores.map((score) => score.evidenceId),
     );
     if (!orderedEvidenceScores || orderedEvidenceScores.length === 0) return [];
+    const evidence = await this.graphStore.getEvidenceByIds(
+      orderedEvidenceScores.map((score) => score.evidenceId),
+    );
     const lookupPlan = planGraphEvidenceCandidateLookupRust(
       orderedEvidenceScores,
       evidence.map((record) => ({ id: record.id, filePath: record.filePath })),
@@ -274,7 +272,9 @@ export class GraphRagQueryEngine {
     }
     if (evidenceRecords.length === 0) return [];
 
-    const entries = await this.vectorStore.getEntriesByFilePaths(lookupPlan.filePaths);
+    const entries = await this.vectorStore.getEntriesByFilePaths([
+      ...new Set(evidenceRecords.map((record) => record.evidence.filePath)),
+    ]);
     const entryPlan = planGraphEvidenceEntryCandidatesRust(
       evidenceRecords.map((record) => record.evidence.entryId),
       entries.map((entry) => ({
@@ -322,6 +322,52 @@ export class GraphRagQueryEngine {
     }
     return candidates;
   }
+
+  private async loadLocalGraphNeighborhood(
+    mentionedMatches: readonly EntityMatch[],
+    traversalDepth: number,
+  ): Promise<LocalGraphNeighborhood> {
+    const maxDepth = Math.max(1, Math.floor(traversalDepth));
+    const seenEntityIds = new Set(mentionedMatches.map((match) => match.entity.id));
+    let frontier = [...seenEntityIds];
+    const relationsById = new Map<string, GraphRelationRecord>();
+
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const relations = await this.graphStore.getRelationsForEntityIds(
+        frontier,
+        this.ontologySchema.id,
+      );
+      const nextFrontier: string[] = [];
+      for (const relation of relations) {
+        relationsById.set(relation.id, relation);
+        for (const entityId of [relation.sourceEntityId, relation.targetEntityId]) {
+          if (seenEntityIds.has(entityId)) continue;
+          seenEntityIds.add(entityId);
+          nextFrontier.push(entityId);
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    const claims = await this.graphStore.getClaimsForEntityIds([...seenEntityIds]);
+    return {
+      relations: [...relationsById.values()],
+      claims,
+    };
+  }
+}
+
+function collectLocalEvidenceScoresFromNeighborhood(
+  neighborhood: LocalGraphNeighborhood,
+  mentionedMatches: readonly EntityMatch[],
+  traversalDepth: number,
+): EvidenceScore[] {
+  return collectLocalEvidenceScores(
+    mentionedMatches,
+    neighborhood.relations,
+    neighborhood.claims,
+    traversalDepth,
+  );
 }
 
 function rankGlobalCommunitiesWithRust(
@@ -523,33 +569,6 @@ function findMentionedEntityMatches(
     matches.push({ entity, score: rustMatch.score });
   }
   return matches;
-}
-
-function selectSchemaRelations(
-  relations: readonly GraphRelationRecord[],
-  ontologySchemaId: string,
-): GraphRelationRecord[] {
-  const relationIndices = planGraphSchemaRelationIndicesRust(
-    relations.map((relation) => relation.ontologySchemaId),
-    ontologySchemaId,
-  );
-  return selectRecordsByRustIndices(relations, relationIndices);
-}
-
-function selectSchemaCommunities(
-  communities: readonly GraphCommunityRecord[],
-  ontologySchemaId: string,
-): GraphCommunityRecord[] {
-  const communityIndices = planGraphSchemaCommunityIndicesRust(
-    communities.map((community) => community.ontologySchemaId),
-    ontologySchemaId,
-  );
-  return selectRecordsByRustIndices(communities, communityIndices);
-}
-
-function selectRecordsByRustIndices<T>(records: readonly T[], indices: readonly number[] | null): T[] {
-  if (indices === null) return [];
-  return selectByRustIndices(records, indices, { dedupe: true });
 }
 
 function createGraphQueryPlan(
