@@ -14198,6 +14198,7 @@ fn parse_chat_message_plan(
 
     let mut message = JsonMap::<String, JsonValue>::new();
     message.insert("id".to_owned(), JsonValue::String(id.to_owned()));
+    copy_optional_chat_u64(object, &mut message, "schemaVersion");
     message.insert("role".to_owned(), JsonValue::String(role.to_owned()));
     message.insert("content".to_owned(), JsonValue::String(final_content));
     message.insert(
@@ -14244,6 +14245,8 @@ fn parse_chat_message_plan(
     copy_optional_chat_string(object, &mut message, "providerLabel");
     copy_optional_chat_string(object, &mut message, "model");
     copy_optional_chat_string(object, &mut message, "branchOf");
+    copy_optional_chat_string(object, &mut message, "branchRoot");
+    copy_optional_chat_string(object, &mut message, "variantOf");
     copy_optional_chat_string(object, &mut message, "stopReason");
     copy_optional_chat_value(object, &mut message, "toolCalls");
     copy_optional_chat_value(object, &mut message, "citations");
@@ -14253,6 +14256,10 @@ fn parse_chat_message_plan(
     copy_optional_chat_value(object, &mut message, "providerCapability");
     copy_optional_chat_string(object, &mut message, "turnStage");
     copy_optional_chat_u64(object, &mut message, "toolRound");
+    copy_optional_chat_value(object, &mut message, "toolRoundLogs");
+    copy_optional_chat_value(object, &mut message, "contextBudgetSnapshot");
+    copy_optional_chat_string(object, &mut message, "errorKind");
+    copy_optional_chat_value(object, &mut message, "actionHistory");
 
     let error_message = object
         .get("errorMessage")

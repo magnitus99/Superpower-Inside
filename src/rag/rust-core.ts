@@ -987,6 +987,7 @@ export type RustAssistantResponseClassification =
 
 export interface RustChatMessagePlan {
   id: string;
+  schemaVersion?: number;
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   timestamp: number;
@@ -1004,10 +1005,16 @@ export interface RustChatMessagePlan {
   contextAttachments?: unknown[];
   assistantQuestion?: unknown;
   branchOf?: string;
+  branchRoot?: string;
+  variantOf?: string;
   stopReason?: string;
   providerCapability?: unknown;
   turnStage?: string;
   toolRound?: number;
+  toolRoundLogs?: unknown[];
+  contextBudgetSnapshot?: unknown;
+  errorKind?: string;
+  actionHistory?: unknown[];
 }
 
 export interface RustChatMetaPlan {
@@ -7098,6 +7105,10 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
   const message = value as Partial<RustChatMessagePlan>;
   return (
     isStringValue(message.id) &&
+    (message.schemaVersion === undefined ||
+      (typeof message.schemaVersion === 'number' &&
+        Number.isInteger(message.schemaVersion) &&
+        message.schemaVersion >= 0)) &&
     (message.role === 'system' ||
       message.role === 'user' ||
       message.role === 'assistant' ||
@@ -7123,6 +7134,8 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.assistantQuestion === undefined ||
       (typeof message.assistantQuestion === 'object' && message.assistantQuestion !== null)) &&
     (message.branchOf === undefined || isStringValue(message.branchOf)) &&
+    (message.branchRoot === undefined || isStringValue(message.branchRoot)) &&
+    (message.variantOf === undefined || isStringValue(message.variantOf)) &&
     (message.stopReason === undefined || isStringValue(message.stopReason)) &&
     (message.providerCapability === undefined ||
       (typeof message.providerCapability === 'object' && message.providerCapability !== null)) &&
@@ -7130,7 +7143,13 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.toolRound === undefined ||
       (typeof message.toolRound === 'number' &&
         Number.isInteger(message.toolRound) &&
-        message.toolRound >= 0))
+        message.toolRound >= 0)) &&
+    (message.toolRoundLogs === undefined || Array.isArray(message.toolRoundLogs)) &&
+    (message.contextBudgetSnapshot === undefined ||
+      (typeof message.contextBudgetSnapshot === 'object' &&
+        message.contextBudgetSnapshot !== null)) &&
+    (message.errorKind === undefined || isStringValue(message.errorKind)) &&
+    (message.actionHistory === undefined || Array.isArray(message.actionHistory))
   );
 }
 

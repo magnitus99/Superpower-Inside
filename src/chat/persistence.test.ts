@@ -214,6 +214,117 @@ describe('chat persistence', () => {
       toolRound: 2,
     });
   });
+
+  it('schema v2 replay 필드와 redacted tool state를 저장하고 복원한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '도구와 출처를 재생합니다.',
+        status: 'error',
+        errorMessage: 'provider failed',
+        errorKind: 'tool',
+        stopReason: 'tool-failed',
+        turnStage: 'error',
+        toolRound: 2,
+        branchOf: 'Chats/root.md',
+        branchRoot: 'Chats/root.md',
+        variantOf: 'msg-root',
+        contextBudgetSnapshot: {
+          maxChars: 12_000,
+          usedChars: 4_200,
+          attachmentCount: 2,
+          citationCount: 1,
+          truncated: false,
+        },
+        toolRoundLogs: [
+          {
+            round: 1,
+            toolCallIds: ['call-1'],
+            status: 'error',
+            startedAt: '2026-05-16T00:00:01.000Z',
+            completedAt: '2026-05-16T00:00:02.000Z',
+            errorMessage: 'ENOENT',
+          },
+        ],
+        actionHistory: [
+          {
+            id: 'action-1',
+            action: 'tool-approved',
+            at: '2026-05-16T00:00:01.000Z',
+            detail: '사용자가 실행을 승인했습니다.',
+          },
+        ],
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'search_notes',
+            arguments: '{"query":"alpha","apiKey":"secret-value"}',
+            result: 'Authorization: Bearer secret-token\n검색 결과',
+            status: 'error',
+            serverName: 'local',
+          },
+        ],
+        citations: [
+          {
+            id: 'rag-1',
+            filePath: 'Notes/A.md',
+            status: 'verified',
+            preview: '근거',
+          },
+        ],
+        sourceWarnings: [
+          {
+            id: 'warn-1',
+            label: 'Source rag-9',
+            detail: '검증된 citation 없음',
+            kind: 'unverified-source',
+          },
+        ],
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const raw = await vault.cachedRead(file);
+    const loaded = await loadChat(vault, file.path);
+
+    expect(raw).toContain('"schemaVersion": 2');
+    expect(raw).toContain('[REDACTED]');
+    expect(raw).not.toContain('secret-value');
+    expect(raw).not.toContain('secret-token');
+    expect(loaded.messages[0]).toMatchObject({
+      schemaVersion: 2,
+      errorKind: 'tool',
+      branchOf: 'Chats/root.md',
+      branchRoot: 'Chats/root.md',
+      variantOf: 'msg-root',
+      contextBudgetSnapshot: {
+        maxChars: 12_000,
+        usedChars: 4_200,
+        attachmentCount: 2,
+        citationCount: 1,
+        truncated: false,
+      },
+      toolRoundLogs: [
+        expect.objectContaining({
+          round: 1,
+          toolCallIds: ['call-1'],
+          status: 'error',
+        }),
+      ],
+      actionHistory: [
+        expect.objectContaining({
+          action: 'tool-approved',
+        }),
+      ],
+      toolCalls: [
+        expect.objectContaining({
+          arguments: '{"query":"alpha","apiKey":"[REDACTED]"}',
+          result: 'Authorization: Bearer [REDACTED]\n검색 결과',
+        }),
+      ],
+    });
+  });
 });
 
 interface TestVault extends Vault {

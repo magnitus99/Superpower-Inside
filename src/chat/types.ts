@@ -20,6 +20,14 @@ export type ChatMessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
 
 export type ChatStopReason = 'complete' | 'cancelled' | 'error' | 'tool-failed';
 
+export type ChatErrorKind =
+  | 'provider'
+  | 'rate-limit'
+  | 'tool'
+  | 'cancelled'
+  | 'validation'
+  | 'unknown';
+
 export interface AssistantQuestionChoice {
   id: string;
   label: string;
@@ -74,6 +82,37 @@ export type ChatAction =
   | 'save-note'
   | 'copy';
 
+export type ChatActionHistoryAction =
+  | ChatAction
+  | 'tool-approved'
+  | 'tool-rejected'
+  | 'resumed'
+  | 'cancelled';
+
+export interface ToolRoundLog {
+  round: number;
+  toolCallIds: string[];
+  status: 'planned' | 'running' | 'complete' | 'error';
+  startedAt?: string;
+  completedAt?: string;
+  errorMessage?: string;
+}
+
+export interface ContextBudgetSnapshot {
+  maxChars: number;
+  usedChars: number;
+  attachmentCount: number;
+  citationCount: number;
+  truncated: boolean;
+}
+
+export interface ChatActionHistoryEntry {
+  id: string;
+  action: ChatActionHistoryAction;
+  at: string;
+  detail?: string;
+}
+
 export interface ToolExecutionPolicy {
   mode: 'mentioned-auto' | 'always-manual' | 'always-auto';
   manualApproval?: boolean;
@@ -85,6 +124,7 @@ export interface ToolExecutionPolicy {
 /** 메시지 메타데이터를 포함한 채팅 메시지 */
 export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   id: string;
+  schemaVersion?: number;
   /** legacy 저장 파일 호환용 타임스탬프 */
   timestamp: number;
   createdAt: string;
@@ -101,11 +141,17 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   contextAttachments?: ContextAttachment[];
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
+  branchRoot?: string;
+  variantOf?: string;
   stopReason?: ChatStopReason;
   originalContent?: string;
   providerCapability?: ProviderCapabilitySnapshot;
   turnStage?: ChatTurnStage;
   toolRound?: number;
+  toolRoundLogs?: ToolRoundLog[];
+  contextBudgetSnapshot?: ContextBudgetSnapshot;
+  errorKind?: ChatErrorKind;
+  actionHistory?: ChatActionHistoryEntry[];
 }
 
 /** 저장된 세션 데이터 (파일에서 로드) */

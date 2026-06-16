@@ -27,9 +27,11 @@ const MESSAGE_PREFIX = 'superpower-inside';
 const MESSAGE_COMMENT_OPEN = `<!-- ${MESSAGE_PREFIX}-message`;
 const MESSAGE_COMMENT_CLOSE = `<!-- /${MESSAGE_PREFIX}-message -->`;
 const ENCODED_BLOCK_ATTR = 'encoding="base64"';
+const CHAT_SESSION_SCHEMA_VERSION = 2;
 
 interface MessagePersistMeta {
   id: string;
+  schemaVersion: number;
   role: ChatMessage['role'];
   timestamp: number;
   createdAt: string;
@@ -45,11 +47,17 @@ interface MessagePersistMeta {
   contextAttachments?: ContextAttachment[];
   assistantQuestion?: AssistantQuestion;
   branchOf?: string;
+  branchRoot?: string;
+  variantOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
   originalContent?: string;
   providerCapability?: ChatMessageWithMeta['providerCapability'];
   turnStage?: ChatMessageWithMeta['turnStage'];
   toolRound?: number;
+  toolRoundLogs?: ChatMessageWithMeta['toolRoundLogs'];
+  contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
+  errorKind?: ChatMessageWithMeta['errorKind'];
+  actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
 
 interface ParsedFrontmatter {
@@ -300,9 +308,36 @@ export async function deleteChat(
   await fileManager.trashFile(file);
 }
 
+function redactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
+  return {
+    ...toolCall,
+    arguments: redactSensitiveText(toolCall.arguments),
+    result: redactOptionalSensitiveText(toolCall.result),
+    resultSummary: redactOptionalSensitiveText(toolCall.resultSummary),
+    normalizedResult: redactOptionalSensitiveText(toolCall.normalizedResult),
+  };
+}
+
+function redactOptionalSensitiveText(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : redactSensitiveText(value);
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(
+      /("(?:api[_-]?key|token|secret|password|authorization)"\s*:\s*)"(?:\\.|[^"\\])*"/gi,
+      '$1"[REDACTED]"',
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;}]+)/gi, '$1=[REDACTED]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED]');
+}
+
 function formatMessage(message: ChatMessageWithMeta, index: number): string {
+  const toolCalls = message.toolCalls?.map(redactToolCallRecord);
   const meta: MessagePersistMeta = {
     id: message.id,
+    schemaVersion: CHAT_SESSION_SCHEMA_VERSION,
     role: message.role,
     timestamp: message.timestamp,
     createdAt: message.createdAt,
@@ -311,16 +346,23 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     providerLabel: message.providerLabel,
     model: message.model,
     status: message.status,
-    toolCalls: message.toolCalls,
+    toolCalls,
     citations: message.citations,
     sourceWarnings: message.sourceWarnings,
     contextAttachments: message.contextAttachments,
     assistantQuestion: message.assistantQuestion,
     branchOf: message.branchOf,
+    branchRoot: message.branchRoot,
+    variantOf: message.variantOf,
     stopReason: message.stopReason,
+    originalContent: message.originalContent,
     providerCapability: message.providerCapability,
     turnStage: message.turnStage,
     toolRound: message.toolRound,
+    toolRoundLogs: message.toolRoundLogs,
+    contextBudgetSnapshot: message.contextBudgetSnapshot,
+    errorKind: message.errorKind,
+    actionHistory: message.actionHistory,
   };
   const lines = [
     `${MESSAGE_COMMENT_OPEN}`,
@@ -348,9 +390,9 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     if (message.reasoning) {
       lines.push('', '#### Reasoning', '', ...formatNamedBlock('reasoning', message.reasoning));
     }
-    if (message.toolCalls && message.toolCalls.length > 0) {
+    if (toolCalls && toolCalls.length > 0) {
       lines.push('', '#### Tool Calls', '');
-      for (const toolCall of message.toolCalls) {
+      for (const toolCall of toolCalls) {
         lines.push(formatToolCall(toolCall));
       }
     }
@@ -422,6 +464,7 @@ function loadPersistedMessages(body: string): ChatMessageWithMeta[] {
 function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta {
   return {
     id: plan.id,
+    schemaVersion: plan.schemaVersion,
     role: plan.role,
     content: plan.content,
     timestamp: plan.timestamp,
@@ -439,10 +482,16 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     contextAttachments: plan.contextAttachments as ContextAttachment[] | undefined,
     assistantQuestion: plan.assistantQuestion as AssistantQuestion | undefined,
     branchOf: plan.branchOf,
+    branchRoot: plan.branchRoot,
+    variantOf: plan.variantOf,
     stopReason: plan.stopReason as ChatMessageWithMeta['stopReason'],
     providerCapability: plan.providerCapability as ChatMessageWithMeta['providerCapability'],
     turnStage: plan.turnStage as ChatMessageWithMeta['turnStage'],
     toolRound: plan.toolRound,
+    toolRoundLogs: plan.toolRoundLogs as ChatMessageWithMeta['toolRoundLogs'],
+    contextBudgetSnapshot: plan.contextBudgetSnapshot as ChatMessageWithMeta['contextBudgetSnapshot'],
+    errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
+    actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],
   };
 }
 
