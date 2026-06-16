@@ -40,7 +40,11 @@ import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
 import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
+import { createComposerLoadingState } from './chat-composer';
+import { createChatMessageMetaItems } from './chat-message-renderer';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
+import { SourcePanel } from './source-panel';
+import { ToolCallPanel } from './tool-call-panel';
 import {
   createChatTurnState,
   getChatTurnStageStatus,
@@ -125,6 +129,8 @@ export class ChatView extends ItemView {
   private abortController: AbortController | null;
   private lastUserPrompt: string | null;
   private previousUserQueries: string[];
+  private readonly sourcePanel: SourcePanel;
+  private readonly toolCallPanel: ToolCallPanel;
 
   // RefreshAction 인스턴스
   private mcpRefreshAction: RefreshAction | null = null;
@@ -164,6 +170,15 @@ export class ChatView extends ItemView {
     this.abortController = null;
     this.lastUserPrompt = null;
     this.previousUserQueries = [];
+    this.sourcePanel = new SourcePanel({
+      openCitation: (citation) => this.openCitation(citation),
+      copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
+      insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
+    });
+    this.toolCallPanel = new ToolCallPanel({
+      approveToolCall: (messageId, toolCallId) => this.approveToolCall(messageId, toolCallId),
+      renderMarkdown: (container, content) => this.renderMarkdownBubble(container, content),
+    });
   }
 
   getViewType(): string {
@@ -931,7 +946,7 @@ export class ChatView extends ItemView {
       });
       void this.renderMarkdownBubble(bubble, content);
     }
-    this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
     this.renderMessageActions(bubbleContainer, msg);
 
     if (this.autoScroll) {
@@ -1055,7 +1070,7 @@ export class ChatView extends ItemView {
     });
     const hasToolCalls = toolCalls && toolCalls.length > 0;
     setHidden(toolCallsSection, !(hasToolCalls || shouldShowStreamingPlaceholders));
-    this.renderToolCallsSection(
+    this.toolCallPanel.renderToolCallsSection(
       toolCallsSection,
       toolCalls ?? [],
       shouldShowStreamingPlaceholders && !hasToolCalls,
@@ -1076,8 +1091,8 @@ export class ChatView extends ItemView {
     } else {
       bubble.setText(content);
     }
-    this.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
   }
 
   private updateAssistantLayers(
@@ -1132,7 +1147,7 @@ export class ChatView extends ItemView {
     if (toolCallsSection instanceof HTMLElement) {
       const calls = toolCalls ?? [];
       setHidden(toolCallsSection, !(calls.length > 0 || !isDone));
-      this.renderToolCallsSection(toolCallsSection, calls, !isDone);
+      this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, !isDone);
     }
 
     const bubble = bubbleContainer.querySelector('.superpower-inside-chat-bubble.assistant');
@@ -1169,8 +1184,8 @@ export class ChatView extends ItemView {
         wrapper.classList.remove('generating');
       }
     }
-    this.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
   }
 
   private renderAssistantQuestionCard(container: HTMLElement, question: AssistantQuestion): void {
@@ -1292,260 +1307,6 @@ export class ChatView extends ItemView {
     this.pendingMarkdownContent = '';
   }
 
-  private renderToolCallsSection(
-    section: HTMLElement,
-    toolCalls: ToolCallRecord[],
-    showPlaceholder: boolean,
-  ): void {
-    const existingLabel = section.querySelector('.superpower-inside-chat-tool-calls-label');
-    if (!existingLabel) {
-      section.createDiv({
-        cls: 'superpower-inside-chat-tool-calls-label',
-        text: `🔧 ${t('toolCallLabel')}`,
-      });
-    }
-
-    if (toolCalls.length === 0 && showPlaceholder) {
-      const existingPlaceholder = section.querySelector('.superpower-inside-tool-call.placeholder');
-      if (!existingPlaceholder) {
-        const row = section.createDiv({ cls: 'superpower-inside-tool-call placeholder' });
-        row.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
-        row.createSpan({ cls: 'superpower-inside-tool-call-name', text: t('mcpToolRunning') });
-        const statusBadge = row.createSpan({ cls: 'superpower-inside-tool-call-status running' });
-        this.renderRunningDots(statusBadge);
-      }
-      return;
-    }
-
-    section
-      .querySelectorAll('.superpower-inside-tool-call.placeholder')
-      .forEach((el) => el.remove());
-
-    for (const toolCall of toolCalls) {
-      const rowId = `tool-call-${toolCall.id || toolCall.name}`;
-      let callRow = Array.from(section.querySelectorAll('.superpower-inside-tool-call')).find(
-        (el): el is HTMLElement =>
-          el instanceof HTMLElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-
-      if (!callRow) {
-        callRow = section.createDiv({ cls: 'superpower-inside-tool-call' });
-        callRow.setAttribute('data-tool-call-id', rowId);
-        callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
-        callRow.createSpan({
-          cls: 'superpower-inside-tool-call-name',
-          text: toolCall.name || t('toolCallLabel'),
-        });
-        const statusBadge = callRow.createSpan({
-          cls: `superpower-inside-tool-call-status ${toolCall.status}`,
-        });
-        this.renderToolCallStatus(statusBadge, toolCall.status);
-      } else {
-        const statusBadge = callRow.querySelector('.superpower-inside-tool-call-status');
-        if (statusBadge instanceof HTMLElement) {
-          statusBadge.className = `superpower-inside-tool-call-status ${toolCall.status}`;
-          this.renderToolCallStatus(statusBadge, toolCall.status);
-        }
-      }
-
-      const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');
-      if (
-        staleApproveBtn instanceof HTMLElement &&
-        (toolCall.status !== 'running' || toolCall.approved !== false)
-      ) {
-        staleApproveBtn.remove();
-      }
-      if (
-        toolCall.status === 'running' &&
-        toolCall.approved === false &&
-        !callRow.querySelector('.superpower-inside-tool-call-approve')
-      ) {
-        const approveBtn = callRow.createEl('button', {
-          cls: 'superpower-inside-tool-call-approve',
-          text: t('toolApproveExecution'),
-        });
-        approveBtn.addEventListener('click', () => {
-          const messageId = section
-            .closest('.superpower-inside-chat-bubble-container')
-            ?.getAttribute('data-message-id');
-          if (messageId) void this.approveToolCall(messageId, toolCall.id || toolCall.name);
-        });
-      }
-
-      const existingArgs = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-arguments'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-      const existingResult = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-result-details'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-      const argsOpen = existingArgs?.open ?? false;
-      const resultOpen = existingResult?.open ?? false;
-      existingArgs?.remove();
-      existingResult?.remove();
-
-      const argumentPreview = toolCall.arguments.trim();
-      if (argumentPreview) {
-        const args = section.createEl('details', { cls: 'superpower-inside-tool-arguments' });
-        args.setAttribute('data-tool-call-id', rowId);
-        args.open = argsOpen;
-        args.createEl('summary', { text: t('toolArgs') });
-        args.createEl('pre', { text: argumentPreview });
-      }
-
-      if (toolCall.result) {
-        const resultDetails = section.createEl('details', {
-          cls: 'superpower-inside-tool-result-details',
-        });
-        resultDetails.setAttribute('data-tool-call-id', rowId);
-        resultDetails.open = resultOpen;
-        resultDetails.createEl('summary', { text: t('toolResult') });
-        const resultArea = resultDetails.createDiv({ cls: 'superpower-inside-tool-result' });
-        void this.renderMarkdownBubble(resultArea, toolCall.result);
-      }
-    }
-
-    const currentIds = new Set(
-      toolCalls.map((toolCall) => `tool-call-${toolCall.id || toolCall.name}`),
-    );
-    section.querySelectorAll('.superpower-inside-tool-call:not(.placeholder)').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-arguments').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-result-details').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-  }
-
-  private renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
-    let section = container.querySelector('.superpower-inside-chat-citations');
-    if (citations.length === 0) {
-      section?.remove();
-      return;
-    }
-    if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
-    }
-    section.empty();
-    const verifiedCount = citations.filter((citation) => citation.status === 'verified').length;
-    section.createDiv({
-      cls: 'superpower-inside-chat-citations-label',
-      text:
-        verifiedCount === citations.length
-          ? t('sourceVerifiedCount', { count: verifiedCount })
-          : t('sourceSearchVerifiedCount', { verified: verifiedCount, total: citations.length }),
-    });
-
-    for (const citation of citations) {
-      const status = citation.status ?? 'candidate';
-      const card = section.createDiv({
-        cls: `superpower-inside-chat-citation-card ${status}`,
-      });
-      const title = card.createDiv({ cls: 'superpower-inside-chat-citation-title' });
-      title.createSpan({ text: citation.filePath });
-      if (citation.heading) {
-        title.createSpan({
-          cls: 'superpower-inside-chat-citation-heading',
-          text: ` # ${citation.heading}`,
-        });
-      }
-      const metaParts = [
-        citation.line !== undefined ? `line ${citation.line}` : '',
-        citation.endLine !== undefined ? `end ${citation.endLine}` : '',
-        citation.score !== undefined ? `score ${citation.score.toFixed(3)}` : '',
-        citation.vectorScore !== undefined ? `vector ${citation.vectorScore.toFixed(3)}` : '',
-        citation.bm25Score !== undefined ? `bm25 ${citation.bm25Score.toFixed(3)}` : '',
-        `status ${status}`,
-      ].filter(Boolean);
-      if (metaParts.length > 0) {
-        card.createDiv({
-          cls: 'superpower-inside-chat-citation-meta',
-          text: metaParts.join(' · '),
-        });
-      }
-      if (citation.detail) {
-        card.createDiv({ cls: 'superpower-inside-chat-citation-warning', text: citation.detail });
-      }
-      card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: citation.preview });
-      const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
-      const openBtn = actions.createEl('button', { text: t('sourceOpenAction') });
-      openBtn.addEventListener('click', () => void this.openCitation(citation));
-      const copyBtn = actions.createEl('button', { text: t('sourceCopyLinkAction') });
-      copyBtn.addEventListener('click', () => void this.copyCitationLink(citation, copyBtn));
-      const insertBtn = actions.createEl('button', { text: t('sourceInsertIntoNoteAction') });
-      insertBtn.addEventListener('click', () => void this.insertCitationIntoActiveNote(citation));
-    }
-  }
-
-  private renderSourceWarningsSection(
-    container: HTMLElement,
-    warnings: SourceValidationWarning[],
-  ): void {
-    let section = container.querySelector('.superpower-inside-chat-source-warnings');
-    if (warnings.length === 0) {
-      section?.remove();
-      return;
-    }
-    if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-source-warnings' });
-    }
-    section.empty();
-    section.createDiv({
-      cls: 'superpower-inside-chat-source-warnings-label',
-      text: t('sourceUnverifiedCount', { count: warnings.length }),
-    });
-    for (const warning of warnings) {
-      const item = section.createDiv({
-        cls: `superpower-inside-chat-source-warning ${warning.kind}`,
-      });
-      item.createSpan({ cls: 'superpower-inside-chat-source-warning-label', text: warning.label });
-      item.createSpan({
-        cls: 'superpower-inside-chat-source-warning-detail',
-        text: warning.detail,
-      });
-    }
-  }
-
-  private renderContextAttachmentsSection(
-    container: HTMLElement,
-    attachments: ContextAttachment[],
-  ): void {
-    let section = container.querySelector('.superpower-inside-chat-context-attachments');
-    if (attachments.length === 0) {
-      section?.remove();
-      return;
-    }
-    if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-context-attachments' });
-    }
-    section.empty();
-    for (const attachment of attachments) {
-      const chip = section.createSpan({
-        cls: `superpower-inside-chat-context-chip ${attachment.type} ${attachment.status}`,
-        text: attachment.label,
-      });
-      if (attachment.detail) {
-        chip.setAttribute('title', attachment.detail);
-      }
-    }
-  }
-
   private async openCitation(citation: SourceCitation): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(citation.filePath);
     if (!(file instanceof TFile)) {
@@ -1590,24 +1351,6 @@ export class ChatView extends ItemView {
       t('sourceInsertBlock', { link, preview: citation.preview }),
     );
     new Notice(t('sourceInsertedNotice'));
-  }
-
-  private renderToolCallStatus(statusBadge: HTMLElement, status: ToolCallRecord['status']): void {
-    if (status === 'running') {
-      this.renderRunningDots(statusBadge);
-    } else if (status === 'success') {
-      statusBadge.setText('✓');
-    } else {
-      statusBadge.setText('✗');
-    }
-  }
-
-  private renderRunningDots(container: HTMLElement): void {
-    container.empty();
-    const dots = container.createSpan({ cls: 'superpower-inside-tool-running-dots' });
-    dots.createSpan({});
-    dots.createSpan({});
-    dots.createSpan({});
   }
 
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
@@ -1670,48 +1413,13 @@ export class ChatView extends ItemView {
     }
   }
 
-  private getRoleLabel(role: string): string {
-    switch (role) {
-      case 'user':
-        return t('messageUser');
-      case 'assistant':
-        return t('messageAssistant');
-      case 'system':
-        return t('messageSystem');
-      case 'tool':
-        return t('messageTool');
-      default:
-        return role;
-    }
-  }
-
   private renderMessageMeta(meta: HTMLElement, msg: ChatMessageWithMeta): void {
     meta.empty();
-    meta.createSpan({ cls: 'superpower-inside-chat-role', text: this.getRoleLabel(msg.role) });
-    meta.createSpan({
-      cls: 'superpower-inside-chat-timestamp',
-      text: this.formatExactTimestamp(msg.createdAt),
-    });
-    if (msg.providerLabel || msg.model) {
-      meta.createSpan({
-        cls: 'superpower-inside-chat-model-meta',
-        text: [msg.providerLabel, msg.model].filter(Boolean).join(' / '),
-      });
-    }
-    if (msg.providerCapability) {
-      meta.createSpan({
-        cls: 'superpower-inside-chat-capability-meta',
-        text: this.getProviderCapabilityLabel(msg.providerCapability),
-      });
-    }
-    const status = meta.createSpan({
-      cls: `superpower-inside-chat-message-status ${msg.status}`,
-      text: msg.turnStage
-        ? this.getTurnStageLabel(msg.turnStage)
-        : this.getMessageStatusLabel(msg.status),
-    });
-    if (msg.errorMessage) {
-      status.setAttribute('title', msg.errorMessage);
+    for (const item of createChatMessageMetaItems(msg)) {
+      const el = meta.createSpan({ cls: item.className, text: item.text });
+      if (item.title) {
+        el.setAttribute('title', item.title);
+      }
     }
   }
 
@@ -1719,54 +1427,6 @@ export class ChatView extends ItemView {
     const meta = wrapper.querySelector('.superpower-inside-chat-meta');
     if (meta instanceof HTMLElement) {
       this.renderMessageMeta(meta, msg);
-    }
-  }
-
-  private getProviderCapabilityLabel(
-    capability: NonNullable<ChatMessageWithMeta['providerCapability']>,
-  ): string {
-    if (!capability.streaming && !capability.toolCalling) {
-      return t('providerCapabilityBufferedNoTools');
-    }
-    if (!capability.streaming) {
-      return t('providerCapabilityBuffered');
-    }
-    if (!capability.toolCalling) {
-      return t('providerCapabilityNoTools');
-    }
-    return capability.reasoning
-      ? t('providerCapabilityStreamingReasoning')
-      : t('providerCapabilityStreaming');
-  }
-
-  private getTurnStageLabel(stage: ChatTurnStage): string {
-    switch (stage) {
-      case 'draft':
-        return t('turnStageDraft');
-      case 'building-context':
-        return t('turnStageBuildingContext');
-      case 'waiting-provider':
-        return t('turnStageWaitingProvider');
-      case 'streaming-reasoning':
-        return t('turnStageStreamingReasoning');
-      case 'streaming-answer':
-        return t('turnStageStreamingAnswer');
-      case 'planning-tools':
-        return t('turnStagePlanningTools');
-      case 'awaiting-tool-approval':
-        return t('turnStageAwaitingToolApproval');
-      case 'running-tools':
-        return t('turnStageRunningTools');
-      case 'finalizing-after-tools':
-        return t('turnStageFinalizingAfterTools');
-      case 'complete':
-        return t('turnStageComplete');
-      case 'cancelled':
-        return t('turnStageCancelled');
-      case 'error':
-        return t('turnStageError');
-      default:
-        return this.getMessageStatusLabel('pending');
     }
   }
 
@@ -1874,31 +1534,6 @@ export class ChatView extends ItemView {
     this.rebuildMessagesDOM();
     await this.saveCurrentSession(true);
     new Notice(t('branchSessionCreatedNotice'));
-  }
-
-  private formatExactTimestamp(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('ko-KR', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
-  private getMessageStatusLabel(status: ChatMessageWithMeta['status']): string {
-    switch (status) {
-      case 'pending':
-        return t('chatStatusIdle');
-      case 'streaming':
-        return t('chatStatusRunning');
-      case 'complete':
-        return t('chatStatusDone');
-      case 'error':
-        return t('chatStatusError');
-    }
   }
 
   clearMessages(): void {
@@ -2158,7 +1793,7 @@ export class ChatView extends ItemView {
       });
       void this.renderMarkdownBubble(bubble, msg.content);
     }
-    this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
     this.renderMessageActions(bubbleContainer, msg);
   }
 
@@ -2735,14 +2370,15 @@ export class ChatView extends ItemView {
   }
 
   private setLoading(loading: boolean): void {
-    this.isStreaming = loading;
+    const state = createComposerLoadingState(loading);
+    this.isStreaming = state.isStreaming;
     if (this.sendBtn) {
-      this.sendBtn.disabled = false;
-      this.sendBtn.setText(loading ? t('stopButton') : t('sendButton'));
+      this.sendBtn.disabled = state.sendButton.disabled;
+      this.sendBtn.setText(state.sendButton.text);
     }
-    if (this.inputArea) this.inputArea.disabled = loading;
-    if (this.mcpBtn) this.mcpBtn.disabled = loading;
-    if (this.modelSelectEl) this.modelSelectEl.disabled = loading;
+    if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
+    if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
+    if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
   }
 
   private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
