@@ -7,7 +7,7 @@
 
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
@@ -130,6 +130,9 @@ const GRAPH_CLAIM_ENTITY_LIST_KEYS: &[&str] = &["entityNames", "entity_names", "
 /// Graph extraction claim single entity 후보 key 목록.
 const GRAPH_CLAIM_SINGLE_ENTITY_KEYS: &[&str] =
     &["entity", "subject", "source", "object", "target"];
+
+/// 작은 token part에서는 `HashSet` 준비 비용보다 선형 스캔이 싸다.
+const DEDUPE_LINEAR_SCAN_LIMIT: usize = 32;
 
 /// `TypeScript` 호스트에 노출할 `Rust` 코어 버전을 반환한다.
 #[must_use]
@@ -17562,7 +17565,25 @@ fn push_token(tokens: &mut Vec<String>, token: &str) {
 
 /// 첫 출현 순서를 보존하면서 중복 토큰을 제거한다.
 fn dedupe_in_order(tokens: Vec<String>) -> Vec<String> {
-    let mut deduped = Vec::new();
+    if tokens.len() <= DEDUPE_LINEAR_SCAN_LIMIT {
+        return dedupe_in_order_linear(tokens);
+    }
+
+    let mut deduped = Vec::with_capacity(tokens.len());
+    let mut seen = HashSet::with_capacity(tokens.len());
+    for token in tokens {
+        if seen.contains(&token) {
+            continue;
+        }
+        seen.insert(token.clone());
+        deduped.push(token);
+    }
+    deduped
+}
+
+/// 작은 token 목록에서는 추가 할당 없이 첫 출현 순서를 보존하면서 중복을 제거한다.
+fn dedupe_in_order_linear(tokens: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::with_capacity(tokens.len());
     for token in tokens {
         if !deduped.iter().any(|existing| existing == &token) {
             deduped.push(token);
@@ -17632,7 +17653,7 @@ mod tests {
         assign_vector_clusters, bm25_score_pairs, build_initial_centroids, chunk_markdown,
         chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
         count_files_by_extensions_json, count_keyword_matches, create_content_hash,
-        create_entity_id, create_graph_id, detect_communities_flat,
+        create_entity_id, create_graph_id, dedupe_in_order, detect_communities_flat,
         detect_communities_from_edges_json, extract_json_object_text, extract_vault_links_json,
         find_mentioned_entity_matches, format_mcp_json, get_mcp_connection_state_rust,
         hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
@@ -17744,6 +17765,33 @@ mod tests {
             frequencies.get("api"),
             Some(&1),
             "camel-case segment frequency를 보존해야 한다",
+        );
+    }
+
+    /// 대형 vault 인덱싱에서는 token dedupe가 unique token 수에 대해 이차 지연을 만들면 안 된다.
+    #[test]
+    fn dedupe_in_order_keeps_large_unique_token_sets_under_latency_budget() {
+        let tokens = (0..20_000_usize)
+            .map(|index| format!("token-{index}"))
+            .collect::<Vec<_>>();
+
+        let started = std::time::Instant::now();
+        let deduped = dedupe_in_order(tokens);
+        let elapsed = started.elapsed();
+        let latency_budget = if cfg!(debug_assertions) {
+            std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+
+        assert_eq!(
+            deduped.len(),
+            20_000,
+            "unique token은 손실 없이 보존해야 한다"
+        );
+        assert!(
+            elapsed <= latency_budget,
+            "dedupe는 대형 token set에서 latency budget 안에 끝나야 한다: elapsed={elapsed:?}, budget={latency_budget:?}",
         );
     }
 
