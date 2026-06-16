@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../llm/providers';
 import type { ProviderCapabilitySnapshot } from '../llm/provider-capabilities';
+import type { ChatTurnStage } from './turn-state';
 
 /** 기록 중인 툴 호출 상태 */
 export interface ToolCallRecord {
@@ -103,6 +104,8 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   stopReason?: ChatStopReason;
   originalContent?: string;
   providerCapability?: ProviderCapabilitySnapshot;
+  turnStage?: ChatTurnStage;
+  toolRound?: number;
 }
 
 /** 저장된 세션 데이터 (파일에서 로드) */

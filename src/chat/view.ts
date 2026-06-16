@@ -41,6 +41,14 @@ import { validateAnswerSources } from './source-validation';
 import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
+import {
+  createChatTurnState,
+  getChatTurnStageStatus,
+  transitionChatTurn,
+  type ChatTurnEvent,
+  type ChatTurnStage,
+  type ChatTurnState,
+} from './turn-state';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
 import { EditMessageModal } from './edit-modal';
@@ -83,6 +91,8 @@ interface MessageMetaInput {
   stopReason?: ChatMessageWithMeta['stopReason'];
   originalContent?: string;
   providerCapability?: ChatMessageWithMeta['providerCapability'];
+  turnStage?: ChatTurnStage;
+  toolRound?: number;
 }
 
 export class ChatView extends ItemView {
@@ -864,6 +874,8 @@ export class ChatView extends ItemView {
       providerLabel: metaInput?.providerLabel,
       model: metaInput?.model,
       providerCapability: metaInput?.providerCapability,
+      turnStage: metaInput?.turnStage,
+      toolRound: metaInput?.toolRound,
       status:
         metaInput?.status ??
         (role === 'assistant' && this.isStreaming
@@ -951,6 +963,8 @@ export class ChatView extends ItemView {
       message.providerLabel = metaInput?.providerLabel ?? message.providerLabel;
       message.model = metaInput?.model ?? message.model;
       message.providerCapability = metaInput?.providerCapability ?? message.providerCapability;
+      message.turnStage = metaInput?.turnStage ?? message.turnStage;
+      message.toolRound = metaInput?.toolRound ?? message.toolRound;
       message.status = metaInput?.status ?? (isDone ? 'complete' : 'streaming');
       message.errorMessage = metaInput?.errorMessage;
       message.citations = metaInput?.citations ?? message.citations;
@@ -1692,7 +1706,9 @@ export class ChatView extends ItemView {
     }
     const status = meta.createSpan({
       cls: `superpower-inside-chat-message-status ${msg.status}`,
-      text: this.getMessageStatusLabel(msg.status),
+      text: msg.turnStage
+        ? this.getTurnStageLabel(msg.turnStage)
+        : this.getMessageStatusLabel(msg.status),
     });
     if (msg.errorMessage) {
       status.setAttribute('title', msg.errorMessage);
@@ -1721,6 +1737,37 @@ export class ChatView extends ItemView {
     return capability.reasoning
       ? t('providerCapabilityStreamingReasoning')
       : t('providerCapabilityStreaming');
+  }
+
+  private getTurnStageLabel(stage: ChatTurnStage): string {
+    switch (stage) {
+      case 'draft':
+        return t('turnStageDraft');
+      case 'building-context':
+        return t('turnStageBuildingContext');
+      case 'waiting-provider':
+        return t('turnStageWaitingProvider');
+      case 'streaming-reasoning':
+        return t('turnStageStreamingReasoning');
+      case 'streaming-answer':
+        return t('turnStageStreamingAnswer');
+      case 'planning-tools':
+        return t('turnStagePlanningTools');
+      case 'awaiting-tool-approval':
+        return t('turnStageAwaitingToolApproval');
+      case 'running-tools':
+        return t('turnStageRunningTools');
+      case 'finalizing-after-tools':
+        return t('turnStageFinalizingAfterTools');
+      case 'complete':
+        return t('turnStageComplete');
+      case 'cancelled':
+        return t('turnStageCancelled');
+      case 'error':
+        return t('turnStageError');
+      default:
+        return this.getMessageStatusLabel('pending');
+    }
   }
 
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
@@ -2236,11 +2283,27 @@ export class ChatView extends ItemView {
       provider = createProvider(fixedKey, config, modelName);
     }
     const providerCapability = provider.capability;
+    let turnState: ChatTurnState = transitionChatTurn(createChatTurnState(), { type: 'submit' });
+    const toTurnMeta = (): Pick<
+      MessageMetaInput,
+      'turnStage' | 'toolRound' | 'status' | 'stopReason' | 'errorMessage'
+    > => ({
+      turnStage: turnState.stage,
+      toolRound: turnState.toolRound,
+      status: getChatTurnStageStatus(turnState.stage),
+      stopReason: turnState.stopReason,
+      errorMessage: turnState.errorMessage,
+    });
+    const applyTurnEvent = (event: ChatTurnEvent): ReturnType<typeof toTurnMeta> => {
+      turnState = transitionChatTurn(turnState, event);
+      return toTurnMeta();
+    };
 
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
     const promptContext = await this.buildPromptContext(text, this.previousUserQueries);
+    applyTurnEvent({ type: 'context-built' });
     this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
@@ -2277,7 +2340,7 @@ export class ChatView extends ItemView {
         providerLabel,
         model: modelName,
         providerCapability,
-        status: 'streaming',
+        ...toTurnMeta(),
         citations: promptContext.citations,
         contextAttachments: promptContext.attachments,
       });
@@ -2302,6 +2365,17 @@ export class ChatView extends ItemView {
           if (chunk.toolCalls) {
             this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
           }
+          const turnMeta =
+            chunk.toolCalls && chunk.toolCalls.length > 0
+              ? applyTurnEvent({
+                  type: 'tool-call-delta',
+                  activeToolCalls: toolCallMap.size,
+                })
+              : chunk.reasoning && !chunk.content
+                ? applyTurnEvent({ type: 'reasoning-delta' })
+                : chunk.content
+                  ? applyTurnEvent({ type: 'answer-delta' })
+                  : toTurnMeta();
 
           if (!hasReceivedContent && (fullText || fullReasoning)) {
             hasReceivedContent = true;
@@ -2319,7 +2393,7 @@ export class ChatView extends ItemView {
               providerLabel,
               model: modelName,
               providerCapability,
-              status: chunk.done ? 'complete' : 'streaming',
+              ...turnMeta,
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
             },
@@ -2353,11 +2427,10 @@ export class ChatView extends ItemView {
             providerLabel,
             model: modelName,
             providerCapability,
-            status: 'complete',
+            ...applyTurnEvent({ type: 'complete' }),
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
             assistantQuestion: firstClassification.question,
-            stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
             originalContent: firstClassification.originalContent,
           },
         );
@@ -2404,7 +2477,7 @@ export class ChatView extends ItemView {
           providerLabel,
           model: modelName,
           providerCapability,
-          status: 'streaming',
+          ...applyTurnEvent({ type: 'context-built' }),
           citations: promptContext.citations,
           contextAttachments: promptContext.attachments,
         });
@@ -2415,6 +2488,17 @@ export class ChatView extends ItemView {
             if (chunk.content) fullText += chunk.content;
             if (chunk.reasoning) fullReasoning += chunk.reasoning;
             if (chunk.toolCalls) this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+            const turnMeta =
+              chunk.toolCalls && chunk.toolCalls.length > 0
+                ? applyTurnEvent({
+                    type: 'tool-call-delta',
+                    activeToolCalls: toolCallMap.size,
+                  })
+                : chunk.reasoning && !chunk.content
+                  ? applyTurnEvent({ type: 'reasoning-delta' })
+                  : chunk.content
+                    ? applyTurnEvent({ type: 'answer-delta' })
+                    : toTurnMeta();
             this.updateMessage(
               assistantId,
               fullText,
@@ -2426,7 +2510,7 @@ export class ChatView extends ItemView {
                 providerLabel,
                 model: modelName,
                 providerCapability,
-                status: chunk.done ? 'complete' : 'streaming',
+                ...turnMeta,
                 citations: promptContext.citations,
                 contextAttachments: promptContext.attachments,
               },
@@ -2460,11 +2544,10 @@ export class ChatView extends ItemView {
               providerLabel,
               model: modelName,
               providerCapability,
-              status: 'complete',
+              ...applyTurnEvent({ type: 'complete' }),
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
               assistantQuestion: retryClassification.question,
-              stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
               originalContent: retryClassification.originalContent,
             },
           );
@@ -2479,16 +2562,19 @@ export class ChatView extends ItemView {
       }
 
       const sourceWarnings = this.validateAssistantSources(fullText, promptContext.citations);
+      const postProviderTurnMeta =
+        toolCalls.length > 0
+          ? applyTurnEvent({ type: 'tool-call-delta', activeToolCalls: toolCalls.length })
+          : applyTurnEvent({ type: 'complete' });
       this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
         providerKey: key,
         providerLabel,
         model: modelName,
         providerCapability,
-        status: 'complete',
+        ...postProviderTurnMeta,
         citations: promptContext.citations,
         sourceWarnings,
         contextAttachments: promptContext.attachments,
-        stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
       });
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
@@ -2508,12 +2594,27 @@ export class ChatView extends ItemView {
             providerLabel,
             model: modelName,
             providerCapability,
-            status: 'complete',
+            ...applyTurnEvent({ type: 'await-tool-approval' }),
             citations: promptContext.citations,
             sourceWarnings,
             contextAttachments: promptContext.attachments,
           });
           new Notice(t('mcpApprovalRequiredNotice'));
+        }
+        if (!pendingApproval) {
+          this.updateMessage(assistantId, fullText, false, fullReasoning || undefined, toolCalls, {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...applyTurnEvent({
+              type: 'tools-running',
+              activeToolCalls: runnableToolCalls.length,
+            }),
+            citations: promptContext.citations,
+            sourceWarnings,
+            contextAttachments: promptContext.attachments,
+          });
         }
         toolCalls = await this.executeAssistantToolCalls(
           assistantId,
@@ -2534,6 +2635,7 @@ export class ChatView extends ItemView {
             providerLabel,
             model: modelName,
             providerCapability,
+            ...applyTurnEvent({ type: 'tools-complete' }),
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
           },
@@ -2567,10 +2669,9 @@ export class ChatView extends ItemView {
               providerLabel,
               model: modelName,
               providerCapability,
-              status: 'complete',
+              ...applyTurnEvent({ type: 'cancel' }),
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
-              stopReason: 'cancelled',
             },
           );
         }
@@ -2579,6 +2680,7 @@ export class ChatView extends ItemView {
       const errorMsg = err instanceof Error ? err.message : String(err);
       if (assistantId) {
         const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
+        const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
         this.updateMessage(
           assistantId,
           t('llmApiError', { detail: errDetail }),
@@ -2590,11 +2692,10 @@ export class ChatView extends ItemView {
             providerLabel,
             model: modelName,
             providerCapability,
-            status: 'error',
+            ...errorTurnMeta,
             errorMessage: errDetail,
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
-            stopReason: 'error',
           },
         );
         if (assistantWrapper) {
@@ -2608,6 +2709,7 @@ export class ChatView extends ItemView {
         }
       } else {
         const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
+        const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
         this.addMessage(
           'assistant',
           t('llmApiError', { detail: errDetail }),
@@ -2618,7 +2720,7 @@ export class ChatView extends ItemView {
             providerLabel,
             model: modelName,
             providerCapability,
-            status: 'error',
+            ...errorTurnMeta,
             errorMessage: errDetail,
           },
         );
@@ -2940,6 +3042,7 @@ export class ChatView extends ItemView {
           {
             ...args.meta,
             status: 'error',
+            turnStage: 'error',
             errorMessage: t('mcpToolFinalAnswerMissing'),
             stopReason: 'tool-failed',
           },
@@ -2966,6 +3069,7 @@ export class ChatView extends ItemView {
               ...args.meta,
               assistantQuestion: classification.question,
               status: 'complete',
+              turnStage: 'complete',
               stopReason: 'complete',
             },
           );
@@ -2981,7 +3085,13 @@ export class ChatView extends ItemView {
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, sourceWarnings, status: 'complete', stopReason: 'complete' },
+          {
+            ...args.meta,
+            sourceWarnings,
+            status: 'complete',
+            turnStage: 'complete',
+            stopReason: 'complete',
+          },
         );
       }
       return;
@@ -2998,7 +3108,13 @@ export class ChatView extends ItemView {
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
-        { ...args.meta, sourceWarnings, status: 'complete', stopReason: 'cancelled' },
+        {
+          ...args.meta,
+          sourceWarnings,
+          status: 'complete',
+          turnStage: 'cancelled',
+          stopReason: 'cancelled',
+        },
       );
     } else {
       const content = accumulatedText || t('tooManyToolCalls');
@@ -3009,7 +3125,7 @@ export class ChatView extends ItemView {
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
-        { ...args.meta, sourceWarnings, status: 'error', stopReason: 'error' },
+        { ...args.meta, sourceWarnings, status: 'error', turnStage: 'error', stopReason: 'error' },
       );
     }
   }

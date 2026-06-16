@@ -76,6 +76,18 @@ export interface I18nKeys {
   providerCapabilityStreamingReasoning: string;
   providerCapabilityStreaming: string;
   providerToolCallingUnsupportedNotice: string;
+  turnStageDraft: string;
+  turnStageBuildingContext: string;
+  turnStageWaitingProvider: string;
+  turnStageStreamingReasoning: string;
+  turnStageStreamingAnswer: string;
+  turnStagePlanningTools: string;
+  turnStageAwaitingToolApproval: string;
+  turnStageRunningTools: string;
+  turnStageFinalizingAfterTools: string;
+  turnStageComplete: string;
+  turnStageCancelled: string;
+  turnStageError: string;
 
   // RAG 탭
   embeddingProvider: string;
@@ -1188,6 +1200,18 @@ const ko: I18nKeys = {
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
   providerToolCallingUnsupportedNotice: '{provider}는 현재 툴 호출 capability가 꺼져 있어 MCP tools를 이번 요청에 보내지 않습니다.',
+  turnStageDraft: '초안',
+  turnStageBuildingContext: '컨텍스트 준비',
+  turnStageWaitingProvider: 'provider 대기',
+  turnStageStreamingReasoning: 'reasoning 수신',
+  turnStageStreamingAnswer: '답변 수신',
+  turnStagePlanningTools: '툴 계획',
+  turnStageAwaitingToolApproval: '툴 승인 대기',
+  turnStageRunningTools: '툴 실행',
+  turnStageFinalizingAfterTools: '툴 결과 반영',
+  turnStageComplete: '완료',
+  turnStageCancelled: '취소됨',
+  turnStageError: '오류',
 
   // RAG
   embeddingProvider: '임베딩 프로바이더',
@@ -2400,6 +2424,18 @@ const en: I18nKeys = {
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
   providerToolCallingUnsupportedNotice: '{provider} currently has tool calling capability disabled, so MCP tools will not be sent for this request.',
+  turnStageDraft: 'Draft',
+  turnStageBuildingContext: 'Building context',
+  turnStageWaitingProvider: 'Waiting for provider',
+  turnStageStreamingReasoning: 'Receiving reasoning',
+  turnStageStreamingAnswer: 'Receiving answer',
+  turnStagePlanningTools: 'Planning tools',
+  turnStageAwaitingToolApproval: 'Awaiting tool approval',
+  turnStageRunningTools: 'Running tools',
+  turnStageFinalizingAfterTools: 'Applying tool results',
+  turnStageComplete: 'Complete',
+  turnStageCancelled: 'Cancelled',
+  turnStageError: 'Error',
 
   // RAG
   embeddingProvider: 'Embedding Provider',

@@ -14251,6 +14251,8 @@ fn parse_chat_message_plan(
     copy_optional_chat_value(object, &mut message, "contextAttachments");
     copy_optional_chat_value(object, &mut message, "assistantQuestion");
     copy_optional_chat_value(object, &mut message, "providerCapability");
+    copy_optional_chat_string(object, &mut message, "turnStage");
+    copy_optional_chat_u64(object, &mut message, "toolRound");
 
     let error_message = object
         .get("errorMessage")
@@ -14311,6 +14313,18 @@ fn copy_optional_chat_value(
         return;
     }
     target.insert(key.to_owned(), value.clone());
+}
+
+/// optional integer meta field를 message object로 복사한다.
+fn copy_optional_chat_u64(
+    source: &JsonMap<String, JsonValue>,
+    target: &mut JsonMap<String, JsonValue>,
+    key: &str,
+) {
+    let Some(value) = source.get(key).and_then(JsonValue::as_u64) else {
+        return;
+    };
+    target.insert(key.to_owned(), JsonValue::Number(JsonNumber::from(value)));
 }
 
 /// named block comment에서 raw 또는 base64-decoded text를 추출한다.
@@ -18182,7 +18196,7 @@ mod tests {
     fn chat_message_blocks_are_planned_in_rust() {
         let body = [
             "<!-- superpower-inside-message",
-            r#"{"id":"msg-1","role":"assistant","providerKey":"openai","providerCapability":{"providerKey":"openai","model":"gpt-test","streaming":true,"transport":"fetch-sse","toolCalling":true,"reasoning":true,"abort":"native","fileReference":true,"maxToolRounds":10,"knownLimitations":[]}}"#,
+            r#"{"id":"msg-1","role":"assistant","providerKey":"openai","turnStage":"streaming-answer","toolRound":2,"providerCapability":{"providerKey":"openai","model":"gpt-test","streaming":true,"transport":"fetch-sse","toolCalling":true,"reasoning":true,"abort":"native","fileReference":true,"maxToolRounds":10,"knownLimitations":[]}}"#,
             "-->",
             "<!-- superpower-inside-reasoning-start encoding=\"base64\" -->",
             "7IOd6rCB7J2YIOqzvOygleyeheuLiOuLpC4=",
@@ -18211,7 +18225,7 @@ mod tests {
                 "2026-01-01T00:00:00.000Z",
                 "[decoding failed]",
             ),
-            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
+            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"turnStage\":\"streaming-answer\",\"toolRound\":2,\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
         );
     }
 

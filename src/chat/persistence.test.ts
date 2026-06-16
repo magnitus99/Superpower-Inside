@@ -192,6 +192,28 @@ describe('chat persistence', () => {
 
     expect(loaded.messages[0].providerCapability).toEqual(messages[0].providerCapability);
   });
+
+  it('turn stage와 tool round를 저장하고 복원한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '툴 결과를 기다리는 중',
+        status: 'pending',
+        turnStage: 'awaiting-tool-approval',
+        toolRound: 2,
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0]).toMatchObject({
+      status: 'pending',
+      turnStage: 'awaiting-tool-approval',
+      toolRound: 2,
+    });
+  });
 });
 
 interface TestVault extends Vault {

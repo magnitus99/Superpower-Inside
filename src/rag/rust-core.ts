@@ -1006,6 +1006,8 @@ export interface RustChatMessagePlan {
   branchOf?: string;
   stopReason?: string;
   providerCapability?: unknown;
+  turnStage?: string;
+  toolRound?: number;
 }
 
 export interface RustChatMetaPlan {
@@ -7123,7 +7125,12 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.branchOf === undefined || isStringValue(message.branchOf)) &&
     (message.stopReason === undefined || isStringValue(message.stopReason)) &&
     (message.providerCapability === undefined ||
-      (typeof message.providerCapability === 'object' && message.providerCapability !== null))
+      (typeof message.providerCapability === 'object' && message.providerCapability !== null)) &&
+    (message.turnStage === undefined || isStringValue(message.turnStage)) &&
+    (message.toolRound === undefined ||
+      (typeof message.toolRound === 'number' &&
+        Number.isInteger(message.toolRound) &&
+        message.toolRound >= 0))
   );
 }
 
