@@ -218,7 +218,8 @@ export class BM25CandidateProvider implements CandidateProvider {
     throwIfAborted(signal);
     if (!this.bm25Index.isReady) return [];
 
-    const scores = this.bm25Index.search(request.question);
+    const lookupLimit = request.candidateLimit * 4;
+    const scores = this.bm25Index.searchTop(request.question, lookupLimit);
     if (scores.size === 0) return [];
 
     const hitPlan = planBm25HitLookupRust(

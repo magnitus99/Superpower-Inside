@@ -164,6 +164,17 @@ export class IndexedDbBM25Index {
     return mappedScores;
   }
 
+  searchTop(query: string, limit: number): Map<string, number> {
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+    if (normalizedLimit === 0) return new Map<string, number>();
+
+    const mappedScores = new Map<string, number>();
+    for (const { docId, score } of this.ensureRuntime().searchTop(query, normalizedLimit) ?? []) {
+      mappedScores.set(docId, score);
+    }
+    return mappedScores;
+  }
+
   get isReady(): boolean {
     return this.loaded && (this.runtime?.isReady() ?? false);
   }

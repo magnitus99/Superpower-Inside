@@ -43,6 +43,10 @@ export class Bm25RuntimeIndex {
      */
     search_json(query: string): string;
     /**
+     * 상위 query score 목록만 JSON 문자열로 반환한다.
+     */
+    search_top_json(query: string, limit: number): string;
+    /**
      * doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
      */
     source_path_for_doc(doc_id: string): string;
@@ -822,6 +826,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_remove_document: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_remove_source: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_search_json: (a: number, b: number, c: number) => [number, number];
+    readonly bm25runtimeindex_search_top_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_source_path_for_doc: (a: number, b: number, c: number) => [number, number];
     readonly bm25runtimeindex_to_json: (a: number) => [number, number];
     readonly bm25runtimeindex_tokenizer_version: (a: number) => number;

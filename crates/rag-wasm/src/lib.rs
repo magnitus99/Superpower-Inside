@@ -4892,6 +4892,12 @@ impl Bm25RuntimeIndex {
         serialize_bm25_search_scores_json(&search_bm25_index(&self.index, query))
     }
 
+    /// 상위 query score 목록만 JSON 문자열로 반환한다.
+    #[must_use]
+    pub fn search_top_json(&self, query: &str, limit: usize) -> String {
+        serialize_bm25_search_scores_json(&search_bm25_index_top(&self.index, query, limit))
+    }
+
     /// compact v3 JSON payload로 직렬화한다.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -5044,6 +5050,14 @@ struct Bm25SearchScore {
     doc_id: String,
     /// BM25 score.
     score: f64,
+}
+
+/// 원래 검색 순서를 보존한 BM25 score.
+struct RankedBm25SearchScore {
+    /// 전체 BM25 score 목록에서의 원래 순서.
+    sequence: usize,
+    /// BM25 search score.
+    score: Bm25SearchScore,
 }
 
 /// TS wrapper가 store에서 조회한 entry metadata.
@@ -5882,6 +5896,67 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
         }
     }
     scores
+}
+
+/// BM25 index에서 상위 query score만 계산한다.
+fn search_bm25_index_top(index: &Bm25IndexData, query: &str, limit: usize) -> Vec<Bm25SearchScore> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    limit_bm25_search_scores(search_bm25_index(index, query), limit)
+}
+
+/// BM25 score 목록을 기존 hit lookup 정렬 계약과 같은 순서로 제한한다.
+fn limit_bm25_search_scores(scores: Vec<Bm25SearchScore>, limit: usize) -> Vec<Bm25SearchScore> {
+    if limit == 0 || scores.is_empty() {
+        return Vec::new();
+    }
+
+    let mut top_scores = Vec::<RankedBm25SearchScore>::with_capacity(limit.min(scores.len()));
+    for (sequence, score) in scores.into_iter().enumerate() {
+        push_top_bm25_search_score(
+            &mut top_scores,
+            RankedBm25SearchScore { sequence, score },
+            limit,
+        );
+    }
+    top_scores.into_iter().map(|ranked| ranked.score).collect()
+}
+
+/// 단일 BM25 score를 정렬된 top-k 버퍼에 반영한다.
+fn push_top_bm25_search_score(
+    scores: &mut Vec<RankedBm25SearchScore>,
+    score: RankedBm25SearchScore,
+    limit: usize,
+) {
+    if limit == 0 || !score.score.score.is_finite() {
+        return;
+    }
+    let insert_at = scores
+        .iter()
+        .position(|candidate| {
+            compare_ranked_bm25_search_scores_descending(&score, candidate).is_lt()
+        })
+        .unwrap_or(scores.len());
+    if insert_at >= limit {
+        return;
+    }
+    scores.insert(insert_at, score);
+    if scores.len() > limit {
+        scores.truncate(limit);
+    }
+}
+
+/// BM25 제한 검색 정렬. 높은 score 우선, 같은 score는 전체 검색의 원래 순서 우선이다.
+fn compare_ranked_bm25_search_scores_descending(
+    left: &RankedBm25SearchScore,
+    right: &RankedBm25SearchScore,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .score
+        .total_cmp(&left.score.score)
+        .then_with(|| left.sequence.cmp(&right.sequence))
 }
 
 /// BM25 score 공식을 계산한다.
@@ -17647,8 +17722,8 @@ mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
     use super::{
-        BM25_B, BM25_K1, Bm25RuntimeIndex, IvfRuntimeIndex, JsonValue, SOURCE_ANN, SOURCE_BM25,
-        SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR, VectorRuntimeIndex,
+        BM25_B, BM25_K1, Bm25RuntimeIndex, Bm25SearchScore, IvfRuntimeIndex, JsonValue, SOURCE_ANN,
+        SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR, VectorRuntimeIndex,
         accumulate_token_frequencies, aggregate_graph_edges_flat, analyze_retrieval_sources,
         assign_vector_clusters, bm25_score_pairs, build_initial_centroids, chunk_markdown,
         chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
@@ -19259,6 +19334,42 @@ mod tests {
         );
     }
 
+    /// BM25 제한 검색은 전체 검색 결과 중 상위 score만 WASM 경계 밖으로 내보내야 한다.
+    #[test]
+    fn bm25_runtime_index_search_top_json_limits_to_highest_scores() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        for doc_index in 0..8_usize {
+            let doc_id = format!("doc-{doc_index}.md::0");
+            let source_path = format!("doc-{doc_index}.md");
+            let repeated_terms = "alpha ".repeat(doc_index.saturating_add(1));
+            let text = format!("{repeated_terms}beta");
+            index.add_new_document(&doc_id, &text, &source_path, 2);
+        }
+
+        let all_scores = parse_bm25_score_test_json(&index.search_json("alpha beta"));
+        let mut ranked_scores = all_scores.iter().enumerate().collect::<Vec<_>>();
+        ranked_scores.sort_by(|(left_sequence, left), (right_sequence, right)| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left_sequence.cmp(right_sequence))
+        });
+        let expected_doc_ids = ranked_scores
+            .iter()
+            .take(3)
+            .map(|(_, score)| score.doc_id.clone())
+            .collect::<Vec<_>>();
+        let limited_doc_ids = parse_bm25_score_test_json(&index.search_top_json("alpha beta", 3))
+            .into_iter()
+            .map(|score| score.doc_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            limited_doc_ids, expected_doc_ids,
+            "제한 검색은 전체 결과를 JS로 넘기지 않고 상위 BM25 hit만 반환해야 한다",
+        );
+    }
+
     /// RAG core hot path의 deterministic median benchmark를 출력한다.
     #[ignore = "manual benchmark: run fish scripts/bench-rag-core.fish"]
     #[test]
@@ -20596,6 +20707,24 @@ mod tests {
             markdown.push_str(segment);
         }
         markdown
+    }
+
+    /// 테스트에서 BM25 score JSON을 간단히 읽는다.
+    fn parse_bm25_score_test_json(payload: &str) -> Vec<Bm25SearchScore> {
+        let value = serde_json::from_str::<JsonValue>(payload).unwrap_or(JsonValue::Null);
+        let Some(items) = value.as_array() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                Some(Bm25SearchScore {
+                    doc_id: object.get("docId")?.as_str()?.to_owned(),
+                    score: object.get("score")?.as_f64()?,
+                })
+            })
+            .collect()
     }
 
     /// pair 배열에서 값을 안전하게 읽는다.

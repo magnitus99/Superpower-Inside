@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BM25CandidateProvider,
   ExactVectorCandidateProvider,
@@ -250,6 +250,27 @@ describe('RagRetrievalPipeline', () => {
     expect(store.getEntriesCalls).toBe(0);
     expect(store.requestedPaths).toEqual([]);
     expect(store.requestedIds).toEqual([[keyword.id]]);
+  });
+
+  it('BM25CandidateProvider는 BM25 hit를 lookup 예산만큼만 WASM에서 가져온다', async () => {
+    const store = new PathLookupStore();
+    const entries = Array.from({ length: 12 }, (_, index) =>
+      createEntry(`keyword-${index}.md`, [0, 1], `specialterm 문서 ${index}`),
+    );
+    await store.add(entries);
+    const bm25 = await createBm25(
+      entries.map((entry) => [entry.id, entry.metadata.text, entry.metadata.filePath]),
+    );
+    const searchTopSpy = vi.spyOn(bm25, 'searchTop');
+    const provider = new BM25CandidateProvider(store, bm25);
+
+    const candidates = await provider.getCandidates({
+      ...createRequest([1, 0], 2),
+      question: 'specialterm',
+    });
+
+    expect(searchTopSpy).toHaveBeenCalledWith('specialterm', 8);
+    expect(candidates).toHaveLength(2);
   });
 
   it('BM25CandidateProvider는 stale doc id를 source file path로 복구한다', async () => {

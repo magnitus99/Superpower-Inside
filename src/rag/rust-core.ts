@@ -367,6 +367,17 @@ export class RustBm25RuntimeIndex {
     }
   }
 
+  searchTop(query: string, limit: number): RustBm25SearchScore[] | null {
+    try {
+      const raw = this.inner.search_top_json(query, limit);
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.every(isBm25SearchScore)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
   sourcePathForDoc(docId: string): string | undefined {
     const value = this.inner.source_path_for_doc(docId);
     return value.length > 0 ? value : undefined;
