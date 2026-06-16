@@ -18,6 +18,7 @@ export function tokenize(text: string): string[] {
 
 const TOKENIZER_VERSION = 2;
 const BM25_SNAPSHOT_KEY = 'bm25-runtime-snapshot:v1';
+const BM25_REBUILD_YIELD_INTERVAL = 128;
 
 interface BM25MetaRecord {
   key: string;
@@ -117,8 +118,16 @@ export class IndexedDbBM25Index {
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
     await this.withBatch(async () => {
       await this.clear();
-      for (const document of documents) {
+      for (let index = 0; index < documents.length; index++) {
+        const document = documents[index];
+        if (document === undefined) continue;
         this.addDocument(document.id, document.text, document.sourcePath);
+        if (
+          index + 1 < documents.length &&
+          (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0
+        ) {
+          await yieldToHost();
+        }
       }
       await this.persist();
     });
@@ -190,4 +199,10 @@ function createEmptyPayload(): string {
     RustBm25RuntimeIndex.empty(TOKENIZER_VERSION)?.toJson() ??
     '{"schemaVersion":3,"tokenizerVersion":2,"docs":[],"terms":[],"totalDocs":0,"avgDocLength":1}'
   );
+}
+
+async function yieldToHost(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
 }

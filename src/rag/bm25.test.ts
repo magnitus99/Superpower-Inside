@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexedDbBM25Index, tokenize } from './bm25';
 
 const dbNames = new Set<string>();
@@ -133,6 +133,37 @@ describe('IndexedDbBM25Index', () => {
 
     expect(inspectable.readCount()).toBe(1);
     expect([...reopened.search('open router').keys()]).toEqual(['api.md::0']);
+  });
+
+  it('전체 재빌드 중 긴 문서 루프는 이벤트 루프에 양보하면서 검색 결과를 유지한다', async () => {
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
+    await bm25.load();
+
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    try {
+      const documents = Array.from({ length: 129 }, (_, index) => ({
+        id: `doc-${index}.md::0`,
+        text: index === 128 ? 'needle final document' : `ordinary document ${index}`,
+        sourcePath: `doc-${index}.md`,
+      }));
+
+      const rebuildPromise = bm25.rebuild(documents);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
+
+      await vi.runAllTimersAsync();
+      await rebuildPromise;
+
+      expect(bm25.totalDocs).toBe(documents.length);
+      expect([...bm25.search('needle').keys()]).toEqual(['doc-128.md::0']);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 
