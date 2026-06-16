@@ -78,6 +78,7 @@ import { setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
 import { loadLocalSettings, saveLocalSettings } from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
+import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -116,6 +117,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private ragIndexAbortController: AbortController | null = null;
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
+  private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
@@ -1080,6 +1082,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async initRAG(): Promise<void> {
+    await this.getRagRuntimeInitRunner().run();
+  }
+
+  private getRagRuntimeInitRunner(): CoalescedAsyncRunner {
+    if (!this.ragRuntimeInitRunner) {
+      this.ragRuntimeInitRunner = new CoalescedAsyncRunner(() => this.initRAGRuntime());
+    }
+    return this.ragRuntimeInitRunner;
+  }
+
+  private async initRAGRuntime(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
     // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
     // button or "Reindex All" command). Re-initializing RAG with a new provider/model must
@@ -1550,6 +1563,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (
       this.ragEngine &&
       !this.ragRuntimeRebuildInProgress &&
+      !this.getRagRuntimeInitRunner().isRunning() &&
       shouldRebuildRagRuntimeForGraphStatus({
         graphRagEnabled: this.settings.rag.graphRagEnabled,
         graphRagModel: this.settings.rag.graphRagModel,

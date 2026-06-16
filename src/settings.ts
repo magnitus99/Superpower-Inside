@@ -438,6 +438,10 @@ interface ProviderValidationCache {
     error?: string;
   };
 }
+interface SettingsSaveOptions {
+  reinitRag: boolean;
+  reinitMcp: boolean;
+}
 type ProviderSettingsTarget =
   | {
       kind: 'fixed';
@@ -458,6 +462,27 @@ function setHidden(el: HTMLElement | null, hidden: boolean): void {
   el.toggleClass(HIDDEN_CLASS, hidden);
 }
 
+function createLightSaveOptions(): SettingsSaveOptions {
+  return { reinitRag: false, reinitMcp: false };
+}
+
+function normalizeSaveOptions(options: Partial<SettingsSaveOptions>): SettingsSaveOptions {
+  return {
+    reinitRag: options.reinitRag ?? false,
+    reinitMcp: options.reinitMcp ?? false,
+  };
+}
+
+function mergeSaveOptions(
+  current: SettingsSaveOptions,
+  next: SettingsSaveOptions,
+): SettingsSaveOptions {
+  return {
+    reinitRag: current.reinitRag || next.reinitRag,
+    reinitMcp: current.reinitMcp || next.reinitMcp,
+  };
+}
+
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
@@ -467,6 +492,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private validationCache: ProviderValidationCache = {};
   private saveTimeout: number | null = null;
   private pendingSave = false;
+  private pendingSaveOptions: SettingsSaveOptions = createLightSaveOptions();
   private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
   private pendingEmbeddingModel: string | null = null;
   private isRebuildingEmbeddingSection = false;
@@ -497,9 +523,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     super(app, plugin as unknown as Plugin);
     this.plugin = plugin;
   }
-  debouncedSave(): void {
+  debouncedSave(options: Partial<SettingsSaveOptions> = {}): void {
+    this.pendingSaveOptions = mergeSaveOptions(
+      this.pendingSaveOptions,
+      normalizeSaveOptions(options),
+    );
     if (!this.plugin.settings.autoSaveEnabled) {
-      void this.saveSettingsWithFeedback();
+      const saveOptions = this.consumePendingSaveOptions();
+      void this.saveSettingsWithFeedback(saveOptions);
       return;
     }
     this.pendingSave = true;
@@ -509,8 +540,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.saveTimeout = window.setTimeout(() => {
       this.saveTimeout = null;
       this.pendingSave = false;
-      void this.saveSettingsWithFeedback();
+      const saveOptions = this.consumePendingSaveOptions();
+      void this.saveSettingsWithFeedback(saveOptions);
     }, this.plugin.settings.autoSaveDebounceMs);
+  }
+  private debouncedRagSave(): void {
+    this.debouncedSave({ reinitRag: true });
   }
   flushSave(): void {
     if (this.saveTimeout) {
@@ -519,12 +554,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (this.pendingSave) {
       this.pendingSave = false;
-      void this.saveSettingsWithFeedback();
+      const saveOptions = this.consumePendingSaveOptions();
+      void this.saveSettingsWithFeedback(saveOptions);
     }
   }
-  private async saveSettingsWithFeedback(): Promise<void> {
+  private consumePendingSaveOptions(): SettingsSaveOptions {
+    const options = this.pendingSaveOptions;
+    this.pendingSaveOptions = createLightSaveOptions();
+    return options;
+  }
+  private async saveSettingsWithFeedback(options: SettingsSaveOptions): Promise<void> {
     try {
-      await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+      await this.plugin.saveSettings(options);
       new Notice(t('autoSaveSuccessNotice'));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1296,7 +1337,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         toggle.setValue(rag.graphRagEnabled).onChange((value) => {
           this.plugin.settings.rag.graphRagEnabled = value;
           this.display();
-          this.debouncedSave();
+          this.debouncedRagSave();
         }),
       );
     const renderGraphRagModelOptions = (selectEl: HTMLSelectElement): void => {
@@ -1324,7 +1365,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         renderGraphRagModelOptions(dropdown.selectEl);
         dropdown.onChange((value) => {
           this.plugin.settings.rag.graphRagModel = value.trim();
-          this.debouncedSave();
+          this.debouncedRagSave();
         });
       });
     new Setting(section)
@@ -1338,7 +1379,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             const num = Number.parseInt(value, 10);
             if (Number.isNaN(num) || num < 1 || num > 10000 || !Number.isInteger(num)) return;
             this.plugin.settings.rag.graphRagMaxFilesPerRun = num;
-            this.debouncedSave();
+            this.debouncedRagSave();
           });
         text.inputEl.type = 'number';
         text.inputEl.min = '1';
@@ -1357,7 +1398,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .onChange((value) => {
             this.plugin.settings.rag.graphRagQueryMode =
               value === 'local' || value === 'global' || value === 'hybrid' ? value : 'auto';
-            this.debouncedSave();
+            this.debouncedRagSave();
           }),
       );
     new Setting(section)
@@ -1368,7 +1409,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           const num = Number(value);
           if (Number.isNaN(num) || num < 0 || num > 1) return;
           this.plugin.settings.rag.ontologyAutoMergeThreshold = num;
-          this.debouncedSave();
+          this.debouncedRagSave();
         });
         text.inputEl.type = 'number';
         text.inputEl.min = '0';
@@ -1380,7 +1421,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           const num = Number(value);
           if (Number.isNaN(num) || num < 0 || num > 1) return;
           this.plugin.settings.rag.ontologyPendingMergeThreshold = num;
-          this.debouncedSave();
+          this.debouncedRagSave();
         });
         text.inputEl.type = 'number';
         text.inputEl.min = '0';
@@ -2280,7 +2321,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const normalized = item.extension.trim().toLowerCase();
         if (!this.plugin.settings.rag.excludeExts.includes(normalized)) {
           this.plugin.settings.rag.excludeExts.push(normalized);
-          this.debouncedSave();
+          this.debouncedRagSave();
         }
         new Notice(`${item.label} ${t('addExcludeExtensionDone')}`);
         this.updateRagStats();
@@ -2981,10 +3022,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           value,
           existingValues,
           (path) => path.includes('*') || this.app.vault.getAbstractFileByPath(path) !== null,
-        ),
+      ),
       onChange: (values) => {
         this.plugin.settings.rag.excludePaths = values;
-        this.debouncedSave();
+        this.debouncedRagSave();
       },
     });
     new Setting(section)
@@ -2993,7 +3034,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.excludeChatFolder).onChange((value) => {
           this.plugin.settings.rag.excludeChatFolder = value;
-          this.debouncedSave();
+          this.debouncedRagSave();
         }),
       );
     this.buildExcludeListSetting({
@@ -3005,7 +3046,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       validate: validateExcludeExtensionInput,
       onChange: (values) => {
         this.plugin.settings.rag.excludeExts = values;
-        this.debouncedSave();
+        this.debouncedRagSave();
       },
       countMeta: {
         getCounts: () =>
@@ -3059,7 +3100,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.rag.performanceTuningMode)
           .onChange((value) => {
             this.plugin.settings.rag.performanceTuningMode = value === 'custom' ? 'custom' : 'auto';
-            this.debouncedSave();
+            this.debouncedRagSave();
             section.remove();
             this.buildIndexingOptionsSection(containerEl);
           }),
@@ -3083,7 +3124,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .addToggle((toggle) =>
           toggle.setValue(this.plugin.settings.rag.performanceGuardEnabled).onChange((value) => {
             this.plugin.settings.rag.performanceGuardEnabled = value;
-            this.debouncedSave();
+            this.debouncedRagSave();
           }),
         );
       new Setting(section)
@@ -3097,7 +3138,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const num = Number.parseInt(value, 10);
               if (Number.isNaN(num) || num < 1 || num > 128 || !Number.isInteger(num)) return;
               this.plugin.settings.rag.maxEmbeddingBatchSize = num;
-              this.debouncedSave();
+              this.debouncedRagSave();
             });
           text.inputEl.type = 'number';
           text.inputEl.min = '1';
@@ -3114,7 +3155,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const num = Number.parseInt(value, 10);
               if (Number.isNaN(num) || num < 0 || num > 1000 || !Number.isInteger(num)) return;
               this.plugin.settings.rag.indexingYieldMs = num;
-              this.debouncedSave();
+              this.debouncedRagSave();
             });
           text.inputEl.type = 'number';
           text.inputEl.min = '0';
@@ -3131,7 +3172,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const num = Number.parseInt(value, 10);
               if (Number.isNaN(num) || num < 16 || num > 5000 || !Number.isInteger(num)) return;
               this.plugin.settings.rag.slowEventLoopThresholdMs = num;
-              this.debouncedSave();
+              this.debouncedRagSave();
             });
           text.inputEl.type = 'number';
           text.inputEl.min = '16';
@@ -3145,7 +3186,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const num = Number.parseInt(value, 10);
               if (Number.isNaN(num) || num < 100 || num > 60000 || !Number.isInteger(num)) return;
               this.plugin.settings.rag.slowBatchThresholdMs = num;
-              this.debouncedSave();
+              this.debouncedRagSave();
             });
           text.inputEl.type = 'number';
           text.inputEl.min = '100';
@@ -3197,7 +3238,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (value.trim() === '') return;
             if (Number.isNaN(num) || num < 0 || num > 1) return;
             this.plugin.settings.rag.minScore = num;
-            this.debouncedSave();
+            this.debouncedRagSave();
           });
         text.inputEl.type = 'number';
         text.inputEl.min = '0';
@@ -3225,7 +3266,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (value.trim() === '') return;
             if (Number.isNaN(num) || num < 0 || num > 1) return;
             this.plugin.settings.rag.bm25Weight = num;
-            this.debouncedSave();
+            this.debouncedRagSave();
           });
         text.inputEl.type = 'number';
         text.inputEl.min = '0';
@@ -3249,7 +3290,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.chat.saveFolder).onChange((value) => {
           this.plugin.settings.chat.saveFolder = value.trim();
-          this.debouncedSave();
+          this.debouncedRagSave();
         }),
       );
     new Setting(promptPanel)

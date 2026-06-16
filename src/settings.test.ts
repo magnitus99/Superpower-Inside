@@ -32,6 +32,7 @@ import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from '
 import { setLanguage, t } from './i18n';
 
 afterEach(() => {
+  vi.useRealTimers();
   setLanguage('ko');
 });
 
@@ -437,7 +438,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(state.start.reason).toBe('GraphRAG 인덱싱 대상 파일이 없습니다.');
   });
 
-  it('설정 자동 저장은 GraphRAG runner를 다시 만들 수 있도록 RAG를 재초기화한다', async () => {
+  it('일반 설정 자동 저장은 RAG 런타임을 재초기화하지 않는다', async () => {
     const saveSettings = vi.fn().mockResolvedValue({ success: true });
     const saveSettingsLight = vi.fn().mockResolvedValue(undefined);
     const plugin = {
@@ -453,8 +454,48 @@ describe('RAG 설정 표시 헬퍼', () => {
     tab.debouncedSave();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
+    expect(saveSettings).toHaveBeenCalledWith({ reinitRag: false, reinitMcp: false });
     expect(saveSettingsLight).not.toHaveBeenCalled();
+  });
+
+  it('RAG 설정 자동 저장은 명시된 경우에만 RAG 런타임을 재초기화한다', async () => {
+    const saveSettings = vi.fn().mockResolvedValue({ success: true });
+    const plugin = {
+      settings: {
+        ...DEFAULT_SETTINGS,
+        autoSaveEnabled: false,
+      },
+      saveSettings,
+      saveSettingsLight: vi.fn().mockResolvedValue(undefined),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    tab.debouncedSave({ reinitRag: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
+  });
+
+  it('여러 자동 저장 요청은 RAG 재초기화 요구를 보존해 한 번으로 병합한다', async () => {
+    vi.useFakeTimers();
+    const saveSettings = vi.fn().mockResolvedValue({ success: true });
+    const plugin = {
+      settings: {
+        ...DEFAULT_SETTINGS,
+        autoSaveEnabled: true,
+        autoSaveDebounceMs: 1000,
+      },
+      saveSettings,
+      saveSettingsLight: vi.fn().mockResolvedValue(undefined),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    tab.debouncedSave();
+    tab.debouncedSave({ reinitRag: true });
+    await vi.runAllTimersAsync();
+
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    expect(saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
   });
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {

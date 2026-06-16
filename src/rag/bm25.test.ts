@@ -107,6 +107,33 @@ describe('IndexedDbBM25Index', () => {
     await reopened.load();
     expect([...reopened.search('graphrag').keys()]).toEqual(['new.md::0']);
   });
+
+  it('legacy BM25 JSON은 load 직후 IndexedDB snapshot으로 남겨 다음 초기화에서 다시 읽지 않는다', async () => {
+    const inspectable = createInspectableAdapter(
+      JSON.stringify({
+        tokenizerVersion: 2,
+        inverted: {
+          open: { 'api.md::0': 1 },
+          router: { 'api.md::0': 1 },
+        },
+        docLengths: { 'api.md::0': 2 },
+        docSources: { 'api.md::0': 'api.md' },
+        totalDocs: 1,
+        avgDocLength: 2,
+      }),
+    );
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, inspectable.adapter);
+
+    await bm25.load();
+    expect(inspectable.readCount()).toBe(1);
+
+    const reopened = new IndexedDbBM25Index(dbName, inspectable.adapter);
+    await reopened.load();
+
+    expect(inspectable.readCount()).toBe(1);
+    expect([...reopened.search('open router').keys()]).toEqual(['api.md::0']);
+  });
 });
 
 async function createBm25(
@@ -133,18 +160,23 @@ function createAdapter(rawJson?: string): DataAdapter {
 interface InspectableAdapter {
   adapter: DataAdapter;
   readRaw(path: string): string | undefined;
+  readCount(): number;
   writeCount(): number;
 }
 
 function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   const files = new Map<string, string>();
+  let reads = 0;
   let writes = 0;
   if (rawJson !== undefined) {
     files.set('.superpower-inside/bm25-index.json', rawJson);
   }
   const adapter = {
     exists: (path: string) => Promise.resolve(files.has(path)),
-    read: (path: string) => Promise.resolve(files.get(path) ?? ''),
+    read: (path: string) => {
+      reads += 1;
+      return Promise.resolve(files.get(path) ?? '');
+    },
     write: (path: string, data: string) => {
       writes += 1;
       files.set(path, data);
@@ -167,6 +199,7 @@ function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   return {
     adapter,
     readRaw: (path: string) => files.get(path),
+    readCount: () => reads,
     writeCount: () => writes,
   };
 }

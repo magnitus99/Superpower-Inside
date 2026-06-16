@@ -25,6 +25,13 @@ interface BM25MetaRecord {
   updated: number;
 }
 
+type BM25SnapshotSource = 'indexeddb' | 'legacy' | 'empty';
+
+interface BM25Snapshot {
+  raw: string;
+  source: BM25SnapshotSource;
+}
+
 class BM25IndexDB extends Dexie {
   meta!: Dexie.Table<BM25MetaRecord, string>;
 
@@ -61,12 +68,15 @@ export class IndexedDbBM25Index {
 
   async load(): Promise<void> {
     this.runtime?.dispose();
-    const raw = await this.loadSnapshot();
+    const snapshot = await this.loadSnapshot();
     this.runtime =
-      raw.trim().length > 0
-        ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
+      snapshot.raw.trim().length > 0
+        ? RustBm25RuntimeIndex.fromJson(snapshot.raw, TOKENIZER_VERSION)
         : RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     this.loaded = true;
+    if (snapshot.source === 'legacy') {
+      await this.persistNow();
+    }
   }
 
   async persist(): Promise<void> {
@@ -160,12 +170,18 @@ export class IndexedDbBM25Index {
     return this.runtime;
   }
 
-  private async loadSnapshot(): Promise<string> {
+  private async loadSnapshot(): Promise<BM25Snapshot> {
     const stored = await this.db.meta.get(BM25_SNAPSHOT_KEY);
-    if (stored?.value) return stored.value;
-    if (!this.legacyAdapter) return '';
-    if (!(await this.legacyAdapter.exists(this.legacyPath))) return '';
-    return this.legacyAdapter.read(this.legacyPath);
+    if (stored?.value) {
+      return { raw: stored.value, source: 'indexeddb' };
+    }
+    if (!this.legacyAdapter) {
+      return { raw: '', source: 'empty' };
+    }
+    if (!(await this.legacyAdapter.exists(this.legacyPath))) {
+      return { raw: '', source: 'empty' };
+    }
+    return { raw: await this.legacyAdapter.read(this.legacyPath), source: 'legacy' };
   }
 }
 
