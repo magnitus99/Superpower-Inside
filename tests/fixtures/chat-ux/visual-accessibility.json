@@ -1,0 +1,29 @@
+{
+  "viewports": [
+    { "id": "narrow-sidebar", "width": 320, "height": 700 },
+    { "id": "medium-split-pane", "width": 540, "height": 800 },
+    { "id": "wide-pane", "width": 960, "height": 900 }
+  ],
+  "reducedMotion": [false, true],
+  "keyboardFlows": [
+    "send-with-enter",
+    "mention-select-with-keyboard",
+    "tool-approve",
+    "assistant-question-submit",
+    "message-action-focus"
+  ],
+  "overflowSamples": [
+    "긴한국어텍스트긴한국어텍스트긴한국어텍스트긴한국어텍스트긴한국어텍스트",
+    "very-long-unbroken-token-very-long-unbroken-token-very-long-unbroken-token",
+    "```ts\nconst veryLongIdentifierNameThatShouldNotOverflowTheSidebar = true;\n```"
+  ],
+  "requiredSelectors": [
+    ".superpower-inside-chat-input",
+    ".superpower-inside-chat-send-btn",
+    ".superpower-inside-chat-message-status",
+    ".superpower-inside-chat-citation-card",
+    ".superpower-inside-chat-source-warning",
+    ".superpower-inside-tool-call-approve",
+    ".superpower-inside-chat-question-submit"
+  ]
+}

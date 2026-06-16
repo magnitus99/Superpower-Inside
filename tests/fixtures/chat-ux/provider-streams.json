@@ -1,0 +1,88 @@
+[
+  {
+    "id": "openai-sse",
+    "provider": "openai",
+    "transport": "fetch-sse",
+    "scenario": "normal streaming content with final usage marker",
+    "chunks": [
+      { "content": "안녕하세요", "done": false },
+      { "content": ". 근거를 확인했습니다.", "done": false },
+      { "content": "", "done": true }
+    ],
+    "expected": {
+      "content": "안녕하세요. 근거를 확인했습니다.",
+      "toolCalls": 0,
+      "turnStage": "streaming-answer"
+    }
+  },
+  {
+    "id": "openrouter-reasoning",
+    "provider": "openRouter",
+    "transport": "fetch-sse",
+    "scenario": "reasoning delta before answer delta",
+    "chunks": [
+      { "reasoning": "관련 문서를 먼저 찾습니다.", "done": false },
+      { "content": "문서 기준으로 답변합니다.", "done": false },
+      { "content": "", "done": true }
+    ],
+    "expected": {
+      "reasoning": "관련 문서를 먼저 찾습니다.",
+      "content": "문서 기준으로 답변합니다.",
+      "turnStage": "streaming-reasoning"
+    }
+  },
+  {
+    "id": "claude-thinking-tool-use",
+    "provider": "claude",
+    "transport": "fetch-sse",
+    "scenario": "thinking block followed by tool_use",
+    "chunks": [
+      { "reasoning": "도구가 필요합니다.", "done": false },
+      {
+        "toolCalls": [
+          {
+            "id": "toolu_1",
+            "name": "search_notes",
+            "arguments": "{\"query\":\"Obsidian\"}"
+          }
+        ],
+        "done": false
+      },
+      { "content": "", "done": true }
+    ],
+    "expected": {
+      "toolCalls": 1,
+      "requiresApproval": true,
+      "turnStage": "planning-tools"
+    }
+  },
+  {
+    "id": "ollama-ndjson",
+    "provider": "ollama",
+    "transport": "fetch-ndjson",
+    "scenario": "Ollama NDJSON answer chunks",
+    "chunks": [
+      { "content": "로컬 모델", "done": false },
+      { "content": " 응답입니다.", "done": false },
+      { "content": "", "done": true }
+    ],
+    "expected": {
+      "content": "로컬 모델 응답입니다.",
+      "turnStage": "streaming-answer"
+    }
+  },
+  {
+    "id": "request-url-buffered",
+    "provider": "customOpenAI",
+    "transport": "request-url-buffered",
+    "scenario": "non-streaming requestUrl buffered answer",
+    "chunks": [
+      { "content": "버퍼링된 전체 응답입니다.", "done": true }
+    ],
+    "expected": {
+      "content": "버퍼링된 전체 응답입니다.",
+      "streaming": false,
+      "toolCalls": 0
+    }
+  }
+]

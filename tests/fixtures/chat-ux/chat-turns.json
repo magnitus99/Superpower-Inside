@@ -1,0 +1,138 @@
+[
+  {
+    "id": "normal-answer",
+    "stage": "complete",
+    "providerCapability": "streaming-reasoning",
+    "messages": [
+      { "role": "user", "content": "프로젝트 요약해줘" },
+      { "role": "assistant", "content": "요약입니다.", "status": "complete" }
+    ],
+    "expectedDom": {
+      "statusLabel": "완료",
+      "answerSelector": ".superpower-inside-chat-answer",
+      "metaSelector": ".superpower-inside-chat-meta"
+    }
+  },
+  {
+    "id": "long-markdown",
+    "stage": "streaming-answer",
+    "providerCapability": "streaming-reasoning",
+    "messages": [
+      { "role": "assistant", "content": "## 제목\n\n- 긴 항목\n- 긴 항목\n- 긴 항목", "status": "streaming" }
+    ],
+    "expectedDom": {
+      "statusLabel": "답변 수신",
+      "answerSelector": ".superpower-inside-chat-bubble.assistant",
+      "overflowPolicy": "wrap"
+    }
+  },
+  {
+    "id": "code-fence",
+    "stage": "complete",
+    "providerCapability": "streaming",
+    "messages": [
+      { "role": "assistant", "content": "```ts\nconst ok = true;\n```", "status": "complete" }
+    ],
+    "expectedDom": {
+      "statusLabel": "완료",
+      "codeSelector": "pre code",
+      "copyButtonSelector": ".superpower-inside-code-copy"
+    }
+  },
+  {
+    "id": "tool-approval",
+    "stage": "awaiting-tool-approval",
+    "providerCapability": "streaming-reasoning",
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "",
+        "status": "pending",
+        "toolCalls": [
+          { "id": "call-1", "name": "search_notes", "arguments": "{\"query\":\"alpha\"}", "status": "running", "approved": false }
+        ]
+      }
+    ],
+    "expectedDom": {
+      "statusLabel": "툴 승인 대기",
+      "toolSelector": ".superpower-inside-chat-tool-calls",
+      "approvalSelector": ".superpower-inside-tool-call-approve"
+    }
+  },
+  {
+    "id": "tool-failure",
+    "stage": "error",
+    "providerCapability": "streaming-reasoning",
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "도구 실행 실패",
+        "status": "error",
+        "toolCalls": [
+          { "id": "call-2", "name": "read_file", "arguments": "{}", "status": "error", "result": "ENOENT" }
+        ]
+      }
+    ],
+    "expectedDom": {
+      "statusLabel": "오류",
+      "toolResultSelector": ".superpower-inside-tool-result-details",
+      "retrySelector": ".superpower-inside-chat-message-actions"
+    }
+  },
+  {
+    "id": "source-warnings",
+    "stage": "complete",
+    "providerCapability": "streaming-reasoning",
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "Source rag-9 기준입니다.",
+        "status": "complete",
+        "sourceWarnings": [
+          { "id": "warn-1", "label": "Source rag-9", "detail": "검증된 citation 없음", "kind": "unverified-source" }
+        ]
+      }
+    ],
+    "expectedDom": {
+      "statusLabel": "완료",
+      "warningSelector": ".superpower-inside-chat-source-warning",
+      "citationSelector": ".superpower-inside-chat-citations"
+    }
+  },
+  {
+    "id": "cancellation",
+    "stage": "cancelled",
+    "providerCapability": "streaming",
+    "messages": [
+      { "role": "assistant", "content": "중단된 응답", "status": "complete", "stopReason": "cancelled" }
+    ],
+    "expectedDom": {
+      "statusLabel": "취소됨",
+      "sendButtonText": "전송"
+    }
+  },
+  {
+    "id": "rate-limit",
+    "stage": "error",
+    "providerCapability": "streaming",
+    "messages": [
+      { "role": "assistant", "content": "", "status": "error", "errorMessage": "429 Too Many Requests" }
+    ],
+    "expectedDom": {
+      "statusLabel": "오류",
+      "statusTitle": "429 Too Many Requests"
+    }
+  },
+  {
+    "id": "missing-provider",
+    "stage": "error",
+    "providerCapability": "buffered-no-tools",
+    "messages": [
+      { "role": "assistant", "content": "모델 설정이 필요합니다.", "status": "error", "errorMessage": "provider missing" }
+    ],
+    "expectedDom": {
+      "statusLabel": "오류",
+      "capabilityLabel": "buffered · tools off"
+    }
+  }
+]
