@@ -82,6 +82,7 @@ interface MessageMetaInput {
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
   originalContent?: string;
+  providerCapability?: ChatMessageWithMeta['providerCapability'];
 }
 
 export class ChatView extends ItemView {
@@ -862,6 +863,7 @@ export class ChatView extends ItemView {
       providerKey: metaInput?.providerKey,
       providerLabel: metaInput?.providerLabel,
       model: metaInput?.model,
+      providerCapability: metaInput?.providerCapability,
       status:
         metaInput?.status ??
         (role === 'assistant' && this.isStreaming
@@ -948,6 +950,7 @@ export class ChatView extends ItemView {
       message.providerKey = metaInput?.providerKey ?? message.providerKey;
       message.providerLabel = metaInput?.providerLabel ?? message.providerLabel;
       message.model = metaInput?.model ?? message.model;
+      message.providerCapability = metaInput?.providerCapability ?? message.providerCapability;
       message.status = metaInput?.status ?? (isDone ? 'complete' : 'streaming');
       message.errorMessage = metaInput?.errorMessage;
       message.citations = metaInput?.citations ?? message.citations;
@@ -1681,6 +1684,12 @@ export class ChatView extends ItemView {
         text: [msg.providerLabel, msg.model].filter(Boolean).join(' / '),
       });
     }
+    if (msg.providerCapability) {
+      meta.createSpan({
+        cls: 'superpower-inside-chat-capability-meta',
+        text: this.getProviderCapabilityLabel(msg.providerCapability),
+      });
+    }
     const status = meta.createSpan({
       cls: `superpower-inside-chat-message-status ${msg.status}`,
       text: this.getMessageStatusLabel(msg.status),
@@ -1695,6 +1704,23 @@ export class ChatView extends ItemView {
     if (meta instanceof HTMLElement) {
       this.renderMessageMeta(meta, msg);
     }
+  }
+
+  private getProviderCapabilityLabel(
+    capability: NonNullable<ChatMessageWithMeta['providerCapability']>,
+  ): string {
+    if (!capability.streaming && !capability.toolCalling) {
+      return t('providerCapabilityBufferedNoTools');
+    }
+    if (!capability.streaming) {
+      return t('providerCapabilityBuffered');
+    }
+    if (!capability.toolCalling) {
+      return t('providerCapabilityNoTools');
+    }
+    return capability.reasoning
+      ? t('providerCapabilityStreamingReasoning')
+      : t('providerCapabilityStreaming');
   }
 
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
@@ -2209,6 +2235,7 @@ export class ChatView extends ItemView {
 
       provider = createProvider(fixedKey, config, modelName);
     }
+    const providerCapability = provider.capability;
 
     this.inputArea!.value = '';
     this.autoResizeInput();
@@ -2218,6 +2245,7 @@ export class ChatView extends ItemView {
       providerKey: key,
       providerLabel,
       model: modelName,
+      providerCapability,
       status: 'complete',
       contextAttachments: promptContext.attachments,
     });
@@ -2235,6 +2263,10 @@ export class ChatView extends ItemView {
       const systemPrompt = promptContext.systemPrompt;
       const mentionedServers = this.getEffectiveMcpServerNames(text);
       const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
+      const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
+      if (!providerCapability.toolCalling && mentionedServers.length > 0) {
+        new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
+      }
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
@@ -2244,6 +2276,7 @@ export class ChatView extends ItemView {
         providerKey: key,
         providerLabel,
         model: modelName,
+        providerCapability,
         status: 'streaming',
         citations: promptContext.citations,
         contextAttachments: promptContext.attachments,
@@ -2285,6 +2318,7 @@ export class ChatView extends ItemView {
               providerKey: key,
               providerLabel,
               model: modelName,
+              providerCapability,
               status: chunk.done ? 'complete' : 'streaming',
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
@@ -2292,7 +2326,7 @@ export class ChatView extends ItemView {
           );
         },
         0.7,
-        toolDefinitions,
+        providerToolDefinitions,
         { signal: abortController.signal },
       );
       setHidden(this.typingIndicator, true);
@@ -2318,6 +2352,7 @@ export class ChatView extends ItemView {
             providerKey: key,
             providerLabel,
             model: modelName,
+            providerCapability,
             status: 'complete',
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
@@ -2345,6 +2380,7 @@ export class ChatView extends ItemView {
       const hasSubstantiveAnswer = fullText.trim().length > 50;
       if (
         hasMentionedServers &&
+        providerCapability.toolCalling &&
         !hasToolCalls &&
         hasSubstantiveAnswer &&
         this.plugin.settings.chat.enforceMcpTools
@@ -2367,6 +2403,7 @@ export class ChatView extends ItemView {
           providerKey: key,
           providerLabel,
           model: modelName,
+          providerCapability,
           status: 'streaming',
           citations: promptContext.citations,
           contextAttachments: promptContext.attachments,
@@ -2388,6 +2425,7 @@ export class ChatView extends ItemView {
                 providerKey: key,
                 providerLabel,
                 model: modelName,
+                providerCapability,
                 status: chunk.done ? 'complete' : 'streaming',
                 citations: promptContext.citations,
                 contextAttachments: promptContext.attachments,
@@ -2395,7 +2433,7 @@ export class ChatView extends ItemView {
             );
           },
           0.7,
-          toolDefinitions,
+          providerToolDefinitions,
           { signal: abortController.signal },
         );
 
@@ -2421,6 +2459,7 @@ export class ChatView extends ItemView {
               providerKey: key,
               providerLabel,
               model: modelName,
+              providerCapability,
               status: 'complete',
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
@@ -2444,6 +2483,7 @@ export class ChatView extends ItemView {
         providerKey: key,
         providerLabel,
         model: modelName,
+        providerCapability,
         status: 'complete',
         citations: promptContext.citations,
         sourceWarnings,
@@ -2467,6 +2507,7 @@ export class ChatView extends ItemView {
             providerKey: key,
             providerLabel,
             model: modelName,
+            providerCapability,
             status: 'complete',
             citations: promptContext.citations,
             sourceWarnings,
@@ -2484,13 +2525,15 @@ export class ChatView extends ItemView {
           provider,
           messageId: assistantId,
           baseMessages: messages,
-          toolDefinitions,
+          toolDefinitions: providerToolDefinitions ?? [],
+          maxToolRounds: providerCapability.maxToolRounds,
           toolCalls,
           abortController,
           meta: {
             providerKey: key,
             providerLabel,
             model: modelName,
+            providerCapability,
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
           },
@@ -2523,6 +2566,7 @@ export class ChatView extends ItemView {
               providerKey: key,
               providerLabel,
               model: modelName,
+              providerCapability,
               status: 'complete',
               citations: promptContext.citations,
               contextAttachments: promptContext.attachments,
@@ -2545,6 +2589,7 @@ export class ChatView extends ItemView {
             providerKey: key,
             providerLabel,
             model: modelName,
+            providerCapability,
             status: 'error',
             errorMessage: errDetail,
             citations: promptContext.citations,
@@ -2572,6 +2617,7 @@ export class ChatView extends ItemView {
             providerKey: key,
             providerLabel,
             model: modelName,
+            providerCapability,
             status: 'error',
             errorMessage: errDetail,
           },
@@ -2832,6 +2878,7 @@ export class ChatView extends ItemView {
     messageId: string;
     baseMessages: ChatMessage[];
     toolDefinitions: ToolDefinition[];
+    maxToolRounds?: number;
     toolCalls: ToolCallRecord[];
     abortController: AbortController;
     meta: MessageMetaInput;
@@ -2839,14 +2886,14 @@ export class ChatView extends ItemView {
     initialText?: string;
     initialReasoning?: string;
   }): Promise<void> {
-    const MAX_ROUNDS = 10;
+    const maxRounds = Math.max(0, Math.trunc(args.maxToolRounds ?? 10));
     let round = 0;
     let currentToolCalls = args.toolCalls;
     let accumulatedText = args.initialText ?? '';
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
 
-    while (round < MAX_ROUNDS) {
+    while (round < maxRounds) {
       if (args.abortController.signal.aborted) break;
       round++;
 
@@ -3082,13 +3129,17 @@ export class ChatView extends ItemView {
         provider,
         messageId,
         baseMessages,
-        toolDefinitions: await this.collectToolDefinitions(mentionedServers),
+        toolDefinitions: provider.capability.toolCalling
+          ? await this.collectToolDefinitions(mentionedServers)
+          : [],
+        maxToolRounds: provider.capability.maxToolRounds,
         toolCalls: updated,
         abortController: this.abortController ?? new AbortController(),
         meta: {
           providerKey: message.providerKey,
           providerLabel: message.providerLabel,
           model: message.model,
+          providerCapability: message.providerCapability,
           citations: latestMessage?.citations,
           contextAttachments: latestMessage?.contextAttachments,
         },

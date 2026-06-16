@@ -24,6 +24,7 @@ import {
   type ProviderKey,
   type LLMProvider,
 } from './src/llm/providers';
+import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -614,7 +615,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const enabled = typeof provider.enabled === 'boolean' ? provider.enabled : false;
           const useRequestUrl =
             typeof provider.useRequestUrl === 'boolean' ? provider.useRequestUrl : true;
-          return { id, name, apiKey, baseUrl, models, enabled, useRequestUrl };
+          const capabilityOverrides = normalizeProviderCapabilityOverrides(
+            provider.capabilityOverrides,
+          );
+          return {
+            id,
+            name,
+            apiKey,
+            baseUrl,
+            models,
+            enabled,
+            useRequestUrl,
+            ...(capabilityOverrides ? { capabilityOverrides } : {}),
+          };
         });
     } else {
       data.customOpenAIProviders = [];

@@ -277,6 +277,132 @@ describe('OpenAI-compatible chat request body', () => {
   });
 });
 
+describe('provider capability matrix', () => {
+  it('built-in provider factory는 provider별 runtime capability snapshot을 노출한다', () => {
+    expect(
+      createProvider(
+        'openai',
+        { apiKey: 'test-key', enabled: true, models: ['gpt-test'] },
+        'gpt-test',
+      ).capability,
+    ).toMatchObject({
+      providerKey: 'openai',
+      model: 'gpt-test',
+      streaming: true,
+      transport: 'fetch-sse',
+      toolCalling: true,
+      reasoning: true,
+      abort: 'native',
+      fileReference: true,
+      maxToolRounds: 10,
+    });
+    expect(
+      createProvider(
+        'ollamaCloud',
+        { apiKey: 'test-key', enabled: true, models: ['deepseek-v4-pro'] },
+        'deepseek-v4-pro',
+      ).capability,
+    ).toMatchObject({
+      providerKey: 'ollamaCloud',
+      model: 'deepseek-v4-pro',
+      streaming: false,
+      transport: 'request-url-buffered',
+      toolCalling: true,
+      reasoning: true,
+      abort: 'best-effort',
+      fileReference: true,
+      maxToolRounds: 10,
+    });
+  });
+
+  it('custom OpenAI-compatible 기본값은 보수적으로 tools/reasoning/live streaming을 비활성화한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { choices: [{ message: { content: 'ok' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createCustomOpenAIProvider(
+      {
+        id: 'custom',
+        name: 'Custom',
+        apiKey: 'test-key',
+        baseUrl: 'http://localhost:1234/v1',
+        enabled: true,
+        models: ['custom-test'],
+        useRequestUrl: true,
+      },
+      'custom-test',
+    );
+
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.1, [createTool()]);
+
+    expect(provider.capability).toMatchObject({
+      providerKey: 'customOpenAI:custom',
+      model: 'custom-test',
+      streaming: false,
+      transport: 'request-url-buffered',
+      toolCalling: false,
+      reasoning: false,
+      abort: 'best-effort',
+      fileReference: true,
+      maxToolRounds: 0,
+    });
+    const body = parseRequestUrlBody();
+    expect(body.tools).toBeUndefined();
+  });
+
+  it('custom OpenAI-compatible capability override가 tools/reasoning/abort 계약을 명시적으로 바꾼다', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createCustomOpenAIProvider(
+      {
+        id: 'custom',
+        name: 'Custom',
+        apiKey: 'test-key',
+        baseUrl: 'http://localhost:1234/v1',
+        enabled: true,
+        models: ['custom-test'],
+        useRequestUrl: false,
+        capabilityOverrides: {
+          streaming: true,
+          toolCalling: true,
+          reasoning: true,
+          abort: 'native',
+          maxToolRounds: 3,
+          knownLimitations: ['검증된 사내 endpoint'],
+        },
+      },
+      'custom-test',
+    );
+
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.1, [createTool()]);
+
+    expect(provider.capability).toMatchObject({
+      providerKey: 'customOpenAI:custom',
+      model: 'custom-test',
+      streaming: true,
+      transport: 'fetch-sse',
+      toolCalling: true,
+      reasoning: true,
+      abort: 'native',
+      fileReference: true,
+      maxToolRounds: 3,
+    });
+    expect(provider.capability.knownLimitations).toContain('검증된 사내 endpoint');
+    const body = parseFetchBody(fetchMock);
+    expect(body.tools).toEqual([createTool()]);
+  });
+});
+
 describe('provider reasoning stream normalization', () => {
   it('OpenAI 호환 SSE의 reasoning_content와 content 내부 think 태그를 분리한다', async () => {
     const fetchMock = vi.fn(() =>

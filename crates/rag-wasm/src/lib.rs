@@ -14250,6 +14250,7 @@ fn parse_chat_message_plan(
     copy_optional_chat_value(object, &mut message, "sourceWarnings");
     copy_optional_chat_value(object, &mut message, "contextAttachments");
     copy_optional_chat_value(object, &mut message, "assistantQuestion");
+    copy_optional_chat_value(object, &mut message, "providerCapability");
 
     let error_message = object
         .get("errorMessage")
@@ -18181,7 +18182,7 @@ mod tests {
     fn chat_message_blocks_are_planned_in_rust() {
         let body = [
             "<!-- superpower-inside-message",
-            r#"{"id":"msg-1","role":"assistant","providerKey":"openai"}"#,
+            r#"{"id":"msg-1","role":"assistant","providerKey":"openai","providerCapability":{"providerKey":"openai","model":"gpt-test","streaming":true,"transport":"fetch-sse","toolCalling":true,"reasoning":true,"abort":"native","fileReference":true,"maxToolRounds":10,"knownLimitations":[]}}"#,
             "-->",
             "<!-- superpower-inside-reasoning-start encoding=\"base64\" -->",
             "7IOd6rCB7J2YIOqzvOygleyeheuLiOuLpC4=",
@@ -18210,7 +18211,7 @@ mod tests {
                 "2026-01-01T00:00:00.000Z",
                 "[decoding failed]",
             ),
-            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
+            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
         );
     }
 

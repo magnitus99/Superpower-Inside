@@ -5,6 +5,10 @@ import {
   normalizeReasoningChunk,
   type ReasoningExtractor,
 } from './reasoning';
+import {
+  resolveProviderCapability,
+  type ProviderCapabilitySnapshot,
+} from './provider-capabilities';
 
 const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -157,6 +161,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 }
 
 export interface LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
   chat(
     messages: ChatMessage[],
     temperature?: number,
@@ -175,6 +180,7 @@ export interface LLMProvider {
 /* ---------- OpenAI / OpenRouter Compatible ---------- */
 
 class OpenAICompatibleProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
   protected config: ProviderConfig;
   protected endpoint: string;
   protected modelOverride?: string;
@@ -187,12 +193,20 @@ class OpenAICompatibleProvider implements LLMProvider {
     modelOverride?: string,
     reasoningExtractor?: ReasoningExtractor,
     useRequestUrl = false,
+    capability?: ProviderCapabilitySnapshot,
   ) {
     this.config = config;
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
     this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
     this.useRequestUrl = useRequestUrl;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: 'openai',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        useRequestUrl,
+      });
   }
 
   private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
@@ -250,7 +264,7 @@ class OpenAICompatibleProvider implements LLMProvider {
       temperature,
       stream,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
     return body;
@@ -386,12 +400,23 @@ class OpenAICompatibleProvider implements LLMProvider {
 /* ---------- Claude (Anthropic Messages API) ---------- */
 
 class ClaudeProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
   private config: ProviderConfig;
   private modelOverride?: string;
 
-  constructor(config: ProviderConfig, modelOverride?: string) {
+  constructor(
+    config: ProviderConfig,
+    modelOverride?: string,
+    capability?: ProviderCapabilitySnapshot,
+  ) {
     this.config = config;
     this.modelOverride = modelOverride;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: 'claude',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+      });
   }
 
   private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
@@ -412,7 +437,7 @@ class ClaudeProvider implements LLMProvider {
       messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
         name: t.function.name,
         description: t.function.description,
@@ -453,7 +478,7 @@ class ClaudeProvider implements LLMProvider {
       messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
         name: t.function.name,
         description: t.function.description,
@@ -548,14 +573,27 @@ class ClaudeProvider implements LLMProvider {
 /* ---------- Ollama (Local) ---------- */
 
 class OllamaProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
   private config: ProviderConfig;
   private modelOverride?: string;
   private useRequestUrlForStreaming: boolean;
 
-  constructor(config: ProviderConfig, modelOverride?: string, useRequestUrlForStreaming = false) {
+  constructor(
+    config: ProviderConfig,
+    modelOverride?: string,
+    useRequestUrlForStreaming = false,
+    capability?: ProviderCapabilitySnapshot,
+  ) {
     this.config = config;
     this.modelOverride = modelOverride;
     this.useRequestUrlForStreaming = useRequestUrlForStreaming;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: useRequestUrlForStreaming ? 'ollamaCloud' : 'ollama',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        useRequestUrl: useRequestUrlForStreaming,
+      });
   }
 
   private buildHeaders(): Record<string, string> {
@@ -588,7 +626,7 @@ class OllamaProvider implements LLMProvider {
       options: { temperature },
       stream: false,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
     const res = await requestUrl({
@@ -625,7 +663,7 @@ class OllamaProvider implements LLMProvider {
       stream: !this.useRequestUrlForStreaming,
       think: true,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
     if (this.useRequestUrlForStreaming) {
@@ -791,24 +829,42 @@ export function createProvider(
   config: ProviderConfig,
   modelOverride?: string,
 ): LLMProvider {
+  const model = modelOverride ?? config.models[0] ?? '';
+  const capability = resolveProviderCapability({ providerKey: key, model });
   switch (key) {
     case 'openai':
       return new OpenAICompatibleProvider(
-        config, OPENAI_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openai,
+        config,
+        OPENAI_CHAT_COMPLETIONS_URL,
+        modelOverride,
+        REASONING_EXTRACTORS.openai,
+        false,
+        capability,
       );
     case 'claude':
-      return new ClaudeProvider(config, modelOverride);
+      return new ClaudeProvider(config, modelOverride, capability);
     case 'ollama':
-      return new OllamaProvider({ ...config, baseUrl: OLLAMA_LOCAL_BASE_URL }, modelOverride);
+      return new OllamaProvider(
+        { ...config, baseUrl: OLLAMA_LOCAL_BASE_URL },
+        modelOverride,
+        false,
+        capability,
+      );
     case 'ollamaCloud':
       return new OllamaProvider(
         { ...config, baseUrl: OLLAMA_CLOUD_BASE_URL },
         modelOverride,
         true,
+        capability,
       );
     case 'openRouter':
       return new OpenAICompatibleProvider(
-        config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openRouter,
+        config,
+        OPENROUTER_CHAT_COMPLETIONS_URL,
+        modelOverride,
+        REASONING_EXTRACTORS.openRouter,
+        false,
+        capability,
       );
     default:
       throw new Error(`Unknown provider: ${String(key)}`);
@@ -823,8 +879,21 @@ export function createCustomOpenAIProvider(
     throw new Error('Custom OpenAI-compatible provider requires a base URL.');
   }
   const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
+  const useRequestUrl = config.useRequestUrl ?? true;
+  const model = modelOverride ?? config.models[0] ?? '';
+  const providerKey = `customOpenAI:${config.id}`;
+  const capability = resolveProviderCapability({
+    providerKey,
+    model,
+    useRequestUrl,
+    overrides: config.capabilityOverrides,
+  });
   return new OpenAICompatibleProvider(
-    config, `${baseUrl}/chat/completions`, modelOverride, REASONING_EXTRACTORS.openRouter,
-    config.useRequestUrl ?? true,
+    config,
+    `${baseUrl}/chat/completions`,
+    modelOverride,
+    REASONING_EXTRACTORS.openRouter,
+    useRequestUrl,
+    capability,
   );
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { CommunitySummarizer } from './community-summarizer';
 import {
   InMemoryKnowledgeGraphStore,
@@ -8,6 +9,11 @@ import {
   type GraphEntityRecord,
   type GraphRelationRecord,
 } from './store';
+
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 
 describe('CommunitySummarizer', () => {
   it('community별 entity, relation, claim grouping은 Rust index plan을 따른다', async () => {
@@ -143,6 +149,7 @@ function createClaim(id: string, entityIds: string[]): GraphClaimRecord {
 function createProvider(): LLMProvider & { calls: number } {
   let calls = 0;
   return {
+    capability: TEST_PROVIDER_CAPABILITY,
     get calls() {
       return calls;
     },

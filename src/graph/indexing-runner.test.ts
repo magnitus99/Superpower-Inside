@@ -6,10 +6,16 @@ import type {
   StreamChunk,
   ToolDefinition,
 } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import type { GraphRagIndexingProgress } from './indexing-runner';
+
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -569,6 +575,7 @@ describe('GraphRagIndexingRunner', () => {
 });
 
 class FakeProvider implements LLMProvider {
+  readonly capability = TEST_PROVIDER_CAPABILITY;
   calls = 0;
   chatSignals: Array<AbortSignal | undefined> = [];
   onCall?: () => void;

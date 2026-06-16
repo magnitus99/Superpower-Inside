@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
 const planGraphRelationEndpointIndicesRustMock = vi.hoisted(() => vi.fn());
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 
 vi.mock('../rag/rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../rag/rust-core')>();
@@ -128,6 +133,7 @@ function createInput(
 
 function createProvider(response: string): LLMProvider {
   return {
+    capability: TEST_PROVIDER_CAPABILITY,
     chat: () => Promise.resolve(response),
     streamChat: () => Promise.resolve(),
   };

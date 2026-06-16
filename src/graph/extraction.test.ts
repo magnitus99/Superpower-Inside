@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
+
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 
 describe('GraphExtractionIndexer', () => {
   it('ontology에 맞는 LLM 추출 결과를 entity, relation, claim, evidence로 저장한다', async () => {
@@ -449,6 +455,7 @@ function createProvider(response: string): LLMProvider & { calls: number } {
 function createProviderSequence(responses: string[]): LLMProvider & { calls: number } {
   let calls = 0;
   return {
+    capability: TEST_PROVIDER_CAPABILITY,
     get calls() {
       return calls;
     },

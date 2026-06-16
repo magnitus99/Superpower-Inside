@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import {
@@ -8,6 +9,11 @@ import {
   LLMGraphQueryPlanner,
   planGraphQuery,
 } from './query-engine';
+
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 import {
   InMemoryKnowledgeGraphStore,
   type GraphClaimRecord,
@@ -556,6 +562,7 @@ function createVectorEntry(id: string, filePath: string): VectorEntry {
 
 function createPlannerProvider(response: string): LLMProvider {
   return {
+    capability: TEST_PROVIDER_CAPABILITY,
     chat: () => Promise.resolve(response),
     streamChat: () => Promise.resolve(),
   };

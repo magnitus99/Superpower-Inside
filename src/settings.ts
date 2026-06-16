@@ -54,6 +54,7 @@ import {
 } from './utils/rag-exclude-validation';
 import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
 import { type Language, t } from './i18n';
+import type { ProviderCapabilityOverrides } from './llm/provider-capabilities';
 import {
   createDefaultContext7McpServer,
   shouldShowPluginAwareContext7Warning,
@@ -109,6 +110,7 @@ export interface CustomOpenAIProviderConfig extends ProviderConfig {
   id: string;
   name: string;
   useRequestUrl?: boolean;
+  capabilityOverrides?: ProviderCapabilityOverrides;
 }
 export const PROVIDER_KEYS = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
 /** 채팅 모델 선택에 표시할 프로바이더 키 (ollama 계열만) */
@@ -3804,6 +3806,67 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             target.config.useRequestUrl = value;
             this.debouncedSave();
           }),
+        );
+      const capabilityOverrides = target.config.capabilityOverrides ?? {};
+      const updateCapabilityOverride = <K extends keyof ProviderCapabilityOverrides>(
+        key: K,
+        value: ProviderCapabilityOverrides[K],
+      ): void => {
+        target.config.capabilityOverrides = {
+          ...(target.config.capabilityOverrides ?? {}),
+          [key]: value,
+        };
+        this.debouncedSave();
+      };
+      new Setting(section)
+        .setName(t('providerCapabilityToolCalling'))
+        .setDesc(t('providerCapabilityToolCallingDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue(capabilityOverrides.toolCalling ?? false).onChange((value) => {
+            updateCapabilityOverride('toolCalling', value);
+          }),
+        );
+      new Setting(section)
+        .setName(t('providerCapabilityReasoning'))
+        .setDesc(t('providerCapabilityReasoningDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue(capabilityOverrides.reasoning ?? false).onChange((value) => {
+            updateCapabilityOverride('reasoning', value);
+          }),
+        );
+      new Setting(section)
+        .setName(t('providerCapabilityLiveStreaming'))
+        .setDesc(t('providerCapabilityLiveStreamingDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue(capabilityOverrides.streaming ?? !useRequestUrl).onChange((value) => {
+            updateCapabilityOverride('streaming', value);
+          }),
+        );
+      const defaultAbort = useRequestUrl ? 'best-effort' : 'native';
+      new Setting(section)
+        .setName(t('providerCapabilityNativeAbort'))
+        .setDesc(t('providerCapabilityNativeAbortDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue((capabilityOverrides.abort ?? defaultAbort) === 'native').onChange(
+            (value) => {
+              updateCapabilityOverride('abort', value ? 'native' : 'best-effort');
+            },
+          ),
+        );
+      new Setting(section)
+        .setName(t('providerCapabilityMaxToolRounds'))
+        .setDesc(t('providerCapabilityMaxToolRoundsDesc'))
+        .addText((text) =>
+          text
+            .setPlaceholder('0')
+            .setValue(String(capabilityOverrides.maxToolRounds ?? 0))
+            .onChange((value) => {
+              const parsed = Number(value.trim());
+              updateCapabilityOverride(
+                'maxToolRounds',
+                Number.isInteger(parsed) && parsed >= 0 ? parsed : 0,
+              );
+            }),
         );
     }
     const controls = section.createDiv({ cls: 'superpower-inside-provider-model-controls' });

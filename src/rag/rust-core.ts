@@ -1005,6 +1005,7 @@ export interface RustChatMessagePlan {
   assistantQuestion?: unknown;
   branchOf?: string;
   stopReason?: string;
+  providerCapability?: unknown;
 }
 
 export interface RustChatMetaPlan {
@@ -7120,7 +7121,9 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.assistantQuestion === undefined ||
       (typeof message.assistantQuestion === 'object' && message.assistantQuestion !== null)) &&
     (message.branchOf === undefined || isStringValue(message.branchOf)) &&
-    (message.stopReason === undefined || isStringValue(message.stopReason))
+    (message.stopReason === undefined || isStringValue(message.stopReason)) &&
+    (message.providerCapability === undefined ||
+      (typeof message.providerCapability === 'object' && message.providerCapability !== null))
   );
 }
 

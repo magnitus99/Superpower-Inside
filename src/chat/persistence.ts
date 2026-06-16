@@ -47,6 +47,7 @@ interface MessagePersistMeta {
   branchOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
   originalContent?: string;
+  providerCapability?: ChatMessageWithMeta['providerCapability'];
 }
 
 interface ParsedFrontmatter {
@@ -315,6 +316,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     assistantQuestion: message.assistantQuestion,
     branchOf: message.branchOf,
     stopReason: message.stopReason,
+    providerCapability: message.providerCapability,
   };
   const lines = [
     `${MESSAGE_COMMENT_OPEN}`,
@@ -434,6 +436,7 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     assistantQuestion: plan.assistantQuestion as AssistantQuestion | undefined,
     branchOf: plan.branchOf,
     stopReason: plan.stopReason as ChatMessageWithMeta['stopReason'],
+    providerCapability: plan.providerCapability as ChatMessageWithMeta['providerCapability'],
   };
 }
 

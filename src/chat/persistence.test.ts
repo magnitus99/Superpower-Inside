@@ -162,6 +162,36 @@ describe('chat persistence', () => {
 
     expect(loaded.messages[0].assistantQuestion).toEqual(messages[0].assistantQuestion);
   });
+
+  it('provider capability snapshot을 저장하고 복원한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '답변',
+        providerKey: 'customOpenAI:custom',
+        providerLabel: 'Custom',
+        model: 'custom-test',
+        providerCapability: {
+          providerKey: 'customOpenAI:custom',
+          model: 'custom-test',
+          streaming: false,
+          transport: 'request-url-buffered',
+          toolCalling: false,
+          reasoning: false,
+          abort: 'best-effort',
+          fileReference: true,
+          maxToolRounds: 0,
+          knownLimitations: ['requestUrl 경로는 취소가 best-effort입니다.'],
+        },
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].providerCapability).toEqual(messages[0].providerCapability);
+  });
 });
 
 interface TestVault extends Vault {

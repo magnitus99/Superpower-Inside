@@ -60,6 +60,22 @@ export interface I18nKeys {
   error: string;
   noModelsFound: string;
   enabled: string;
+  providerCapabilityToolCalling: string;
+  providerCapabilityToolCallingDesc: string;
+  providerCapabilityReasoning: string;
+  providerCapabilityReasoningDesc: string;
+  providerCapabilityLiveStreaming: string;
+  providerCapabilityLiveStreamingDesc: string;
+  providerCapabilityNativeAbort: string;
+  providerCapabilityNativeAbortDesc: string;
+  providerCapabilityMaxToolRounds: string;
+  providerCapabilityMaxToolRoundsDesc: string;
+  providerCapabilityBufferedNoTools: string;
+  providerCapabilityBuffered: string;
+  providerCapabilityNoTools: string;
+  providerCapabilityStreamingReasoning: string;
+  providerCapabilityStreaming: string;
+  providerToolCallingUnsupportedNotice: string;
 
   // RAG 탭
   embeddingProvider: string;
@@ -1156,6 +1172,22 @@ const ko: I18nKeys = {
   error: '오류',
   noModelsFound: '모델을 찾을 수 없습니다.',
   enabled: '활성화',
+  providerCapabilityToolCalling: '툴 호출 지원',
+  providerCapabilityToolCallingDesc: '이 custom OpenAI-compatible endpoint가 tool schema와 tool call delta를 안정적으로 지원할 때만 켭니다.',
+  providerCapabilityReasoning: 'reasoning/thinking 표시 지원',
+  providerCapabilityReasoningDesc: 'provider가 명시적으로 reasoning 또는 thinking 필드를 제공할 때만 켭니다.',
+  providerCapabilityLiveStreaming: '실시간 스트리밍 지원',
+  providerCapabilityLiveStreamingDesc: '토큰이 실시간으로 도착하는 endpoint일 때만 켭니다. requestUrl 경로는 보통 buffered입니다.',
+  providerCapabilityNativeAbort: '네이티브 취소 지원',
+  providerCapabilityNativeAbortDesc: 'AbortSignal로 요청을 실제 중단할 수 있을 때 켭니다. requestUrl은 best-effort입니다.',
+  providerCapabilityMaxToolRounds: '최대 툴 라운드',
+  providerCapabilityMaxToolRoundsDesc: '이 provider에서 한 답변 중 허용할 tool loop 라운드 수입니다. 툴 호출 미지원이면 0으로 둡니다.',
+  providerCapabilityBufferedNoTools: 'buffered · tools off',
+  providerCapabilityBuffered: 'buffered',
+  providerCapabilityNoTools: 'tools off',
+  providerCapabilityStreamingReasoning: 'streaming · reasoning',
+  providerCapabilityStreaming: 'streaming',
+  providerToolCallingUnsupportedNotice: '{provider}는 현재 툴 호출 capability가 꺼져 있어 MCP tools를 이번 요청에 보내지 않습니다.',
 
   // RAG
   embeddingProvider: '임베딩 프로바이더',
@@ -2352,6 +2384,22 @@ const en: I18nKeys = {
   error: 'Error:',
   noModelsFound: 'No models found.',
   enabled: 'Enabled',
+  providerCapabilityToolCalling: 'Tool calling support',
+  providerCapabilityToolCallingDesc: 'Enable only when this custom OpenAI-compatible endpoint reliably supports tool schemas and tool call deltas.',
+  providerCapabilityReasoning: 'Reasoning/thinking display support',
+  providerCapabilityReasoningDesc: 'Enable only when the provider explicitly emits reasoning or thinking fields.',
+  providerCapabilityLiveStreaming: 'Live streaming support',
+  providerCapabilityLiveStreamingDesc: 'Enable only for endpoints that deliver tokens live. requestUrl paths are usually buffered.',
+  providerCapabilityNativeAbort: 'Native abort support',
+  providerCapabilityNativeAbortDesc: 'Enable when AbortSignal can actually cancel the request. requestUrl is best-effort.',
+  providerCapabilityMaxToolRounds: 'Max tool rounds',
+  providerCapabilityMaxToolRoundsDesc: 'Maximum tool-loop rounds allowed for one answer on this provider. Keep 0 when tool calling is disabled.',
+  providerCapabilityBufferedNoTools: 'buffered · tools off',
+  providerCapabilityBuffered: 'buffered',
+  providerCapabilityNoTools: 'tools off',
+  providerCapabilityStreamingReasoning: 'streaming · reasoning',
+  providerCapabilityStreaming: 'streaming',
+  providerToolCallingUnsupportedNotice: '{provider} currently has tool calling capability disabled, so MCP tools will not be sent for this request.',
 
   // RAG
   embeddingProvider: 'Embedding Provider',

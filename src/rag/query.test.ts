@@ -4,6 +4,7 @@ import type { DataAdapter, TFile } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { GraphRagQueryEngine } from '../graph/query-engine';
 import {
@@ -12,6 +13,11 @@ import {
   type GraphEvidenceRecord,
   type GraphRelationRecord,
 } from '../graph/store';
+
+const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
+  providerKey: 'openai',
+  model: 'test-model',
+});
 import { IndexedDbBM25Index } from './bm25';
 import { LLMRAGResultReranker, RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
@@ -437,6 +443,7 @@ function createEntry(path: string, vector: number[], text: string, startLine = 0
 
 function createRerankProvider(response: string): LLMProvider {
   return {
+    capability: TEST_PROVIDER_CAPABILITY,
     chat: () => Promise.resolve(response),
     streamChat: () => Promise.resolve(),
   };
