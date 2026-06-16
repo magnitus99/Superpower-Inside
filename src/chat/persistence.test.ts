@@ -223,7 +223,7 @@ describe('chat persistence', () => {
         content: '도구와 출처를 재생합니다.',
         status: 'error',
         errorMessage: 'provider failed',
-        errorKind: 'tool',
+        errorKind: 'tool-failed',
         stopReason: 'tool-failed',
         turnStage: 'error',
         toolRound: 2,
@@ -294,7 +294,7 @@ describe('chat persistence', () => {
     expect(raw).not.toContain('secret-token');
     expect(loaded.messages[0]).toMatchObject({
       schemaVersion: 2,
-      errorKind: 'tool',
+      errorKind: 'tool-failed',
       branchOf: 'Chats/root.md',
       branchRoot: 'Chats/root.md',
       variantOf: 'msg-root',

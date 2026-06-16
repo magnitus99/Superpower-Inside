@@ -40,9 +40,12 @@ import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
 import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
+import { classifyChatError, redactDebugDetail } from './chat-error-actions';
 import { createComposerLoadingState } from './chat-composer';
 import { createChatMessageMetaItems } from './chat-message-renderer';
+import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
+import { createProviderWaitStatus } from './provider-wait';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
 import {
@@ -97,6 +100,8 @@ interface MessageMetaInput {
   providerCapability?: ChatMessageWithMeta['providerCapability'];
   turnStage?: ChatTurnStage;
   toolRound?: number;
+  errorKind?: ChatMessageWithMeta['errorKind'];
+  actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
 
 export class ChatView extends ItemView {
@@ -131,6 +136,7 @@ export class ChatView extends ItemView {
   private previousUserQueries: string[];
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
+  private lastStreamingMarkdownAt: number;
 
   // RefreshAction 인스턴스
   private mcpRefreshAction: RefreshAction | null = null;
@@ -170,6 +176,7 @@ export class ChatView extends ItemView {
     this.abortController = null;
     this.lastUserPrompt = null;
     this.previousUserQueries = [];
+    this.lastStreamingMarkdownAt = 0;
     this.sourcePanel = new SourcePanel({
       openCitation: (citation) => this.openCitation(citation),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
@@ -907,6 +914,8 @@ export class ChatView extends ItemView {
       assistantQuestion: metaInput?.assistantQuestion,
       branchOf: metaInput?.branchOf,
       stopReason: metaInput?.stopReason,
+      errorKind: metaInput?.errorKind,
+      actionHistory: metaInput?.actionHistory,
     };
     this.messages.push(msg);
     this.markDirtyAndAutoSave();
@@ -988,6 +997,8 @@ export class ChatView extends ItemView {
       message.assistantQuestion = metaInput?.assistantQuestion;
       message.branchOf = metaInput?.branchOf ?? message.branchOf;
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
+      message.errorKind = metaInput?.errorKind ?? message.errorKind;
+      message.actionHistory = metaInput?.actionHistory ?? message.actionHistory;
       if (toolCalls) {
         message.toolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
       }
@@ -1271,18 +1282,25 @@ export class ChatView extends ItemView {
   }
 
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
+    const plan = createStreamingRenderPlan({
+      content,
+      isFinal: false,
+      now: Date.now(),
+      lastMarkdownAt: this.lastStreamingMarkdownAt,
+      minIntervalMs: ChatView.MARKDOWN_RENDER_INTERVAL,
+    });
     renderPlainTextWithBreaks(bubble, content);
 
-    const existingCursor = bubble.querySelector('.superpower-inside-chat-streaming-cursor');
+    const existingCursor = bubble.querySelector(`.${STREAMING_CURSOR_CLASS}`);
     if (!existingCursor) {
-      const cursor = bubble.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
+      const cursor = bubble.createSpan({ cls: plan.cursorClassName });
       bubble.appendChild(cursor);
     }
 
     this.pendingMarkdownEl = bubble;
     this.pendingMarkdownContent = content;
 
-    if (!this.markdownRenderTimer) {
+    if (plan.renderMarkdown && !this.markdownRenderTimer) {
       this.markdownRenderTimer = window.setTimeout(() => {
         this.markdownRenderTimer = null;
         if (this.pendingMarkdownEl && this.pendingMarkdownEl.isConnected) {
@@ -1290,7 +1308,8 @@ export class ChatView extends ItemView {
           const txt = this.pendingMarkdownContent;
           if (txt.trim()) {
             void this.renderMarkdownBubble(el, txt);
-            const cursor = el.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
+            this.lastStreamingMarkdownAt = Date.now();
+            const cursor = el.createSpan({ cls: STREAMING_CURSOR_CLASS });
             el.appendChild(cursor);
           }
         }
@@ -1305,6 +1324,7 @@ export class ChatView extends ItemView {
     }
     this.pendingMarkdownEl = null;
     this.pendingMarkdownContent = '';
+    this.lastStreamingMarkdownAt = 0;
   }
 
   private async openCitation(citation: SourceCitation): Promise<void> {
@@ -1970,7 +1990,18 @@ export class ChatView extends ItemView {
         ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
       ];
 
-      assistantId = this.addMessage('assistant', '', undefined, undefined, {
+      const waitStatus = createProviderWaitStatus({
+        providerLabel,
+        model: modelName,
+        elapsedMs: 0,
+        capability: providerCapability,
+      });
+      assistantId = this.addMessage(
+        'assistant',
+        providerCapability.streaming ? '' : waitStatus.headline,
+        undefined,
+        undefined,
+        {
         providerKey: key,
         providerLabel,
         model: modelName,
@@ -1978,7 +2009,8 @@ export class ChatView extends ItemView {
         ...toTurnMeta(),
         citations: promptContext.citations,
         contextAttachments: promptContext.attachments,
-      });
+        },
+      );
       assistantWrapper = this.messageEls.get(assistantId);
       if (assistantWrapper) {
         assistantWrapper.classList.add('generating');
@@ -2313,8 +2345,9 @@ export class ChatView extends ItemView {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorKind = classifyChatError(errorMsg);
       if (assistantId) {
-        const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
+        const errDetail = this.formatErrorDetail(key, modelName, redactDebugDetail(errorMsg));
         const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
         this.updateMessage(
           assistantId,
@@ -2329,6 +2362,7 @@ export class ChatView extends ItemView {
             providerCapability,
             ...errorTurnMeta,
             errorMessage: errDetail,
+            errorKind,
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
           },
@@ -2343,7 +2377,7 @@ export class ChatView extends ItemView {
           }
         }
       } else {
-        const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
+        const errDetail = this.formatErrorDetail(key, modelName, redactDebugDetail(errorMsg));
         const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
         this.addMessage(
           'assistant',
@@ -2357,6 +2391,7 @@ export class ChatView extends ItemView {
             providerCapability,
             ...errorTurnMeta,
             errorMessage: errDetail,
+            errorKind,
           },
         );
       }

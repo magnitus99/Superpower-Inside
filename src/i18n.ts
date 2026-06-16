@@ -76,6 +76,18 @@ export interface I18nKeys {
   providerCapabilityStreamingReasoning: string;
   providerCapabilityStreaming: string;
   providerToolCallingUnsupportedNotice: string;
+  providerWaitBufferedHeadline: string;
+  providerWaitBufferedDetail: string;
+  providerWaitElapsedSeconds: string;
+  reasoningProvidedLabel: string;
+  chatRecoveryRetrySameContext: string;
+  chatRecoverySwitchProvider: string;
+  chatRecoveryReconnectMcp: string;
+  chatRecoveryEditToolArgs: string;
+  chatRecoverySkipFailedTool: string;
+  chatRecoverySendWithoutRag: string;
+  chatRecoverySendWithoutSourceValidation: string;
+  chatRecoveryCopyDebug: string;
   turnStageDraft: string;
   turnStageBuildingContext: string;
   turnStageWaitingProvider: string;
@@ -1200,6 +1212,19 @@ const ko: I18nKeys = {
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
   providerToolCallingUnsupportedNotice: '{provider}는 현재 툴 호출 capability가 꺼져 있어 MCP tools를 이번 요청에 보내지 않습니다.',
+  providerWaitBufferedHeadline: '{provider} / {model} 응답 대기 중',
+  providerWaitBufferedDetail:
+    '실시간 토큰 없이 완료된 응답을 한 번에 표시합니다. 취소는 provider에 따라 이미 진행 중인 요청을 즉시 멈추지 못할 수 있습니다.',
+  providerWaitElapsedSeconds: '{seconds}초',
+  reasoningProvidedLabel: '모델이 제공한 thinking',
+  chatRecoveryRetrySameContext: '같은 맥락으로 다시 시도',
+  chatRecoverySwitchProvider: 'Provider/모델 변경',
+  chatRecoveryReconnectMcp: 'MCP 다시 연결',
+  chatRecoveryEditToolArgs: '툴 인자 수정',
+  chatRecoverySkipFailedTool: '실패한 툴 건너뛰기',
+  chatRecoverySendWithoutRag: 'RAG 없이 전송',
+  chatRecoverySendWithoutSourceValidation: '출처 검증 없이 전송',
+  chatRecoveryCopyDebug: '디버그 복사',
   turnStageDraft: '초안',
   turnStageBuildingContext: '컨텍스트 준비',
   turnStageWaitingProvider: 'provider 대기',
@@ -2424,6 +2449,19 @@ const en: I18nKeys = {
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
   providerToolCallingUnsupportedNotice: '{provider} currently has tool calling capability disabled, so MCP tools will not be sent for this request.',
+  providerWaitBufferedHeadline: 'Waiting for {provider} / {model}',
+  providerWaitBufferedDetail:
+    'The completed response will appear at once without live tokens. Cancel may not immediately stop a request that is already in progress at the provider.',
+  providerWaitElapsedSeconds: '{seconds}s',
+  reasoningProvidedLabel: 'Provider-emitted thinking',
+  chatRecoveryRetrySameContext: 'Retry with same context',
+  chatRecoverySwitchProvider: 'Switch provider/model',
+  chatRecoveryReconnectMcp: 'Reconnect MCP',
+  chatRecoveryEditToolArgs: 'Edit tool args',
+  chatRecoverySkipFailedTool: 'Skip failed tool',
+  chatRecoverySendWithoutRag: 'Send without RAG',
+  chatRecoverySendWithoutSourceValidation: 'Send without source validation',
+  chatRecoveryCopyDebug: 'Copy debug',
   turnStageDraft: 'Draft',
   turnStageBuildingContext: 'Building context',
   turnStageWaitingProvider: 'Waiting for provider',

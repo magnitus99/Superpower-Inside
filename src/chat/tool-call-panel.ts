@@ -18,8 +18,12 @@ export interface ToolCallRowView {
   showRunningDots: boolean;
   statusText: string;
   approvalRequired: boolean;
+  safetyDecision: 'approval-required' | 'auto-approved' | 'blocked' | 'completed';
+  availableActions: string[];
   argumentsPreview: string;
   result?: string;
+  resultSummary?: string;
+  resultApplied: boolean;
 }
 
 export interface ToolCallPanelView {
@@ -64,9 +68,33 @@ export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView
     showRunningDots: status.showRunningDots,
     statusText: status.text,
     approvalRequired: toolCall.status === 'running' && toolCall.approved === false,
+    safetyDecision: getSafetyDecision(toolCall),
+    availableActions: getAvailableActions(toolCall),
     argumentsPreview: toolCall.arguments.trim(),
     result: toolCall.result,
+    resultSummary: summarizeToolResult(toolCall.resultSummary ?? toolCall.normalizedResult ?? toolCall.result),
+    resultApplied: toolCall.status === 'success' && Boolean(toolCall.normalizedResult || toolCall.resultSummary),
   };
+}
+
+function getSafetyDecision(toolCall: ToolCallRecord): ToolCallRowView['safetyDecision'] {
+  if (toolCall.approved === false) return 'approval-required';
+  if (toolCall.status === 'error') return 'blocked';
+  if (toolCall.status === 'success') return 'completed';
+  return 'auto-approved';
+}
+
+function getAvailableActions(toolCall: ToolCallRecord): string[] {
+  if (toolCall.approved === false) return ['approve-tool', 'copy-args'];
+  if (toolCall.status === 'error') return ['retry-tool', 'copy-debug'];
+  if (toolCall.status === 'success') return ['copy-result', 'regenerate-answer'];
+  return ['copy-args'];
+}
+
+function summarizeToolResult(result: string | undefined): string | undefined {
+  if (!result) return undefined;
+  const collapsed = result.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 160 ? `${collapsed.slice(0, 157)}...` : collapsed;
 }
 
 function getToolCallStatusView(status: ToolCallRecord['status']): {

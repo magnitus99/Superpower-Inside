@@ -45,8 +45,12 @@ describe('ToolCallPanel view model contract', () => {
         showRunningDots: true,
         statusText: '',
         approvalRequired: true,
+        safetyDecision: 'approval-required',
+        availableActions: ['approve-tool', 'copy-args'],
         argumentsPreview: '{ "q": "obsidian" }',
         result: '검색 결과',
+        resultSummary: '검색 결과',
+        resultApplied: false,
       },
       {
         rowId: 'tool-call-call-2',
@@ -58,8 +62,12 @@ describe('ToolCallPanel view model contract', () => {
         showRunningDots: false,
         statusText: '✓',
         approvalRequired: false,
+        safetyDecision: 'completed',
+        availableActions: ['copy-result', 'regenerate-answer'],
         argumentsPreview: '',
         result: undefined,
+        resultSummary: undefined,
+        resultApplied: false,
       },
     ]);
   });

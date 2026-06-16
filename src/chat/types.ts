@@ -21,11 +21,15 @@ export type ChatMessageStatus = 'pending' | 'streaming' | 'complete' | 'error';
 export type ChatStopReason = 'complete' | 'cancelled' | 'error' | 'tool-failed';
 
 export type ChatErrorKind =
-  | 'provider'
+  | 'auth'
   | 'rate-limit'
-  | 'tool'
-  | 'cancelled'
-  | 'validation'
+  | 'network'
+  | 'timeout'
+  | 'provider-response'
+  | 'context-build'
+  | 'tool-not-found'
+  | 'tool-failed'
+  | 'source-validation'
   | 'unknown';
 
 export interface AssistantQuestionChoice {
