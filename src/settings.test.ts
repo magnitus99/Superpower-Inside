@@ -311,12 +311,50 @@ describe('RAG 설정 표시 헬퍼', () => {
       skippedFiles: 1,
       failedFiles: 1,
       selectedFiles: 8,
+      processedChunks: 0,
+      skippedChunks: 0,
+      failedChunks: 0,
+      storedEvidence: 0,
+      storedEntities: 0,
+      storedRelations: 0,
+      storedClaims: 0,
+      storedRejectedFacts: 0,
+      cachedChunks: 0,
     });
 
     expect(status.active).toBe(true);
     expect(status.title).toBe('지금 GraphRAG가 인덱싱 중입니다');
     expect(status.phaseLabel).toBe('API 응답 정리 중');
     expect(status.detail).toBe('4/8 파일 처리 중 (note.md) — 50%');
+    expect(status.chunkDetail).toBeNull();
+    expect(status.storageDetail).toBeNull();
+  });
+
+  it('GraphRAG live 상태는 청크 처리량과 저장 항목 수를 함께 보여준다', () => {
+    const status = getGraphRagLiveStatusPresentation({
+      isRunning: true,
+      phase: 'storing-results',
+      currentFile: 'folder/note.md',
+      processedFiles: 57,
+      skippedFiles: 0,
+      failedFiles: 2,
+      selectedFiles: 1406,
+      processedChunks: 12,
+      skippedChunks: 3,
+      failedChunks: 2,
+      storedEvidence: 12,
+      storedEntities: 38,
+      storedRelations: 21,
+      storedClaims: 9,
+      storedRejectedFacts: 2,
+      cachedChunks: 10,
+    });
+
+    expect(status.detail).toBe('59/1406 파일 처리 중 (note.md) — 4%');
+    expect(status.chunkDetail).toBe('청크 12개 저장 완료, 2개 실패');
+    expect(status.storageDetail).toBe(
+      '저장됨: 증거 12, 엔티티 38, 관계 21, 클레임 9, 거부 2',
+    );
   });
 
   it('GraphRAG live 상태는 실행 중이 아니면 비활성 패널 상태를 반환한다', () => {
@@ -329,12 +367,23 @@ describe('RAG 설정 표시 헬퍼', () => {
         skippedFiles: 0,
         failedFiles: 0,
         selectedFiles: 5,
+        processedChunks: 3,
+        skippedChunks: 0,
+        failedChunks: 0,
+        storedEvidence: 3,
+        storedEntities: 2,
+        storedRelations: 1,
+        storedClaims: 1,
+        storedRejectedFacts: 0,
+        cachedChunks: 3,
       }),
     ).toEqual({
       active: false,
       title: 'GraphRAG 인덱싱 대기 중',
       phaseLabel: '추출 완료',
       detail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
+      chunkDetail: null,
+      storageDetail: null,
     });
   });
 

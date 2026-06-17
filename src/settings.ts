@@ -1257,6 +1257,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       text: '',
     });
     progressText.id = 'superpower-inside-graph-progress-text';
+    const progressChunks = progressBody.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-detail',
+      text: '',
+    });
+    progressChunks.id = 'superpower-inside-graph-progress-chunks';
+    const progressStorage = progressBody.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-detail',
+      text: '',
+    });
+    progressStorage.id = 'superpower-inside-graph-progress-storage';
     this.graphRagProgressBanner = progressBanner;
     this.renderGraphRagProgressBanner();
     // 요약 배너
@@ -1539,6 +1549,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             selectedFiles: number;
             currentFile: string | null;
             phase?: import('./graph/indexing-progress').GraphRagIndexingPhase;
+            processedChunks: number;
+            skippedChunks: number;
+            failedChunks: number;
+            storedEvidence: number;
+            storedEntities: number;
+            storedRelations: number;
+            storedClaims: number;
+            storedRejectedFacts: number;
+            cachedChunks: number;
           };
         } | null;
       }
@@ -1552,19 +1571,38 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       skippedFiles: progress?.skippedFiles ?? 0,
       failedFiles: progress?.failedFiles ?? 0,
       selectedFiles: progress?.selectedFiles ?? 0,
+      processedChunks: progress?.processedChunks ?? 0,
+      skippedChunks: progress?.skippedChunks ?? 0,
+      failedChunks: progress?.failedChunks ?? 0,
+      storedEvidence: progress?.storedEvidence ?? 0,
+      storedEntities: progress?.storedEntities ?? 0,
+      storedRelations: progress?.storedRelations ?? 0,
+      storedClaims: progress?.storedClaims ?? 0,
+      storedRejectedFacts: progress?.storedRejectedFacts ?? 0,
+      cachedChunks: progress?.cachedChunks ?? 0,
     });
-    const titleEl = this.graphRagProgressBanner.querySelector(
+    const titleEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
       '#superpower-inside-graph-progress-title',
     );
-    const phaseEl = this.graphRagProgressBanner.querySelector(
+    const phaseEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
       '#superpower-inside-graph-progress-phase',
     );
-    const detailEl = this.graphRagProgressBanner.querySelector(
+    const detailEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
       '#superpower-inside-graph-progress-text',
+    );
+    const chunksEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
+      '#superpower-inside-graph-progress-chunks',
+    );
+    const storageEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
+      '#superpower-inside-graph-progress-storage',
     );
     titleEl?.setText(presentation.title);
     phaseEl?.setText(presentation.phaseLabel);
     detailEl?.setText(presentation.detail);
+    chunksEl?.setText(presentation.chunkDetail ?? '');
+    storageEl?.setText(presentation.storageDetail ?? '');
+    setHidden(chunksEl, presentation.chunkDetail === null);
+    setHidden(storageEl, presentation.storageDetail === null);
     setHidden(this.graphRagProgressBanner, !presentation.active);
   }
 

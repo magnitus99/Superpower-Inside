@@ -882,6 +882,9 @@ export interface I18nKeys {
   graphRagLiveStatusRunningTitle: string;
   graphRagLiveStatusIdleTitle: string;
   graphRagLiveStatusIdleDetail: string;
+  graphRagLiveChunkDetail: string;
+  graphRagLiveChunkDetailWithFailed: string;
+  graphRagLiveStorageDetail: string;
   graphRagPhaseIdle: string;
   graphRagPhaseSelectingFiles: string;
   graphRagPhaseCheckingCache: string;
@@ -1732,7 +1735,7 @@ const ko: I18nKeys = {
   settingsAuto034: '상태',
   settingsAuto035: '전체 파일',
   settingsAuto036: '처리 완료(증거)',
-  settingsAuto036Desc: '이 값은 추출된 증거 항목 수로, 파일 수와 동일하지 않을 수 있습니다.',
+  settingsAuto036Desc: '저장된 증거 항목 총량입니다. 파일 수와 동일하지 않을 수 있습니다.',
   settingsAuto037: '실패 파일',
   settingsAuto038: '이어서 실행 버튼으로 실패 파일만 다시 시도할 수 있습니다.',
   settingsAuto039: '실패한 파일이 없습니다.',
@@ -2150,6 +2153,10 @@ const ko: I18nKeys = {
   graphRagLiveStatusRunningTitle: '지금 GraphRAG가 인덱싱 중입니다',
   graphRagLiveStatusIdleTitle: 'GraphRAG 인덱싱 대기 중',
   graphRagLiveStatusIdleDetail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
+  graphRagLiveChunkDetail: '청크 {processed}개 저장 완료',
+  graphRagLiveChunkDetailWithFailed: '청크 {processed}개 저장 완료, {failed}개 실패',
+  graphRagLiveStorageDetail:
+    '저장됨: 증거 {evidence}, 엔티티 {entities}, 관계 {relations}, 클레임 {claims}, 거부 {rejected}',
   graphRagPhaseIdle: '대기 중',
   graphRagPhaseSelectingFiles: '대상 파일 준비 중',
   graphRagPhaseCheckingCache: '추출 캐시 확인 중',
@@ -3039,7 +3046,8 @@ const en: I18nKeys = {
   settingsAuto034: 'Status',
   settingsAuto035: 'Total files',
   settingsAuto036: 'Processed (evidence)',
-  settingsAuto036Desc: 'This is the number of extracted evidence items, which can differ from file count.',
+  settingsAuto036Desc:
+    'Total saved evidence items. This can differ from the file count.',
   settingsAuto037: 'Failed files',
   settingsAuto038: 'Use the resume button to retry only failed files.',
   settingsAuto039: 'No failed files.',
@@ -3464,6 +3472,10 @@ const en: I18nKeys = {
   graphRagLiveStatusRunningTitle: 'GraphRAG is indexing now',
   graphRagLiveStatusIdleTitle: 'GraphRAG indexing is idle',
   graphRagLiveStatusIdleDetail: 'No GraphRAG indexing job is running.',
+  graphRagLiveChunkDetail: '{processed} chunks saved',
+  graphRagLiveChunkDetailWithFailed: '{processed} chunks saved, {failed} failed',
+  graphRagLiveStorageDetail:
+    'Saved: evidence {evidence}, entities {entities}, relations {relations}, claims {claims}, rejected {rejected}',
   graphRagPhaseIdle: 'Idle',
   graphRagPhaseSelectingFiles: 'Preparing target files',
   graphRagPhaseCheckingCache: 'Checking extraction cache',

@@ -147,6 +147,15 @@ export interface GraphRagLiveStatusInput {
   skippedFiles: number;
   failedFiles: number;
   selectedFiles: number;
+  processedChunks: number;
+  skippedChunks: number;
+  failedChunks: number;
+  storedEvidence: number;
+  storedEntities: number;
+  storedRelations: number;
+  storedClaims: number;
+  storedRejectedFacts: number;
+  cachedChunks: number;
 }
 
 export interface GraphRagLiveStatusPresentation {
@@ -154,6 +163,8 @@ export interface GraphRagLiveStatusPresentation {
   title: string;
   phaseLabel: string;
   detail: string;
+  chunkDetail: string | null;
+  storageDetail: string | null;
 }
 
 export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
@@ -297,6 +308,8 @@ export function getGraphRagLiveStatusPresentation(
       title: t('graphRagLiveStatusIdleTitle'),
       phaseLabel: getGraphRagPhaseLabel(phase),
       detail: t('graphRagLiveStatusIdleDetail'),
+      chunkDetail: null,
+      storageDetail: null,
     };
   }
 
@@ -304,6 +317,15 @@ export function getGraphRagLiveStatusPresentation(
   const selected = Math.max(0, input.selectedFiles);
   const pct = selected > 0 ? Math.round((done / selected) * 100) : 0;
   const fileInfo = getGraphRagCurrentFileLabel(input.currentFile);
+  const processedChunks = Math.max(0, input.processedChunks);
+  const failedChunks = Math.max(0, input.failedChunks);
+  const storedEvidence = Math.max(0, input.storedEvidence);
+  const storedEntities = Math.max(0, input.storedEntities);
+  const storedRelations = Math.max(0, input.storedRelations);
+  const storedClaims = Math.max(0, input.storedClaims);
+  const storedRejectedFacts = Math.max(0, input.storedRejectedFacts);
+  const storedTotal =
+    storedEvidence + storedEntities + storedRelations + storedClaims + storedRejectedFacts;
   return {
     active: true,
     title: t('graphRagLiveStatusRunningTitle'),
@@ -314,6 +336,25 @@ export function getGraphRagLiveStatusPresentation(
       v2: fileInfo,
       v3: String(pct),
     }),
+    chunkDetail:
+      processedChunks > 0 || failedChunks > 0
+        ? failedChunks > 0
+          ? t('graphRagLiveChunkDetailWithFailed', {
+              processed: String(processedChunks),
+              failed: String(failedChunks),
+            })
+          : t('graphRagLiveChunkDetail', { processed: String(processedChunks) })
+        : null,
+    storageDetail:
+      storedTotal > 0
+        ? t('graphRagLiveStorageDetail', {
+            evidence: String(storedEvidence),
+            entities: String(storedEntities),
+            relations: String(storedRelations),
+            claims: String(storedClaims),
+            rejected: String(storedRejectedFacts),
+          })
+        : null,
   };
 }
 
