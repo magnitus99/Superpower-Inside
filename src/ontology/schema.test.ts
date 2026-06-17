@@ -9,6 +9,7 @@ describe('Ontology schema', () => {
   it('단일 기본 schema만 제공하고 도메인 schema 옵션을 노출하지 않는다', () => {
     expect(buildDefaultOntologySchema().id).toBe('default');
     expect(buildDefaultOntologySchema().name).toBe('Default');
+    expect(buildDefaultOntologySchema().version).toBe(2);
     expect(
       buildDefaultOntologySchema().entityTypes.map((entityType) => entityType.id),
     ).not.toContain('biblical_person');
@@ -30,6 +31,32 @@ describe('Ontology schema', () => {
 
     expect(result.valid).toBe(true);
     expect(result.reason).toBeUndefined();
+  });
+
+  it('interprets 관계는 일반 문서/개념/저자가 작품과 개념을 해석하는 조합을 허용한다', () => {
+    const schema = buildDefaultOntologySchema();
+
+    expect(
+      validateOntologyRelation(schema, {
+        relationTypeId: 'interprets',
+        sourceTypeId: 'work',
+        targetTypeId: 'work',
+      }),
+    ).toEqual({ valid: true });
+    expect(
+      validateOntologyRelation(schema, {
+        relationTypeId: 'interprets',
+        sourceTypeId: 'concept',
+        targetTypeId: 'work',
+      }),
+    ).toEqual({ valid: true });
+    expect(
+      validateOntologyRelation(schema, {
+        relationTypeId: 'interprets',
+        sourceTypeId: 'person',
+        targetTypeId: 'concept',
+      }),
+    ).toEqual({ valid: true });
   });
 
   it('relation source/target type이 domain/range와 맞지 않으면 reject한다', () => {

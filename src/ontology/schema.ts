@@ -103,7 +103,7 @@ export function buildDefaultOntologySchema(): OntologySchema {
   return {
     id: 'default',
     name: 'Default',
-    version: 1,
+    version: 2,
     locale: 'mixed',
     description: t('ontologyDefaultDescription'),
     entityTypes: buildBaseEntityTypes(),
@@ -169,7 +169,7 @@ export function buildDefaultOntologySchema(): OntologySchema {
       relationType(
         'interprets',
         'Interprets',
-        ['argument'],
+        ['argument', 'work', 'concept', 'person', 'organization'],
         ['work', 'concept'],
         t('ontologyRelationInterpretsDesc'),
       ),

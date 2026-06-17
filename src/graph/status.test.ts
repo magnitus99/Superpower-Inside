@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RAGConfig } from '../settings';
 import { MemoryVectorStore } from '../rag/store';
+import { buildDefaultOntologySchema } from '../ontology/schema';
 import { calculateGraphRagStatus } from './status';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -12,6 +13,7 @@ const baseRagConfig: Pick<
   graphRagModel: 'openai:gpt-4.1-mini',
   graphRagMaxFilesPerRun: 50,
 };
+const CURRENT_ONTOLOGY_VERSION = buildDefaultOntologySchema().version;
 
 function createEntry(filePath: string, contentHash: string) {
   return {
@@ -87,7 +89,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
 
@@ -125,7 +127,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-current',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const input = {
@@ -161,7 +163,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-old',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
 
@@ -196,7 +198,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-old',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
 
@@ -231,7 +233,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     await graphStore.addRejectedFact({
@@ -312,7 +314,7 @@ describe('calculateGraphRagStatus', () => {
 
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addEvidence({ id: 'ev-2', filePath: 'a.md', entryId: 'e1', startLine: 1, quote: 'X is Y', contentHash: 'hash-a', extractionModelKey: 'openai:gpt-4.1-mini', updatedAt: Date.now() });
-    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'new', extractionModelKey: 'openai:gpt-4.1-mini', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: Date.now() });
+    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'new', extractionModelKey: 'openai:gpt-4.1-mini', ontologySchemaId: 'default', ontologyVersion: CURRENT_ONTOLOGY_VERSION, updatedAt: Date.now() });
 
     const status = await calculateGraphRagStatus({
       ragConfig: baseRagConfig,
@@ -332,7 +334,7 @@ describe('calculateGraphRagStatus', () => {
 
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addEvidence({ id: 'ev-2', filePath: 'a.md', entryId: 'e1', startLine: 1, quote: 'X is Y', contentHash: 'hash-a', extractionModelKey: 'openai:gpt-4.1-mini', updatedAt: Date.now() });
-    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'same', extractionModelKey: 'old-model', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: Date.now() });
+    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'same', extractionModelKey: 'old-model', ontologySchemaId: 'default', ontologyVersion: CURRENT_ONTOLOGY_VERSION, updatedAt: Date.now() });
 
     const status = await calculateGraphRagStatus({
       ragConfig: baseRagConfig,
@@ -365,7 +367,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
 
@@ -411,7 +413,7 @@ describe('calculateGraphRagStatus', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
 

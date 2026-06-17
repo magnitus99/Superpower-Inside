@@ -130,6 +130,113 @@ describe('GraphExtractionIndexer', () => {
     ]);
   });
 
+  it('문헌/개념이 작품을 해석하는 interprets relation은 저장하고 reject하지 않는다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            {
+              name: '주석 성경',
+              typeId: 'work',
+              description: '본문을 해석하는 주석 문헌',
+              confidence: 0.9,
+            },
+            {
+              name: '성경',
+              typeId: 'work',
+              description: '해석 대상 문헌',
+              confidence: 0.9,
+            },
+            {
+              name: '모세오경',
+              typeId: 'concept',
+              description: '성경 본문 해석 주제',
+              confidence: 0.85,
+            },
+          ],
+          relations: [
+            {
+              source: '주석 성경',
+              target: '성경',
+              relationTypeId: 'interprets',
+              description: '주석 성경은 성경 본문을 해석한다.',
+              confidence: 0.9,
+            },
+            {
+              source: '모세오경',
+              target: '성경',
+              relationTypeId: 'interprets',
+              description: '모세오경 주제는 성경 본문 해석과 연결된다.',
+              confidence: 0.85,
+            },
+          ],
+          claims: [],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('주석 성경은 성경 본문과 모세오경을 해석한다.'));
+
+    expect(
+      (await store.getRelations()).map((relation) => relation.relationTypeId),
+    ).toEqual(['interprets', 'interprets']);
+    expect(await store.getRejectedFacts()).toEqual([]);
+  });
+
+  it('relation endpoint가 같은 응답의 entity name 또는 alias와 맞지 않으면 reject한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            { name: '주석 성경', typeId: 'work', description: '주석 문헌', confidence: 0.9 },
+            { name: '성경', typeId: 'work', description: '해석 대상 문헌', confidence: 0.9 },
+          ],
+          relations: [
+            {
+              source: '본문',
+              target: '성경',
+              relationTypeId: 'interprets',
+              description: '일반 역할명을 endpoint로 사용했다.',
+              confidence: 0.9,
+            },
+          ],
+          claims: [],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('주석 성경은 성경 본문을 해석한다.'));
+
+    expect(await store.getRelations()).toEqual([]);
+    expect(await store.getRejectedFacts()).toEqual([
+      expect.objectContaining({ reason: 'unknown-relation-entity' }),
+    ]);
+  });
+
+  it('추출 프롬프트는 relation domain/range와 endpoint exact-match 규칙을 포함한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = createCapturingProvider(
+      JSON.stringify({
+        entities: [],
+        relations: [],
+        claims: [],
+      }),
+    );
+    const indexer = new GraphExtractionIndexer({ provider, store });
+
+    await indexer.extractChunk(createInput('No graph facts.'));
+
+    const systemPrompt = provider.messages[0]?.[0]?.content ?? '';
+    expect(systemPrompt).toContain('Relation domain/range constraints:');
+    expect(systemPrompt).toContain('interprets: sourceTypeIds=argument|work|concept|person|organization; targetTypeIds=work|concept');
+    expect(systemPrompt).toContain('Relation source and target must exactly match an entities[].name or one of that entity aliases.');
+    expect(systemPrompt).toContain('Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.');
+  });
+
   it('JSON 파싱 실패는 rejected fact로 저장하고 다음 chunk 처리를 막지 않는다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
@@ -462,6 +569,21 @@ function createProviderSequence(responses: string[]): LLMProvider & { calls: num
     chat: () => {
       const response = responses[Math.min(calls, responses.length - 1)] ?? '';
       calls++;
+      return Promise.resolve(response);
+    },
+    streamChat: () => Promise.resolve(),
+  };
+}
+
+function createCapturingProvider(response: string): LLMProvider & {
+  messages: Parameters<LLMProvider['chat']>[0][];
+} {
+  const messages: Parameters<LLMProvider['chat']>[0][] = [];
+  return {
+    capability: TEST_PROVIDER_CAPABILITY,
+    messages,
+    chat: (inputMessages) => {
+      messages.push(inputMessages);
       return Promise.resolve(response);
     },
     streamChat: () => Promise.resolve(),

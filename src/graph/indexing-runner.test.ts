@@ -16,6 +16,7 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
   providerKey: 'openai',
   model: 'test-model',
 });
+const CURRENT_ONTOLOGY_VERSION = buildDefaultOntologySchema().version;
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -60,7 +61,7 @@ describe('GraphRagIndexingRunner', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
@@ -357,7 +358,7 @@ describe('GraphRagIndexingRunner', () => {
       contentHash: 'hash-old',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const provider = new FakeProvider([textResponse(graphPayload('Fresh Paul'))]);
@@ -414,7 +415,7 @@ describe('GraphRagIndexingRunner', () => {
       contentHash: 'hash-same',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
@@ -458,7 +459,7 @@ describe('GraphRagIndexingRunner', () => {
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const provider = new FakeProvider([
@@ -516,7 +517,7 @@ describe('GraphRagIndexingRunner', () => {
       contentHash: 'hash-deleted',
       extractionModelKey: 'openai:gpt-4.1-mini',
       ontologySchemaId: 'default',
-      ontologyVersion: 1,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
@@ -540,7 +541,7 @@ describe('GraphRagIndexingRunner', () => {
         contentHash: 'hash-deleted',
         extractionModelKey: 'openai:gpt-4.1-mini',
         ontologySchemaId: 'default',
-        ontologyVersion: 1,
+        ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       }),
     ).resolves.toBe(false);
   });

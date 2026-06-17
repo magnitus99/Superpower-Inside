@@ -1089,6 +1089,9 @@ export interface I18nKeys {
   ontologyAliasRuleDesc: string;
   ontologyMergeRuleDesc: string;
   ontologyExtractionGuidelines: string;
+  ontologyRelationEndpointExactMatchInstruction: string;
+  ontologyRelationEndpointGenericRoleInstruction: string;
+  ontologyRelationDomainRangeFallbackInstruction: string;
   contextRuleNoSourceOutsideVault: string;
   contextRuleSeparateSuggestions: string;
   contextRuleNoEvidence: string;
@@ -2373,6 +2376,12 @@ const ko: I18nKeys = {
   ontologyMergeRuleDesc: 'canonical name과 alias exact match 기반 병합',
   ontologyExtractionGuidelines:
     '허용된 entity/relation/claim type만 사용하고, 근거가 있는 본문 표현을 중심으로 추출한다.',
+  ontologyRelationEndpointExactMatchInstruction:
+    'Relation source and target must exactly match an entities[].name or one of that entity aliases.',
+  ontologyRelationEndpointGenericRoleInstruction:
+    'Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.',
+  ontologyRelationDomainRangeFallbackInstruction:
+    'If a relation would violate the domain/range constraints, omit the relation and preserve the statement as a claim when useful.',
   contextRuleNoSourceOutsideVault: 'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
   contextRuleSeparateSuggestions: '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
   contextRuleNoEvidence: '근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
@@ -3678,6 +3687,12 @@ const en: I18nKeys = {
   ontologyMergeRuleDesc: 'Merge based on canonical name and exact alias match',
   ontologyExtractionGuidelines:
     'Use only allowed entity, relation, and claim types, and extract around evidence-backed source expressions.',
+  ontologyRelationEndpointExactMatchInstruction:
+    'Relation source and target must exactly match an entities[].name or one of that entity aliases.',
+  ontologyRelationEndpointGenericRoleInstruction:
+    'Do not use generic role words such as author, text, body, source, target, subject, object, or translated role labels as relation endpoints unless they are explicit entity names in entities.',
+  ontologyRelationDomainRangeFallbackInstruction:
+    'If a relation would violate the domain/range constraints, omit the relation and preserve the statement as a claim when useful.',
   contextRuleNoSourceOutsideVault: 'Do not cite document names that are absent from Vault Context.',
   contextRuleSeparateSuggestions:
     'Separate new note suggestions from sources and mark them as "Suggestions".',

@@ -1,4 +1,5 @@
 import type { LLMProvider } from '../llm/providers';
+import { t } from '../i18n';
 import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
 import {
   createGraphIdRust,
@@ -292,17 +293,27 @@ function buildExtractionSystemPrompt(schema: OntologySchema): string {
   const entityTypes = schema.entityTypes.map((entityType) => entityType.id).join(', ');
   const relationTypes = schema.relationTypes.map((relationType) => relationType.id).join(', ');
   const claimTypes = schema.claimTypes.map((claimType) => claimType.id).join(', ');
+  const relationConstraints = schema.relationTypes
+    .map(
+      (relationType) =>
+        `${relationType.id}: sourceTypeIds=${relationType.sourceTypeIds.join('|')}; targetTypeIds=${relationType.targetTypeIds.join('|')}`,
+    )
+    .join('\n');
   return [
     'Extract ontology-guided graph facts as JSON only.',
     `Ontology schema: ${schema.id}@${schema.version}`,
     `Entity types: ${entityTypes}`,
     `Relation types: ${relationTypes}`,
     `Claim types: ${claimTypes}`,
+    'Relation domain/range constraints:',
+    relationConstraints,
     'Return exactly one JSON object with this shape:',
     '{"entities":[{"name":"string","typeId":"person|organization|place|work|concept|event|argument|evidence","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"source":"entity name","target":"entity name","relationTypeId":"authored|mentions|supports|opposes|collaborated_with|causes|influences|part_of|located_in|interprets","description":"string","confidence":0.0}],"claims":[{"text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityNames":["entity name"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
     'Use entities, relations, claims as arrays even when empty.',
     'Use typeId, relationTypeId, claimTypeId exactly. Do not use type, relation, claim_type, subject, object, or keyed objects.',
-    'Every relation source and target must match an entity name in entities.',
+    t('ontologyRelationEndpointExactMatchInstruction'),
+    t('ontologyRelationEndpointGenericRoleInstruction'),
+    t('ontologyRelationDomainRangeFallbackInstruction'),
     schema.extractionGuidelines,
   ].join('\n');
 }
