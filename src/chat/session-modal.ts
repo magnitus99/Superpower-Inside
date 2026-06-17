@@ -1,6 +1,7 @@
 import type { App, Vault } from 'obsidian';
 import { t } from '../i18n';
 import type { RefreshBus } from '../utils/refresh-bus';
+import { runActionWithFeedback } from '../utils/action-feedback';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
@@ -240,17 +241,27 @@ export function openSessionHistoryModal(
             return;
           }
 
-          deleteBtn.disabled = true;
-          void deleteChat(app.fileManager, activeVault, meta.filePath).then(
-            () => {
-              sessionsEventBus?.emit('sessions', { status: 'success' });
-              void loadMetas();
+          void runActionWithFeedback({
+            button: deleteBtn,
+            loadingText: t('mcpRefreshing'),
+            refreshBus: sessionsEventBus,
+            refreshDomains: ['sessions'],
+            action: async () => {
+              try {
+                await deleteChat(app.fileManager, activeVault, meta.filePath);
+                await loadMetas();
+                return { status: 'success', detail: t('chatSessionDeletedNotice') };
+              } catch (err) {
+                deleteConfirmPath = null;
+                const message = err instanceof Error ? err.message : String(err);
+                return {
+                  status: 'error',
+                  detail: message,
+                  notice: t('chatSessionDeleteFailedNotice', { message }),
+                };
+              }
             },
-            () => {
-              deleteBtn.disabled = false;
-              deleteConfirmPath = null;
-            },
-          );
+          });
         });
       }
     }
@@ -274,15 +285,37 @@ export function openSessionHistoryModal(
     });
 
     const save = async (): Promise<void> => {
-      const nextTitle = inputEl.value.trim();
-      if (!nextTitle || nextTitle === meta.title) {
-        const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
-        if (!isClosed) renderMetas(freshMetas);
-        return;
-      }
-      saveBtn.disabled = true;
-      await renameChat(activeVault, meta.filePath, nextTitle);
-      await loadMetas();
+      await runActionWithFeedback({
+        button: saveBtn,
+        loadingText: t('mcpRefreshing'),
+        refreshBus: sessionsEventBus,
+        refreshDomains: ['sessions'],
+        action: async () => {
+          const nextTitle = inputEl.value.trim();
+          if (!nextTitle) {
+            const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
+            if (!isClosed) renderMetas(freshMetas);
+            return { status: 'noop', detail: t('chatSessionRenameEmptyNotice') };
+          }
+          if (nextTitle === meta.title) {
+            const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
+            if (!isClosed) renderMetas(freshMetas);
+            return { status: 'noop', detail: t('chatSessionRenameNoChangeNotice') };
+          }
+          try {
+            await renameChat(activeVault, meta.filePath, nextTitle);
+            await loadMetas();
+            return { status: 'success', detail: t('chatSessionRenamedNotice') };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              status: 'error',
+              detail: message,
+              notice: t('chatSessionRenameFailedNotice', { message }),
+            };
+          }
+        },
+      });
     };
 
     saveBtn.addEventListener('click', () => void save());

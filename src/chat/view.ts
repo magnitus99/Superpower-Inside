@@ -689,7 +689,9 @@ export class ChatView extends ItemView {
 
   private getEnabledProviderCount(): number {
     const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
-    const custom = this.plugin.settings.customOpenAIProviders.filter((provider) => provider.enabled).length;
+    const custom = this.plugin.settings.customOpenAIProviders.filter(
+      (provider) => provider.enabled,
+    ).length;
     return builtIn + custom;
   }
 
@@ -724,7 +726,9 @@ export class ChatView extends ItemView {
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
-    const mentionOpen = Boolean(this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS));
+    const mentionOpen = Boolean(
+      this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS),
+    );
     const action = resolveComposerKeyAction({
       key: e.key,
       shiftKey: e.shiftKey,
@@ -1157,7 +1161,8 @@ export class ChatView extends ItemView {
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
       message.contextBudgetSnapshot =
         metaInput?.contextBudgetSnapshot ?? message.contextBudgetSnapshot;
-      message.dataBoundarySnapshot = metaInput?.dataBoundarySnapshot ?? message.dataBoundarySnapshot;
+      message.dataBoundarySnapshot =
+        metaInput?.dataBoundarySnapshot ?? message.dataBoundarySnapshot;
       message.errorKind = metaInput?.errorKind ?? message.errorKind;
       message.actionHistory = metaInput?.actionHistory ?? message.actionHistory;
       if (toolCalls) {
@@ -1511,7 +1516,13 @@ export class ChatView extends ItemView {
       new Notice(t('sourceFileNotFound', { path: citation.filePath }));
       return;
     }
-    await this.app.workspace.getLeaf(false).openFile(file);
+    try {
+      await this.app.workspace.getLeaf(false).openFile(file);
+      new Notice(t('sourceOpenedNotice', { path: citation.filePath }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceOpenFailedNotice', { message }), 5000);
+    }
   }
 
   private async copyCitationLink(
@@ -1524,9 +1535,14 @@ export class ChatView extends ItemView {
       );
     }
     const heading = citation.heading ? `#${citation.heading}` : '';
-    await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
-    button.setText(t('copied'));
-    window.setTimeout(() => button.setText(t('sourceCopyLinkAction')), 1500);
+    try {
+      await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
+      button.setText(t('copied'));
+      window.setTimeout(() => button.setText(t('sourceCopyLinkAction')), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceCopyLinkFailedNotice', { message }), 5000);
+    }
   }
 
   private async insertCitationIntoActiveNote(citation: SourceCitation): Promise<void> {
@@ -1544,11 +1560,16 @@ export class ChatView extends ItemView {
     const link = citation.heading
       ? `[[${citation.filePath}#${citation.heading}]]`
       : `[[${citation.filePath}]]`;
-    await this.app.vault.append(
-      active,
-      t('sourceInsertBlock', { link, preview: citation.preview }),
-    );
-    new Notice(t('sourceInsertedNotice'));
+    try {
+      await this.app.vault.append(
+        active,
+        t('sourceInsertBlock', { link, preview: citation.preview }),
+      );
+      new Notice(t('sourceInsertedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceInsertFailedNotice', { message }), 5000);
+    }
   }
 
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
@@ -1709,9 +1730,14 @@ export class ChatView extends ItemView {
 
   private async copyMessage(msg: ChatMessageWithMeta, button: HTMLButtonElement): Promise<void> {
     this.noticeSourceWarnings(msg);
-    await navigator.clipboard.writeText(msg.content);
-    button.setText(t('copied'));
-    window.setTimeout(() => button.setText(t('messageCopyAction')), 1500);
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      button.setText(t('copied'));
+      window.setTimeout(() => button.setText(t('messageCopyAction')), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('messageCopyFailedNotice', { message }), 5000);
+    }
   }
 
   private async insertMessageIntoActiveNote(msg: ChatMessageWithMeta): Promise<void> {
@@ -1721,8 +1747,13 @@ export class ChatView extends ItemView {
       new Notice(t('activeNoteMissingNotice'));
       return;
     }
-    await this.app.vault.append(active, `\n\n${msg.content}\n`);
-    new Notice(t('messageInsertedNotice'));
+    try {
+      await this.app.vault.append(active, `\n\n${msg.content}\n`);
+      new Notice(t('messageInsertedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('messageInsertFailedNotice', { message }), 5000);
+    }
   }
 
   private noticeSourceWarnings(msg: ChatMessageWithMeta): void {
@@ -1743,11 +1774,16 @@ export class ChatView extends ItemView {
     const title = this.session.title || t('aiAnswerTitle');
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
-    if (!(await this.app.vault.adapter.exists(folder))) {
-      await this.app.vault.createFolder(folder);
+    try {
+      if (!(await this.app.vault.adapter.exists(folder))) {
+        await this.app.vault.createFolder(folder);
+      }
+      await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
+      new Notice(t('savedAsNewNoteNotice', { path }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('savedAsNewNoteFailedNotice', { message }), 5000);
     }
-    await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
-    new Notice(t('savedAsNewNoteNotice', { path }));
   }
 
   private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
@@ -1765,7 +1801,10 @@ export class ChatView extends ItemView {
 
   private async regenerateFromAssistant(messageId: string): Promise<void> {
     const draft = createRegenerationDraft(this.messages, messageId);
-    if (!draft) return;
+    if (!draft) {
+      new Notice(t('regenerationTargetMissingNotice'));
+      return;
+    }
     const originalIndex = this.messages.findIndex((message) => message.id === messageId);
     if (originalIndex >= 0) {
       this.messages[originalIndex] = markMessageRegenerated(this.messages[originalIndex]);
@@ -1781,21 +1820,29 @@ export class ChatView extends ItemView {
 
   private async branchFromMessage(messageId: string): Promise<void> {
     const index = this.messages.findIndex((message) => message.id === messageId);
-    if (index < 0) return;
-    await this.saveCurrentSession(true);
-    const branchMessages = this.messages.slice(0, index + 1).map((message) => ({
-      ...message,
-      branchOf: message.branchOf ?? this.session.filePath ?? messageId,
-    }));
-    this.messages = branchMessages;
-    this.session = {
-      filePath: null,
-      title: `${this.session.title || t('chatSessionTitle')} branch`,
-      isDirty: true,
-    };
-    this.rebuildMessagesDOM();
-    await this.saveCurrentSession(true);
-    new Notice(t('branchSessionCreatedNotice'));
+    if (index < 0) {
+      new Notice(t('branchSessionMissingNotice'));
+      return;
+    }
+    try {
+      await this.saveCurrentSession(true);
+      const branchMessages = this.messages.slice(0, index + 1).map((message) => ({
+        ...message,
+        branchOf: message.branchOf ?? this.session.filePath ?? messageId,
+      }));
+      this.messages = branchMessages;
+      this.session = {
+        filePath: null,
+        title: `${this.session.title || t('chatSessionTitle')} branch`,
+        isDirty: true,
+      };
+      this.rebuildMessagesDOM();
+      await this.saveCurrentSession(true);
+      new Notice(t('branchSessionCreatedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('branchSessionFailedNotice', { message }), 5000);
+    }
   }
 
   clearMessages(): void {
@@ -3588,9 +3635,15 @@ export class ChatView extends ItemView {
     messageId?: string,
   ): Promise<void> {
     const registry = this.plugin.mcpRegistry;
-    if (!registry) return;
+    if (!registry) {
+      new Notice(t('mcpRegistryUnavailableNotice'), 5000);
+      return;
+    }
     const client = registry.getClient(serverName);
-    if (!client) return;
+    if (!client) {
+      new Notice(t('mcpClientUnavailableNotice', { server: serverName }), 5000);
+      return;
+    }
 
     let runId: string | null = null;
     if (messageId) {

@@ -16,6 +16,11 @@ export interface I18nKeys {
   refreshModelList: string;
   refreshing: string;
   refreshComplete: string;
+  actionCompletedNotice: string;
+  actionPartialNotice: string;
+  actionNoopNotice: string;
+  actionCancelledNotice: string;
+  actionFailedWithMessage: string;
   noModelsEnabled: string;
   pluginAwareGeneration: string;
   pluginAwareGenerationDesc: string;
@@ -380,6 +385,10 @@ export interface I18nKeys {
   sourceOpenAction: string;
   sourceCopyLinkAction: string;
   sourceInsertIntoNoteAction: string;
+  sourceOpenedNotice: string;
+  sourceOpenFailedNotice: string;
+  sourceCopyLinkFailedNotice: string;
+  sourceInsertFailedNotice: string;
   sourceUnverifiedCount: string;
   sourceFileNotFound: string;
   sourceUnverifiedCandidate: string;
@@ -393,10 +402,16 @@ export interface I18nKeys {
   messageEditAndSendAction: string;
   activeNoteMissingNotice: string;
   messageInsertedNotice: string;
+  messageCopyFailedNotice: string;
+  messageInsertFailedNotice: string;
   sourceWarningIncluded: string;
   aiAnswerTitle: string;
   savedAsNewNoteNotice: string;
+  savedAsNewNoteFailedNotice: string;
   branchSessionCreatedNotice: string;
+  branchSessionMissingNotice: string;
+  branchSessionFailedNotice: string;
+  regenerationTargetMissingNotice: string;
   chatStatusIdle: string;
   chatStatusRunning: string;
   chatStatusDone: string;
@@ -466,6 +481,12 @@ export interface I18nKeys {
   chatSessionCount: string;
   chatMessageUnit: string;
   chatDaysAgo: string;
+  chatSessionRenamedNotice: string;
+  chatSessionRenameFailedNotice: string;
+  chatSessionRenameNoChangeNotice: string;
+  chatSessionRenameEmptyNotice: string;
+  chatSessionDeletedNotice: string;
+  chatSessionDeleteFailedNotice: string;
 
   settingsAuto001: string;
   settingsAuto002: string;
@@ -856,6 +877,10 @@ export interface I18nKeys {
   chatFolderExcludeCurrentDesc: string;
   ragNoUpdates: string;
   ragNoDocuments: string;
+  ragNoPendingUpdatesNotice: string;
+  ragNoDocumentsNotice: string;
+  ragIndexCancelRequestedNotice: string;
+  ragIndexResumeRequestedNotice: string;
   ragNoRunningIndexing: string;
   ragNotPerformancePaused: string;
   graphRagStatusDisabledLabel: string;
@@ -983,6 +1008,8 @@ export interface I18nKeys {
   overviewEmbeddingLabel: string;
   mcpToolNotFoundInConnectedServers: string;
   mcpServerNotConnected: string;
+  mcpRegistryUnavailableNotice: string;
+  mcpClientUnavailableNotice: string;
   mcpToolErrorPrefix: string;
   mcpToolEmptyResult: string;
   mcpValidationPattern: string;
@@ -1219,6 +1246,11 @@ const ko: I18nKeys = {
   refreshModelList: '모델 목록 새로고침',
   refreshing: '새로고침 중...',
   refreshComplete: '새로고침 완료',
+  actionCompletedNotice: '완료되었습니다.',
+  actionPartialNotice: '일부만 완료되었습니다.',
+  actionNoopNotice: '변경 사항이 없습니다.',
+  actionCancelledNotice: '취소했습니다.',
+  actionFailedWithMessage: '실패했습니다: {message}',
   noModelsEnabled: '활성화된 모델 없음',
   pluginAwareGeneration: '플러그인 인식 생성 활성화',
   pluginAwareGenerationDesc:
@@ -1268,21 +1300,27 @@ const ko: I18nKeys = {
   noModelsFound: '모델을 찾을 수 없습니다.',
   enabled: '활성화',
   providerCapabilityToolCalling: '툴 호출 지원',
-  providerCapabilityToolCallingDesc: '이 custom OpenAI-compatible endpoint가 tool schema와 tool call delta를 안정적으로 지원할 때만 켭니다.',
+  providerCapabilityToolCallingDesc:
+    '이 custom OpenAI-compatible endpoint가 tool schema와 tool call delta를 안정적으로 지원할 때만 켭니다.',
   providerCapabilityReasoning: 'reasoning/thinking 표시 지원',
-  providerCapabilityReasoningDesc: 'provider가 명시적으로 reasoning 또는 thinking 필드를 제공할 때만 켭니다.',
+  providerCapabilityReasoningDesc:
+    'provider가 명시적으로 reasoning 또는 thinking 필드를 제공할 때만 켭니다.',
   providerCapabilityLiveStreaming: '실시간 스트리밍 지원',
-  providerCapabilityLiveStreamingDesc: '토큰이 실시간으로 도착하는 endpoint일 때만 켭니다. requestUrl 경로는 보통 buffered입니다.',
+  providerCapabilityLiveStreamingDesc:
+    '토큰이 실시간으로 도착하는 endpoint일 때만 켭니다. requestUrl 경로는 보통 buffered입니다.',
   providerCapabilityNativeAbort: '네이티브 취소 지원',
-  providerCapabilityNativeAbortDesc: 'AbortSignal로 요청을 실제 중단할 수 있을 때 켭니다. requestUrl은 best-effort입니다.',
+  providerCapabilityNativeAbortDesc:
+    'AbortSignal로 요청을 실제 중단할 수 있을 때 켭니다. requestUrl은 best-effort입니다.',
   providerCapabilityMaxToolRounds: '최대 툴 라운드',
-  providerCapabilityMaxToolRoundsDesc: '이 provider에서 한 답변 중 허용할 tool loop 라운드 수입니다. 툴 호출 미지원이면 0으로 둡니다.',
+  providerCapabilityMaxToolRoundsDesc:
+    '이 provider에서 한 답변 중 허용할 tool loop 라운드 수입니다. 툴 호출 미지원이면 0으로 둡니다.',
   providerCapabilityBufferedNoTools: 'buffered · tools off',
   providerCapabilityBuffered: 'buffered',
   providerCapabilityNoTools: 'tools off',
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
-  providerToolCallingUnsupportedNotice: '{provider}는 현재 툴 호출 capability가 꺼져 있어 MCP tools를 이번 요청에 보내지 않습니다.',
+  providerToolCallingUnsupportedNotice:
+    '{provider}는 현재 툴 호출 capability가 꺼져 있어 MCP tools를 이번 요청에 보내지 않습니다.',
   providerWaitBufferedHeadline: '{provider} / {model} 응답 대기 중',
   providerWaitBufferedDetail:
     '실시간 토큰 없이 완료된 응답을 한 번에 표시합니다. 취소는 provider에 따라 이미 진행 중인 요청을 즉시 멈추지 못할 수 있습니다.',
@@ -1542,17 +1580,20 @@ const ko: I18nKeys = {
   chatFolderMentionChip: '폴더 {name}',
   chatFileMentionChip: '파일 {name}',
   chatReadinessProviderMissing: 'Provider 설정 필요',
-  chatReadinessProviderMissingDetail: '설정에서 최소 하나의 LLM Provider를 활성화해야 전송할 수 있습니다.',
+  chatReadinessProviderMissingDetail:
+    '설정에서 최소 하나의 LLM Provider를 활성화해야 전송할 수 있습니다.',
   chatReadinessModelMissing: '모델 선택 필요',
   chatReadinessModelMissingDetail: '활성 Provider에 사용할 모델을 하나 이상 등록하세요.',
   chatReadinessRagIndexing: 'RAG 인덱싱 중',
-  chatReadinessRagIndexingDetail: '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
+  chatReadinessRagIndexingDetail:
+    '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
   chatReadinessRagNotReady: 'RAG 준비 안 됨',
   chatReadinessRagNotReadyDetail: '인덱스를 만들거나 갱신하면 자동 컨텍스트 품질이 좋아집니다.',
   chatReadinessMcpPartial: 'MCP 일부 연결 필요',
   chatReadinessMcpPartialDetail: '연결됨 {connected}/{total}. 필요한 서버를 재연결하세요.',
   chatReadinessSaveFolderMissing: '저장 폴더 없음',
-  chatReadinessSaveFolderMissingDetail: '세션 replay와 draft 복구를 위해 채팅 저장 폴더를 설정하세요.',
+  chatReadinessSaveFolderMissingDetail:
+    '세션 replay와 draft 복구를 위해 채팅 저장 폴더를 설정하세요.',
   chatReadinessReady: '채팅 준비 완료',
   chatReadinessBlocked: 'Provider 설정 필요',
   chatReadinessDegraded: '일부 기능 준비 필요',
@@ -1576,7 +1617,8 @@ const ko: I18nKeys = {
   dataBoundaryCitationPreview: '출처 preview {count}개',
   dataBoundaryDraftStore: '초안 저장소',
   dataBoundarySourceCardState: '출처 카드 UI 상태',
-  dataBoundaryExcludedAttachmentNote: '제외된 attachment {count}개는 provider 요청에 포함하지 않습니다.',
+  dataBoundaryExcludedAttachmentNote:
+    '제외된 attachment {count}개는 provider 요청에 포함하지 않습니다.',
   sourceStatusVerified: '검증됨',
   sourceStatusCandidate: '후보',
   sourceStatusMissing: '누락',
@@ -1606,6 +1648,10 @@ const ko: I18nKeys = {
   sourceOpenAction: '열기',
   sourceCopyLinkAction: '링크 복사',
   sourceInsertIntoNoteAction: '노트에 삽입',
+  sourceOpenedNotice: '출처를 열었습니다: {path}',
+  sourceOpenFailedNotice: '출처 열기 실패: {message}',
+  sourceCopyLinkFailedNotice: '출처 링크 복사 실패: {message}',
+  sourceInsertFailedNotice: '출처 삽입 실패: {message}',
   sourceUnverifiedCount: '검증되지 않은 링크/출처 {count}개',
   sourceFileNotFound: '파일을 찾을 수 없습니다: {path}',
   sourceUnverifiedCandidate: '검증되지 않은 검색 후보입니다: {detail}',
@@ -1619,10 +1665,16 @@ const ko: I18nKeys = {
   messageEditAndSendAction: '수정 후 전송',
   activeNoteMissingNotice: '활성 노트가 없습니다.',
   messageInsertedNotice: '활성 노트에 삽입했습니다.',
+  messageCopyFailedNotice: '메시지 복사 실패: {message}',
+  messageInsertFailedNotice: '메시지 삽입 실패: {message}',
   sourceWarningIncluded: '검증되지 않은 링크/출처 {count}개가 포함되어 있습니다.',
   aiAnswerTitle: 'AI 답변',
   savedAsNewNoteNotice: '새 노트로 저장했습니다: {path}',
+  savedAsNewNoteFailedNotice: '새 노트 저장 실패: {message}',
   branchSessionCreatedNotice: '브랜치 세션을 만들었습니다.',
+  branchSessionMissingNotice: '브랜치할 메시지를 찾을 수 없습니다.',
+  branchSessionFailedNotice: '브랜치 세션 생성 실패: {message}',
+  regenerationTargetMissingNotice: '재생성할 메시지를 찾을 수 없습니다.',
   chatStatusIdle: '대기',
   chatStatusRunning: '생성 중',
   chatStatusDone: '완료',
@@ -1695,6 +1747,12 @@ const ko: I18nKeys = {
   chatSessionCount: '{count}개 대화',
   chatMessageUnit: '개 메시지',
   chatDaysAgo: '{count}일 전',
+  chatSessionRenamedNotice: '대화 이름을 변경했습니다.',
+  chatSessionRenameFailedNotice: '대화 이름 변경 실패: {message}',
+  chatSessionRenameNoChangeNotice: '대화 이름이 변경되지 않았습니다.',
+  chatSessionRenameEmptyNotice: '대화 이름이 비어 있어 변경하지 않았습니다.',
+  chatSessionDeletedNotice: '대화를 삭제했습니다.',
+  chatSessionDeleteFailedNotice: '대화 삭제 실패: {message}',
 
   settingsAuto001: '가장 널리 쓰이는 기본 모델. 성능과 비용의 균형이 뛰어납니다.',
   settingsAuto002: '최고 성능 모델. 다국어와 복잡한 문맥에 강점이 있습니다.',
@@ -2123,6 +2181,10 @@ const ko: I18nKeys = {
     '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다. 현재 제외 대상: {folder}',
   ragNoUpdates: '업데이트가 필요한 문서가 없습니다.',
   ragNoDocuments: 'RAG 대상 문서가 없습니다.',
+  ragNoPendingUpdatesNotice: '이미 최신입니다.',
+  ragNoDocumentsNotice: '인덱싱할 RAG 대상 문서가 없습니다.',
+  ragIndexCancelRequestedNotice: '인덱싱 취소를 요청했습니다.',
+  ragIndexResumeRequestedNotice: '인덱싱을 재개했습니다.',
   ragNoRunningIndexing: '실행 중인 인덱싱이 없습니다.',
   ragNotPerformancePaused: '성능 보호 대기 상태가 아닙니다.',
   graphRagStatusDisabledLabel: '빌드 보류',
@@ -2261,6 +2323,8 @@ const ko: I18nKeys = {
   overviewEmbeddingLabel: '{provider} / {model}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
   mcpServerNotConnected: 'MCP 서버 `{server}`에 연결되어 있지 않습니다.',
+  mcpRegistryUnavailableNotice: 'MCP 레지스트리가 초기화되지 않았습니다.',
+  mcpClientUnavailableNotice: 'MCP 서버 `{server}` 클라이언트를 찾을 수 없습니다.',
   mcpToolErrorPrefix: '[MCP 도구 오류] {message}',
   mcpToolEmptyResult: 'MCP 도구 `{tool}`가 빈 결과를 반환했습니다.',
   mcpValidationPattern: '입력값의 형식이 올바르지 않습니다. 요구되는 패턴: `{pattern}`',
@@ -2533,6 +2597,11 @@ const en: I18nKeys = {
   refreshModelList: 'Refresh model list',
   refreshing: 'Refreshing...',
   refreshComplete: 'Refresh complete',
+  actionCompletedNotice: 'Completed.',
+  actionPartialNotice: 'Partially completed.',
+  actionNoopNotice: 'No changes were made.',
+  actionCancelledNotice: 'Cancelled.',
+  actionFailedWithMessage: 'Failed: {message}',
   noModelsEnabled: 'No models enabled',
   pluginAwareGeneration: 'Enable Plugin-Aware Generation',
   pluginAwareGenerationDesc:
@@ -2583,21 +2652,27 @@ const en: I18nKeys = {
   noModelsFound: 'No models found.',
   enabled: 'Enabled',
   providerCapabilityToolCalling: 'Tool calling support',
-  providerCapabilityToolCallingDesc: 'Enable only when this custom OpenAI-compatible endpoint reliably supports tool schemas and tool call deltas.',
+  providerCapabilityToolCallingDesc:
+    'Enable only when this custom OpenAI-compatible endpoint reliably supports tool schemas and tool call deltas.',
   providerCapabilityReasoning: 'Reasoning/thinking display support',
-  providerCapabilityReasoningDesc: 'Enable only when the provider explicitly emits reasoning or thinking fields.',
+  providerCapabilityReasoningDesc:
+    'Enable only when the provider explicitly emits reasoning or thinking fields.',
   providerCapabilityLiveStreaming: 'Live streaming support',
-  providerCapabilityLiveStreamingDesc: 'Enable only for endpoints that deliver tokens live. requestUrl paths are usually buffered.',
+  providerCapabilityLiveStreamingDesc:
+    'Enable only for endpoints that deliver tokens live. requestUrl paths are usually buffered.',
   providerCapabilityNativeAbort: 'Native abort support',
-  providerCapabilityNativeAbortDesc: 'Enable when AbortSignal can actually cancel the request. requestUrl is best-effort.',
+  providerCapabilityNativeAbortDesc:
+    'Enable when AbortSignal can actually cancel the request. requestUrl is best-effort.',
   providerCapabilityMaxToolRounds: 'Max tool rounds',
-  providerCapabilityMaxToolRoundsDesc: 'Maximum tool-loop rounds allowed for one answer on this provider. Keep 0 when tool calling is disabled.',
+  providerCapabilityMaxToolRoundsDesc:
+    'Maximum tool-loop rounds allowed for one answer on this provider. Keep 0 when tool calling is disabled.',
   providerCapabilityBufferedNoTools: 'buffered · tools off',
   providerCapabilityBuffered: 'buffered',
   providerCapabilityNoTools: 'tools off',
   providerCapabilityStreamingReasoning: 'streaming · reasoning',
   providerCapabilityStreaming: 'streaming',
-  providerToolCallingUnsupportedNotice: '{provider} currently has tool calling capability disabled, so MCP tools will not be sent for this request.',
+  providerToolCallingUnsupportedNotice:
+    '{provider} currently has tool calling capability disabled, so MCP tools will not be sent for this request.',
   providerWaitBufferedHeadline: 'Waiting for {provider} / {model}',
   providerWaitBufferedDetail:
     'The completed response will appear at once without live tokens. Cancel may not immediately stop a request that is already in progress at the provider.',
@@ -2854,17 +2929,21 @@ const en: I18nKeys = {
   chatFolderMentionChip: 'Folder {name}',
   chatFileMentionChip: 'File {name}',
   chatReadinessProviderMissing: 'Provider setup required',
-  chatReadinessProviderMissingDetail: 'Enable at least one LLM provider in settings before sending.',
+  chatReadinessProviderMissingDetail:
+    'Enable at least one LLM provider in settings before sending.',
   chatReadinessModelMissing: 'Model selection required',
   chatReadinessModelMissingDetail: 'Add at least one model to an enabled provider.',
   chatReadinessRagIndexing: 'RAG indexing',
-  chatReadinessRagIndexingDetail: 'You can send now, but some current vault context may be missing.',
+  chatReadinessRagIndexingDetail:
+    'You can send now, but some current vault context may be missing.',
   chatReadinessRagNotReady: 'RAG not ready',
-  chatReadinessRagNotReadyDetail: 'Build or refresh the index to improve automatic context quality.',
+  chatReadinessRagNotReadyDetail:
+    'Build or refresh the index to improve automatic context quality.',
   chatReadinessMcpPartial: 'Some MCP connections need attention',
   chatReadinessMcpPartialDetail: 'Connected {connected}/{total}. Reconnect the servers you need.',
   chatReadinessSaveFolderMissing: 'No save folder',
-  chatReadinessSaveFolderMissingDetail: 'Set a chat save folder for session replay and draft recovery.',
+  chatReadinessSaveFolderMissingDetail:
+    'Set a chat save folder for session replay and draft recovery.',
   chatReadinessReady: 'Chat is ready',
   chatReadinessBlocked: 'Provider setup required',
   chatReadinessDegraded: 'Some features need attention',
@@ -2918,6 +2997,10 @@ const en: I18nKeys = {
   sourceOpenAction: 'Open',
   sourceCopyLinkAction: 'Copy link',
   sourceInsertIntoNoteAction: 'Insert into note',
+  sourceOpenedNotice: 'Opened source: {path}',
+  sourceOpenFailedNotice: 'Failed to open source: {message}',
+  sourceCopyLinkFailedNotice: 'Failed to copy source link: {message}',
+  sourceInsertFailedNotice: 'Failed to insert source: {message}',
   sourceUnverifiedCount: '{count} unverified links/sources',
   sourceFileNotFound: 'File not found: {path}',
   sourceUnverifiedCandidate: 'Unverified search candidate: {detail}',
@@ -2931,10 +3014,16 @@ const en: I18nKeys = {
   messageEditAndSendAction: 'Edit and send',
   activeNoteMissingNotice: 'No active note.',
   messageInsertedNotice: 'Inserted into the active note.',
+  messageCopyFailedNotice: 'Failed to copy message: {message}',
+  messageInsertFailedNotice: 'Failed to insert message: {message}',
   sourceWarningIncluded: 'Includes {count} unverified links/sources.',
   aiAnswerTitle: 'AI answer',
   savedAsNewNoteNotice: 'Saved as a new note: {path}',
+  savedAsNewNoteFailedNotice: 'Failed to save new note: {message}',
   branchSessionCreatedNotice: 'Created a branch session.',
+  branchSessionMissingNotice: 'Could not find the message to branch from.',
+  branchSessionFailedNotice: 'Failed to create branch session: {message}',
+  regenerationTargetMissingNotice: 'Could not find the message to regenerate.',
   chatStatusIdle: 'Idle',
   chatStatusRunning: 'Generating',
   chatStatusDone: 'Done',
@@ -3007,6 +3096,12 @@ const en: I18nKeys = {
   chatSessionCount: '{count} sessions',
   chatMessageUnit: ' messages',
   chatDaysAgo: '{count}d ago',
+  chatSessionRenamedNotice: 'Renamed the session.',
+  chatSessionRenameFailedNotice: 'Failed to rename session: {message}',
+  chatSessionRenameNoChangeNotice: 'The session name was not changed.',
+  chatSessionRenameEmptyNotice: 'The session name is empty, so it was not changed.',
+  chatSessionDeletedNotice: 'Deleted the session.',
+  chatSessionDeleteFailedNotice: 'Failed to delete session: {message}',
 
   settingsAuto001: 'Most widely used default model. Strong balance between performance and cost.',
   settingsAuto002: 'Highest performance model. Strong for multilingual and complex context.',
@@ -3041,15 +3136,15 @@ const en: I18nKeys = {
   settingsAuto028: 'Calculating status...',
   settingsAuto029: 'Optional GraphRAG operations',
   settingsAuto030: 'Processed {v1} evidence items of {v0} files{v2}{v3}',
-  settingsAuto030Desc: 'This processed count is the number of extracted evidence units, not file count.',
+  settingsAuto030Desc:
+    'This processed count is the number of extracted evidence units, not file count.',
   settingsAuto031: ', {v0} failed',
   settingsAuto032: ', {v0} need sync',
   settingsAuto033: 'No files are eligible for RAG indexing.',
   settingsAuto034: 'Status',
   settingsAuto035: 'Total files',
   settingsAuto036: 'Processed (evidence)',
-  settingsAuto036Desc:
-    'Total saved evidence items. This can differ from the file count.',
+  settingsAuto036Desc: 'Total saved evidence items. This can differ from the file count.',
   settingsAuto037: 'Failed files',
   settingsAuto038: 'Use the resume button to retry only failed files.',
   settingsAuto039: 'No failed files.',
@@ -3445,6 +3540,10 @@ const en: I18nKeys = {
     'Automatically exclude the chat save folder from RAG indexing. Current exclusion target: {folder}',
   ragNoUpdates: 'No documents need updating.',
   ragNoDocuments: 'No RAG target documents.',
+  ragNoPendingUpdatesNotice: 'Already up to date.',
+  ragNoDocumentsNotice: 'No RAG target documents to index.',
+  ragIndexCancelRequestedNotice: 'Indexing cancellation was requested.',
+  ragIndexResumeRequestedNotice: 'Indexing resumed.',
   ragNoRunningIndexing: 'No indexing job is running.',
   ragNotPerformancePaused: 'Performance guard is not paused.',
   graphRagStatusDisabledLabel: 'Build paused',
@@ -3586,6 +3685,8 @@ const en: I18nKeys = {
   overviewEmbeddingLabel: '{provider} / {model}',
   mcpToolNotFoundInConnectedServers: 'Tool `{tool}` was not found on connected MCP servers.',
   mcpServerNotConnected: 'MCP server `{server}` is not connected.',
+  mcpRegistryUnavailableNotice: 'MCP registry is not initialized.',
+  mcpClientUnavailableNotice: 'Could not find the MCP client for `{server}`.',
   mcpToolErrorPrefix: '[MCP tool error] {message}',
   mcpToolEmptyResult: 'MCP tool `{tool}` returned an empty result.',
   mcpValidationPattern: 'The input format is invalid. Required pattern: `{pattern}`',

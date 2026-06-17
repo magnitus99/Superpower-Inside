@@ -18,6 +18,7 @@ import {
 } from './mcp/connection-state';
 import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
+import { runActionWithFeedback } from './utils/action-feedback';
 import type { VectorStore } from './rag/store';
 import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from './rag/indexer';
 import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
@@ -2174,6 +2175,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
     const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
+    statusEl.setAttribute('role', 'status');
+    statusEl.setAttribute('aria-live', 'polite');
     const getEmbeddingValidationConfig = (): ProviderConfig | CustomOpenAIProviderConfig =>
       effectiveProvider === 'other'
         ? { apiKey: '', models: [], enabled: false }
@@ -2188,27 +2191,34 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('testConnection'));
         button.onClick(async () => {
-          statusEl.setText('');
-          button.setDisabled(true);
-          statusEl.setText(t('testing'));
-          try {
-            const { validateEmbeddingConnection } = await import('./llm/validation');
-            const result = await validateEmbeddingConnection(
-              effectiveProvider,
-              effectiveModel,
-              getEmbeddingValidationConfig(),
-            );
-            if (result.valid) {
-              statusEl.setText(t('settingsAuto096', { v0: String(result.models.length) }));
-            } else {
-              statusEl.setText(t('settingsAuto097', { v0: String(result.error) }));
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            statusEl.setText(t('settingsAuto098', { v0: String(msg) }));
-          } finally {
-            button.setDisabled(false);
-          }
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            action: async () => {
+              statusEl.setText(t('testing'));
+              try {
+                const { validateEmbeddingConnection } = await import('./llm/validation');
+                const result = await validateEmbeddingConnection(
+                  effectiveProvider,
+                  effectiveModel,
+                  getEmbeddingValidationConfig(),
+                );
+                if (result.valid) {
+                  const detail = t('settingsAuto096', { v0: String(result.models.length) });
+                  statusEl.setText(detail);
+                  return { status: 'success', detail };
+                }
+                const detail = t('settingsAuto097', { v0: String(result.error) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = t('settingsAuto098', { v0: String(msg) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              }
+            },
+          });
         });
       });
     new Setting(section)
@@ -2217,27 +2227,34 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('settingsAuto099'));
         button.onClick(async () => {
-          statusEl.setText('');
-          button.setDisabled(true);
-          statusEl.setText(t('testing'));
-          try {
-            const { testEmbeddingGeneration } = await import('./llm/validation');
-            const result = await testEmbeddingGeneration(
-              effectiveProvider,
-              effectiveModel,
-              getEmbeddingValidationConfig(),
-            );
-            if (result.valid) {
-              statusEl.setText(t('settingsAuto101', { v0: String(effectiveModel) }));
-            } else {
-              statusEl.setText(t('settingsAuto102', { v0: String(result.error) }));
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            statusEl.setText(t('settingsAuto098', { v0: String(msg) }));
-          } finally {
-            button.setDisabled(false);
-          }
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            action: async () => {
+              statusEl.setText(t('testing'));
+              try {
+                const { testEmbeddingGeneration } = await import('./llm/validation');
+                const result = await testEmbeddingGeneration(
+                  effectiveProvider,
+                  effectiveModel,
+                  getEmbeddingValidationConfig(),
+                );
+                if (result.valid) {
+                  const detail = t('settingsAuto101', { v0: String(effectiveModel) });
+                  statusEl.setText(detail);
+                  return { status: 'success', detail };
+                }
+                const detail = t('settingsAuto102', { v0: String(result.error) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = t('settingsAuto098', { v0: String(msg) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              }
+            },
+          });
         });
       });
   }
@@ -2775,78 +2792,131 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.updateRagControlStates(status);
       });
       btn.addEventListener('click', () => {
-        void (async () => {
-          if (!hasIndexer) {
-            new Notice(t('settingsAuto164') + this.diagnoseRAGInitFailure());
-            return;
-          }
-          try {
+        void runActionWithFeedback({
+          button: btn,
+          loadingText: t('indexingStarted'),
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['rag'],
+          action: async () => {
+            if (!hasIndexer) {
+              return {
+                status: 'error',
+                notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
+              };
+            }
             const status = await this.getRagStatus();
             if (!status || status.updateRequiredDocuments.length === 0) {
-              return;
+              this.updateRagStats();
+              return { status: 'noop', detail: t('ragNoPendingUpdatesNotice') };
             }
             new Notice(t('settingsAuto165', { v0: String(status.updateRequiredDocuments.length) }));
-            const result = await p.ragIndexingScheduler!.indexPending();
-            new Notice(
-              t('settingsAuto166', { v0: String(result.indexed), v1: String(result.skipped) }),
-            );
-            this.updateRagStats();
-          } catch (err) {
-            if (isIndexingCancelledError(err)) {
-              new Notice(t('settingsAuto167'));
+            try {
+              const result = await p.ragIndexingScheduler!.indexPending();
               this.updateRagStats();
-              return;
+              return {
+                status: 'success',
+                detail: t('settingsAuto166', {
+                  v0: String(result.indexed),
+                  v1: String(result.skipped),
+                }),
+              };
+            } catch (err) {
+              if (isIndexingCancelledError(err)) {
+                this.updateRagStats();
+                return { status: 'partial', detail: t('settingsAuto167') };
+              }
+              const msg = err instanceof Error ? err.message : String(err);
+              return {
+                status: 'error',
+                detail: msg,
+                notice: t('settingsAuto168', { v0: String(msg) }),
+              };
             }
-            const msg = err instanceof Error ? err.message : String(err);
-            new Notice(t('settingsAuto168', { v0: String(msg) }));
-          }
-        })();
+          },
+        });
       });
     });
     primaryControls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
       this.reindexAllButton = btn;
       btn.disabled = isIndexing || !hasIndexer;
       btn.addEventListener('click', () => {
-        void (async () => {
-          if (!hasIndexer) {
-            new Notice(t('settingsAuto164') + this.diagnoseRAGInitFailure());
-            return;
-          }
-          try {
+        void runActionWithFeedback({
+          button: btn,
+          loadingText: t('reindexingStarted'),
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['rag'],
+          action: async () => {
+            if (!hasIndexer) {
+              return {
+                status: 'error',
+                notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
+              };
+            }
             const status = await this.getRagStatus();
             if (!status || status.totalDocuments === 0) {
-              return;
+              this.updateRagStats();
+              return { status: 'noop', detail: t('ragNoDocumentsNotice') };
             }
             new Notice(t('settingsAuto170'));
-            const result = await p.ragIndexingScheduler!.reindexAll();
-            new Notice(t('settingsAuto171', { v0: String(result.indexed) }));
-            this.updateRagStats();
-          } catch (err) {
-            if (isIndexingCancelledError(err)) {
-              new Notice(t('settingsAuto167'));
+            try {
+              const result = await p.ragIndexingScheduler!.reindexAll();
               this.updateRagStats();
-              return;
+              return {
+                status: 'success',
+                detail: t('settingsAuto171', { v0: String(result.indexed) }),
+              };
+            } catch (err) {
+              if (isIndexingCancelledError(err)) {
+                this.updateRagStats();
+                return { status: 'partial', detail: t('settingsAuto167') };
+              }
+              const msg = err instanceof Error ? err.message : String(err);
+              return {
+                status: 'error',
+                detail: msg,
+                notice: t('settingsAuto172', { v0: String(msg) }),
+              };
             }
-            const msg = err instanceof Error ? err.message : String(err);
-            new Notice(t('settingsAuto172', { v0: String(msg) }));
-          }
-        })();
+          },
+        });
       });
     });
     primaryControls.createEl('button', { text: t('settingsAuto173') }, (btn) => {
       this.cancelIndexingButton = btn;
       btn.disabled = !isIndexing;
       btn.addEventListener('click', () => {
-        this.plugin.cancelRagIndexing();
-        this.updateRagStats();
+        void runActionWithFeedback({
+          button: btn,
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['rag'],
+          action: () => {
+            if (!this.plugin.isRagIndexing()) {
+              return { status: 'noop', detail: t('ragNoRunningIndexing') };
+            }
+            this.plugin.cancelRagIndexing();
+            this.updateRagStats();
+            return { status: 'success', detail: t('ragIndexCancelRequestedNotice') };
+          },
+        });
       });
     });
     primaryControls.createEl('button', { text: t('settingsAuto174') }, (btn) => {
       this.resumeIndexingButton = btn;
       btn.disabled = true;
       btn.addEventListener('click', () => {
-        this.plugin.resumeRagIndexing();
-        this.updateRagStats();
+        void runActionWithFeedback({
+          button: btn,
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['rag'],
+          action: () => {
+            if (!this.plugin.getRagPerformanceGuardState()?.remainingPauseMs) {
+              return { status: 'noop', detail: t('ragNotPerformancePaused') };
+            }
+            this.plugin.resumeRagIndexing();
+            this.updateRagStats();
+            return { status: 'success', detail: t('ragIndexResumeRequestedNotice') };
+          },
+        });
       });
     });
     this.ragControlsHint = controls.createDiv({
@@ -2859,24 +2929,33 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     dangerControls.createEl('button', { text: t('settingsAuto176') }, (btn) => {
       btn.disabled = isIndexing;
       btn.addEventListener('click', () => {
-        void (async () => {
-          if (!confirm(t('settingsAuto177'))) {
-            return;
-          }
-          try {
-            if (p.vectorStore) {
-              await p.vectorStore.clear();
+        void runActionWithFeedback({
+          button: btn,
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['rag'],
+          action: async () => {
+            if (!confirm(t('settingsAuto177'))) {
+              return { status: 'noop', detail: t('actionCancelledNotice') };
             }
-            if (p.embeddingProvider) {
-              await p.embeddingProvider.clearCache();
+            try {
+              if (p.vectorStore) {
+                await p.vectorStore.clear();
+              }
+              if (p.embeddingProvider) {
+                await p.embeddingProvider.clearCache();
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              return {
+                status: 'error',
+                detail: msg,
+                notice: t('settingsAuto179', { v0: String(msg) }),
+              };
             }
-            new Notice(t('settingsAuto178'));
             this.updateRagStats();
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            new Notice(t('settingsAuto179', { v0: String(msg) }));
-          }
-        })();
+            return { status: 'success', detail: t('settingsAuto178') };
+          },
+        });
       });
     });
     void this.getRagStatus().then((status) => this.updateRagControlStates(status));
@@ -3081,7 +3160,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           value,
           existingValues,
           (path) => path.includes('*') || this.app.vault.getAbstractFileByPath(path) !== null,
-      ),
+        ),
       onChange: (values) => {
         this.plugin.settings.rag.excludePaths = values;
         this.debouncedRagSave();
@@ -3904,11 +3983,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .setName(t('providerCapabilityNativeAbort'))
         .setDesc(t('providerCapabilityNativeAbortDesc'))
         .addToggle((toggle) =>
-          toggle.setValue((capabilityOverrides.abort ?? defaultAbort) === 'native').onChange(
-            (value) => {
+          toggle
+            .setValue((capabilityOverrides.abort ?? defaultAbort) === 'native')
+            .onChange((value) => {
               updateCapabilityOverride('abort', value ? 'native' : 'best-effort');
-            },
-          ),
+            }),
         );
       new Setting(section)
         .setName(t('providerCapabilityMaxToolRounds'))
@@ -3941,6 +4020,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const statusContainer = section.createDiv({
       cls: 'superpower-inside-settings-validation-status',
     });
+    statusContainer.setAttribute('role', 'status');
+    statusContainer.setAttribute('aria-live', 'polite');
     let filterText = '';
     let selectedOnly = false;
     let availableModels = this.getInitialProviderModels(cacheKey, config);
@@ -4003,36 +4084,46 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('settingsAuto257'));
         button.onClick(async () => {
-          statusContainer.setText('');
-          button.setDisabled(true);
-          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-          try {
-            const { fetchProviderModels } = await import('./llm/validation');
-            const result =
-              target.kind === 'fixed'
-                ? await fetchProviderModels(target.key, config)
-                : await fetchProviderModels('customOpenAI', target.config);
-            spinner.remove();
-            if (result.valid) {
-              availableModels = this.mergeModels(config.models, result.models);
-              this.validationCache[cacheKey] = result;
-              statusContainer.setText(t('settingsAuto258', { v0: String(result.models.length) }));
-              renderModelList();
-            } else {
-              statusContainer.setText(t('settingsAuto259', { v0: String(result.error) }));
-              this.validationCache[cacheKey] = {
-                valid: false,
-                models: this.validationCache[cacheKey]?.models ?? [],
-                error: result.error,
-              };
-            }
-          } catch (err) {
-            spinner.remove();
-            const msg = err instanceof Error ? err.message : String(err);
-            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
-          } finally {
-            button.setDisabled(false);
-          }
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            refreshBus: this.plugin.refreshBus,
+            refreshDomains: ['models'],
+            action: async () => {
+              statusContainer.setText('');
+              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+              try {
+                const { fetchProviderModels } = await import('./llm/validation');
+                const result =
+                  target.kind === 'fixed'
+                    ? await fetchProviderModels(target.key, config)
+                    : await fetchProviderModels('customOpenAI', target.config);
+                if (result.valid) {
+                  availableModels = this.mergeModels(config.models, result.models);
+                  this.validationCache[cacheKey] = result;
+                  const detail = t('settingsAuto258', { v0: String(result.models.length) });
+                  statusContainer.setText(detail);
+                  renderModelList();
+                  return { status: 'success', detail };
+                }
+                const detail = t('settingsAuto259', { v0: String(result.error) });
+                statusContainer.setText(detail);
+                this.validationCache[cacheKey] = {
+                  valid: false,
+                  models: this.validationCache[cacheKey]?.models ?? [],
+                  error: result.error,
+                };
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = `${t('error')}: ${msg}`;
+                statusContainer.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              } finally {
+                spinner.remove();
+              }
+            },
+          });
         });
       });
     new Setting(section)
@@ -4041,36 +4132,46 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('testConnection'));
         button.onClick(async () => {
-          statusContainer.setText('');
-          button.setDisabled(true);
-          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-          try {
-            const { validateProviderConnection } = await import('./llm/validation');
-            const result =
-              target.kind === 'fixed'
-                ? await validateProviderConnection(target.key, config)
-                : await validateProviderConnection('customOpenAI', target.config);
-            spinner.remove();
-            if (result.valid) {
-              availableModels = this.mergeModels(config.models, result.models);
-              statusContainer.setText(t('settingsAuto260', { v0: String(result.models.length) }));
-              this.validationCache[cacheKey] = result;
-              renderModelList();
-            } else {
-              statusContainer.setText(t('settingsAuto097', { v0: String(result.error) }));
-              this.validationCache[cacheKey] = {
-                valid: false,
-                models: this.validationCache[cacheKey]?.models ?? [],
-                error: result.error,
-              };
-            }
-          } catch (err) {
-            spinner.remove();
-            const msg = err instanceof Error ? err.message : String(err);
-            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
-          } finally {
-            button.setDisabled(false);
-          }
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            refreshBus: this.plugin.refreshBus,
+            refreshDomains: ['models'],
+            action: async () => {
+              statusContainer.setText('');
+              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+              try {
+                const { validateProviderConnection } = await import('./llm/validation');
+                const result =
+                  target.kind === 'fixed'
+                    ? await validateProviderConnection(target.key, config)
+                    : await validateProviderConnection('customOpenAI', target.config);
+                if (result.valid) {
+                  availableModels = this.mergeModels(config.models, result.models);
+                  const detail = t('settingsAuto260', { v0: String(result.models.length) });
+                  statusContainer.setText(detail);
+                  this.validationCache[cacheKey] = result;
+                  renderModelList();
+                  return { status: 'success', detail };
+                }
+                const detail = t('settingsAuto097', { v0: String(result.error) });
+                statusContainer.setText(detail);
+                this.validationCache[cacheKey] = {
+                  valid: false,
+                  models: this.validationCache[cacheKey]?.models ?? [],
+                  error: result.error,
+                };
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = `${t('error')}: ${msg}`;
+                statusContainer.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              } finally {
+                spinner.remove();
+              }
+            },
+          });
         });
       });
     new Setting(section)
@@ -4079,39 +4180,48 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('settingsAuto261'));
         button.onClick(async () => {
-          statusContainer.setText('');
-          const model = config.models[0];
-          if (!model) {
-            statusContainer.setText(t('settingsAuto263'));
-            return;
-          }
-          button.setDisabled(true);
-          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-          try {
-            const { testProviderGeneration } = await import('./llm/validation');
-            const result =
-              target.kind === 'fixed'
-                ? await testProviderGeneration(target.key, config, model)
-                : await testProviderGeneration('customOpenAI', target.config, model);
-            spinner.remove();
-            if (result.valid) {
-              statusContainer.setText(t('settingsAuto264', { v0: String(model) }));
-              this.validationCache[cacheKey] = result;
-            } else {
-              statusContainer.setText(t('settingsAuto265', { v0: String(result.error) }));
-              this.validationCache[cacheKey] = {
-                valid: false,
-                models: this.validationCache[cacheKey]?.models ?? [],
-                error: result.error,
-              };
-            }
-          } catch (err) {
-            spinner.remove();
-            const msg = err instanceof Error ? err.message : String(err);
-            statusContainer.setText(`❌ ${t('error')}: ${msg}`);
-          } finally {
-            button.setDisabled(false);
-          }
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            action: async () => {
+              statusContainer.setText('');
+              const model = config.models[0];
+              if (!model) {
+                const detail = t('settingsAuto263');
+                statusContainer.setText(detail);
+                return { status: 'noop', detail };
+              }
+              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+              try {
+                const { testProviderGeneration } = await import('./llm/validation');
+                const result =
+                  target.kind === 'fixed'
+                    ? await testProviderGeneration(target.key, config, model)
+                    : await testProviderGeneration('customOpenAI', target.config, model);
+                if (result.valid) {
+                  const detail = t('settingsAuto264', { v0: String(model) });
+                  statusContainer.setText(detail);
+                  this.validationCache[cacheKey] = result;
+                  return { status: 'success', detail };
+                }
+                const detail = t('settingsAuto265', { v0: String(result.error) });
+                statusContainer.setText(detail);
+                this.validationCache[cacheKey] = {
+                  valid: false,
+                  models: this.validationCache[cacheKey]?.models ?? [],
+                  error: result.error,
+                };
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = `${t('error')}: ${msg}`;
+                statusContainer.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              } finally {
+                spinner.remove();
+              }
+            },
+          });
         });
       });
   }
