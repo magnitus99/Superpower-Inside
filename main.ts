@@ -119,6 +119,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
   private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
+  private unloaded = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
   eventDrivenRagStats: RagStatusSummary | null = null;
@@ -126,21 +127,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   refreshBus: RefreshBus = new RefreshBus();
 
   async onload(): Promise<void> {
+    this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     await this.loadSettings();
     this.initProvider();
-    await this.initRAG();
-    void this.initMCP()
-      .then((errors) => {
-        if (errors.length > 0) {
-          new Notice(t('mcpAutoConnectFailedCount', { count: errors.length }), 10000);
-        }
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.getLogger().error('MCP auto-connect failed.', { source: 'mcp', error: err });
-        new Notice(t('mcpAutoConnectFailedMessage', { message: msg }), 10000);
-      });
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
@@ -245,10 +235,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
+    this.startDeferredStartupTasks();
     this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
   }
 
   onunload(): void {
+    this.unloaded = true;
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
@@ -278,6 +270,43 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.clearMcpRetryTimers();
     this.refreshBus.destroy();
     this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
+  }
+
+  private startDeferredStartupTasks(): void {
+    this.startDeferredRagInitialization();
+    this.startDeferredMcpInitialization();
+  }
+
+  private startDeferredRagInitialization(): void {
+    const timeoutId = window.setTimeout(() => {
+      void this.initRAG().catch((err) => {
+        if (this.unloaded) return;
+        this.getLogger().error('Deferred RAG initialization failed.', {
+          source: 'rag',
+          error: err,
+        });
+        this.refreshBus.emit('rag', { status: 'error', detail: t('ragStatsFailed') });
+      });
+    }, 250);
+    this.register(() => window.clearTimeout(timeoutId));
+  }
+
+  private startDeferredMcpInitialization(): void {
+    const timeoutId = window.setTimeout(() => {
+      void this.initMCP()
+        .then((errors) => {
+          if (!this.unloaded && errors.length > 0) {
+            new Notice(t('mcpAutoConnectFailedCount', { count: errors.length }), 10000);
+          }
+        })
+        .catch((err) => {
+          if (this.unloaded) return;
+          const msg = err instanceof Error ? err.message : String(err);
+          this.getLogger().error('MCP auto-connect failed.', { source: 'mcp', error: err });
+          new Notice(t('mcpAutoConnectFailedMessage', { message: msg }), 10000);
+        });
+    }, 1000);
+    this.register(() => window.clearTimeout(timeoutId));
   }
 
   private getLogger(): AppLogger {

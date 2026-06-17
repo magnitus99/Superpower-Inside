@@ -245,6 +245,7 @@ function createApp(options: { localSettings?: unknown; legacyDataExists?: boolea
       exists: vi.fn((path: string) =>
         Promise.resolve(path.endsWith('/data.json') ? options.legacyDataExists === true : false),
       ),
+      stat: vi.fn(() => Promise.resolve(null)),
       mkdir: vi.fn(() => Promise.resolve()),
       remove: vi.fn(() => Promise.resolve()),
       read: vi.fn(() => Promise.resolve('')),

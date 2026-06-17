@@ -8,13 +8,21 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
+export interface MCPClientManagerOptions {
+  connectTimeoutMs?: number;
+}
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
+
 export class MCPClientManager {
   private client: Client | null;
   private transport: StdioClientTransport | null;
+  private readonly connectTimeoutMs: number;
 
-  constructor() {
+  constructor(options: MCPClientManagerOptions = {}) {
     this.client = null;
     this.transport = null;
+    this.connectTimeoutMs = normalizeTimeoutMs(options.connectTimeoutMs);
   }
 
   isConnected(): boolean {
@@ -37,13 +45,24 @@ export class MCPClientManager {
   }
 
   async connectStdio(config: MCPServerConfig): Promise<void> {
-    this.transport = new StdioClientTransport({
+    const transport = new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
       env: config.env,
     });
-    this.client = new Client({ name: 'superpower-inside', version: '1.0.0' });
-    await this.client.connect(this.transport);
+    const client = new Client({ name: 'superpower-inside', version: '1.0.0' });
+    this.transport = transport;
+    this.client = client;
+    try {
+      await withTimeout(client.connect(transport), this.connectTimeoutMs);
+    } catch (err) {
+      try {
+        await this.disconnect();
+      } catch {
+        // 연결 실패 후 정리 실패가 원래 연결 오류를 덮지 않게 한다.
+      }
+      throw err;
+    }
   }
 
   async listTools(): Promise<
@@ -65,10 +84,35 @@ export class MCPClientManager {
   }
 
   async disconnect(): Promise<void> {
-    if (this.client) {
-      await this.client.close();
-      this.client = null;
-    }
+    const client = this.client;
+    const transport = this.transport;
+    this.client = null;
     this.transport = null;
+    if (client) {
+      await client.close();
+      return;
+    }
+    if (transport) {
+      await transport.close();
+    }
   }
+}
+
+function normalizeTimeoutMs(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CONNECT_TIMEOUT_MS;
+  return Math.max(1, Math.floor(value));
+}
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutId: number | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(`MCP stdio connection timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  });
 }
