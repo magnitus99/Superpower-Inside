@@ -21,6 +21,18 @@
 - Rust/WASM 변경은 반드시 `npm run security:full`를 통과해야 한다. 이 게이트는 `rustfmt`, `clippy -D warnings`, Rust tests, wasm target build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, npm audit, generated WASM 최신성 검사를 포함한다.
 - UI/DOM/CSS 변경은 Obsidian community review 규칙까지 검증한다. 런타임 TS에서 inline style, `innerHTML`, heading direct create 같은 review error 패턴을 만들지 않는다.
 
+## UI/UX VISUAL REVIEW BAR
+
+- UI/UX 검수는 반드시 비주얼로 한다. 사람은 화면을 그림으로 이해하지, 절대로 문자 설명만으로 이해하지 않는다.
+- UI/UX 검수는 반드시 비주얼로 한다. 코드 diff, DOM 구조, 테스트 이름, 텍스트 설명은 실제 화면을 대체하지 못한다.
+- UI/UX 검수는 반드시 비주얼로 한다. 스크린샷 없이 “괜찮다”, “정돈됐다”, “브랜드 톤에 맞다”, “여백이 좋다”고 말하지 않는다.
+- UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드렸다면, 반드시 실제 실행 화면의 스크린샷을 직접 찍어서 본다. 가능하면 `.test-vault`에서 Obsidian을 열고, 불가능하면 해당 UI를 재현하는 시뮬레이션/브라우저 화면을 열어 스크린샷으로 확인한다.
+- 작업자는 스크린샷을 보고 판단해야 한다. 사람은 UI를 문자로 이해하지 않는다. 버튼, 카드, 간격, 컬러, 폰트 크기, 상태 배지, 빈 상태, 오류 상태, focus ring, hover/active 상태는 실제 픽셀로 봐야 한다.
+- UI/UX에도 기준이 있다. 검수 시 최소한 브랜드 톤, 정보 위계, 정보의 여백, 밀도, 정렬, 대비, 가독성, 좁은 sidebar에서의 줄바꿈, 긴 텍스트 overflow, 아이콘/버튼 의미, 상태 변화의 명확성, 모션과 reduced-motion 처리를 스크린샷 기준으로 확인한다.
+- 스크린샷 없는 UI/UX 완료 보고는 금지한다. 자동 테스트와 review gate가 통과해도, 실제 화면을 보지 않았다면 UI/UX 검수는 끝난 것이 아니다.
+- 스크린샷 없는 UI/UX 완료 보고는 금지한다. “테스트 통과”는 동작 검증이고, “화면을 봤다”는 경험 검증이다. 둘은 서로 대체되지 않는다.
+- 스크린샷을 찍을 수 없는 환경이면 그 사실을 명시하고, UI/UX 작업을 완료로 주장하지 않는다. 이 경우 남은 검수 항목과 필요한 실행 화면을 구체적으로 남긴다.
+
 ## RELEASE NOTES POLICY (GitHub 릴리스)
 
 - 모든 버전 태그(Obsidian 플러그인 버전 포함)는 해당 태그 구간의 커밋 로그를 기준으로 릴리즈 내역을 작성한다.
