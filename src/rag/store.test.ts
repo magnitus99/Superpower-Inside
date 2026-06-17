@@ -235,6 +235,38 @@ describe('IndexedDbVectorStore', () => {
     db.close();
   });
 
+  it('legacy v1 벡터 레코드는 schema upgrade에서 전체 변환하지 않고 lazy로 읽는다', async () => {
+    const dbName = createDbName();
+    dbNames.add(dbName);
+    const legacyEntry = createEntry('legacy.md', 0, [0.25, 0.75], 'legacy');
+    await seedLegacyVectorDb(dbName, legacyEntry);
+
+    const store = createStore(dbName);
+
+    await expect(store.getEntriesByIds([legacyEntry.id])).resolves.toEqual([legacyEntry]);
+    await expect(
+      store.search({
+        queryVector: [0.25, 0.75],
+        topK: 1,
+        filter: {
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+          dimension: 2,
+        },
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        entry: legacyEntry,
+        mode: 'exact',
+      }),
+    ]);
+
+    const raw = await readRawVectorRecord(dbName, legacyEntry.id);
+    expect(raw?.vector).toEqual([0.25, 0.75]);
+    expect(raw?.vectorBuffer).toBeUndefined();
+    expect(raw?.dimension).toBeUndefined();
+  });
+
   it('clear로 모든 벡터를 삭제한다', async () => {
     const store = createStore();
     await store.add([createEntry('note.md', 0, [1, 0], 'a')]);
@@ -329,6 +361,23 @@ describe('legacy JSON vector import', () => {
     });
     expect(await store.getEntries()).toEqual([]);
   });
+
+  it('큰 legacy JSON 벡터 파일은 시작 경로에서 읽지 않고 건너뛴다', async () => {
+    const adapter = new TestJsonAdapter();
+    adapter.setRaw('vectors.json', JSON.stringify([createEntry('large.md', 0, [1, 0], 'large')]));
+    const store = createStore();
+
+    await expect(
+      importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json', {
+        maxBytes: 4,
+      }),
+    ).resolves.toEqual({
+      imported: 0,
+      skipped: true,
+    });
+    expect(adapter.readCount).toBe(0);
+    expect(await store.getEntries()).toEqual([]);
+  });
 });
 
 function createDbName(): string {
@@ -378,6 +427,37 @@ function createEntryWithoutEmbeddingModel(
   return entry;
 }
 
+async function seedLegacyVectorDb(dbName: string, entry: VectorEntry): Promise<void> {
+  const db = new Dexie(dbName);
+  db.version(1).stores({
+    vectors: 'id, filePath, updated',
+  });
+  await db.table('vectors').put({
+    id: entry.id,
+    vector: [...entry.vector],
+    metadata: { ...entry.metadata },
+    filePath: entry.metadata.filePath,
+    updated: 1000,
+  });
+  db.close();
+}
+
+async function readRawVectorRecord(
+  dbName: string,
+  id: string,
+): Promise<Record<string, unknown> | undefined> {
+  const db = new Dexie(dbName);
+  db.version(3).stores({
+    vectors:
+      'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+    fileIndex: 'filePath, updated',
+    meta: 'key',
+  });
+  const raw = (await db.table('vectors').get(id)) as Record<string, unknown> | undefined;
+  db.close();
+  return raw;
+}
+
 async function expectVectorStoreContract(store: VectorStore): Promise<void> {
   await store.add([
     createEntry('note.md', 0, [1, 0], 'a'),
@@ -418,6 +498,16 @@ class TestJsonAdapter {
   asDataAdapter(): DataAdapter {
     return {
       exists: (path: string) => Promise.resolve(this.files.has(path)),
+      stat: (path: string) => {
+        const data = this.files.get(path);
+        if (data === undefined) return Promise.resolve(null);
+        return Promise.resolve({
+          type: 'file',
+          ctime: 1000,
+          mtime: 1000,
+          size: data.length,
+        });
+      },
       read: (path: string) => {
         this.readCount += 1;
         return Promise.resolve(this.files.get(path) ?? '');

@@ -122,7 +122,12 @@ export interface LegacyJsonVectorImportResult {
   skipped: boolean;
 }
 
+export interface LegacyJsonVectorImportOptions {
+  maxBytes?: number;
+}
+
 const LEGACY_JSON_VECTOR_IMPORT_KEY = 'legacy-json-vector-import:v1';
+const DEFAULT_LEGACY_JSON_IMPORT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_HYDRATE_ALL_ENTRY_LIMIT = 4096;
 const DEFAULT_VECTOR_SEARCH_PAGE_SIZE = 256;
 const DEFAULT_RUNTIME_PAYLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
@@ -168,20 +173,7 @@ class VectorStoreDB extends Dexie {
           'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
         fileIndex: 'filePath, updated',
         meta: 'key',
-      })
-      .upgrade((tx) =>
-        tx.table('vectors').toCollection().modify((record: IndexedDbVectorRecord) => {
-          if (Array.isArray(record.vector)) {
-            record.vectorBuffer = vectorToArrayBuffer(record.vector);
-            record.dimension = record.vector.length;
-            delete record.vector;
-          }
-          record.dimension = record.dimension || vectorFromRecord(record).length;
-          record.filePath = record.filePath || record.metadata.filePath;
-          record.embeddingProvider = record.metadata.embeddingProvider;
-          record.embeddingModel = record.metadata.embeddingModel;
-        }),
-      );
+      });
   }
 }
 
@@ -331,21 +323,26 @@ function matchesVectorRecordSearchFilter(
   filter?: VectorSearchFilter,
 ): boolean {
   if (!filter) return true;
+  const embeddingProvider = record.embeddingProvider ?? record.metadata.embeddingProvider;
+  const embeddingModel = record.embeddingModel ?? record.metadata.embeddingModel;
   if (
     filter.embeddingProvider &&
-    record.embeddingProvider &&
-    record.embeddingProvider !== filter.embeddingProvider
+    embeddingProvider &&
+    embeddingProvider !== filter.embeddingProvider
   ) {
     return false;
   }
   if (
     filter.embeddingModel &&
-    record.embeddingModel &&
-    record.embeddingModel !== filter.embeddingModel
+    embeddingModel &&
+    embeddingModel !== filter.embeddingModel
   ) {
     return false;
   }
-  if (typeof filter.dimension === 'number' && record.dimension !== filter.dimension) {
+  if (
+    typeof filter.dimension === 'number' &&
+    getVectorRecordDimension(record) !== filter.dimension
+  ) {
     return false;
   }
   return true;
@@ -393,6 +390,10 @@ function vectorFromRecord(record: IndexedDbVectorRecord): number[] {
     return [...record.vector];
   }
   return [];
+}
+
+function getVectorRecordDimension(record: IndexedDbVectorRecord): number {
+  return record.dimension || vectorFromRecord(record).length;
 }
 
 function isVectorEntryLike(value: unknown): value is VectorEntry {
@@ -800,8 +801,18 @@ export async function importLegacyJsonVectorStore(
   adapter: DataAdapter,
   store: IndexedDbVectorStore,
   path = '.superpower-inside/vectors.json',
+  options: LegacyJsonVectorImportOptions = {},
 ): Promise<LegacyJsonVectorImportResult> {
   if ((await store.getMetaValue<boolean>(LEGACY_JSON_VECTOR_IMPORT_KEY)) === true) {
+    return { imported: 0, skipped: true };
+  }
+
+  const maxBytes = Math.max(
+    1,
+    Math.floor(options.maxBytes ?? DEFAULT_LEGACY_JSON_IMPORT_MAX_BYTES),
+  );
+  const stat = await statVaultPath(adapter, path);
+  if (stat?.type === 'file' && stat.size > maxBytes) {
     return { imported: 0, skipped: true };
   }
 
@@ -818,6 +829,15 @@ export async function importLegacyJsonVectorStore(
   }
   await store.setMetaValue(LEGACY_JSON_VECTOR_IMPORT_KEY, true);
   return { imported: entries.length, skipped: false };
+}
+
+async function statVaultPath(adapter: DataAdapter, path: string) {
+  if (typeof adapter.stat !== 'function') return null;
+  try {
+    return await adapter.stat(path);
+  } catch {
+    return null;
+  }
 }
 
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */

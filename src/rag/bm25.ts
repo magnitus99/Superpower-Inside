@@ -19,6 +19,7 @@ export function tokenize(text: string): string[] {
 const TOKENIZER_VERSION = 2;
 const BM25_SNAPSHOT_KEY = 'bm25-runtime-snapshot:v1';
 const BM25_REBUILD_YIELD_INTERVAL = 128;
+const DEFAULT_BM25_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
 
 interface BM25MetaRecord {
   key: string;
@@ -31,6 +32,10 @@ type BM25SnapshotSource = 'indexeddb' | 'legacy' | 'empty';
 interface BM25Snapshot {
   raw: string;
   source: BM25SnapshotSource;
+}
+
+export interface IndexedDbBM25IndexOptions {
+  maxSnapshotBytes?: number;
 }
 
 class BM25IndexDB extends Dexie {
@@ -52,11 +57,13 @@ export class IndexedDbBM25Index {
   private loaded: boolean;
   private batchDepth: number;
   private batchDirty: boolean;
+  private readonly maxSnapshotBytes: number;
 
   constructor(
     dbName = 'SuperpowerInsideBM25Index',
     legacyAdapter?: DataAdapter,
     legacyPath = '.superpower-inside/bm25-index.json',
+    options: IndexedDbBM25IndexOptions = {},
   ) {
     this.db = new BM25IndexDB(dbName);
     this.legacyAdapter = legacyAdapter;
@@ -65,17 +72,19 @@ export class IndexedDbBM25Index {
     this.loaded = false;
     this.batchDepth = 0;
     this.batchDirty = false;
+    this.maxSnapshotBytes = normalizeMaxSnapshotBytes(options.maxSnapshotBytes);
   }
 
   async load(): Promise<void> {
     this.runtime?.dispose();
     const snapshot = await this.loadSnapshot();
+    const raw = snapshot.raw.trim();
     this.runtime =
-      snapshot.raw.trim().length > 0
-        ? RustBm25RuntimeIndex.fromJson(snapshot.raw, TOKENIZER_VERSION)
+      raw.length > 0 && raw.length <= this.maxSnapshotBytes
+        ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
         : RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     this.loaded = true;
-    if (snapshot.source === 'legacy') {
+    if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
       await this.persistNow();
     }
   }
@@ -212,8 +221,28 @@ export class IndexedDbBM25Index {
     if (!(await this.legacyAdapter.exists(this.legacyPath))) {
       return { raw: '', source: 'empty' };
     }
+    const stat = await statLegacyPath(this.legacyAdapter, this.legacyPath);
+    if (stat?.type === 'file' && stat.size > this.maxSnapshotBytes) {
+      return { raw: '', source: 'empty' };
+    }
     return { raw: await this.legacyAdapter.read(this.legacyPath), source: 'legacy' };
   }
+}
+
+async function statLegacyPath(adapter: DataAdapter, path: string) {
+  if (typeof adapter.stat !== 'function') return null;
+  try {
+    return await adapter.stat(path);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMaxSnapshotBytes(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_BM25_SNAPSHOT_MAX_BYTES;
+  }
+  return Math.max(1, Math.floor(value));
 }
 
 function createEmptyPayload(): string {

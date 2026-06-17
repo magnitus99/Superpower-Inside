@@ -135,6 +135,44 @@ describe('IndexedDbBM25Index', () => {
     expect([...reopened.search('open router').keys()]).toEqual(['api.md::0']);
   });
 
+  it('큰 legacy BM25 JSON은 시작 경로에서 읽지 않고 빈 runtime으로 시작한다', async () => {
+    const inspectable = createInspectableAdapter(
+      JSON.stringify({
+        tokenizerVersion: 2,
+        inverted: { giant: { 'large.md::0': 1 } },
+        docLengths: { 'large.md::0': 1 },
+        docSources: { 'large.md::0': 'large.md' },
+        totalDocs: 1,
+        avgDocLength: 1,
+      }),
+    );
+    const bm25 = new IndexedDbBM25Index(
+      createDbName(),
+      inspectable.adapter,
+      '.superpower-inside/bm25-index.json',
+      { maxSnapshotBytes: 4 },
+    );
+
+    await bm25.load();
+
+    expect(inspectable.readCount()).toBe(0);
+    expect(bm25.totalDocs).toBe(0);
+    expect(bm25.isTokenizerCurrent).toBe(true);
+  });
+
+  it('큰 IndexedDB BM25 snapshot은 시작 경로에서 WASM runtime으로 파싱하지 않는다', async () => {
+    const dbName = createDbName();
+    await seedBm25Snapshot(dbName, '{"schemaVersion":3,"tokenizerVersion":2,"docs":["large"]}');
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), '.superpower-inside/bm25-index.json', {
+      maxSnapshotBytes: 4,
+    });
+
+    await bm25.load();
+
+    expect(bm25.totalDocs).toBe(0);
+    expect(bm25.isTokenizerCurrent).toBe(true);
+  });
+
   it('전체 재빌드 중 긴 문서 루프는 이벤트 루프에 양보하면서 검색 결과를 유지한다', async () => {
     const dbName = createDbName();
     const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
@@ -201,6 +239,19 @@ function createAdapter(rawJson?: string): DataAdapter {
   return createInspectableAdapter(rawJson).adapter;
 }
 
+async function seedBm25Snapshot(dbName: string, raw: string): Promise<void> {
+  const db = new Dexie(dbName);
+  db.version(1).stores({
+    meta: 'key',
+  });
+  await db.table('meta').put({
+    key: 'bm25-runtime-snapshot:v1',
+    value: raw,
+    updated: 1000,
+  });
+  db.close();
+}
+
 interface InspectableAdapter {
   adapter: DataAdapter;
   readRaw(path: string): string | undefined;
@@ -217,6 +268,16 @@ function createInspectableAdapter(rawJson?: string): InspectableAdapter {
   }
   const adapter = {
     exists: (path: string) => Promise.resolve(files.has(path)),
+    stat: (path: string) => {
+      const data = files.get(path);
+      if (data === undefined) return Promise.resolve(null);
+      return Promise.resolve({
+        type: 'file',
+        ctime: 1000,
+        mtime: 1000,
+        size: data.length,
+      });
+    },
     read: (path: string) => {
       reads += 1;
       return Promise.resolve(files.get(path) ?? '');
