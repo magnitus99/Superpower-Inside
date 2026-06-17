@@ -188,6 +188,138 @@ describe('GraphRagIndexingRunner', () => {
     expect(runner.getFailedFileCount()).toBe(0);
   });
 
+  it('persisted rejected fact만 있어도 실패 파일 재시도 대상으로 선택한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('rejected.md', 'hash-rejected')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addRejectedFact({
+      id: 'reject-persisted',
+      filePath: 'rejected.md',
+      entryId: 'rejected.md::0',
+      reason: 'relation-domain-range-mismatch',
+      rawFact: { relationTypeId: 'interprets' },
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider([textResponse(graphPayload('Recovered Paul'))]);
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
+
+    const result = await runner.resumeFailed();
+
+    expect(result.totalCandidateFiles).toBe(1);
+    expect(result.selectedFiles).toBe(1);
+    expect(result.processedFiles).toBe(1);
+    expect(provider.calls).toBe(1);
+    expect(await graphStore.getRejectedFacts()).toEqual([]);
+    expect((await graphStore.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Recovered Paul',
+    ]);
+  });
+
+  it('실패 파일 재시도는 cache hit이어도 기존 rejected fact를 지우고 다시 추출한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('cached-rejected.md', 'hash-same')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-cached-rejected',
+      filePath: 'cached-rejected.md',
+      entryId: 'cached-rejected.md::0',
+      startLine: 1,
+      endLine: 2,
+      quote: 'cached text',
+      contentHash: 'hash-same',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'cached-rejected.md::0',
+      contentHash: 'hash-same',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      updatedAt: 1000,
+    });
+    await graphStore.addRejectedFact({
+      id: 'reject-cached',
+      filePath: 'cached-rejected.md',
+      entryId: 'cached-rejected.md::0',
+      reason: 'relation-domain-range-mismatch',
+      rawFact: { relationTypeId: 'opposes' },
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider([textResponse(graphPayload('Fresh Recovered Paul'))]);
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
+
+    const result = await runner.run({
+      onlyFailedFiles: true,
+      failedFilePaths: ['cached-rejected.md'],
+    });
+
+    expect(result.skippedFiles).toBe(0);
+    expect(result.processedChunks).toBe(1);
+    expect(provider.calls).toBe(1);
+    expect(await graphStore.getRejectedFacts()).toEqual([]);
+    expect((await graphStore.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Fresh Recovered Paul',
+    ]);
+  });
+
+  it('명시한 실패 파일 경로가 있으면 다른 persisted rejected fact는 같은 실행에 섞지 않는다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('clicked.md', 'hash-clicked'),
+      createEntry('other.md', 'hash-other'),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addRejectedFact({
+      id: 'reject-clicked',
+      filePath: 'clicked.md',
+      entryId: 'clicked.md::0',
+      reason: 'relation-domain-range-mismatch',
+      rawFact: {},
+      updatedAt: 1000,
+    });
+    await graphStore.addRejectedFact({
+      id: 'reject-other',
+      filePath: 'other.md',
+      entryId: 'other.md::0',
+      reason: 'relation-domain-range-mismatch',
+      rawFact: {},
+      updatedAt: 1000,
+    });
+    const provider = new FakeProvider([textResponse(graphPayload('Clicked Paul'))]);
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore,
+        provider,
+      }),
+    );
+
+    const result = await runner.run({
+      onlyFailedFiles: true,
+      failedFilePaths: ['clicked.md'],
+    });
+
+    expect(result.totalCandidateFiles).toBe(1);
+    expect(result.selectedFiles).toBe(1);
+    expect(provider.calls).toBe(1);
+    expect((await graphStore.getRejectedFacts()).map((fact) => fact.filePath)).toEqual([
+      'other.md',
+    ]);
+  });
+
   it('AbortSignal이 중단되면 partial 결과를 반환한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
@@ -264,6 +396,7 @@ describe('GraphRagIndexingRunner', () => {
       failedFiles: 0,
       selectedFiles: 0,
       runId: 0,
+      phase: 'idle',
     });
   });
 
@@ -287,6 +420,41 @@ describe('GraphRagIndexingRunner', () => {
     expect(runner.getLastRunId()).toBe(secondResult.runId);
     expect(secondResult.runId).toBe(2);
     expect(new Set(seenRunIds)).toEqual(new Set([firstResult.runId, secondResult.runId]));
+  });
+
+  it('GraphRAG progress는 API 호출과 응답 정리 단계를 phase로 알린다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('a.md', 'hash-a')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const phases: string[] = [];
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner({
+      ...makeRunnerOptions({ vectorStore, graphStore, provider }),
+      onProgress: (progress: GraphRagIndexingProgress) => {
+        phases.push(progress.phase);
+      },
+    });
+
+    await runner.run();
+
+    expect(phases).toEqual(
+      expect.arrayContaining([
+        'selecting-files',
+        'checking-cache',
+        'api-waiting',
+        'api-response-received',
+        'api-response-normalizing',
+        'storing-results',
+        'file-completed',
+        'building-communities',
+        'completed',
+      ]),
+    );
+    expect(phases.indexOf('api-waiting')).toBeLessThan(phases.indexOf('api-response-received'));
+    expect(phases.indexOf('api-response-received')).toBeLessThan(
+      phases.indexOf('api-response-normalizing'),
+    );
+    expect(runner.getProgress().phase).toBe('completed');
   });
 
   it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {

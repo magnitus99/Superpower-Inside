@@ -11,6 +11,7 @@ import type {
 } from './store';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
+import { retryRejectedGraphFact } from './view-retry';
 
 export const GRAPH_RAG_VIEW_TYPE = 'superpower-inside-graph-rag';
 
@@ -781,13 +782,33 @@ export class GraphRagView extends ItemView {
         });
         const retryBtn = actions.createEl('button', {
           cls: 'mod-cta',
-          text: t('graphRagViewRetry'),
+          text: this.plugin.isGraphRagIndexing()
+            ? t('graphRagViewProcessing')
+            : t('graphRagViewRetry'),
         });
+        retryBtn.dataset.graphRetryFile = fact.filePath;
+        retryBtn.disabled = this.plugin.isGraphRagIndexing();
         retryBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          retryBtn.setText(t('graphRagViewProcessing'));
-          retryBtn.setAttr('disabled', 'true');
-          void this.plugin.runGraphRagIndexing();
+          void retryRejectedGraphFact({
+            plugin: this.plugin,
+            filePath: fact.filePath,
+            button: retryBtn,
+            labels: { retry: t('graphRagViewRetry'), processing: t('graphRagViewProcessing') },
+            setRetryControlsDisabled: (disabled) => {
+              this.setRejectedRetryButtonsDisabled(disabled);
+            },
+            refreshGraphData: (result) => {
+              this.refreshGraphData(result);
+            },
+            onIgnored: () => {
+              new Notice(t('graphRagAlreadyRunningReason'));
+            },
+            onError: (error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              new Notice(t('graphRagViewRetryFailed', { message }), 5000);
+            },
+          }).catch(() => undefined);
         });
       }
       if (hasMore) break;
@@ -836,11 +857,15 @@ export class GraphRagView extends ItemView {
     const progress = result.progress;
     if (!progress) {
       setHidden(this.progressEl, true);
+      this.setRejectedRetryButtonsDisabled(false);
       return;
     }
-    const done = progress.processedFiles + progress.failedFiles;
+    const done = progress.processedFiles + progress.skippedFiles + progress.failedFiles;
     const pct = progress.selectedFiles > 0 ? Math.round((done / progress.selectedFiles) * 100) : 0;
     setHidden(this.progressEl, false);
+    this.setRejectedRetryButtonsDisabled(
+      progress.phase !== 'completed' && progress.phase !== 'cancelled',
+    );
     this.progressTextEl.setText(
       t('graphRagViewIndexingProgress', {
         done,
@@ -852,6 +877,14 @@ export class GraphRagView extends ItemView {
       '#superpower-inside-graph-progress-fill',
     );
     fill?.setCssProps({ [GRAPH_PROGRESS_WIDTH_VAR]: `${pct}%` });
+  }
+
+  private setRejectedRetryButtonsDisabled(disabled: boolean): void {
+    if (!this.bodyEl) return;
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('button[data-graph-retry-file]').forEach((button) => {
+      button.disabled = disabled;
+      button.setText(disabled ? t('graphRagViewProcessing') : t('graphRagViewRetry'));
+    });
   }
 
   private refreshGraphData(result: GraphDataResult): void {

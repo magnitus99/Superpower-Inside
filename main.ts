@@ -309,11 +309,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async runGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
-    return this.runGraphRagOperation(false);
+    return this.runGraphRagOperation({ resumeFailed: false });
   }
 
   async resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
-    return this.runGraphRagOperation(true);
+    return this.runGraphRagOperation({ resumeFailed: true });
+  }
+
+  async retryGraphRagFile(filePath: string): Promise<GraphRagIndexingResult | null> {
+    return this.runGraphRagOperation({ resumeFailed: true, failedFilePaths: [filePath] });
   }
 
   hasGraphRagRunner(): boolean {
@@ -369,9 +373,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void this.computeAndEmitGraphRagStatus();
   }
 
-  private async runGraphRagOperation(
-    resumeFailed: boolean,
-  ): Promise<GraphRagIndexingResult | null> {
+  private async runGraphRagOperation(options: {
+    resumeFailed: boolean;
+    failedFilePaths?: readonly string[];
+  }): Promise<GraphRagIndexingResult | null> {
     if (this.graphRagAbortController || !this.graphRagIndexingRunner) {
       return null;
     }
@@ -381,10 +386,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     try {
       this.getLogger().info('GraphRAG indexing operation started.', {
         source: 'graph.indexing',
-        data: { resumeFailed },
+        data: {
+          resumeFailed: options.resumeFailed,
+          failedFilePaths: options.failedFilePaths ?? [],
+        },
       });
-      const result = resumeFailed
-        ? await this.graphRagIndexingRunner.resumeFailed({ signal: controller.signal })
+      const result = options.resumeFailed
+        ? await this.graphRagIndexingRunner.resumeFailed({
+            signal: controller.signal,
+            failedFilePaths: options.failedFilePaths,
+          })
         : await this.graphRagIndexingRunner.run({ signal: controller.signal });
       await this.computeAndEmitGraphRagStatus();
       this.getLogger().notice('GraphRAG indexing operation completed.', {

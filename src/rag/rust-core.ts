@@ -3532,6 +3532,24 @@ function emptyGraphRagStatusFallback(
   };
 }
 
+function buildingGraphRagStatusFallback(
+  input: RustGraphRagStatusInput,
+  failedFileCount: number,
+  maxFilesPerRun: number,
+): RustGraphRagStatusPlan {
+  return {
+    state: 'building',
+    totalCandidateFiles: input.totalCandidateFiles,
+    graphEvidenceCount: input.evidence.length,
+    rejectedFactCount: input.rejectedFactFilePaths.length,
+    failedFileCount,
+    pendingMergeCount: input.pendingMergeCount,
+    staleFileCount: 0,
+    staleFilePaths: [],
+    maxFilesPerRun,
+  };
+}
+
 export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): RustGraphRagStatusPlan {
   const maxFilesPerRun = normalizeGraphRagMaxFilesPerRunFallback(input.graphRagMaxFilesPerRun);
   if (!input.graphRagEnabled) {
@@ -3540,11 +3558,10 @@ export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): Rust
   if (input.schemaErrorCount > 0) {
     return emptyGraphRagStatusFallback('schema-error', input.totalCandidateFiles, maxFilesPerRun);
   }
-  if (input.isRunning) {
-    return emptyGraphRagStatusFallback('building', input.totalCandidateFiles, maxFilesPerRun);
-  }
-
   const failedFileCount = countUniqueValuesFallback(input.rejectedFactFilePaths);
+  if (input.isRunning) {
+    return buildingGraphRagStatusFallback(input, failedFileCount, maxFilesPerRun);
+  }
   if (input.evidence.length === 0) {
     return {
       state: 'not-built',

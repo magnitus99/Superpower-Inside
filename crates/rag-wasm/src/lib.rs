@@ -8455,6 +8455,9 @@ fn plan_graph_rag_status(input: &GraphRagStatusInput) -> GraphRagStatusPlan {
     }
 
     let failed_file_count = count_unique_strings(&input.rejected_fact_file_paths);
+    if input.is_running {
+        return graph_rag_building_status(input, failed_file_count, max_files_per_run);
+    }
     let graph_evidence_count = input.evidence.len();
     if graph_evidence_count == 0 {
         return graph_rag_not_built_status(input, failed_file_count, max_files_per_run);
@@ -8478,7 +8481,7 @@ fn plan_graph_rag_status(input: &GraphRagStatusInput) -> GraphRagStatusPlan {
     }
 }
 
-/// `GraphRAG` status에서 비활성/스키마 오류/빌드 중 상태를 먼저 처리한다.
+/// `GraphRAG` status에서 비활성/스키마 오류 상태를 먼저 처리한다.
 const fn graph_rag_status_early_plan(
     input: &GraphRagStatusInput,
     max_files_per_run: usize,
@@ -8497,13 +8500,6 @@ const fn graph_rag_status_early_plan(
             max_files_per_run,
         ));
     }
-    if input.is_running {
-        return Some(empty_graph_rag_status(
-            GraphRagIndexState::Building,
-            input.total_candidate_files,
-            max_files_per_run,
-        ));
-    }
     None
 }
 
@@ -8517,6 +8513,25 @@ const fn graph_rag_not_built_status(
         state: GraphRagIndexState::NotBuilt,
         total_candidate_files: input.total_candidate_files,
         graph_evidence_count: 0,
+        rejected_fact_count: input.rejected_fact_file_paths.len(),
+        failed_file_count,
+        pending_merge_count: input.pending_merge_count,
+        stale_file_count: 0,
+        stale_file_paths: Vec::new(),
+        max_files_per_run,
+    }
+}
+
+/// 실행 중인 `GraphRAG` status에서도 기존 대상/실패 수는 유지한다.
+const fn graph_rag_building_status(
+    input: &GraphRagStatusInput,
+    failed_file_count: usize,
+    max_files_per_run: usize,
+) -> GraphRagStatusPlan {
+    GraphRagStatusPlan {
+        state: GraphRagIndexState::Building,
+        total_candidate_files: input.total_candidate_files,
+        graph_evidence_count: input.evidence.len(),
         rejected_fact_count: input.rejected_fact_file_paths.len(),
         failed_file_count,
         pending_merge_count: input.pending_merge_count,

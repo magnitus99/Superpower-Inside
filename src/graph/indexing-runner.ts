@@ -18,7 +18,10 @@ import {
   isProcessableGraphRagFilePath,
   type GraphRagFilePathPredicate,
 } from './file-paths';
+import type { GraphRagIndexingPhase, GraphRagIndexingProgress } from './indexing-progress';
 import type { GraphRejectedFactRecord, KnowledgeGraphStore } from './store';
+
+export type { GraphRagIndexingPhase, GraphRagIndexingProgress } from './indexing-progress';
 
 export interface GraphRagIndexingRunnerOptions {
   vectorStore: VectorStore;
@@ -37,6 +40,7 @@ export interface GraphRagRunOptions {
   signal?: AbortSignal;
   onlyFailedFiles?: boolean;
   onlyStaleFiles?: boolean;
+  failedFilePaths?: readonly string[];
   staleFilePaths?: readonly string[];
 }
 
@@ -52,15 +56,6 @@ export interface GraphRagIndexingResult {
   cancelled: boolean;
   startedAt: number;
   finishedAt: number;
-  runId: number;
-}
-
-export interface GraphRagIndexingProgress {
-  currentFile: string | null;
-  processedFiles: number;
-  skippedFiles: number;
-  failedFiles: number;
-  selectedFiles: number;
   runId: number;
 }
 
@@ -93,6 +88,7 @@ export class GraphRagIndexingRunner {
     failedFiles: 0,
     selectedFiles: 0,
     runId: 0,
+    phase: 'idle',
   };
   private lastResult: GraphRagIndexingResult | null = null;
 
@@ -164,6 +160,7 @@ export class GraphRagIndexingRunner {
       failedFiles: 0,
       selectedFiles: 0,
       runId: 0,
+      phase: 'idle',
     };
   }
 
@@ -230,7 +227,9 @@ export class GraphRagIndexingRunner {
     }
   }
 
-  resumeFailed(options: Omit<GraphRagRunOptions, 'onlyFailedFiles' | 'onlyStaleFiles' | 'staleFilePaths'> = {}): Promise<GraphRagIndexingResult> {
+  resumeFailed(
+    options: Omit<GraphRagRunOptions, 'onlyFailedFiles' | 'onlyStaleFiles' | 'staleFilePaths'> = {},
+  ): Promise<GraphRagIndexingResult> {
     return this.run({ ...options, onlyFailedFiles: true });
   }
 
@@ -247,19 +246,17 @@ export class GraphRagIndexingRunner {
 
     this.running = true;
     const startedAt = Date.now();
+    this.progress = createEmptyProgress(runId, 0, 'selecting-files');
+    this.emitProgress();
     await this.pruneUnsupportedGraphFiles();
     const fileSelection = await this.getFileSelection(options);
     const candidateFilePaths = fileSelection.candidateFilePaths;
     const selectedFilePaths = fileSelection.selectedFilePaths;
     const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length, runId);
-    this.progress = {
-      runId,
-      currentFile: null,
-      processedFiles: 0,
-      skippedFiles: 0,
-      failedFiles: 0,
+    this.updateProgress({
       selectedFiles: selectedFilePaths.length,
-    };
+      phase: selectedFilePaths.length > 0 ? 'checking-cache' : 'completed',
+    });
 
     try {
       for (const filePath of selectedFilePaths) {
@@ -267,12 +264,16 @@ export class GraphRagIndexingRunner {
           result.cancelled = true;
           break;
         }
-        this.progress.currentFile = filePath;
-        this.onProgress?.(this.getProgress());
+        this.updateProgress({ currentFile: filePath, phase: 'checking-cache' });
         const entries = this.isProcessable(filePath)
           ? await this.vectorStore.getEntriesByFilePaths([filePath])
           : [];
-        const fileResult = await this.processFile(filePath, entries, options.signal);
+        const fileResult = await this.processFile(
+          filePath,
+          entries,
+          options.signal,
+          options.onlyFailedFiles === true,
+        );
         result.processedChunks += fileResult.processedChunks;
         result.skippedChunks += fileResult.skippedChunks;
         result.failedChunks += fileResult.failedChunks;
@@ -283,35 +284,66 @@ export class GraphRagIndexingRunner {
         if (fileResult.failedChunks > 0) {
           result.failedFiles += 1;
           this.failedFilePaths.add(filePath);
-          this.progress.failedFiles = result.failedFiles;
+          this.updateProgress({ failedFiles: result.failedFiles, phase: 'file-completed' });
         } else if (fileResult.processedChunks > 0) {
           result.processedFiles += 1;
           this.failedFilePaths.delete(filePath);
-          this.progress.processedFiles = result.processedFiles;
+          this.updateProgress({ processedFiles: result.processedFiles, phase: 'file-completed' });
         } else {
           result.skippedFiles += 1;
-          this.progress.skippedFiles = result.skippedFiles;
+          this.updateProgress({ skippedFiles: result.skippedFiles, phase: 'file-completed' });
         }
-        this.onProgress?.(this.getProgress());
       }
     } finally {
-      this.progress.currentFile = null;
-      this.onProgress?.(this.getProgress());
+      const shouldBuildCommunities =
+        !result.cancelled &&
+        (result.processedChunks > 0 || result.processedFiles > 0) &&
+        !options.signal?.aborted;
+      this.updateProgress({
+        currentFile: null,
+        phase:
+          result.cancelled || options.signal?.aborted
+            ? 'cancelled'
+            : shouldBuildCommunities
+              ? 'building-communities'
+              : 'completed',
+      });
       this.running = false;
       result.finishedAt = Date.now();
       this.lastResult = { ...result };
-      if (!result.cancelled && (result.processedChunks > 0 || result.processedFiles > 0) && !options.signal?.aborted) {
+      if (shouldBuildCommunities) {
         await this.buildCommunities(options.signal);
       }
+      this.updateProgress({
+        currentFile: null,
+        phase: result.cancelled || options.signal?.aborted ? 'cancelled' : 'completed',
+      });
     }
 
     return result;
+  }
+
+  private updateProgress(patch: Partial<GraphRagIndexingProgress>): void {
+    this.progress = { ...this.progress, ...patch };
+    this.emitProgress();
+  }
+
+  private updateProgressPhase(phase: GraphRagIndexingPhase): void {
+    this.updateProgress({ phase });
+  }
+
+  private emitProgress(): void {
+    this.onProgress?.(this.getProgress());
   }
 
   private async getFileSelection(
     options: GraphRagRunOptions,
   ): Promise<RustGraphRagRunFileSelectionPlan> {
     const mode = getGraphRagRunFileSelectionMode(options);
+    const failedFilePaths =
+      mode === 'failed'
+        ? await this.getFailedFilePaths(options.failedFilePaths)
+        : [...this.failedFilePaths];
     const recordFilePaths: RustGraphRagRunFilePathInput[] = [];
     const indexedFilePaths: RustGraphRagRunFilePathInput[] = [];
 
@@ -333,7 +365,7 @@ export class GraphRagIndexingRunner {
     return (
       planGraphRagRunFileSelectionRust({
         mode,
-        failedFilePaths: [...this.failedFilePaths],
+        failedFilePaths,
         staleFilePaths: options.staleFilePaths ?? [],
         recordFilePaths,
         indexedFilePaths,
@@ -360,10 +392,25 @@ export class GraphRagIndexingRunner {
     return isProcessableGraphRagFilePath(filePath, this.isProcessableFilePath);
   }
 
+  private async getFailedFilePaths(explicitFilePaths: readonly string[] = []): Promise<string[]> {
+    if (explicitFilePaths.length > 0) {
+      return [...new Set(explicitFilePaths)];
+    }
+    const rejectedFacts = await this.graphStore.getRejectedFacts();
+    return [
+      ...new Set([
+        ...this.failedFilePaths,
+        ...explicitFilePaths,
+        ...rejectedFacts.map((fact) => fact.filePath),
+      ]),
+    ];
+  }
+
   private async processFile(
     filePath: string,
     entries: readonly VectorEntry[],
     signal?: AbortSignal,
+    forceReprocess = false,
   ): Promise<{
     processedChunks: number;
     skippedChunks: number;
@@ -375,10 +422,12 @@ export class GraphRagIndexingRunner {
     const preparedEntries: Array<{ entry: VectorEntry; contentHash: string; cached: boolean }> = [];
 
     if (entries.length === 0) {
+      this.updateProgressPhase('storing-results');
       await this.graphStore.pruneByFilePaths([filePath]);
       return result;
     }
 
+    this.updateProgressPhase('checking-cache');
     for (const entry of entries) {
       if (signal?.aborted) {
         result.cancelled = true;
@@ -392,7 +441,7 @@ export class GraphRagIndexingRunner {
         ontologySchemaId: this.ontologySchema.id,
         ontologyVersion: this.ontologySchema.version,
       };
-      if (await this.graphStore.isExtractionCached(cacheKey)) {
+      if (!forceReprocess && await this.graphStore.isExtractionCached(cacheKey)) {
         preparedEntries.push({ entry, contentHash, cached: true });
       } else {
         preparedEntries.push({ entry, contentHash, cached: false });
@@ -404,6 +453,7 @@ export class GraphRagIndexingRunner {
       return result;
     }
 
+    this.updateProgressPhase('storing-results');
     await this.graphStore.pruneByFilePaths([filePath]);
 
     for (let i = 0; i < preparedEntries.length; i += CONCURRENCY_LIMIT) {
@@ -432,6 +482,7 @@ export class GraphRagIndexingRunner {
               extractionModelKey: this.extractionModelKey,
               ontologySchema: this.ontologySchema,
               signal,
+              onPhase: (phase) => this.updateProgressPhase(phase),
             });
             return { processed: true, failed: false, cancelled: false };
           } catch (error) {
@@ -488,6 +539,22 @@ function createEmptyResult(
     startedAt,
     finishedAt: startedAt,
     runId,
+  };
+}
+
+function createEmptyProgress(
+  runId: number,
+  selectedFiles: number,
+  phase: GraphRagIndexingPhase,
+): GraphRagIndexingProgress {
+  return {
+    currentFile: null,
+    processedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    selectedFiles,
+    runId,
+    phase,
   };
 }
 

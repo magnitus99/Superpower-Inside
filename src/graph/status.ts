@@ -58,17 +58,16 @@ export interface GraphRagStatusSummary {
 export async function calculateGraphRagStatus(
   input: GraphRagStatusInput,
 ): Promise<GraphRagStatusSummary> {
+  if (!input.ragConfig.graphRagEnabled || input.schemaErrors.length > 0) {
+    return requireGraphRagStatusPlan(createGraphRagStatusInput(input, [], 0));
+  }
+
   const fileSnapshot = await getGraphRagStatusFileSnapshot(
     input.vectorStore,
     input.isProcessableFilePath,
   );
   const fileIndexRecords = fileSnapshot.fileIndexRecords;
   const totalCandidateFiles = fileSnapshot.totalCandidateFiles;
-  if (!input.ragConfig.graphRagEnabled || input.schemaErrors.length > 0 || input.isRunning) {
-    return requireGraphRagStatusPlan(
-      createGraphRagStatusInput(input, fileIndexRecords, totalCandidateFiles),
-    );
-  }
 
   const [evidence, rejectedFacts, pendingMerges, cacheRecords] = await Promise.all([
     input.graphStore.getEvidence(),
@@ -110,10 +109,8 @@ async function getGraphRagStatusFileSnapshot(
   vectorStore: VectorStore,
   isProcessableFilePath: GraphRagFilePathPredicate | undefined,
 ): Promise<GraphRagStatusFileSnapshot> {
-  const [fileIndexRecords, indexedFilePaths] = await Promise.all([
-    vectorStore.getFileIndexRecords(),
-    vectorStore.getIndexedFilePaths(),
-  ]);
+  const fileIndexRecords = await vectorStore.getFileIndexRecords();
+  const indexedFilePaths = fileIndexRecords.map((record) => record.filePath);
   const plan = requireGraphRagStatusFileSnapshot(
     fileIndexRecords.map((record) =>
       toGraphRagStatusFileSnapshotRecordInput(record, isProcessableFilePath),

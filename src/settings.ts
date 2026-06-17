@@ -34,6 +34,7 @@ import {
   buildGraphRagActionGroups,
   getGraphRagStatusPresentation,
   getGraphRagStatusLabel,
+  getGraphRagLiveStatusPresentation,
   getGraphRagControlState,
   estimateGraphRagIndexingCost,
   type GraphRagActionDefinition,
@@ -1236,10 +1237,28 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const progressBanner = section.createDiv({
       cls: 'superpower-inside-rag-graph-progress-banner superpower-inside-hidden',
     });
-    progressBanner.createDiv({ cls: 'superpower-inside-spinner' });
-    const progressText = progressBanner.createSpan({ text: '' });
+    const spinner = progressBanner.createDiv({ cls: 'superpower-inside-spinner' });
+    spinner.setAttr('aria-hidden', 'true');
+    const progressBody = progressBanner.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-body',
+    });
+    const progressTitle = progressBody.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-title',
+      text: '',
+    });
+    progressTitle.id = 'superpower-inside-graph-progress-title';
+    const progressPhase = progressBody.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-phase',
+      text: '',
+    });
+    progressPhase.id = 'superpower-inside-graph-progress-phase';
+    const progressText = progressBody.createDiv({
+      cls: 'superpower-inside-rag-graph-progress-detail',
+      text: '',
+    });
     progressText.id = 'superpower-inside-graph-progress-text';
     this.graphRagProgressBanner = progressBanner;
+    this.renderGraphRagProgressBanner();
     // 요약 배너
     const total = graphState?.totalCandidateFiles ?? 0;
     const done = graphState?.graphEvidenceCount ?? 0;
@@ -1507,52 +1526,52 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       staleFileCount: stale,
     });
   }
+
+  private renderGraphRagProgressBanner(): void {
+    if (!this.graphRagProgressBanner) return;
+    const runner = (
+      this.plugin as unknown as {
+        graphRagIndexingRunner?: {
+          getProgress(): {
+            processedFiles: number;
+            skippedFiles: number;
+            failedFiles: number;
+            selectedFiles: number;
+            currentFile: string | null;
+            phase?: import('./graph/indexing-progress').GraphRagIndexingPhase;
+          };
+        } | null;
+      }
+    ).graphRagIndexingRunner;
+    const progress = runner?.getProgress();
+    const presentation = getGraphRagLiveStatusPresentation({
+      isRunning: this.plugin.isGraphRagIndexing() && progress !== undefined,
+      phase: progress?.phase ?? null,
+      currentFile: progress?.currentFile ?? null,
+      processedFiles: progress?.processedFiles ?? 0,
+      skippedFiles: progress?.skippedFiles ?? 0,
+      failedFiles: progress?.failedFiles ?? 0,
+      selectedFiles: progress?.selectedFiles ?? 0,
+    });
+    const titleEl = this.graphRagProgressBanner.querySelector(
+      '#superpower-inside-graph-progress-title',
+    );
+    const phaseEl = this.graphRagProgressBanner.querySelector(
+      '#superpower-inside-graph-progress-phase',
+    );
+    const detailEl = this.graphRagProgressBanner.querySelector(
+      '#superpower-inside-graph-progress-text',
+    );
+    titleEl?.setText(presentation.title);
+    phaseEl?.setText(presentation.phaseLabel);
+    detailEl?.setText(presentation.detail);
+    setHidden(this.graphRagProgressBanner, !presentation.active);
+  }
+
   /** GraphRAG 대시보드를 부분 업데이트합니다. */
   updateGraphRagStats(): void {
     if (!this.graphRagSectionContainer) return;
-    // 진행 중 배너 업데이트
-    if (this.graphRagProgressBanner) {
-      const progressText = this.graphRagProgressBanner.querySelector(
-        '#superpower-inside-graph-progress-text',
-      );
-      if (this.plugin.isGraphRagIndexing()) {
-        // runner의 progress 접근
-        const runner = (
-          this.plugin as unknown as {
-            graphRagIndexingRunner?: {
-              getProgress(): {
-                processedFiles: number;
-                failedFiles: number;
-                selectedFiles: number;
-                currentFile: string | null;
-              };
-            } | null;
-          }
-        ).graphRagIndexingRunner;
-        if (runner) {
-          const progress = runner.getProgress();
-          const done = progress.processedFiles + progress.failedFiles;
-          const pct =
-            progress.selectedFiles > 0 ? Math.round((done / progress.selectedFiles) * 100) : 0;
-          const fileInfo = progress.currentFile
-            ? ` (${progress.currentFile.split('/').pop() ?? progress.currentFile})`
-            : '';
-          if (progressText) {
-            progressText.setText(
-              t('settingsAuto067', {
-                v0: String(done),
-                v1: String(progress.selectedFiles),
-                v2: String(fileInfo),
-                v3: String(pct),
-              }),
-            );
-          }
-          setHidden(this.graphRagProgressBanner, false);
-        }
-      } else {
-        setHidden(this.graphRagProgressBanner, true);
-      }
-    }
+    this.renderGraphRagProgressBanner();
     const graphState = this.plugin.graphRagStatus;
     const rag = this.plugin.settings.rag;
     const statusLabel =

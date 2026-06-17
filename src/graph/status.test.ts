@@ -31,19 +31,21 @@ function createEntry(filePath: string, contentHash: string) {
 
 describe('calculateGraphRagStatus', () => {
   it('GraphRAG가 꺼져 있으면 disabled를 반환한다', async () => {
+    const vectorStore = new UnusedStatusVectorStore();
     const status = await calculateGraphRagStatus({
       ragConfig: { ...baseRagConfig, graphRagEnabled: false },
       graphStore: new InMemoryKnowledgeGraphStore(),
-      vectorStore: new MemoryVectorStore(),
+      vectorStore,
       isRunning: false,
       schemaErrors: [],
     });
 
     expect(status.state).toBe('disabled');
+    expect(vectorStore.lookupCount).toBe(0);
   });
 
   it('graph evidence가 없으면 not-built를 반환한다', async () => {
-    const vectorStore = new MemoryVectorStore();
+    const vectorStore = new StatusLookupVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-a')]);
 
     const status = await calculateGraphRagStatus({
@@ -56,18 +58,34 @@ describe('calculateGraphRagStatus', () => {
 
     expect(status.state).toBe('not-built');
     expect(status.totalCandidateFiles).toBe(1);
+    expect(vectorStore.fileIndexRecordCalls).toBe(1);
+    expect(vectorStore.indexedFilePathCalls).toBe(0);
   });
 
-  it('실행 중이면 building을 반환한다', async () => {
+  it('실행 중이면 building을 반환하되 기존 대상/실패 개수를 유지한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('running.md', 'hash-running')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addRejectedFact({
+      id: 'reject-running',
+      filePath: 'running.md',
+      entryId: 'running.md::0',
+      reason: 'relation-domain-range-mismatch',
+      rawFact: {},
+      updatedAt: 1000,
+    });
+
     const status = await calculateGraphRagStatus({
       ragConfig: baseRagConfig,
-      graphStore: new InMemoryKnowledgeGraphStore(),
-      vectorStore: new MemoryVectorStore(),
+      graphStore,
+      vectorStore,
       isRunning: true,
       schemaErrors: [],
     });
 
     expect(status.state).toBe('building');
+    expect(status.totalCandidateFiles).toBe(1);
+    expect(status.failedFileCount).toBe(1);
   });
 
   it('cache가 현재 파일/model/schema/version과 모두 맞으면 ready를 반환한다', async () => {
@@ -432,7 +450,19 @@ describe('calculateGraphRagStatus', () => {
 
 class StatusLookupVectorStore extends MemoryVectorStore {
   getEntriesCalls = 0;
+  fileIndexRecordCalls = 0;
+  indexedFilePathCalls = 0;
   requestedIds: string[][] = [];
+
+  override getFileIndexRecords() {
+    this.fileIndexRecordCalls++;
+    return super.getFileIndexRecords();
+  }
+
+  override getIndexedFilePaths() {
+    this.indexedFilePathCalls++;
+    return super.getIndexedFilePaths();
+  }
 
   override getEntries(): Promise<never> {
     this.getEntriesCalls++;
@@ -442,5 +472,24 @@ class StatusLookupVectorStore extends MemoryVectorStore {
   override async getEntriesByIds(ids: readonly string[]) {
     this.requestedIds.push([...ids].sort());
     return super.getEntriesByIds(ids);
+  }
+}
+
+class UnusedStatusVectorStore extends MemoryVectorStore {
+  lookupCount = 0;
+
+  override getFileIndexRecords(): Promise<never> {
+    this.lookupCount++;
+    return Promise.reject(new Error('disabled 상태 계산은 vector file index를 읽지 않아야 합니다.'));
+  }
+
+  override getIndexedFilePaths(): Promise<never> {
+    this.lookupCount++;
+    return Promise.reject(new Error('disabled 상태 계산은 indexed path를 읽지 않아야 합니다.'));
+  }
+
+  override getEntriesByIds(): Promise<never> {
+    this.lookupCount++;
+    return Promise.reject(new Error('disabled 상태 계산은 vector entry를 읽지 않아야 합니다.'));
   }
 }

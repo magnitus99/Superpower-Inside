@@ -1,4 +1,5 @@
 import { t } from '../i18n';
+import type { GraphRagIndexingPhase } from '../graph/indexing-progress';
 
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
@@ -138,6 +139,23 @@ export interface GraphRagIndexingCostEstimate {
   costLabel: string;
 }
 
+export interface GraphRagLiveStatusInput {
+  isRunning: boolean;
+  phase: GraphRagIndexingPhase | null | undefined;
+  currentFile: string | null;
+  processedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
+  selectedFiles: number;
+}
+
+export interface GraphRagLiveStatusPresentation {
+  active: boolean;
+  title: string;
+  phaseLabel: string;
+  detail: string;
+}
+
 export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
   if (normalizeRagPerformanceTuningMode(rag.performanceTuningMode) === 'custom') {
     return {
@@ -267,6 +285,69 @@ export function getGraphRagStatusPresentation(state: string): GraphRagStatusPres
     default:
       return { label: state, description: '', tone: 'neutral' };
   }
+}
+
+export function getGraphRagLiveStatusPresentation(
+  input: GraphRagLiveStatusInput,
+): GraphRagLiveStatusPresentation {
+  const phase = input.phase ?? 'idle';
+  if (!input.isRunning) {
+    return {
+      active: false,
+      title: t('graphRagLiveStatusIdleTitle'),
+      phaseLabel: getGraphRagPhaseLabel(phase),
+      detail: t('graphRagLiveStatusIdleDetail'),
+    };
+  }
+
+  const done = Math.max(0, input.processedFiles + input.skippedFiles + input.failedFiles);
+  const selected = Math.max(0, input.selectedFiles);
+  const pct = selected > 0 ? Math.round((done / selected) * 100) : 0;
+  const fileInfo = getGraphRagCurrentFileLabel(input.currentFile);
+  return {
+    active: true,
+    title: t('graphRagLiveStatusRunningTitle'),
+    phaseLabel: getGraphRagPhaseLabel(phase),
+    detail: t('settingsAuto067', {
+      v0: String(done),
+      v1: String(selected),
+      v2: fileInfo,
+      v3: String(pct),
+    }),
+  };
+}
+
+function getGraphRagPhaseLabel(phase: GraphRagIndexingPhase): string {
+  switch (phase) {
+    case 'selecting-files':
+      return t('graphRagPhaseSelectingFiles');
+    case 'checking-cache':
+      return t('graphRagPhaseCheckingCache');
+    case 'api-waiting':
+      return t('graphRagPhaseApiWaiting');
+    case 'api-response-received':
+      return t('graphRagPhaseApiResponseReceived');
+    case 'api-response-normalizing':
+      return t('graphRagPhaseApiResponseNormalizing');
+    case 'storing-results':
+      return t('graphRagPhaseStoringResults');
+    case 'file-completed':
+      return t('graphRagPhaseFileCompleted');
+    case 'building-communities':
+      return t('graphRagPhaseBuildingCommunities');
+    case 'completed':
+      return t('graphRagPhaseCompleted');
+    case 'cancelled':
+      return t('graphRagPhaseCancelled');
+    case 'idle':
+      return t('graphRagPhaseIdle');
+  }
+}
+
+function getGraphRagCurrentFileLabel(currentFile: string | null): string {
+  if (!currentFile) return '';
+  const fileName = currentFile.split('/').pop()?.trim();
+  return fileName ? ` (${fileName})` : '';
 }
 
 export function getGraphRagControlState(input: GraphRagControlStateInput): GraphRagControlState {

@@ -12,6 +12,7 @@ vi.mock('obsidian', () => ({
 import {
   buildEmbeddingModelOptions,
   buildGraphRagActionGroups,
+  getGraphRagLiveStatusPresentation,
   getGraphRagControlState,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
@@ -299,6 +300,42 @@ describe('RAG 설정 표시 헬퍼', () => {
       '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
     );
     expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
+  });
+
+  it('GraphRAG live 상태는 현재 phase와 파일 진행률을 작은 패널 문구로 바꾼다', () => {
+    const status = getGraphRagLiveStatusPresentation({
+      isRunning: true,
+      phase: 'api-response-normalizing',
+      currentFile: 'folder/note.md',
+      processedFiles: 2,
+      skippedFiles: 1,
+      failedFiles: 1,
+      selectedFiles: 8,
+    });
+
+    expect(status.active).toBe(true);
+    expect(status.title).toBe('지금 GraphRAG가 인덱싱 중입니다');
+    expect(status.phaseLabel).toBe('API 응답 정리 중');
+    expect(status.detail).toBe('4/8 파일 처리 중 (note.md) — 50%');
+  });
+
+  it('GraphRAG live 상태는 실행 중이 아니면 비활성 패널 상태를 반환한다', () => {
+    expect(
+      getGraphRagLiveStatusPresentation({
+        isRunning: false,
+        phase: 'completed',
+        currentFile: null,
+        processedFiles: 5,
+        skippedFiles: 0,
+        failedFiles: 0,
+        selectedFiles: 5,
+      }),
+    ).toEqual({
+      active: false,
+      title: 'GraphRAG 인덱싱 대기 중',
+      phaseLabel: '추출 완료',
+      detail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
+    });
   });
 
   it('resetGraphRag 액션은 확인창 승인 시 plugin.resetGraphRagData를 호출하고 상태 갱신합니다', async () => {

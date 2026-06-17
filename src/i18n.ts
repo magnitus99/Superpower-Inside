@@ -879,6 +879,20 @@ export interface I18nKeys {
   graphRagNoFilesReason: string;
   graphRagNoRunningReason: string;
   graphRagNoFailedReason: string;
+  graphRagLiveStatusRunningTitle: string;
+  graphRagLiveStatusIdleTitle: string;
+  graphRagLiveStatusIdleDetail: string;
+  graphRagPhaseIdle: string;
+  graphRagPhaseSelectingFiles: string;
+  graphRagPhaseCheckingCache: string;
+  graphRagPhaseApiWaiting: string;
+  graphRagPhaseApiResponseReceived: string;
+  graphRagPhaseApiResponseNormalizing: string;
+  graphRagPhaseStoringResults: string;
+  graphRagPhaseFileCompleted: string;
+  graphRagPhaseBuildingCommunities: string;
+  graphRagPhaseCompleted: string;
+  graphRagPhaseCancelled: string;
   graphRagStartScopeLimited: string;
   graphRagStartScopeAll: string;
   graphRagActionExtract: string;
@@ -1137,6 +1151,7 @@ export interface I18nKeys {
   graphRagViewRawCopied: string;
   graphRagViewRetry: string;
   graphRagViewProcessing: string;
+  graphRagViewRetryFailed: string;
   graphRagViewErrorCopied: string;
   graphRagViewCopyFailed: string;
   graphRagViewIndexingProgress: string;
@@ -2132,6 +2147,20 @@ const ko: I18nKeys = {
   graphRagNoFilesReason: 'GraphRAG 인덱싱 대상 파일이 없습니다.',
   graphRagNoRunningReason: '실행 중인 GraphRAG 인덱싱이 없습니다.',
   graphRagNoFailedReason: '이어 실행할 실패 파일이 없습니다.',
+  graphRagLiveStatusRunningTitle: '지금 GraphRAG가 인덱싱 중입니다',
+  graphRagLiveStatusIdleTitle: 'GraphRAG 인덱싱 대기 중',
+  graphRagLiveStatusIdleDetail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
+  graphRagPhaseIdle: '대기 중',
+  graphRagPhaseSelectingFiles: '대상 파일 준비 중',
+  graphRagPhaseCheckingCache: '추출 캐시 확인 중',
+  graphRagPhaseApiWaiting: 'API 응답 대기 중',
+  graphRagPhaseApiResponseReceived: 'API 호출 완료',
+  graphRagPhaseApiResponseNormalizing: 'API 응답 정리 중',
+  graphRagPhaseStoringResults: '추출 결과 저장 중',
+  graphRagPhaseFileCompleted: '파일 추출 완료',
+  graphRagPhaseBuildingCommunities: '커뮤니티 정리 중',
+  graphRagPhaseCompleted: '추출 완료',
+  graphRagPhaseCancelled: '취소됨',
   graphRagStartScopeLimited: '대상 {total}개 중 최대 {limit}개 파일을 새로 추출합니다.',
   graphRagStartScopeAll: 'GraphRAG 대상 파일을 새로 추출합니다.',
   graphRagActionExtract: '추출 실행',
@@ -2428,6 +2457,7 @@ const ko: I18nKeys = {
   graphRagViewRawCopied: 'GraphRAG 원본 응답을 복사했습니다.',
   graphRagViewRetry: '다시 시도',
   graphRagViewProcessing: '처리 중...',
+  graphRagViewRetryFailed: 'GraphRAG 재시도 실패: {message}',
   graphRagViewErrorCopied: 'GraphRAG 오류 상세 정보를 복사했습니다.',
   graphRagViewCopyFailed: '복사 실패: {message}',
   graphRagViewIndexingProgress: '인덱싱 중: {done}/{total} 파일 처리 ({percent}%)',
@@ -3431,6 +3461,20 @@ const en: I18nKeys = {
   graphRagNoFilesReason: 'There are no files eligible for GraphRAG indexing.',
   graphRagNoRunningReason: 'No GraphRAG indexing job is running.',
   graphRagNoFailedReason: 'There are no failed files to resume.',
+  graphRagLiveStatusRunningTitle: 'GraphRAG is indexing now',
+  graphRagLiveStatusIdleTitle: 'GraphRAG indexing is idle',
+  graphRagLiveStatusIdleDetail: 'No GraphRAG indexing job is running.',
+  graphRagPhaseIdle: 'Idle',
+  graphRagPhaseSelectingFiles: 'Preparing target files',
+  graphRagPhaseCheckingCache: 'Checking extraction cache',
+  graphRagPhaseApiWaiting: 'Waiting for API response',
+  graphRagPhaseApiResponseReceived: 'API call complete',
+  graphRagPhaseApiResponseNormalizing: 'Cleaning API response',
+  graphRagPhaseStoringResults: 'Saving extraction results',
+  graphRagPhaseFileCompleted: 'File extraction complete',
+  graphRagPhaseBuildingCommunities: 'Organizing communities',
+  graphRagPhaseCompleted: 'Extraction complete',
+  graphRagPhaseCancelled: 'Cancelled',
   graphRagStartScopeLimited: 'Extract up to {limit} new files out of {total} targets.',
   graphRagStartScopeAll: 'Extract GraphRAG target files.',
   graphRagActionExtract: 'Extraction',
@@ -3740,6 +3784,7 @@ const en: I18nKeys = {
   graphRagViewRawCopied: 'Copied GraphRAG raw response.',
   graphRagViewRetry: 'Retry',
   graphRagViewProcessing: 'Processing...',
+  graphRagViewRetryFailed: 'GraphRAG retry failed: {message}',
   graphRagViewErrorCopied: 'Copied GraphRAG error details.',
   graphRagViewCopyFailed: 'Copy failed: {message}',
   graphRagViewIndexingProgress: 'Indexing: {done}/{total} files processed ({percent}%)',

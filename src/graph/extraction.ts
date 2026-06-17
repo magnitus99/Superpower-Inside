@@ -1,6 +1,7 @@
 import type { LLMProvider } from '../llm/providers';
 import { t } from '../i18n';
 import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
+import type { GraphRagIndexingPhase } from './indexing-progress';
 import {
   createGraphIdRust,
   normalizeGraphConfidenceRust,
@@ -45,6 +46,7 @@ export interface GraphExtractionChunkInput {
   extractionModelKey: string;
   ontologySchema: OntologySchema;
   signal?: AbortSignal;
+  onPhase?: (phase: GraphRagIndexingPhase) => void;
 }
 
 type GraphPayloadParseResult =
@@ -75,6 +77,7 @@ export class GraphExtractionIndexer {
       ontologySchemaId: input.ontologySchema.id,
       ontologyVersion: input.ontologySchema.version,
     };
+    input.onPhase?.('checking-cache');
     if (await this.store.isExtractionCached(cacheKey)) return;
     throwIfGraphExtractionAborted(input.signal);
 
@@ -82,6 +85,7 @@ export class GraphExtractionIndexer {
     await this.store.addEvidence(evidence);
     throwIfGraphExtractionAborted(input.signal);
 
+    input.onPhase?.('api-waiting');
     const rawResponse = await this.provider.chat(
       [
         { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
@@ -92,7 +96,10 @@ export class GraphExtractionIndexer {
       { signal: input.signal },
     );
     throwIfGraphExtractionAborted(input.signal);
+    input.onPhase?.('api-response-received');
+    input.onPhase?.('api-response-normalizing');
     const parsed = parseExtractedGraphPayload(rawResponse);
+    input.onPhase?.('storing-results');
     if (!parsed.ok) {
       await this.reject(input, parsed.reason, parsed.rawFact);
       return;
