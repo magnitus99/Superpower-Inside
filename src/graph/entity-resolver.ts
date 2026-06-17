@@ -16,6 +16,12 @@ import type {
   KnowledgeGraphStore,
   PendingEntityMergeRecord,
 } from './store';
+import {
+  getEntityLabelValues,
+  hasCrossLanguageGraphEntityLabelPair,
+  hasExactGraphEntityLabelMatch,
+  type GraphEntityLabelRecord,
+} from './entity-labels';
 
 export interface EntityResolverOptions {
   autoMergeThreshold: number;
@@ -28,6 +34,7 @@ export interface EntityResolutionInput {
   typeId: string;
   canonicalName: string;
   aliases: string[];
+  labels?: GraphEntityLabelRecord[];
   description: string;
   evidenceIds?: string[];
 }
@@ -54,6 +61,7 @@ export class EntityResolver {
       entities,
       input,
       this.options.embeddingProvider,
+      this.options.autoMergeThreshold,
     );
     const resolutionPlan = planEntityResolutionRust({
       ontologySchemaId: input.ontologySchema.id,
@@ -109,12 +117,13 @@ async function createScoredResolutionCandidates(
   entities: readonly GraphEntityRecord[],
   input: EntityResolutionInput,
   embeddingProvider?: EmbeddingProvider,
+  autoMergeThreshold?: number,
 ): Promise<RustEntityResolutionCandidate[]> {
   const candidates: RustEntityResolutionCandidate[] = [];
   for (const entity of entities) {
     const score =
       entity.ontologySchemaId === input.ontologySchema.id && entity.typeId === input.typeId
-        ? await scoreEntityMatch(entity, input, embeddingProvider)
+        ? await scoreEntityMatch(entity, input, embeddingProvider, autoMergeThreshold)
         : 0;
     candidates.push({
       entityId: entity.id,
@@ -130,8 +139,12 @@ async function scoreEntityMatch(
   entity: GraphEntityRecord,
   input: EntityResolutionInput,
   embeddingProvider?: EmbeddingProvider,
+  autoMergeThreshold?: number,
 ): Promise<number> {
   const rustInput = createRustEntityMatchInput(entity, input, 0);
+  const candidateNames = getResolutionInputLabelValues(input);
+  const existingNames = getEntityLabelValues(entity);
+  const exactLabelMatch = hasExactGraphEntityLabelMatch(candidateNames, existingNames);
   const rustScoreWithoutEmbedding = scoreEntityMatchRust(rustInput);
   if (rustScoreWithoutEmbedding === 1 || !embeddingProvider) {
     return rustScoreWithoutEmbedding ?? 0;
@@ -142,7 +155,12 @@ async function scoreEntityMatch(
     ...rustInput,
     embeddingScore,
   });
-  return rustScore ?? 0;
+  return capCrossLanguageSemanticScore(
+    rustScore ?? 0,
+    exactLabelMatch,
+    hasCrossLanguageGraphEntityLabelPair(candidateNames, existingNames),
+    autoMergeThreshold,
+  );
 }
 
 function createRustEntityMatchInput(
@@ -151,8 +169,8 @@ function createRustEntityMatchInput(
   embeddingScore: number,
 ): RustEntityMatchInput {
   return {
-    candidateNames: [input.canonicalName, ...input.aliases],
-    existingNames: [entity.canonicalName, ...entity.aliases],
+    candidateNames: getResolutionInputLabelValues(input),
+    existingNames: getEntityLabelValues(entity),
     candidateDescription: `${input.canonicalName} ${input.description}`,
     existingDescription: `${entity.canonicalName} ${entity.description}`,
     candidateEvidenceIds: input.evidenceIds ?? [],
@@ -170,8 +188,8 @@ async function embeddingSimilarityScore(
   if (!embeddingProvider) return 0;
   try {
     const [left, right] = await embeddingProvider.embedBatch([
-      `${entity.canonicalName}\n${entity.description}`.trim(),
-      `${input.canonicalName}\n${input.description}`.trim(),
+      `${getEntityLabelValues(entity).join('\n')}\n${entity.description}`.trim(),
+      `${getResolutionInputLabelValues(input).join('\n')}\n${input.description}`.trim(),
     ]);
     return cosineSimilarityFromRust(left, right);
   } catch {
@@ -182,6 +200,27 @@ async function embeddingSimilarityScore(
 function cosineSimilarityFromRust(left: readonly number[], right: readonly number[]): number {
   const rustScore = cosineSimilarityRust(left, right);
   return rustScore ?? 0;
+}
+
+function getResolutionInputLabelValues(input: EntityResolutionInput): string[] {
+  return [
+    input.canonicalName,
+    ...input.aliases,
+    ...(input.labels ?? []).map((label) => label.value),
+  ].filter((value) => value.trim().length > 0);
+}
+
+function capCrossLanguageSemanticScore(
+  score: number,
+  exactLabelMatch: boolean,
+  hasCrossLanguagePair: boolean,
+  autoMergeThreshold: number | undefined,
+): number {
+  if (exactLabelMatch || !hasCrossLanguagePair || autoMergeThreshold === undefined) {
+    return score;
+  }
+  if (score < autoMergeThreshold) return score;
+  return Math.max(0, autoMergeThreshold - 0.000001);
 }
 
 function createPendingMergeRecord(

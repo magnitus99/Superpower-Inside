@@ -260,6 +260,58 @@ describe('GraphRagQueryEngine', () => {
     expect(candidates[0]?.sourceScore).toBeGreaterThan(0.7);
   });
 
+  it('legacy aliases가 비어 있어도 structured label로 local evidence 후보를 찾는다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    const evidence: GraphEvidenceRecord = {
+      id: 'evidence::acts',
+      filePath: 'Acts.md',
+      entryId: 'Acts.md::1::0',
+      startLine: 1,
+      endLine: 4,
+      quote: 'Paul and Barnabas traveled together.',
+      contentHash: 'hash',
+      extractionModelKey: 'model',
+      updatedAt: 1,
+    };
+    await graphStore.addEvidence(evidence);
+    await graphStore.upsertEntity(
+      createEntity('Paul', [], [evidence.id], [
+        {
+          value: 'Paul',
+          language: 'en',
+          kind: 'preferred',
+          source: 'llm-extraction',
+          confidence: 0.9,
+          evidenceIds: [evidence.id],
+        },
+        {
+          value: '바울',
+          language: 'ko',
+          kind: 'alias',
+          source: 'manual',
+          confidence: 1,
+          evidenceIds: [],
+        },
+      ]),
+    );
+    await graphStore.upsertEntity(createEntity('Barnabas', ['바나바'], [evidence.id]));
+    await graphStore.addRelation(createRelation(evidence.id));
+    await graphStore.addClaim(createClaim(evidence.id));
+    await vectorStore.add([createVectorEntry('Acts.md::1::0', 'Acts.md')]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+      queryMode: 'local',
+    });
+
+    const candidates = await engine.query({
+      question: '바울과 Barnabas는 어떤 관계야?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(candidates[0]?.entry.metadata.filePath).toBe('Acts.md');
+  });
+
   it('짧은 이름은 단어 경계 없이 부분 문자열로 오탐하지 않는다', async () => {
     const graphStore = new InMemoryKnowledgeGraphStore();
     const vectorStore = new MemoryVectorStore();
@@ -514,7 +566,12 @@ async function createGraphFixtureWithCommunity(): Promise<{
   return fixture;
 }
 
-function createEntity(name: string, aliases: string[], evidenceIds: string[]): GraphEntityRecord {
+function createEntity(
+  name: string,
+  aliases: string[],
+  evidenceIds: string[],
+  labels?: GraphEntityRecord['labels'],
+): GraphEntityRecord {
   return {
     id: `entity::general::person::${name.toLowerCase()}`,
     ontologySchemaId: 'default',
@@ -522,6 +579,7 @@ function createEntity(name: string, aliases: string[], evidenceIds: string[]): G
     typeId: 'person',
     canonicalName: name,
     aliases,
+    labels,
     description: '',
     properties: {},
     confidence: 0.9,

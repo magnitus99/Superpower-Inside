@@ -10,6 +10,7 @@ import type {
   GraphRejectedFactRecord,
 } from './store';
 import { buildDefaultOntologySchema } from '../ontology/schema';
+import { getEntityDisplayAliases, getEntityLabelValues } from './entity-labels';
 import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
 import { retryRejectedGraphFact } from './view-retry';
 
@@ -319,8 +320,7 @@ export class GraphRagView extends ItemView {
     let filtered = query
       ? this.allEntities.filter(
           (e) =>
-            e.canonicalName.toLowerCase().includes(query) ||
-            e.aliases.some((a) => a.toLowerCase().includes(query)) ||
+            getEntityLabelValues(e).some((label) => label.toLowerCase().includes(query)) ||
             e.description.toLowerCase().includes(query),
         )
       : this.allEntities;
@@ -369,10 +369,11 @@ export class GraphRagView extends ItemView {
           cls: 'superpower-inside-graph-view-item-name',
           text: entity.canonicalName,
         });
-        if (entity.aliases.length > 0) {
+        const aliases = getEntityDisplayAliases(entity);
+        if (aliases.length > 0) {
           nameSpan.createSpan({
             cls: 'superpower-inside-graph-view-item-aliases',
-            text: ` (${entity.aliases.join(', ')})`,
+            text: ` (${aliases.join(', ')})`,
           });
         }
         item.createSpan({
@@ -413,10 +414,11 @@ export class GraphRagView extends ItemView {
       cls: 'superpower-inside-graph-view-detail-heading',
       text: entity.canonicalName,
     });
-    if (entity.aliases.length > 0) {
+    const aliases = getEntityDisplayAliases(entity);
+    if (aliases.length > 0) {
       header.createDiv({
         cls: 'superpower-inside-graph-view-item-aliases',
-        text: t('graphRagViewAliases') + entity.aliases.join(', '),
+        text: t('graphRagViewAliases') + aliases.join(', '),
       });
     }
     header.createSpan({

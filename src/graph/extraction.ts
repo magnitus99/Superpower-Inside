@@ -21,6 +21,7 @@ import {
   type RustGraphRelationEndpointPlan,
 } from '../rag/rust-core';
 import { EntityResolver, type EntityResolverOptions } from './entity-resolver';
+import { createGraphEntityLabels } from './entity-labels';
 import {
   type GraphClaimRecord,
   type GraphEntityRecord,
@@ -130,15 +131,23 @@ export class GraphExtractionIndexer {
         await this.reject(input, 'unknown-entity-type', entity);
         continue;
       }
+      const labels = createGraphEntityLabels({
+        canonicalName: entity.name,
+        aliases: entity.aliases ?? [],
+        confidence: normalizeConfidence(entity.confidence),
+        evidenceId: evidence.id,
+        source: 'llm-extraction',
+      });
       const resolution = await this.entityResolver.resolve({
         ontologySchema: input.ontologySchema,
         typeId: entity.typeId,
         canonicalName: entity.name,
         aliases: entity.aliases ?? [],
+        labels,
         description: entity.description ?? '',
         evidenceIds: [evidence.id],
       });
-      const record = createEntityRecord(input, evidence.id, entity, resolution.entityId, now);
+      const record = createEntityRecord(input, evidence.id, entity, labels, resolution.entityId, now);
       const entityIndex = entityRecords.length;
       entityRecords.push(record);
       claimEntityLookupRecords.push({ name: entity.name, entityId: record.id });
@@ -318,6 +327,8 @@ function buildExtractionSystemPrompt(schema: OntologySchema): string {
     '{"entities":[{"name":"string","typeId":"person|organization|place|work|concept|event|argument|evidence","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"source":"entity name","target":"entity name","relationTypeId":"authored|mentions|supports|opposes|collaborated_with|causes|influences|part_of|located_in|interprets","description":"string","confidence":0.0}],"claims":[{"text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityNames":["entity name"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
     'Use entities, relations, claims as arrays even when empty.',
     'Use typeId, relationTypeId, claimTypeId exactly. Do not use type, relation, claim_type, subject, object, or keyed objects.',
+    'Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.',
+    'Do not invent translated aliases just to make the graph multilingual.',
     t('ontologyRelationEndpointExactMatchInstruction'),
     t('ontologyRelationEndpointGenericRoleInstruction'),
     t('ontologyRelationDomainRangeFallbackInstruction'),
@@ -353,6 +364,7 @@ function createEntityRecord(
   input: GraphExtractionChunkInput,
   evidenceId: string,
   entity: ExtractedEntity,
+  labels: GraphEntityRecord['labels'],
   entityId: string,
   now: number,
 ): GraphEntityRecord {
@@ -363,6 +375,7 @@ function createEntityRecord(
     typeId: entity.typeId,
     canonicalName: entity.name.trim(),
     aliases: (entity.aliases ?? []).map((alias) => alias.trim()).filter(Boolean),
+    labels,
     description: entity.description?.trim() ?? '',
     properties: {},
     confidence: normalizeConfidence(entity.confidence),

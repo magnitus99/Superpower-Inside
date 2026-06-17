@@ -36,6 +36,49 @@ describe('EntityResolver', () => {
     expect(result.mergeScore).toBeGreaterThanOrEqual(0.88);
   });
 
+  it('기존 entity의 다국어 label과 exact match되면 자동 merge 대상으로 resolve한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(
+      createEntity({
+        canonicalName: 'Paul',
+        aliases: [],
+        labels: [
+          {
+            value: 'Paul',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.9,
+            evidenceIds: ['evidence::acts'],
+          },
+          {
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'manual',
+            confidence: 1,
+            evidenceIds: [],
+          },
+        ],
+      }),
+    );
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.88,
+      pendingMergeThreshold: 0.72,
+    });
+
+    const result = await resolver.resolve({
+      ontologySchema: buildDefaultOntologySchema(),
+      typeId: 'person',
+      canonicalName: '바울',
+      aliases: [],
+      description: '사도',
+    });
+
+    expect(result.status).toBe('auto-merge');
+    expect(result.entityId).toBe('entity::default::person::paul');
+  });
+
   it('type이 다르면 이름이 같아도 자동 merge하지 않는다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await store.upsertEntity(createEntity({ canonicalName: 'Jordan', typeId: 'person' }));
@@ -161,12 +204,51 @@ describe('EntityResolver', () => {
     expect(result.status).toBe('pending-merge');
     expect(result.matchedEntityId).toBe('entity::default::concept::grace');
   });
+
+  it('다른 언어 label의 의미 유사도만으로는 auto threshold가 낮아도 pending merge까지만 허용한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(
+      createEntity({
+        canonicalName: 'Grace',
+        aliases: [],
+        typeId: 'concept',
+        description: 'divine favor and mercy',
+        labels: [
+          {
+            value: 'Grace',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.9,
+            evidenceIds: ['evidence::grace'],
+          },
+        ],
+      }),
+    );
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.7,
+      pendingMergeThreshold: 0.5,
+      embeddingProvider: createCrossLanguageEmbeddingProvider(),
+    });
+
+    const result = await resolver.resolve({
+      ontologySchema: buildDefaultOntologySchema(),
+      typeId: 'concept',
+      canonicalName: '은혜',
+      aliases: [],
+      description: 'divine favor and mercy',
+    });
+
+    expect(result.status).toBe('pending-merge');
+    expect(result.matchedEntityId).toBe('entity::default::concept::grace');
+  });
 });
 
 function createEntity(input: {
   canonicalName: string;
   typeId?: string;
   aliases?: string[];
+  labels?: GraphEntityRecord['labels'];
   description?: string;
   evidenceIds?: string[];
 }): GraphEntityRecord {
@@ -178,6 +260,7 @@ function createEntity(input: {
     typeId,
     canonicalName: input.canonicalName,
     aliases: input.aliases ?? [],
+    labels: input.labels,
     description: input.description ?? '',
     properties: {},
     confidence: 0.8,
@@ -194,6 +277,17 @@ function createEmbeddingProvider(): EmbeddingProvider {
     embedBatch: (texts: string[]) =>
       Promise.resolve(
         texts.map((text) => (text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1])),
+      ),
+  };
+}
+
+function createCrossLanguageEmbeddingProvider(): EmbeddingProvider {
+  return {
+    embed: (text: string) =>
+      Promise.resolve(text.includes('Grace') || text.includes('은혜') ? [1, 0] : [0, 1]),
+    embedBatch: (texts: string[]) =>
+      Promise.resolve(
+        texts.map((text) => (text.includes('Grace') || text.includes('은혜') ? [1, 0] : [0, 1])),
       ),
   };
 }

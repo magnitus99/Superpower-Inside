@@ -17,6 +17,7 @@ import type {
   KnowledgeGraphStore,
 } from './store';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import { getEntityDisplayAliases } from './entity-labels';
 
 export interface CommunitySummarizerOptions {
   provider: LLMProvider;
@@ -27,8 +28,9 @@ export interface CommunitySummarizerOptions {
 
 function formatEntitySummary(entity: GraphEntityRecord): string {
   const parts = [entity.canonicalName];
-  if (entity.aliases.length > 0) {
-    parts.push(`(${entity.aliases.join(', ')})`);
+  const aliases = getEntityDisplayAliases(entity);
+  if (aliases.length > 0) {
+    parts.push(`(${aliases.join(', ')})`);
   }
   if (entity.description) {
     parts.push(`: ${entity.description}`);

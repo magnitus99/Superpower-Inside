@@ -12,6 +12,11 @@ import {
   type RustGraphPrunePlan,
 } from '../rag/rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import {
+  copyGraphEntityLabels,
+  mergeGraphEntityLabels,
+  type GraphEntityLabelRecord,
+} from './entity-labels';
 
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
@@ -23,6 +28,7 @@ export interface GraphEntityRecord {
   typeId: string;
   canonicalName: string;
   aliases: string[];
+  labels?: GraphEntityLabelRecord[];
   description: string;
   properties: Record<string, GraphPropertyValue>;
   confidence: number;
@@ -974,6 +980,7 @@ function uniqueById<T extends { id: string }>(records: readonly T[]): T[] {
 }
 
 function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): GraphEntityRecord {
+  const labels = mergeGraphEntityLabels(existing.labels, incoming.labels);
   const plan = planGraphEntityMergeRust(
     toRustGraphEntityMergeInput(existing),
     toRustGraphEntityMergeInput(incoming),
@@ -982,6 +989,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
     return {
       ...existing,
       aliases: mergeOrderedStrings(existing.aliases, incoming.aliases),
+      labels,
       description:
         incoming.description.length === 0 ? existing.description : incoming.description,
       confidence: Math.max(existing.confidence, incoming.confidence),
@@ -992,6 +1000,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
   return {
     ...existing,
     aliases: plan.aliases,
+    labels,
     description: plan.description,
     confidence: plan.confidence,
     evidenceIds: plan.evidenceIds,
@@ -1074,6 +1083,7 @@ function copyEntity(record: GraphEntityRecord): GraphEntityRecord {
   return {
     ...record,
     aliases: [...record.aliases],
+    labels: copyGraphEntityLabels(record.labels),
     properties: { ...record.properties },
     evidenceIds: [...record.evidenceIds],
   };

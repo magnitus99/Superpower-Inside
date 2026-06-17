@@ -33,6 +33,7 @@ import type {
   GraphRelationRecord,
   KnowledgeGraphStore,
 } from './store';
+import { getEntitySearchAliases } from './entity-labels';
 
 export type GraphQueryType =
   | 'factual'
@@ -549,7 +550,7 @@ function findMentionedEntityMatches(
     entities.map((entity) => ({
       ontologySchemaId: entity.ontologySchemaId,
       canonicalName: entity.canonicalName,
-      aliases: entity.aliases,
+      aliases: getEntitySearchAliases(entity),
     })),
     ontologySchemaId,
     entityHints,

@@ -149,6 +149,88 @@ describe('IndexedDbKnowledgeGraphStore', () => {
       }),
     ]);
   });
+
+  it('upsertEntity는 다국어 label metadata를 순서 보존 dedupe로 병합한다', async () => {
+    const store = createIndexedDbStore();
+
+    await store.upsertEntity(
+      createEntity({
+        aliases: [],
+        labels: [
+          {
+            value: 'Paul',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.8,
+            evidenceIds: ['ev-1'],
+          },
+          {
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'llm-extraction',
+            confidence: 0.8,
+            evidenceIds: ['ev-1'],
+          },
+        ],
+      }),
+    );
+    await store.upsertEntity(
+      createEntity({
+        aliases: [],
+        labels: [
+          {
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'llm-extraction',
+            confidence: 0.9,
+            evidenceIds: ['ev-2'],
+          },
+          {
+            value: 'Saul',
+            language: 'en',
+            kind: 'alias',
+            source: 'manual',
+            confidence: 1,
+            evidenceIds: [],
+          },
+        ],
+      }),
+    );
+
+    await expect(store.getEntities()).resolves.toEqual([
+      expect.objectContaining({
+        labels: [
+          {
+            value: 'Paul',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.8,
+            evidenceIds: ['ev-1'],
+          },
+          {
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'llm-extraction',
+            confidence: 0.9,
+            evidenceIds: ['ev-1', 'ev-2'],
+          },
+          {
+            value: 'Saul',
+            language: 'en',
+            kind: 'alias',
+            source: 'manual',
+            confidence: 1,
+            evidenceIds: [],
+          },
+        ],
+      }),
+    ]);
+  });
 });
 
 function createIndexedDbStore(): IndexedDbKnowledgeGraphStore {

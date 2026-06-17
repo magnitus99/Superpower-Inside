@@ -76,6 +76,24 @@ describe('GraphExtractionIndexer', () => {
     ]);
     const entities = await store.getEntities();
     expect(entities.map((entity) => entity.canonicalName)).toEqual(['Paul', 'Romans']);
+    expect(entities[0]?.labels).toEqual([
+      {
+        value: 'Paul',
+        language: 'en',
+        kind: 'preferred',
+        source: 'llm-extraction',
+        confidence: 0.9,
+        evidenceIds: [expect.stringContaining('evidence::')],
+      },
+      {
+        value: 'Saul',
+        language: 'en',
+        kind: 'alias',
+        source: 'llm-extraction',
+        confidence: 0.9,
+        evidenceIds: [expect.stringContaining('evidence::')],
+      },
+    ]);
     expect(await store.getRelations()).toEqual([
       expect.objectContaining({
         relationTypeId: 'authored',
@@ -235,6 +253,8 @@ describe('GraphExtractionIndexer', () => {
     expect(systemPrompt).toContain('interprets: sourceTypeIds=argument|work|concept|person|organization; targetTypeIds=work|concept');
     expect(systemPrompt).toContain('Relation source and target must exactly match an entities[].name or one of that entity aliases.');
     expect(systemPrompt).toContain('Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.');
+    expect(systemPrompt).toContain('Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.');
+    expect(systemPrompt).toContain('Do not invent translated aliases just to make the graph multilingual.');
   });
 
   it('JSON 파싱 실패는 rejected fact로 저장하고 다음 chunk 처리를 막지 않는다', async () => {
@@ -485,6 +505,60 @@ describe('GraphExtractionIndexer', () => {
     const entities = await store.getEntities();
     expect(entities.map((entity) => entity.canonicalName)).toEqual(['Paul']);
     expect(entities[0]?.evidenceIds).toHaveLength(2);
+  });
+
+  it('다른 언어 alias는 structured label metadata와 legacy aliases에 함께 저장한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            {
+              name: 'Paul',
+              typeId: 'person',
+              aliases: ['바울', 'Saul'],
+              description: 'Apostle known in Korean notes as 바울',
+              confidence: 0.91,
+            },
+          ],
+          relations: [],
+          claims: [],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('Paul, 바울, and Saul refer to the same apostle.'));
+
+    const [entity] = await store.getEntities();
+    expect(entity).toEqual(
+      expect.objectContaining({
+        aliases: ['바울', 'Saul'],
+        labels: [
+          expect.objectContaining({
+            value: 'Paul',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.91,
+          }),
+          expect.objectContaining({
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'llm-extraction',
+            confidence: 0.91,
+          }),
+          expect.objectContaining({
+            value: 'Saul',
+            language: 'en',
+            kind: 'alias',
+            source: 'llm-extraction',
+            confidence: 0.91,
+          }),
+        ],
+      }),
+    );
   });
 
   it('추출 경로에서도 임베딩 유사도를 entity resolver에 전달한다', async () => {
