@@ -459,6 +459,16 @@ type ProviderSettingsTarget =
       label: string;
       config: CustomOpenAIProviderConfig;
     };
+type ProviderVisualTone = 'ready' | 'needs-key' | 'needs-models' | 'disabled';
+interface ProviderVisualState {
+  tone: ProviderVisualTone;
+  iconName: string;
+  statusLabel: string;
+  summary: string;
+  keyLabel: string;
+  modelLabel: string;
+  typeLabel: string;
+}
 const HIDDEN_CLASS = 'superpower-inside-hidden';
 
 function setHidden(el: HTMLElement | null, hidden: boolean): void {
@@ -1068,43 +1078,137 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderOverviewSection(containerEl, titleText, rows);
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
-    this.createSettingsPanel(containerEl, t('settingsAuto011'), {
+    const fixedTargets: ProviderSettingsTarget[] = [
+      {
+        kind: 'fixed',
+        key: 'openai',
+        label: 'OpenAI',
+        config: this.plugin.settings.openai,
+      },
+      {
+        kind: 'fixed',
+        key: 'claude',
+        label: 'Claude (Anthropic)',
+        config: this.plugin.settings.claude,
+      },
+      {
+        kind: 'fixed',
+        key: 'ollama',
+        label: 'Ollama (Local)',
+        config: this.plugin.settings.ollama,
+      },
+      {
+        kind: 'fixed',
+        key: 'ollamaCloud',
+        label: 'Ollama (Cloud)',
+        config: this.plugin.settings.ollamaCloud,
+      },
+      {
+        kind: 'fixed',
+        key: 'openRouter',
+        label: 'OpenRouter',
+        config: this.plugin.settings.openRouter,
+      },
+    ];
+    const customTargets: ProviderSettingsTarget[] = this.plugin.settings.customOpenAIProviders.map(
+      (provider) => ({
+        kind: 'custom',
+        key: `customOpenAI:${provider.id}`,
+        label: provider.name.trim() || 'Custom OpenAI-Compatible',
+        config: provider,
+      }),
+    );
+    const providerTargets = [...fixedTargets, ...customTargets];
+    const providerStates = providerTargets.map((target) => this.getProviderVisualState(target));
+    const readyCount = providerStates.filter((state) => state.tone === 'ready').length;
+    const attentionCount = providerStates.filter(
+      (state) => state.tone === 'needs-key' || state.tone === 'needs-models',
+    ).length;
+    const enabledCount = providerTargets.filter((target) => target.config.enabled).length;
+    const selectedModelCount = providerTargets.reduce(
+      (count, target) => count + target.config.models.length,
+      0,
+    );
+    const introPanel = this.createSettingsPanel(containerEl, t('settingsAuto011'), {
       description: t('settingsAuto024'),
       meta: t('settingsAuto025', {
-        v0: String(CHAT_PROVIDER_KEYS.length + this.plugin.settings.customOpenAIProviders.length),
+        v0: String(providerTargets.length),
       }),
       className: 'superpower-inside-settings-intro-panel',
     });
-    this.buildProviderSettings(containerEl, {
-      kind: 'fixed',
-      key: 'openai',
-      label: 'OpenAI',
-      config: this.plugin.settings.openai,
+    introPanel.addClass('superpower-inside-providers-intro');
+
+    const commandCenter = containerEl.createDiv({
+      cls: 'superpower-inside-providers-command-center',
     });
-    this.buildProviderSettings(containerEl, {
-      kind: 'fixed',
-      key: 'claude',
-      label: 'Claude (Anthropic)',
-      config: this.plugin.settings.claude,
+    const commandCopy = commandCenter.createDiv({ cls: 'superpower-inside-providers-command-copy' });
+    commandCopy.createDiv({
+      cls: 'superpower-inside-providers-command-title',
+      text: t('providerCommandCenterTitle'),
     });
-    this.buildProviderSettings(containerEl, {
-      kind: 'fixed',
-      key: 'ollama',
-      label: 'Ollama (Local)',
-      config: this.plugin.settings.ollama,
+    commandCopy.createDiv({
+      cls: 'superpower-inside-providers-command-desc',
+      text: t('providerCommandCenterDesc'),
     });
-    this.buildProviderSettings(containerEl, {
-      kind: 'fixed',
-      key: 'ollamaCloud',
-      label: 'Ollama (Cloud)',
-      config: this.plugin.settings.ollamaCloud,
+
+    const summaryGrid = commandCenter.createDiv({
+      cls: 'superpower-inside-provider-summary-grid',
     });
-    this.buildProviderSettings(containerEl, {
-      kind: 'fixed',
-      key: 'openRouter',
-      label: 'OpenRouter',
-      config: this.plugin.settings.openRouter,
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'badge-check',
+      value: String(readyCount),
+      label: t('providerDashboardReady'),
+      detail: t('providerDashboardReadyDetail'),
+      tone: 'ready',
     });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'triangle-alert',
+      value: String(attentionCount),
+      label: t('providerDashboardAttention'),
+      detail: t('providerDashboardAttentionDetail'),
+      tone: attentionCount > 0 ? 'needs-key' : 'ready',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'power',
+      value: String(enabledCount),
+      label: t('providerDashboardEnabled'),
+      detail: t('providerDashboardEnabledDetail'),
+      tone: enabledCount > 0 ? 'ready' : 'disabled',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'layers-3',
+      value: String(selectedModelCount),
+      label: t('providerDashboardModels'),
+      detail: t('providerDashboardModelsDetail'),
+      tone: selectedModelCount > 0 ? 'ready' : 'needs-models',
+    });
+
+    const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
+    const collapseAll = toolbar.createEl('button', {
+      cls: 'superpower-inside-provider-toolbar-btn',
+      attr: { type: 'button' },
+    });
+    setIcon(collapseAll, 'minimize-2');
+    collapseAll.createSpan({ text: t('collapseAll') });
+    const expandAll = toolbar.createEl('button', {
+      cls: 'superpower-inside-provider-toolbar-btn',
+      attr: { type: 'button' },
+    });
+    setIcon(expandAll, 'maximize-2');
+    expandAll.createSpan({ text: t('expandAll') });
+
+    if (readyCount === 0) {
+      const banner = commandCenter.createDiv({ cls: 'superpower-inside-provider-banner' });
+      setIcon(banner, 'circle-alert');
+      banner.createSpan({ text: t('noProviderEnabledBanner') });
+    }
+
+    const providerGrid = containerEl.createDiv({ cls: 'superpower-inside-provider-grid' });
+    for (const target of fixedTargets) {
+      this.buildProviderSettings(providerGrid, target);
+    }
+    collapseAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, false));
+    expandAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, true));
     this.buildCustomOpenAIProvidersSection(containerEl);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
@@ -3885,37 +3989,201 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
   }
+  private createProviderSummaryCard(
+    containerEl: HTMLElement,
+    summary: {
+      iconName: string;
+      value: string;
+      label: string;
+      detail: string;
+      tone: ProviderVisualTone;
+    },
+  ): void {
+    const card = containerEl.createDiv({
+      cls: `superpower-inside-provider-summary-card is-${summary.tone}`,
+    });
+    const icon = card.createDiv({ cls: 'superpower-inside-provider-summary-icon' });
+    setIcon(icon, summary.iconName);
+    const copy = card.createDiv({ cls: 'superpower-inside-provider-summary-copy' });
+    copy.createDiv({ cls: 'superpower-inside-provider-summary-value', text: summary.value });
+    copy.createDiv({ cls: 'superpower-inside-provider-summary-label', text: summary.label });
+    card.createDiv({ cls: 'superpower-inside-provider-summary-detail', text: summary.detail });
+  }
+  private setAllProviderCardsExpanded(containerEl: HTMLElement, expanded: boolean): void {
+    const cards = containerEl.querySelectorAll<HTMLElement>('.superpower-inside-provider-card');
+    cards.forEach((card) => {
+      card.toggleClass('is-expanded', expanded);
+      card.toggleClass('is-collapsed', !expanded);
+      const header = card.querySelector<HTMLElement>('.superpower-inside-provider-hero');
+      header?.setAttribute('aria-expanded', String(expanded));
+    });
+  }
+  private getProviderVisualState(target: ProviderSettingsTarget): ProviderVisualState {
+    const { config } = target;
+    const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
+    const apiKeyRequired = shouldShowProviderApiKey(apiKeyVisibilityKey);
+    const hasApiKey = !apiKeyRequired || config.apiKey.trim().length > 0;
+    const modelCount = config.models.length;
+    const modelLabel =
+      modelCount > 0
+        ? t('providerModelsSelected', { v0: String(modelCount) })
+        : t('providerNoModelsShort');
+    const keyLabel = apiKeyRequired
+      ? hasApiKey
+        ? t('providerKeyReady')
+        : t('providerKeyMissing')
+      : t('providerKeyNotRequired');
+    const typeLabel = target.kind === 'custom' ? t('providerTypeCustom') : t('providerTypeBuiltIn');
+
+    if (!config.enabled) {
+      return {
+        tone: 'disabled',
+        iconName: 'power-off',
+        statusLabel: t('providerStatusOff'),
+        summary: t('providerSummaryOff'),
+        keyLabel,
+        modelLabel,
+        typeLabel,
+      };
+    }
+    if (!hasApiKey) {
+      return {
+        tone: 'needs-key',
+        iconName: 'key-round',
+        statusLabel: t('providerStatusNeedsKey'),
+        summary: t('providerSummaryNeedsKey'),
+        keyLabel,
+        modelLabel,
+        typeLabel,
+      };
+    }
+    if (modelCount === 0) {
+      return {
+        tone: 'needs-models',
+        iconName: 'list-plus',
+        statusLabel: t('providerStatusNeedsModels'),
+        summary: t('providerSummaryNeedsModels'),
+        keyLabel,
+        modelLabel,
+        typeLabel,
+      };
+    }
+    return {
+      tone: 'ready',
+      iconName: 'badge-check',
+      statusLabel: t('providerStatusReady'),
+      summary: t('providerSummaryReady', { v0: String(modelCount) }),
+      keyLabel,
+      modelLabel,
+      typeLabel,
+    };
+  }
   private buildProviderSettings(containerEl: HTMLElement, target: ProviderSettingsTarget): void {
     const { config, label } = target;
     const cacheKey = target.key;
+    const initialState = this.getProviderVisualState(target);
+    const startsExpanded = initialState.tone !== 'disabled' || target.kind === 'custom';
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-settings-panel superpower-inside-provider-card',
+      cls: `superpower-inside-provider-shell superpower-inside-provider-card is-${initialState.tone}`,
     });
-    const titleRow = section.createDiv({ cls: 'superpower-inside-provider-title-row' });
-    titleRow.createDiv({ cls: 'superpower-inside-settings-section-title', text: label });
-    const selectedCountEl = titleRow.createDiv({
-      cls: 'superpower-inside-provider-selected-count',
+    section.toggleClass('is-expanded', startsExpanded);
+    section.toggleClass('is-collapsed', !startsExpanded);
+    section.setAttribute('data-provider-key', cacheKey);
+
+    const hero = section.createEl('button', {
+      cls: 'superpower-inside-provider-hero',
+      attr: { type: 'button', 'aria-expanded': String(startsExpanded) },
     });
-    new Setting(section).setName(t('enabled')).addToggle((toggle) =>
+    const brandIcon = hero.createSpan({ cls: 'superpower-inside-provider-brand-icon' });
+    const titleCopy = hero.createSpan({ cls: 'superpower-inside-provider-title-copy' });
+    titleCopy.createSpan({ cls: 'superpower-inside-provider-title-text', text: label });
+    const summaryText = titleCopy.createSpan({ cls: 'superpower-inside-provider-subtitle' });
+    const statusToken = hero.createSpan({ cls: 'superpower-inside-provider-status-token' });
+    const modelPreview = hero.createSpan({ cls: 'superpower-inside-provider-model-preview' });
+    const chevron = hero.createSpan({ cls: 'superpower-inside-provider-chevron' });
+    setIcon(chevron, 'chevron-right');
+
+    const body = section.createDiv({ cls: 'superpower-inside-provider-body' });
+    const quickRow = body.createDiv({ cls: 'superpower-inside-provider-quick-row' });
+
+    const renderProviderHeader = (): void => {
+      const visualState = this.getProviderVisualState(target);
+      section.classList.remove('is-ready', 'is-needs-key', 'is-needs-models', 'is-disabled');
+      section.classList.add(`is-${visualState.tone}`);
+      brandIcon.empty();
+      setIcon(brandIcon, visualState.iconName);
+      summaryText.setText(visualState.summary);
+      statusToken.className = `superpower-inside-provider-status-token is-${visualState.tone}`;
+      statusToken.setText(visualState.statusLabel);
+      modelPreview.empty();
+      if (config.models.length === 0) {
+        modelPreview.createSpan({
+          cls: 'superpower-inside-provider-preview-empty',
+          text: t('providerNoModelsShort'),
+        });
+      } else {
+        for (const model of config.models.slice(0, 2)) {
+          modelPreview.createSpan({ cls: 'superpower-inside-provider-preview-chip', text: model });
+        }
+        if (config.models.length > 2) {
+          modelPreview.createSpan({
+            cls: 'superpower-inside-provider-preview-more',
+            text: `+${config.models.length - 2}`,
+          });
+        }
+      }
+      quickRow.empty();
+      const quickFacts = [
+        { iconName: 'key-round', label: t('providerQuickKey'), value: visualState.keyLabel },
+        { iconName: 'boxes', label: t('providerQuickModels'), value: visualState.modelLabel },
+        { iconName: 'route', label: t('providerQuickType'), value: visualState.typeLabel },
+      ];
+      for (const fact of quickFacts) {
+        const item = quickRow.createDiv({ cls: 'superpower-inside-provider-quick-fact' });
+        const icon = item.createSpan({ cls: 'superpower-inside-provider-quick-icon' });
+        setIcon(icon, fact.iconName);
+        const copy = item.createSpan({ cls: 'superpower-inside-provider-quick-copy' });
+        copy.createSpan({ cls: 'superpower-inside-provider-quick-label', text: fact.label });
+        copy.createSpan({ cls: 'superpower-inside-provider-quick-value', text: fact.value });
+      }
+    };
+
+    hero.addEventListener('click', () => {
+      const expanded = section.hasClass('is-collapsed');
+      section.toggleClass('is-expanded', expanded);
+      section.toggleClass('is-collapsed', !expanded);
+      hero.setAttribute('aria-expanded', String(expanded));
+    });
+
+    const connectionSection = body.createDiv({
+      cls: 'superpower-inside-provider-section superpower-inside-provider-connection-panel',
+    });
+    connectionSection.createDiv({
+      cls: 'superpower-inside-provider-section-title',
+      text: t('providerConnectionSection'),
+    });
+    new Setting(connectionSection).setName(t('enabled')).addToggle((toggle) =>
       toggle.setValue(config.enabled).onChange((value) => {
         config.enabled = value;
+        renderProviderHeader();
         this.debouncedSave();
       }),
     );
     const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
     if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
-      new Setting(section).setName(t('apiKey')).addText((text) =>
+      new Setting(connectionSection).setName(t('apiKey')).addText((text) =>
         text
           .setPlaceholder('sk-...')
           .setValue(config.apiKey)
           .onChange((value) => {
             config.apiKey = value.trim();
+            renderProviderHeader();
             this.debouncedSave();
           }),
       );
     }
     if (target.kind === 'custom') {
-      new Setting(section).setName(t('settingsAuto244')).addText((text) =>
+      new Setting(connectionSection).setName(t('settingsAuto244')).addText((text) =>
         text
           .setPlaceholder(t('settingsAuto245'))
           .setValue(target.config.name)
@@ -3924,7 +4192,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.debouncedSave();
           }),
       );
-      new Setting(section).setName('OpenAI v1 Base URL').addText((text) =>
+      new Setting(connectionSection).setName('OpenAI v1 Base URL').addText((text) =>
         text
           .setPlaceholder(t('settingsAuto246'))
           .setValue(target.config.baseUrl ?? '')
@@ -3934,7 +4202,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
       const useRequestUrl = target.config.useRequestUrl ?? true;
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('settingsAuto247'))
         .setDesc(t('settingsAuto248') + t('settingsAuto249'))
         .addToggle((toggle) =>
@@ -3954,7 +4222,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         };
         this.debouncedSave();
       };
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('providerCapabilityToolCalling'))
         .setDesc(t('providerCapabilityToolCallingDesc'))
         .addToggle((toggle) =>
@@ -3962,7 +4230,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             updateCapabilityOverride('toolCalling', value);
           }),
         );
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('providerCapabilityReasoning'))
         .setDesc(t('providerCapabilityReasoningDesc'))
         .addToggle((toggle) =>
@@ -3970,7 +4238,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             updateCapabilityOverride('reasoning', value);
           }),
         );
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('providerCapabilityLiveStreaming'))
         .setDesc(t('providerCapabilityLiveStreamingDesc'))
         .addToggle((toggle) =>
@@ -3979,7 +4247,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
         );
       const defaultAbort = useRequestUrl ? 'best-effort' : 'native';
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('providerCapabilityNativeAbort'))
         .setDesc(t('providerCapabilityNativeAbortDesc'))
         .addToggle((toggle) =>
@@ -3989,7 +4257,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               updateCapabilityOverride('abort', value ? 'native' : 'best-effort');
             }),
         );
-      new Setting(section)
+      new Setting(connectionSection)
         .setName(t('providerCapabilityMaxToolRounds'))
         .setDesc(t('providerCapabilityMaxToolRoundsDesc'))
         .addText((text) =>
@@ -4005,7 +4273,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             }),
         );
     }
-    const controls = section.createDiv({ cls: 'superpower-inside-provider-model-controls' });
+
+    const modelSection = body.createDiv({
+      cls: 'superpower-inside-provider-section superpower-inside-provider-model-shell',
+    });
+    modelSection.createDiv({
+      cls: 'superpower-inside-provider-section-title',
+      text: t('providerModelsSection'),
+    });
+    const controls = modelSection.createDiv({ cls: 'superpower-inside-provider-model-controls' });
     const searchInput = controls.createEl('input', {
       type: 'search',
       placeholder: t('settingsAuto250'),
@@ -4015,10 +4291,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       cls: 'superpower-inside-provider-selected-only',
     });
     const selectedOnlyInput = selectedOnlyLabel.createEl('input', { type: 'checkbox' });
-    selectedOnlyLabel.createSpan({ text: t('settingsAuto251') });
-    const modelListContainer = section.createDiv({ cls: 'superpower-inside-settings-model-list' });
-    const statusContainer = section.createDiv({
-      cls: 'superpower-inside-settings-validation-status',
+    selectedOnlyLabel.createSpan({ text: t('selectedOnly') });
+    const modelListContainer = modelSection.createDiv({
+      cls: 'superpower-inside-settings-model-list superpower-inside-provider-model-list',
+    });
+    const statusContainer = body.createDiv({
+      cls: 'superpower-inside-provider-validation-status',
     });
     statusContainer.setAttribute('role', 'status');
     statusContainer.setAttribute('aria-live', 'polite');
@@ -4027,9 +4305,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     let availableModels = this.getInitialProviderModels(cacheKey, config);
     const renderModelList = () => {
       modelListContainer.empty();
-      selectedCountEl.setText(t('settingsAuto252', { v0: String(config.models.length) }));
+      renderProviderHeader();
       if (availableModels.length === 0) {
-        modelListContainer.setText(t('noModelsFound'));
+        modelListContainer.createDiv({
+          cls: 'superpower-inside-provider-empty-models',
+          text: t('noModelsFound'),
+        });
         return;
       }
       const normalizedFilter = filterText.trim().toLowerCase();
@@ -4077,153 +4358,150 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       selectedOnly = selectedOnlyInput.checked;
       renderModelList();
     });
+
+    const actionRail = body.createDiv({ cls: 'superpower-inside-provider-action-rail' });
+    const createActionButton = (
+      labelText: string,
+      iconName: string,
+      onClick: (button: HTMLButtonElement) => Promise<void>,
+    ): void => {
+      const button = actionRail.createEl('button', {
+        cls: 'superpower-inside-provider-action-btn',
+        attr: { type: 'button' },
+      });
+      setIcon(button, iconName);
+      button.createSpan({ text: labelText });
+      button.addEventListener('click', () => {
+        void onClick(button);
+      });
+    };
+    createActionButton(t('fetchModels'), 'download', async (button) => {
+      await runActionWithFeedback({
+        button,
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['models'],
+        action: async () => {
+          statusContainer.setText('');
+          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+          try {
+            const { fetchProviderModels } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await fetchProviderModels(target.key, config)
+                : await fetchProviderModels('customOpenAI', target.config);
+            if (result.valid) {
+              availableModels = this.mergeModels(config.models, result.models);
+              this.validationCache[cacheKey] = result;
+              const detail = t('settingsAuto258', { v0: String(result.models.length) });
+              statusContainer.setText(detail);
+              renderModelList();
+              return { status: 'success', detail };
+            }
+            const detail = t('settingsAuto259', { v0: String(result.error) });
+            statusContainer.setText(detail);
+            this.validationCache[cacheKey] = {
+              valid: false,
+              models: this.validationCache[cacheKey]?.models ?? [],
+              error: result.error,
+            };
+            return { status: 'error', detail: String(result.error), notice: detail };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const detail = `${t('error')}: ${msg}`;
+            statusContainer.setText(detail);
+            return { status: 'error', detail: msg, notice: detail };
+          } finally {
+            spinner.remove();
+          }
+        },
+      });
+    });
+    createActionButton(t('testConnection'), 'plug-zap', async (button) => {
+      await runActionWithFeedback({
+        button,
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['models'],
+        action: async () => {
+          statusContainer.setText('');
+          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+          try {
+            const { validateProviderConnection } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await validateProviderConnection(target.key, config)
+                : await validateProviderConnection('customOpenAI', target.config);
+            if (result.valid) {
+              availableModels = this.mergeModels(config.models, result.models);
+              const detail = t('settingsAuto260', { v0: String(result.models.length) });
+              statusContainer.setText(detail);
+              this.validationCache[cacheKey] = result;
+              renderModelList();
+              return { status: 'success', detail };
+            }
+            const detail = t('settingsAuto097', { v0: String(result.error) });
+            statusContainer.setText(detail);
+            this.validationCache[cacheKey] = {
+              valid: false,
+              models: this.validationCache[cacheKey]?.models ?? [],
+              error: result.error,
+            };
+            return { status: 'error', detail: String(result.error), notice: detail };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const detail = `${t('error')}: ${msg}`;
+            statusContainer.setText(detail);
+            return { status: 'error', detail: msg, notice: detail };
+          } finally {
+            spinner.remove();
+          }
+        },
+      });
+    });
+    createActionButton(t('testGeneration'), 'sparkles', async (button) => {
+      await runActionWithFeedback({
+        button,
+        action: async () => {
+          statusContainer.setText('');
+          const model = config.models[0];
+          if (!model) {
+            const detail = t('settingsAuto263');
+            statusContainer.setText(detail);
+            return { status: 'noop', detail };
+          }
+          const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
+          try {
+            const { testProviderGeneration } = await import('./llm/validation');
+            const result =
+              target.kind === 'fixed'
+                ? await testProviderGeneration(target.key, config, model)
+                : await testProviderGeneration('customOpenAI', target.config, model);
+            if (result.valid) {
+              const detail = t('settingsAuto264', { v0: String(model) });
+              statusContainer.setText(detail);
+              this.validationCache[cacheKey] = result;
+              renderProviderHeader();
+              return { status: 'success', detail };
+            }
+            const detail = t('settingsAuto265', { v0: String(result.error) });
+            statusContainer.setText(detail);
+            this.validationCache[cacheKey] = {
+              valid: false,
+              models: this.validationCache[cacheKey]?.models ?? [],
+              error: result.error,
+            };
+            return { status: 'error', detail: String(result.error), notice: detail };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const detail = `${t('error')}: ${msg}`;
+            statusContainer.setText(detail);
+            return { status: 'error', detail: msg, notice: detail };
+          } finally {
+            spinner.remove();
+          }
+        },
+      });
+    });
     renderModelList();
-    new Setting(section)
-      .setName(t('settingsAuto255'))
-      .setDesc(t('settingsAuto256'))
-      .addButton((button) => {
-        button.setButtonText(t('settingsAuto257'));
-        button.onClick(async () => {
-          await runActionWithFeedback({
-            button,
-            loadingText: t('testing'),
-            refreshBus: this.plugin.refreshBus,
-            refreshDomains: ['models'],
-            action: async () => {
-              statusContainer.setText('');
-              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-              try {
-                const { fetchProviderModels } = await import('./llm/validation');
-                const result =
-                  target.kind === 'fixed'
-                    ? await fetchProviderModels(target.key, config)
-                    : await fetchProviderModels('customOpenAI', target.config);
-                if (result.valid) {
-                  availableModels = this.mergeModels(config.models, result.models);
-                  this.validationCache[cacheKey] = result;
-                  const detail = t('settingsAuto258', { v0: String(result.models.length) });
-                  statusContainer.setText(detail);
-                  renderModelList();
-                  return { status: 'success', detail };
-                }
-                const detail = t('settingsAuto259', { v0: String(result.error) });
-                statusContainer.setText(detail);
-                this.validationCache[cacheKey] = {
-                  valid: false,
-                  models: this.validationCache[cacheKey]?.models ?? [],
-                  error: result.error,
-                };
-                return { status: 'error', detail: String(result.error), notice: detail };
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                const detail = `${t('error')}: ${msg}`;
-                statusContainer.setText(detail);
-                return { status: 'error', detail: msg, notice: detail };
-              } finally {
-                spinner.remove();
-              }
-            },
-          });
-        });
-      });
-    new Setting(section)
-      .setName(t('settingsAuto094'))
-      .setDesc(t('settingsAuto256'))
-      .addButton((button) => {
-        button.setButtonText(t('testConnection'));
-        button.onClick(async () => {
-          await runActionWithFeedback({
-            button,
-            loadingText: t('testing'),
-            refreshBus: this.plugin.refreshBus,
-            refreshDomains: ['models'],
-            action: async () => {
-              statusContainer.setText('');
-              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-              try {
-                const { validateProviderConnection } = await import('./llm/validation');
-                const result =
-                  target.kind === 'fixed'
-                    ? await validateProviderConnection(target.key, config)
-                    : await validateProviderConnection('customOpenAI', target.config);
-                if (result.valid) {
-                  availableModels = this.mergeModels(config.models, result.models);
-                  const detail = t('settingsAuto260', { v0: String(result.models.length) });
-                  statusContainer.setText(detail);
-                  this.validationCache[cacheKey] = result;
-                  renderModelList();
-                  return { status: 'success', detail };
-                }
-                const detail = t('settingsAuto097', { v0: String(result.error) });
-                statusContainer.setText(detail);
-                this.validationCache[cacheKey] = {
-                  valid: false,
-                  models: this.validationCache[cacheKey]?.models ?? [],
-                  error: result.error,
-                };
-                return { status: 'error', detail: String(result.error), notice: detail };
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                const detail = `${t('error')}: ${msg}`;
-                statusContainer.setText(detail);
-                return { status: 'error', detail: msg, notice: detail };
-              } finally {
-                spinner.remove();
-              }
-            },
-          });
-        });
-      });
-    new Setting(section)
-      .setName(t('settingsAuto261'))
-      .setDesc(t('settingsAuto262'))
-      .addButton((button) => {
-        button.setButtonText(t('settingsAuto261'));
-        button.onClick(async () => {
-          await runActionWithFeedback({
-            button,
-            loadingText: t('testing'),
-            action: async () => {
-              statusContainer.setText('');
-              const model = config.models[0];
-              if (!model) {
-                const detail = t('settingsAuto263');
-                statusContainer.setText(detail);
-                return { status: 'noop', detail };
-              }
-              const spinner = statusContainer.createSpan({ cls: 'superpower-inside-spinner' });
-              try {
-                const { testProviderGeneration } = await import('./llm/validation');
-                const result =
-                  target.kind === 'fixed'
-                    ? await testProviderGeneration(target.key, config, model)
-                    : await testProviderGeneration('customOpenAI', target.config, model);
-                if (result.valid) {
-                  const detail = t('settingsAuto264', { v0: String(model) });
-                  statusContainer.setText(detail);
-                  this.validationCache[cacheKey] = result;
-                  return { status: 'success', detail };
-                }
-                const detail = t('settingsAuto265', { v0: String(result.error) });
-                statusContainer.setText(detail);
-                this.validationCache[cacheKey] = {
-                  valid: false,
-                  models: this.validationCache[cacheKey]?.models ?? [],
-                  error: result.error,
-                };
-                return { status: 'error', detail: String(result.error), notice: detail };
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                const detail = `${t('error')}: ${msg}`;
-                statusContainer.setText(detail);
-                return { status: 'error', detail: msg, notice: detail };
-              } finally {
-                spinner.remove();
-              }
-            },
-          });
-        });
-      });
   }
   private getInitialProviderModels(cacheKey: string, config: ProviderConfig): string[] {
     const cached = this.validationCache[cacheKey];
@@ -4240,34 +4518,48 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildCustomOpenAIProvidersSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-settings-panel superpower-inside-provider-custom-section',
+      cls: 'superpower-inside-provider-custom-dock',
     });
-    section.createDiv({
-      cls: 'superpower-inside-settings-section-title',
-      text: 'Custom OpenAI-Compatible',
+    const header = section.createDiv({ cls: 'superpower-inside-provider-custom-header' });
+    const title = header.createDiv({ cls: 'superpower-inside-provider-custom-title' });
+    title.createDiv({
+      cls: 'superpower-inside-provider-custom-heading',
+      text: t('providerCustomDockTitle'),
     });
-    section.createDiv({
-      cls: 'superpower-inside-provider-help',
-      text: t('settingsAuto266'),
+    title.createDiv({
+      cls: 'superpower-inside-provider-custom-desc',
+      text: t('providerCustomDockDesc'),
+    });
+    const addButton = header.createEl('button', {
+      cls: 'superpower-inside-provider-add-btn',
+      attr: { type: 'button' },
+    });
+    setIcon(addButton, 'plus');
+    addButton.createSpan({ text: t('settingsAuto268') });
+    const customGrid = section.createDiv({
+      cls: 'superpower-inside-provider-grid superpower-inside-provider-custom-grid',
     });
     for (const provider of this.plugin.settings.customOpenAIProviders) {
-      this.buildProviderSettings(section, {
+      const slot = customGrid.createDiv({ cls: 'superpower-inside-custom-provider-slot' });
+      this.buildProviderSettings(slot, {
         kind: 'custom',
         key: `customOpenAI:${provider.id}`,
         label: provider.name.trim() || 'Custom OpenAI-Compatible',
         config: provider,
       });
-      const row = section.createDiv({ cls: 'superpower-inside-provider-custom-actions' });
-      const removeButton = row.createEl('button', { text: t('settingsAuto267') });
+      const removeButton = slot.createEl('button', {
+        cls: 'superpower-inside-provider-remove-btn',
+        attr: { type: 'button', 'aria-label': t('settingsAuto267') },
+      });
+      setIcon(removeButton, 'trash-2');
+      removeButton.createSpan({ text: t('settingsAuto267') });
       removeButton.addEventListener('click', () => {
         this.plugin.settings.customOpenAIProviders =
           this.plugin.settings.customOpenAIProviders.filter((item) => item.id !== provider.id);
         this.debouncedSave();
-        section.remove();
-        this.buildCustomOpenAIProvidersSection(containerEl);
+        this.display();
       });
     }
-    const addButton = section.createEl('button', { text: t('settingsAuto268') });
     addButton.addEventListener('click', () => {
       const id = this.createCustomProviderId();
       this.plugin.settings.customOpenAIProviders.push({
@@ -4280,8 +4572,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         useRequestUrl: true,
       });
       this.debouncedSave();
-      section.remove();
-      this.buildCustomOpenAIProvidersSection(containerEl);
+      this.display();
     });
   }
   private createCustomProviderId(): string {

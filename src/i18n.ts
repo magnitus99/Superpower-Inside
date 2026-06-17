@@ -835,6 +835,36 @@ export interface I18nKeys {
   selectedOnly: string;
   fetchModels: string;
   testGeneration: string;
+  providerCommandCenterTitle: string;
+  providerCommandCenterDesc: string;
+  providerDashboardReady: string;
+  providerDashboardReadyDetail: string;
+  providerDashboardAttention: string;
+  providerDashboardAttentionDetail: string;
+  providerDashboardEnabled: string;
+  providerDashboardEnabledDetail: string;
+  providerDashboardModels: string;
+  providerDashboardModelsDetail: string;
+  providerStatusReady: string;
+  providerStatusNeedsKey: string;
+  providerStatusNeedsModels: string;
+  providerStatusOff: string;
+  providerSummaryReady: string;
+  providerSummaryNeedsKey: string;
+  providerSummaryNeedsModels: string;
+  providerSummaryOff: string;
+  providerKeyReady: string;
+  providerKeyMissing: string;
+  providerKeyNotRequired: string;
+  providerModelsSelected: string;
+  providerNoModelsShort: string;
+  providerTypeBuiltIn: string;
+  providerTypeCustom: string;
+  providerQuickKey: string;
+  providerQuickModels: string;
+  providerQuickType: string;
+  providerCustomDockTitle: string;
+  providerCustomDockDesc: string;
   tabRag: string;
   tabChat: string;
   tabMcp: string;
@@ -2132,6 +2162,37 @@ const ko: I18nKeys = {
   selectedOnly: '선택됨만 보기',
   fetchModels: '모델 검색',
   testGeneration: '최소 생성 테스트',
+  providerCommandCenterTitle: 'LLM 연결 관제판',
+  providerCommandCenterDesc:
+    '채팅, RAG, GraphRAG가 사용할 provider 준비 상태를 한 화면에서 정리합니다.',
+  providerDashboardReady: '준비 완료',
+  providerDashboardReadyDetail: '바로 사용할 수 있는 provider',
+  providerDashboardAttention: '조치 필요',
+  providerDashboardAttentionDetail: '키 또는 모델 선택 필요',
+  providerDashboardEnabled: '활성',
+  providerDashboardEnabledDetail: '켜져 있는 provider',
+  providerDashboardModels: '선택 모델',
+  providerDashboardModelsDetail: '등록된 채팅 모델',
+  providerStatusReady: '준비됨',
+  providerStatusNeedsKey: '키 필요',
+  providerStatusNeedsModels: '모델 필요',
+  providerStatusOff: '꺼짐',
+  providerSummaryReady: '{v0}개 모델로 사용 가능',
+  providerSummaryNeedsKey: 'API Key를 입력하면 사용 가능',
+  providerSummaryNeedsModels: '모델을 하나 이상 선택하세요',
+  providerSummaryOff: '필요할 때 켜서 사용',
+  providerKeyReady: '키 준비됨',
+  providerKeyMissing: '키 필요',
+  providerKeyNotRequired: '키 불필요',
+  providerModelsSelected: '{v0}개 선택',
+  providerNoModelsShort: '모델 없음',
+  providerTypeBuiltIn: '기본 제공',
+  providerTypeCustom: '커스텀',
+  providerQuickKey: '인증',
+  providerQuickModels: '모델',
+  providerQuickType: '유형',
+  providerCustomDockTitle: 'Custom OpenAI-Compatible',
+  providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 endpoint를 같은 카드 흐름에서 관리합니다.',
   tabRag: 'RAG',
   tabChat: '채팅',
   tabMcp: 'MCP',
@@ -3490,6 +3551,38 @@ const en: I18nKeys = {
   selectedOnly: 'Selected only',
   fetchModels: 'Fetch Models',
   testGeneration: 'Test Generation',
+  providerCommandCenterTitle: 'LLM Connection Console',
+  providerCommandCenterDesc:
+    'Review the provider readiness used by chat, RAG, and GraphRAG in one place.',
+  providerDashboardReady: 'Ready',
+  providerDashboardReadyDetail: 'Providers ready to use',
+  providerDashboardAttention: 'Needs action',
+  providerDashboardAttentionDetail: 'Key or model selection required',
+  providerDashboardEnabled: 'Enabled',
+  providerDashboardEnabledDetail: 'Providers currently turned on',
+  providerDashboardModels: 'Selected models',
+  providerDashboardModelsDetail: 'Registered chat models',
+  providerStatusReady: 'Ready',
+  providerStatusNeedsKey: 'Key needed',
+  providerStatusNeedsModels: 'Models needed',
+  providerStatusOff: 'Off',
+  providerSummaryReady: '{v0} models ready',
+  providerSummaryNeedsKey: 'Enter an API Key to use this provider',
+  providerSummaryNeedsModels: 'Select at least one model',
+  providerSummaryOff: 'Enable when needed',
+  providerKeyReady: 'Key ready',
+  providerKeyMissing: 'Key needed',
+  providerKeyNotRequired: 'No key required',
+  providerModelsSelected: '{v0} selected',
+  providerNoModelsShort: 'No models',
+  providerTypeBuiltIn: 'Built-in',
+  providerTypeCustom: 'Custom',
+  providerQuickKey: 'Auth',
+  providerQuickModels: 'Models',
+  providerQuickType: 'Type',
+  providerCustomDockTitle: 'Custom OpenAI-Compatible',
+  providerCustomDockDesc:
+    'Manage local servers or internal OpenAI-compatible endpoints in the same card flow.',
   tabRag: 'RAG',
   tabChat: 'Chat',
   tabMcp: 'MCP',
