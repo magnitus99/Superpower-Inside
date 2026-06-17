@@ -1,7 +1,7 @@
 import type { TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
-import type { VectorStore, VectorEntry } from './store';
+import type { VectorStore, VectorEntry, FileIndexRecord } from './store';
 import {
   getRagCandidateFiles,
   isExcludedPath,
@@ -236,6 +236,17 @@ export class VaultIndexer {
     const content = await this.vault.cachedRead(file);
     throwIfIndexingCancelled(options.signal);
     const sourceHash = createContentHash(content);
+    if (await this.isCurrentFileIndexRecord(file, sourceHash)) {
+      const skipped = finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+      this.logger.debug('File indexing skipped because content hash is unchanged.', {
+        data: { path: file.path },
+      });
+      return skipped;
+    }
     const indexedAt = Date.now();
     const chunks =
       file.extension.toLowerCase() === 'md'
@@ -465,6 +476,28 @@ export class VaultIndexer {
     }
     return this.vectorStore.withBatch(() => this.bm25Index!.withBatch(operation));
   }
+
+  private async isCurrentFileIndexRecord(file: TFile, contentHash: string): Promise<boolean> {
+    const record = await this.vectorStore.getFileIndexRecord(file.path);
+    return record ? isCurrentFileIndexRecord(record, file, contentHash, this.ragConfig) : false;
+  }
+}
+
+function isCurrentFileIndexRecord(
+  record: FileIndexRecord,
+  file: TFile,
+  contentHash: string,
+  ragConfig: RAGConfig,
+): boolean {
+  return (
+    record.vectorCount > 0 &&
+    record.hasCompleteMetadata === true &&
+    record.sourceMtime === file.stat.mtime &&
+    record.sourceSize === file.stat.size &&
+    record.contentHash === contentHash &&
+    record.embeddingProvider === ragConfig.embeddingProvider &&
+    record.embeddingModel === ragConfig.embeddingModel
+  );
 }
 
 function createScopedIndexerLogger(logger: AppLogger | ScopedLogger | undefined): ScopedLogger {

@@ -111,6 +111,7 @@ export interface VectorStore {
   withBatch<T>(operation: () => Promise<T>): Promise<T>;
   getStats(): Promise<VectorStoreStats>;
   getIndexedFilePaths(): Promise<string[]>;
+  getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null>;
   getFileIndexRecords(): Promise<FileIndexRecord[]>;
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]>;
   getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]>;
@@ -630,6 +631,15 @@ export class IndexedDbVectorStore implements VectorStore {
     return (await this.getFileIndexRecords()).map((record) => record.filePath).sort();
   }
 
+  async getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null> {
+    const record = await this.db.fileIndex.get(filePath);
+    if (record) return record;
+    const vectorCount = await this.db.vectors.count();
+    if (vectorCount === 0) return null;
+    await this.rebuildFileIndexFromVectors();
+    return (await this.db.fileIndex.get(filePath)) ?? null;
+  }
+
   async getFileIndexRecords(): Promise<FileIndexRecord[]> {
     const records = await this.db.fileIndex.toArray();
     const vectorCount = await this.db.vectors.count();
@@ -940,6 +950,10 @@ export class MemoryVectorStore implements VectorStore {
 
   getIndexedFilePaths(): Promise<string[]> {
     return Promise.resolve(vectorStoreStatsFromRust(this.entries).indexedFilePaths);
+  }
+
+  async getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null> {
+    return (await this.getFileIndexRecords()).find((record) => record.filePath === filePath) ?? null;
   }
 
   getFileIndexRecords(): Promise<FileIndexRecord[]> {

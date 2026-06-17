@@ -14,6 +14,7 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
 import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
+import { createContentHash } from './hash';
 
 const bm25DbNames = new Set<string>();
 
@@ -274,6 +275,61 @@ describe('VaultIndexer 배치 인덱싱', () => {
     await indexer.removeFile('note.md');
 
     expect([...bm25.search('specialterm').keys()]).toEqual([]);
+  });
+
+  it('contentHash와 임베딩 설정이 같으면 파일 재임베딩과 BM25 재작성을 건너뛴다', async () => {
+    const content = '변경 없는 문서 내용';
+    const file = createFile('note.md', 1000, content.length);
+    const vault = createVault(new Map([[file.path, content]]));
+    const store = new MemoryVectorStore();
+    await store.add([
+      {
+        id: 'note.md::0::0',
+        vector: [1, 0],
+        metadata: {
+          filePath: file.path,
+          startLine: 0,
+          endLine: 0,
+          text: 'old indexed text',
+          sourceMtime: file.stat.mtime,
+          sourceSize: file.stat.size,
+          contentHash: createContentHash(content),
+          indexedAt: 1,
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+        },
+      },
+    ]);
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    const removeSourceSpy = vi.spyOn(bm25, 'removeDocumentsBySource');
+    const addDocumentSpy = vi.spyOn(bm25, 'addDocument');
+    const persistSpy = vi.spyOn(bm25, 'persist');
+    let embedBatchCalls = 0;
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        embedBatchCalls += 1;
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), enableBM25: true },
+      createChatConfig(),
+      bm25,
+    );
+
+    const result = await indexer.indexFile(file);
+
+    expect(result).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
+    expect(result.documents).toEqual(['note.md']);
+    expect(embedBatchCalls).toBe(0);
+    expect(removeSourceSpy).not.toHaveBeenCalled();
+    expect(addDocumentSpy).not.toHaveBeenCalled();
+    expect(persistSpy).not.toHaveBeenCalled();
   });
 
   it('전체 재인덱싱 전에 BM25에 남은 stale 문서를 제거한다', async () => {
