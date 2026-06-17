@@ -58,7 +58,7 @@ export interface GraphRagStatusSummary {
 export async function calculateGraphRagStatus(
   input: GraphRagStatusInput,
 ): Promise<GraphRagStatusSummary> {
-  if (!input.ragConfig.graphRagEnabled || input.schemaErrors.length > 0) {
+  if (input.schemaErrors.length > 0) {
     return requireGraphRagStatusPlan(createGraphRagStatusInput(input, [], 0));
   }
 
@@ -151,7 +151,7 @@ function createGraphRagStatusInput(
 ): RustGraphRagStatusInput {
   const ontologySchema = buildDefaultOntologySchema();
   return {
-    graphRagEnabled: input.ragConfig.graphRagEnabled,
+    graphRagEnabled: true,
     isRunning: input.isRunning,
     schemaErrorCount: input.schemaErrors.length,
     totalCandidateFiles,

@@ -63,6 +63,7 @@ import {
   type RagIndexingSchedulerStatus,
 } from './src/rag/indexing-scheduler';
 import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
+import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
 import { LOG_VIEW_TYPE, LogView } from './src/logs/view';
@@ -85,6 +86,64 @@ const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
+  if (!status) return false;
+  return (
+    status.state === 'ready' ||
+    status.state === 'partial' ||
+    status.state === 'stale' ||
+    (status.state === 'building' && status.graphEvidenceCount > 0)
+  );
+}
+
+function graphRagReadinessFromStatus(
+  status: GraphRagStatusSummary | null,
+): RetrievalProviderReadiness {
+  if (!status) {
+    return {
+      readiness: 'cold',
+      estimatedCost: 'medium',
+      reason: 'GraphRAG status has not been calculated yet.',
+    };
+  }
+  if (status.state === 'ready') {
+    return { readiness: 'ready', estimatedCost: 'medium' };
+  }
+  if (status.state === 'partial') {
+    return {
+      readiness: 'partial',
+      estimatedCost: 'medium',
+      reason: 'GraphRAG index is partially available.',
+    };
+  }
+  if (status.state === 'stale') {
+    return {
+      readiness: 'stale',
+      estimatedCost: 'medium',
+      reason: 'GraphRAG index is stale but still available as supporting evidence.',
+    };
+  }
+  if (status.state === 'building' && status.graphEvidenceCount > 0) {
+    return {
+      readiness: 'partial',
+      estimatedCost: 'medium',
+      reason: 'GraphRAG index is building; existing evidence is available.',
+    };
+  }
+  if (status.state === 'schema-error') {
+    return {
+      readiness: 'degraded',
+      estimatedCost: 'high',
+      reason: 'GraphRAG ontology schema has errors.',
+    };
+  }
+  return {
+    readiness: 'cold',
+    estimatedCost: 'high',
+    reason: 'GraphRAG index has not been built yet.',
+  };
 }
 
 export default class SuperpowerInsidePlugin extends Plugin {
@@ -1256,13 +1315,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       : undefined;
 
     const ontologySchema = buildDefaultOntologySchema();
-    const graphProvider =
-      rag.graphRagEnabled && rag.graphRagModel.trim()
-        ? this.createProviderForModel(rag.graphRagModel)
-        : null;
-    const graphRagEnabledForQuery =
-      rag.graphRagEnabled &&
-      (this.graphRagStatus?.state === 'ready' || this.graphRagStatus?.state === 'partial');
+    const graphProvider = rag.graphRagModel.trim()
+      ? this.createProviderForModel(rag.graphRagModel)
+      : null;
+    const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
     const graphRagQueryEngine =
       graphRagEnabledForQuery && this.knowledgeGraphStore
         ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
@@ -1287,6 +1343,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         structuralMetadataContext,
         graphRagEnabled: graphRagEnabledForQuery,
         graphRagQueryEngine,
+        graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
         reranker: graphProvider ? new LLMRAGResultReranker(graphProvider) : undefined,
         embeddingModel: rag.embeddingModel,
       },

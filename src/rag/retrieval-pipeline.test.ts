@@ -94,6 +94,91 @@ describe('RagRetrievalPipeline', () => {
     expect(signals[0]?.aborted).toBe(true);
   });
 
+  it('orchestrator는 cold provider를 호출하지 않고 readiness diagnostic으로 남긴다', async () => {
+    let coldCalls = 0;
+    let readyCalls = 0;
+    const readyEntry = createEntry('ready.md', [1, 0], '준비된 후보');
+    const coldProvider: CandidateProvider & {
+      getReadiness(): { readiness: 'cold'; estimatedCost: 'high'; reason: string };
+    } = {
+      id: 'cold-graph',
+      source: 'graph-local',
+      deadlineMs: 50,
+      getReadiness: () => ({
+        readiness: 'cold',
+        estimatedCost: 'high',
+        reason: 'GraphRAG index has not been built yet.',
+      }),
+      getCandidates: () => {
+        coldCalls++;
+        return Promise.resolve([]);
+      },
+    };
+    const readyProvider: CandidateProvider & {
+      getReadiness(): { readiness: 'ready'; estimatedCost: 'low' };
+    } = {
+      id: 'ready-vector',
+      source: 'vector',
+      deadlineMs: 50,
+      getReadiness: () => ({ readiness: 'ready', estimatedCost: 'low' }),
+      getCandidates: () => {
+        readyCalls++;
+        return Promise.resolve([{ entry: readyEntry, source: 'vector', sourceScore: 1 }]);
+      },
+    };
+    const pipeline = new RagRetrievalPipeline([coldProvider, readyProvider]);
+
+    const result = await pipeline.retrieve(createRequest([1, 0], 5));
+
+    expect(coldCalls).toBe(0);
+    expect(readyCalls).toBe(1);
+    expect(result.candidates.map((candidate) => candidate.entry.id)).toEqual([readyEntry.id]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        providerId: 'cold-graph',
+        source: 'graph-local',
+        status: 'skipped',
+        readiness: 'cold',
+        estimatedCost: 'high',
+        skippedReason: 'GraphRAG index has not been built yet.',
+      }),
+      expect.objectContaining({
+        providerId: 'ready-vector',
+        source: 'vector',
+        status: 'ok',
+        readiness: 'ready',
+        estimatedCost: 'low',
+      }),
+    ]);
+  });
+
+  it('provider readiness 계산 실패도 전체 retrieval 실패로 전파하지 않는다', async () => {
+    const provider: CandidateProvider = {
+      id: 'broken-readiness',
+      source: 'graph-local',
+      deadlineMs: 50,
+      getReadiness: () => {
+        throw new Error('readiness failed');
+      },
+      getCandidates: () =>
+        Promise.resolve([{ entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'graph-local' }]),
+    };
+    const pipeline = new RagRetrievalPipeline([provider]);
+
+    const result = await pipeline.retrieve(createRequest([1, 0], 5));
+
+    expect(result.candidates).toEqual([]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        providerId: 'broken-readiness',
+        status: 'error',
+        readiness: 'degraded',
+        estimatedCost: 'high',
+        error: 'readiness failed',
+      }),
+    ]);
+  });
+
   it('provider별 후보 순위를 병합 결과에 보존한다', async () => {
     const shared = createEntry('shared.md', [1, 0], '공통 후보');
     const vectorProvider: CandidateProvider = {

@@ -1749,7 +1749,7 @@ const ko: I18nKeys = {
   settingsAuto047: '예상 파일',
   settingsAuto048: '예상 호출',
   settingsAuto049: '예상 입력 토큰',
-  settingsAuto050: 'GraphRAG 활성화',
+  settingsAuto050: 'GraphRAG 백그라운드 빌드 허용',
   settingsAuto051:
     '장시간 LLM 추출 인덱싱을 명시적으로 허용합니다. 기본 RAG 검색은 이 설정과 별개로 유지됩니다.',
   settingsAuto052: 'GraphRAG 모델',
@@ -1764,7 +1764,7 @@ const ko: I18nKeys = {
     '파일 변경 시 stale 파일을 자동으로 동기화합니다. LLM API 비용이 발생할 수 있습니다.',
   settingsAuto060: '자동 동기화 간격(분)',
   settingsAuto061: '파일 변경 후 자동 동기화까지 대기하는 최소 시간입니다.',
-  settingsAuto062: 'GraphRAG가 비활성화되어 있습니다.',
+  settingsAuto062: 'GraphRAG 백그라운드 빌드가 보류되어 있습니다.',
   settingsAuto063: '선택한 GraphRAG 모델의 provider가 꺼져 있거나 모델 목록에 없습니다.',
   settingsAuto064: 'GraphRAG 모델이 설정되지 않았습니다.',
   settingsAuto065: '인덱싱 중에는 커뮤니티 빌드를 실행할 수 없습니다.',
@@ -2125,8 +2125,9 @@ const ko: I18nKeys = {
   ragNoDocuments: 'RAG 대상 문서가 없습니다.',
   ragNoRunningIndexing: '실행 중인 인덱싱이 없습니다.',
   ragNotPerformancePaused: '성능 보호 대기 상태가 아닙니다.',
-  graphRagStatusDisabledLabel: '비활성',
-  graphRagStatusDisabledDesc: 'GraphRAG 기능이 꺼져 있습니다.',
+  graphRagStatusDisabledLabel: '빌드 보류',
+  graphRagStatusDisabledDesc:
+    '긴 GraphRAG 추출 작업만 보류되어 있습니다. 준비된 그래프 데이터는 일반 채팅에서 계속 보강으로 사용됩니다.',
   graphRagStatusNotBuiltLabel: '미생성',
   graphRagStatusNotBuiltDesc:
     'GraphRAG 인덱스가 아직 생성되지 않았습니다. 시작 버튼으로 생성하세요.',
@@ -2142,7 +2143,7 @@ const ko: I18nKeys = {
     '일부 파일 추출에 실패했습니다. 실패한 파일만 다시 시도할 수 있습니다.',
   graphRagStatusSchemaErrorLabel: '설정 오류',
   graphRagStatusSchemaErrorDesc: '온톨로지 스키마에 오류가 있습니다. 설정을 확인하세요.',
-  graphRagDisabledReason: 'GraphRAG가 비활성 상태입니다.',
+  graphRagDisabledReason: 'GraphRAG 백그라운드 빌드가 보류되어 있습니다.',
   graphRagProviderMissingReason:
     '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
   graphRagModelMissingReason: 'GraphRAG 추출 모델을 선택하세요.',
@@ -2225,7 +2226,8 @@ const ko: I18nKeys = {
   overviewRagNeedsDetail: '{count}개 문서가 missing/stale/unknown 상태입니다.',
   overviewRagHealthyDetail: '{healthy}/{total}개 문서가 최신입니다.',
   overviewSyncRequired: '동기화 필요',
-  overviewGraphRagDisabledDetail: '기본 RAG 검색은 계속 사용할 수 있습니다.',
+  overviewGraphRagDisabledDetail:
+    '비싼 GraphRAG 추출 작업만 보류되어 있습니다. vector/BM25/structural 검색과 준비된 그래프 보강은 계속 사용할 수 있습니다.',
   overviewNeedsSetup: '설정 필요',
   overviewGraphRagRunnerMissing: 'Runner가 초기화되지 않았습니다.',
   overviewGraphRagExtractingDetail: '추출 인덱싱이 진행 중입니다.',
@@ -2426,7 +2428,7 @@ const ko: I18nKeys = {
   contextNoRelevantDocs: '유사도 임계치를 충족하는 관련 문서가 없습니다.',
   contextRagLoadFailed: 'RAG 컨텍스트를 불러오지 못했습니다: {error}',
   contextAutoRagTitle: '자동 RAG',
-  contextDiagnosticProviderSummary: '{provider} {status} {count}개',
+  contextDiagnosticProviderSummary: '{provider} {status}/{readiness} {count}개',
   contextSearchDiagnostic: '검색 진단: {summary}',
   contextFileMissing: '파일이 vault에 존재하지 않습니다.',
   contextLegacyIndexNeedsReindex: '이전 형식의 인덱스라 재인덱싱이 필요합니다.',
@@ -3062,7 +3064,7 @@ const en: I18nKeys = {
   settingsAuto047: 'Estimated files',
   settingsAuto048: 'Estimated calls',
   settingsAuto049: 'Estimated input tokens',
-  settingsAuto050: 'Enable GraphRAG',
+  settingsAuto050: 'Allow GraphRAG background build',
   settingsAuto051:
     'Explicitly allow long-running LLM extraction indexing. Basic RAG search remains independent of this setting.',
   settingsAuto052: 'GraphRAG model',
@@ -3076,7 +3078,7 @@ const en: I18nKeys = {
   settingsAuto059: 'Automatically sync stale files when files change. LLM API costs may occur.',
   settingsAuto060: 'Auto-sync interval (minutes)',
   settingsAuto061: 'Minimum wait time after file changes before auto-sync.',
-  settingsAuto062: 'GraphRAG is disabled.',
+  settingsAuto062: 'GraphRAG background build is paused.',
   settingsAuto063:
     'The selected GraphRAG model provider is disabled or the model is missing from its model list.',
   settingsAuto064: 'GraphRAG model is not configured.',
@@ -3445,8 +3447,9 @@ const en: I18nKeys = {
   ragNoDocuments: 'No RAG target documents.',
   ragNoRunningIndexing: 'No indexing job is running.',
   ragNotPerformancePaused: 'Performance guard is not paused.',
-  graphRagStatusDisabledLabel: 'Disabled',
-  graphRagStatusDisabledDesc: 'GraphRAG is turned off.',
+  graphRagStatusDisabledLabel: 'Build paused',
+  graphRagStatusDisabledDesc:
+    'Only long-running GraphRAG extraction is paused. Prepared graph data can still improve normal chat.',
   graphRagStatusNotBuiltLabel: 'Not built',
   graphRagStatusNotBuiltDesc:
     'GraphRAG index has not been created yet. Use the start button to create it.',
@@ -3461,7 +3464,7 @@ const en: I18nKeys = {
   graphRagStatusPartialDesc: 'Some file extraction failed. You can retry only the failed files.',
   graphRagStatusSchemaErrorLabel: 'Configuration error',
   graphRagStatusSchemaErrorDesc: 'The ontology schema has errors. Check the settings.',
-  graphRagDisabledReason: 'GraphRAG is disabled.',
+  graphRagDisabledReason: 'GraphRAG background build is paused.',
   graphRagProviderMissingReason:
     'Enable the selected GraphRAG model provider and add the model to its model list.',
   graphRagModelMissingReason: 'Select a GraphRAG extraction model.',
@@ -3548,7 +3551,8 @@ const en: I18nKeys = {
   overviewRagNeedsDetail: '{count} documents are missing, stale, or unknown.',
   overviewRagHealthyDetail: '{healthy}/{total} documents are up to date.',
   overviewSyncRequired: 'Sync required',
-  overviewGraphRagDisabledDetail: 'Basic RAG search remains available.',
+  overviewGraphRagDisabledDetail:
+    'Only expensive GraphRAG extraction is paused. Vector, BM25, structural search, and prepared graph enrichment remain available.',
   overviewNeedsSetup: 'Setup needed',
   overviewGraphRagRunnerMissing: 'Runner is not initialized.',
   overviewGraphRagExtractingDetail: 'Extraction indexing is running.',
@@ -3758,7 +3762,7 @@ const en: I18nKeys = {
   contextNoRelevantDocs: 'No relevant documents met the similarity threshold.',
   contextRagLoadFailed: 'Unable to load RAG context: {error}',
   contextAutoRagTitle: 'Auto RAG',
-  contextDiagnosticProviderSummary: '{provider} {status} {count}',
+  contextDiagnosticProviderSummary: '{provider} {status}/{readiness} {count}',
   contextSearchDiagnostic: 'Search diagnostics: {summary}',
   contextFileMissing: 'File does not exist in the vault.',
   contextLegacyIndexNeedsReindex: 'This is an older index format and needs reindexing.',

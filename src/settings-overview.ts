@@ -273,12 +273,69 @@ function buildGraphRagMetric(
   settings: SuperpowerInsideSettings,
   runtime: SettingsOverviewRuntimeState,
 ): SettingsOverviewMetric {
+  if (runtime.isGraphRagIndexing) {
+    return {
+      id: 'graph-rag',
+      label: 'GraphRAG',
+      value: t('overviewRunning'),
+      statusLabel: t('ragIndexingInProgress'),
+      detail: t('overviewGraphRagExtractingDetail'),
+      tone: 'warning',
+      target: 'rag',
+    };
+  }
+
+  const status = runtime.graphRagStatus;
+  if (status?.state === 'ready') {
+    return {
+      id: 'graph-rag',
+      label: 'GraphRAG',
+      value: t('overviewLatest'),
+      statusLabel: t('overviewLatest'),
+      detail: t('overviewGraphRagEvidenceReady', { count: status.graphEvidenceCount }),
+      tone: 'success',
+      target: 'rag',
+    };
+  }
+  if (status?.state === 'stale') {
+    return {
+      id: 'graph-rag',
+      label: 'GraphRAG',
+      value: t('overviewGraphRagStaleValue', { count: status.staleFileCount }),
+      statusLabel: t('overviewSyncRequired'),
+      detail: t('overviewGraphRagStaleDetail'),
+      tone: 'warning',
+      target: 'rag',
+    };
+  }
+  if (status?.state === 'partial') {
+    return {
+      id: 'graph-rag',
+      label: 'GraphRAG',
+      value: t('graphRagStatusPartialLabel'),
+      statusLabel: t('graphRagStatusPartialLabel'),
+      detail: t('overviewGraphRagPartialDetail', { count: status.failedFileCount }),
+      tone: 'warning',
+      target: 'rag',
+    };
+  }
+  if (status?.state === 'schema-error') {
+    return {
+      id: 'graph-rag',
+      label: 'GraphRAG',
+      value: t('overviewNotReady'),
+      statusLabel: t('graphRagStatusSchemaErrorLabel'),
+      detail: t('overviewGraphRagNeedIndexing'),
+      tone: 'danger',
+      target: 'rag',
+    };
+  }
   if (!settings.rag.graphRagEnabled) {
     return {
       id: 'graph-rag',
       label: 'GraphRAG',
-      value: t('overviewProviderOff'),
-      statusLabel: t('overviewProviderOff'),
+      value: t('graphRagStatusDisabledLabel'),
+      statusLabel: t('graphRagStatusDisabledLabel'),
       detail: t('overviewGraphRagDisabledDetail'),
       tone: 'neutral',
       target: 'rag',
@@ -297,19 +354,6 @@ function buildGraphRagMetric(
       target: 'rag',
     };
   }
-  if (runtime.isGraphRagIndexing) {
-    return {
-      id: 'graph-rag',
-      label: 'GraphRAG',
-      value: t('overviewRunning'),
-      statusLabel: t('ragIndexingInProgress'),
-      detail: t('overviewGraphRagExtractingDetail'),
-      tone: 'warning',
-      target: 'rag',
-    };
-  }
-
-  const status = runtime.graphRagStatus;
   if (!status) {
     return {
       id: 'graph-rag',
@@ -321,48 +365,14 @@ function buildGraphRagMetric(
       target: 'rag',
     };
   }
-  if (status.state === 'ready') {
-    return {
-      id: 'graph-rag',
-      label: 'GraphRAG',
-      value: t('overviewLatest'),
-      statusLabel: t('overviewLatest'),
-      detail: t('overviewGraphRagEvidenceReady', { count: status.graphEvidenceCount }),
-      tone: 'success',
-      target: 'rag',
-    };
-  }
-  if (status.state === 'stale') {
-    return {
-      id: 'graph-rag',
-      label: 'GraphRAG',
-      value: t('overviewGraphRagStaleValue', { count: status.staleFileCount }),
-      statusLabel: t('overviewSyncRequired'),
-      detail: t('overviewGraphRagStaleDetail'),
-      tone: 'warning',
-      target: 'rag',
-    };
-  }
-  if (status.state === 'partial') {
-    return {
-      id: 'graph-rag',
-      label: 'GraphRAG',
-      value: t('graphRagStatusPartialLabel'),
-      statusLabel: t('graphRagStatusPartialLabel'),
-      detail: t('overviewGraphRagPartialDetail', { count: status.failedFileCount }),
-      tone: 'warning',
-      target: 'rag',
-    };
-  }
 
   return {
     id: 'graph-rag',
     label: 'GraphRAG',
     value: t('overviewNotReady'),
-    statusLabel:
-      status.state === 'schema-error' ? t('graphRagStatusSchemaErrorLabel') : t('overviewNotReady'),
+    statusLabel: t('overviewNotReady'),
     detail: t('overviewGraphRagNeedIndexing'),
-    tone: status.state === 'schema-error' ? 'danger' : 'warning',
+    tone: 'warning',
     target: 'rag',
   };
 }

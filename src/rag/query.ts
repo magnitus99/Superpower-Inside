@@ -10,6 +10,7 @@ import {
   RagRetrievalPipeline,
   StructuralGraphCandidateProvider,
   type CandidateProvider,
+  type RetrievalProviderReadiness,
   type RetrievalProviderDiagnostic,
   type StructuralMetadataContext,
 } from './retrieval-pipeline';
@@ -66,6 +67,7 @@ export interface RAGQueryEngineOptions {
   structuralMetadataContext?: StructuralMetadataContext;
   graphRagEnabled?: boolean;
   graphRagQueryEngine?: GraphRagQueryEngine;
+  graphRagReadiness?: () => RetrievalProviderReadiness;
   reranker?: RAGResultReranker;
   rerankCandidateLimit?: number;
   embeddingModel?: string;
@@ -118,7 +120,12 @@ export class RAGQueryEngine {
       );
     }
     if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
-      providers.push(new GraphRagCandidateProvider(options.graphRagQueryEngine));
+      providers.push(
+        new GraphRagCandidateProvider(
+          options.graphRagQueryEngine,
+          options.graphRagReadiness ?? defaultGraphRagReadiness,
+        ),
+      );
     }
     this.retrievalPipeline = new RagRetrievalPipeline(providers);
   }
@@ -249,6 +256,10 @@ export class RAGQueryEngine {
       return [...results];
     }
   }
+}
+
+function defaultGraphRagReadiness(): RetrievalProviderReadiness {
+  return { readiness: 'partial', estimatedCost: 'medium' };
 }
 
 export class LLMRAGResultReranker implements RAGResultReranker {

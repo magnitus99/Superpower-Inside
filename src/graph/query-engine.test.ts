@@ -438,6 +438,7 @@ describe('GraphRagCandidateProvider', () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     const provider = new GraphRagCandidateProvider(
       new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema()),
+      () => ({ readiness: 'ready', estimatedCost: 'medium' }),
     );
 
     const candidates = await provider.getCandidates({

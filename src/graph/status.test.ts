@@ -30,18 +30,39 @@ function createEntry(filePath: string, contentHash: string) {
 }
 
 describe('calculateGraphRagStatus', () => {
-  it('GraphRAG가 꺼져 있으면 disabled를 반환한다', async () => {
-    const vectorStore = new UnusedStatusVectorStore();
+  it('GraphRAG 자동 빌드가 꺼져 있어도 준비된 그래프 인덱스는 ready로 계산한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('note.md', 'hash-a')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-1',
+      filePath: 'note.md',
+      entryId: 'note.md::0',
+      startLine: 1,
+      quote: 'text',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'note.md::0',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: 'default',
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      updatedAt: 1000,
+    });
+
     const status = await calculateGraphRagStatus({
       ragConfig: { ...baseRagConfig, graphRagEnabled: false },
-      graphStore: new InMemoryKnowledgeGraphStore(),
+      graphStore,
       vectorStore,
       isRunning: false,
       schemaErrors: [],
     });
 
-    expect(status.state).toBe('disabled');
-    expect(vectorStore.lookupCount).toBe(0);
+    expect(status.state).toBe('ready');
+    expect(status.totalCandidateFiles).toBe(1);
   });
 
   it('graph evidence가 없으면 not-built를 반환한다', async () => {
@@ -472,24 +493,5 @@ class StatusLookupVectorStore extends MemoryVectorStore {
   override async getEntriesByIds(ids: readonly string[]) {
     this.requestedIds.push([...ids].sort());
     return super.getEntriesByIds(ids);
-  }
-}
-
-class UnusedStatusVectorStore extends MemoryVectorStore {
-  lookupCount = 0;
-
-  override getFileIndexRecords(): Promise<never> {
-    this.lookupCount++;
-    return Promise.reject(new Error('disabled 상태 계산은 vector file index를 읽지 않아야 합니다.'));
-  }
-
-  override getIndexedFilePaths(): Promise<never> {
-    this.lookupCount++;
-    return Promise.reject(new Error('disabled 상태 계산은 indexed path를 읽지 않아야 합니다.'));
-  }
-
-  override getEntriesByIds(): Promise<never> {
-    this.lookupCount++;
-    return Promise.reject(new Error('disabled 상태 계산은 vector entry를 읽지 않아야 합니다.'));
   }
 }

@@ -155,6 +155,26 @@ describe('설정 Overview snapshot', () => {
     expect(snapshot.graphRag.tone).toBe('warning');
   });
 
+  it('GraphRAG 빌드 허용이 꺼져 있어도 준비된 인덱스는 일반 채팅 보강 상태로 표시한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          graphRagEnabled: false,
+          graphRagModel: '',
+        },
+      }),
+      runtime: buildRuntime({
+        graphRagStatus: buildGraphStatus({ state: 'ready', graphEvidenceCount: 7 }),
+        hasGraphRagRunner: false,
+      }),
+    });
+
+    expect(snapshot.graphRag.statusLabel).toBe('최신');
+    expect(snapshot.graphRag.detail).toContain('7');
+    expect(snapshot.graphRag.tone).toBe('success');
+  });
+
   it('MCP connected/error/disconnected 상태를 서버 행과 요약 metric으로 표시한다', () => {
     const snapshot = buildSettingsOverviewSnapshot({
       settings: buildSettings({

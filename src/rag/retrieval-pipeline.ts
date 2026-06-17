@@ -43,6 +43,16 @@ export interface RetrievalCandidate {
   reason?: string;
 }
 
+export type RetrievalReadiness = 'cold' | 'partial' | 'ready' | 'stale' | 'degraded';
+export type RetrievalEstimatedCost = 'free' | 'low' | 'medium' | 'high';
+
+export interface RetrievalProviderReadiness {
+  readiness: RetrievalReadiness;
+  estimatedCost: RetrievalEstimatedCost;
+  reason?: string;
+  enabled?: boolean;
+}
+
 export interface MergedRetrievalCandidate {
   entry: VectorEntry;
   sources: RetrievalCandidateSource[];
@@ -55,10 +65,13 @@ export interface CandidateProvider {
   id: string;
   source: RetrievalCandidateSource;
   deadlineMs: number;
+  getReadiness?(
+    request: RagRetrievalRequest,
+  ): RetrievalProviderReadiness | Promise<RetrievalProviderReadiness>;
   getCandidates(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]>;
 }
 
-export type RetrievalProviderStatus = 'ok' | 'timeout' | 'error';
+export type RetrievalProviderStatus = 'ok' | 'timeout' | 'error' | 'skipped';
 
 export interface RetrievalProviderDiagnostic {
   providerId: string;
@@ -66,6 +79,9 @@ export interface RetrievalProviderDiagnostic {
   status: RetrievalProviderStatus;
   durationMs: number;
   candidateCount: number;
+  readiness: RetrievalReadiness;
+  estimatedCost: RetrievalEstimatedCost;
+  skippedReason?: string;
   error?: string;
 }
 
@@ -453,7 +469,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
   }
 }
 
-export class RagRetrievalPipeline {
+export class RetrievalOrchestrator {
   constructor(private readonly providers: readonly CandidateProvider[]) {}
 
   async retrieve(request: RagRetrievalRequest): Promise<RagRetrievalResult> {
@@ -471,6 +487,40 @@ export class RagRetrievalPipeline {
     request: RagRetrievalRequest,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
+    let readiness: RetrievalProviderReadiness;
+    try {
+      readiness = await resolveProviderReadiness(provider, request);
+    } catch (error) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'error',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'high',
+          error: stringifyError(error),
+        },
+      };
+    }
+    if (shouldSkipProvider(readiness)) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'skipped',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: readiness.readiness,
+          estimatedCost: readiness.estimatedCost,
+          skippedReason: readiness.reason ?? defaultSkippedReason(readiness.readiness),
+        },
+      };
+    }
+
     try {
       const abortController = new AbortController();
       const candidates = await withProviderDeadline(
@@ -490,6 +540,8 @@ export class RagRetrievalPipeline {
           status: 'ok',
           durationMs: Date.now() - startedAt,
           candidateCount: rankedCandidates.length,
+          readiness: readiness.readiness,
+          estimatedCost: readiness.estimatedCost,
         },
       };
     } catch (error) {
@@ -502,12 +554,16 @@ export class RagRetrievalPipeline {
           status: isTimeout ? 'timeout' : 'error',
           durationMs: Date.now() - startedAt,
           candidateCount: 0,
+          readiness: readiness.readiness,
+          estimatedCost: readiness.estimatedCost,
           error: isTimeout ? undefined : stringifyError(error),
         },
       };
     }
   }
 }
+
+export class RagRetrievalPipeline extends RetrievalOrchestrator {}
 
 export function mergeRetrievalCandidateGroupsByEntryId(
   candidates: readonly RetrievalCandidate[],
@@ -660,6 +716,42 @@ function withProviderDeadline<T>(
   return Promise.race([operation, timeout]).finally(() => {
     if (timeoutId) window.clearTimeout(timeoutId);
   });
+}
+
+async function resolveProviderReadiness(
+  provider: CandidateProvider,
+  request: RagRetrievalRequest,
+): Promise<RetrievalProviderReadiness> {
+  const readiness = await provider.getReadiness?.(request);
+  return normalizeProviderReadiness(readiness);
+}
+
+function normalizeProviderReadiness(
+  readiness: RetrievalProviderReadiness | undefined,
+): RetrievalProviderReadiness {
+  if (!readiness) {
+    return { readiness: 'ready', estimatedCost: 'low' };
+  }
+  return {
+    readiness: readiness.readiness,
+    estimatedCost: readiness.estimatedCost,
+    ...(readiness.reason ? { reason: readiness.reason } : {}),
+    ...(readiness.enabled !== undefined ? { enabled: readiness.enabled } : {}),
+  };
+}
+
+function shouldSkipProvider(readiness: RetrievalProviderReadiness): boolean {
+  return (
+    readiness.enabled === false ||
+    readiness.readiness === 'cold' ||
+    readiness.readiness === 'degraded'
+  );
+}
+
+function defaultSkippedReason(readiness: RetrievalReadiness): string {
+  if (readiness === 'cold') return 'Index is not built yet.';
+  if (readiness === 'degraded') return 'Provider is currently degraded.';
+  return 'Provider is not available for this query.';
 }
 
 class ProviderTimeoutError extends Error {

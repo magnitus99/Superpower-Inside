@@ -302,6 +302,7 @@ function formatRetrievalDiagnostics(
       t('contextDiagnosticProviderSummary', {
         provider: diagnostic.providerId,
         status: diagnostic.status,
+        readiness: diagnostic.readiness,
         count: diagnostic.candidateCount,
       }),
     )

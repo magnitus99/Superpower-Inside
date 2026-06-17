@@ -8,6 +8,7 @@ import type {
   RagRetrievalRequest,
   RetrievalCandidate,
   RetrievalCandidateSource,
+  RetrievalProviderReadiness,
 } from '../rag/retrieval-pipeline';
 import type { VectorEntry, VectorStore } from '../rag/store';
 import {
@@ -486,8 +487,13 @@ export class GraphRagCandidateProvider implements CandidateProvider {
 
   constructor(
     private readonly engine: GraphRagQueryEngine,
+    private readonly readiness: () => RetrievalProviderReadiness,
     readonly deadlineMs = 180,
   ) {}
+
+  getReadiness(): RetrievalProviderReadiness {
+    return this.readiness();
+  }
 
   getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
     return this.engine.query(request);

@@ -66,8 +66,24 @@ describe('buildChatContext RAG 출처 검증', () => {
     const ragEngine = {
       query: () => Promise.resolve([createResult('note.md', '현재 내용', createContentHash('현재 내용'))]),
       getLastRetrievalDiagnostics: () => [
-        { providerId: 'exact-vector', source: 'vector', status: 'ok', durationMs: 12, candidateCount: 5 },
-        { providerId: 'bm25', source: 'bm25', status: 'timeout', durationMs: 80, candidateCount: 0 },
+        {
+          providerId: 'exact-vector',
+          source: 'vector',
+          status: 'ok',
+          durationMs: 12,
+          candidateCount: 5,
+          readiness: 'ready',
+          estimatedCost: 'low',
+        },
+        {
+          providerId: 'bm25',
+          source: 'bm25',
+          status: 'timeout',
+          durationMs: 80,
+          candidateCount: 0,
+          readiness: 'ready',
+          estimatedCost: 'free',
+        },
       ],
     } satisfies RagQueryLike & {
       getLastRetrievalDiagnostics: () => Array<{
@@ -76,6 +92,8 @@ describe('buildChatContext RAG 출처 검증', () => {
         status: string;
         durationMs: number;
         candidateCount: number;
+        readiness: string;
+        estimatedCost: string;
       }>;
     };
 
@@ -83,7 +101,7 @@ describe('buildChatContext RAG 출처 검증', () => {
 
     expect(context.attachments[0]).toEqual(
       expect.objectContaining({
-        detail: '검색 진단: exact-vector ok 5개, bm25 timeout 0개',
+        detail: '검색 진단: exact-vector ok/ready 5개, bm25 timeout/ready 0개',
       }),
     );
   });
