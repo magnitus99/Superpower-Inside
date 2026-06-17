@@ -1,7 +1,7 @@
 import type { LLMProvider } from '../llm/providers';
 import { t } from '../i18n';
 import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
-import type { GraphRagIndexingPhase } from './indexing-progress';
+import type { GraphRagIndexingCounterPatch, GraphRagIndexingPhase } from './indexing-progress';
 import {
   createGraphIdRust,
   normalizeGraphConfidenceRust,
@@ -48,6 +48,7 @@ export interface GraphExtractionChunkInput {
   ontologySchema: OntologySchema;
   signal?: AbortSignal;
   onPhase?: (phase: GraphRagIndexingPhase) => void;
+  onProgress?: (patch: GraphRagIndexingCounterPatch) => void;
 }
 
 type GraphPayloadParseResult =
@@ -84,6 +85,7 @@ export class GraphExtractionIndexer {
 
     const evidence = createEvidence(input);
     await this.store.addEvidence(evidence);
+    input.onProgress?.({ storedEvidence: 1 });
     throwIfGraphExtractionAborted(input.signal);
 
     input.onPhase?.('api-waiting');
@@ -108,6 +110,7 @@ export class GraphExtractionIndexer {
 
     await this.storeAcceptedFacts(input, evidence, parsed.payload);
     await this.store.markExtractionCached({ ...cacheKey, updatedAt: Date.now() });
+    input.onProgress?.({ cachedChunks: 1 });
   }
 
   private async storeAcceptedFacts(
@@ -157,6 +160,7 @@ export class GraphExtractionIndexer {
         relationEndpointLookupRecords.push({ name: alias, entityIndex });
       }
       await this.store.upsertEntity(record);
+      input.onProgress?.({ storedEntities: 1 });
     }
 
     const relationEndpointPlan =
@@ -215,6 +219,7 @@ export class GraphExtractionIndexer {
         record.id,
       );
       await this.store.addRelation(record);
+      input.onProgress?.({ storedRelations: 1 });
     }
 
     for (const [claimIndex, claim] of payload.claims.entries()) {
@@ -232,6 +237,7 @@ export class GraphExtractionIndexer {
         now,
       );
       await this.store.addClaim(record);
+      input.onProgress?.({ storedClaims: 1 });
     }
   }
 
@@ -249,6 +255,7 @@ export class GraphExtractionIndexer {
       updatedAt: Date.now(),
     };
     await this.store.addRejectedFact(record);
+    input.onProgress?.({ storedRejectedFacts: 1 });
   }
 }
 

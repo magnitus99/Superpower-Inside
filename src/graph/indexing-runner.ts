@@ -18,7 +18,12 @@ import {
   isProcessableGraphRagFilePath,
   type GraphRagFilePathPredicate,
 } from './file-paths';
-import type { GraphRagIndexingPhase, GraphRagIndexingProgress } from './indexing-progress';
+import {
+  createEmptyGraphRagProgressCounters,
+  type GraphRagIndexingCounterPatch,
+  type GraphRagIndexingPhase,
+  type GraphRagIndexingProgress,
+} from './indexing-progress';
 import type { GraphRejectedFactRecord, KnowledgeGraphStore } from './store';
 
 export type { GraphRagIndexingPhase, GraphRagIndexingProgress } from './indexing-progress';
@@ -89,6 +94,7 @@ export class GraphRagIndexingRunner {
     selectedFiles: 0,
     runId: 0,
     phase: 'idle',
+    ...createEmptyGraphRagProgressCounters(),
   };
   private lastResult: GraphRagIndexingResult | null = null;
 
@@ -161,6 +167,7 @@ export class GraphRagIndexingRunner {
       selectedFiles: 0,
       runId: 0,
       phase: 'idle',
+      ...createEmptyGraphRagProgressCounters(),
     };
   }
 
@@ -332,6 +339,17 @@ export class GraphRagIndexingRunner {
     this.updateProgress({ phase });
   }
 
+  private incrementProgressCounters(patch: GraphRagIndexingCounterPatch): void {
+    const next: Partial<GraphRagIndexingProgress> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value !== 'number' || value <= 0) continue;
+      if (!isGraphRagProgressCounterKey(key)) continue;
+      next[key] = this.progress[key] + value;
+    }
+    if (Object.keys(next).length === 0) return;
+    this.updateProgress(next);
+  }
+
   private emitProgress(): void {
     this.onProgress?.(this.getProgress());
   }
@@ -450,6 +468,10 @@ export class GraphRagIndexingRunner {
 
     if (preparedEntries.every((item) => item.cached)) {
       result.skippedChunks = preparedEntries.length;
+      this.incrementProgressCounters({
+        skippedChunks: preparedEntries.length,
+        cachedChunks: preparedEntries.length,
+      });
       return result;
     }
 
@@ -483,6 +505,7 @@ export class GraphRagIndexingRunner {
               ontologySchema: this.ontologySchema,
               signal,
               onPhase: (phase) => this.updateProgressPhase(phase),
+              onProgress: (patch) => this.incrementProgressCounters(patch),
             });
             return { processed: true, failed: false, cancelled: false };
           } catch (error) {
@@ -490,6 +513,7 @@ export class GraphRagIndexingRunner {
               return { processed: false, failed: false, cancelled: true };
             }
             await this.graphStore.addRejectedFact(createChunkFailureRecord(filePath, entry, error));
+            this.incrementProgressCounters({ storedRejectedFacts: 1 });
             return { processed: false, failed: true, cancelled: false };
           }
         }),
@@ -500,6 +524,10 @@ export class GraphRagIndexingRunner {
         if (r.failed) result.failedChunks += 1;
         if (r.cancelled) result.cancelled = true;
       }
+      this.incrementProgressCounters({
+        processedChunks: batchResults.filter((r) => r.processed).length,
+        failedChunks: batchResults.filter((r) => r.failed).length,
+      });
       if (result.cancelled) break;
     }
     return result;
@@ -555,7 +583,26 @@ function createEmptyProgress(
     selectedFiles,
     runId,
     phase,
+    ...createEmptyGraphRagProgressCounters(),
   };
+}
+
+const GRAPH_RAG_PROGRESS_COUNTER_KEYS = new Set<keyof GraphRagIndexingCounterPatch>([
+  'processedChunks',
+  'skippedChunks',
+  'failedChunks',
+  'storedEvidence',
+  'storedEntities',
+  'storedRelations',
+  'storedClaims',
+  'storedRejectedFacts',
+  'cachedChunks',
+]);
+
+function isGraphRagProgressCounterKey(
+  key: string,
+): key is keyof GraphRagIndexingCounterPatch {
+  return GRAPH_RAG_PROGRESS_COUNTER_KEYS.has(key as keyof GraphRagIndexingCounterPatch);
 }
 
 function getGraphRagRunFileSelectionMode(

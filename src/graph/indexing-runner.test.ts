@@ -397,6 +397,15 @@ describe('GraphRagIndexingRunner', () => {
       selectedFiles: 0,
       runId: 0,
       phase: 'idle',
+      processedChunks: 0,
+      skippedChunks: 0,
+      failedChunks: 0,
+      storedEvidence: 0,
+      storedEntities: 0,
+      storedRelations: 0,
+      storedClaims: 0,
+      storedRejectedFacts: 0,
+      cachedChunks: 0,
     });
   });
 
@@ -455,6 +464,45 @@ describe('GraphRagIndexingRunner', () => {
       phases.indexOf('api-response-normalizing'),
     );
     expect(runner.getProgress().phase).toBe('completed');
+  });
+
+  it('GraphRAG progress는 파일 완료 전에도 청크와 저장 카운터를 알린다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('note.md', 'hash-a', 0),
+      createEntry('note.md', 'hash-b', 1),
+    ]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const progressEvents: GraphRagIndexingProgress[] = [];
+    const provider = new FakeProvider([textResponse(graphPayload('Paul')), throwResponse()]);
+    const runner = new GraphRagIndexingRunner({
+      ...makeRunnerOptions({ vectorStore, graphStore, provider }),
+      onProgress: (progress: GraphRagIndexingProgress) => {
+        progressEvents.push(progress);
+      },
+    });
+
+    await runner.run();
+
+    expect(runner.getProgress()).toEqual(
+      expect.objectContaining({
+        processedChunks: 1,
+        failedChunks: 1,
+        storedEvidence: 2,
+        storedEntities: 1,
+        storedClaims: 1,
+        storedRejectedFacts: 1,
+        cachedChunks: 1,
+      }),
+    );
+    expect(
+      progressEvents.some(
+        (progress) =>
+          progress.currentFile === 'note.md' &&
+          progress.processedFiles === 0 &&
+          progress.processedChunks + progress.failedChunks === 2,
+      ),
+    ).toBe(true);
   });
 
   it('취소된 indexing은 community rebuild를 실행하지 않는다', async () => {

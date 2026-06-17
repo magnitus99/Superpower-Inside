@@ -113,6 +113,65 @@ describe('GraphExtractionIndexer', () => {
     expect(await store.getRejectedFacts()).toEqual([]);
   });
 
+  it('저장 진행 이벤트는 성공적으로 저장된 항목 수를 알린다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const progressEvents: Array<Record<string, number>> = [];
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            {
+              name: 'Paul',
+              typeId: 'person',
+              description: 'Apostle and author',
+              aliases: [],
+              confidence: 0.9,
+            },
+            {
+              name: 'Romans',
+              typeId: 'work',
+              description: 'A New Testament letter',
+              aliases: [],
+              confidence: 0.86,
+            },
+          ],
+          relations: [
+            {
+              source: 'Paul',
+              target: 'Romans',
+              relationTypeId: 'authored',
+              description: 'Paul authored Romans',
+              confidence: 0.82,
+            },
+          ],
+          claims: [
+            {
+              text: 'Paul authored Romans.',
+              claimTypeId: 'factual_claim',
+              entityNames: ['Paul', 'Romans'],
+              stance: 'neutral',
+              confidence: 0.8,
+            },
+          ],
+        }),
+      ),
+      store,
+    });
+
+    const input = {
+      ...createInput('Paul authored Romans.', 'Romans.md::1::0'),
+      filePath: 'Romans.md',
+      onProgress: (patch: Record<string, number>) => progressEvents.push(patch),
+    };
+    await indexer.extractChunk(input);
+
+    expect(sumProgress(progressEvents, 'storedEvidence')).toBe(1);
+    expect(sumProgress(progressEvents, 'storedEntities')).toBe(2);
+    expect(sumProgress(progressEvents, 'storedRelations')).toBe(1);
+    expect(sumProgress(progressEvents, 'storedClaims')).toBe(1);
+    expect(sumProgress(progressEvents, 'cachedChunks')).toBe(1);
+  });
+
   it('ontology domain/range에 맞지 않는 relation은 rejected fact로 저장하고 relation으로 저장하지 않는다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
@@ -146,6 +205,25 @@ describe('GraphExtractionIndexer', () => {
         filePath: 'note.md',
       }),
     ]);
+  });
+
+  it('schema reject 저장 진행 이벤트는 거부 항목 수를 알린다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const progressEvents: Array<Record<string, number>> = [];
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider('{bad json'),
+      store,
+    });
+
+    const input = {
+      ...createInput('Malformed response.'),
+      onProgress: (patch: Record<string, number>) => progressEvents.push(patch),
+    };
+    await indexer.extractChunk(input);
+
+    expect(sumProgress(progressEvents, 'storedEvidence')).toBe(1);
+    expect(sumProgress(progressEvents, 'storedRejectedFacts')).toBe(1);
+    expect(sumProgress(progressEvents, 'cachedChunks')).toBe(0);
   });
 
   it('문헌/개념이 작품을 해석하는 interprets relation은 저장하고 reject하지 않는다', async () => {
@@ -673,4 +751,8 @@ function createEmbeddingProvider(): EmbeddingProvider {
 
 function createEmbeddingVector(text: string): number[] {
   return text.includes('Grace') || text.includes('Mercy') ? [1, 0] : [0, 1];
+}
+
+function sumProgress(events: ReadonlyArray<Record<string, number>>, key: string): number {
+  return events.reduce((total, event) => total + (event[key] ?? 0), 0);
 }
