@@ -27,6 +27,26 @@ interface BM25MetaRecord {
   updated: number;
 }
 
+interface BM25DocumentRecord {
+  id: string;
+  text: string;
+  sourcePath: string;
+  updated: number;
+  order: number;
+}
+
+interface BM25MutationRecord {
+  id: string;
+  kind: 'clear' | 'remove-doc' | 'remove-source';
+  target: string;
+  updated: number;
+  order: number;
+}
+
+type BM25PendingOperation =
+  | { kind: 'upsert-document'; record: BM25DocumentRecord }
+  | { kind: 'mutation'; record: BM25MutationRecord };
+
 type BM25SnapshotSource = 'indexeddb' | 'legacy' | 'empty';
 
 interface BM25Snapshot {
@@ -40,11 +60,18 @@ export interface IndexedDbBM25IndexOptions {
 
 class BM25IndexDB extends Dexie {
   meta!: Dexie.Table<BM25MetaRecord, string>;
+  documents!: Dexie.Table<BM25DocumentRecord, string>;
+  mutations!: Dexie.Table<BM25MutationRecord, string>;
 
   constructor(name: string) {
     super(name);
     this.version(1).stores({
       meta: 'key',
+    });
+    this.version(2).stores({
+      meta: 'key',
+      documents: 'id, sourcePath, updated, order',
+      mutations: 'id, kind, target, updated, order',
     });
   }
 }
@@ -58,6 +85,8 @@ export class IndexedDbBM25Index {
   private batchDepth: number;
   private batchDirty: boolean;
   private readonly maxSnapshotBytes: number;
+  private pendingOperations: BM25PendingOperation[];
+  private nextOperationOrderValue: number;
 
   constructor(
     dbName = 'SuperpowerInsideBM25Index',
@@ -73,19 +102,23 @@ export class IndexedDbBM25Index {
     this.batchDepth = 0;
     this.batchDirty = false;
     this.maxSnapshotBytes = normalizeMaxSnapshotBytes(options.maxSnapshotBytes);
+    this.pendingOperations = [];
+    this.nextOperationOrderValue = Date.now() * 1000;
   }
 
   async load(): Promise<void> {
     this.runtime?.dispose();
     const snapshot = await this.loadSnapshot();
     const raw = snapshot.raw.trim();
-    this.runtime =
+    const snapshotRuntime =
       raw.length > 0 && raw.length <= this.maxSnapshotBytes
         ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
-        : RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+        : null;
+    this.runtime = snapshotRuntime ?? RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    await this.replayPersistedOperations();
     this.loaded = true;
     if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
-      await this.persistNow();
+      await this.persistSnapshotRaw(raw);
     }
   }
 
@@ -110,17 +143,28 @@ export class IndexedDbBM25Index {
   }
 
   private async persistNow(): Promise<void> {
-    await this.db.meta.put({
-      key: BM25_SNAPSHOT_KEY,
-      value: this.runtime?.toJson() ?? createEmptyPayload(),
-      updated: Date.now(),
+    const operations = [...this.pendingOperations];
+    if (operations.length === 0) {
+      this.batchDirty = false;
+      return;
+    }
+    await this.db.transaction('rw', this.db.documents, this.db.mutations, async () => {
+      for (const operation of operations) {
+        if (operation.kind === 'upsert-document') {
+          await this.db.documents.put(operation.record);
+          continue;
+        }
+        await this.persistMutationOperation(operation.record);
+      }
     });
+    this.pendingOperations = this.pendingOperations.slice(operations.length);
     this.batchDirty = false;
   }
 
   async clear(): Promise<void> {
     this.runtime?.dispose();
     this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    this.queueMutation('clear', '*');
     await this.persist();
   }
 
@@ -140,6 +184,7 @@ export class IndexedDbBM25Index {
             document.sourcePath ?? document.id,
             TOKENIZER_VERSION,
           );
+          this.queueDocument(document.id, document.text, document.sourcePath ?? document.id);
           seenDocIds.add(document.id);
         }
         if (
@@ -155,14 +200,17 @@ export class IndexedDbBM25Index {
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
     this.ensureRuntime().addDocument(docId, text, sourcePath, TOKENIZER_VERSION);
+    this.queueDocument(docId, text, sourcePath);
   }
 
   removeDocument(docId: string): void {
     this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
+    this.queueMutation('remove-doc', docId);
   }
 
   removeDocumentsBySource(sourcePath: string): void {
     this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
+    this.queueMutation('remove-source', sourcePath);
   }
 
   search(query: string): Map<string, number> {
@@ -210,6 +258,122 @@ export class IndexedDbBM25Index {
     return this.runtime;
   }
 
+  private async replayPersistedOperations(): Promise<void> {
+    const [documents, mutations] = await Promise.all([
+      this.db.documents.toArray(),
+      this.db.mutations.toArray(),
+    ]);
+    const operations: Array<
+      | { kind: 'upsert-document'; record: BM25DocumentRecord; order: number }
+      | { kind: 'mutation'; record: BM25MutationRecord; order: number }
+    > = [
+      ...documents.map((record) => ({
+        kind: 'upsert-document' as const,
+        record,
+        order: normalizeOperationOrder(record),
+      })),
+      ...mutations.map((record) => ({
+        kind: 'mutation' as const,
+        record,
+        order: normalizeOperationOrder(record),
+      })),
+    ].sort((a, b) => a.order - b.order);
+
+    for (let index = 0; index < operations.length; index++) {
+      const operation = operations[index];
+      if (!operation) continue;
+      if (operation.kind === 'upsert-document') {
+        this.ensureRuntime().addDocument(
+          operation.record.id,
+          operation.record.text,
+          operation.record.sourcePath,
+          TOKENIZER_VERSION,
+        );
+      } else {
+        this.applyMutation(operation.record);
+      }
+      if (
+        index + 1 < operations.length &&
+        (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0
+      ) {
+        await yieldToHost();
+      }
+    }
+    this.pendingOperations = [];
+    this.batchDirty = false;
+  }
+
+  private async persistMutationOperation(record: BM25MutationRecord): Promise<void> {
+    if (record.kind === 'clear') {
+      await this.db.documents.clear();
+      await this.db.mutations.clear();
+      await this.db.mutations.put(record);
+      return;
+    }
+    if (record.kind === 'remove-doc') {
+      await this.db.documents.delete(record.target);
+    } else {
+      await this.db.documents.where('sourcePath').equals(record.target).delete();
+    }
+    await this.db.mutations.put(record);
+  }
+
+  private applyMutation(record: BM25MutationRecord): void {
+    if (record.kind === 'clear') {
+      this.runtime?.dispose();
+      this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+      return;
+    }
+    if (record.kind === 'remove-doc') {
+      this.ensureRuntime().removeDocument(record.target, TOKENIZER_VERSION);
+      return;
+    }
+    this.ensureRuntime().removeSource(record.target, TOKENIZER_VERSION);
+  }
+
+  private queueDocument(docId: string, text: string, sourcePath: string): void {
+    const now = Date.now();
+    this.pendingOperations.push({
+      kind: 'upsert-document',
+      record: {
+        id: docId,
+        text,
+        sourcePath,
+        updated: now,
+        order: this.nextOperationOrder(),
+      },
+    });
+  }
+
+  private queueMutation(kind: BM25MutationRecord['kind'], target: string): void {
+    const now = Date.now();
+    const order = this.nextOperationOrder();
+    this.pendingOperations.push({
+      kind: 'mutation',
+      record: {
+        id: `${kind}:${target}:${order}`,
+        kind,
+        target,
+        updated: now,
+        order,
+      },
+    });
+  }
+
+  private nextOperationOrder(): number {
+    const nextClockOrder = Date.now() * 1000;
+    this.nextOperationOrderValue = Math.max(this.nextOperationOrderValue + 1, nextClockOrder);
+    return this.nextOperationOrderValue;
+  }
+
+  private async persistSnapshotRaw(raw: string): Promise<void> {
+    await this.db.meta.put({
+      key: BM25_SNAPSHOT_KEY,
+      value: raw,
+      updated: Date.now(),
+    });
+  }
+
   private async loadSnapshot(): Promise<BM25Snapshot> {
     const stored = await this.db.meta.get(BM25_SNAPSHOT_KEY);
     if (stored?.value) {
@@ -245,11 +409,8 @@ function normalizeMaxSnapshotBytes(value: number | undefined): number {
   return Math.max(1, Math.floor(value));
 }
 
-function createEmptyPayload(): string {
-  return (
-    RustBm25RuntimeIndex.empty(TOKENIZER_VERSION)?.toJson() ??
-    '{"schemaVersion":3,"tokenizerVersion":2,"docs":[],"terms":[],"totalDocs":0,"avgDocLength":1}'
-  );
+function normalizeOperationOrder(record: { order?: number; updated: number }): number {
+  return Number.isFinite(record.order) ? (record.order as number) : record.updated * 1000;
 }
 
 async function yieldToHost(): Promise<void> {

@@ -3,6 +3,7 @@ import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexedDbBM25Index, tokenize } from './bm25';
+import { RustBm25RuntimeIndex } from './rust-core';
 
 const dbNames = new Set<string>();
 
@@ -133,6 +134,25 @@ describe('IndexedDbBM25Index', () => {
 
     expect(inspectable.readCount()).toBe(1);
     expect([...reopened.search('open router').keys()]).toEqual(['api.md::0']);
+  });
+
+  it('증분 persist는 전체 runtime JSON 직렬화를 호출하지 않고 재시작 후 검색을 유지한다', async () => {
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
+    await bm25.load();
+    const toJsonSpy = vi.spyOn(RustBm25RuntimeIndex.prototype, 'toJson');
+    try {
+      bm25.addDocument('doc.md::0', 'specialterm 직접 근거', 'doc.md');
+      await bm25.persist();
+
+      expect(toJsonSpy).not.toHaveBeenCalled();
+    } finally {
+      toJsonSpy.mockRestore();
+    }
+
+    const reopened = new IndexedDbBM25Index(dbName, createAdapter());
+    await reopened.load();
+    expect([...reopened.search('specialterm').keys()]).toEqual(['doc.md::0']);
   });
 
   it('큰 legacy BM25 JSON은 시작 경로에서 읽지 않고 빈 runtime으로 시작한다', async () => {
