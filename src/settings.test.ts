@@ -12,6 +12,7 @@ vi.mock('obsidian', () => ({
 import {
   buildEmbeddingModelOptions,
   buildGraphRagActionGroups,
+  getGraphRagIndexingResultNotice,
   getGraphRagLiveStatusPresentation,
   getGraphRagControlState,
   getRagIndexingControlState,
@@ -385,6 +386,30 @@ describe('RAG 설정 표시 헬퍼', () => {
       chunkDetail: null,
       storageDetail: null,
     });
+  });
+
+  it('변경분 동기화가 처리할 파일 없이 끝나면 완료 대신 이유를 안내한다', () => {
+    const notice = getGraphRagIndexingResultNotice(
+      {
+        totalCandidateFiles: 0,
+        selectedFiles: 0,
+        processedFiles: 0,
+        skippedFiles: 0,
+        failedFiles: 0,
+        processedChunks: 0,
+        skippedChunks: 0,
+        failedChunks: 0,
+        cancelled: false,
+        startedAt: 1,
+        finishedAt: 2,
+        runId: 1,
+      },
+      'syncStale',
+    );
+
+    expect(notice).toBe(
+      'GraphRAG 변경분 동기화: 다시 추출할 파일이 없습니다. 모든 파일이 최신 상태이거나 현재 RAG 인덱스에 남아 있는 변경 후보가 없습니다.',
+    );
   });
 
   it('resetGraphRag 액션은 확인창 승인 시 plugin.resetGraphRagData를 호출하고 상태 갱신합니다', async () => {

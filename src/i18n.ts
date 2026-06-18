@@ -887,6 +887,9 @@ export interface I18nKeys {
   graphRagAutoSyncStarted: string;
   graphRagAutoSyncDone: string;
   graphRagStaleSyncStatusNotice: string;
+  graphRagRunNoopNotice: string;
+  graphRagFailedRetryNoopNotice: string;
+  graphRagStaleSyncNoopNotice: string;
   ragPerformancePaused: string;
   ragPerformanceThrottled: string;
   ragIndexingInProgress: string;
@@ -2217,6 +2220,12 @@ const ko: I18nKeys = {
   graphRagAutoSyncStarted: 'GraphRAG 자동 동기화 시작...',
   graphRagAutoSyncDone: 'GraphRAG 자동 동기화 완료: {processed}개 처리, {failed}개 실패',
   graphRagStaleSyncStatusNotice: 'GraphRAG {label}: {description}',
+  graphRagRunNoopNotice:
+    'GraphRAG 추출 실행: 처리할 파일이 없습니다. 모든 파일이 최신 상태이거나 현재 RAG 인덱싱 대상 파일이 없습니다.',
+  graphRagFailedRetryNoopNotice:
+    'GraphRAG 실패 재시도: 다시 처리할 실패 파일이 없습니다. 탐색기에서 이전 실패가 이미 정리됐는지 확인할 수 있습니다.',
+  graphRagStaleSyncNoopNotice:
+    'GraphRAG 변경분 동기화: 다시 추출할 파일이 없습니다. 모든 파일이 최신 상태이거나 현재 RAG 인덱스에 남아 있는 변경 후보가 없습니다.',
   ragPerformancePaused: '성능 보호 대기',
   ragPerformanceThrottled: '속도 조절 중',
   ragIndexingInProgress: '인덱싱 중',
@@ -3607,6 +3616,12 @@ const en: I18nKeys = {
   graphRagAutoSyncStarted: 'GraphRAG auto-sync started...',
   graphRagAutoSyncDone: 'GraphRAG auto-sync complete: processed {processed}, failed {failed}',
   graphRagStaleSyncStatusNotice: 'GraphRAG {label}: {description}',
+  graphRagRunNoopNotice:
+    'GraphRAG extraction: no files were selected. All files may already be up to date, or there may be no current RAG indexing candidates.',
+  graphRagFailedRetryNoopNotice:
+    'GraphRAG failed-file retry: no failed files were selected. You can open the explorer to check whether previous failures were already resolved.',
+  graphRagStaleSyncNoopNotice:
+    'GraphRAG stale sync: no files need extraction. All files are up to date, or no remaining changed candidates exist in the current RAG index.',
   ragPerformancePaused: 'Performance guard paused',
   ragPerformanceThrottled: 'Throttling',
   ragIndexingInProgress: 'Indexing',

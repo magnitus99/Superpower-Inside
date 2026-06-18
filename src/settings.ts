@@ -37,8 +37,10 @@ import {
   getGraphRagStatusLabel,
   getGraphRagLiveStatusPresentation,
   getGraphRagControlState,
+  getGraphRagIndexingResultNotice,
   estimateGraphRagIndexingCost,
   type GraphRagActionDefinition,
+  type GraphRagIndexingResultNoticeScope,
 } from './rag/settings-display';
 import {
   createDefaultPromptEntry,
@@ -1951,7 +1953,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       case 'start': {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.runGraphRagIndexing();
-        this.showGraphRagResult(result);
+        this.showGraphRagResult(result, 'start');
         this.updateGraphRagStats();
         return;
       }
@@ -1963,14 +1965,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       case 'resumeFailed': {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.resumeGraphRagIndexing();
-        this.showGraphRagResult(result);
+        this.showGraphRagResult(result, 'resumeFailed');
         this.updateGraphRagStats();
         return;
       }
       case 'syncStale': {
         if (!this.confirmGraphRagRemoteRun(cost)) return;
         const result = await this.plugin.syncStaleGraphRag();
-        this.showGraphRagResult(result);
+        this.showGraphRagResult(result, 'syncStale');
         this.updateGraphRagStats();
         return;
       }
@@ -2016,22 +2018,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private confirmGraphRagReset(): boolean {
     return confirm(t('graphRagResetDataConfirm'));
   }
-  private showGraphRagResult(result: GraphRagIndexingResult | null): void {
-    if (!result) {
-      new Notice(t('settingsAuto072'));
-      return;
-    }
-    if (result.cancelled) {
-      new Notice(t('settingsAuto073'));
-      return;
-    }
-    new Notice(
-      t('settingsAuto074', {
-        v0: String(result.processedFiles),
-        v1: String(result.skippedFiles),
-        v2: String(result.failedFiles),
-      }),
-    );
+  private showGraphRagResult(
+    result: GraphRagIndexingResult | null,
+    scope: GraphRagIndexingResultNoticeScope,
+  ): void {
+    new Notice(getGraphRagIndexingResultNotice(result, scope));
   }
   /** RefreshBus 'rag' 이벤트 수신 시 인덱스 통계 그리드를 갱신합니다. */
   private refreshStatsGrid(): void {

@@ -112,6 +112,26 @@ export interface GraphRagActionGroup {
   actions: GraphRagActionDefinition[];
 }
 
+export type GraphRagIndexingResultNoticeScope = Extract<
+  GraphRagActionId,
+  'start' | 'resumeFailed' | 'syncStale'
+>;
+
+export interface GraphRagIndexingResultNoticeInput {
+  totalCandidateFiles: number;
+  selectedFiles: number;
+  processedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
+  processedChunks: number;
+  skippedChunks: number;
+  failedChunks: number;
+  cancelled: boolean;
+  startedAt: number;
+  finishedAt: number;
+  runId: number;
+}
+
 export interface GraphRagActionGroupInput {
   controls: GraphRagControlState;
   syncStale: RagIndexingButtonState;
@@ -137,6 +157,33 @@ export interface GraphRagIndexingCostEstimate {
   estimatedCalls: number;
   estimatedInputTokens: number;
   costLabel: string;
+}
+
+export function getGraphRagIndexingResultNotice(
+  result: GraphRagIndexingResultNoticeInput | null,
+  scope: GraphRagIndexingResultNoticeScope = 'start',
+): string {
+  if (!result) {
+    return t('settingsAuto072');
+  }
+  if (result.cancelled) {
+    return t('settingsAuto073');
+  }
+  if (result.selectedFiles === 0) {
+    switch (scope) {
+      case 'syncStale':
+        return t('graphRagStaleSyncNoopNotice');
+      case 'resumeFailed':
+        return t('graphRagFailedRetryNoopNotice');
+      case 'start':
+        return t('graphRagRunNoopNotice');
+    }
+  }
+  return t('settingsAuto074', {
+    v0: String(result.processedFiles),
+    v1: String(result.skippedFiles),
+    v2: String(result.failedFiles),
+  });
 }
 
 export interface GraphRagLiveStatusInput {
