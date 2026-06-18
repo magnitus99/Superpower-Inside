@@ -58,6 +58,66 @@ vi.mock('obsidian', () => {
 });
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
+  it('플러그인 시작 직후 RAG 런타임을 자동 초기화하지 않는다', async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        register: ReturnType<typeof vi.fn>;
+        initRAG: ReturnType<typeof vi.fn>;
+        initMCP: ReturnType<typeof vi.fn>;
+      };
+      plugin.register = vi.fn();
+      plugin.initRAG = vi.fn(() => Promise.resolve());
+      plugin.initMCP = vi.fn(() => Promise.resolve([]));
+
+      (
+        plugin as unknown as {
+          startDeferredStartupTasks(): void;
+        }
+      ).startDeferredStartupTasks();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(plugin.initRAG).not.toHaveBeenCalled();
+      expect(plugin.initMCP).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(plugin.initRAG).not.toHaveBeenCalled();
+      expect(plugin.initMCP).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('명시적 RAG 액션에서 런타임이 없으면 초기화를 시도한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      vectorStore: unknown;
+      vaultIndexer: unknown;
+      ragIndexingScheduler: unknown;
+      initRAG: ReturnType<typeof vi.fn>;
+    };
+    plugin.vectorStore = null;
+    plugin.vaultIndexer = null;
+    plugin.ragIndexingScheduler = null;
+    plugin.initRAG = vi.fn(() => {
+      plugin.vectorStore = {};
+      plugin.vaultIndexer = {};
+      plugin.ragIndexingScheduler = {};
+      return Promise.resolve();
+    });
+
+    const initialized = await (
+      plugin as unknown as {
+        ensureRagRuntimeInitialized(): Promise<boolean>;
+      }
+    ).ensureRagRuntimeInitialized();
+
+    expect(initialized).toBe(true);
+    expect(plugin.initRAG).toHaveBeenCalledOnce();
+  });
+
   it('BM25 로드 이후 RAG 파일 이벤트를 등록한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -102,13 +162,19 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(app.vault.on).toHaveBeenCalledTimes(6);
   });
 
-  it('설정 로드 시 localStorage 값이 있으면 data.json을 읽지 않는다', async () => {
+  it('설정 로드 시 data.json의 RAG 안전 설정이 stale localStorage 값을 덮는다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const app = createApp({
       localSettings: {
         ...DEFAULT_SETTINGS,
         openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'local-key' },
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          excludePaths: ['**/.git', '**/node_modules', '**/.obsidian'],
+          autoUpdateEnabled: true,
+          enableBM25: true,
+        },
       },
     });
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
@@ -117,13 +183,31 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       settings: typeof DEFAULT_SETTINGS;
     };
     plugin.app = app;
-    plugin.loadData = vi.fn();
+    plugin.loadData = vi.fn(() =>
+      Promise.resolve({
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          excludePaths: [
+            '**/.git',
+            '**/node_modules',
+            '**/.obsidian',
+            '**/.venv',
+            '**/__pycache__',
+          ],
+          autoUpdateEnabled: false,
+          enableBM25: false,
+        },
+      }),
+    );
 
     await plugin.loadSettings();
 
     expect(app.loadLocalStorage).toHaveBeenCalledWith('superpower-inside:settings');
-    expect(plugin.loadData).not.toHaveBeenCalled();
+    expect(plugin.loadData).toHaveBeenCalledOnce();
     expect(plugin.settings.openai.apiKey).toBe('local-key');
+    expect(plugin.settings.rag.autoUpdateEnabled).toBe(false);
+    expect(plugin.settings.rag.enableBM25).toBe(false);
+    expect(plugin.settings.rag.excludePaths).toContain('**/__pycache__');
   });
 
   it('기존 설정 로드 시 WSL PATH 조회 옵션 기본값을 보강한다', async () => {

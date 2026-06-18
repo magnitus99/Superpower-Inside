@@ -714,8 +714,22 @@ export class ChatView extends ItemView {
       return;
     }
     if (item.action === 'index-rag') {
-      this.plugin.resumeRagIndexing();
-      this.renderChatReadiness();
+      void this.plugin
+        .ensureRagRuntimeInitialized()
+        .then((initialized) => {
+          if (initialized) {
+            this.plugin.resumeRagIndexing();
+          } else {
+            new Notice(t('ragIndexerNotInitializedBase'), 5000);
+          }
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          new Notice(t('indexingFailedWithMessage', { message: msg }), 10000);
+        })
+        .finally(() => {
+          this.renderChatReadiness();
+        });
       return;
     }
     if (item.action === 'select-model') {

@@ -62,6 +62,14 @@ describe('RAG 유효 제외 경로', () => {
       '.git',
       'node_modules',
       'attachments',
+      '.venv',
+      '__pycache__',
+      '.codegraph',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.ruff_cache',
+      '.playwright-mcp',
+      '.playwright-cli',
       '.config/obsidian',
       'Archive',
       'CustomChats',
@@ -76,6 +84,14 @@ describe('RAG 유효 제외 경로', () => {
       '.git',
       'node_modules',
       'attachments',
+      '.venv',
+      '__pycache__',
+      '.codegraph',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.ruff_cache',
+      '.playwright-mcp',
+      '.playwright-cli',
       '.config/obsidian',
       'Archive',
     ]);
@@ -89,6 +105,14 @@ describe('RAG 유효 제외 경로', () => {
       '.git',
       'node_modules',
       'attachments',
+      '.venv',
+      '__pycache__',
+      '.codegraph',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.ruff_cache',
+      '.playwright-mcp',
+      '.playwright-cli',
       '.config/obsidian',
       'Archive',
       'CustomChats',
@@ -120,6 +144,24 @@ describe('RAG 후보 파일', () => {
     const files = await getRagCandidateFiles(vault, ragConfig, baseChatConfig);
 
     expect(files.map((file) => file.path)).toEqual(['note.md', 'src/main.ts']);
+  });
+
+  it('가상환경과 개발 캐시 폴더는 사용자 설정 없이 기본 제외한다', async () => {
+    const vault = createVault([
+      createFile('note.md'),
+      createFile('project/.venv/lib/python3.12/site-packages/pkg/module.py'),
+      createFile('project/__pycache__/module.pyc'),
+      createFile('project/.codegraph/index.sqlite'),
+      createFile('project/.pytest_cache/v/cache/nodeids'),
+      createFile('project/.mypy_cache/3.12/module.data.json'),
+      createFile('project/.ruff_cache/content'),
+      createFile('.playwright-mcp/session.json'),
+      createFile('.playwright-cli/session.json'),
+    ]);
+
+    const files = await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig);
+
+    expect(files.map((file) => file.path)).toEqual(['note.md']);
   });
 
   it('내용이 없는 텍스트 파일은 후보에서 제외한다', async () => {

@@ -36,6 +36,14 @@ const DEFAULT_EXCLUDE_PATHS = [
   '.git',
   'node_modules',
   'attachments',
+  '.venv',
+  '__pycache__',
+  '.codegraph',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.playwright-mcp',
+  '.playwright-cli',
 ];
 /**
  * 볼트에서 마크다운 파일 목록을 가져오되, 제외 패턴을 적용합니다.

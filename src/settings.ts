@@ -407,6 +407,7 @@ export interface PluginLike {
   openGraphRagView(): void;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
+  ensureRagRuntimeInitialized(): Promise<boolean>;
   isRagIndexing(): boolean;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;

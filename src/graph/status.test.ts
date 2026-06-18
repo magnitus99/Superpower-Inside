@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { RAGConfig } from '../settings';
-import { MemoryVectorStore } from '../rag/store';
+import { MemoryVectorStore, type VectorStore } from '../rag/store';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { calculateGraphRagStatus } from './status';
-import { InMemoryKnowledgeGraphStore } from './store';
+import { InMemoryKnowledgeGraphStore, type KnowledgeGraphStore } from './store';
 
 const baseRagConfig: Pick<
   RAGConfig,
@@ -30,39 +30,26 @@ function createEntry(filePath: string, contentHash: string) {
 }
 
 describe('calculateGraphRagStatus', () => {
-  it('GraphRAG 자동 빌드가 꺼져 있어도 준비된 그래프 인덱스는 ready로 계산한다', async () => {
-    const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([createEntry('note.md', 'hash-a')]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence({
-      id: 'ev-1',
-      filePath: 'note.md',
-      entryId: 'note.md::0',
-      startLine: 1,
-      quote: 'text',
-      contentHash: 'hash-a',
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      updatedAt: 1000,
-    });
-    await graphStore.markExtractionCached({
-      entryId: 'note.md::0',
-      contentHash: 'hash-a',
-      extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
-      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
-      updatedAt: 1000,
-    });
-
+  it('GraphRAG가 꺼져 있으면 저장소를 읽지 않고 disabled를 반환한다', async () => {
     const status = await calculateGraphRagStatus({
       ragConfig: { ...baseRagConfig, graphRagEnabled: false },
-      graphStore,
-      vectorStore,
+      graphStore: createThrowingGraphStore(),
+      vectorStore: createThrowingVectorStore(),
       isRunning: false,
       schemaErrors: [],
     });
 
-    expect(status.state).toBe('ready');
-    expect(status.totalCandidateFiles).toBe(1);
+    expect(status).toEqual({
+      state: 'disabled',
+      totalCandidateFiles: 0,
+      graphEvidenceCount: 0,
+      rejectedFactCount: 0,
+      failedFileCount: 0,
+      pendingMergeCount: 0,
+      staleFileCount: 0,
+      staleFilePaths: [],
+      maxFilesPerRun: 50,
+    });
   });
 
   it('graph evidence가 없으면 not-built를 반환한다', async () => {
@@ -494,4 +481,26 @@ class StatusLookupVectorStore extends MemoryVectorStore {
     this.requestedIds.push([...ids].sort());
     return super.getEntriesByIds(ids);
   }
+}
+
+function createThrowingVectorStore(): VectorStore {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        throw new Error(`disabled GraphRAG should not read vector store: ${String(property)}`);
+      },
+    },
+  ) as VectorStore;
+}
+
+function createThrowingGraphStore(): KnowledgeGraphStore {
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        throw new Error(`disabled GraphRAG should not read graph store: ${String(property)}`);
+      },
+    },
+  ) as KnowledgeGraphStore;
 }

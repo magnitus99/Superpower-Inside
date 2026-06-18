@@ -63,6 +63,7 @@ import {
   type RagIndexingSchedulerStatus,
 } from './src/rag/indexing-scheduler';
 import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
+import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status';
 import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
@@ -78,15 +79,15 @@ import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { getMcpDesktopOnlyMessage, isMcpStdioAvailable } from './src/mcp/platform';
 import { setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
-import { loadLocalSettings, saveLocalSettings } from './src/settings-storage';
+import {
+  loadLocalSettings,
+  resolveSettingsLoadData,
+  saveLocalSettings,
+} from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -220,28 +221,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       id: 'reindex-vault',
       name: t('cmdReindexVault'),
       callback: async () => {
-        if (!this.vaultIndexer) {
-          const rag = this.settings.rag;
-          const providerKey = rag.embeddingProvider;
-          let reason = t('ragIndexerNotInitializedBase');
-          const config = this.getEmbeddingProviderConfig(providerKey);
-          const providerLabel = this.getEmbeddingProviderLabel(providerKey);
-          const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-            ? 'customOpenAI'
-            : providerKey;
-          if (!config?.enabled) {
-            reason += ` ${t('ragIndexerEnableProvider', { provider: providerLabel })}`;
-          } else if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
-            reason += ` ${t('ragIndexerEnterApiKey', { provider: providerLabel })}`;
-          } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
-            reason += ` ${t('ragIndexerSelectEmbeddingModel')}`;
-          } else {
-            reason += ` ${t('ragIndexerConnectionFailed', {
-              provider: providerLabel,
-              model: rag.embeddingModel,
-            })}`;
-          }
-          new Notice(reason);
+        const initialized = await this.ensureRagRuntimeInitialized();
+        if (!initialized) {
+          new Notice(this.getRagIndexerNotInitializedReason());
           return;
         }
         if (this.isRagIndexing()) return;
@@ -332,22 +314,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private startDeferredStartupTasks(): void {
-    this.startDeferredRagInitialization();
     this.startDeferredMcpInitialization();
-  }
-
-  private startDeferredRagInitialization(): void {
-    const timeoutId = window.setTimeout(() => {
-      void this.initRAG().catch((err) => {
-        if (this.unloaded) return;
-        this.getLogger().error('Deferred RAG initialization failed.', {
-          source: 'rag',
-          error: err,
-        });
-        this.refreshBus.emit('rag', { status: 'error', detail: t('ragStatsFailed') });
-      });
-    }, 250);
-    this.register(() => window.clearTimeout(timeoutId));
   }
 
   private startDeferredMcpInitialization(): void {
@@ -658,17 +625,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const localRaw = loadLocalSettings(this.app);
-    let migratedFromLegacyData = false;
-    let raw: Record<string, unknown> = {};
-    if (isRecord(localRaw)) {
-      raw = localRaw;
-    } else {
-      const legacyRaw = (await this.loadData()) as unknown;
-      if (isRecord(legacyRaw)) {
-        raw = legacyRaw;
-        migratedFromLegacyData = true;
-      }
-    }
+    const legacyRaw = (await this.loadData()) as unknown;
+    const { raw, migratedFromLegacyData } = resolveSettingsLoadData(localRaw, legacyRaw);
     const data = { ...raw };
 
     const providerKeys = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
@@ -1197,6 +1155,38 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await this.getRagRuntimeInitRunner().run();
   }
 
+  async ensureRagRuntimeInitialized(): Promise<boolean> {
+    if (this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler) {
+      return true;
+    }
+    await this.initRAG();
+    return Boolean(this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler);
+  }
+
+  private getRagIndexerNotInitializedReason(): string {
+    const rag = this.settings.rag;
+    const providerKey = rag.embeddingProvider;
+    let reason = t('ragIndexerNotInitializedBase');
+    const config = this.getEmbeddingProviderConfig(providerKey);
+    const providerLabel = this.getEmbeddingProviderLabel(providerKey);
+    const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+      ? 'customOpenAI'
+      : providerKey;
+    if (!config?.enabled) {
+      reason += ` ${t('ragIndexerEnableProvider', { provider: providerLabel })}`;
+    } else if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+      reason += ` ${t('ragIndexerEnterApiKey', { provider: providerLabel })}`;
+    } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+      reason += ` ${t('ragIndexerSelectEmbeddingModel')}`;
+    } else {
+      reason += ` ${t('ragIndexerConnectionFailed', {
+        provider: providerLabel,
+        model: rag.embeddingModel,
+      })}`;
+    }
+    return reason;
+  }
+
   private getRagRuntimeInitRunner(): CoalescedAsyncRunner {
     if (!this.ragRuntimeInitRunner) {
       this.ragRuntimeInitRunner = new CoalescedAsyncRunner(() => this.initRAGRuntime());
@@ -1628,6 +1618,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.ragStatusTimer) {
       window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
+    }
+    if (!shouldRunRagStatusBackgroundRefresh(this.settings.rag)) {
+      return;
     }
     // 초기 1회 즉시 실행
     void this.computeAndEmitRagStats();

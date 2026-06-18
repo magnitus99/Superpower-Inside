@@ -58,6 +58,10 @@ export interface GraphRagStatusSummary {
 export async function calculateGraphRagStatus(
   input: GraphRagStatusInput,
 ): Promise<GraphRagStatusSummary> {
+  if (!input.ragConfig.graphRagEnabled) {
+    return createDisabledGraphRagStatus(input.ragConfig.graphRagMaxFilesPerRun);
+  }
+
   if (input.schemaErrors.length > 0) {
     return requireGraphRagStatusPlan(createGraphRagStatusInput(input, [], 0));
   }
@@ -167,6 +171,20 @@ function createGraphRagStatusInput(
     pendingMergeCount: snapshot.pendingMergeCount ?? 0,
     cacheRecords: (snapshot.cacheRecords ?? []).map(toGraphRagStatusCacheInput),
     entries: (snapshot.entries ?? []).map(toGraphRagStatusEntryInput),
+  };
+}
+
+function createDisabledGraphRagStatus(maxFilesPerRun: number): GraphRagStatusSummary {
+  return {
+    state: 'disabled',
+    totalCandidateFiles: 0,
+    graphEvidenceCount: 0,
+    rejectedFactCount: 0,
+    failedFileCount: 0,
+    pendingMergeCount: 0,
+    staleFileCount: 0,
+    staleFilePaths: [],
+    maxFilesPerRun,
   };
 }
 
