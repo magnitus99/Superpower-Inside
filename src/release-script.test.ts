@@ -22,3 +22,43 @@ describe('릴리스 스크립트 브랜치 정책', () => {
     expect(script).not.toContain('set PREV_TAG $TAGS[(math $TAG_COUNT - 1)]');
   });
 });
+
+describe('Rust security tool installer portability', () => {
+  it('passes cargo install feature flags through for cargo-geiger', () => {
+    const script = readFileSync(resolve(root, 'scripts/install-rust-security-tools.fish'), 'utf8');
+
+    expect(script).toContain('set -l install_args $argv[4..-1]');
+    expect(script).toContain('cargo install "$package" --version "$tool_version" --locked --force $install_args');
+    expect(script).toContain(
+      'install_cargo_tool cargo-geiger 0.13.0 cargo-geiger --features vendored-openssl',
+    );
+  });
+});
+
+describe('Windows Obsidian setup scripts', () => {
+  it('opens the test vault in an isolated Obsidian profile instead of using URI path lookup', () => {
+    const setupScript = readFileSync(resolve(root, 'scripts/setup-dev.ps1'), 'utf8');
+    const launchScript = readFileSync(resolve(root, 'scripts/launch-obsidian-debug.ps1'), 'utf8');
+    const enableScript = readFileSync(resolve(root, 'scripts/enable-obsidian-dev-plugins.mjs'), 'utf8');
+
+    expect(setupScript).toContain('ExtraObsidianConfigDirs');
+    expect(setupScript).toContain('function Write-Utf8NoBom');
+    expect(setupScript).toContain('System.Text.UTF8Encoding($false)');
+    expect(setupScript).toContain('function Register-ObsidianVault');
+    expect(setupScript).toContain('[bool]$Open = $false');
+    expect(setupScript).toContain('[bool]$ResetInvalid = $false');
+    expect(setupScript).toContain('"obsidian"');
+    expect(setupScript).toContain('"obsidian.json"');
+    expect(setupScript).toContain('Remove-CommunityPlugin');
+    expect(launchScript).toContain('setup-dev.ps1');
+    expect(launchScript).toContain('-ExtraObsidianConfigDirs @($profileDir)');
+    expect(launchScript).toContain('enable-obsidian-dev-plugins.mjs');
+    expect(launchScript).toContain('function Get-AvailablePort');
+    expect(launchScript).toContain('.obsidian-dev-profile');
+    expect(launchScript).toContain('--user-data-dir=');
+    expect(launchScript).not.toContain('obsidian://open?path=');
+    expect(enableScript).toContain('localStorage.setItem("enable-plugin-" + app.appId, "true")');
+    expect(enableScript).toContain('await app.plugins.setEnable(true)');
+    expect(enableScript).toContain('await app.plugins.enablePlugin(id)');
+  });
+});
