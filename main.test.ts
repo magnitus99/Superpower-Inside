@@ -1,5 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
+import type { GraphRagIndexingResult, GraphRagRunOptions } from './src/graph/indexing-runner';
+import type { GraphRagStatusSummary } from './src/graph/status';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -160,6 +162,131 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 
     expect(app.vault.offref).toHaveBeenCalledTimes(3);
     expect(app.vault.on).toHaveBeenCalledTimes(6);
+  });
+
+  it('GraphRAG 변경분 동기화는 실행 상태 재계산 전에 stale 파일 목록을 보존한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const initialStatus = createGraphRagStatus({
+      state: 'stale',
+      staleFileCount: 2,
+      staleFilePaths: ['a.md', 'b.md'],
+    });
+    const runningStatus = createGraphRagStatus({
+      state: 'building',
+      staleFileCount: 0,
+      staleFilePaths: [],
+    });
+    const result: GraphRagIndexingResult = {
+      totalCandidateFiles: 2,
+      selectedFiles: 2,
+      processedFiles: 2,
+      skippedFiles: 0,
+      failedFiles: 0,
+      processedChunks: 2,
+      skippedChunks: 0,
+      failedChunks: 0,
+      cancelled: false,
+      startedAt: 1,
+      finishedAt: 2,
+      runId: 7,
+    };
+    const run = vi.fn<(options: GraphRagRunOptions) => Promise<GraphRagIndexingResult>>(() =>
+      Promise.resolve(result),
+    );
+    const logger = {
+      info: vi.fn(),
+      notice: vi.fn(),
+      error: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      graphRagIndexingRunner: { run: typeof run };
+      graphRagAbortController: AbortController | null;
+      graphRagStatus: GraphRagStatusSummary | null;
+      computeAndEmitGraphRagStatus: ReturnType<typeof vi.fn<() => Promise<void>>>;
+      getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      emitGraphDataRefresh: ReturnType<typeof vi.fn>;
+    };
+    plugin.graphRagIndexingRunner = { run };
+    plugin.graphRagAbortController = null;
+    plugin.graphRagStatus = initialStatus;
+    plugin.computeAndEmitGraphRagStatus = vi.fn(async () => {
+      plugin.graphRagStatus = runningStatus;
+    });
+    plugin.getLogger = vi.fn(() => logger);
+    plugin.emitGraphDataRefresh = vi.fn();
+
+    await plugin.syncStaleGraphRag();
+
+    expect(run).toHaveBeenCalledOnce();
+    const [options] = run.mock.calls[0];
+    expect(options.onlyStaleFiles).toBe(true);
+    expect(options.staleFilePaths).toEqual(['a.md', 'b.md']);
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('RAG 런타임 재초기화가 중간에 실패하면 기존 인덱서를 복구한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      manifest: { id: string };
+      vectorStore: unknown;
+      knowledgeGraphStore: unknown;
+      embeddingProvider: unknown;
+      ragEngine: unknown;
+      graphRagIndexingRunner: unknown;
+      vaultIndexer: unknown;
+      ragIndexingScheduler: { cancel: ReturnType<typeof vi.fn> };
+      createProviderForModel: ReturnType<typeof vi.fn>;
+    };
+    const previousVectorStore = { kind: 'previous-vector-store' };
+    const previousKnowledgeGraphStore = { kind: 'previous-graph-store' };
+    const previousEmbeddingProvider = { kind: 'previous-embedding-provider' };
+    const previousRagEngine = { kind: 'previous-rag-engine' };
+    const previousGraphRagRunner = { kind: 'previous-graph-runner' };
+    const previousVaultIndexer = { kind: 'previous-vault-indexer' };
+    const previousScheduler = { cancel: vi.fn() };
+
+    plugin.app = createApp();
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        autoUpdateEnabled: false,
+        graphRagEnabled: false,
+        graphRagModel: 'openai:gpt-test',
+        graphRagAutoSyncEnabled: false,
+      },
+    };
+    plugin.vectorStore = previousVectorStore;
+    plugin.knowledgeGraphStore = previousKnowledgeGraphStore;
+    plugin.embeddingProvider = previousEmbeddingProvider;
+    plugin.ragEngine = previousRagEngine;
+    plugin.graphRagIndexingRunner = previousGraphRagRunner;
+    plugin.vaultIndexer = previousVaultIndexer;
+    plugin.ragIndexingScheduler = previousScheduler;
+    plugin.createProviderForModel = vi.fn(() => {
+      throw new Error('graph provider failed');
+    });
+
+    await expect(
+      (
+        plugin as unknown as {
+          initRAGRuntime(): Promise<void>;
+        }
+      ).initRAGRuntime(),
+    ).rejects.toThrow('graph provider failed');
+
+    expect(plugin.vectorStore).toBe(previousVectorStore);
+    expect(plugin.knowledgeGraphStore).toBe(previousKnowledgeGraphStore);
+    expect(plugin.embeddingProvider).toBe(previousEmbeddingProvider);
+    expect(plugin.ragEngine).toBe(previousRagEngine);
+    expect(plugin.graphRagIndexingRunner).toBe(previousGraphRagRunner);
+    expect(plugin.vaultIndexer).toBe(previousVaultIndexer);
+    expect(plugin.ragIndexingScheduler).toBe(previousScheduler);
   });
 
   it('설정 로드 시 data.json의 RAG 안전 설정이 stale localStorage 값을 덮는다', async () => {
@@ -354,5 +481,22 @@ function createApp(options: { localSettings?: unknown; legacyDataExists?: boolea
     workspace: {
       trigger: vi.fn(),
     },
+  };
+}
+
+function createGraphRagStatus(
+  override: Partial<GraphRagStatusSummary> = {},
+): GraphRagStatusSummary {
+  return {
+    state: 'ready',
+    totalCandidateFiles: 0,
+    graphEvidenceCount: 0,
+    rejectedFactCount: 0,
+    failedFileCount: 0,
+    pendingMergeCount: 0,
+    staleFileCount: 0,
+    staleFilePaths: [],
+    maxFilesPerRun: 50,
+    ...override,
   };
 }
