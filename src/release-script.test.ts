@@ -14,11 +14,13 @@ describe('릴리스 스크립트 브랜치 정책', () => {
     expect(script).not.toContain('main 브랜치에서 직접 릴리스 커밋을 만들 수 없습니다');
   });
 
-  it('릴리스 노트 이전 태그 계산은 legacy v-prefix 태그를 제외한다', () => {
+  it('릴리스 스크립트는 release-notes 파일 대신 GitHub Release 본문 작성을 안내한다', () => {
     const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
 
-    expect(script).toContain("git tag --sort=version:refname --list '[0-9]*'");
-    expect(script).toContain('if test "$RELEASE_TAGS[$index]" = "$NEW_VERSION"');
-    expect(script).not.toContain('set PREV_TAG $TAGS[(math $TAG_COUNT - 1)]');
+    expect(script).toContain('release-notes-*.md 문서는 생성하지 않습니다');
+    expect(script).toContain('GitHub Release가 생성되면 릴리즈 요약을 본문에 직접 붙여 넣으세요');
+    expect(script).not.toContain('./scripts/release-notes.fish');
+    expect(script).not.toContain('--notes-file');
+    expect(script).not.toContain("git tag --sort=version:refname --list '[0-9]*'");
   });
 });

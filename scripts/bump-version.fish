@@ -1,25 +1,24 @@
 #!/usr/bin/env fish
 # 버전을 올리고 Obsidian 커뮤니티 제출 규칙에 맞는 git 태그를 생성한 뒤 푸시하는 스크립트
-# 사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]
+# 사용법: ./scripts/bump-version.fish [patch|minor|major]
 # 기본값: patch
 
 set BUMP_TYPE patch
-set CREATE_RELEASE true
 
 for ARG in $argv
     switch "$ARG"
         case patch minor major
             set BUMP_TYPE "$ARG"
         case --no-release
-            set CREATE_RELEASE false
+            echo "WARN: --no-release 옵션은 더 이상 사용하지 않습니다. release-notes 문서는 만들지 말고 GitHub Release 본문에 릴리즈 요약을 직접 붙여 넣으세요."
         case -h --help
-            echo "사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]"
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major]"
             echo "기본값: patch"
-            echo "옵션: --no-release  (릴리스 생성 단계는 생략)"
+            echo "release-notes 문서는 생성하지 않습니다. 필요한 제품 설명은 README.md에 통합하고, 릴리즈 요약은 GitHub Release 본문에 직접 붙여 넣으세요."
             exit 0
         case '*'
             echo "ERROR: 유효하지 않은 인자 '$ARG'"
-            echo "사용법: ./scripts/bump-version.fish [patch|minor|major] [--no-release]"
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major]"
             exit 1
     end
 end
@@ -154,28 +153,7 @@ or begin
     exit 1
 end
 
-set RELEASE_NOTE_FILE "release-notes-$NEW_VERSION.md"
-set RELEASE_TAGS (git tag --sort=version:refname --list '[0-9]*')
-set PREV_TAG ""
-for index in (seq 1 (count $RELEASE_TAGS))
-    if test "$RELEASE_TAGS[$index]" = "$NEW_VERSION"
-        if test $index -gt 1
-            set PREV_TAG $RELEASE_TAGS[(math $index - 1)]
-        end
-        break
-    end
-end
-
-if test -n "$PREV_TAG"
-    ./scripts/release-notes.fish "$NEW_VERSION" "$PREV_TAG" "$RELEASE_NOTE_FILE"
-    if test $status -ne 0
-        echo "ERROR: release-notes 생성 실패"
-        exit 1
-    end
-else
-    echo "INFO: 이전 태그가 없어 release-notes를 자동 생성하지 않습니다."
-    set RELEASE_NOTE_FILE ""
-end
+echo "INFO: release-notes-*.md 문서는 생성하지 않습니다. 릴리즈 요약은 GitHub Release 본문에 직접 붙여 넣고, 필요한 제품 설명은 README.md에 현재형으로 통합하세요."
 
 # 푸시
 git push origin "$CURRENT_BRANCH"
@@ -185,24 +163,8 @@ or begin
     exit 1
 end
 
-if test -n "$RELEASE_NOTE_FILE"
-    if test "$CREATE_RELEASE" = true
-        if not type gh >/dev/null 2>&1
-            echo "WARN: gh CLI가 없습니다. 수동으로 릴리즈를 생성해 주세요."
-            echo "gh release create \"$NEW_VERSION\" --title \"Release $NEW_VERSION\" --notes-file \"$RELEASE_NOTE_FILE\" --target \"$CURRENT_BRANCH\""
-        else
-            gh release create "$NEW_VERSION" --title "Release $NEW_VERSION" --notes-file "$RELEASE_NOTE_FILE" --target "$CURRENT_BRANCH"
-            if test $status -ne 0
-                echo "WARN: gh release create 실패 (수동으로 다시 실행해 주세요)"
-                echo "gh release create \"$NEW_VERSION\" --title \"Release $NEW_VERSION\" --notes-file \"$RELEASE_NOTE_FILE\" --target \"$CURRENT_BRANCH\""
-            end
-        end
-    else
-        echo "INFO: --no-release 옵션으로 gh 릴리스 생성은 생략합니다."
-    end
-end
-
 echo ""
 echo "✅ $NEW_VERSION 릴리스 완료!"
 echo "GitHub Actions가 자동으로 릴리스를 생성합니다."
+echo "GitHub Release가 생성되면 릴리즈 요약을 본문에 직접 붙여 넣으세요. release-notes 파일은 커밋하지 않습니다."
 echo "https://github.com/magnitus99/Superpower-Inside/actions"
