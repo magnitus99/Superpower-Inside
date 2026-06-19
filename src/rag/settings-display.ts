@@ -22,6 +22,47 @@ export interface EmbeddingModelOption {
   label: string;
   description: string;
   source: 'preset' | 'provider' | 'current';
+  chatStatus?: ModelCapabilityStatus;
+  embeddingStatus?: ModelCapabilityStatus;
+}
+
+export type ModelCapabilityStatus = 'unknown' | 'success' | 'failed';
+
+export interface ModelCapabilitySnapshot {
+  chatStatus: ModelCapabilityStatus;
+  embeddingStatus: ModelCapabilityStatus;
+  lastCheckedAt?: number;
+  lastError?: string;
+}
+
+export interface ProviderValidationSnapshot {
+  providerFingerprint?: string;
+  modelsFetched?: boolean;
+  connectionTested?: boolean;
+  generationTested?: boolean;
+  authenticated?: boolean;
+  serverReachable?: boolean;
+  lastCheckedAt?: number;
+  lastError?: string;
+  modelCapabilities?: Record<string, ModelCapabilitySnapshot>;
+}
+
+export type ProviderReadinessTone = 'ready' | 'needs-key' | 'needs-models' | 'disabled';
+
+export interface ProviderReadinessInput {
+  enabled: boolean;
+  modelCount: number;
+  apiKeyRequired: boolean;
+  hasApiKey: boolean;
+  validation?: Pick<
+    ProviderValidationSnapshot,
+    'authenticated' | 'serverReachable' | 'modelsFetched' | 'connectionTested' | 'generationTested'
+  >;
+}
+
+export interface ProviderReadinessState {
+  tone: ProviderReadinessTone;
+  validationAccepted: boolean;
 }
 
 export interface RagIndexingControlStateInput {
@@ -254,6 +295,28 @@ export function shouldShowProviderApiKey(key: string): boolean {
 
 export function shouldRequireProviderApiKey(key: string): boolean {
   return shouldShowProviderApiKey(key) && key !== 'customOpenAI';
+}
+
+export function resolveProviderReadiness(
+  input: ProviderReadinessInput,
+): ProviderReadinessState {
+  const validationAccepted = Boolean(
+    input.validation?.authenticated ||
+      input.validation?.serverReachable ||
+      input.validation?.modelsFetched ||
+      input.validation?.connectionTested ||
+      input.validation?.generationTested,
+  );
+  if (!input.enabled) {
+    return { tone: 'disabled', validationAccepted };
+  }
+  if (input.apiKeyRequired && !input.hasApiKey && !validationAccepted) {
+    return { tone: 'needs-key', validationAccepted };
+  }
+  if (input.modelCount === 0) {
+    return { tone: 'needs-models', validationAccepted };
+  }
+  return { tone: 'ready', validationAccepted };
 }
 
 export function getRagIndexingControlState(
@@ -591,6 +654,7 @@ export function buildEmbeddingModelOptions(
   presets: EmbeddingModelPreset[],
   providerModels: string[],
   currentModel: string,
+  modelCapabilities: Record<string, Partial<ModelCapabilitySnapshot>> = {},
 ): EmbeddingModelOption[] {
   const options = new Map<string, EmbeddingModelOption>();
 
@@ -600,6 +664,8 @@ export function buildEmbeddingModelOptions(
       label: t('embeddingDimensionsLabel', { name: preset.name, dimensions: preset.dimensions }),
       description: preset.description,
       source: 'preset',
+      chatStatus: normalizeCapabilityStatus(modelCapabilities[preset.id]?.chatStatus),
+      embeddingStatus: normalizeCapabilityStatus(modelCapabilities[preset.id]?.embeddingStatus),
     });
   }
 
@@ -611,6 +677,8 @@ export function buildEmbeddingModelOptions(
       label: id,
       description: t('embeddingProviderModelDesc'),
       source: 'provider',
+      chatStatus: normalizeCapabilityStatus(modelCapabilities[id]?.chatStatus),
+      embeddingStatus: normalizeCapabilityStatus(modelCapabilities[id]?.embeddingStatus),
     });
   }
 
@@ -621,8 +689,34 @@ export function buildEmbeddingModelOptions(
       label: t('embeddingCurrentLabel', { model: selected }),
       description: t('embeddingCurrentDesc'),
       source: 'current',
+      chatStatus: normalizeCapabilityStatus(modelCapabilities[selected]?.chatStatus),
+      embeddingStatus: normalizeCapabilityStatus(modelCapabilities[selected]?.embeddingStatus),
     });
   }
 
-  return Array.from(options.values());
+  return Array.from(options.values()).sort(compareEmbeddingModelOptions);
+}
+
+export function selectInitialEmbeddingModel(options: readonly EmbeddingModelOption[]): string {
+  return options.find((option) => option.embeddingStatus === 'success')?.id ?? '';
+}
+
+function normalizeCapabilityStatus(status: unknown): ModelCapabilityStatus {
+  return status === 'success' || status === 'failed' ? status : 'unknown';
+}
+
+function compareEmbeddingModelOptions(
+  left: EmbeddingModelOption,
+  right: EmbeddingModelOption,
+): number {
+  const leftRank = getEmbeddingCapabilityRank(left.embeddingStatus);
+  const rightRank = getEmbeddingCapabilityRank(right.embeddingStatus);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return 0;
+}
+
+function getEmbeddingCapabilityRank(status: ModelCapabilityStatus | undefined): number {
+  if (status === 'success') return 0;
+  if (status === 'failed') return 2;
+  return 1;
 }

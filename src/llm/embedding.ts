@@ -332,8 +332,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private logger: ScopedLogger;
 
   constructor(
-    baseUrl = 'http://localhost:11434',
-    model = 'nomic-embed-text',
+    baseUrl: string,
+    model: string,
     apiKey?: string,
     options: EmbeddingProviderRuntimeOptions = {},
   ) {

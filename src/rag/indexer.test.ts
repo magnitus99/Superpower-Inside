@@ -54,7 +54,7 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
     // chunkSize 1000이어도 실제 임베딩 입력은 1000자를 초과할 수 있음
     expect(maxLen).toBeGreaterThan(1000);
 
-    // Ollama nomic-embed-text-v2-moe의 컨텍스트 상한은 약 2048 tokens.
+    // 일부 로컬 임베딩 모델의 컨텍스트 상한은 약 2048 tokens.
     // 한국어 혼합 텍스트 기준 안전 문자수는 약 3000자이므로,
     // chunkSize 1000 + 메타데이터 오버헤드 조합이 이 상한을 초과할 가능성을 문서화한다.
     // (이 테스트는 chunkSize를 낮춰야 하는 근거를 제공한다.)

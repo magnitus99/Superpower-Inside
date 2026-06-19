@@ -156,11 +156,11 @@ describe('provider validation', () => {
   it('Ollama Local 임베딩 연결 테스트는 태그 목록만 조회하고 임베딩을 생성하지 않는다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      json: { models: [{ name: 'nomic-embed-text' }] },
+      json: { models: [{ name: 'local-embedding-model' }] },
       text: '',
     });
 
-    const result = await validateEmbeddingConnection('ollama', 'nomic-embed-text', baseConfig);
+    const result = await validateEmbeddingConnection('ollama', 'local-embedding-model', baseConfig);
 
     expect(result.valid).toBe(true);
     expect(requestUrlMock).toHaveBeenCalledTimes(1);
@@ -228,6 +228,34 @@ describe('provider validation', () => {
     );
   });
 
+  it('Custom OpenAI-compatible 최소 생성 테스트는 API 키가 비어 있으면 Authorization 헤더를 생략한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { choices: [{ message: { content: 'p' } }] },
+      text: '',
+    });
+
+    await testProviderGeneration(
+      'customOpenAI',
+      {
+        ...baseConfig,
+        id: 'local',
+        name: 'Local',
+        apiKey: '',
+        baseUrl: 'http://localhost:1234/v1',
+      },
+      'local-model',
+    );
+
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }),
+    );
+  });
+
   it('OpenAI 임베딩 연결 테스트는 모델 목록만 조회하고 /embeddings에 input을 보내지 않는다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
@@ -278,6 +306,34 @@ describe('provider validation', () => {
         method: 'POST',
         body: JSON.stringify({ input: 'test', model: 'custom-embedding' }),
         throw: false,
+      }),
+    );
+  });
+
+  it('Custom OpenAI-compatible 임베딩 생성 테스트는 API 키가 비어 있으면 Authorization 헤더를 생략한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ embedding: [0.3, 0.4] }] },
+      text: '',
+    });
+
+    await testEmbeddingGeneration(
+      'customOpenAI:local',
+      'custom-embedding',
+      {
+        ...baseConfig,
+        id: 'local',
+        name: 'Local',
+        apiKey: '',
+        baseUrl: 'http://localhost:1234/v1',
+      },
+    );
+
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: {
+          'Content-Type': 'application/json',
+        },
       }),
     );
   });

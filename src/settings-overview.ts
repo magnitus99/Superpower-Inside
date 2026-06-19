@@ -2,7 +2,7 @@ import type { GraphRagStatusSummary } from './graph/status';
 import type { MCPConnectionState, MCPServerConnectionStatus } from './mcp/connection-state';
 import type { RagStatusSummary } from './rag/status';
 import { t } from './i18n';
-import { shouldShowProviderApiKey } from './rag/settings-display';
+import { shouldRequireProviderApiKey } from './rag/settings-display';
 import type {
   CustomOpenAIProviderConfig,
   MCPServerConfig,
@@ -112,7 +112,7 @@ export function buildSettingsOverviewSnapshot(input: {
 function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverviewStatusRow[] {
   return getProviderSources(settings).map((source) => {
     const modelCount = source.config.models.length;
-    const requiresKey = shouldShowProviderApiKey(source.key);
+    const requiresKey = shouldRequireProviderApiKey(source.key);
     const missingKey = requiresKey && source.config.enabled && source.config.apiKey.trim() === '';
     const tone: SettingsOverviewTone = !source.config.enabled
       ? 'neutral'

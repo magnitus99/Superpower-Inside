@@ -493,7 +493,6 @@ export interface I18nKeys {
   settingsAuto003: string;
   settingsAuto004: string;
   settingsAuto005: string;
-  settingsAuto006: string;
   settingsAuto007: string;
   settingsAuto008: string;
   settingsAuto009: string;
@@ -856,6 +855,15 @@ export interface I18nKeys {
   providerKeyReady: string;
   providerKeyMissing: string;
   providerKeyNotRequired: string;
+  providerModelChatVerified: string;
+  providerModelChatUnknown: string;
+  providerModelChatFailed: string;
+  providerModelEmbeddingVerified: string;
+  providerModelEmbeddingUnknown: string;
+  providerModelEmbeddingFailed: string;
+  providerTestChatModel: string;
+  providerTestEmbeddingModel: string;
+  providerEmbeddingUnsupported: string;
   providerModelsSelected: string;
   providerNoModelsShort: string;
   providerTypeBuiltIn: string;
@@ -1792,7 +1800,6 @@ const ko: I18nKeys = {
   settingsAuto003: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.',
   settingsAuto004: '다국어(한국어 포함) 최적화. 8K 컨텍스트.',
   settingsAuto005: '32K 컨텍스트 지원. 긴 문서에 적합.',
-  settingsAuto006: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.',
   settingsAuto007:
     '임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)',
   settingsAuto008: '모델 선택 안 함',
@@ -2187,6 +2194,15 @@ const ko: I18nKeys = {
   providerKeyReady: '키 준비됨',
   providerKeyMissing: '키 필요',
   providerKeyNotRequired: '키 불필요',
+  providerModelChatVerified: 'Chat 확인됨',
+  providerModelChatUnknown: 'Chat 미검증',
+  providerModelChatFailed: 'Chat 실패',
+  providerModelEmbeddingVerified: 'Embedding 확인됨',
+  providerModelEmbeddingUnknown: 'Embedding 미검증',
+  providerModelEmbeddingFailed: 'Embedding 실패',
+  providerTestChatModel: '이 모델 최소 생성 테스트',
+  providerTestEmbeddingModel: '이 모델 임베딩 테스트',
+  providerEmbeddingUnsupported: '이 provider는 임베딩 테스트를 지원하지 않습니다.',
   providerModelsSelected: '{v0}개 선택',
   providerNoModelsShort: '모델 없음',
   providerTypeBuiltIn: '기본 제공',
@@ -3178,7 +3194,6 @@ const en: I18nKeys = {
   settingsAuto003: 'Via OpenRouter. Same quality, uses an OpenRouter API key.',
   settingsAuto004: 'Optimized for multilingual use including Korean. 8K context.',
   settingsAuto005: 'Supports 32K context. Suitable for long documents.',
-  settingsAuto006: 'Default Ollama embedding model. Requires local installation.',
   settingsAuto007:
     'Embedding setting changes were cancelled. Unsaved changes are discarded when closing the settings tab.',
   settingsAuto008: 'No model selected',
@@ -3582,6 +3597,15 @@ const en: I18nKeys = {
   providerKeyReady: 'Key ready',
   providerKeyMissing: 'Key needed',
   providerKeyNotRequired: 'No key required',
+  providerModelChatVerified: 'Chat verified',
+  providerModelChatUnknown: 'Chat untested',
+  providerModelChatFailed: 'Chat failed',
+  providerModelEmbeddingVerified: 'Embedding verified',
+  providerModelEmbeddingUnknown: 'Embedding untested',
+  providerModelEmbeddingFailed: 'Embedding failed',
+  providerTestChatModel: 'Test minimal generation for this model',
+  providerTestEmbeddingModel: 'Test embeddings for this model',
+  providerEmbeddingUnsupported: 'This provider does not support embedding tests.',
   providerModelsSelected: '{v0} selected',
   providerNoModelsShort: 'No models',
   providerTypeBuiltIn: 'Built-in',

@@ -714,6 +714,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data.customOpenAIProviders = [];
     }
 
+    if (
+      typeof data.providerValidation !== 'object' ||
+      data.providerValidation === null ||
+      Array.isArray(data.providerValidation)
+    ) {
+      data.providerValidation = {};
+    }
+
     const chat = data.chat;
     if (
       chat &&

@@ -2486,7 +2486,7 @@ describe('Rust WASM RAG core bridge', () => {
           contentHash: 'embedding-hash',
           indexedAt: 900,
           embeddingProvider: 'ollama',
-          embeddingModel: 'nomic-embed-text',
+          embeddingModel: 'local-embedding-model',
           hasCompleteMetadata: true,
           vectorCount: 5,
         },

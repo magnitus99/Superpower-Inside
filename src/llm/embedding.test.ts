@@ -57,7 +57,7 @@ describe('OllamaEmbeddingProvider', () => {
   it('컨텍스트 길이 초과 400 응답 시 개선된 에러 메시지를 던진다', async () => {
     const provider = new OllamaEmbeddingProvider(
       'http://localhost:11434',
-      'nomic-embed-text-v2-moe:latest',
+      'local-embedding-context-model:latest',
     );
 
     const mocked = vi.mocked(requestUrl);
@@ -87,7 +87,7 @@ describe('OllamaEmbeddingProvider', () => {
   it('여러 입력을 배열 한 번이 아니라 단일 요청들로 처리하고 결과 순서를 유지한다', async () => {
     const provider = new OllamaEmbeddingProvider(
       'http://localhost:11434',
-      'nomic-embed-text-v2-moe:latest',
+      'local-embedding-batch-model:latest',
     );
 
     const mocked = vi.mocked(requestUrl);
@@ -122,7 +122,7 @@ describe('OllamaEmbeddingProvider', () => {
   it('일반 400 오류는 기존 형식의 에러 메시지를 유지한다', async () => {
     const provider = new OllamaEmbeddingProvider(
       'http://localhost:11434',
-      'nomic-embed-text-v2-moe:latest',
+      'local-embedding-error-model:latest',
     );
 
     const mocked = vi.mocked(requestUrl);

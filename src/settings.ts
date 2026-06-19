@@ -30,7 +30,10 @@ import {
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
   resolveRagPerformanceSettings,
+  resolveProviderReadiness,
+  selectInitialEmbeddingModel,
   type RagPerformanceTuningMode,
+  shouldRequireProviderApiKey,
   shouldShowProviderApiKey,
   buildGraphRagActionGroups,
   getGraphRagStatusPresentation,
@@ -41,6 +44,9 @@ import {
   estimateGraphRagIndexingCost,
   type GraphRagActionDefinition,
   type GraphRagIndexingResultNoticeScope,
+  type ModelCapabilitySnapshot,
+  type ModelCapabilityStatus,
+  type ProviderValidationSnapshot,
 } from './rag/settings-display';
 import {
   createDefaultPromptEntry,
@@ -178,14 +184,7 @@ export function buildEmbeddingModels(): Record<BuiltInEmbeddingProviderKey, Embe
         description: t('settingsAuto005'),
       },
     ],
-    ollama: [
-      {
-        id: 'nomic-embed-text',
-        name: 'nomic-embed-text',
-        dimensions: 768,
-        description: t('settingsAuto006'),
-      },
-    ],
+    ollama: [],
     other: [],
   };
 }
@@ -283,6 +282,7 @@ export interface SuperpowerInsideSettings {
   ollamaCloud: ProviderConfig;
   openRouter: ProviderConfig;
   customOpenAIProviders: CustomOpenAIProviderConfig[];
+  providerValidation: Record<string, ProviderValidationSnapshot>;
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
@@ -326,6 +326,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     enabled: false,
   },
   customOpenAIProviders: [],
+  providerValidation: {},
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
@@ -477,6 +478,45 @@ const HIDDEN_CLASS = 'superpower-inside-hidden';
 function setHidden(el: HTMLElement | null, hidden: boolean): void {
   if (!el) return;
   el.toggleClass(HIDDEN_CLASS, hidden);
+}
+
+function createProviderValidationFingerprint(config: ProviderConfig | CustomOpenAIProviderConfig): string {
+  return JSON.stringify({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl ?? '',
+    enabled: config.enabled,
+    models: [...config.models].sort((a, b) => a.localeCompare(b, 'en')),
+    useRequestUrl:
+      'useRequestUrl' in config && typeof config.useRequestUrl === 'boolean'
+        ? config.useRequestUrl
+        : undefined,
+  });
+}
+
+function getFreshProviderValidation(
+  state: Record<string, ProviderValidationSnapshot>,
+  providerKey: string,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): ProviderValidationSnapshot | undefined {
+  const validation = state[providerKey];
+  if (!validation) return undefined;
+  if (validation.providerFingerprint !== createProviderValidationFingerprint(config)) {
+    return undefined;
+  }
+  return validation;
+}
+
+function mergeModelCapability(
+  current: ModelCapabilitySnapshot | undefined,
+  patch: Partial<ModelCapabilitySnapshot>,
+  checkedAt: number,
+): ModelCapabilitySnapshot {
+  return {
+    chatStatus: current?.chatStatus ?? 'unknown',
+    embeddingStatus: current?.embeddingStatus ?? 'unknown',
+    ...patch,
+    lastCheckedAt: checkedAt,
+  };
 }
 
 function createLightSaveOptions(): SettingsSaveOptions {
@@ -2120,10 +2160,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const embeddingModels = buildEmbeddingModels();
     const modelsForProvider = builtInProvider ? embeddingModels[builtInProvider] : [];
     const isOther = effectiveProvider === 'other';
+    const embeddingValidationConfig = isOther
+      ? null
+      : this.getEmbeddingProviderConfig(effectiveProvider);
     const providerModels = isOther ? [] : this.getEmbeddingProviderModels(effectiveProvider);
+    const modelCapabilities =
+      !isOther && embeddingValidationConfig
+        ? this.getProviderModelCapabilities(effectiveProvider, embeddingValidationConfig)
+        : {};
     const modelOptions = isOther
       ? []
-      : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel);
+      : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel, modelCapabilities);
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
     const providerNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
     providerNotice.setText(t('settingsAuto082'));
@@ -2157,8 +2204,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               nextBuiltInProvider ? embeddingModels[nextBuiltInProvider] : [],
               this.getEmbeddingProviderModels(nextProvider),
               '',
+              (() => {
+                const nextConfig = this.getEmbeddingProviderConfig(nextProvider);
+                return nextConfig ? this.getProviderModelCapabilities(nextProvider, nextConfig) : {};
+              })(),
             );
-            this.pendingEmbeddingModel = nextModels[0]?.id ?? '';
+            this.pendingEmbeddingModel = selectInitialEmbeddingModel(nextModels);
           }
           this.isRebuildingEmbeddingSection = true;
           try {
@@ -2300,9 +2351,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                   getEmbeddingValidationConfig(),
                 );
                 if (result.valid) {
+                  if (effectiveProvider !== 'other') {
+                    await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
+                      connectionTested: true,
+                      serverReachable: true,
+                      lastError: undefined,
+                    });
+                  }
                   const detail = t('settingsAuto096', { v0: String(result.models.length) });
                   statusEl.setText(detail);
                   return { status: 'success', detail };
+                }
+                if (effectiveProvider !== 'other') {
+                  await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
+                    connectionTested: false,
+                    lastError: String(result.error),
+                  });
                 }
                 const detail = t('settingsAuto097', { v0: String(result.error) });
                 statusEl.setText(detail);
@@ -2336,9 +2400,28 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                   getEmbeddingValidationConfig(),
                 );
                 if (result.valid) {
+                  if (effectiveProvider !== 'other') {
+                    await this.recordModelCapability(
+                      effectiveProvider,
+                      getEmbeddingValidationConfig(),
+                      effectiveModel,
+                      'embeddingStatus',
+                      'success',
+                    );
+                  }
                   const detail = t('settingsAuto101', { v0: String(effectiveModel) });
                   statusEl.setText(detail);
                   return { status: 'success', detail };
+                }
+                if (effectiveProvider !== 'other') {
+                  await this.recordModelCapability(
+                    effectiveProvider,
+                    getEmbeddingValidationConfig(),
+                    effectiveModel,
+                    'embeddingStatus',
+                    'failed',
+                    String(result.error),
+                  );
                 }
                 const detail = t('settingsAuto102', { v0: String(result.error) });
                 statusEl.setText(detail);
@@ -2773,13 +2856,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (this.plugin.eventDrivenRagStats) {
       return this.plugin.eventDrivenRagStats;
     }
-    const p = this.plugin as unknown as {
-      vectorStore?: VectorStore;
-    };
-    if (p.vectorStore) {
+    if (!this.plugin.vectorStore) {
+      const initialized = await this.plugin.ensureRagRuntimeInitialized();
+      if (!initialized) {
+        return this.plugin.eventDrivenRagStats ?? null;
+      }
+    }
+    const vectorStore = this.plugin.vectorStore;
+    if (vectorStore) {
       return calculateRagStatus(
         this.plugin.app.vault,
-        p.vectorStore,
+        vectorStore,
         this.plugin.settings.rag,
         this.plugin.settings.chat,
         signal,
@@ -2827,7 +2914,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
         ? 'customOpenAI'
         : providerKey;
-      if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+      if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
         return t('settingsAuto156', { v0: String(label) });
       }
     }
@@ -2848,7 +2935,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
         ? 'customOpenAI'
         : providerKey;
-      if (shouldShowProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+      if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
         return t('settingsAuto159', { v0: String(label) });
       }
       if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
@@ -2864,12 +2951,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       v1: String(rag.embeddingModel),
     });
   }
-  private buildControlsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-section superpower-inside-rag-controls-panel',
-    });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto163') });
-    const controls = section.createDiv({ cls: 'superpower-inside-rag-controls' });
+  private getRagRuntimeAccess(): {
+    vaultIndexer?: VaultIndexer;
+    vectorStore?: VectorStore;
+    embeddingProvider?: {
+      clearCache(): Promise<void>;
+    };
+    ragIndexingScheduler?: RAGIndexingScheduler;
+    hasIndexer: boolean;
+  } {
     const p = this.plugin as unknown as {
       vaultIndexer?: VaultIndexer;
       vectorStore?: VectorStore;
@@ -2878,7 +2968,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       };
       ragIndexingScheduler?: RAGIndexingScheduler;
     };
-    const hasIndexer = !!p.vaultIndexer && !!p.ragIndexingScheduler;
+    return {
+      ...p,
+      hasIndexer: !!p.vaultIndexer && !!p.ragIndexingScheduler,
+    };
+  }
+  private async ensureRagRuntimeAccess(): Promise<ReturnType<typeof this.getRagRuntimeAccess>> {
+    const current = this.getRagRuntimeAccess();
+    if (current.hasIndexer) {
+      return current;
+    }
+    await this.plugin.ensureRagRuntimeInitialized();
+    return this.getRagRuntimeAccess();
+  }
+  private buildControlsSection(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-rag-section superpower-inside-rag-controls-panel',
+    });
+    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto163') });
+    const controls = section.createDiv({ cls: 'superpower-inside-rag-controls' });
+    const runtime = this.getRagRuntimeAccess();
+    const hasIndexer = runtime.hasIndexer;
     const isIndexing = this.plugin.isRagIndexing();
     const primaryControls = controls.createDiv({ cls: 'superpower-inside-rag-controls-group' });
     primaryControls.createEl('button', { text: t('settingsAuto127') }, (btn) => {
@@ -2894,7 +3004,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: async () => {
-            if (!hasIndexer) {
+            const latestRuntime = await this.ensureRagRuntimeAccess();
+            if (!latestRuntime.hasIndexer || !latestRuntime.ragIndexingScheduler) {
               return {
                 status: 'error',
                 notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
@@ -2907,7 +3018,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             }
             new Notice(t('settingsAuto165', { v0: String(status.updateRequiredDocuments.length) }));
             try {
-              const result = await p.ragIndexingScheduler!.indexPending();
+              const result = await latestRuntime.ragIndexingScheduler.indexPending();
               this.updateRagStats();
               return {
                 status: 'success',
@@ -2942,7 +3053,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: async () => {
-            if (!hasIndexer) {
+            const latestRuntime = await this.ensureRagRuntimeAccess();
+            if (!latestRuntime.hasIndexer || !latestRuntime.ragIndexingScheduler) {
               return {
                 status: 'error',
                 notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
@@ -2955,7 +3067,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             }
             new Notice(t('settingsAuto170'));
             try {
-              const result = await p.ragIndexingScheduler!.reindexAll();
+              const result = await latestRuntime.ragIndexingScheduler.reindexAll();
               this.updateRagStats();
               return {
                 status: 'success',
@@ -3034,11 +3146,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return { status: 'noop', detail: t('actionCancelledNotice') };
             }
             try {
-              if (p.vectorStore) {
-                await p.vectorStore.clear();
+              const latestRuntime = this.getRagRuntimeAccess();
+              if (latestRuntime.vectorStore) {
+                await latestRuntime.vectorStore.clear();
               }
-              if (p.embeddingProvider) {
-                await p.embeddingProvider.clearCache();
+              if (latestRuntime.embeddingProvider) {
+                await latestRuntime.embeddingProvider.clearCache();
               }
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
@@ -4010,12 +4123,112 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       header?.setAttribute('aria-expanded', String(expanded));
     });
   }
+  private getFreshProviderValidation(
+    providerKey: string,
+    config: ProviderConfig | CustomOpenAIProviderConfig,
+  ): ProviderValidationSnapshot | undefined {
+    return getFreshProviderValidation(this.plugin.settings.providerValidation, providerKey, config);
+  }
+  private getProviderModelCapabilities(
+    providerKey: string,
+    config: ProviderConfig | CustomOpenAIProviderConfig,
+  ): Record<string, ModelCapabilitySnapshot> {
+    return this.getFreshProviderValidation(providerKey, config)?.modelCapabilities ?? {};
+  }
+  private async recordProviderValidation(
+    providerKey: string,
+    config: ProviderConfig | CustomOpenAIProviderConfig,
+    patch: Partial<ProviderValidationSnapshot>,
+  ): Promise<void> {
+    const checkedAt = Date.now();
+    const current =
+      this.getFreshProviderValidation(providerKey, config) ??
+      ({
+        providerFingerprint: createProviderValidationFingerprint(config),
+        modelCapabilities: {},
+      } satisfies ProviderValidationSnapshot);
+    this.plugin.settings.providerValidation[providerKey] = {
+      ...current,
+      ...patch,
+      providerFingerprint: createProviderValidationFingerprint(config),
+      lastCheckedAt: checkedAt,
+      modelCapabilities: current.modelCapabilities ?? {},
+    };
+    await this.plugin.saveSettingsLight();
+  }
+  private async recordModelCapability(
+    providerKey: string,
+    config: ProviderConfig | CustomOpenAIProviderConfig,
+    modelId: string,
+    capability: 'chatStatus' | 'embeddingStatus',
+    status: ModelCapabilityStatus,
+    error?: string,
+  ): Promise<void> {
+    const checkedAt = Date.now();
+    const current =
+      this.getFreshProviderValidation(providerKey, config) ??
+      ({
+        providerFingerprint: createProviderValidationFingerprint(config),
+        modelCapabilities: {},
+      } satisfies ProviderValidationSnapshot);
+    const modelCapabilities = { ...(current.modelCapabilities ?? {}) };
+    modelCapabilities[modelId] = mergeModelCapability(
+      modelCapabilities[modelId],
+      {
+        [capability]: status,
+        ...(error ? { lastError: error } : { lastError: undefined }),
+      },
+      checkedAt,
+    );
+    this.plugin.settings.providerValidation[providerKey] = {
+      ...current,
+      providerFingerprint: createProviderValidationFingerprint(config),
+      serverReachable: status === 'success' || current.serverReachable,
+      authenticated: capability === 'chatStatus' && status === 'success' ? true : current.authenticated,
+      generationTested:
+        capability === 'chatStatus' && status === 'success' ? true : current.generationTested,
+      lastCheckedAt: checkedAt,
+      lastError: error,
+      modelCapabilities,
+    };
+    await this.plugin.saveSettingsLight();
+  }
+  private getEmbeddingValidationKeyForTarget(target: ProviderSettingsTarget): EmbeddingProviderKey | null {
+    if (target.kind === 'custom') {
+      return `customOpenAI:${target.config.id}`;
+    }
+    if (target.key === 'openai' || target.key === 'openRouter' || target.key === 'ollama') {
+      return target.key;
+    }
+    return null;
+  }
+  private getCapabilityLabel(
+    kind: 'chat' | 'embedding',
+    status: ModelCapabilityStatus | undefined,
+  ): string {
+    if (kind === 'chat') {
+      if (status === 'success') return t('providerModelChatVerified');
+      if (status === 'failed') return t('providerModelChatFailed');
+      return t('providerModelChatUnknown');
+    }
+    if (status === 'success') return t('providerModelEmbeddingVerified');
+    if (status === 'failed') return t('providerModelEmbeddingFailed');
+    return t('providerModelEmbeddingUnknown');
+  }
   private getProviderVisualState(target: ProviderSettingsTarget): ProviderVisualState {
     const { config } = target;
     const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
-    const apiKeyRequired = shouldShowProviderApiKey(apiKeyVisibilityKey);
+    const apiKeyRequired = shouldRequireProviderApiKey(apiKeyVisibilityKey);
     const hasApiKey = !apiKeyRequired || config.apiKey.trim().length > 0;
     const modelCount = config.models.length;
+    const validation = this.getFreshProviderValidation(target.key, config);
+    const readiness = resolveProviderReadiness({
+      enabled: config.enabled,
+      modelCount,
+      apiKeyRequired,
+      hasApiKey,
+      validation,
+    });
     const modelLabel =
       modelCount > 0
         ? t('providerModelsSelected', { v0: String(modelCount) })
@@ -4038,7 +4251,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         typeLabel,
       };
     }
-    if (!hasApiKey) {
+    if (readiness.tone === 'needs-key') {
       return {
         tone: 'needs-key',
         iconName: 'key-round',
@@ -4049,7 +4262,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         typeLabel,
       };
     }
-    if (modelCount === 0) {
+    if (readiness.tone === 'needs-models') {
       return {
         tone: 'needs-models',
         iconName: 'list-plus',
@@ -4331,6 +4544,120 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const checkbox = item.createEl('input', { type: 'checkbox' });
         checkbox.checked = config.models.includes(model);
         item.createSpan({ text: model });
+        const capability = this.getProviderModelCapabilities(cacheKey, config)[model];
+        const capabilityRow = item.createSpan({
+          cls: 'superpower-inside-provider-model-capabilities',
+        });
+        const chatStatus = capabilityRow.createSpan({
+          cls: `superpower-inside-provider-model-capability is-${capability?.chatStatus ?? 'unknown'}`,
+          text: this.getCapabilityLabel('chat', capability?.chatStatus),
+        });
+        chatStatus.setAttribute('title', capability?.lastError ?? '');
+        const embeddingStatus = capabilityRow.createSpan({
+          cls: `superpower-inside-provider-model-capability is-${capability?.embeddingStatus ?? 'unknown'}`,
+          text: this.getCapabilityLabel('embedding', capability?.embeddingStatus),
+        });
+        embeddingStatus.setAttribute('title', capability?.lastError ?? '');
+        const modelActions = item.createSpan({
+          cls: 'superpower-inside-provider-model-actions',
+        });
+        const chatTestButton = modelActions.createEl('button', {
+          cls: 'superpower-inside-provider-model-action-btn',
+          attr: { type: 'button', 'aria-label': t('providerTestChatModel') },
+        });
+        setIcon(chatTestButton, 'sparkles');
+        chatTestButton.addEventListener('click', () => {
+          void runActionWithFeedback({
+            button: chatTestButton,
+            action: async () => {
+              statusContainer.setText('');
+              try {
+                const { testProviderGeneration } = await import('./llm/validation');
+                const result =
+                  target.kind === 'fixed'
+                    ? await testProviderGeneration(target.key, config, model)
+                    : await testProviderGeneration('customOpenAI', target.config, model);
+                if (result.valid) {
+                  await this.recordModelCapability(cacheKey, config, model, 'chatStatus', 'success');
+                  const detail = t('settingsAuto264', { v0: String(model) });
+                  statusContainer.setText(detail);
+                  renderModelList();
+                  return { status: 'success', detail };
+                }
+                await this.recordModelCapability(
+                  cacheKey,
+                  config,
+                  model,
+                  'chatStatus',
+                  'failed',
+                  String(result.error),
+                );
+                const detail = t('settingsAuto265', { v0: String(result.error) });
+                statusContainer.setText(detail);
+                renderModelList();
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = `${t('error')}: ${msg}`;
+                statusContainer.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              }
+            },
+          });
+        });
+        const embeddingTestButton = modelActions.createEl('button', {
+          cls: 'superpower-inside-provider-model-action-btn',
+          attr: { type: 'button', 'aria-label': t('providerTestEmbeddingModel') },
+        });
+        setIcon(embeddingTestButton, 'scan-search');
+        const embeddingProviderKey = this.getEmbeddingValidationKeyForTarget(target);
+        if (embeddingProviderKey === null) {
+          embeddingTestButton.disabled = true;
+          embeddingTestButton.setAttribute('title', t('providerEmbeddingUnsupported'));
+        } else {
+          embeddingTestButton.addEventListener('click', () => {
+            void runActionWithFeedback({
+              button: embeddingTestButton,
+              action: async () => {
+                statusContainer.setText('');
+                try {
+                  const { testEmbeddingGeneration } = await import('./llm/validation');
+                  const result = await testEmbeddingGeneration(embeddingProviderKey, model, config);
+                  if (result.valid) {
+                    await this.recordModelCapability(
+                      cacheKey,
+                      config,
+                      model,
+                      'embeddingStatus',
+                      'success',
+                    );
+                    const detail = t('settingsAuto101', { v0: String(model) });
+                    statusContainer.setText(detail);
+                    renderModelList();
+                    return { status: 'success', detail };
+                  }
+                  await this.recordModelCapability(
+                    cacheKey,
+                    config,
+                    model,
+                    'embeddingStatus',
+                    'failed',
+                    String(result.error),
+                  );
+                  const detail = t('settingsAuto102', { v0: String(result.error) });
+                  statusContainer.setText(detail);
+                  renderModelList();
+                  return { status: 'error', detail: String(result.error), notice: detail };
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  const detail = `${t('error')}: ${msg}`;
+                  statusContainer.setText(detail);
+                  return { status: 'error', detail: msg, notice: detail };
+                }
+              },
+            });
+          });
+        }
         checkbox.addEventListener('change', () => {
           if (checkbox.checked) {
             config.models.push(model);
@@ -4384,6 +4711,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (result.valid) {
               availableModels = this.mergeModels(config.models, result.models);
               this.validationCache[cacheKey] = result;
+              await this.recordProviderValidation(cacheKey, config, {
+                modelsFetched: true,
+                serverReachable: true,
+                lastError: undefined,
+              });
               const detail = t('settingsAuto258', { v0: String(result.models.length) });
               statusContainer.setText(detail);
               renderModelList();
@@ -4396,6 +4728,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               models: this.validationCache[cacheKey]?.models ?? [],
               error: result.error,
             };
+            await this.recordProviderValidation(cacheKey, config, {
+              modelsFetched: false,
+              lastError: String(result.error),
+            });
             return { status: 'error', detail: String(result.error), notice: detail };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -4427,6 +4763,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const detail = t('settingsAuto260', { v0: String(result.models.length) });
               statusContainer.setText(detail);
               this.validationCache[cacheKey] = result;
+              await this.recordProviderValidation(cacheKey, config, {
+                connectionTested: true,
+                serverReachable: true,
+                lastError: undefined,
+              });
               renderModelList();
               return { status: 'success', detail };
             }
@@ -4437,6 +4778,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               models: this.validationCache[cacheKey]?.models ?? [],
               error: result.error,
             };
+            await this.recordProviderValidation(cacheKey, config, {
+              connectionTested: false,
+              lastError: String(result.error),
+            });
             return { status: 'error', detail: String(result.error), notice: detail };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -4468,12 +4813,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 ? await testProviderGeneration(target.key, config, model)
                 : await testProviderGeneration('customOpenAI', target.config, model);
             if (result.valid) {
+              await this.recordProviderValidation(cacheKey, config, {
+                generationTested: true,
+                authenticated: true,
+                serverReachable: true,
+                lastError: undefined,
+              });
+              await this.recordModelCapability(cacheKey, config, model, 'chatStatus', 'success');
               const detail = t('settingsAuto264', { v0: String(model) });
               statusContainer.setText(detail);
               this.validationCache[cacheKey] = result;
-              renderProviderHeader();
+              renderModelList();
               return { status: 'success', detail };
             }
+            await this.recordProviderValidation(cacheKey, config, {
+              generationTested: false,
+              lastError: String(result.error),
+            });
+            await this.recordModelCapability(
+              cacheKey,
+              config,
+              model,
+              'chatStatus',
+              'failed',
+              String(result.error),
+            );
             const detail = t('settingsAuto265', { v0: String(result.error) });
             statusContainer.setText(detail);
             this.validationCache[cacheKey] = {
