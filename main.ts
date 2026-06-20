@@ -86,6 +86,11 @@ import {
 } from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
+import {
+  EMBEDDING_CACHE_DB_NAME,
+  buildPluginIndexedDbNames,
+  resetPluginOwnedData,
+} from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -147,10 +152,35 @@ function graphRagReadinessFromStatus(
   };
 }
 
+interface ClearableEmbeddingProvider extends EmbeddingProvider {
+  clearCache(): Promise<void>;
+  deleteDatabase?: () => Promise<void>;
+}
+
+interface DeletableIndexedDbStore {
+  deleteDatabase(): Promise<void>;
+}
+
+function hasClearableEmbeddingCache(
+  provider: EmbeddingProvider | null,
+): provider is ClearableEmbeddingProvider {
+  const candidate = provider as Partial<ClearableEmbeddingProvider> | null;
+  return typeof candidate?.clearCache === 'function';
+}
+
+function hasDeletableIndexedDbStore(store: unknown): store is DeletableIndexedDbStore {
+  return (
+    typeof store === 'object' &&
+    store !== null &&
+    typeof (store as Partial<DeletableIndexedDbStore>).deleteDatabase === 'function'
+  );
+}
+
 interface RagRuntimeSnapshot {
   vectorStore: VectorStore | null;
   knowledgeGraphStore: KnowledgeGraphStore | null;
   embeddingProvider: EmbeddingProvider | null;
+  bm25Index: IndexedDbBM25Index | null;
   ragEngine: RAGQueryEngine | null;
   graphRagStatus: GraphRagStatusSummary | null;
   graphRagIndexingRunner: GraphRagIndexingRunner | null;
@@ -171,6 +201,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   vectorStore: VectorStore | null = null;
   knowledgeGraphStore: KnowledgeGraphStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
+  private bm25Index: IndexedDbBM25Index | null = null;
   ragEngine: RAGQueryEngine | null = null;
   graphRagStatus: GraphRagStatusSummary | null = null;
   private graphRagIndexingRunner: GraphRagIndexingRunner | null = null;
@@ -596,6 +627,90 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       throw err;
     }
+  }
+
+  async resetPluginData(): Promise<void> {
+    this.getLogger().info('Plugin data reset started.', { source: 'settings.reset' });
+    this.cancelRagIndexing();
+    this.cancelGraphRagIndexing();
+    if (this.graphRagAbortController) {
+      const cancelled = await this.awaitGraphRagCancellation();
+      if (!cancelled) {
+        this.getLogger().warn('GraphRAG indexing did not stop within timeout during plugin reset.', {
+          source: 'settings.reset',
+        });
+      }
+    }
+
+    const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
+    const activeIndexedDbNames = new Set<string>();
+    const vectorStoreClear = this.vectorStore
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
+          hasDeletableIndexedDbStore(this.vectorStore)
+            ? this.vectorStore.deleteDatabase()
+            : this.vectorStore.clear()
+        )
+      : Promise.resolve();
+    const knowledgeGraphClear = this.knowledgeGraphStore
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
+          hasDeletableIndexedDbStore(this.knowledgeGraphStore)
+            ? this.knowledgeGraphStore.deleteDatabase()
+            : this.knowledgeGraphStore.clear()
+        )
+      : Promise.resolve();
+    const bm25Clear = this.bm25Index
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
+          this.bm25Index.deleteDatabase()
+        )
+      : Promise.resolve();
+    const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
+      ? this.embeddingProvider.deleteDatabase
+        ? this.embeddingProvider.deleteDatabase()
+        : this.embeddingProvider.clearCache()
+      : Promise.resolve();
+    if (hasClearableEmbeddingCache(this.embeddingProvider)) {
+      activeIndexedDbNames.add(EMBEDDING_CACHE_DB_NAME);
+    }
+    await Promise.all([vectorStoreClear, knowledgeGraphClear, bm25Clear, embeddingCacheClear]);
+    this.clearRAG();
+
+    const resetResult = await resetPluginOwnedData({
+      adapter: this.app.vault.adapter,
+      indexedDbNames: indexedDbNames.filter((name) => !activeIndexedDbNames.has(name)),
+    });
+
+    this.settings = structuredClone(DEFAULT_SETTINGS);
+    this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.getLogger().configure(this.settings.logging);
+    setLanguage(this.settings.language);
+    saveLocalSettings(this.app, this.settings);
+    await this.saveData(this.settings);
+    this.initProvider();
+    const mcpErrors = await this.initMCP();
+
+    this.refreshBus.emit('models', { status: 'success', detail: 'Plugin data reset' });
+    this.refreshBus.emit('rag', { status: 'success', detail: 'Plugin data reset' });
+    this.refreshBus.emit('graph-data', {
+      status: 'success',
+      detail: 'Plugin data reset',
+      source: 'graph-cleanup',
+    });
+    this.refreshBus.emit('mcp', {
+      status: mcpErrors.length === 0 ? 'success' : 'partial',
+      detail: 'Plugin data reset',
+    });
+
+    this.getLogger().notice('Plugin data reset completed.', {
+      source: 'settings.reset',
+      data: {
+        deletedLegacyDataDir: resetResult.deletedLegacyDataDir,
+        deletedIndexedDbNames: resetResult.deletedIndexedDbNames,
+        mcpErrors,
+      },
+    });
   }
 
   private async awaitGraphRagCancellation(timeoutMs = 2000): Promise<boolean> {
@@ -1231,6 +1346,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       vectorStore: this.vectorStore,
       knowledgeGraphStore: this.knowledgeGraphStore,
       embeddingProvider: this.embeddingProvider,
+      bm25Index: this.bm25Index,
       ragEngine: this.ragEngine,
       graphRagStatus: this.graphRagStatus,
       graphRagIndexingRunner: this.graphRagIndexingRunner,
@@ -1252,6 +1368,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.vectorStore = snapshot.vectorStore;
     this.knowledgeGraphStore = snapshot.knowledgeGraphStore;
     this.embeddingProvider = snapshot.embeddingProvider;
+    this.bm25Index = snapshot.bm25Index;
     this.ragEngine = snapshot.ragEngine;
     this.graphRagStatus = snapshot.graphRagStatus;
     this.graphRagIndexingRunner = snapshot.graphRagIndexingRunner;
@@ -1387,6 +1504,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           await this.rebuildBM25Index(bm25Index);
         }
       }
+      this.bm25Index = bm25Index ?? null;
       const structuralMetadataContext = this.app.metadataCache
         ? {
             resolvedLinks: this.app.metadataCache.resolvedLinks,
@@ -1607,6 +1725,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.vectorStore = null;
     this.knowledgeGraphStore = null;
     this.embeddingProvider = null;
+    this.bm25Index = null;
     this.ragEngine = null;
     this.graphRagIndexingRunner = null;
     this.graphRagStatus = null;

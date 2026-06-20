@@ -655,6 +655,54 @@
   padding: 8px 0;
 }
 
+.superpower-inside-overview-danger-zone {
+  border-color: var(--text-error);
+  border-left: 3px solid var(--text-error);
+}
+
+.superpower-inside-overview-danger-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-overview-danger-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.superpower-inside-overview-danger-scope {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-overview-danger-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.superpower-inside-overview-danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: var(--text-error);
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  min-height: 30px;
+}
+
+.superpower-inside-overview-danger-button:hover:not(:disabled) {
+  background: var(--background-modifier-error-hover);
+  color: var(--text-on-accent);
+}
+
 .superpower-inside-debug-panel {
   border-color: var(--background-modifier-border);
 }

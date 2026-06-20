@@ -404,6 +404,7 @@ export interface PluginLike {
   syncStaleGraphRag(): Promise<GraphRagIndexingResult | null>;
   buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null>;
   resetGraphRagData(): Promise<void>;
+  resetPluginData(): Promise<void>;
   hasGraphRagRunner(): boolean;
   openGraphRagView(): void;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
@@ -1000,6 +1001,64 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
+    this.buildPluginDataResetSection(containerEl);
+  }
+
+  private buildPluginDataResetSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsPanel(containerEl, t('pluginDataResetTitle'), {
+      description: t('pluginDataResetDesc'),
+      className: 'superpower-inside-overview-danger-zone',
+    });
+    const warning = section.createDiv({
+      cls: 'superpower-inside-overview-danger-warning',
+    });
+    setIcon(warning, 'triangle-alert');
+    warning.createSpan({ text: t('pluginDataResetWarning') });
+    section.createDiv({
+      cls: 'superpower-inside-overview-danger-scope',
+      text: t('pluginDataResetScope'),
+    });
+    const actions = section.createDiv({ cls: 'superpower-inside-overview-danger-actions' });
+    const button = actions.createEl('button', {
+      cls: 'superpower-inside-overview-danger-button',
+      attr: { type: 'button' },
+    });
+    setIcon(button, 'trash-2');
+    button.createSpan({ text: t('pluginDataResetButton') });
+    button.addEventListener('click', () => {
+      void this.handlePluginDataReset(button);
+    });
+  }
+
+  private async handlePluginDataReset(button: HTMLButtonElement): Promise<void> {
+    const result = await runActionWithFeedback({
+      button,
+      loadingText: t('pluginDataResetRunning'),
+      refreshBus: this.plugin.refreshBus,
+      refreshDomains: ['rag', 'mcp', 'models', 'graph-data'],
+      action: async () => {
+        if (!confirm(t('pluginDataResetConfirm'))) {
+          return { status: 'noop', detail: t('actionCancelledNotice') };
+        }
+        if (!confirm(t('pluginDataResetSecondConfirm'))) {
+          return { status: 'noop', detail: t('actionCancelledNotice') };
+        }
+        try {
+          await this.plugin.resetPluginData();
+          return { status: 'success', detail: t('pluginDataResetDone') };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            status: 'error',
+            detail: message,
+            notice: t('pluginDataResetFailed', { message }),
+          };
+        }
+      },
+    });
+    if (result.status === 'success') {
+      this.display();
+    }
   }
 
   private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {

@@ -282,6 +282,19 @@ describe('IndexedDbVectorStore', () => {
       lastUpdated: null,
     });
   });
+
+  it('deleteDatabase는 벡터와 메타데이터 DB를 통째로 삭제한다', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+    await store.add([createEntry('note.md', 0, [1, 0], 'a')]);
+    await store.setMetaValue('legacy-json-vector-import:v1', true);
+
+    await store.deleteDatabase();
+
+    const reopened = createStore(dbName);
+    expect(await reopened.getEntries()).toEqual([]);
+    expect(await reopened.getMetaValue('legacy-json-vector-import:v1')).toBeUndefined();
+  });
 });
 
 describe('VectorStore contract', () => {

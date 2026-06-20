@@ -482,6 +482,11 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
       },
     );
   }
+
+  async deleteDatabase(): Promise<void> {
+    this.db.close();
+    await Dexie.delete(this.db.name);
+  }
 }
 
 export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {

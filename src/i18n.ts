@@ -1047,6 +1047,16 @@ export interface I18nKeys {
   overviewMcpErrorAttention: string;
   overviewGraphRagErrorAttention: string;
   overviewEmbeddingLabel: string;
+  pluginDataResetTitle: string;
+  pluginDataResetDesc: string;
+  pluginDataResetWarning: string;
+  pluginDataResetScope: string;
+  pluginDataResetButton: string;
+  pluginDataResetRunning: string;
+  pluginDataResetConfirm: string;
+  pluginDataResetSecondConfirm: string;
+  pluginDataResetDone: string;
+  pluginDataResetFailed: string;
   mcpToolNotFoundInConnectedServers: string;
   mcpServerNotConnected: string;
   mcpRegistryUnavailableNotice: string;
@@ -2407,6 +2417,21 @@ const ko: I18nKeys = {
   overviewMcpErrorAttention: 'MCP 연결 오류',
   overviewGraphRagErrorAttention: 'GraphRAG 상태 오류',
   overviewEmbeddingLabel: '{provider} / {model}',
+  pluginDataResetTitle: '전체 플러그인 데이터 초기화',
+  pluginDataResetDesc:
+    '업데이트 이후 설정, 인덱스, 캐시 상태가 꼬였을 때 Superpower Inside 내부 데이터를 기본 상태로 되돌립니다.',
+  pluginDataResetWarning:
+    '설정, Provider/API Key, MCP 서버, 프롬프트 라이브러리, RAG/GraphRAG 인덱스, 임베딩 캐시가 삭제됩니다. 복구할 수 없습니다.',
+  pluginDataResetScope:
+    '볼트의 일반 노트와 채팅 세션 Markdown 파일은 삭제하지 않습니다. 내부 data.json, 로컬 설정, IndexedDB, .superpower-inside 데이터만 초기화합니다.',
+  pluginDataResetButton: '전체 데이터 초기화',
+  pluginDataResetRunning: '초기화 중...',
+  pluginDataResetConfirm:
+    'Superpower Inside 내부 데이터를 모두 초기화하시겠습니까? 설정과 API Key도 기본값으로 돌아갑니다.',
+  pluginDataResetSecondConfirm:
+    '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
+  pluginDataResetDone: 'Superpower Inside 내부 데이터가 초기화되었습니다.',
+  pluginDataResetFailed: '전체 플러그인 데이터 초기화 실패: {message}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
   mcpServerNotConnected: 'MCP 서버 `{server}`에 연결되어 있지 않습니다.',
   mcpRegistryUnavailableNotice: 'MCP 레지스트리가 초기화되지 않았습니다.',
@@ -3815,6 +3840,21 @@ const en: I18nKeys = {
   overviewMcpErrorAttention: 'MCP connection error',
   overviewGraphRagErrorAttention: 'GraphRAG status error',
   overviewEmbeddingLabel: '{provider} / {model}',
+  pluginDataResetTitle: 'Reset all plugin data',
+  pluginDataResetDesc:
+    'Return Superpower Inside internal data to defaults when frequent updates leave settings, indexes, or caches in a tangled state.',
+  pluginDataResetWarning:
+    'Settings, Provider/API keys, MCP servers, prompt library, RAG/GraphRAG indexes, and embedding cache will be deleted. This cannot be undone.',
+  pluginDataResetScope:
+    'Regular vault notes and chat session Markdown files are not deleted. Only internal data.json, local settings, IndexedDB, and .superpower-inside data are reset.',
+  pluginDataResetButton: 'Reset all data',
+  pluginDataResetRunning: 'Resetting...',
+  pluginDataResetConfirm:
+    'Reset all Superpower Inside internal data? Settings and API keys will return to defaults.',
+  pluginDataResetSecondConfirm:
+    'Are you sure you want to continue? This action cannot be cancelled or recovered.',
+  pluginDataResetDone: 'Superpower Inside internal data has been reset.',
+  pluginDataResetFailed: 'Failed to reset all plugin data: {message}',
   mcpToolNotFoundInConnectedServers: 'Tool `{tool}` was not found on connected MCP servers.',
   mcpServerNotConnected: 'MCP server `{server}` is not connected.',
   mcpRegistryUnavailableNotice: 'MCP registry is not initialized.',

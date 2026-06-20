@@ -168,6 +168,15 @@ export class IndexedDbBM25Index {
     await this.persist();
   }
 
+  async deleteDatabase(): Promise<void> {
+    this.runtime?.dispose();
+    this.runtime = null;
+    this.pendingOperations = [];
+    this.batchDirty = false;
+    this.db.close();
+    await Dexie.delete(this.db.name);
+  }
+
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
     await this.withBatch(async () => {
       await this.clear();

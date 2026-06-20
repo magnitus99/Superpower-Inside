@@ -68,6 +68,18 @@ describe('KnowledgeGraphStore contract', () => {
     await expect(store.clear()).resolves.toBeUndefined();
     await expectClearTables(store);
   });
+
+  it('IndexedDbKnowledgeGraphStore deleteDatabase()는 GraphRAG DB를 통째로 삭제합니다', async () => {
+    const dbName = `SuperpowerInsideGraphStoreTest-${crypto.randomUUID()}`;
+    dbNames.add(dbName);
+    const store = new IndexedDbKnowledgeGraphStore(dbName);
+    await fillGraphStoreForClearTest(store);
+
+    await store.deleteDatabase();
+
+    const reopened = new IndexedDbKnowledgeGraphStore(dbName);
+    await expectClearTables(reopened);
+  });
 });
 
 describe('IndexedDbKnowledgeGraphStore', () => {

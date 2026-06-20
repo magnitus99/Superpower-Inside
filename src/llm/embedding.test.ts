@@ -287,6 +287,25 @@ describe('CachedEmbeddingProvider', () => {
 
     await provider.clearCache();
   });
+
+  it('deleteDatabase 이후 같은 namespace도 새 임베딩으로 다시 채운다', async () => {
+    const first = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([1, 0]),
+      'openai::reset-model',
+    );
+    await first.clearCache();
+
+    await expect(first.embed('reset target')).resolves.toEqual([1, 0]);
+    await first.deleteDatabase();
+
+    const second = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([0, 1]),
+      'openai::reset-model',
+    );
+    await expect(second.embed('reset target')).resolves.toEqual([0, 1]);
+
+    await second.deleteDatabase();
+  });
 });
 
 function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {

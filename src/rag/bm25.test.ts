@@ -236,6 +236,21 @@ describe('IndexedDbBM25Index', () => {
     expect([...bm25.search('obsoletealpha').keys()]).toEqual([]);
     expect([...bm25.search('freshbeta').keys()]).toEqual(['note.md::0']);
   });
+
+  it('deleteDatabase는 BM25 문서와 mutation DB를 통째로 삭제한다', async () => {
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
+    await bm25.load();
+    bm25.addDocument('note.md::0', 'freshbeta', 'note.md');
+    await bm25.persist();
+
+    await bm25.deleteDatabase();
+
+    const reopened = new IndexedDbBM25Index(dbName, createAdapter());
+    await reopened.load();
+    expect(reopened.totalDocs).toBe(0);
+    expect([...reopened.search('freshbeta').keys()]).toEqual([]);
+  });
 });
 
 async function createBm25(
