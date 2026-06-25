@@ -493,7 +493,6 @@ export interface I18nKeys {
   settingsAuto003: string;
   settingsAuto004: string;
   settingsAuto005: string;
-  settingsAuto006: string;
   settingsAuto007: string;
   settingsAuto008: string;
   settingsAuto009: string;
@@ -856,6 +855,15 @@ export interface I18nKeys {
   providerKeyReady: string;
   providerKeyMissing: string;
   providerKeyNotRequired: string;
+  providerModelChatVerified: string;
+  providerModelChatUnknown: string;
+  providerModelChatFailed: string;
+  providerModelEmbeddingVerified: string;
+  providerModelEmbeddingUnknown: string;
+  providerModelEmbeddingFailed: string;
+  providerTestChatModel: string;
+  providerTestEmbeddingModel: string;
+  providerEmbeddingUnsupported: string;
   providerModelsSelected: string;
   providerNoModelsShort: string;
   providerTypeBuiltIn: string;
@@ -1039,6 +1047,16 @@ export interface I18nKeys {
   overviewMcpErrorAttention: string;
   overviewGraphRagErrorAttention: string;
   overviewEmbeddingLabel: string;
+  pluginDataResetTitle: string;
+  pluginDataResetDesc: string;
+  pluginDataResetWarning: string;
+  pluginDataResetScope: string;
+  pluginDataResetButton: string;
+  pluginDataResetRunning: string;
+  pluginDataResetConfirm: string;
+  pluginDataResetSecondConfirm: string;
+  pluginDataResetDone: string;
+  pluginDataResetFailed: string;
   mcpToolNotFoundInConnectedServers: string;
   mcpServerNotConnected: string;
   mcpRegistryUnavailableNotice: string;
@@ -1792,7 +1810,6 @@ const ko: I18nKeys = {
   settingsAuto003: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.',
   settingsAuto004: '다국어(한국어 포함) 최적화. 8K 컨텍스트.',
   settingsAuto005: '32K 컨텍스트 지원. 긴 문서에 적합.',
-  settingsAuto006: 'Ollama 기본 임베딩 모델. 로컬 설치 필요.',
   settingsAuto007:
     '임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)',
   settingsAuto008: '모델 선택 안 함',
@@ -2187,6 +2204,15 @@ const ko: I18nKeys = {
   providerKeyReady: '키 준비됨',
   providerKeyMissing: '키 필요',
   providerKeyNotRequired: '키 불필요',
+  providerModelChatVerified: 'Chat 확인됨',
+  providerModelChatUnknown: 'Chat 미검증',
+  providerModelChatFailed: 'Chat 실패',
+  providerModelEmbeddingVerified: 'Embedding 확인됨',
+  providerModelEmbeddingUnknown: 'Embedding 미검증',
+  providerModelEmbeddingFailed: 'Embedding 실패',
+  providerTestChatModel: '이 모델 최소 생성 테스트',
+  providerTestEmbeddingModel: '이 모델 임베딩 테스트',
+  providerEmbeddingUnsupported: '이 provider는 임베딩 테스트를 지원하지 않습니다.',
   providerModelsSelected: '{v0}개 선택',
   providerNoModelsShort: '모델 없음',
   providerTypeBuiltIn: '기본 제공',
@@ -2391,6 +2417,21 @@ const ko: I18nKeys = {
   overviewMcpErrorAttention: 'MCP 연결 오류',
   overviewGraphRagErrorAttention: 'GraphRAG 상태 오류',
   overviewEmbeddingLabel: '{provider} / {model}',
+  pluginDataResetTitle: '전체 플러그인 데이터 초기화',
+  pluginDataResetDesc:
+    '업데이트 이후 설정, 인덱스, 캐시 상태가 꼬였을 때 Superpower Inside 내부 데이터를 기본 상태로 되돌립니다.',
+  pluginDataResetWarning:
+    '설정, Provider/API Key, MCP 서버, 프롬프트 라이브러리, RAG/GraphRAG 인덱스, 임베딩 캐시가 삭제됩니다. 복구할 수 없습니다.',
+  pluginDataResetScope:
+    '볼트의 일반 노트와 채팅 세션 Markdown 파일은 삭제하지 않습니다. 내부 data.json, 로컬 설정, IndexedDB, .superpower-inside 데이터만 초기화합니다.',
+  pluginDataResetButton: '전체 데이터 초기화',
+  pluginDataResetRunning: '초기화 중...',
+  pluginDataResetConfirm:
+    'Superpower Inside 내부 데이터를 모두 초기화하시겠습니까? 설정과 API Key도 기본값으로 돌아갑니다.',
+  pluginDataResetSecondConfirm:
+    '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
+  pluginDataResetDone: 'Superpower Inside 내부 데이터가 초기화되었습니다.',
+  pluginDataResetFailed: '전체 플러그인 데이터 초기화 실패: {message}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
   mcpServerNotConnected: 'MCP 서버 `{server}`에 연결되어 있지 않습니다.',
   mcpRegistryUnavailableNotice: 'MCP 레지스트리가 초기화되지 않았습니다.',
@@ -3178,7 +3219,6 @@ const en: I18nKeys = {
   settingsAuto003: 'Via OpenRouter. Same quality, uses an OpenRouter API key.',
   settingsAuto004: 'Optimized for multilingual use including Korean. 8K context.',
   settingsAuto005: 'Supports 32K context. Suitable for long documents.',
-  settingsAuto006: 'Default Ollama embedding model. Requires local installation.',
   settingsAuto007:
     'Embedding setting changes were cancelled. Unsaved changes are discarded when closing the settings tab.',
   settingsAuto008: 'No model selected',
@@ -3582,6 +3622,15 @@ const en: I18nKeys = {
   providerKeyReady: 'Key ready',
   providerKeyMissing: 'Key needed',
   providerKeyNotRequired: 'No key required',
+  providerModelChatVerified: 'Chat verified',
+  providerModelChatUnknown: 'Chat untested',
+  providerModelChatFailed: 'Chat failed',
+  providerModelEmbeddingVerified: 'Embedding verified',
+  providerModelEmbeddingUnknown: 'Embedding untested',
+  providerModelEmbeddingFailed: 'Embedding failed',
+  providerTestChatModel: 'Test minimal generation for this model',
+  providerTestEmbeddingModel: 'Test embeddings for this model',
+  providerEmbeddingUnsupported: 'This provider does not support embedding tests.',
   providerModelsSelected: '{v0} selected',
   providerNoModelsShort: 'No models',
   providerTypeBuiltIn: 'Built-in',
@@ -3791,6 +3840,21 @@ const en: I18nKeys = {
   overviewMcpErrorAttention: 'MCP connection error',
   overviewGraphRagErrorAttention: 'GraphRAG status error',
   overviewEmbeddingLabel: '{provider} / {model}',
+  pluginDataResetTitle: 'Reset all plugin data',
+  pluginDataResetDesc:
+    'Return Superpower Inside internal data to defaults when frequent updates leave settings, indexes, or caches in a tangled state.',
+  pluginDataResetWarning:
+    'Settings, Provider/API keys, MCP servers, prompt library, RAG/GraphRAG indexes, and embedding cache will be deleted. This cannot be undone.',
+  pluginDataResetScope:
+    'Regular vault notes and chat session Markdown files are not deleted. Only internal data.json, local settings, IndexedDB, and .superpower-inside data are reset.',
+  pluginDataResetButton: 'Reset all data',
+  pluginDataResetRunning: 'Resetting...',
+  pluginDataResetConfirm:
+    'Reset all Superpower Inside internal data? Settings and API keys will return to defaults.',
+  pluginDataResetSecondConfirm:
+    'Are you sure you want to continue? This action cannot be cancelled or recovered.',
+  pluginDataResetDone: 'Superpower Inside internal data has been reset.',
+  pluginDataResetFailed: 'Failed to reset all plugin data: {message}',
   mcpToolNotFoundInConnectedServers: 'Tool `{tool}` was not found on connected MCP servers.',
   mcpServerNotConnected: 'MCP server `{server}` is not connected.',
   mcpRegistryUnavailableNotice: 'MCP registry is not initialized.',

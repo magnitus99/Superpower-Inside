@@ -594,6 +594,13 @@ export class IndexedDbVectorStore implements VectorStore {
     this.invalidateRuntimeIndex();
   }
 
+  async deleteDatabase(): Promise<void> {
+    this.entriesCache = null;
+    this.invalidateRuntimeIndex();
+    this.db.close();
+    await Dexie.delete(this.db.name);
+  }
+
   async getMetaValue<T>(key: string): Promise<T | undefined> {
     const record = await this.db.meta.get(key);
     return record?.value as T | undefined;

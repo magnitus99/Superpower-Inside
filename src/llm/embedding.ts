@@ -24,7 +24,7 @@ class EmbeddingCacheDB extends Dexie {
   }
 }
 
-const db = new EmbeddingCacheDB();
+let db = new EmbeddingCacheDB();
 
 export interface EmbeddingProvider {
   embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
@@ -332,8 +332,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   private logger: ScopedLogger;
 
   constructor(
-    baseUrl = 'http://localhost:11434',
-    model = 'nomic-embed-text',
+    baseUrl: string,
+    model: string,
     apiKey?: string,
     options: EmbeddingProviderRuntimeOptions = {},
   ) {
@@ -580,5 +580,13 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   async clearCache(): Promise<void> {
     this.memoryCache.clear();
     await db.embeddings.clear();
+  }
+
+  async deleteDatabase(): Promise<void> {
+    this.memoryCache.clear();
+    const currentDb = db;
+    currentDb.close();
+    await Dexie.delete(currentDb.name);
+    db = new EmbeddingCacheDB();
   }
 }

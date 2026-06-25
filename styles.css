@@ -203,6 +203,53 @@
   }
 }
 
+.superpower-inside-provider-model-capabilities {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.superpower-inside-provider-model-capability {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.superpower-inside-provider-model-capability.is-success {
+  border-color: var(--color-green);
+  color: var(--color-green);
+}
+
+.superpower-inside-provider-model-capability.is-failed {
+  border-color: var(--text-error);
+  color: var(--text-error);
+}
+
+.superpower-inside-provider-model-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.superpower-inside-provider-model-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+}
+
 @keyframes superpower-inside-spin {
   to {
     transform: rotate(360deg);
@@ -606,6 +653,54 @@
 
 .superpower-inside-overview-basics .setting-item {
   padding: 8px 0;
+}
+
+.superpower-inside-overview-danger-zone {
+  border-color: var(--text-error);
+  border-left: 3px solid var(--text-error);
+}
+
+.superpower-inside-overview-danger-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-overview-danger-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.superpower-inside-overview-danger-scope {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-overview-danger-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.superpower-inside-overview-danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: var(--text-error);
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  min-height: 30px;
+}
+
+.superpower-inside-overview-danger-button:hover:not(:disabled) {
+  background: var(--background-modifier-error-hover);
+  color: var(--text-on-accent);
 }
 
 .superpower-inside-debug-panel {

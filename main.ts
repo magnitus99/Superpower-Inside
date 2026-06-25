@@ -86,6 +86,11 @@ import {
 } from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
+import {
+  EMBEDDING_CACHE_DB_NAME,
+  buildPluginIndexedDbNames,
+  resetPluginOwnedData,
+} from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 
@@ -147,6 +152,48 @@ function graphRagReadinessFromStatus(
   };
 }
 
+interface ClearableEmbeddingProvider extends EmbeddingProvider {
+  clearCache(): Promise<void>;
+  deleteDatabase?: () => Promise<void>;
+}
+
+interface DeletableIndexedDbStore {
+  deleteDatabase(): Promise<void>;
+}
+
+function hasClearableEmbeddingCache(
+  provider: EmbeddingProvider | null,
+): provider is ClearableEmbeddingProvider {
+  const candidate = provider as Partial<ClearableEmbeddingProvider> | null;
+  return typeof candidate?.clearCache === 'function';
+}
+
+function hasDeletableIndexedDbStore(store: unknown): store is DeletableIndexedDbStore {
+  return (
+    typeof store === 'object' &&
+    store !== null &&
+    typeof (store as Partial<DeletableIndexedDbStore>).deleteDatabase === 'function'
+  );
+}
+
+interface RagRuntimeSnapshot {
+  vectorStore: VectorStore | null;
+  knowledgeGraphStore: KnowledgeGraphStore | null;
+  embeddingProvider: EmbeddingProvider | null;
+  bm25Index: IndexedDbBM25Index | null;
+  ragEngine: RAGQueryEngine | null;
+  graphRagStatus: GraphRagStatusSummary | null;
+  graphRagIndexingRunner: GraphRagIndexingRunner | null;
+  graphRagProviderAttached: boolean;
+  vaultIndexer: VaultIndexer | null;
+  ragIndexingScheduler: RAGIndexingScheduler | null;
+  ragPerformanceGuard: PerformanceGuard | null;
+  ragIndexingStatus: RagIndexingSchedulerStatus | null;
+  nextAutoUpdateAt: number | null;
+  lastAutoUpdateSkippedReason: string | null;
+  lastAutoUpdateResult: IndexingResult | null;
+}
+
 export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
@@ -154,6 +201,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   vectorStore: VectorStore | null = null;
   knowledgeGraphStore: KnowledgeGraphStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
+  private bm25Index: IndexedDbBM25Index | null = null;
   ragEngine: RAGQueryEngine | null = null;
   graphRagStatus: GraphRagStatusSummary | null = null;
   private graphRagIndexingRunner: GraphRagIndexingRunner | null = null;
@@ -486,19 +534,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (!this.graphRagStatus?.staleFileCount) {
       return null;
     }
+    const staleFilePaths = [...this.graphRagStatus.staleFilePaths];
+    if (staleFilePaths.length === 0) {
+      return null;
+    }
     const controller = new AbortController();
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
     try {
       this.getLogger().info('GraphRAG stale sync started.', {
         source: 'graph.indexing',
-        data: { staleFileCount: this.graphRagStatus.staleFileCount },
+        data: { staleFileCount: staleFilePaths.length },
       });
       const result = await this.graphRagIndexingRunner.run({
         signal: controller.signal,
         onlyStaleFiles: true,
-        staleFilePaths: this.graphRagStatus.staleFilePaths,
+        staleFilePaths,
       });
+      if (this.graphRagAbortController === controller) {
+        this.graphRagAbortController = null;
+      }
       await this.computeAndEmitGraphRagStatus();
       const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
       this.getLogger().notice('GraphRAG stale sync completed.', {
@@ -522,8 +577,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     } finally {
       if (this.graphRagAbortController === controller) {
         this.graphRagAbortController = null;
+        await this.computeAndEmitGraphRagStatus();
       }
-      await this.computeAndEmitGraphRagStatus();
     }
   }
 
@@ -572,6 +627,90 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       throw err;
     }
+  }
+
+  async resetPluginData(): Promise<void> {
+    this.getLogger().info('Plugin data reset started.', { source: 'settings.reset' });
+    this.cancelRagIndexing();
+    this.cancelGraphRagIndexing();
+    if (this.graphRagAbortController) {
+      const cancelled = await this.awaitGraphRagCancellation();
+      if (!cancelled) {
+        this.getLogger().warn('GraphRAG indexing did not stop within timeout during plugin reset.', {
+          source: 'settings.reset',
+        });
+      }
+    }
+
+    const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
+    const activeIndexedDbNames = new Set<string>();
+    const vectorStoreClear = this.vectorStore
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
+          hasDeletableIndexedDbStore(this.vectorStore)
+            ? this.vectorStore.deleteDatabase()
+            : this.vectorStore.clear()
+        )
+      : Promise.resolve();
+    const knowledgeGraphClear = this.knowledgeGraphStore
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
+          hasDeletableIndexedDbStore(this.knowledgeGraphStore)
+            ? this.knowledgeGraphStore.deleteDatabase()
+            : this.knowledgeGraphStore.clear()
+        )
+      : Promise.resolve();
+    const bm25Clear = this.bm25Index
+      ? (
+          activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
+          this.bm25Index.deleteDatabase()
+        )
+      : Promise.resolve();
+    const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
+      ? this.embeddingProvider.deleteDatabase
+        ? this.embeddingProvider.deleteDatabase()
+        : this.embeddingProvider.clearCache()
+      : Promise.resolve();
+    if (hasClearableEmbeddingCache(this.embeddingProvider)) {
+      activeIndexedDbNames.add(EMBEDDING_CACHE_DB_NAME);
+    }
+    await Promise.all([vectorStoreClear, knowledgeGraphClear, bm25Clear, embeddingCacheClear]);
+    this.clearRAG();
+
+    const resetResult = await resetPluginOwnedData({
+      adapter: this.app.vault.adapter,
+      indexedDbNames: indexedDbNames.filter((name) => !activeIndexedDbNames.has(name)),
+    });
+
+    this.settings = structuredClone(DEFAULT_SETTINGS);
+    this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.getLogger().configure(this.settings.logging);
+    setLanguage(this.settings.language);
+    saveLocalSettings(this.app, this.settings);
+    await this.saveData(this.settings);
+    this.initProvider();
+    const mcpErrors = await this.initMCP();
+
+    this.refreshBus.emit('models', { status: 'success', detail: 'Plugin data reset' });
+    this.refreshBus.emit('rag', { status: 'success', detail: 'Plugin data reset' });
+    this.refreshBus.emit('graph-data', {
+      status: 'success',
+      detail: 'Plugin data reset',
+      source: 'graph-cleanup',
+    });
+    this.refreshBus.emit('mcp', {
+      status: mcpErrors.length === 0 ? 'success' : 'partial',
+      detail: 'Plugin data reset',
+    });
+
+    this.getLogger().notice('Plugin data reset completed.', {
+      source: 'settings.reset',
+      data: {
+        deletedLegacyDataDir: resetResult.deletedLegacyDataDir,
+        deletedIndexedDbNames: resetResult.deletedIndexedDbNames,
+        mcpErrors,
+      },
+    });
   }
 
   private async awaitGraphRagCancellation(timeoutMs = 2000): Promise<boolean> {
@@ -688,6 +827,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
     } else {
       data.customOpenAIProviders = [];
+    }
+
+    if (
+      typeof data.providerValidation !== 'object' ||
+      data.providerValidation === null ||
+      Array.isArray(data.providerValidation)
+    ) {
+      data.providerValidation = {};
     }
 
     const chat = data.chat;
@@ -1194,264 +1341,341 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.ragRuntimeInitRunner;
   }
 
+  private captureRagRuntimeSnapshot(): RagRuntimeSnapshot {
+    return {
+      vectorStore: this.vectorStore,
+      knowledgeGraphStore: this.knowledgeGraphStore,
+      embeddingProvider: this.embeddingProvider,
+      bm25Index: this.bm25Index,
+      ragEngine: this.ragEngine,
+      graphRagStatus: this.graphRagStatus,
+      graphRagIndexingRunner: this.graphRagIndexingRunner,
+      graphRagProviderAttached: this.graphRagProviderAttached,
+      vaultIndexer: this.vaultIndexer,
+      ragIndexingScheduler: this.ragIndexingScheduler,
+      ragPerformanceGuard: this.ragPerformanceGuard,
+      ragIndexingStatus: this.ragIndexingStatus,
+      nextAutoUpdateAt: this.nextAutoUpdateAt,
+      lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
+      lastAutoUpdateResult: this.lastAutoUpdateResult,
+    };
+  }
+
+  private restoreRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): boolean {
+    if (!snapshot.vectorStore || !snapshot.vaultIndexer || !snapshot.ragIndexingScheduler) {
+      return false;
+    }
+    this.vectorStore = snapshot.vectorStore;
+    this.knowledgeGraphStore = snapshot.knowledgeGraphStore;
+    this.embeddingProvider = snapshot.embeddingProvider;
+    this.bm25Index = snapshot.bm25Index;
+    this.ragEngine = snapshot.ragEngine;
+    this.graphRagStatus = snapshot.graphRagStatus;
+    this.graphRagIndexingRunner = snapshot.graphRagIndexingRunner;
+    this.graphRagProviderAttached = snapshot.graphRagProviderAttached;
+    this.vaultIndexer = snapshot.vaultIndexer;
+    this.ragIndexingScheduler = snapshot.ragIndexingScheduler;
+    this.ragPerformanceGuard = snapshot.ragPerformanceGuard;
+    this.ragIndexingStatus = snapshot.ragIndexingStatus;
+    this.nextAutoUpdateAt = snapshot.nextAutoUpdateAt;
+    this.lastAutoUpdateSkippedReason = snapshot.lastAutoUpdateSkippedReason;
+    this.lastAutoUpdateResult = snapshot.lastAutoUpdateResult;
+    this.setupAutoUpdate();
+    this.setupRagStatusTimer();
+    this.registerRAGEvents();
+    this.refreshBus?.emit('rag', {
+      status: 'success',
+      detail: this.ragIndexingStatus
+        ? this.formatRagIndexingStatus(this.ragIndexingStatus)
+        : t('ragIdle'),
+    });
+    return true;
+  }
+
   private async initRAGRuntime(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
     // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
     // button or "Reindex All" command). Re-initializing RAG with a new provider/model must
     // preserve existing vector store data so users can incrementally reindex.
 
+    const previousRuntime = this.captureRagRuntimeSnapshot();
     // Clear any existing timer
     this.clearRAG();
 
-    const rag = this.settings.rag;
-    const providerKey = rag.embeddingProvider;
-    this.getLogger().info('RAG runtime initialization started.', {
-      source: 'rag',
-      data: {
-        embeddingProvider: providerKey,
-        embeddingModel: rag.embeddingModel,
-        vectorStore: 'indexeddb',
-        bm25Enabled: rag.enableBM25,
-        graphRagEnabled: rag.graphRagEnabled,
-      },
-    });
-
-    const config = this.getEmbeddingProviderConfig(providerKey);
-    if (!config?.enabled) {
-      this.getLogger().warn('RAG embedding provider is disabled.', {
+    try {
+      const rag = this.settings.rag;
+      const providerKey = rag.embeddingProvider;
+      this.getLogger().info('RAG runtime initialization started.', {
         source: 'rag',
-        data: { embeddingProvider: providerKey },
+        data: {
+          embeddingProvider: providerKey,
+          embeddingModel: rag.embeddingModel,
+          vectorStore: 'indexeddb',
+          bm25Enabled: rag.enableBM25,
+          graphRagEnabled: rag.graphRagEnabled,
+        },
       });
-      return;
-    }
 
-    let baseUrl: string | undefined;
-    let apiKey = '';
-    const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-      ? 'customOpenAI'
-      : providerKey;
-    if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
-      apiKey = config.apiKey;
-      if (config.baseUrl) {
-        baseUrl = config.baseUrl;
-      }
-    }
-    if (!baseUrl) {
-      if (providerKey === 'openai') {
-        baseUrl = 'https://api.openai.com';
-      } else if (providerKey === 'openRouter') {
-        baseUrl = 'https://openrouter.ai/api';
-      } else if (providerKey === 'ollama') {
-        baseUrl = 'http://localhost:11434';
-      }
-    }
-
-    // Create embedding provider
-    let rawProvider: EmbeddingProvider;
-    if (providerKey === 'ollama') {
-      rawProvider = new OllamaEmbeddingProvider(baseUrl, rag.embeddingModel, apiKey, {
-        logger: this.getLogger(),
-      });
-    } else {
-      rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, rag.embeddingModel, {
-        logger: this.getLogger(),
-      });
-    }
-
-    this.embeddingProvider = new CachedEmbeddingProvider(
-      rawProvider,
-      createEmbeddingCacheNamespace(providerKey, rag.embeddingModel),
-    );
-
-    // Vector store
-    const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
-    await importLegacyJsonVectorStore(
-      this.app.vault.adapter,
-      vectorStore,
-      '.superpower-inside/vectors.json',
-    );
-    this.vectorStore = vectorStore;
-    this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
-      this.createIndexedDbName('KnowledgeGraph'),
-    );
-    await this.computeAndEmitGraphRagStatus();
-
-    // BM25 index
-    let bm25Index: IndexedDbBM25Index | undefined;
-    if (rag.enableBM25) {
-      bm25Index = new IndexedDbBM25Index(
-        this.createIndexedDbName('BM25Index'),
-        this.app.vault.adapter,
-      );
-      await bm25Index.load();
-      if (!bm25Index.isTokenizerCurrent) {
-        this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
-          source: 'rag.bm25',
+      const config = this.getEmbeddingProviderConfig(providerKey);
+      const embeddingModel = rag.embeddingModel.trim();
+      if (!config?.enabled) {
+        this.getLogger().warn('RAG embedding provider is disabled.', {
+          source: 'rag',
+          data: { embeddingProvider: providerKey },
         });
-        await this.rebuildBM25Index(bm25Index);
+        return;
       }
-    }
-    const structuralMetadataContext = this.app.metadataCache
-      ? {
-          resolvedLinks: this.app.metadataCache.resolvedLinks,
-          getFileByPath: (path: string) => {
-            const file = this.app.vault.getAbstractFileByPath(path);
-            return file instanceof TFile ? file : null;
-          },
-          getFileCache: (file: TFile) => this.app.metadataCache.getFileCache(file),
-          getFirstLinkpathDest: (linkpath: string, sourcePath: string) =>
-            this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath),
+      if (!embeddingModel) {
+        this.getLogger().warn('RAG embedding model is not selected.', {
+          source: 'rag',
+          data: { embeddingProvider: providerKey },
+        });
+        return;
+      }
+
+      let baseUrl: string | undefined;
+      let apiKey = '';
+      const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
+        ? 'customOpenAI'
+        : providerKey;
+      if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
+        apiKey = config.apiKey;
+        if (config.baseUrl) {
+          baseUrl = config.baseUrl;
         }
-      : undefined;
+      }
+      if (!baseUrl) {
+        if (providerKey === 'openai') {
+          baseUrl = 'https://api.openai.com';
+        } else if (providerKey === 'openRouter') {
+          baseUrl = 'https://openrouter.ai/api';
+        } else if (providerKey === 'ollama') {
+          baseUrl = 'http://localhost:11434';
+        }
+      }
 
-    const ontologySchema = buildDefaultOntologySchema();
-    const graphProvider = rag.graphRagModel.trim()
-      ? this.createProviderForModel(rag.graphRagModel)
-      : null;
-    const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
-    const graphRagQueryEngine =
-      graphRagEnabledForQuery && this.knowledgeGraphStore
-        ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
-            queryMode: rag.graphRagQueryMode,
-            queryPlanner: graphProvider ? new LLMGraphQueryPlanner(graphProvider) : undefined,
-          })
+      // Create embedding provider
+      let rawProvider: EmbeddingProvider;
+      if (providerKey === 'ollama') {
+        rawProvider = new OllamaEmbeddingProvider(
+          baseUrl ?? 'http://localhost:11434',
+          embeddingModel,
+          apiKey,
+          {
+            logger: this.getLogger(),
+          },
+        );
+      } else {
+        rawProvider = new OpenAIEmbeddingProvider(apiKey, baseUrl, embeddingModel, {
+          logger: this.getLogger(),
+        });
+      }
+
+      this.embeddingProvider = new CachedEmbeddingProvider(
+        rawProvider,
+        createEmbeddingCacheNamespace(providerKey, embeddingModel),
+      );
+
+      // Vector store
+      const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
+      await importLegacyJsonVectorStore(
+        this.app.vault.adapter,
+        vectorStore,
+        '.superpower-inside/vectors.json',
+      );
+      this.vectorStore = vectorStore;
+      this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
+        this.createIndexedDbName('KnowledgeGraph'),
+      );
+      await this.computeAndEmitGraphRagStatus();
+
+      // BM25 index
+      let bm25Index: IndexedDbBM25Index | undefined;
+      if (rag.enableBM25) {
+        bm25Index = new IndexedDbBM25Index(
+          this.createIndexedDbName('BM25Index'),
+          this.app.vault.adapter,
+        );
+        await bm25Index.load();
+        if (!bm25Index.isTokenizerCurrent) {
+          this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+            source: 'rag.bm25',
+          });
+          await this.rebuildBM25Index(bm25Index);
+        }
+      }
+      this.bm25Index = bm25Index ?? null;
+      const structuralMetadataContext = this.app.metadataCache
+        ? {
+            resolvedLinks: this.app.metadataCache.resolvedLinks,
+            getFileByPath: (path: string) => {
+              const file = this.app.vault.getAbstractFileByPath(path);
+              return file instanceof TFile ? file : null;
+            },
+            getFileCache: (file: TFile) => this.app.metadataCache.getFileCache(file),
+            getFirstLinkpathDest: (linkpath: string, sourcePath: string) =>
+              this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath),
+          }
         : undefined;
-    this.graphRagProviderAttached = graphRagQueryEngine !== undefined;
 
-    // RAG engine
-    this.ragEngine = new RAGQueryEngine(
-      this.vectorStore,
-      this.embeddingProvider,
-      bm25Index,
-      rag.bm25Weight,
-      rag.minScore,
-      {
-        annEnabled: rag.annEnabled,
-        annClusterCount: rag.annClusterCount,
-        annProbeCount: rag.annProbeCount,
-        structuralGraphEnabled: rag.structuralGraphEnabled,
-        structuralMetadataContext,
-        graphRagEnabled: graphRagEnabledForQuery,
-        graphRagQueryEngine,
-        graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
-        reranker: graphProvider ? new LLMRAGResultReranker(graphProvider) : undefined,
-        embeddingModel: rag.embeddingModel,
-      },
-    );
-
-    // Indexer
-    this.vaultIndexer = new VaultIndexer(
-      this.app.vault,
-      this.vectorStore,
-      this.embeddingProvider,
-      this.settings.rag,
-      this.settings.chat,
-      bm25Index,
-      this.getLogger(),
-    );
-
-    this.graphRagIndexingRunner =
-      graphProvider && this.knowledgeGraphStore && this.embeddingProvider
-        ? new GraphRagIndexingRunner({
-            vectorStore: this.vectorStore,
-            graphStore: this.knowledgeGraphStore,
-            provider: graphProvider,
-            embeddingProvider: this.embeddingProvider,
-            ontologySchema,
-            extractionModelKey: rag.graphRagModel,
-            maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-            entityResolverOptions: {
-              autoMergeThreshold: rag.ontologyAutoMergeThreshold,
-              pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
-            },
-            isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
-            onProgress: (progress) => {
-              this.getLogger().debug('GraphRAG indexing progress updated.', {
-                source: 'graph.progress',
-                data: {
-                  currentFile: progress.currentFile,
-                  processedFiles: progress.processedFiles,
-                  failedFiles: progress.failedFiles,
-                  selectedFiles: progress.selectedFiles,
-                  runId: progress.runId,
-                },
-              });
-              this.refreshBus.emit('graph-progress', {
-                status: 'partial',
-                detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
-                runId: progress.runId,
-                progress,
-              });
-            },
-          })
+      const ontologySchema = buildDefaultOntologySchema();
+      const graphProvider = rag.graphRagModel.trim()
+        ? this.createProviderForModel(rag.graphRagModel)
         : null;
-    await this.computeAndEmitGraphRagStatus();
+      const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
+      const graphRagQueryEngine =
+        graphRagEnabledForQuery && this.knowledgeGraphStore
+          ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
+              queryMode: rag.graphRagQueryMode,
+              queryPlanner: graphProvider ? new LLMGraphQueryPlanner(graphProvider) : undefined,
+            })
+          : undefined;
+      this.graphRagProviderAttached = graphRagQueryEngine !== undefined;
 
-    const performanceSettings = resolveRagPerformanceSettings(rag);
-    this.ragPerformanceGuard = new PerformanceGuard({
-      enabled: performanceSettings.enabled,
-      initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
-      initialYieldMs: performanceSettings.indexingYieldMs,
-      slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
-      slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
-    });
-    this.ragIndexingScheduler = new RAGIndexingScheduler({
-      debounceMs: 500,
-      indexFile: (file, options) => this.vaultIndexer!.indexFile(file, options),
-      removeFile: (filePath) => this.vaultIndexer!.removeFile(filePath),
-      indexPending: (options) => this.vaultIndexer!.indexPending(options),
-      reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
-      createIndexingOptions: (signal) => ({
-        signal,
-        maxEmbeddingBatchSize:
-          this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
-        indexingYieldMs:
-          this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
-        onBatchComplete: (durationMs) => {
-          this.getLogger().debug('RAG embedding batch completed.', {
+      // RAG engine
+      this.ragEngine = new RAGQueryEngine(
+        this.vectorStore,
+        this.embeddingProvider,
+        bm25Index,
+        rag.bm25Weight,
+        rag.minScore,
+        {
+          annEnabled: rag.annEnabled,
+          annClusterCount: rag.annClusterCount,
+          annProbeCount: rag.annProbeCount,
+          structuralGraphEnabled: rag.structuralGraphEnabled,
+          structuralMetadataContext,
+          graphRagEnabled: graphRagEnabledForQuery,
+          graphRagQueryEngine,
+          graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
+          reranker: graphProvider ? new LLMRAGResultReranker(graphProvider) : undefined,
+          embeddingModel: rag.embeddingModel,
+        },
+      );
+
+      // Indexer
+      this.vaultIndexer = new VaultIndexer(
+        this.app.vault,
+        this.vectorStore,
+        this.embeddingProvider,
+        this.settings.rag,
+        this.settings.chat,
+        bm25Index,
+        this.getLogger(),
+      );
+
+      this.graphRagIndexingRunner =
+        graphProvider && this.knowledgeGraphStore && this.embeddingProvider
+          ? new GraphRagIndexingRunner({
+              vectorStore: this.vectorStore,
+              graphStore: this.knowledgeGraphStore,
+              provider: graphProvider,
+              embeddingProvider: this.embeddingProvider,
+              ontologySchema,
+              extractionModelKey: rag.graphRagModel,
+              maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+              entityResolverOptions: {
+                autoMergeThreshold: rag.ontologyAutoMergeThreshold,
+                pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
+              },
+              isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
+              onProgress: (progress) => {
+                this.getLogger().debug('GraphRAG indexing progress updated.', {
+                  source: 'graph.progress',
+                  data: {
+                    currentFile: progress.currentFile,
+                    processedFiles: progress.processedFiles,
+                    failedFiles: progress.failedFiles,
+                    selectedFiles: progress.selectedFiles,
+                    runId: progress.runId,
+                  },
+                });
+                this.refreshBus.emit('graph-progress', {
+                  status: 'partial',
+                  detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
+                  runId: progress.runId,
+                  progress,
+                });
+              },
+            })
+          : null;
+      await this.computeAndEmitGraphRagStatus();
+
+      const performanceSettings = resolveRagPerformanceSettings(rag);
+      this.ragPerformanceGuard = new PerformanceGuard({
+        enabled: performanceSettings.enabled,
+        initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
+        initialYieldMs: performanceSettings.indexingYieldMs,
+        slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
+        slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
+      });
+      this.ragIndexingScheduler = new RAGIndexingScheduler({
+        debounceMs: 500,
+        indexFile: (file, options) => this.vaultIndexer!.indexFile(file, options),
+        removeFile: (filePath) => this.vaultIndexer!.removeFile(filePath),
+        indexPending: (options) => this.vaultIndexer!.indexPending(options),
+        reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
+        createIndexingOptions: (signal) => ({
+          signal,
+          maxEmbeddingBatchSize:
+            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
+          indexingYieldMs:
+            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+          onBatchComplete: (durationMs) => {
+            this.getLogger().debug('RAG embedding batch completed.', {
+              source: 'rag.indexing',
+              data: {
+                durationMs: Math.round(durationMs),
+                guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
+              },
+            });
+            this.ragPerformanceGuard?.recordBatchDuration(durationMs);
+            void this.ragPerformanceGuard?.measureEventLoopLag();
+          },
+          getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
+        }),
+        onStatusChange: (status) => {
+          this.ragIndexingStatus = status;
+          this.getLogger().debug('RAG indexing scheduler status changed.', {
             source: 'rag.indexing',
             data: {
-              durationMs: Math.round(durationMs),
-              guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
+              running: status.running,
+              phase: status.phase,
+              queuedFiles: status.queuedFiles,
+              lastIndexed: status.lastResult?.indexed ?? null,
+              lastVectors: status.lastResult?.vectors ?? null,
             },
           });
-          this.ragPerformanceGuard?.recordBatchDuration(durationMs);
-          void this.ragPerformanceGuard?.measureEventLoopLag();
+          this.refreshBus?.emit('rag', {
+            status: status.running ? 'partial' : 'success',
+            detail: this.formatRagIndexingStatus(status),
+          });
         },
-        getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
-      }),
-      onStatusChange: (status) => {
-        this.ragIndexingStatus = status;
-        this.getLogger().debug('RAG indexing scheduler status changed.', {
-          source: 'rag.indexing',
-          data: {
-            running: status.running,
-            phase: status.phase,
-            queuedFiles: status.queuedFiles,
-            lastIndexed: status.lastResult?.indexed ?? null,
-            lastVectors: status.lastResult?.vectors ?? null,
-          },
-        });
-        this.refreshBus?.emit('rag', {
-          status: status.running ? 'partial' : 'success',
-          detail: this.formatRagIndexingStatus(status),
-        });
-      },
-    });
+      });
 
-    // Auto-update timer
-    this.setupAutoUpdate();
-    // RAG 상태 자동 갱신 타이머 (30초 간격)
-    this.setupRagStatusTimer();
-    this.registerRAGEvents();
-    this.getLogger().info('RAG runtime initialization completed.', {
-      source: 'rag',
-      data: {
-        hasVectorStore: this.vectorStore !== null,
-        hasGraphRagRunner: this.graphRagIndexingRunner !== null,
-        hasBM25: rag.enableBM25,
-      },
-    });
+      // Auto-update timer
+      this.setupAutoUpdate();
+      // RAG 상태 자동 갱신 타이머 (30초 간격)
+      this.setupRagStatusTimer();
+      this.registerRAGEvents();
+      this.getLogger().info('RAG runtime initialization completed.', {
+        source: 'rag',
+        data: {
+          hasVectorStore: this.vectorStore !== null,
+          hasGraphRagRunner: this.graphRagIndexingRunner !== null,
+          hasBM25: rag.enableBM25,
+        },
+      });
+    } catch (err) {
+      const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
+      this.getLogger().error(
+        restored
+          ? 'RAG runtime initialization failed; restored previous runtime.'
+          : 'RAG runtime initialization failed; no previous runtime was available.',
+        { source: 'rag', error: err },
+      );
+      throw err;
+    }
   }
 
   private formatRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
@@ -1501,6 +1725,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.vectorStore = null;
     this.knowledgeGraphStore = null;
     this.embeddingProvider = null;
+    this.bm25Index = null;
     this.ragEngine = null;
     this.graphRagIndexingRunner = null;
     this.graphRagStatus = null;

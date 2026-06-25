@@ -11,6 +11,8 @@ vi.mock('obsidian', () => ({
 
 import {
   buildEmbeddingModelOptions,
+  resolveProviderReadiness,
+  selectInitialEmbeddingModel,
   buildGraphRagActionGroups,
   getGraphRagIndexingResultNotice,
   getGraphRagLiveStatusPresentation,
@@ -19,10 +21,12 @@ import {
   getChatFolderExcludeDescription,
   normalizeRagPerformanceTuningMode,
   resolveRagPerformanceSettings,
+  shouldRequireProviderApiKey,
   shouldShowProviderApiKey,
 } from './rag/settings-display';
 import {
   buildSettingsTabs,
+  buildEmbeddingModels,
   buildEmbeddingProviderOptions,
   buildMcpJsonEditorValue,
   buildChatModelOptions,
@@ -59,6 +63,44 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(shouldShowProviderApiKey('ollamaCloud')).toBe(true);
     expect(shouldShowProviderApiKey('openai')).toBe(true);
     expect(shouldShowProviderApiKey('customOpenAI')).toBe(true);
+    expect(shouldRequireProviderApiKey('customOpenAI')).toBe(false);
+  });
+
+  it('Provider readiness는 API 키보다 실제 검증 성공을 우선한다', () => {
+    expect(
+      resolveProviderReadiness({
+        enabled: true,
+        modelCount: 1,
+        apiKeyRequired: true,
+        hasApiKey: false,
+        validation: {
+          authenticated: true,
+          serverReachable: true,
+        },
+      }).tone,
+    ).toBe('ready');
+
+    expect(
+      resolveProviderReadiness({
+        enabled: true,
+        modelCount: 1,
+        apiKeyRequired: true,
+        hasApiKey: false,
+        validation: {
+          authenticated: false,
+          serverReachable: true,
+        },
+      }).tone,
+    ).toBe('ready');
+
+    expect(
+      resolveProviderReadiness({
+        enabled: true,
+        modelCount: 1,
+        apiKeyRequired: true,
+        hasApiKey: false,
+      }).tone,
+    ).toBe('needs-key');
   });
 
   it('RAG 임베딩 모델 옵션은 preset, provider 모델, 현재 선택 모델을 보존해 병합한다', () => {
@@ -85,6 +127,51 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(options.find((option) => option.id === 'legacy-selected')?.label).toContain(
       '현재 선택됨',
     );
+  });
+
+  it('RAG 임베딩 모델 옵션은 embedding 검증 성공 모델을 먼저 표시하고 chat-only 모델을 확정하지 않는다', () => {
+    const options = buildEmbeddingModelOptions(
+      [],
+      ['chat-only-model', 'embedding-model', 'unknown-model'],
+      'chat-only-model',
+      {
+        'chat-only-model': { chatStatus: 'success', embeddingStatus: 'unknown' },
+        'embedding-model': { chatStatus: 'unknown', embeddingStatus: 'success' },
+      },
+    );
+
+    expect(options.map((option) => option.id)).toEqual([
+      'embedding-model',
+      'chat-only-model',
+      'unknown-model',
+    ]);
+    expect(options.find((option) => option.id === 'embedding-model')?.embeddingStatus).toBe(
+      'success',
+    );
+    expect(options.find((option) => option.id === 'chat-only-model')?.embeddingStatus).toBe(
+      'unknown',
+    );
+  });
+
+  it('Ollama Local로 전환할 때 embedding 검증 성공 모델이 없으면 preset 모델을 자동 선택하지 않는다', () => {
+    const options = buildEmbeddingModelOptions(
+      [
+        {
+          id: 'legacy-hardcoded-embedding',
+          name: 'legacy-hardcoded-embedding',
+          dimensions: 384,
+          description: 'preset',
+        },
+      ],
+      ['llama3.1'],
+      '',
+    );
+
+    expect(selectInitialEmbeddingModel(options)).toBe('');
+  });
+
+  it('Ollama Local 임베딩 모델은 하드코딩 preset을 제공하지 않는다', () => {
+    expect(buildEmbeddingModels().ollama).toEqual([]);
   });
 
   it('RAG 임베딩 프로바이더 옵션에는 활성화된 custom OpenAI-compatible provider를 포함한다', () => {
@@ -266,6 +353,53 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(state.updatePending.disabled).toBe(true);
     expect(state.reindexAll.disabled).toBe(false);
     expect(state.reindexAll.reason).toBeNull();
+  });
+
+  it('RAG 상태 계산은 런타임이 없으면 명시 초기화를 먼저 시도한다', async () => {
+    const file = {
+      path: 'note.md',
+      name: 'note.md',
+      basename: 'note',
+      extension: 'md',
+      stat: { ctime: 1, mtime: 1, size: 12 },
+    };
+    const vectorStore = {
+      getFileIndexRecords: vi.fn(() => Promise.resolve([])),
+    };
+    const plugin = {
+      app: {
+        vault: {
+          configDir: '.obsidian',
+          getFiles: vi.fn(() => [file]),
+          cachedRead: vi.fn(() => Promise.resolve('문서 내용')),
+        },
+      },
+      settings: {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          excludePaths: [],
+          excludeExts: [],
+          excludeChatFolder: false,
+        },
+      },
+      eventDrivenRagStats: null,
+      vectorStore: null as typeof vectorStore | null,
+      ensureRagRuntimeInitialized: vi.fn(() => {
+        plugin.vectorStore = vectorStore;
+        return Promise.resolve(true);
+      }),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    const status = await (
+      tab as unknown as {
+        getRagStatus(): Promise<{ totalDocuments: number } | null>;
+      }
+    ).getRagStatus();
+
+    expect(plugin.ensureRagRuntimeInitialized).toHaveBeenCalledOnce();
+    expect(status?.totalDocuments).toBe(1);
   });
 
   it('GraphRAG 작업 버튼은 실행 범위와 차이를 라벨/설명에 드러낸다', () => {

@@ -29,6 +29,21 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('superpower-inside-settings-tab-panels');
   });
 
+  it('Overview 탭 맨 아래에 전체 플러그인 데이터 초기화 위험 구역을 배치한다', () => {
+    const methodStart = settingsSource.indexOf('private buildGeneralTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildOverviewRuntimeState', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+    const basicsIndex = methodSource.indexOf('superpower-inside-overview-basics');
+    const resetIndex = methodSource.indexOf('buildPluginDataResetSection');
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(basicsIndex).toBeGreaterThanOrEqual(0);
+    expect(resetIndex).toBeGreaterThan(basicsIndex);
+    expect(settingsSource).toContain('resetPluginData(): Promise<void>');
+    expect(settingsSource).toContain('pluginDataResetWarning');
+    expect(styles).toContain('.superpower-inside-overview-danger-zone');
+  });
+
   it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {
     const renderStatsStart = settingsSource.indexOf('private async renderStats(');
     const getStatusIndex = settingsSource.indexOf(

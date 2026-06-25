@@ -122,6 +122,37 @@ describe('설정 Overview snapshot', () => {
     );
   });
 
+  it('Custom OpenAI-compatible provider는 빈 API 키만으로 주의 항목이 되지 않는다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        customOpenAIProviders: [
+          {
+            id: 'local',
+            name: 'Local Provider',
+            apiKey: '',
+            baseUrl: 'http://localhost:1234/v1',
+            models: ['local-model'],
+            enabled: true,
+            useRequestUrl: true,
+          },
+        ],
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.providerRows).toContainEqual(
+      expect.objectContaining({
+        id: 'provider-custom-local',
+        label: 'Local Provider',
+        statusLabel: '준비됨',
+        tone: 'success',
+      }),
+    );
+    expect(snapshot.attentionItems.map((item) => item.id)).not.toContain(
+      'provider-custom-local-api-key',
+    );
+  });
+
   it('RAG stale/empty/ready 상태와 GraphRAG 상태를 요약한다', () => {
     const snapshot = buildSettingsOverviewSnapshot({
       settings: buildSettings({
