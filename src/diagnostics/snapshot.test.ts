@@ -109,6 +109,14 @@ function buildRuntime(): AgentDiagnosticsRuntimeState {
     nextAutoUpdateAt: 1_780_371_200_000,
     lastAutoUpdateSkippedReason: 'already running',
     lastAutoUpdateResult: null,
+    ragRuntimeInit: {
+      running: true,
+      currentStage: 'legacy-vector-import',
+      lastError: 'previous init timeout',
+      lastSkippedReason: null,
+      lastStartedAt: 1_780_371_100_000,
+      lastFinishedAt: null,
+    },
     runtimeFlags: {
       vectorStoreReady: true,
       knowledgeGraphStoreReady: true,
@@ -208,6 +216,12 @@ describe('agent diagnostics snapshot', () => {
       }),
     );
     expect(snapshot.rag.status?.totalDocuments).toBe(7);
+    expect(snapshot.rag.init).toEqual(
+      expect.objectContaining({
+        running: true,
+        currentStage: 'legacy-vector-import',
+      }),
+    );
     expect(snapshot.graphRag.status?.state).toBe('partial');
     expect(snapshot.mcp.servers[0]?.env).toEqual({
       API_KEY: '[REDACTED]',

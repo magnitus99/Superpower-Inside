@@ -174,6 +174,44 @@ describe('provider validation', () => {
     );
   });
 
+  it('Ollama Local embedding validation uses the configured Base URL', async () => {
+    requestUrlMock
+      .mockResolvedValueOnce({
+        status: 200,
+        json: { models: [{ name: 'local-embedding-model' }] },
+        text: '',
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        json: { embeddings: [[0.1, 0.2]] },
+        text: '',
+      });
+    const config = {
+      ...baseConfig,
+      baseUrl: 'http://127.0.0.1:11555/api',
+    };
+
+    await expect(
+      validateEmbeddingConnection('ollama', 'local-embedding-model', config),
+    ).resolves.toEqual(expect.objectContaining({ valid: true }));
+    await expect(
+      testEmbeddingGeneration('ollama', 'local-embedding-model', config),
+    ).resolves.toEqual(expect.objectContaining({ valid: true }));
+
+    expect(requestUrlMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        url: 'http://127.0.0.1:11555/api/tags',
+      }),
+    );
+    expect(requestUrlMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: 'http://127.0.0.1:11555/api/embed',
+      }),
+    );
+  });
+
   it('Custom OpenAI 호환 모델 검색 URL을 /v1/models로 정규화한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,

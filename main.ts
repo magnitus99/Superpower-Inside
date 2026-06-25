@@ -108,6 +108,7 @@ import {
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
+const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -228,6 +229,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   nextAutoUpdateAt: number | null = null;
   lastAutoUpdateSkippedReason: string | null = null;
   lastAutoUpdateResult: IndexingResult | null = null;
+  lastRagRuntimeInitError: string | null = null;
+  lastRagRuntimeInitSkippedReason: string | null = null;
+  lastRagRuntimeInitStage: string | null = null;
+  lastRagRuntimeInitStartedAt: number | null = null;
+  lastRagRuntimeInitFinishedAt: number | null = null;
   mcpRegistry: MCPRegistry | null = null;
   mcpConnectionState: MCPConnectionState = 'idle';
   mcpLastErrors: string[] = [];
@@ -589,6 +595,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
       nextAutoUpdateAt: this.nextAutoUpdateAt,
       lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
       lastAutoUpdateResult: this.lastAutoUpdateResult,
+      ragRuntimeInit: {
+        running: this.ragRuntimeInitRunner?.isRunning() ?? false,
+        currentStage: this.lastRagRuntimeInitStage,
+        lastError: this.lastRagRuntimeInitError,
+        lastSkippedReason: this.lastRagRuntimeInitSkippedReason,
+        lastStartedAt: this.lastRagRuntimeInitStartedAt,
+        lastFinishedAt: this.lastRagRuntimeInitFinishedAt,
+      },
       runtimeFlags: {
         vectorStoreReady: this.vectorStore !== null,
         knowledgeGraphStoreReady: this.knowledgeGraphStore !== null,
@@ -1290,6 +1304,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.provider;
   }
 
+  getRagRuntimeState() {
+    const clearableEmbeddingProvider = hasClearableEmbeddingCache(this.embeddingProvider)
+      ? this.embeddingProvider
+      : null;
+    return {
+      ragStatus: this.eventDrivenRagStats,
+      graphRagStatus: this.graphRagStatus,
+      vectorStore: this.vectorStore,
+      embeddingProvider: clearableEmbeddingProvider,
+      ragIndexingScheduler: this.ragIndexingScheduler,
+      ragIndexingStatus: this.ragIndexingStatus,
+      hasIndexer: Boolean(this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler),
+      nextAutoUpdateAt: this.nextAutoUpdateAt,
+      lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
+      lastAutoUpdateResult: this.lastAutoUpdateResult,
+      lastInitError: this.lastRagRuntimeInitError,
+      lastInitSkippedReason: this.lastRagRuntimeInitSkippedReason,
+      initRunning: this.ragRuntimeInitRunner?.isRunning() ?? false,
+      lastInitStage: this.lastRagRuntimeInitStage,
+      lastInitStartedAt: this.lastRagRuntimeInitStartedAt,
+      lastInitFinishedAt: this.lastRagRuntimeInitFinishedAt,
+    };
+  }
+
   private initProvider(): void {
     const defaultModel = this.settings.chat.defaultModel;
     if (!defaultModel) {
@@ -1493,6 +1531,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const rag = this.settings.rag;
     const providerKey = rag.embeddingProvider;
     let reason = t('ragIndexerNotInitializedBase');
+    if (this.lastRagRuntimeInitError) {
+      return `${reason} ${t('ragIndexerLastInitError', {
+        message: this.lastRagRuntimeInitError,
+      })}`;
+    }
+    if (this.lastRagRuntimeInitSkippedReason) {
+      return `${reason} ${t('ragIndexerLastInitSkipped', {
+        reason: this.lastRagRuntimeInitSkippedReason,
+      })}`;
+    }
     const config = this.getEmbeddingProviderConfig(providerKey);
     const providerLabel = this.getEmbeddingProviderLabel(providerKey);
     const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
@@ -1518,6 +1566,66 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.ragRuntimeInitRunner = new CoalescedAsyncRunner(() => this.initRAGRuntime());
     }
     return this.ragRuntimeInitRunner;
+  }
+
+  private async runRagRuntimeInitStep<T>(
+    stage: string,
+    operation: () => Promise<T>,
+    timeoutMs = RAG_RUNTIME_INIT_STEP_TIMEOUT_MS,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    this.lastRagRuntimeInitStage = stage;
+    this.getLogger().info('RAG runtime initialization step started.', {
+      source: 'rag',
+      data: { stage },
+    });
+    try {
+      const result = await this.withRagRuntimeInitTimeout(
+        Promise.resolve().then(operation),
+        stage,
+        timeoutMs,
+      );
+      this.getLogger().info('RAG runtime initialization step completed.', {
+        source: 'rag',
+        data: { stage, durationMs: Date.now() - startedAt },
+      });
+      return result;
+    } catch (err) {
+      this.lastRagRuntimeInitError = err instanceof Error ? err.message : String(err);
+      this.getLogger().error('RAG runtime initialization step failed.', {
+        source: 'rag',
+        data: { stage, durationMs: Date.now() - startedAt },
+        error: err,
+      });
+      throw err;
+    }
+  }
+
+  private async withRagRuntimeInitTimeout<T>(
+    operation: Promise<T>,
+    stage: string,
+    timeoutMs: number,
+  ): Promise<T> {
+    let timeoutId: number | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(
+          new Error(
+            t('ragRuntimeInitStepTimedOut', {
+              stage,
+              seconds: String(Math.ceil(timeoutMs / 1000)),
+            }),
+          ),
+        );
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
   }
 
   private captureRagRuntimeSnapshot(): RagRuntimeSnapshot {
@@ -1580,6 +1688,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const previousRuntime = this.captureRagRuntimeSnapshot();
     // Clear any existing timer
     this.clearRAG();
+    this.lastRagRuntimeInitError = null;
+    this.lastRagRuntimeInitSkippedReason = null;
+    this.lastRagRuntimeInitStage = 'starting';
+    this.lastRagRuntimeInitStartedAt = Date.now();
+    this.lastRagRuntimeInitFinishedAt = null;
 
     try {
       const rag = this.settings.rag;
@@ -1598,6 +1711,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const config = this.getEmbeddingProviderConfig(providerKey);
       const embeddingModel = rag.embeddingModel.trim();
       if (!config?.enabled) {
+        this.lastRagRuntimeInitSkippedReason = t('ragIndexerEnableProvider', {
+          provider: this.getEmbeddingProviderLabel(providerKey),
+        });
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
         this.getLogger().warn('RAG embedding provider is disabled.', {
           source: 'rag',
           data: { embeddingProvider: providerKey },
@@ -1605,6 +1723,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         return;
       }
       if (!embeddingModel) {
+        this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
         this.getLogger().warn('RAG embedding model is not selected.', {
           source: 'rag',
           data: { embeddingProvider: providerKey },
@@ -1657,30 +1778,46 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       // Vector store
       const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
-      await importLegacyJsonVectorStore(
-        this.app.vault.adapter,
-        vectorStore,
-        '.superpower-inside/vectors.json',
+      await this.runRagRuntimeInitStep(
+        'legacy-vector-import',
+        () =>
+          importLegacyJsonVectorStore(
+            this.app.vault.adapter,
+            vectorStore,
+            '.superpower-inside/vectors.json',
+          ),
       );
       this.vectorStore = vectorStore;
       this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
         this.createIndexedDbName('KnowledgeGraph'),
       );
-      await this.computeAndEmitGraphRagStatus();
+      await this.runRagRuntimeInitStep('graph-status-initial', () =>
+        this.computeAndEmitGraphRagStatus(),
+      );
 
       // BM25 index
       let bm25Index: IndexedDbBM25Index | undefined;
       if (rag.enableBM25) {
-        bm25Index = new IndexedDbBM25Index(
+        const nextBm25Index = new IndexedDbBM25Index(
           this.createIndexedDbName('BM25Index'),
           this.app.vault.adapter,
         );
-        await bm25Index.load();
-        if (!bm25Index.isTokenizerCurrent) {
-          this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+        try {
+          await this.runRagRuntimeInitStep('bm25-load', () => nextBm25Index.load());
+          if (!nextBm25Index.isTokenizerCurrent) {
+            this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+              source: 'rag.bm25',
+            });
+            await this.runRagRuntimeInitStep('bm25-rebuild', () =>
+              this.rebuildBM25Index(nextBm25Index),
+            );
+          }
+          bm25Index = nextBm25Index;
+        } catch (err) {
+          this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
             source: 'rag.bm25',
+            error: err,
           });
-          await this.rebuildBM25Index(bm25Index);
         }
       }
       this.bm25Index = bm25Index ?? null;
@@ -1778,7 +1915,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
               },
             })
           : null;
-      await this.computeAndEmitGraphRagStatus();
+      await this.runRagRuntimeInitStep('graph-status-runner', () =>
+        this.computeAndEmitGraphRagStatus(),
+      );
 
       const performanceSettings = resolveRagPerformanceSettings(rag);
       this.ragPerformanceGuard = new PerformanceGuard({
@@ -1842,11 +1981,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
         data: {
           hasVectorStore: this.vectorStore !== null,
           hasGraphRagRunner: this.graphRagIndexingRunner !== null,
-          hasBM25: rag.enableBM25,
+          hasBM25: this.bm25Index !== null,
         },
       });
+      this.lastRagRuntimeInitError = null;
+      this.lastRagRuntimeInitSkippedReason = null;
+      this.lastRagRuntimeInitStage = null;
+      this.lastRagRuntimeInitFinishedAt = Date.now();
     } catch (err) {
       const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
+      this.lastRagRuntimeInitError = this.lastRagRuntimeInitError ?? (
+        err instanceof Error ? err.message : String(err)
+      );
+      this.lastRagRuntimeInitFinishedAt = Date.now();
       this.getLogger().error(
         restored
           ? 'RAG runtime initialization failed; restored previous runtime.'

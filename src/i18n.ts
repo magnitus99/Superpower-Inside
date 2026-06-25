@@ -910,6 +910,9 @@ export interface I18nKeys {
   ragIndexerEnterApiKey: string;
   ragIndexerSelectEmbeddingModel: string;
   ragIndexerConnectionFailed: string;
+  ragIndexerLastInitError: string;
+  ragIndexerLastInitSkipped: string;
+  ragRuntimeInitStepTimedOut: string;
   vaultIndexingStarted: string;
   vaultIndexingDone: string;
   indexingCancelled: string;
@@ -2291,6 +2294,10 @@ const ko: I18nKeys = {
     '임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.',
   ragIndexerConnectionFailed:
     '"{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
+  ragIndexerLastInitError: '마지막 초기화 오류: {message}',
+  ragIndexerLastInitSkipped: '마지막 초기화 중단 사유: {reason}',
+  ragRuntimeInitStepTimedOut:
+    'RAG 런타임 초기화가 "{stage}" 단계에서 {seconds}초 동안 완료되지 않았습니다.',
   vaultIndexingStarted: '볼트 인덱싱 시작...',
   vaultIndexingDone: '{count}개 파일 인덱싱 완료',
   indexingCancelled: '인덱싱이 중단되었습니다.',
@@ -3738,6 +3745,10 @@ const en: I18nKeys = {
     'No embedding model is selected. Choose a model in Settings → RAG and save it.',
   ragIndexerConnectionFailed:
     'Failed to connect "{provider}" ({model}). Check the Base URL or API Key.',
+  ragIndexerLastInitError: 'Last initialization error: {message}',
+  ragIndexerLastInitSkipped: 'Last initialization skipped: {reason}',
+  ragRuntimeInitStepTimedOut:
+    'RAG runtime initialization did not finish stage "{stage}" within {seconds} seconds.',
   vaultIndexingStarted: 'Vault indexing started...',
   vaultIndexingDone: 'Indexed {count} files',
   indexingCancelled: 'Indexing was cancelled.',

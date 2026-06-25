@@ -422,9 +422,11 @@ class OpenAICompatibleEmbeddingValidator implements EmbeddingConnectionValidator
 
 class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
   private readonly providerValidator: OllamaValidator;
+  private readonly baseUrl: string;
 
   constructor(config: ProviderConfig) {
-    this.providerValidator = new OllamaValidator(config, OLLAMA_LOCAL_BASE_URL, false);
+    this.baseUrl = normalizeOllamaBaseUrl(config.baseUrl?.trim() || OLLAMA_LOCAL_BASE_URL);
+    this.providerValidator = new OllamaValidator(config, this.baseUrl, false);
   }
 
   async validateConnection(): Promise<ValidationResult> {
@@ -432,10 +434,9 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
   }
 
   async testEmbedding(modelId: string): Promise<ValidationResult> {
-    const baseUrl = normalizeOllamaBaseUrl(OLLAMA_LOCAL_BASE_URL);
     try {
       const res = await requestUrl({
-        url: `${baseUrl}/api/embed`,
+        url: `${this.baseUrl}/api/embed`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -52,7 +52,17 @@ export interface AgentDiagnosticsRuntimeState {
   nextAutoUpdateAt: number | null;
   lastAutoUpdateSkippedReason: string | null;
   lastAutoUpdateResult: IndexingResult | null;
+  ragRuntimeInit: AgentDiagnosticsRagRuntimeInitState;
   runtimeFlags: AgentDiagnosticsRuntimeFlags;
+}
+
+export interface AgentDiagnosticsRagRuntimeInitState {
+  running: boolean;
+  currentStage: string | null;
+  lastError: string | null;
+  lastSkippedReason: string | null;
+  lastStartedAt: number | null;
+  lastFinishedAt: number | null;
 }
 
 export interface AgentDiagnosticsRuntimeFlags {
@@ -159,6 +169,7 @@ export interface AgentDiagnosticsSnapshot {
     lastAutoUpdateSkippedReason: string | null;
     lastAutoUpdateResult: IndexingResult | null;
     performanceGuard: PerformanceGuardState | null;
+    init: AgentDiagnosticsRagRuntimeInitState;
   };
   graphRag: {
     status: GraphRagStatusSummary | null;
@@ -229,6 +240,7 @@ export function buildAgentDiagnosticsSnapshot(
       lastAutoUpdateSkippedReason: input.runtime.lastAutoUpdateSkippedReason,
       lastAutoUpdateResult: input.runtime.lastAutoUpdateResult,
       performanceGuard: input.runtime.performanceGuardState,
+      init: { ...input.runtime.ragRuntimeInit },
     },
     graphRag: {
       status: input.runtime.graphRagStatus,
