@@ -31,6 +31,7 @@ import {
   buildMcpJsonEditorValue,
   buildChatModelOptions,
   DEFAULT_SETTINGS,
+  normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
   SuperpowerInsideSettingTab,
 } from './settings';
@@ -745,6 +746,13 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
+  });
+
+  it('agent diagnostics settings default to disabled and normalize legacy data', () => {
+    expect(DEFAULT_SETTINGS.agentDiagnostics.enabled).toBe(false);
+    expect(normalizeAgentDiagnosticsSettings(undefined)).toEqual({ enabled: false });
+    expect(normalizeAgentDiagnosticsSettings({ enabled: true })).toEqual({ enabled: true });
+    expect(normalizeAgentDiagnosticsSettings({ enabled: 'true' })).toEqual({ enabled: false });
   });
 
   it('기본 MCP 설정은 Context7 서버를 포함한다', () => {

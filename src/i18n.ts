@@ -54,6 +54,30 @@ export interface I18nKeys {
   loggingEmpty: string;
   loggingCopied: string;
   loggingCopyFailed: string;
+  agentDiagnosticsPanelTitle: string;
+  agentDiagnosticsPanelDesc: string;
+  agentDiagnosticsToggle: string;
+  agentDiagnosticsToggleDesc: string;
+  agentDiagnosticsOpenView: string;
+  agentDiagnosticsOpenViewDesc: string;
+  agentDiagnosticsOpenViewButton: string;
+  agentDiagnosticsFilePath: string;
+  agentDiagnosticsWriteSnapshot: string;
+  agentDiagnosticsWriteSnapshotDesc: string;
+  agentDiagnosticsWriteButton: string;
+  agentDiagnosticsClearDetailedLogging: string;
+  agentDiagnosticsClearDetailedLoggingDesc: string;
+  agentDiagnosticsClearButton: string;
+  agentDiagnosticsViewTitle: string;
+  agentDiagnosticsViewDesc: string;
+  agentDiagnosticsRefreshButton: string;
+  agentDiagnosticsCopyButton: string;
+  agentDiagnosticsEnabledStatus: string;
+  agentDiagnosticsDisabledStatus: string;
+  agentDiagnosticsWriteDone: string;
+  agentDiagnosticsClearDone: string;
+  agentDiagnosticsCopied: string;
+  agentDiagnosticsCopyFailed: string;
 
   // 프로바이더 탭
   apiKey: string;
@@ -1273,6 +1297,7 @@ export interface I18nKeys {
   cmdReindexVault: string;
   cmdOpenGraphRagView: string;
   cmdOpenLogView: string;
+  cmdOpenAgentDiagnosticsView: string;
   graphRagViewTabTitle: string;
   graphRagViewTabEntities: string;
   graphRagViewTabRelations: string;
@@ -1282,6 +1307,35 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  agentDiagnosticsPanelTitle: 'Debugging',
+  agentDiagnosticsPanelDesc:
+    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
+  agentDiagnosticsToggle: 'Enable agent diagnostics',
+  agentDiagnosticsToggleDesc:
+    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
+  agentDiagnosticsOpenView: 'Agent diagnostics status window',
+  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
+  agentDiagnosticsOpenViewButton: 'Open diagnostics',
+  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
+  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
+  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
+  agentDiagnosticsWriteButton: 'Write snapshot',
+  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
+  agentDiagnosticsClearDetailedLoggingDesc:
+    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
+  agentDiagnosticsClearButton: 'Clean detailed logging',
+  agentDiagnosticsViewTitle: 'Agent Diagnostics',
+  agentDiagnosticsViewDesc:
+    'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsRefreshButton: 'Refresh',
+  agentDiagnosticsCopyButton: 'Copy JSON',
+  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
+  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
+  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
+  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
+  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
+  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
+  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
   // General
   autoSaveSettings: '설정 자동 저장',
   autoSaveSettingsDesc: '변경 사항 후 자동으로 설정 저장 (디스크 I/O 감소)',
@@ -2751,6 +2805,34 @@ const en: I18nKeys = {
   loggingEmpty: 'No logs to show.',
   loggingCopied: 'Logs copied.',
   loggingCopyFailed: 'Failed to copy logs: {message}',
+  agentDiagnosticsPanelTitle: 'Debugging',
+  agentDiagnosticsPanelDesc:
+    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
+  agentDiagnosticsToggle: 'Enable agent diagnostics',
+  agentDiagnosticsToggleDesc:
+    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
+  agentDiagnosticsOpenView: 'Agent diagnostics status window',
+  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
+  agentDiagnosticsOpenViewButton: 'Open diagnostics',
+  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
+  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
+  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
+  agentDiagnosticsWriteButton: 'Write snapshot',
+  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
+  agentDiagnosticsClearDetailedLoggingDesc:
+    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
+  agentDiagnosticsClearButton: 'Clean detailed logging',
+  agentDiagnosticsViewTitle: 'Agent Diagnostics',
+  agentDiagnosticsViewDesc:
+    'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsRefreshButton: 'Refresh',
+  agentDiagnosticsCopyButton: 'Copy JSON',
+  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
+  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
+  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
+  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
+  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
+  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
 
   // Providers
   apiKey: 'API Key',
@@ -4117,6 +4199,7 @@ const en: I18nKeys = {
   cmdReindexVault: 'Reindex Vault for RAG',
   cmdOpenGraphRagView: 'Open GraphRAG Explorer',
   cmdOpenLogView: 'Open Integrated Logs',
+  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
   graphRagViewTabTitle: 'GraphRAG Explorer',
   graphRagViewTabEntities: 'Entities',
   graphRagViewTabRelations: 'Relations',

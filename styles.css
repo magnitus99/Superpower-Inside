@@ -915,6 +915,90 @@
   font-size: var(--font-ui-smaller);
 }
 
+.superpower-inside-agent-diagnostics-settings {
+  border-color: var(--background-modifier-border);
+}
+
+.superpower-inside-agent-diagnostics-path {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-agent-diagnostics-view {
+  padding: 20px;
+  height: 100%;
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superpower-inside-agent-diagnostics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.superpower-inside-agent-diagnostics-title {
+  min-width: min(100%, 280px);
+}
+
+.superpower-inside-agent-diagnostics-heading {
+  margin: 0;
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.superpower-inside-agent-diagnostics-subtitle {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.superpower-inside-agent-diagnostics-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.superpower-inside-agent-diagnostics-status {
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-agent-diagnostics-snapshot {
+  flex: 1;
+  min-height: 320px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  white-space: pre;
+}
+
 @media (max-width: 520px) {
   .superpower-inside-overview-header,
   .superpower-inside-overview-panel-header {

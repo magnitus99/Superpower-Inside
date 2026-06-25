@@ -8,6 +8,7 @@ target/
 # Obsidian 플러그인 빌드/로컬 설정 산출물
 main.js
 data.json
+agent-diagnostics.json*
 .env.test.local
 
 # 개발용 Obsidian 테스트 볼트와 에이전트 작업 상태

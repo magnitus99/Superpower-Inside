@@ -543,6 +543,71 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
   });
 });
 
+describe('SuperpowerInsidePlugin agent diagnostics view', () => {
+  it('reuses a readable root workspace diagnostics leaf', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { AGENT_DIAGNOSTICS_VIEW_TYPE } = await import('./src/diagnostics/view');
+    const root = { kind: 'root' };
+    const existingLeaf = createWorkspaceLeaf(root, 640);
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [existingLeaf]),
+      getMostRecentLeaf: vi.fn(),
+      setActiveLeaf: vi.fn(),
+      getLeaf: vi.fn(),
+      createLeafBySplit: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    plugin.openAgentDiagnosticsView();
+
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(AGENT_DIAGNOSTICS_VIEW_TYPE);
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(existingLeaf);
+    expect(existingLeaf.detach).not.toHaveBeenCalled();
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+  });
+
+  it('replaces sidebar or too narrow diagnostics leaves with a root workspace tab', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { AGENT_DIAGNOSTICS_VIEW_TYPE } = await import('./src/diagnostics/view');
+    const root = { kind: 'root' };
+    const sideRoot = { kind: 'right-sidebar' };
+    const sidebarLeaf = createWorkspaceLeaf(sideRoot, 420);
+    const narrowRootLeaf = createWorkspaceLeaf(root, 52);
+    const recentRootLeaf = createWorkspaceLeaf(root, 720);
+    const newLeaf = createWorkspaceLeaf(root, 720);
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [sidebarLeaf, narrowRootLeaf]),
+      getMostRecentLeaf: vi.fn(() => recentRootLeaf),
+      setActiveLeaf: vi.fn(),
+      getLeaf: vi.fn(() => newLeaf),
+      createLeafBySplit: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    plugin.openAgentDiagnosticsView();
+
+    expect(sidebarLeaf.detach).toHaveBeenCalledOnce();
+    expect(narrowRootLeaf.detach).toHaveBeenCalledOnce();
+    expect(workspace.setActiveLeaf).toHaveBeenCalledWith(recentRootLeaf, { focus: false });
+    expect(workspace.getLeaf).toHaveBeenCalledWith('tab');
+    expect(newLeaf.setViewState).toHaveBeenCalledWith({
+      type: AGENT_DIAGNOSTICS_VIEW_TYPE,
+      active: true,
+    });
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(newLeaf);
+  });
+});
+
 function createApp(
   options: {
     localSettings?: unknown;
@@ -586,6 +651,19 @@ function createApp(
     workspace: {
       trigger: vi.fn(),
     },
+  };
+}
+
+function createWorkspaceLeaf(root: unknown, width: number) {
+  return {
+    getRoot: vi.fn(() => root),
+    view: {
+      containerEl: {
+        getBoundingClientRect: vi.fn(() => ({ width })),
+      },
+    },
+    setViewState: vi.fn(() => Promise.resolve()),
+    detach: vi.fn(),
   };
 }
 

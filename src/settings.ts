@@ -275,6 +275,20 @@ export function normalizeChatSaveFolder(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   return value;
 }
+export interface AgentDiagnosticsSettings {
+  enabled: boolean;
+}
+export function normalizeAgentDiagnosticsSettings(
+  value: unknown,
+): AgentDiagnosticsSettings {
+  const raw =
+    typeof value === 'object' && value !== null
+      ? (value as Partial<AgentDiagnosticsSettings>)
+      : undefined;
+  return {
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : false,
+  };
+}
 export interface SuperpowerInsideSettings {
   openai: ProviderConfig;
   claude: ProviderConfig;
@@ -293,6 +307,7 @@ export interface SuperpowerInsideSettings {
   autoSaveDebounceMs: number;
   language: Language;
   logging: LoggerConfig;
+  agentDiagnostics: AgentDiagnosticsSettings;
 }
 export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   openai: {
@@ -383,6 +398,9 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     maxEntries: 1000,
     mirrorToConsole: true,
   },
+  agentDiagnostics: {
+    enabled: false,
+  },
 };
 export interface PluginLike {
   app: App;
@@ -407,6 +425,10 @@ export interface PluginLike {
   resetPluginData(): Promise<void>;
   hasGraphRagRunner(): boolean;
   openGraphRagView(): void;
+  openAgentDiagnosticsView(): void;
+  getAgentDiagnosticsFilePath(): string;
+  writeAgentDiagnosticsSnapshot(reason: string): Promise<void>;
+  clearAgentDiagnosticsDetailedLogging(): Promise<void>;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   ensureRagRuntimeInitialized(): Promise<boolean>;
@@ -1001,7 +1023,56 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
+    this.buildAgentDiagnosticsSection(containerEl);
     this.buildPluginDataResetSection(containerEl);
+  }
+
+  private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsPanel(containerEl, t('agentDiagnosticsPanelTitle'), {
+      description: t('agentDiagnosticsPanelDesc'),
+      className: 'superpower-inside-agent-diagnostics-settings',
+    });
+    new Setting(section)
+      .setName(t('agentDiagnosticsToggle'))
+      .setDesc(t('agentDiagnosticsToggleDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.agentDiagnostics.enabled).onChange(async (value) => {
+          this.plugin.settings.agentDiagnostics.enabled = value;
+          await this.plugin.saveSettingsLight();
+          if (value) {
+            await this.plugin.writeAgentDiagnosticsSnapshot('settings-toggle');
+          }
+          this.buildGeneralTab(containerEl);
+        }),
+      );
+    new Setting(section)
+      .setName(t('agentDiagnosticsOpenView'))
+      .setDesc(t('agentDiagnosticsOpenViewDesc'))
+      .addButton((button) =>
+        button
+          .setButtonText(t('agentDiagnosticsOpenViewButton'))
+          .onClick(() => this.plugin.openAgentDiagnosticsView()),
+      );
+    section.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-path',
+      text: t('agentDiagnosticsFilePath', { path: this.plugin.getAgentDiagnosticsFilePath() }),
+    });
+    new Setting(section)
+      .setName(t('agentDiagnosticsWriteSnapshot'))
+      .setDesc(t('agentDiagnosticsWriteSnapshotDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('agentDiagnosticsWriteButton')).onClick(() => {
+          void this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
+        }),
+      );
+    new Setting(section)
+      .setName(t('agentDiagnosticsClearDetailedLogging'))
+      .setDesc(t('agentDiagnosticsClearDetailedLoggingDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('agentDiagnosticsClearButton')).onClick(() => {
+          void this.plugin.clearAgentDiagnosticsDetailedLogging();
+        }),
+      );
   }
 
   private buildPluginDataResetSection(containerEl: HTMLElement): void {
