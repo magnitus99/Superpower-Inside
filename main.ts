@@ -68,10 +68,7 @@ import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status
 import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
-import {
-  AGENT_DIAGNOSTICS_VIEW_TYPE,
-  AgentDiagnosticsView,
-} from './src/diagnostics/view';
+import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
 import {
   AgentDiagnosticsService,
   type AgentDiagnosticsBreadcrumbInput,
@@ -265,10 +262,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
-    this.registerView(
-      AGENT_DIAGNOSTICS_VIEW_TYPE,
-      (leaf) => new AgentDiagnosticsView(leaf, this),
-    );
+    this.registerView(AGENT_DIAGNOSTICS_VIEW_TYPE, (leaf) => new AgentDiagnosticsView(leaf, this));
 
     // 리본 아이콘
     this.registerView(GRAPH_RAG_VIEW_TYPE, (leaf) => new GraphRagView(leaf, this));
@@ -474,7 +468,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   getAgentDiagnosticsSnapshotText(): string {
-    const state = this.agentDiagnosticsService?.getSnapshotState() ?? this.createDisabledAgentDiagnosticsState();
+    const state =
+      this.agentDiagnosticsService?.getSnapshotState() ??
+      this.createDisabledAgentDiagnosticsState();
     return JSON.stringify(this.buildAgentDiagnosticsSnapshot(state), null, 2);
   }
 
@@ -816,35 +812,32 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.graphRagAbortController) {
       const cancelled = await this.awaitGraphRagCancellation();
       if (!cancelled) {
-        this.getLogger().warn('GraphRAG indexing did not stop within timeout during plugin reset.', {
-          source: 'settings.reset',
-        });
+        this.getLogger().warn(
+          'GraphRAG indexing did not stop within timeout during plugin reset.',
+          {
+            source: 'settings.reset',
+          },
+        );
       }
     }
 
     const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
     const activeIndexedDbNames = new Set<string>();
     const vectorStoreClear = this.vectorStore
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
-          hasDeletableIndexedDbStore(this.vectorStore)
-            ? this.vectorStore.deleteDatabase()
-            : this.vectorStore.clear()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
+        hasDeletableIndexedDbStore(this.vectorStore)
+          ? this.vectorStore.deleteDatabase()
+          : this.vectorStore.clear())
       : Promise.resolve();
     const knowledgeGraphClear = this.knowledgeGraphStore
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
-          hasDeletableIndexedDbStore(this.knowledgeGraphStore)
-            ? this.knowledgeGraphStore.deleteDatabase()
-            : this.knowledgeGraphStore.clear()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
+        hasDeletableIndexedDbStore(this.knowledgeGraphStore)
+          ? this.knowledgeGraphStore.deleteDatabase()
+          : this.knowledgeGraphStore.clear())
       : Promise.resolve();
     const bm25Clear = this.bm25Index
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
-          this.bm25Index.deleteDatabase()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
+        this.bm25Index.deleteDatabase())
       : Promise.resolve();
     const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
       ? this.embeddingProvider.deleteDatabase
@@ -1230,9 +1223,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.logging = normalizeLoggerConfig(
       data.logging as Partial<SuperpowerInsideSettings['logging']> | undefined,
     );
-    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(
-      data.agentDiagnostics,
-    );
+    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(data.agentDiagnostics);
     this.getLogger().configure(this.settings.logging);
     setLanguage(this.settings.language);
     this.getLogger().info('Settings loaded.', {
@@ -1783,14 +1774,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       // Vector store
       const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
-      await this.runRagRuntimeInitStep(
-        'legacy-vector-import',
-        () =>
-          importLegacyJsonVectorStore(
-            this.app.vault.adapter,
-            vectorStore,
-            '.superpower-inside/vectors.json',
-          ),
+      await this.runRagRuntimeInitStep('legacy-vector-import', () =>
+        importLegacyJsonVectorStore(
+          this.app.vault.adapter,
+          vectorStore,
+          '.superpower-inside/vectors.json',
+        ),
       );
       this.vectorStore = vectorStore;
       this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
@@ -1995,9 +1984,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.lastRagRuntimeInitFinishedAt = Date.now();
     } catch (err) {
       const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
-      this.lastRagRuntimeInitError = this.lastRagRuntimeInitError ?? (
-        err instanceof Error ? err.message : String(err)
-      );
+      this.lastRagRuntimeInitError =
+        this.lastRagRuntimeInitError ?? (err instanceof Error ? err.message : String(err));
       this.lastRagRuntimeInitFinishedAt = Date.now();
       this.getLogger().error(
         restored
@@ -2019,6 +2007,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return t('ragPerformanceThrottled');
     }
     if (status.running) {
+      const progress = status.progress;
+      if (progress && progress.totalFiles > 0) {
+        const completed = Math.min(progress.completedFiles, progress.totalFiles);
+        const phase = this.formatRagIndexingPhase(status.phase);
+        if (
+          !progress.eta ||
+          progress.eta.remainingMs === null ||
+          progress.eta.confidence === 'calculating' ||
+          progress.eta.confidence === 'low'
+        ) {
+          return t('ragIndexingRunningEtaCalculating', {
+            phase,
+            completed: String(completed),
+            total: String(progress.totalFiles),
+          });
+        }
+        return t('ragIndexingRunningWithEta', {
+          phase,
+          completed: String(completed),
+          total: String(progress.totalFiles),
+          eta: this.formatRagEtaDuration(progress.eta.remainingMs),
+        });
+      }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
     }
     if (status.lastResult) {
@@ -2035,6 +2046,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (phase === 'pending') return t('ragPhasePending');
     if (phase === 'all') return t('ragPhaseAll');
     return t('ragPhaseIdle');
+  }
+
+  private formatRagEtaDuration(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) {
+      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    }
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
 
   private clearRAG(): void {
@@ -2626,9 +2650,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   openAgentDiagnosticsView(): void {
     const existingLeaves = this.app.workspace.getLeavesOfType(AGENT_DIAGNOSTICS_VIEW_TYPE);
     const readableRootLeaf = existingLeaves.find(
-      (leaf) =>
-        this.isRootWorkspaceLeaf(leaf) &&
-        this.isReadableAgentDiagnosticsLeaf(leaf),
+      (leaf) => this.isRootWorkspaceLeaf(leaf) && this.isReadableAgentDiagnosticsLeaf(leaf),
     );
     if (readableRootLeaf) {
       void this.app.workspace.revealLeaf(readableRootLeaf);

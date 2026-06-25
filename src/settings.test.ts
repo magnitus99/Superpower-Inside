@@ -502,9 +502,7 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(status.detail).toBe('59/1406 파일 처리 중 (note.md) — 4%');
     expect(status.chunkDetail).toBe('청크 12개 저장 완료, 2개 실패');
-    expect(status.storageDetail).toBe(
-      '저장됨: 증거 12, 엔티티 38, 관계 21, 클레임 9, 거부 2',
-    );
+    expect(status.storageDetail).toBe('저장됨: 증거 12, 엔티티 38, 관계 21, 클레임 9, 거부 2');
   });
 
   it('GraphRAG live 상태는 실행 중이 아니면 비활성 패널 상태를 반환한다', () => {
@@ -868,5 +866,133 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(t('mcpToolExecutionPolicyDesc')).toContain('sent back to the LLM provider');
 
     setLanguage('ko');
+  });
+});
+
+describe('RAG indexing ETA settings label', () => {
+  it('formats running RAG indexing ETA in the settings status label', () => {
+    setLanguage('en');
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({
+        ragIndexingStatus: {
+          running: true,
+          phase: 'all',
+          queuedFiles: 0,
+          lastResult: null,
+          progress: {
+            event: 'batch-complete',
+            startedAtMs: 0,
+            nowMs: 10000,
+            totalFiles: 10,
+            completedFiles: 3,
+            currentFilePath: 'c.md',
+            currentFileIndex: 2,
+            currentFileTotalChunks: 1,
+            currentFileEmbeddedChunks: 0,
+            totalEstimatedChunks: 10,
+            completedEstimatedChunks: 3,
+            currentFileEstimatedChunks: 1,
+            totalPlannedChunks: 0,
+            completedPlannedChunks: 0,
+            currentFilePlannedChunks: 0,
+            planningComplete: false,
+            indexed: 3,
+            vectors: 20,
+            skipped: 0,
+            completedBatchDurationsMs: [500],
+            completedBatchChunkCounts: [1],
+            completedFileDurationsMs: [2000, 3000, 2500],
+            completedFileChunkCounts: [1, 1, 1],
+            completedFileEstimatedChunkCounts: [1, 1, 1],
+            completedFileActualChunkCounts: [1, 1, 1],
+            completedFileOverheadDurationsMs: [],
+            historicalMsPerChunk: null,
+            historicalChunkEstimateRatio: null,
+            historicalVariance: null,
+            eta: {
+              totalFiles: 10,
+              completedFiles: 3,
+              currentFileProgress: 0,
+              progressRatio: 0.3,
+              elapsedMs: 10000,
+              remainingMs: 17500,
+              estimatedCompletionMs: 27500,
+              confidence: 'medium',
+              basis: 'calibrated-estimate',
+              lowerRemainingMs: 14000,
+              upperRemainingMs: 21000,
+              confidenceReason: 'calibrated-estimate',
+            },
+          },
+        },
+      })),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
+      'Indexing: Full reindex - 3/10 files, ETA about 18s',
+    );
+  });
+
+  it('keeps low-confidence RAG indexing ETA in calculating state', () => {
+    setLanguage('en');
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({
+        ragIndexingStatus: {
+          running: true,
+          phase: 'all',
+          queuedFiles: 0,
+          lastResult: null,
+          progress: {
+            event: 'batch-complete',
+            startedAtMs: 0,
+            nowMs: 5000,
+            totalFiles: 4,
+            completedFiles: 0,
+            currentFileTotalChunks: 1,
+            currentFileEmbeddedChunks: 1,
+            totalEstimatedChunks: 100,
+            completedEstimatedChunks: 0,
+            currentFileEstimatedChunks: 1,
+            totalPlannedChunks: 0,
+            completedPlannedChunks: 0,
+            currentFilePlannedChunks: 0,
+            planningComplete: false,
+            indexed: 0,
+            vectors: 0,
+            skipped: 0,
+            completedBatchDurationsMs: [1000],
+            completedBatchChunkCounts: [1],
+            completedFileDurationsMs: [],
+            completedFileChunkCounts: [],
+            completedFileEstimatedChunkCounts: [],
+            completedFileActualChunkCounts: [],
+            completedFileOverheadDurationsMs: [],
+            historicalMsPerChunk: null,
+            historicalChunkEstimateRatio: null,
+            historicalVariance: null,
+            eta: {
+              totalFiles: 4,
+              completedFiles: 0,
+              currentFileProgress: 1,
+              progressRatio: 0.01,
+              elapsedMs: 5000,
+              remainingMs: 99000,
+              estimatedCompletionMs: 104000,
+              confidence: 'low',
+              basis: 'batch-rate',
+              lowerRemainingMs: 0,
+              upperRemainingMs: 198000,
+              confidenceReason: 'batch-rate-only',
+            },
+          },
+        },
+      })),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
+      'Indexing: Full reindex - 0/4 files, calculating ETA',
+    );
   });
 });

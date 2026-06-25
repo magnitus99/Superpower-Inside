@@ -2005,6 +2005,16 @@ pub fn plan_index_pending_files_json(file_paths_json: &str, update_paths_json: &
 /// graph store record key snapshot에서 삭제할 record index plan을 만든다.
 #[must_use]
 #[wasm_bindgen]
+pub fn plan_rag_indexing_eta_json(input_json: &str) -> String {
+    let Some(input) = parse_rag_indexing_eta_input_json(input_json) else {
+        return String::new();
+    };
+    serialize_rag_indexing_eta_plan_json(&plan_rag_indexing_eta(&input))
+}
+
+/// RAG vector indexing progress snapshot에서 ETA plan JSON을 만든다.
+#[must_use]
+#[wasm_bindgen]
 pub fn plan_graph_deletion_indices_json(
     record_keys_json: &str,
     requested_keys_json: &str,
@@ -7233,6 +7243,148 @@ struct IndexPendingPlan {
     skipped: usize,
 }
 
+/// RAG vector indexing ETA input snapshot.
+struct RagIndexingEtaInput {
+    /// Host timestamp at progress emission.
+    now_ms: f64,
+    /// Host timestamp when indexing progress tracking started.
+    started_at_ms: f64,
+    /// Total file count in the current indexing job.
+    total_files: usize,
+    /// Fully processed file count in the current indexing job.
+    completed_files: usize,
+    /// Chunk count for the current file.
+    current_file_total_chunks: usize,
+    /// Embedded chunk count for the current file.
+    current_file_embedded_chunks: usize,
+    /// Estimated chunk count for the current indexing job.
+    total_estimated_chunks: usize,
+    /// Estimated chunk count for fully processed files.
+    completed_estimated_chunks: usize,
+    /// Estimated chunk count for the current file before exact chunking is known.
+    current_file_estimated_chunks: usize,
+    /// Exact planned chunk count for the current indexing job, when precomputed.
+    total_planned_chunks: usize,
+    /// Exact planned chunk count for fully processed files.
+    completed_planned_chunks: usize,
+    /// Whether the host finished the exact chunk planning pass.
+    planning_complete: bool,
+    /// Completed embedding batch durations.
+    completed_batch_durations_ms: Vec<f64>,
+    /// Chunk counts for completed embedding batches.
+    completed_batch_chunk_counts: Vec<usize>,
+    /// Completed file durations.
+    completed_file_durations_ms: Vec<f64>,
+    /// Actual or estimated chunk counts for completed file durations.
+    completed_file_chunk_counts: Vec<usize>,
+    /// Byte-estimated chunk counts for completed files.
+    completed_file_estimated_chunk_counts: Vec<usize>,
+    /// Actual chunk counts for completed files.
+    completed_file_actual_chunk_counts: Vec<usize>,
+    /// Completed non-embedding overhead durations per file.
+    completed_file_overhead_durations_ms: Vec<f64>,
+    /// Historical milliseconds per chunk for matching provider/model/chunk settings.
+    historical_ms_per_chunk: Option<f64>,
+    /// Historical actual/estimated chunk ratio for matching provider/model/chunk settings.
+    historical_chunk_estimate_ratio: Option<f64>,
+    /// Historical ETA rate variance for matching provider/model/chunk settings.
+    historical_variance: Option<f64>,
+}
+
+/// Estimated milliseconds per chunk-like work unit.
+#[derive(Clone, Copy)]
+struct RagIndexingEtaRate {
+    /// Average milliseconds per work unit.
+    ms_per_chunk: f64,
+    /// Number of samples used for the rate.
+    sample_count: usize,
+    /// Number of chunk-like work units represented by the samples.
+    chunk_count: usize,
+    /// Coefficient of variation across per-sample rates.
+    coefficient_of_variation: f64,
+}
+
+/// RAG indexing ETA work basis.
+#[derive(Clone, Copy)]
+enum RagIndexingEtaBasis {
+    /// Exact planned chunk counts are available.
+    PlannedChunks,
+    /// Remaining work is based on calibrated byte-derived estimates.
+    CalibratedEstimate,
+    /// Remaining time is based on embedding batch throughput.
+    BatchRate,
+    /// Remaining time is based on elapsed progress.
+    ElapsedRate,
+}
+
+impl RagIndexingEtaBasis {
+    /// Returns the JSON string label for this ETA basis.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PlannedChunks => "planned-chunks",
+            Self::CalibratedEstimate => "calibrated-estimate",
+            Self::BatchRate => "batch-rate",
+            Self::ElapsedRate => "elapsed-rate",
+        }
+    }
+}
+
+/// RAG vector indexing ETA confidence label.
+#[derive(Clone, Copy)]
+enum RagIndexingEtaConfidence {
+    /// No reliable sample exists yet.
+    Calculating,
+    /// ETA is based on a weak partial sample.
+    Low,
+    /// ETA is based on a small completed-file sample.
+    Medium,
+    /// ETA is based on several completed files.
+    High,
+    /// Indexing is already complete.
+    Complete,
+}
+
+impl RagIndexingEtaConfidence {
+    /// Returns the JSON string label for this confidence level.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Calculating => "calculating",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+/// RAG vector indexing ETA output plan.
+struct RagIndexingEtaPlan {
+    /// Clamped total file count.
+    total_files: usize,
+    /// Clamped completed file count.
+    completed_files: usize,
+    /// Current file partial progress in `[0, 1]`.
+    current_file_progress: f64,
+    /// Overall indexing progress ratio in `[0, 1]`.
+    progress_ratio: f64,
+    /// Elapsed indexing time in milliseconds.
+    elapsed_ms: f64,
+    /// Estimated remaining milliseconds, when available.
+    remaining_ms: Option<f64>,
+    /// Estimated completion timestamp in milliseconds, when available.
+    estimated_completion_ms: Option<f64>,
+    /// Estimate confidence.
+    confidence: RagIndexingEtaConfidence,
+    /// Work and speed model basis used for the estimate.
+    basis: RagIndexingEtaBasis,
+    /// Lower remaining-time bound in milliseconds, when available.
+    lower_remaining_ms: Option<f64>,
+    /// Upper remaining-time bound in milliseconds, when available.
+    upper_remaining_ms: Option<f64>,
+    /// Machine-readable confidence reason.
+    confidence_reason: &'static str,
+}
+
 /// `GraphRAG` status file index record snapshot.
 struct GraphRagStatusFileRecordInput {
     /// file path.
@@ -7871,6 +8023,636 @@ fn plan_index_pending_files(file_paths: &[String], update_paths: &[String]) -> I
 }
 
 /// graph store record key와 요청 key로 삭제할 record index 목록을 만든다.
+/// RAG vector indexing ETA plan을 계산한다.
+/// ETA work units and progress after choosing the strongest available basis.
+struct RagIndexingEtaWorkEstimate {
+    /// Work basis represented by the units.
+    basis: RagIndexingEtaBasis,
+    /// Completed chunk-like work units including current file partial work.
+    progress_units: f64,
+    /// Remaining chunk-like work units.
+    remaining_units: f64,
+    /// Overall progress ratio.
+    progress_ratio: f64,
+}
+
+/// Observed actual/estimated chunk calibration.
+struct RagIndexingEtaCalibration {
+    /// Shrunk actual/estimated chunk ratio.
+    ratio: f64,
+    /// Mean absolute ratio residual.
+    residual: f64,
+}
+
+/// Remaining ETA calculation before confidence labeling.
+struct RagIndexingEtaEstimate {
+    /// Selected speed basis.
+    basis: RagIndexingEtaBasis,
+    /// Estimated remaining milliseconds.
+    remaining_ms: f64,
+    /// Rate sample used for confidence.
+    rate: Option<RagIndexingEtaRate>,
+}
+
+/// A single duration/chunk sample for robust ETA rate estimation.
+struct RagIndexingEtaRateSample {
+    /// Sample duration in milliseconds.
+    duration_ms: f64,
+    /// Sample chunk count.
+    chunk_count: usize,
+    /// Sample milliseconds per chunk.
+    ms_per_chunk: f64,
+}
+
+/// Plans the RAG vector indexing ETA from host-collected progress samples.
+fn plan_rag_indexing_eta(input: &RagIndexingEtaInput) -> RagIndexingEtaPlan {
+    let total_files = input.total_files;
+    let completed_files = input.completed_files.min(total_files);
+    let elapsed_ms = (input.now_ms - input.started_at_ms).max(0.0).round();
+    let current_file_progress = current_file_progress(input, completed_files);
+    let work = estimate_rag_indexing_eta_work(input, current_file_progress);
+
+    if total_files == 0 || completed_files >= total_files {
+        return RagIndexingEtaPlan {
+            total_files,
+            completed_files,
+            current_file_progress: 0.0,
+            progress_ratio: 1.0,
+            elapsed_ms,
+            remaining_ms: Some(0.0),
+            estimated_completion_ms: Some(input.now_ms),
+            confidence: RagIndexingEtaConfidence::Complete,
+            basis: complete_eta_basis(input),
+            lower_remaining_ms: Some(0.0),
+            upper_remaining_ms: Some(0.0),
+            confidence_reason: "complete",
+        };
+    }
+
+    let estimate = estimate_rag_indexing_remaining_time(input, &work, completed_files, elapsed_ms);
+    let Some(estimate) = estimate else {
+        return RagIndexingEtaPlan {
+            total_files,
+            completed_files,
+            current_file_progress,
+            progress_ratio: work.progress_ratio,
+            elapsed_ms,
+            remaining_ms: None,
+            estimated_completion_ms: None,
+            confidence: RagIndexingEtaConfidence::Calculating,
+            basis: work.basis,
+            lower_remaining_ms: None,
+            upper_remaining_ms: None,
+            confidence_reason: "insufficient-samples",
+        };
+    };
+
+    let (confidence, confidence_reason) =
+        rag_indexing_eta_confidence(input, &work, &estimate, completed_files, total_files);
+    let (lower_remaining_ms, upper_remaining_ms) = rag_indexing_eta_interval(
+        estimate.remaining_ms,
+        confidence,
+        estimate.rate.as_ref(),
+        input,
+    );
+    RagIndexingEtaPlan {
+        total_files,
+        completed_files,
+        current_file_progress,
+        progress_ratio: work.progress_ratio,
+        elapsed_ms,
+        remaining_ms: Some(estimate.remaining_ms),
+        estimated_completion_ms: Some(input.now_ms + estimate.remaining_ms),
+        confidence,
+        basis: estimate.basis,
+        lower_remaining_ms: Some(lower_remaining_ms),
+        upper_remaining_ms: Some(upper_remaining_ms),
+        confidence_reason,
+    }
+}
+
+/// Current file progress를 `[0, 1]`로 제한한다.
+fn current_file_progress(input: &RagIndexingEtaInput, completed_files: usize) -> f64 {
+    if completed_files >= input.total_files || input.current_file_total_chunks == 0 {
+        return 0.0;
+    }
+    let embedded_chunks = input
+        .current_file_embedded_chunks
+        .min(input.current_file_total_chunks);
+    let Some(embedded) = usize_to_f64(embedded_chunks) else {
+        return 0.0;
+    };
+    let Some(total) = usize_to_f64(input.current_file_total_chunks) else {
+        return 0.0;
+    };
+    clamp_unit_score(embedded / total)
+}
+
+/// Complete jobs keep their strongest available work basis.
+const fn complete_eta_basis(input: &RagIndexingEtaInput) -> RagIndexingEtaBasis {
+    if input.planning_complete {
+        RagIndexingEtaBasis::PlannedChunks
+    } else if input.historical_chunk_estimate_ratio.is_some()
+        || !input.completed_file_actual_chunk_counts.is_empty()
+    {
+        RagIndexingEtaBasis::CalibratedEstimate
+    } else {
+        RagIndexingEtaBasis::ElapsedRate
+    }
+}
+
+/// Chooses exact planned chunks, calibrated estimates, or raw estimates for work progress.
+fn estimate_rag_indexing_eta_work(
+    input: &RagIndexingEtaInput,
+    current_file_progress: f64,
+) -> RagIndexingEtaWorkEstimate {
+    if input.planning_complete && input.total_planned_chunks > 0 {
+        return planned_rag_indexing_eta_work(input, current_file_progress);
+    }
+    if let Some(calibration) = observed_rag_indexing_eta_calibration(input) {
+        return calibrated_rag_indexing_eta_work(
+            input,
+            current_file_progress,
+            Some(calibration.ratio),
+        );
+    }
+    if let Some(ratio) = finite_positive(input.historical_chunk_estimate_ratio) {
+        return calibrated_rag_indexing_eta_work(input, current_file_progress, Some(ratio));
+    }
+    raw_estimated_rag_indexing_eta_work(input, current_file_progress)
+}
+
+/// Builds a planned-chunk work estimate.
+fn planned_rag_indexing_eta_work(
+    input: &RagIndexingEtaInput,
+    current_file_progress: f64,
+) -> RagIndexingEtaWorkEstimate {
+    let total_units = usize_to_f64(input.total_planned_chunks)
+        .filter(|total| *total > 0.0)
+        .unwrap_or(1.0);
+    let completed_planned_chunks = input
+        .completed_planned_chunks
+        .min(input.total_planned_chunks);
+    let completed_units = usize_to_f64(completed_planned_chunks).unwrap_or(0.0);
+    let current_units =
+        usize_to_f64(input.current_file_total_chunks).unwrap_or(0.0) * current_file_progress;
+    let progress_units = (completed_units + current_units).clamp(0.0, total_units);
+    let remaining_units = (total_units - progress_units).max(0.0);
+    RagIndexingEtaWorkEstimate {
+        basis: RagIndexingEtaBasis::PlannedChunks,
+        progress_units,
+        remaining_units,
+        progress_ratio: clamp_unit_score(progress_units / total_units),
+    }
+}
+
+/// Builds a calibrated-estimate work estimate.
+fn calibrated_rag_indexing_eta_work(
+    input: &RagIndexingEtaInput,
+    current_file_progress: f64,
+    ratio: Option<f64>,
+) -> RagIndexingEtaWorkEstimate {
+    let ratio = ratio.unwrap_or(1.0).max(0.05);
+    let completed_actual_chunks = input
+        .completed_file_actual_chunk_counts
+        .iter()
+        .copied()
+        .fold(0_usize, usize::saturating_add);
+    let completed_units = if completed_actual_chunks > 0 {
+        usize_to_f64(completed_actual_chunks).unwrap_or(0.0)
+    } else {
+        usize_to_f64(input.completed_estimated_chunks).unwrap_or(0.0) * ratio
+    };
+    let current_total_units = if input.current_file_total_chunks > 0 {
+        usize_to_f64(input.current_file_total_chunks).unwrap_or(0.0)
+    } else {
+        usize_to_f64(input.current_file_estimated_chunks).unwrap_or(0.0) * ratio
+    };
+    let current_units = current_total_units * current_file_progress;
+    let total_estimated_chunks = input.total_estimated_chunks.max(input.total_files);
+    let completed_estimated_chunks = input.completed_estimated_chunks.min(total_estimated_chunks);
+    let remaining_after_completed =
+        total_estimated_chunks.saturating_sub(completed_estimated_chunks);
+    let remaining_units = usize_to_f64(remaining_after_completed)
+        .unwrap_or(0.0)
+        .mul_add(ratio, -current_units)
+        .max(0.0);
+    let total_units = (completed_units + current_units + remaining_units).max(1.0);
+    let progress_units = (completed_units + current_units).clamp(0.0, total_units);
+    RagIndexingEtaWorkEstimate {
+        basis: RagIndexingEtaBasis::CalibratedEstimate,
+        progress_units,
+        remaining_units: (total_units - progress_units).max(0.0),
+        progress_ratio: clamp_unit_score(progress_units / total_units),
+    }
+}
+
+/// Builds a raw estimated work estimate when no calibration exists.
+fn raw_estimated_rag_indexing_eta_work(
+    input: &RagIndexingEtaInput,
+    current_file_progress: f64,
+) -> RagIndexingEtaWorkEstimate {
+    let total_estimated_chunks = input.total_estimated_chunks.max(input.total_files);
+    let completed_estimated_chunks = input.completed_estimated_chunks.min(total_estimated_chunks);
+    let current_completed_chunks =
+        current_file_completed_estimated_chunks(input, current_file_progress);
+    let progress_units = completed_estimated_chunks_to_f64(completed_estimated_chunks)
+        .map_or(0.0, |completed| completed + current_completed_chunks);
+    let progress_ratio = estimated_chunk_progress_ratio(total_estimated_chunks, progress_units);
+    let remaining_units =
+        remaining_estimated_chunk_units(total_estimated_chunks, progress_units).unwrap_or(0.0);
+    RagIndexingEtaWorkEstimate {
+        basis: RagIndexingEtaBasis::ElapsedRate,
+        progress_units,
+        remaining_units,
+        progress_ratio,
+    }
+}
+
+/// Overall file progress ratio를 계산한다.
+fn current_file_completed_estimated_chunks(
+    input: &RagIndexingEtaInput,
+    current_file_progress: f64,
+) -> f64 {
+    let estimated_chunks = input
+        .current_file_estimated_chunks
+        .max(input.current_file_total_chunks);
+    let Some(estimated_chunks) = usize_to_f64(estimated_chunks) else {
+        return 0.0;
+    };
+    estimated_chunks * current_file_progress.clamp(0.0, 1.0)
+}
+
+/// Estimated chunk work 기준 전체 진행률을 계산한다.
+fn estimated_chunk_progress_ratio(total_estimated_chunks: usize, progress_chunks: f64) -> f64 {
+    if total_estimated_chunks == 0 {
+        return 1.0;
+    }
+    let Some(total) = usize_to_f64(total_estimated_chunks) else {
+        return 0.0;
+    };
+    clamp_unit_score(progress_chunks.max(0.0) / total)
+}
+
+/// Completed file units plus current file partial unit.
+fn completed_estimated_chunks_to_f64(completed_estimated_chunks: usize) -> Option<f64> {
+    usize_to_f64(completed_estimated_chunks)
+}
+
+/// Remaining file-equivalent units.
+fn remaining_estimated_chunk_units(
+    total_estimated_chunks: usize,
+    progress_chunks: f64,
+) -> Option<f64> {
+    let total = usize_to_f64(total_estimated_chunks)?;
+    Some((total - progress_chunks.max(0.0)).max(0.0))
+}
+
+/// Positive finite values의 평균을 계산한다.
+fn average_completed_file_chunk_ms(
+    durations_ms: &[f64],
+    chunk_counts: &[usize],
+) -> Option<RagIndexingEtaRate> {
+    weighted_average_ms_per_chunk(durations_ms, chunk_counts)
+}
+
+/// Completed batch samples에서 chunk당 평균 시간을 계산한다.
+fn average_completed_batch_chunk_ms(
+    durations_ms: &[f64],
+    chunk_counts: &[usize],
+) -> Option<RagIndexingEtaRate> {
+    weighted_average_ms_per_chunk(durations_ms, chunk_counts)
+}
+
+/// Duration/unit samples에서 weighted average milliseconds per chunk를 계산한다.
+fn weighted_average_ms_per_chunk(
+    durations_ms: &[f64],
+    chunk_counts: &[usize],
+) -> Option<RagIndexingEtaRate> {
+    let mut samples = Vec::new();
+    for (duration_ms, chunk_count) in durations_ms.iter().zip(chunk_counts.iter().copied()) {
+        if !duration_ms.is_finite() || *duration_ms <= 0.0 || chunk_count == 0 {
+            continue;
+        }
+        let chunk_units = usize_to_f64(chunk_count)?;
+        samples.push(RagIndexingEtaRateSample {
+            duration_ms: *duration_ms,
+            chunk_count,
+            ms_per_chunk: *duration_ms / chunk_units,
+        });
+    }
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(|left, right| left.ms_per_chunk.total_cmp(&right.ms_per_chunk));
+    let trim = usize::from(samples.len() >= 5);
+    let observed_sample_count = samples.len();
+    let observed_chunk_count = samples
+        .iter()
+        .map(|sample| sample.chunk_count)
+        .fold(0_usize, usize::saturating_add);
+    let selected_len = samples.len().saturating_sub(trim.saturating_mul(2));
+    let mut total_duration = 0.0;
+    let mut total_chunks = 0_usize;
+    let mut rates = Vec::with_capacity(selected_len);
+    for sample in samples.iter().skip(trim).take(selected_len) {
+        total_duration += sample.duration_ms;
+        total_chunks = total_chunks.saturating_add(sample.chunk_count);
+        rates.push(sample.ms_per_chunk);
+    }
+    let total_chunk_units = usize_to_f64(total_chunks)?;
+    if total_chunk_units <= 0.0 {
+        return None;
+    }
+    let ms_per_chunk = total_duration / total_chunk_units;
+    Some(RagIndexingEtaRate {
+        ms_per_chunk,
+        sample_count: observed_sample_count,
+        chunk_count: observed_chunk_count,
+        coefficient_of_variation: coefficient_of_variation(&rates, ms_per_chunk),
+    })
+}
+
+/// Estimates remaining milliseconds from phase-aware speed samples.
+fn estimate_rag_indexing_remaining_time(
+    input: &RagIndexingEtaInput,
+    work: &RagIndexingEtaWorkEstimate,
+    completed_files: usize,
+    elapsed_ms: f64,
+) -> Option<RagIndexingEtaEstimate> {
+    let batch_rate = average_completed_batch_chunk_ms(
+        &input.completed_batch_durations_ms,
+        &input.completed_batch_chunk_counts,
+    );
+    let file_rate = average_completed_file_chunk_ms(
+        &input.completed_file_durations_ms,
+        &input.completed_file_chunk_counts,
+    );
+    let selected_rate = select_rag_indexing_eta_rate(batch_rate, file_rate);
+    let overhead_ms_per_file = trimmed_average_ms(&input.completed_file_overhead_durations_ms)
+        .unwrap_or(0.0)
+        .max(0.0);
+    if let Some(rate) = selected_rate {
+        let basis = match work.basis {
+            RagIndexingEtaBasis::PlannedChunks => RagIndexingEtaBasis::PlannedChunks,
+            RagIndexingEtaBasis::CalibratedEstimate => RagIndexingEtaBasis::CalibratedEstimate,
+            RagIndexingEtaBasis::ElapsedRate | RagIndexingEtaBasis::BatchRate => {
+                RagIndexingEtaBasis::BatchRate
+            }
+        };
+        let remaining_ms = remaining_ms_from_rate(
+            input,
+            work,
+            completed_files,
+            rate.ms_per_chunk,
+            overhead_ms_per_file,
+        )?;
+        return Some(RagIndexingEtaEstimate {
+            basis,
+            remaining_ms,
+            rate: Some(rate),
+        });
+    }
+    if let Some(historical_ms_per_chunk) = finite_positive(input.historical_ms_per_chunk) {
+        let remaining_ms = remaining_ms_from_rate(
+            input,
+            work,
+            completed_files,
+            historical_ms_per_chunk,
+            overhead_ms_per_file,
+        )?;
+        return Some(RagIndexingEtaEstimate {
+            basis: work.basis,
+            remaining_ms,
+            rate: None,
+        });
+    }
+    if work.progress_units > 0.0 && elapsed_ms > 0.0 {
+        let elapsed_rate = elapsed_ms / work.progress_units;
+        let remaining_ms = round_non_negative_millis(work.remaining_units * elapsed_rate)?;
+        return Some(RagIndexingEtaEstimate {
+            basis: RagIndexingEtaBasis::ElapsedRate,
+            remaining_ms,
+            rate: None,
+        });
+    }
+    None
+}
+
+/// Chooses the most stable current run rate sample.
+const fn select_rag_indexing_eta_rate(
+    batch_rate: Option<RagIndexingEtaRate>,
+    file_rate: Option<RagIndexingEtaRate>,
+) -> Option<RagIndexingEtaRate> {
+    match (batch_rate, file_rate) {
+        (Some(batch), Some(file)) => {
+            if batch.sample_count >= 3 || file.sample_count < 3 {
+                Some(batch)
+            } else {
+                Some(file)
+            }
+        }
+        (Some(batch), None) => Some(batch),
+        (None, Some(file)) => Some(file),
+        (None, None) => None,
+    }
+}
+
+/// Computes remaining milliseconds from chunk rate and per-file overhead.
+fn remaining_ms_from_rate(
+    input: &RagIndexingEtaInput,
+    work: &RagIndexingEtaWorkEstimate,
+    completed_files: usize,
+    ms_per_chunk: f64,
+    overhead_ms_per_file: f64,
+) -> Option<f64> {
+    let remaining_files = input.total_files.saturating_sub(completed_files);
+    let remaining_file_units = usize_to_f64(remaining_files).unwrap_or(0.0);
+    round_non_negative_millis(
+        work.remaining_units
+            .mul_add(ms_per_chunk, remaining_file_units * overhead_ms_per_file),
+    )
+}
+
+/// Labels ETA confidence and reason from basis, progress, variance, and calibration quality.
+fn rag_indexing_eta_confidence(
+    input: &RagIndexingEtaInput,
+    work: &RagIndexingEtaWorkEstimate,
+    estimate: &RagIndexingEtaEstimate,
+    completed_files: usize,
+    total_files: usize,
+) -> (RagIndexingEtaConfidence, &'static str) {
+    let rate_sample_count = estimate.rate.as_ref().map_or(0, |rate| rate.sample_count);
+    let rate_chunk_count = estimate.rate.as_ref().map_or(0, |rate| rate.chunk_count);
+    let rate_variation = estimate.rate.as_ref().map_or_else(
+        || input.historical_variance.unwrap_or(1.0).sqrt(),
+        |rate| rate.coefficient_of_variation,
+    );
+    match estimate.basis {
+        RagIndexingEtaBasis::PlannedChunks => {
+            if input.planning_complete
+                && work.progress_ratio >= 0.2
+                && rate_sample_count >= 5
+                && rate_chunk_count >= 50
+                && rate_variation <= 0.15
+                && completed_files < total_files
+            {
+                (RagIndexingEtaConfidence::High, "planned-stable")
+            } else if input.planning_complete
+                && rate_sample_count >= 3
+                && work.progress_ratio >= 0.05
+            {
+                if rate_variation > 0.35 {
+                    (RagIndexingEtaConfidence::Medium, "planned-variable-rate")
+                } else {
+                    (RagIndexingEtaConfidence::Medium, "planned-partial")
+                }
+            } else {
+                (RagIndexingEtaConfidence::Low, "insufficient-samples")
+            }
+        }
+        RagIndexingEtaBasis::CalibratedEstimate => {
+            if rate_sample_count >= 3 && work.progress_ratio >= 0.05 {
+                if observed_rag_indexing_eta_calibration(input)
+                    .is_some_and(|calibration| calibration.residual > 0.35)
+                {
+                    (RagIndexingEtaConfidence::Medium, "calibration-variable")
+                } else {
+                    (RagIndexingEtaConfidence::Medium, "calibrated-estimate")
+                }
+            } else {
+                (RagIndexingEtaConfidence::Low, "calibrated-estimate")
+            }
+        }
+        RagIndexingEtaBasis::BatchRate => (RagIndexingEtaConfidence::Low, "batch-rate-only"),
+        RagIndexingEtaBasis::ElapsedRate => (RagIndexingEtaConfidence::Low, "elapsed-rate-only"),
+    }
+}
+
+/// Computes a confidence interval for the remaining estimate.
+fn rag_indexing_eta_interval(
+    remaining_ms: f64,
+    confidence: RagIndexingEtaConfidence,
+    rate: Option<&RagIndexingEtaRate>,
+    input: &RagIndexingEtaInput,
+) -> (f64, f64) {
+    let variation = rate.map_or_else(
+        || input.historical_variance.unwrap_or(0.25).sqrt(),
+        |rate| rate.coefficient_of_variation,
+    );
+    let factor = match confidence {
+        RagIndexingEtaConfidence::High => (variation * 1.96).clamp(0.05, 0.10),
+        RagIndexingEtaConfidence::Medium => (variation * 1.96).clamp(0.20, 0.60),
+        RagIndexingEtaConfidence::Low | RagIndexingEtaConfidence::Calculating => {
+            (variation * 1.96).clamp(0.50, 1.00)
+        }
+        RagIndexingEtaConfidence::Complete => 0.0,
+    };
+    (
+        (remaining_ms * (1.0 - factor)).max(0.0).round(),
+        (remaining_ms * (1.0 + factor)).max(0.0).round(),
+    )
+}
+
+/// Observes actual/estimated chunk calibration with shrinkage toward a prior.
+fn observed_rag_indexing_eta_calibration(
+    input: &RagIndexingEtaInput,
+) -> Option<RagIndexingEtaCalibration> {
+    let mut actual_total = 0.0;
+    let mut estimated_total = 0.0;
+    let mut ratios = Vec::new();
+    for (estimated, actual) in input
+        .completed_file_estimated_chunk_counts
+        .iter()
+        .copied()
+        .zip(input.completed_file_actual_chunk_counts.iter().copied())
+    {
+        if estimated == 0 || actual == 0 {
+            continue;
+        }
+        let estimated = usize_to_f64(estimated)?;
+        let actual = usize_to_f64(actual)?;
+        estimated_total += estimated;
+        actual_total += actual;
+        ratios.push(actual / estimated);
+    }
+    if estimated_total <= 0.0 || actual_total <= 0.0 {
+        return None;
+    }
+    let observed_ratio = actual_total / estimated_total;
+    let prior_ratio = finite_positive(input.historical_chunk_estimate_ratio).unwrap_or(1.0);
+    let sample_count_f64 = usize_to_f64(ratios.len()).unwrap_or(0.0);
+    let shrinkage = sample_count_f64 / (sample_count_f64 + 4.0);
+    let ratio = observed_ratio * shrinkage + prior_ratio * (1.0 - shrinkage);
+    let residual = mean_absolute_ratio_residual(&ratios, observed_ratio);
+    Some(RagIndexingEtaCalibration {
+        ratio: ratio.max(0.05),
+        residual,
+    })
+}
+
+/// Mean absolute residual for actual/estimated ratio observations.
+fn mean_absolute_ratio_residual(ratios: &[f64], observed_ratio: f64) -> f64 {
+    if ratios.is_empty() || observed_ratio <= 0.0 {
+        return 0.0;
+    }
+    let total = ratios
+        .iter()
+        .map(|ratio| ((*ratio - observed_ratio).abs()) / observed_ratio)
+        .sum::<f64>();
+    total / usize_to_f64(ratios.len()).unwrap_or(1.0)
+}
+
+/// Trimmed average for non-chunk overhead samples.
+fn trimmed_average_ms(values: &[f64]) -> Option<f64> {
+    let mut samples = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .collect::<Vec<_>>();
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(f64::total_cmp);
+    let trim = usize::from(samples.len() >= 5);
+    let selected_len = samples.len().saturating_sub(trim.saturating_mul(2));
+    let count = usize_to_f64(selected_len)?;
+    Some(samples.iter().skip(trim).take(selected_len).sum::<f64>() / count)
+}
+
+/// Coefficient of variation for sample rates.
+fn coefficient_of_variation(values: &[f64], mean: f64) -> f64 {
+    if values.len() < 2 || mean <= 0.0 || !mean.is_finite() {
+        return 0.0;
+    }
+    let count = usize_to_f64(values.len()).unwrap_or(1.0);
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = *value - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / count;
+    variance.sqrt() / mean
+}
+
+/// Returns finite positive optional values.
+fn finite_positive(value: Option<f64>) -> Option<f64> {
+    value.filter(|number| number.is_finite() && *number > 0.0)
+}
+
+// Removed old remaining-chunk helper; ETA now uses estimated chunk work units.
+
+/// Millisecond estimate를 non-negative integer-like JSON number로 반올림한다.
+const fn round_non_negative_millis(value: f64) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    Some(value.max(0.0).round())
+}
+
+/// graph store record key? ?붿껌 key濡???젣??record index 紐⑸줉??留뚮뱺??
 fn plan_graph_deletion_indices(record_keys: &[String], requested_keys: &[String]) -> Vec<usize> {
     if record_keys.is_empty() || requested_keys.is_empty() {
         return Vec::new();
@@ -10328,6 +11110,33 @@ fn serialize_index_pending_plan_json(plan: &IndexPendingPlan) -> String {
 }
 
 /// `GraphRAG` run file selection plan을 `JSON` 문자열로 serialize한다.
+/// RAG indexing ETA plan을 JSON 문자열로 serialize한다.
+fn serialize_rag_indexing_eta_plan_json(plan: &RagIndexingEtaPlan) -> String {
+    format!(
+        "{{\"totalFiles\":{},\"completedFiles\":{},\"currentFileProgress\":{},\"progressRatio\":{},\"elapsedMs\":{},\"remainingMs\":{},\"estimatedCompletionMs\":{},\"confidence\":\"{}\",\"basis\":\"{}\",\"lowerRemainingMs\":{},\"upperRemainingMs\":{},\"confidenceReason\":\"{}\"}}",
+        plan.total_files,
+        plan.completed_files,
+        finite_json_number(plan.current_file_progress).unwrap_or_else(|| "0".to_owned()),
+        finite_json_number(plan.progress_ratio).unwrap_or_else(|| "0".to_owned()),
+        finite_json_number(plan.elapsed_ms).unwrap_or_else(|| "0".to_owned()),
+        optional_finite_json_number_string(plan.remaining_ms),
+        optional_finite_json_number_string(plan.estimated_completion_ms),
+        plan.confidence.as_str(),
+        plan.basis.as_str(),
+        optional_finite_json_number_string(plan.lower_remaining_ms),
+        optional_finite_json_number_string(plan.upper_remaining_ms),
+        escape_json_string(plan.confidence_reason),
+    )
+}
+
+/// Optional finite JSON number를 문자열로 serialize한다.
+fn optional_finite_json_number_string(value: Option<f64>) -> String {
+    value
+        .and_then(finite_json_number)
+        .unwrap_or_else(|| "null".to_owned())
+}
+
+/// `GraphRAG` run file selection plan??`JSON` 臾몄옄?대줈 serialize?쒕떎.
 fn serialize_graph_rag_run_file_selection_plan_json(plan: &GraphRagRunFileSelectionPlan) -> String {
     format!(
         "{{\"candidateFilePaths\":{},\"selectedFilePaths\":{}}}",
@@ -16086,6 +16895,61 @@ fn parse_raw_string_array_json(payload: &str) -> Option<Vec<String>> {
 }
 
 /// finite number JSON array를 파싱한다.
+/// RAG indexing ETA input JSON을 파싱한다.
+fn parse_rag_indexing_eta_input_json(payload: &str) -> Option<RagIndexingEtaInput> {
+    let value = serde_json::from_str::<JsonValue>(payload).ok()?;
+    let object = value.as_object()?;
+    Some(RagIndexingEtaInput {
+        now_ms: json_finite_number_field(object, "nowMs")?,
+        started_at_ms: json_finite_number_field(object, "startedAtMs")?,
+        total_files: json_usize_field(object, "totalFiles")?,
+        completed_files: json_usize_field(object, "completedFiles")?,
+        current_file_total_chunks: json_usize_field(object, "currentFileTotalChunks")?,
+        current_file_embedded_chunks: json_usize_field(object, "currentFileEmbeddedChunks")?,
+        total_estimated_chunks: json_usize_field(object, "totalEstimatedChunks")?,
+        completed_estimated_chunks: json_usize_field(object, "completedEstimatedChunks")?,
+        current_file_estimated_chunks: json_usize_field(object, "currentFileEstimatedChunks")?,
+        total_planned_chunks: json_usize_field(object, "totalPlannedChunks")?,
+        completed_planned_chunks: json_usize_field(object, "completedPlannedChunks")?,
+        planning_complete: object.get("planningComplete")?.as_bool()?,
+        completed_batch_durations_ms: parse_finite_number_array_value(
+            object.get("completedBatchDurationsMs")?,
+        )?,
+        completed_batch_chunk_counts: parse_usize_array_value(
+            object.get("completedBatchChunkCounts")?,
+        )?,
+        completed_file_durations_ms: parse_finite_number_array_value(
+            object.get("completedFileDurationsMs")?,
+        )?,
+        completed_file_chunk_counts: parse_usize_array_value(
+            object.get("completedFileChunkCounts")?,
+        )?,
+        completed_file_estimated_chunk_counts: parse_usize_array_value(
+            object.get("completedFileEstimatedChunkCounts")?,
+        )?,
+        completed_file_actual_chunk_counts: parse_usize_array_value(
+            object.get("completedFileActualChunkCounts")?,
+        )?,
+        completed_file_overhead_durations_ms: parse_finite_number_array_value(
+            object.get("completedFileOverheadDurationsMs")?,
+        )?,
+        historical_ms_per_chunk: optional_finite_json_number(object.get("historicalMsPerChunk")),
+        historical_chunk_estimate_ratio: optional_finite_json_number(
+            object.get("historicalChunkEstimateRatio"),
+        ),
+        historical_variance: optional_finite_json_number(object.get("historicalVariance")),
+    })
+}
+
+/// JSON object에서 required finite number field를 읽는다.
+fn json_finite_number_field(object: &JsonMap<String, JsonValue>, key: &str) -> Option<f64> {
+    object
+        .get(key)
+        .and_then(JsonValue::as_f64)
+        .filter(|value| value.is_finite())
+}
+
+/// finite number JSON array瑜??뚯떛?쒕떎.
 fn parse_finite_number_array_json(payload: &str) -> Option<Vec<f64>> {
     let value = serde_json::from_str::<JsonValue>(payload).ok()?;
     parse_finite_number_array_value(&value)
@@ -16105,6 +16969,11 @@ fn parse_non_negative_u64_array_json(payload: &str) -> Option<Vec<u64>> {
 /// usize JSON array를 index 보존 vector로 파싱한다.
 fn parse_usize_array_json(payload: &str) -> Option<Vec<usize>> {
     let value = serde_json::from_str::<JsonValue>(payload).ok()?;
+    parse_usize_array_value(&value)
+}
+
+/// usize JSON array value를 index 보존 vector로 파싱한다.
+fn parse_usize_array_value(value: &JsonValue) -> Option<Vec<usize>> {
     let values = value.as_array()?;
     let mut numbers = Vec::with_capacity(values.len());
     for value in values {
@@ -17799,17 +18668,17 @@ mod tests {
         plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
         plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
         plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
-        plan_rag_file_indexability_json, plan_rag_file_type_summary_json, plan_rag_status_json,
-        plan_reference_file_indices_json, plan_rerank_messages_json, plan_rerank_response_json,
-        plan_rerank_result_order_json, plan_source_references_json,
-        plan_source_validation_inputs_json, plan_source_validation_warnings_json,
-        plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
-        plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
-        plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
-        plan_vector_store_lookup_by_ids_json, plan_vector_store_remove_file_json,
-        plan_vector_store_replace_file_json, plan_vector_store_stats_json,
-        prune_graph_indexes_json, rank_top_k_pairs, recall_at_k, recompute_centroids,
-        rrf_score_or_nan, sanitize_graph_id_part, score_entity_match_or_nan,
+        plan_rag_file_indexability_json, plan_rag_file_type_summary_json,
+        plan_rag_indexing_eta_json, plan_rag_status_json, plan_reference_file_indices_json,
+        plan_rerank_messages_json, plan_rerank_response_json, plan_rerank_result_order_json,
+        plan_source_references_json, plan_source_validation_inputs_json,
+        plan_source_validation_warnings_json, plan_structural_heading_neighbors_json,
+        plan_structural_linked_paths_json, plan_vault_link_candidates_json,
+        plan_vault_link_fallback_index_json, plan_vector_store_add_json,
+        plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
+        plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
+        plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
+        recompute_centroids, rrf_score_or_nan, sanitize_graph_id_part, score_entity_match_or_nan,
         score_local_evidence_pairs, select_diverse_indices, select_relevant_result_indices,
         should_append_mcp_path_hint_rust, should_rebuild_graph_runtime_for_graph_status,
         token_frequencies_json, tokenize, validate_mcp_json, validate_ontology_relation,
@@ -20475,6 +21344,164 @@ mod tests {
     }
 
     /// `GraphRAG` status의 entry lookup과 stale/partial/ready 판정은 `Rust`가 담당한다.
+    /// ETA planner test input with the accuracy-upgrade fields populated.
+    fn rag_eta_test_input(body: &str) -> String {
+        format!(
+            "{{{body},\"completedFileOverheadDurationsMs\":[],\"historicalMsPerChunk\":null,\"historicalChunkEstimateRatio\":null,\"historicalVariance\":null}}"
+        )
+    }
+
+    /// Parses the ETA planner output for field-level assertions.
+    fn rag_eta_test_plan(input_json: &str) -> JsonValue {
+        serde_json::from_str::<JsonValue>(&plan_rag_indexing_eta_json(input_json))
+            .unwrap_or(JsonValue::Null)
+    }
+
+    /// Reads a string field from an ETA test JSON object.
+    fn rag_eta_test_string<'a>(plan: &'a JsonValue, key: &str) -> Option<&'a str> {
+        plan.as_object()?.get(key)?.as_str()
+    }
+
+    /// Reads a number field from an ETA test JSON object.
+    fn rag_eta_test_number(plan: &JsonValue, key: &str) -> Option<f64> {
+        plan.as_object()?.get(key)?.as_f64()
+    }
+
+    /// Compares a finite number field with a tolerance.
+    fn rag_eta_test_number_matches(plan: &JsonValue, key: &str, expected: f64) -> bool {
+        rag_eta_test_number(plan, key)
+            .is_some_and(|actual| (actual - expected).abs() <= f64::EPSILON)
+    }
+
+    #[test]
+    fn rag_indexing_eta_is_planned_in_rust() {
+        let calculating = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":1000,"startedAtMs":0,"totalFiles":10,"completedFiles":0,"currentFileTotalChunks":0,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":10,"completedEstimatedChunks":0,"currentFileEstimatedChunks":0,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[],"completedBatchChunkCounts":[],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[]"#,
+        ));
+        assert_eq!(
+            rag_eta_test_string(&calculating, "confidence"),
+            Some("calculating"),
+        );
+        assert_eq!(
+            rag_eta_test_string(&calculating, "basis"),
+            Some("elapsed-rate")
+        );
+        assert_eq!(
+            rag_eta_test_string(&calculating, "confidenceReason"),
+            Some("insufficient-samples"),
+        );
+
+        let batch_rate = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":5000,"startedAtMs":1000,"totalFiles":4,"completedFiles":0,"currentFileTotalChunks":8,"currentFileEmbeddedChunks":4,"totalEstimatedChunks":32,"completedEstimatedChunks":0,"currentFileEstimatedChunks":8,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[1000,1200],"completedBatchChunkCounts":[2,2],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[]"#,
+        ));
+        assert_eq!(
+            rag_eta_test_string(&batch_rate, "basis"),
+            Some("batch-rate")
+        );
+        assert_eq!(rag_eta_test_string(&batch_rate, "confidence"), Some("low"));
+        assert!(
+            rag_eta_test_number_matches(&batch_rate, "remainingMs", 15400.0),
+            "batch ETA should use completed embedding batch ms/chunk",
+        );
+
+        let calibrated = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":10000,"startedAtMs":0,"totalFiles":10,"completedFiles":3,"currentFileTotalChunks":1,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":10,"completedEstimatedChunks":3,"currentFileEstimatedChunks":1,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[500],"completedBatchChunkCounts":[1],"completedFileDurationsMs":[2000,3000,2500],"completedFileChunkCounts":[1,1,1],"completedFileEstimatedChunkCounts":[1,1,1],"completedFileActualChunkCounts":[1,1,1]"#,
+        ));
+        assert_eq!(
+            rag_eta_test_string(&calibrated, "basis"),
+            Some("calibrated-estimate"),
+        );
+        assert_eq!(
+            rag_eta_test_string(&calibrated, "confidence"),
+            Some("medium")
+        );
+        assert!(
+            rag_eta_test_number_matches(&calibrated, "remainingMs", 17500.0),
+            "calibrated ETA should preserve completed-file rate",
+        );
+
+        let complete = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":9000,"startedAtMs":0,"totalFiles":0,"completedFiles":0,"currentFileTotalChunks":0,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":0,"completedEstimatedChunks":0,"currentFileEstimatedChunks":0,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":true,"completedBatchDurationsMs":[],"completedBatchChunkCounts":[],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[]"#,
+        ));
+        assert_eq!(
+            rag_eta_test_string(&complete, "confidence"),
+            Some("complete")
+        );
+        assert_eq!(
+            rag_eta_test_string(&complete, "basis"),
+            Some("planned-chunks")
+        );
+        assert!(
+            rag_eta_test_number_matches(&complete, "remainingMs", 0.0),
+            "completed jobs should have no remaining work",
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_uses_planned_chunk_work_instead_of_current_file_shape() {
+        let plan = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":5000,"startedAtMs":0,"totalFiles":4,"completedFiles":1,"currentFileTotalChunks":4,"currentFileEmbeddedChunks":2,"totalEstimatedChunks":100,"completedEstimatedChunks":25,"currentFileEstimatedChunks":50,"totalPlannedChunks":10,"completedPlannedChunks":3,"planningComplete":true,"completedBatchDurationsMs":[1000,1000,1000],"completedBatchChunkCounts":[1,1,1],"completedFileDurationsMs":[1200],"completedFileChunkCounts":[3],"completedFileEstimatedChunkCounts":[25],"completedFileActualChunkCounts":[3]"#,
+        ));
+        assert_eq!(rag_eta_test_string(&plan, "basis"), Some("planned-chunks"));
+        assert!(
+            rag_eta_test_number_matches(&plan, "progressRatio", 0.5),
+            "planned chunks should override byte-estimated chunk skew",
+        );
+        assert!(
+            rag_eta_test_number_matches(&plan, "currentFileProgress", 0.5),
+            "current file progress should stay on actual chunk counts",
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_high_confidence_requires_stable_planned_work() {
+        let unplanned = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":20000,"startedAtMs":0,"totalFiles":10,"completedFiles":5,"currentFileTotalChunks":1,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":10,"completedEstimatedChunks":5,"currentFileEstimatedChunks":1,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[1000,1000,1000,1000,1000],"completedBatchChunkCounts":[1,1,1,1,1],"completedFileDurationsMs":[1000,1000,1000,1000,1000],"completedFileChunkCounts":[1,1,1,1,1],"completedFileEstimatedChunkCounts":[1,1,1,1,1],"completedFileActualChunkCounts":[1,1,1,1,1]"#,
+        ));
+        assert_eq!(
+            rag_eta_test_string(&unplanned, "confidence"),
+            Some("medium"),
+            "sample count alone must not grant high confidence",
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_confidence_tracks_rate_variance_interval() {
+        let stable = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":50000,"startedAtMs":0,"totalFiles":10,"completedFiles":5,"currentFileTotalChunks":10,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":100,"completedEstimatedChunks":50,"currentFileEstimatedChunks":10,"totalPlannedChunks":100,"completedPlannedChunks":50,"planningComplete":true,"completedBatchDurationsMs":[1000,1020,980,1010,990],"completedBatchChunkCounts":[10,10,10,10,10],"completedFileDurationsMs":[1100,1120,1080,1110,1090],"completedFileChunkCounts":[10,10,10,10,10],"completedFileEstimatedChunkCounts":[10,10,10,10,10],"completedFileActualChunkCounts":[10,10,10,10,10]"#,
+        ));
+        assert_eq!(rag_eta_test_string(&stable, "confidence"), Some("high"));
+        assert_eq!(
+            rag_eta_test_string(&stable, "confidenceReason"),
+            Some("planned-stable"),
+        );
+
+        let variable = rag_eta_test_plan(&rag_eta_test_input(
+            r#""nowMs":50000,"startedAtMs":0,"totalFiles":10,"completedFiles":5,"currentFileTotalChunks":10,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":100,"completedEstimatedChunks":50,"currentFileEstimatedChunks":10,"totalPlannedChunks":100,"completedPlannedChunks":50,"planningComplete":true,"completedBatchDurationsMs":[200,2000,400,1800,600],"completedBatchChunkCounts":[10,10,10,10,10],"completedFileDurationsMs":[300,2100,500,1900,700],"completedFileChunkCounts":[10,10,10,10,10],"completedFileEstimatedChunkCounts":[10,10,10,10,10],"completedFileActualChunkCounts":[10,10,10,10,10]"#,
+        ));
+        assert_eq!(rag_eta_test_string(&variable, "confidence"), Some("medium"));
+        assert_eq!(
+            rag_eta_test_string(&variable, "confidenceReason"),
+            Some("planned-variable-rate"),
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_uses_historical_calibration_when_current_samples_are_missing() {
+        let input = r#"{"nowMs":1000,"startedAtMs":0,"totalFiles":10,"completedFiles":0,"currentFileTotalChunks":0,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":100,"completedEstimatedChunks":0,"currentFileEstimatedChunks":10,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[],"completedBatchChunkCounts":[],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[],"completedFileOverheadDurationsMs":[],"historicalMsPerChunk":25,"historicalChunkEstimateRatio":0.5,"historicalVariance":0.01}"#;
+        let plan = rag_eta_test_plan(input);
+        assert_eq!(
+            rag_eta_test_string(&plan, "basis"),
+            Some("calibrated-estimate"),
+        );
+        assert_eq!(rag_eta_test_string(&plan, "confidence"), Some("low"));
+        assert!(
+            rag_eta_test_number_matches(&plan, "remainingMs", 1250.0),
+            "historical calibration should shrink raw estimated chunks",
+        );
+    }
+
+    /// `GraphRAG` status??entry lookup怨?stale/partial/ready ?먯젙? `Rust`媛 ?대떦?쒕떎.
     #[test]
     fn graph_rag_status_is_planned_in_rust() {
         assert_eq!(

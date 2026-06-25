@@ -1,5 +1,6 @@
 import type { TFile } from 'obsidian';
-import type { IndexingOptions, IndexingResult } from './indexer';
+import type { IndexingOptions, IndexingResult, RagIndexingProgressSnapshot } from './indexer';
+import { planRagIndexingEtaRust, type RustRagIndexingEtaPlan } from './rust-core';
 
 export type RagIndexingRequestReason = 'modify' | 'rename' | 'manual' | 'auto';
 export type RagIndexingPhase = 'idle' | 'file' | 'pending' | 'all';
@@ -9,6 +10,11 @@ export interface RagIndexingSchedulerStatus {
   phase: RagIndexingPhase;
   queuedFiles: number;
   lastResult: IndexingResult | null;
+  progress: RagIndexingSchedulerProgress | null;
+}
+
+export interface RagIndexingSchedulerProgress extends RagIndexingProgressSnapshot {
+  eta: RustRagIndexingEtaPlan | null;
 }
 
 interface SchedulerOperations {
@@ -23,8 +29,18 @@ interface SchedulerOperations {
 }
 
 type QueueJob =
-  | { kind: 'file'; file: TFile; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void }
-  | { kind: 'delete'; filePath: string; resolve: (removed: number) => void; reject: (error: unknown) => void }
+  | {
+      kind: 'file';
+      file: TFile;
+      resolve: (result: IndexingResult) => void;
+      reject: (error: unknown) => void;
+    }
+  | {
+      kind: 'delete';
+      filePath: string;
+      resolve: (removed: number) => void;
+      reject: (error: unknown) => void;
+    }
   | { kind: 'pending'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void }
   | { kind: 'all'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void };
 
@@ -90,6 +106,7 @@ export class RAGIndexingScheduler {
   private abortController: AbortController | null = null;
   private cancelled = false;
   private lastResult: IndexingResult | null = null;
+  private progress: RagIndexingSchedulerProgress | null = null;
 
   constructor(operations: SchedulerOperations) {
     this.operations = operations;
@@ -102,6 +119,7 @@ export class RAGIndexingScheduler {
       phase: this.phase,
       queuedFiles: this.dirtySet.size + this.queue.filter((job) => job.kind === 'file').length,
       lastResult: this.lastResult,
+      progress: this.progress,
     };
   }
 
@@ -164,11 +182,17 @@ export class RAGIndexingScheduler {
     this.debounceTimers.clear();
     this.dirtySet.clear();
     this.queue = this.queue.filter((job) => job.kind !== 'file');
+    this.progress = null;
     this.emitStatus();
   }
 
   async waitForIdle(): Promise<void> {
-    if (!this.running && this.queue.length === 0 && this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed) {
+    if (
+      !this.running &&
+      this.queue.length === 0 &&
+      this.dirtySet.size === 0 &&
+      !this.dirtySet.hasOverflowed
+    ) {
       return;
     }
     await new Promise<void>((resolve) => {
@@ -203,6 +227,7 @@ export class RAGIndexingScheduler {
       this.running = false;
       this.phase = 'idle';
       this.abortController = null;
+      this.progress = null;
       this.emitStatus();
       const resolvers = this.idleResolvers.splice(0);
       for (const resolve of resolvers) {
@@ -215,7 +240,10 @@ export class RAGIndexingScheduler {
     if (this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed) return;
     const { files, overflowed } = this.dirtySet.drain();
     if (overflowed) {
-      this.enqueuePending(() => undefined, () => undefined);
+      this.enqueuePending(
+        () => undefined,
+        () => undefined,
+      );
       return;
     }
     for (const file of files) {
@@ -257,9 +285,17 @@ export class RAGIndexingScheduler {
 
   private async runJob(job: QueueJob): Promise<void> {
     this.abortController = new AbortController();
-    const options = this.operations.createIndexingOptions?.(this.abortController.signal) ?? {
+    const baseOptions = this.operations.createIndexingOptions?.(this.abortController.signal) ?? {
       signal: this.abortController.signal,
     };
+    const options: IndexingOptions = {
+      ...baseOptions,
+      onProgress: (progress) => {
+        baseOptions.onProgress?.(progress);
+        this.handleProgress(progress);
+      },
+    };
+    this.progress = null;
     try {
       if (job.kind === 'file') {
         this.phase = 'file';
@@ -296,6 +332,37 @@ export class RAGIndexingScheduler {
 
   private emitStatus(): void {
     this.operations.onStatusChange?.(this.getStatus());
+  }
+
+  private handleProgress(progress: RagIndexingProgressSnapshot): void {
+    this.progress = {
+      ...progress,
+      eta: planRagIndexingEtaRust({
+        nowMs: progress.nowMs,
+        startedAtMs: progress.startedAtMs,
+        totalFiles: progress.totalFiles,
+        completedFiles: progress.completedFiles,
+        currentFileTotalChunks: progress.currentFileTotalChunks,
+        currentFileEmbeddedChunks: progress.currentFileEmbeddedChunks,
+        totalEstimatedChunks: progress.totalEstimatedChunks,
+        completedEstimatedChunks: progress.completedEstimatedChunks,
+        currentFileEstimatedChunks: progress.currentFileEstimatedChunks,
+        totalPlannedChunks: progress.totalPlannedChunks,
+        completedPlannedChunks: progress.completedPlannedChunks,
+        planningComplete: progress.planningComplete,
+        completedBatchDurationsMs: progress.completedBatchDurationsMs,
+        completedBatchChunkCounts: progress.completedBatchChunkCounts,
+        completedFileDurationsMs: progress.completedFileDurationsMs,
+        completedFileChunkCounts: progress.completedFileChunkCounts,
+        completedFileEstimatedChunkCounts: progress.completedFileEstimatedChunkCounts,
+        completedFileActualChunkCounts: progress.completedFileActualChunkCounts,
+        completedFileOverheadDurationsMs: progress.completedFileOverheadDurationsMs,
+        historicalMsPerChunk: progress.historicalMsPerChunk,
+        historicalChunkEstimateRatio: progress.historicalChunkEstimateRatio,
+        historicalVariance: progress.historicalVariance,
+      }),
+    };
+    this.emitStatus();
   }
 }
 

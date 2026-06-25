@@ -116,6 +116,8 @@ export interface VectorStore {
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]>;
   getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]>;
   getEntries(): Promise<VectorEntry[]>;
+  getMetaValue?<T>(key: string): Promise<T | undefined>;
+  setMetaValue?(key: string, value: unknown): Promise<void>;
 }
 
 export interface LegacyJsonVectorImportResult {

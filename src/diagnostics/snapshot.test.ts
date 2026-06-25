@@ -20,9 +20,7 @@ import {
   type AgentDiagnosticsSessionState,
 } from './snapshot';
 
-function buildSettings(
-  override: Partial<SuperpowerInsideSettings> = {},
-): SuperpowerInsideSettings {
+function buildSettings(override: Partial<SuperpowerInsideSettings> = {}): SuperpowerInsideSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...override,
@@ -37,8 +35,7 @@ function buildSettings(
       ...DEFAULT_SETTINGS.agentDiagnostics,
       ...override.agentDiagnostics,
     },
-    customOpenAIProviders:
-      override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
+    customOpenAIProviders: override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
     mcpServers: override.mcpServers ?? DEFAULT_SETTINGS.mcpServers,
   };
 }
@@ -96,6 +93,7 @@ function buildRuntime(): AgentDiagnosticsRuntimeState {
       phase: 'pending',
       queuedFiles: 4,
       lastResult: null,
+      progress: null,
     },
     performanceGuardState: {
       mode: 'throttled',

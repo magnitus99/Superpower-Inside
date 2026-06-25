@@ -107,9 +107,10 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
   });
 
   it('overlap이 chunkSize와 같아도 최종 청크 길이를 키우지 않는다', () => {
-    const content = Array.from({ length: 12 }, (_, index) => `line-${index}-${'x'.repeat(20)}`).join(
-      '\n',
-    );
+    const content = Array.from(
+      { length: 12 },
+      (_, index) => `line-${index}-${'x'.repeat(20)}`,
+    ).join('\n');
 
     const chunks = chunkPlainText(content, 100, 100);
 
@@ -121,7 +122,11 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
 describe('VaultIndexer 배치 인덱싱', () => {
   it('임베딩 요청을 maxEmbeddingBatchSize 단위로 나눈다', async () => {
     const file = createFile('note.md', 1000, 1500);
-    const vault = createVault(new Map([[file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')]]));
+    const vault = createVault(
+      new Map([
+        [file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')],
+      ]),
+    );
     const store = new MemoryVectorStore();
     const batches: number[] = [];
     const embeddingProvider: EmbeddingProvider = {
@@ -131,7 +136,13 @@ describe('VaultIndexer 배치 인덱싱', () => {
         return Promise.resolve(texts.map(() => [1, 0]));
       },
     };
-    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
 
     const result = await indexer.indexFile(file, { maxEmbeddingBatchSize: 2 });
 
@@ -142,7 +153,11 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
   it('배치 사이에 AbortSignal 취소를 반영한다', async () => {
     const file = createFile('note.md', 1000, 1500);
-    const vault = createVault(new Map([[file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')]]));
+    const vault = createVault(
+      new Map([
+        [file.path, Array.from({ length: 12 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')],
+      ]),
+    );
     const store = new MemoryVectorStore();
     const controller = new AbortController();
     let callCount = 0;
@@ -156,7 +171,13 @@ describe('VaultIndexer 배치 인덱싱', () => {
         return Promise.resolve(texts.map(() => [1, 0]));
       },
     };
-    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
 
     await expect(
       indexer.indexFile(file, { signal: controller.signal, maxEmbeddingBatchSize: 1 }),
@@ -166,7 +187,9 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
   it('임베딩 batch 결과 개수가 입력 개수와 다르면 벡터를 저장하지 않는다', async () => {
     const file = createFile('note.md', 1000, 120);
-    const vault = createVault(new Map([[file.path, ['first chunk', '', 'second chunk'].join('\n')]]));
+    const vault = createVault(
+      new Map([[file.path, ['first chunk', '', 'second chunk'].join('\n')]]),
+    );
     const store = new MemoryVectorStore();
     const embeddingProvider: EmbeddingProvider = {
       embed: () => Promise.resolve([1, 0]),
@@ -194,7 +217,13 @@ describe('VaultIndexer 배치 인덱싱', () => {
       embed: () => Promise.resolve([1, 0]),
       embedBatch: () => Promise.resolve([[Number.NaN, 0]]),
     };
-    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
 
     await expect(indexer.indexFile(file)).rejects.toThrow(/Invalid embedding vector/);
     expect(await store.getEntries()).toEqual([]);
@@ -209,7 +238,13 @@ describe('VaultIndexer 배치 인덱싱', () => {
       embed: () => Promise.resolve([1, 0]),
       embedBatch: () => Promise.resolve([[1, 0]]),
     };
-    const indexer = new VaultIndexer(vault, store, embeddingProvider, createRagConfig(), createChatConfig());
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
 
     const result = await indexer.indexFile(file);
 
@@ -247,7 +282,9 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
   it('BM25 인덱스는 청크 ID로 갱신하고 파일 삭제 시 함께 제거한다', async () => {
     const file = createFile('note.md', 1000, 120);
-    const vault = createVault(new Map([[file.path, ['specialterm 첫 청크', '', '다른 내용'].join('\n')]]));
+    const vault = createVault(
+      new Map([[file.path, ['specialterm 첫 청크', '', '다른 내용'].join('\n')]]),
+    );
     const store = new MemoryVectorStore();
     const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
     await bm25.load();
@@ -461,6 +498,123 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(result.skipped).toBeGreaterThanOrEqual(1);
     expect(result.documents).toEqual(['a.md', 'b.md']);
   });
+  it('emits progress snapshots for pending RAG embedding batches', async () => {
+    const fileA = createFile('a.md', 1000, 120);
+    const fileB = createFile('b.md', 1000, 120);
+    const vault = createVault(
+      new Map([
+        [fileA.path, Array.from({ length: 6 }, (_, index) => `alpha ${index}`).join('\n')],
+        [fileB.path, Array.from({ length: 6 }, (_, index) => `bravo ${index}`).join('\n')],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), chunkSize: 20 },
+      createChatConfig(),
+    );
+    const progress: Array<{
+      event: string;
+      totalFiles: number;
+      completedFiles: number;
+      currentFilePath?: string;
+      currentFileEmbeddedChunks: number;
+      totalEstimatedChunks: number;
+      completedEstimatedChunks: number;
+      currentFileEstimatedChunks: number;
+      totalPlannedChunks: number;
+      completedPlannedChunks: number;
+      currentFilePlannedChunks: number;
+      planningComplete: boolean;
+      completedBatchDurationsMs: readonly number[];
+      completedFileDurationsMs: readonly number[];
+      completedFileChunkCounts: readonly number[];
+      completedFileEstimatedChunkCounts: readonly number[];
+      completedFileActualChunkCounts: readonly number[];
+      completedFileOverheadDurationsMs: readonly number[];
+    }> = [];
+
+    await indexer.indexPending({
+      maxEmbeddingBatchSize: 1,
+      onProgress: (snapshot) => {
+        progress.push(snapshot);
+      },
+    });
+
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: 'plan', totalFiles: 2, completedFiles: 0 }),
+        expect.objectContaining({ event: 'file-start', currentFilePath: 'a.md' }),
+        expect.objectContaining({
+          event: 'file-complete',
+          currentFilePath: 'b.md',
+          completedFiles: 2,
+        }),
+      ]),
+    );
+    const batchProgress = progress.find((snapshot) => snapshot.event === 'batch-complete');
+    const plannedProgress = progress.find(
+      (snapshot) => snapshot.event === 'plan' && snapshot.planningComplete,
+    );
+    expect(plannedProgress?.totalPlannedChunks).toBeGreaterThan(0);
+    expect(batchProgress?.currentFileEmbeddedChunks).toBeGreaterThan(0);
+    expect(batchProgress?.totalEstimatedChunks).toBe(6);
+    expect(batchProgress?.planningComplete).toBe(true);
+    expect(batchProgress?.totalPlannedChunks).toBe(plannedProgress?.totalPlannedChunks);
+    expect(batchProgress?.currentFileEstimatedChunks).toBe(3);
+    expect(batchProgress?.currentFilePlannedChunks).toBeGreaterThan(0);
+    expect(batchProgress?.completedBatchDurationsMs.length).toBeGreaterThan(0);
+    const finalProgress = progress.find(
+      (snapshot) => snapshot.event === 'file-complete' && snapshot.currentFilePath === 'b.md',
+    );
+    expect(finalProgress?.completedEstimatedChunks).toBe(6);
+    expect(finalProgress?.completedPlannedChunks).toBe(finalProgress?.totalPlannedChunks);
+    expect(finalProgress?.completedFileDurationsMs.length).toBeGreaterThan(0);
+    expect(finalProgress?.completedFileChunkCounts.length).toBeGreaterThan(0);
+    expect(finalProgress?.completedFileEstimatedChunkCounts.length).toBeGreaterThan(0);
+    expect(finalProgress?.completedFileActualChunkCounts.length).toBeGreaterThan(0);
+    expect(finalProgress?.completedFileOverheadDurationsMs.length).toBeGreaterThan(0);
+  });
+
+  it('emits full reindex plan progress before clearing existing vectors', async () => {
+    const file = createFile('a.md', 1000, 120);
+    const vault = createVault(new Map([[file.path, 'alpha\n\nbravo']]));
+    const progress: string[] = [];
+    class ClearObservingStore extends MemoryVectorStore {
+      override async clear(): Promise<void> {
+        progress.push('clear');
+        await super.clear();
+      }
+    }
+    const store = new ClearObservingStore();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), chunkSize: 20 },
+      createChatConfig(),
+    );
+
+    await indexer.reindexAll({
+      onProgress: (snapshot) => {
+        progress.push(snapshot.event);
+      },
+    });
+
+    expect(progress[0]).toBe('plan');
+    expect(progress).toContain('clear');
+    expect(progress.indexOf('plan')).toBeLessThan(progress.indexOf('clear'));
+  });
 });
 
 function createRagConfig(): RAGConfig {
@@ -512,7 +666,9 @@ function createChatConfig(): ChatConfig {
 }
 
 function createVault(contents: Map<string, string>): Vault {
-  const files = [...contents.keys()].map((path) => createFile(path, 1000, contents.get(path)?.length ?? 0));
+  const files = [...contents.keys()].map((path) =>
+    createFile(path, 1000, contents.get(path)?.length ?? 0),
+  );
   return {
     getFiles: () => files,
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),

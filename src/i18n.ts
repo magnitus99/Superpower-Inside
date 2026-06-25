@@ -921,6 +921,9 @@ export interface I18nKeys {
   ragPerformanceThrottled: string;
   ragIndexingInProgress: string;
   ragIndexingRunning: string;
+  ragIndexingRunningWithEta: string;
+  ragIndexingRunningWithApproxEta: string;
+  ragIndexingRunningEtaCalculating: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
   ragPhasePending: string;
@@ -1319,8 +1322,7 @@ const ko: I18nKeys = {
     'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
   agentDiagnosticsClearButton: 'Clean detailed logging',
   agentDiagnosticsViewTitle: 'Agent Diagnostics',
-  agentDiagnosticsViewDesc:
-    'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
   agentDiagnosticsRefreshButton: 'Refresh',
   agentDiagnosticsCopyButton: 'Copy JSON',
   agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
@@ -2301,6 +2303,9 @@ const ko: I18nKeys = {
   ragPerformanceThrottled: '속도 조절 중',
   ragIndexingInProgress: '인덱싱 중',
   ragIndexingRunning: '인덱싱 중: {phase}',
+  ragIndexingRunningWithEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta}',
+  ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
+  ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
   ragPhasePending: '필요 문서 업데이트',
@@ -2473,8 +2478,7 @@ const ko: I18nKeys = {
   pluginDataResetRunning: '초기화 중...',
   pluginDataResetConfirm:
     'Superpower Inside 내부 데이터를 모두 초기화하시겠습니까? 설정과 API Key도 기본값으로 돌아갑니다.',
-  pluginDataResetSecondConfirm:
-    '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
+  pluginDataResetSecondConfirm: '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
   pluginDataResetDone: 'Superpower Inside 내부 데이터가 초기화되었습니다.',
   pluginDataResetFailed: '전체 플러그인 데이터 초기화 실패: {message}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
@@ -2805,8 +2809,7 @@ const en: I18nKeys = {
     'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
   agentDiagnosticsClearButton: 'Clean detailed logging',
   agentDiagnosticsViewTitle: 'Agent Diagnostics',
-  agentDiagnosticsViewDesc:
-    'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
   agentDiagnosticsRefreshButton: 'Refresh',
   agentDiagnosticsCopyButton: 'Copy JSON',
   agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
@@ -3743,6 +3746,11 @@ const en: I18nKeys = {
   ragPerformanceThrottled: 'Throttling',
   ragIndexingInProgress: 'Indexing',
   ragIndexingRunning: 'Indexing: {phase}',
+  ragIndexingRunningWithEta: 'Indexing: {phase} - {completed}/{total} files, ETA {eta}',
+  ragIndexingRunningWithApproxEta:
+    'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
+  ragIndexingRunningEtaCalculating:
+    'Indexing: {phase} - {completed}/{total} files, calculating ETA',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
   ragPhasePending: 'Update pending documents',

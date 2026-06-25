@@ -13,6 +13,7 @@ agent-diagnostics.json*
 
 # 개발용 Obsidian 테스트 볼트와 에이전트 작업 상태
 .test-vault/
+.rag-eta-temp/
 .sisyphus/
 
 # 시뮬레이션/브라우저 테스트 산출물

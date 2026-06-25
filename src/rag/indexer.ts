@@ -29,8 +29,95 @@ export interface IndexingOptions {
   maxEmbeddingBatchSize?: number;
   indexingYieldMs?: number;
   onBatchComplete?: (durationMs: number) => void;
+  onProgress?: (progress: RagIndexingProgressSnapshot) => void;
   getPerformanceGuardState?: () => PerformanceGuardState | null;
 }
+
+export type RagIndexingProgressEvent =
+  | 'plan'
+  | 'file-start'
+  | 'file-chunks'
+  | 'batch-complete'
+  | 'file-complete';
+
+export interface RagIndexingProgressSnapshot {
+  event: RagIndexingProgressEvent;
+  startedAtMs: number;
+  nowMs: number;
+  totalFiles: number;
+  completedFiles: number;
+  currentFilePath?: string;
+  currentFileIndex?: number;
+  currentFileTotalChunks: number;
+  currentFileEmbeddedChunks: number;
+  totalEstimatedChunks: number;
+  completedEstimatedChunks: number;
+  currentFileEstimatedChunks: number;
+  totalPlannedChunks: number;
+  completedPlannedChunks: number;
+  currentFilePlannedChunks: number;
+  planningComplete: boolean;
+  indexed: number;
+  vectors: number;
+  skipped: number;
+  completedBatchDurationsMs: readonly number[];
+  completedBatchChunkCounts: readonly number[];
+  completedFileDurationsMs: readonly number[];
+  completedFileChunkCounts: readonly number[];
+  completedFileEstimatedChunkCounts: readonly number[];
+  completedFileActualChunkCounts: readonly number[];
+  completedFileOverheadDurationsMs: readonly number[];
+  historicalMsPerChunk: number | null;
+  historicalChunkEstimateRatio: number | null;
+  historicalVariance: number | null;
+}
+
+interface IndexingProgressTracker {
+  startedAtMs: number;
+  totalFiles: number;
+  completedFiles: number;
+  currentFilePath?: string;
+  currentFileIndex?: number;
+  currentFileTotalChunks: number;
+  currentFileEmbeddedChunks: number;
+  totalEstimatedChunks: number;
+  completedEstimatedChunks: number;
+  currentFileEstimatedChunks: number;
+  totalPlannedChunks: number;
+  completedPlannedChunks: number;
+  currentFilePlannedChunks: number;
+  planningComplete: boolean;
+  plannedChunkCountsByPath: Map<string, number>;
+  indexed: number;
+  vectors: number;
+  skipped: number;
+  completedBatchDurationsMs: number[];
+  completedBatchChunkCounts: number[];
+  completedFileDurationsMs: number[];
+  completedFileChunkCounts: number[];
+  completedFileEstimatedChunkCounts: number[];
+  completedFileActualChunkCounts: number[];
+  completedFileOverheadDurationsMs: number[];
+  currentFileBatchDurationMs: number;
+  historicalMsPerChunk: number | null;
+  historicalChunkEstimateRatio: number | null;
+  historicalVariance: number | null;
+}
+
+interface RagEtaCalibrationSummary {
+  version: 1;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkSize: number;
+  overlap: number;
+  msPerChunk: number;
+  chunkEstimateRatio: number;
+  variance: number;
+  sampleCount: number;
+  updatedAt: number;
+}
+
+const RAG_ETA_CALIBRATION_META_PREFIX = 'rag-indexing-eta-calibration:v1';
 
 export interface IndexingResult {
   indexed: number;
@@ -70,6 +157,117 @@ function isTFileLike(file: unknown): file is TFile {
   );
 }
 
+function ragEtaCalibrationMetaKey(ragConfig: RAGConfig): string {
+  return [
+    RAG_ETA_CALIBRATION_META_PREFIX,
+    ragConfig.embeddingProvider,
+    ragConfig.embeddingModel,
+    String(Math.floor(ragConfig.chunkSize)),
+    String(Math.floor(ragConfig.overlap)),
+  ].join(':');
+}
+
+function isMatchingRagEtaCalibrationSummary(
+  value: unknown,
+  ragConfig: RAGConfig,
+): value is RagEtaCalibrationSummary {
+  if (!isRecord(value)) return false;
+  return (
+    value.version === 1 &&
+    value.embeddingProvider === ragConfig.embeddingProvider &&
+    value.embeddingModel === ragConfig.embeddingModel &&
+    value.chunkSize === Math.floor(ragConfig.chunkSize) &&
+    value.overlap === Math.floor(ragConfig.overlap) &&
+    typeof value.msPerChunk === 'number' &&
+    Number.isFinite(value.msPerChunk) &&
+    value.msPerChunk > 0 &&
+    typeof value.chunkEstimateRatio === 'number' &&
+    Number.isFinite(value.chunkEstimateRatio) &&
+    value.chunkEstimateRatio > 0 &&
+    typeof value.variance === 'number' &&
+    Number.isFinite(value.variance) &&
+    value.variance >= 0 &&
+    typeof value.sampleCount === 'number' &&
+    Number.isInteger(value.sampleCount) &&
+    value.sampleCount > 0 &&
+    typeof value.updatedAt === 'number' &&
+    Number.isFinite(value.updatedAt)
+  );
+}
+
+function createRagEtaCalibrationSummary(
+  tracker: IndexingProgressTracker,
+  ragConfig: RAGConfig,
+): RagEtaCalibrationSummary | null {
+  const totalBatchDurationMs = tracker.completedBatchDurationsMs.reduce(
+    (total, durationMs) => total + Math.max(0, durationMs),
+    0,
+  );
+  const totalBatchChunks = tracker.completedBatchChunkCounts.reduce(
+    (total, chunkCount) => total + Math.max(0, chunkCount),
+    0,
+  );
+  if (totalBatchDurationMs <= 0 || totalBatchChunks <= 0) return null;
+  const chunkEstimateRatio = observedChunkEstimateRatio(
+    tracker.completedFileEstimatedChunkCounts,
+    tracker.completedFileActualChunkCounts,
+  );
+  if (chunkEstimateRatio === null) return null;
+  const msPerChunk = totalBatchDurationMs / totalBatchChunks;
+  return {
+    version: 1,
+    embeddingProvider: ragConfig.embeddingProvider,
+    embeddingModel: ragConfig.embeddingModel,
+    chunkSize: Math.floor(ragConfig.chunkSize),
+    overlap: Math.floor(ragConfig.overlap),
+    msPerChunk,
+    chunkEstimateRatio,
+    variance: observedBatchRateVariance(
+      tracker.completedBatchDurationsMs,
+      tracker.completedBatchChunkCounts,
+      msPerChunk,
+    ),
+    sampleCount: tracker.completedBatchChunkCounts.length,
+    updatedAt: Date.now(),
+  };
+}
+
+function observedChunkEstimateRatio(
+  estimatedChunkCounts: readonly number[],
+  actualChunkCounts: readonly number[],
+): number | null {
+  let estimatedTotal = 0;
+  let actualTotal = 0;
+  for (let index = 0; index < estimatedChunkCounts.length; index++) {
+    const estimated = estimatedChunkCounts[index] ?? 0;
+    const actual = actualChunkCounts[index] ?? 0;
+    if (estimated <= 0 || actual <= 0) continue;
+    estimatedTotal += estimated;
+    actualTotal += actual;
+  }
+  if (estimatedTotal <= 0 || actualTotal <= 0) return null;
+  return actualTotal / estimatedTotal;
+}
+
+function observedBatchRateVariance(
+  durationsMs: readonly number[],
+  chunkCounts: readonly number[],
+  meanMsPerChunk: number,
+): number {
+  if (meanMsPerChunk <= 0) return 1;
+  const rates: number[] = [];
+  for (let index = 0; index < durationsMs.length; index++) {
+    const durationMs = durationsMs[index] ?? 0;
+    const chunkCount = chunkCounts[index] ?? 0;
+    if (!Number.isFinite(durationMs) || durationMs <= 0 || chunkCount <= 0) continue;
+    rates.push(durationMs / chunkCount);
+  }
+  if (rates.length <= 1) return 1;
+  const variance =
+    rates.reduce((total, rate) => total + (rate - meanMsPerChunk) ** 2, 0) / rates.length;
+  return variance / (meanMsPerChunk * meanMsPerChunk);
+}
+
 function createEmptyIndexingResult(startedAt: number): IndexingResult {
   return {
     indexed: 0,
@@ -90,6 +288,146 @@ function finishIndexingResult(
     durationMs: performance.now() - startedAt,
     guardState: options.getPerformanceGuardState?.() ?? null,
   };
+}
+
+function createProgressTracker(
+  files: readonly TFile[],
+  ragConfig: RAGConfig,
+  skipped = 0,
+): IndexingProgressTracker {
+  return {
+    startedAtMs: performance.now(),
+    totalFiles: files.length,
+    completedFiles: 0,
+    currentFileTotalChunks: 0,
+    currentFileEmbeddedChunks: 0,
+    totalEstimatedChunks: estimateFilesChunkCount(files, ragConfig),
+    completedEstimatedChunks: 0,
+    currentFileEstimatedChunks: 0,
+    totalPlannedChunks: 0,
+    completedPlannedChunks: 0,
+    currentFilePlannedChunks: 0,
+    planningComplete: false,
+    plannedChunkCountsByPath: new Map(),
+    indexed: 0,
+    vectors: 0,
+    skipped,
+    completedBatchDurationsMs: [],
+    completedBatchChunkCounts: [],
+    completedFileDurationsMs: [],
+    completedFileChunkCounts: [],
+    completedFileEstimatedChunkCounts: [],
+    completedFileActualChunkCounts: [],
+    completedFileOverheadDurationsMs: [],
+    currentFileBatchDurationMs: 0,
+    historicalMsPerChunk: null,
+    historicalChunkEstimateRatio: null,
+    historicalVariance: null,
+  };
+}
+
+function resetProgressTrackerPlan(
+  tracker: IndexingProgressTracker,
+  files: readonly TFile[],
+  ragConfig: RAGConfig,
+  skipped = tracker.skipped,
+): void {
+  tracker.totalFiles = files.length;
+  tracker.totalEstimatedChunks = estimateFilesChunkCount(files, ragConfig);
+  tracker.totalPlannedChunks = 0;
+  tracker.completedPlannedChunks = 0;
+  tracker.currentFilePlannedChunks = 0;
+  tracker.planningComplete = false;
+  tracker.plannedChunkCountsByPath.clear();
+  tracker.historicalMsPerChunk = null;
+  tracker.historicalChunkEstimateRatio = null;
+  tracker.historicalVariance = null;
+  tracker.skipped = skipped;
+}
+
+function estimateFilesChunkCount(files: readonly TFile[], ragConfig: RAGConfig): number {
+  return files.reduce((total, file) => total + estimateFileChunkCount(file, ragConfig), 0);
+}
+
+function estimateFileChunkCount(file: TFile, ragConfig: RAGConfig): number {
+  const chunkSize = Math.max(1, Math.floor(ragConfig.chunkSize));
+  const overlap = Math.max(0, Math.min(Math.floor(ragConfig.overlap), chunkSize - 1));
+  const stride = Math.max(1, chunkSize - overlap);
+  const size = Math.max(0, Math.floor(file.stat.size));
+  return Math.max(1, Math.ceil(size / stride));
+}
+
+function countPlannedChunks(file: TFile, content: string, ragConfig: RAGConfig): number {
+  const chunks =
+    file.extension.toLowerCase() === 'md'
+      ? chunkMarkdown(content, ragConfig.chunkSize, ragConfig.overlap)
+      : chunkPlainText(content, ragConfig.chunkSize, ragConfig.overlap);
+  return Math.max(1, chunks.length);
+}
+
+function completeProgressFile(
+  tracker: IndexingProgressTracker,
+  durationMs: number,
+  actualChunkCount: number,
+): void {
+  const estimatedChunks = Math.max(1, tracker.currentFileEstimatedChunks);
+  const actualChunks = Math.max(0, Math.floor(actualChunkCount));
+  const plannedChunks = Math.max(1, tracker.currentFilePlannedChunks || actualChunks || estimatedChunks);
+  tracker.completedFiles += 1;
+  tracker.completedEstimatedChunks = Math.min(
+    tracker.totalEstimatedChunks,
+    tracker.completedEstimatedChunks + estimatedChunks,
+  );
+  tracker.completedPlannedChunks = tracker.planningComplete
+    ? Math.min(tracker.totalPlannedChunks, tracker.completedPlannedChunks + plannedChunks)
+    : tracker.completedPlannedChunks + plannedChunks;
+  tracker.completedFileDurationsMs.push(durationMs);
+  tracker.completedFileChunkCounts.push(actualChunks);
+  tracker.completedFileEstimatedChunkCounts.push(estimatedChunks);
+  tracker.completedFileActualChunkCounts.push(actualChunks);
+  tracker.completedFileOverheadDurationsMs.push(
+    Math.max(0, durationMs - tracker.currentFileBatchDurationMs),
+  );
+  tracker.currentFileBatchDurationMs = 0;
+}
+
+function emitIndexingProgress(
+  options: IndexingOptions,
+  tracker: IndexingProgressTracker | undefined,
+  event: RagIndexingProgressEvent,
+): void {
+  if (!tracker || !options.onProgress) return;
+  options.onProgress({
+    event,
+    startedAtMs: tracker.startedAtMs,
+    nowMs: performance.now(),
+    totalFiles: tracker.totalFiles,
+    completedFiles: tracker.completedFiles,
+    currentFilePath: tracker.currentFilePath,
+    currentFileIndex: tracker.currentFileIndex,
+    currentFileTotalChunks: tracker.currentFileTotalChunks,
+    currentFileEmbeddedChunks: tracker.currentFileEmbeddedChunks,
+    totalEstimatedChunks: tracker.totalEstimatedChunks,
+    completedEstimatedChunks: tracker.completedEstimatedChunks,
+    currentFileEstimatedChunks: tracker.currentFileEstimatedChunks,
+    totalPlannedChunks: tracker.totalPlannedChunks,
+    completedPlannedChunks: tracker.completedPlannedChunks,
+    currentFilePlannedChunks: tracker.currentFilePlannedChunks,
+    planningComplete: tracker.planningComplete,
+    indexed: tracker.indexed,
+    vectors: tracker.vectors,
+    skipped: tracker.skipped,
+    completedBatchDurationsMs: [...tracker.completedBatchDurationsMs],
+    completedBatchChunkCounts: [...tracker.completedBatchChunkCounts],
+    completedFileDurationsMs: [...tracker.completedFileDurationsMs],
+    completedFileChunkCounts: [...tracker.completedFileChunkCounts],
+    completedFileEstimatedChunkCounts: [...tracker.completedFileEstimatedChunkCounts],
+    completedFileActualChunkCounts: [...tracker.completedFileActualChunkCounts],
+    completedFileOverheadDurationsMs: [...tracker.completedFileOverheadDurationsMs],
+    historicalMsPerChunk: tracker.historicalMsPerChunk,
+    historicalChunkEstimateRatio: tracker.historicalChunkEstimateRatio,
+    historicalVariance: tracker.historicalVariance,
+  });
 }
 
 async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> {
@@ -185,16 +523,31 @@ export class VaultIndexer {
   async indexVault(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
+    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
+    emitIndexingProgress(options, progressTracker, 'plan');
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     this.logger.info('Vault indexing started.', { data: { fileCount: files.length } });
+    resetProgressTrackerPlan(progressTracker, files, this.ragConfig);
+    emitIndexingProgress(options, progressTracker, 'plan');
+    await this.planProgressChunks(files, options, progressTracker);
+    emitIndexingProgress(options, progressTracker, 'plan');
 
+    return this.indexFiles(files, startedAt, options, progressTracker);
+  }
+
+  private async indexFiles(
+    files: TFile[],
+    startedAt: number,
+    options: IndexingOptions,
+    progressTracker: IndexingProgressTracker,
+  ): Promise<IndexingResult> {
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
       for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
         const file = files[i];
-        const fileResult = await this.indexFile(file, options);
+        const fileResult = await this.indexFile(file, options, progressTracker, i);
         throwIfIndexingCancelled(options.signal);
         batchResult.indexed += fileResult.indexed;
         batchResult.vectors += fileResult.vectors;
@@ -224,12 +577,71 @@ export class VaultIndexer {
         durationMs: Math.round(finished.durationMs),
       },
     });
+    await this.saveEtaCalibration(progressTracker);
     return finished;
   }
 
-  async indexFile(file: TFile, options: IndexingOptions = {}): Promise<IndexingResult> {
+  private async planProgressChunks(
+    files: readonly TFile[],
+    options: IndexingOptions,
+    tracker: IndexingProgressTracker,
+  ): Promise<void> {
+    await this.loadEtaCalibration(tracker);
+    tracker.plannedChunkCountsByPath.clear();
+    let totalPlannedChunks = 0;
+    for (const file of files) {
+      throwIfIndexingCancelled(options.signal);
+      const content = await this.vault.cachedRead(file);
+      throwIfIndexingCancelled(options.signal);
+      const plannedChunks = countPlannedChunks(file, content, this.ragConfig);
+      tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
+      totalPlannedChunks += plannedChunks;
+    }
+    tracker.totalPlannedChunks = totalPlannedChunks;
+    tracker.completedPlannedChunks = 0;
+    tracker.currentFilePlannedChunks = 0;
+    tracker.planningComplete = true;
+  }
+
+  private async loadEtaCalibration(tracker: IndexingProgressTracker): Promise<void> {
+    const summary = await this.vectorStore.getMetaValue?.<RagEtaCalibrationSummary>(
+      ragEtaCalibrationMetaKey(this.ragConfig),
+    );
+    if (!isMatchingRagEtaCalibrationSummary(summary, this.ragConfig)) return;
+    tracker.historicalMsPerChunk = summary.msPerChunk;
+    tracker.historicalChunkEstimateRatio = summary.chunkEstimateRatio;
+    tracker.historicalVariance = summary.variance;
+  }
+
+  private async saveEtaCalibration(tracker: IndexingProgressTracker): Promise<void> {
+    const summary = createRagEtaCalibrationSummary(tracker, this.ragConfig);
+    if (!summary) return;
+    await this.vectorStore.setMetaValue?.(ragEtaCalibrationMetaKey(this.ragConfig), summary);
+  }
+
+  async indexFile(
+    file: TFile,
+    options: IndexingOptions = {},
+    progressTracker?: IndexingProgressTracker,
+    fileIndex = 0,
+  ): Promise<IndexingResult> {
     const startedAt = performance.now();
+    const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
+    if (!progressTracker) {
+      emitIndexingProgress(options, tracker, 'plan');
+      await this.planProgressChunks([file], options, tracker);
+      emitIndexingProgress(options, tracker, 'plan');
+    }
     throwIfIndexingCancelled(options.signal);
+    tracker.currentFilePath = file.path;
+    tracker.currentFileIndex = fileIndex;
+    tracker.currentFileTotalChunks = 0;
+    tracker.currentFileEmbeddedChunks = 0;
+    tracker.currentFileEstimatedChunks = estimateFileChunkCount(file, this.ragConfig);
+    tracker.currentFilePlannedChunks = tracker.plannedChunkCountsByPath.get(file.path) ?? 0;
+    tracker.currentFileBatchDurationMs = 0;
+    const fileStartedAt = performance.now();
+    emitIndexingProgress(options, tracker, 'file-start');
     this.logger.debug('File indexing started.', {
       data: { path: file.path, size: file.stat.size },
     });
@@ -242,6 +654,9 @@ export class VaultIndexer {
         startedAt,
         options,
       );
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
       this.logger.debug('File indexing skipped because content hash is unchanged.', {
         data: { path: file.path },
       });
@@ -265,14 +680,24 @@ export class VaultIndexer {
         startedAt,
         options,
       );
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
       this.logger.debug('File indexing skipped because no chunks were produced.', {
         data: { path: file.path },
       });
       return skipped;
     }
+    tracker.currentFileTotalChunks = chunks.length;
+    tracker.currentFilePlannedChunks = Math.max(
+      1,
+      tracker.currentFilePlannedChunks || chunks.length,
+    );
+    tracker.currentFileEmbeddedChunks = 0;
+    emitIndexingProgress(options, tracker, 'file-chunks');
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
-    const vectors = await this.embedTextsInBatches(texts, options);
+    const vectors = await this.embedTextsInBatches(texts, options, tracker);
     throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
@@ -310,6 +735,13 @@ export class VaultIndexer {
       startedAt,
       options,
     );
+    tracker.indexed += 1;
+    tracker.vectors += entries.length;
+    completeProgressFile(tracker, performance.now() - fileStartedAt, entries.length);
+    emitIndexingProgress(options, tracker, 'file-complete');
+    if (!progressTracker) {
+      await this.saveEtaCalibration(tracker);
+    }
     this.logger.debug('File indexing completed.', {
       data: {
         path: file.path,
@@ -324,15 +756,24 @@ export class VaultIndexer {
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
+    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
+    emitIndexingProgress(options, progressTracker, 'plan');
+    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
+    throwIfIndexingCancelled(options.signal);
+    this.logger.info('Vault full reindex started.', { data: { fileCount: files.length } });
+    resetProgressTrackerPlan(progressTracker, files, this.ragConfig);
+    emitIndexingProgress(options, progressTracker, 'plan');
+    await this.planProgressChunks(files, options, progressTracker);
+    emitIndexingProgress(options, progressTracker, 'plan');
     const result = await this.withIndexBatch(async () => {
       await this.vectorStore.clear();
       if (this.bm25Index) {
         await this.bm25Index.clear();
       }
       throwIfIndexingCancelled(options.signal);
-      return this.indexVault(options);
+      return this.indexFiles(files, startedAt, options, progressTracker);
     });
-    return finishIndexingResult(
+    const finished = finishIndexingResult(
       {
         indexed: result.indexed,
         vectors: result.vectors,
@@ -342,6 +783,7 @@ export class VaultIndexer {
       startedAt,
       options,
     );
+    return finished;
   }
 
   async removeFile(filePath: string): Promise<number> {
@@ -356,6 +798,8 @@ export class VaultIndexer {
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
+    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
+    emitIndexingProgress(options, progressTracker, 'plan');
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     const status = await calculateRagStatus(
@@ -383,6 +827,18 @@ export class VaultIndexer {
       fileIndices: normalizedPendingPlanFileIndices,
       skipped: Math.max(candidatePaths.length - normalizedPendingPlanFileIndices.length, 0),
     };
+    const pendingFiles = normalizedPendingPlan.fileIndices
+      .map((index) => files[index])
+      .filter((file): file is TFile => file !== undefined);
+    resetProgressTrackerPlan(
+      progressTracker,
+      pendingFiles,
+      this.ragConfig,
+      normalizedPendingPlan.skipped,
+    );
+    emitIndexingProgress(options, progressTracker, 'plan');
+    await this.planProgressChunks(pendingFiles, options, progressTracker);
+    emitIndexingProgress(options, progressTracker, 'plan');
 
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
@@ -394,7 +850,7 @@ export class VaultIndexer {
           batchResult.skipped += 1;
           continue;
         }
-        const fileResult = await this.indexFile(file, options);
+        const fileResult = await this.indexFile(file, options, progressTracker, i);
         throwIfIndexingCancelled(options.signal);
         batchResult.indexed += fileResult.indexed;
         batchResult.vectors += fileResult.vectors;
@@ -407,7 +863,7 @@ export class VaultIndexer {
       return batchResult;
     });
 
-    return finishIndexingResult(
+    const finished = finishIndexingResult(
       {
         indexed: result.indexed,
         vectors: result.vectors,
@@ -417,11 +873,14 @@ export class VaultIndexer {
       startedAt,
       options,
     );
+    await this.saveEtaCalibration(progressTracker);
+    return finished;
   }
 
   private async embedTextsInBatches(
     texts: string[],
     options: IndexingOptions,
+    progressTracker?: IndexingProgressTracker,
   ): Promise<number[][]> {
     const batchSize = Math.max(1, Math.floor(options.maxEmbeddingBatchSize ?? texts.length));
     const vectors: number[][] = [];
@@ -449,6 +908,16 @@ export class VaultIndexer {
       );
       const durationMs = performance.now() - startedAt;
       options.onBatchComplete?.(durationMs);
+      if (progressTracker) {
+        progressTracker.completedBatchDurationsMs.push(durationMs);
+        progressTracker.completedBatchChunkCounts.push(batch.length);
+        progressTracker.currentFileBatchDurationMs += durationMs;
+        progressTracker.currentFileEmbeddedChunks = Math.min(
+          progressTracker.currentFileTotalChunks,
+          progressTracker.currentFileEmbeddedChunks + batch.length,
+        );
+        emitIndexingProgress(options, progressTracker, 'batch-complete');
+      }
       this.logger.trace('Embedding batch validated.', {
         data: {
           offset,

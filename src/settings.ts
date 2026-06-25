@@ -278,9 +278,7 @@ export function normalizeChatSaveFolder(value: unknown): string | null {
 export interface AgentDiagnosticsSettings {
   enabled: boolean;
 }
-export function normalizeAgentDiagnosticsSettings(
-  value: unknown,
-): AgentDiagnosticsSettings {
+export function normalizeAgentDiagnosticsSettings(value: unknown): AgentDiagnosticsSettings {
   const raw =
     typeof value === 'object' && value !== null
       ? (value as Partial<AgentDiagnosticsSettings>)
@@ -517,7 +515,9 @@ function setHidden(el: HTMLElement | null, hidden: boolean): void {
   el.toggleClass(HIDDEN_CLASS, hidden);
 }
 
-function createProviderValidationFingerprint(config: ProviderConfig | CustomOpenAIProviderConfig): string {
+function createProviderValidationFingerprint(
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): string {
   return JSON.stringify({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl ?? '',
@@ -1329,7 +1329,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const commandCenter = containerEl.createDiv({
       cls: 'superpower-inside-providers-command-center',
     });
-    const commandCopy = commandCenter.createDiv({ cls: 'superpower-inside-providers-command-copy' });
+    const commandCopy = commandCenter.createDiv({
+      cls: 'superpower-inside-providers-command-copy',
+    });
     commandCopy.createDiv({
       cls: 'superpower-inside-providers-command-title',
       text: t('providerCommandCenterTitle'),
@@ -1395,7 +1397,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     for (const target of fixedTargets) {
       this.buildProviderSettings(providerGrid, target);
     }
-    collapseAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, false));
+    collapseAll.addEventListener('click', () =>
+      this.setAllProviderCardsExpanded(containerEl, false),
+    );
     expandAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, true));
     this.buildCustomOpenAIProvidersSection(containerEl);
   }
@@ -1918,7 +1922,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     const presentation = getGraphRagStatusPresentation(statusLabel);
     const cost = estimateGraphRagIndexingCost({
-      totalCandidateFiles: graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
@@ -1931,7 +1936,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       hasProvider: this.plugin.hasGraphRagRunner(),
       hasModel: rag.graphRagModel.trim().length > 0,
       isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles: graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
+      totalCandidateFiles:
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       failedFileCount: graphState?.failedFileCount ?? 0,
     });
     const total = graphState?.totalCandidateFiles ?? 0;
@@ -2254,7 +2260,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const status = this.plugin.getRagRuntimeState().ragIndexingStatus;
     if (!status) return this.plugin.isRagIndexing() ? t('settingsAuto077') : t('settingsAuto078');
     if (status.running) {
-      return t('settingsAuto079', { v0: String(status.phase), v1: String(status.queuedFiles) });
+      return this.formatRunningRagIndexingStatus(status);
     }
     if (status.lastResult) {
       return t('settingsAuto080', {
@@ -2263,6 +2269,59 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
     return t('settingsAuto078');
+  }
+  private formatRunningRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
+    const progress = status.progress;
+    const phase = this.formatRagIndexingPhase(status.phase);
+    if (!progress || progress.totalFiles <= 0) {
+      return t('settingsAuto079', { v0: phase, v1: String(status.queuedFiles) });
+    }
+    const completed = Math.min(progress.completedFiles, progress.totalFiles);
+    const eta = progress.eta;
+    if (
+      !eta ||
+      eta.remainingMs === null ||
+      eta.confidence === 'calculating' ||
+      eta.confidence === 'low'
+    ) {
+      return t('ragIndexingRunningEtaCalculating', {
+        phase,
+        completed: String(completed),
+        total: String(progress.totalFiles),
+      });
+    }
+    if (eta.confidence === 'medium') {
+      return t('ragIndexingRunningWithApproxEta', {
+        phase,
+        completed: String(completed),
+        total: String(progress.totalFiles),
+        eta: this.formatEtaDuration(eta.remainingMs),
+      });
+    }
+    return t('ragIndexingRunningWithEta', {
+      phase,
+      completed: String(completed),
+      total: String(progress.totalFiles),
+      eta: this.formatEtaDuration(eta.remainingMs),
+    });
+  }
+  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+    if (phase === 'file') return t('ragPhaseFile');
+    if (phase === 'pending') return t('ragPhasePending');
+    if (phase === 'all') return t('ragPhaseAll');
+    return t('ragPhaseIdle');
+  }
+  private formatEtaDuration(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) {
+      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    }
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
     const ANCHOR_CLS = 'si-embedding-anchor';
@@ -2304,7 +2363,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         : {};
     const modelOptions = isOther
       ? []
-      : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel, modelCapabilities);
+      : buildEmbeddingModelOptions(
+          modelsForProvider,
+          providerModels,
+          effectiveModel,
+          modelCapabilities,
+        );
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
     const providerNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
     providerNotice.setText(t('settingsAuto082'));
@@ -2340,7 +2404,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               '',
               (() => {
                 const nextConfig = this.getEmbeddingProviderConfig(nextProvider);
-                return nextConfig ? this.getProviderModelCapabilities(nextProvider, nextConfig) : {};
+                return nextConfig
+                  ? this.getProviderModelCapabilities(nextProvider, nextConfig)
+                  : {};
               })(),
             );
             this.pendingEmbeddingModel = selectInitialEmbeddingModel(nextModels);
@@ -2486,21 +2552,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 );
                 if (result.valid) {
                   if (effectiveProvider !== 'other') {
-                    await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
-                      connectionTested: true,
-                      serverReachable: true,
-                      lastError: undefined,
-                    });
+                    await this.recordProviderValidation(
+                      effectiveProvider,
+                      getEmbeddingValidationConfig(),
+                      {
+                        connectionTested: true,
+                        serverReachable: true,
+                        lastError: undefined,
+                      },
+                    );
                   }
                   const detail = t('settingsAuto096', { v0: String(result.models.length) });
                   statusEl.setText(detail);
                   return { status: 'success', detail };
                 }
                 if (effectiveProvider !== 'other') {
-                  await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
-                    connectionTested: false,
-                    lastError: String(result.error),
-                  });
+                  await this.recordProviderValidation(
+                    effectiveProvider,
+                    getEmbeddingValidationConfig(),
+                    {
+                      connectionTested: false,
+                      lastError: String(result.error),
+                    },
+                  );
                 }
                 const detail = t('settingsAuto097', { v0: String(result.error) });
                 statusEl.setText(detail);
@@ -4320,7 +4394,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       ...current,
       providerFingerprint: createProviderValidationFingerprint(config),
       serverReachable: status === 'success' || current.serverReachable,
-      authenticated: capability === 'chatStatus' && status === 'success' ? true : current.authenticated,
+      authenticated:
+        capability === 'chatStatus' && status === 'success' ? true : current.authenticated,
       generationTested:
         capability === 'chatStatus' && status === 'success' ? true : current.generationTested,
       lastCheckedAt: checkedAt,
@@ -4329,7 +4404,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
     await this.plugin.saveSettingsLight();
   }
-  private getEmbeddingValidationKeyForTarget(target: ProviderSettingsTarget): EmbeddingProviderKey | null {
+  private getEmbeddingValidationKeyForTarget(
+    target: ProviderSettingsTarget,
+  ): EmbeddingProviderKey | null {
     if (target.kind === 'custom') {
       return `customOpenAI:${target.config.id}`;
     }
@@ -4714,7 +4791,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                     ? await testProviderGeneration(target.key, config, model)
                     : await testProviderGeneration('customOpenAI', target.config, model);
                 if (result.valid) {
-                  await this.recordModelCapability(cacheKey, config, model, 'chatStatus', 'success');
+                  await this.recordModelCapability(
+                    cacheKey,
+                    config,
+                    model,
+                    'chatStatus',
+                    'success',
+                  );
                   const detail = t('settingsAuto264', { v0: String(model) });
                   statusContainer.setText(detail);
                   renderModelList();

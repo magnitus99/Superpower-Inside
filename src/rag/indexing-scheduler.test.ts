@@ -44,7 +44,7 @@ describe('RAGIndexingScheduler', () => {
           calls.push('all:start');
           releaseReindex = () => {
             calls.push('all:end');
-        resolve(createResult({ indexed: 10, vectors: 20 }));
+            resolve(createResult({ indexed: 10, vectors: 20 }));
           };
         }),
     });
@@ -120,6 +120,66 @@ describe('RAGIndexingScheduler', () => {
     await scheduler.waitForIdle();
 
     expect(calls).toEqual(['file:a.md', 'pending']);
+  });
+
+  it('emits RAG indexing progress with Rust-planned ETA and clears it after idle', async () => {
+    const statuses: ReturnType<RAGIndexingScheduler['getStatus']>[] = [];
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: (options) => {
+        options.onProgress?.({
+          event: 'batch-complete',
+          startedAtMs: 0,
+          nowMs: 10000,
+          totalFiles: 10,
+          completedFiles: 3,
+          currentFilePath: 'c.md',
+          currentFileIndex: 2,
+          currentFileTotalChunks: 1,
+          currentFileEmbeddedChunks: 0,
+          totalEstimatedChunks: 10,
+          completedEstimatedChunks: 3,
+          currentFileEstimatedChunks: 1,
+          totalPlannedChunks: 0,
+          completedPlannedChunks: 0,
+          currentFilePlannedChunks: 0,
+          planningComplete: false,
+          indexed: 2,
+          vectors: 20,
+          skipped: 0,
+          completedBatchDurationsMs: [500],
+          completedBatchChunkCounts: [1],
+          completedFileDurationsMs: [2000, 3000, 2500],
+          completedFileChunkCounts: [1, 1, 1],
+          completedFileEstimatedChunkCounts: [1, 1, 1],
+          completedFileActualChunkCounts: [1, 1, 1],
+          completedFileOverheadDurationsMs: [],
+          historicalMsPerChunk: null,
+          historicalChunkEstimateRatio: null,
+          historicalVariance: null,
+        });
+        return Promise.resolve(createResult({ indexed: 2, vectors: 20 }));
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+      onStatusChange: (status) => {
+        statuses.push(status);
+      },
+    });
+
+    await scheduler.indexPending();
+    await scheduler.waitForIdle();
+
+    const progressStatus = statuses.find(
+      (status) => status.running && status.phase === 'pending' && status.progress !== null,
+    );
+    expect(progressStatus?.progress?.currentFilePath).toBe('c.md');
+    expect(progressStatus?.progress?.eta?.remainingMs).toBe(17500);
+    expect(progressStatus?.progress?.eta?.estimatedCompletionMs).toBe(27500);
+    expect(progressStatus?.progress?.eta?.confidence).toBe('medium');
+    expect(progressStatus?.progress?.eta?.basis).toBe('calibrated-estimate');
+    expect(scheduler.getStatus().progress).toBeNull();
   });
 
   it('returns to idle when a pending indexing job rejects', async () => {
