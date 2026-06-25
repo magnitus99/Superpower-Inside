@@ -27,29 +27,23 @@
 - UI/UX 검수는 반드시 비주얼로 한다. 코드 diff, DOM 구조, 테스트 이름, 텍스트 설명은 실제 화면을 대체하지 못한다.
 - UI/UX 검수는 반드시 비주얼로 한다. 스크린샷 없이 “괜찮다”, “정돈됐다”, “브랜드 톤에 맞다”, “여백이 좋다”고 말하지 않는다.
 - UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드렸다면, 반드시 실제 실행 화면의 스크린샷을 직접 찍어서 본다. 가능하면 `.test-vault`에서 Obsidian을 열고, 불가능하면 해당 UI를 재현하는 시뮬레이션/브라우저 화면을 열어 스크린샷으로 확인한다.
+- UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드린 작업은 **커밋, 태그, push, GitHub Release 생성 전에** 화면 검수를 끝낸다. 커밋이나 릴리즈를 끝낸 뒤에 뒤늦게 검수용 HTML, 스크린샷, 브라우저 세션, 임시 산출물을 새로 만들지 않는다.
+- 릴리즈 이후에 화면 검수 누락을 발견했다면, 새 검수물을 만들거나 릴리즈를 다시 건드리지 말고 누락 사실을 명시한다. 완료 보고에서는 “UI/UX 검수는 릴리즈 전에 수행하지 못했다”고 솔직하게 말하고, 추가 작업은 사용자가 명시적으로 지시할 때만 진행한다.
 - 작업자는 스크린샷을 보고 판단해야 한다. 사람은 UI를 문자로 이해하지 않는다. 버튼, 카드, 간격, 컬러, 폰트 크기, 상태 배지, 빈 상태, 오류 상태, focus ring, hover/active 상태는 실제 픽셀로 봐야 한다.
 - UI/UX에도 기준이 있다. 검수 시 최소한 브랜드 톤, 정보 위계, 정보의 여백, 밀도, 정렬, 대비, 가독성, 좁은 sidebar에서의 줄바꿈, 긴 텍스트 overflow, 아이콘/버튼 의미, 상태 변화의 명확성, 모션과 reduced-motion 처리를 스크린샷 기준으로 확인한다.
 - 스크린샷 없는 UI/UX 완료 보고는 금지한다. 자동 테스트와 review gate가 통과해도, 실제 화면을 보지 않았다면 UI/UX 검수는 끝난 것이 아니다.
 - 스크린샷 없는 UI/UX 완료 보고는 금지한다. “테스트 통과”는 동작 검증이고, “화면을 봤다”는 경험 검증이다. 둘은 서로 대체되지 않는다.
 - 스크린샷을 찍을 수 없는 환경이면 그 사실을 명시하고, UI/UX 작업을 완료로 주장하지 않는다. 이 경우 남은 검수 항목과 필요한 실행 화면을 구체적으로 남긴다.
+- Obsidian 네이티브 앱에서는 `computer-use`로 마우스 클릭이나 타이핑을 시도하지 않는다. 이 환경의 Obsidian 앱 마우스 조작은 신뢰할 수 없으므로, 앱 조작 대신 코드/파일/빌드/로그/.test-vault 상태를 확인하고 사용자가 직접 눌러야 하는 단계는 명시한다.
 
-## RELEASE NOTES POLICY (GitHub 릴리스)
+## README AND GITHUB RELEASE POLICY
 
-- 모든 버전 태그(Obsidian 플러그인 버전 포함)는 해당 태그 구간의 커밋 로그를 기준으로 릴리즈 내역을 작성한다.
-- 범위는 `git log <prev-tag>..<current-tag> --oneline` 기준으로 잡는다.
-- PR/Issue 번호를 참조할 수 없으므로, 본문에는 **커밋 단위 변경사항**만 작성한다.
-- 내용 구성은 아래 순서로 정리한다.
-  - 핵심 기능/기능 변경
-  - 버그 수정
-  - 성능/안정성/호환성
-  - 문서/기타 정리
-- “버전 간 변경사항”을 강조해 작성하고, 항목은 메시지에서 유추 가능한 핵심 변경만 1~2줄로 요약한다.
-- `scripts/release-notes.fish`를 실행해 `태그..태그` 구간의 커밋을 자동으로 정리한다.
-  - 사용 예: `./scripts/release-notes.fish v1.2.2 v1.2.1`
-- GitHub Releases에는 태그 생성 시 `--notes` 혹은 수동 붙여넣기로 이 릴리즈 노트 본문을 넣어, 태그 페이지에서 바로 내역이 보이도록 한다.
-- Obsidian/플러그인 버전 관련 릴리즈도 동일 규칙을 적용한다(버전 사이 커밋만 중심).
-- `./scripts/bump-version.fish`는 릴리즈 완료 흐름에 맞춰 `release-notes-<버전>.md`를 자동 생성하고, 가능하면 `gh release create`도 자동 시도한다.
-  - `--no-release` 옵션을 주면 릴리스 생성 단계만 생략하고 노트 생성까지만 수행한다.
+- 커밋 로그 기반 릴리즈 노트, 업데이트 로그, changelog, `release-notes-<버전>.md` 파일을 작성하지 않는다. 릴리즈마다 항목별 변경 내역을 따로 나열하는 문서는 금지한다.
+- 릴리즈마다 `README.md`를 먼저 검토하고, 사용자에게 의미 있는 새 기능이나 제품 가치가 있으면 README의 기존 기능 설명, 사용 흐름, 설정 안내, 스크린샷 맥락에 자연스럽게 통합해 업데이트한다.
+- README는 업데이트 로그처럼 쓰지 않는다. “이번 버전에서 무엇이 바뀌었다”가 아니라 “현재 플러그인이 무엇을 할 수 있고 어떻게 쓰는지”가 한 번에 읽히도록 어울려서 적는다.
+- 단순 버그 수정, 내부 알고리즘 조정, 리팩터링, 성능 미세 조정처럼 README 전체 설명에 녹일 만한 사용자 가치가 없으면 README에 적지 않는다.
+- GitHub Release 본문에는 그 릴리즈에서 사용자에게 의미 있는 업데이트 내역을 직접 붙여 넣는다. 단, 이 내용은 repo 문서로 커밋하지 말고 작업자가 임시로 기억하거나 채팅에 작성한 뒤 GitHub Release 본문에 복붙한다.
+- GitHub Release 본문도 커밋 로그 나열이 아니라 사용자 관점의 요약으로 쓴다. README에 적을 가치가 없는 단순 버그 수정, 내부 알고리즘 조정, 리팩터링은 GitHub Release 본문에도 적지 않는다.
 
 ## JS/TS ROLE BOUNDARY
 
@@ -424,9 +418,11 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - GitHub Release에는 `manifest.json`, `main.js`, `styles.css` 세 asset이 포함되어야 한다. `main.js`는 `npm run build` 결과물이어야 한다.
 - 릴리스 전 검증은 `npm ci`, `npm run security:full`, `npm run build` 순서로 확인한다. CI와 동일한 npm 계열에서 `package-lock.json`이 `package.json`과 동기화되어야 한다.
 - 릴리스 전후에는 `npm run review -- --tag <version> --built`를 실행해 release asset 기준 Obsidian review gate를 통과시킨다.
+- UI/DOM/CSS/설정 화면/채팅 화면을 포함한 릴리스는 커밋과 태그를 만들기 전에 UI/UX VISUAL REVIEW BAR의 스크린샷 검수를 완료해야 한다. 릴리즈 완료 후 검수 누락을 만회하려고 임시 HTML이나 브라우저 화면을 새로 만드는 행동은 금지한다.
 - `package-lock.json`은 추적 대상이다. 의존성 변경이나 npm CI 실패를 수정할 때는 lockfile을 함께 갱신하고 커밋한다.
 - Obsidian 플러그인 스토어 출시와 업데이트는 별도 릴리스 브랜치나 PR 브랜치를 만들지 않고 `main` 브랜치에서 직접 준비한다.
 - 커뮤니티 제출 시스템은 기본 브랜치의 `manifest.json`과 동일 버전 GitHub Release 태그를 기준으로 삼는다. 따라서 릴리스 버전 변경은 `main`에 커밋하고, 버전명과 완전히 같은 태그만 생성해 관리한다.
+- 릴리즈 준비 시 `release-notes-*.md`나 업데이트 로그 문서를 만들지 않는다. 사용자에게 의미 있는 새 기능이 있으면 `README.md`의 현재 기능 설명에 통합하고, 릴리즈별 업데이트 요약은 repo에 커밋하지 말고 GitHub Release 본문에 직접 붙여 넣는다.
 - 출시 이력과 업데이트 관리는 브랜치가 아니라 태그로만 추적한다. 예: `1.0.0`, `1.0.1`, `1.1.0`.
 - 같은 버전을 재출시할 때는 새 버전으로 올리지 말고 해당 버전 태그를 새 커밋으로 이동한다. 순서: `main` 푸시 → `git tag -f <version>` → `git push --force origin <version>` → Release workflow 완료 대기 → `gh release view <version> --json assets,tagName,targetCommitish,url`로 asset 3개 확인.
 - Release workflow가 tag push로 실행 중이거나 실행될 예정이면 같은 태그에 대해 수동 `gh release create`를 먼저 실행하지 않는다. workflow가 기존 asset을 지우고 다시 올리는 중 실패하면 `main.js` 누락 릴리즈가 생길 수 있다.
