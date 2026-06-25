@@ -121,6 +121,26 @@ describe('RAGIndexingScheduler', () => {
 
     expect(calls).toEqual(['file:a.md', 'pending']);
   });
+
+  it('returns to idle when a pending indexing job rejects', async () => {
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.reject(new Error('embedding request timed out')),
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+
+    await expect(scheduler.indexPending()).rejects.toThrow('embedding request timed out');
+    await scheduler.waitForIdle();
+
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({
+        running: false,
+        phase: 'idle',
+      }),
+    );
+  });
 });
 
 function createFile(path: string, mtime = 1): TFile {

@@ -39,6 +39,7 @@ export interface EmbeddingRetryOptions {
   maxRetries: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  requestTimeoutMs: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
@@ -58,6 +59,7 @@ const DEFAULT_EMBEDDING_RETRY: EmbeddingRetryOptions = {
   maxRetries: 4,
   baseDelayMs: 1000,
   maxDelayMs: 60_000,
+  requestTimeoutMs: 120_000,
 };
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -96,6 +98,12 @@ function normalizeRetryOptions(options?: Partial<EmbeddingRetryOptions>): Embedd
       1,
       300_000,
       DEFAULT_EMBEDDING_RETRY.maxDelayMs,
+    ),
+    requestTimeoutMs: clampRetryInteger(
+      options?.requestTimeoutMs,
+      0,
+      3_600_000,
+      DEFAULT_EMBEDDING_RETRY.requestTimeoutMs,
     ),
     sleep: options?.sleep ?? sleepWithAbort,
   };
@@ -160,7 +168,7 @@ async function requestEmbeddingWithRateLimitRetry(
 ): Promise<RequestUrlResponse> {
   for (let attempt = 0; ; attempt++) {
     throwIfAborted(context.signal);
-    const response = await requestUrl(request);
+    const response = await requestUrlWithTimeout(request, retry.requestTimeoutMs, logger, context);
     throwIfAborted(context.signal);
     if (response.status !== 429 || attempt >= retry.maxRetries) {
       if (response.status === 429) {
@@ -188,6 +196,65 @@ async function requestEmbeddingWithRateLimitRetry(
     });
     await retry.sleep?.(retryInMs, context.signal);
   }
+}
+
+function requestUrlWithTimeout(
+  request: RequestUrlParam,
+  timeoutMs: number,
+  logger: ScopedLogger,
+  context: RetryRequestContext,
+): Promise<RequestUrlResponse> {
+  throwIfAborted(context.signal);
+  if (timeoutMs <= 0 && !context.signal) {
+    return requestUrl(request);
+  }
+
+  return new Promise<RequestUrlResponse>((resolve, reject) => {
+    let settled = false;
+    let timeoutId: number | null = null;
+    const settle = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      context.signal?.removeEventListener('abort', onAbort);
+      complete();
+    };
+    const onAbort = (): void => {
+      settle(() => reject(new DOMException('Embedding request cancelled', 'AbortError')));
+    };
+
+    if (timeoutMs > 0) {
+      timeoutId = window.setTimeout(() => {
+        logger.error('Embedding request timed out.', {
+          data: {
+            endpoint: context.endpoint,
+            model: context.model,
+            batchSize: context.batchSize,
+            timeoutMs,
+          },
+        });
+        settle(() =>
+          reject(
+            new Error(
+              `Embedding request timed out after ${timeoutMs}ms (endpoint: ${context.endpoint}, model: ${context.model}).`,
+            ),
+          ),
+        );
+      }, timeoutMs);
+    }
+    context.signal?.addEventListener('abort', onAbort, { once: true });
+
+    void requestUrl(request).then(
+      (response) => settle(() => resolve(response)),
+      (error: unknown) => settle(() => reject(toError(error))),
+    );
+  });
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

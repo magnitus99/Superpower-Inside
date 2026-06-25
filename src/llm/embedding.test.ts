@@ -42,6 +42,18 @@ function mockResponse(data: {
   });
 }
 
+function pendingRequest(): RequestUrlResponsePromise {
+  const promise = new Promise<RequestUrlResponse>(() => undefined);
+  const arrayBuffer = new Promise<ArrayBuffer>(() => undefined);
+  const json = new Promise<unknown>(() => undefined);
+  const text = new Promise<string>(() => undefined);
+  return Object.assign(promise, {
+    arrayBuffer,
+    json,
+    text,
+  });
+}
+
 function parseRequestBody(request: string | RequestUrlParam): Record<string, unknown> {
   if (typeof request === 'string' || typeof request.body !== 'string') {
     throw new Error('테스트 요청 body가 문자열이 아닙니다.');
@@ -51,6 +63,7 @@ function parseRequestBody(request: string | RequestUrlParam): Record<string, unk
 
 describe('OllamaEmbeddingProvider', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.mocked(requestUrl).mockReset();
   });
 
@@ -142,10 +155,48 @@ describe('OllamaEmbeddingProvider', () => {
 
     await expect(provider.embedBatch(['short'])).rejects.toThrow(/Ollama embedding failed/);
   });
+
+  it('stuck Ollama embedding requests time out instead of leaving indexing running forever', async () => {
+    vi.useFakeTimers();
+    const logger = createLogger({ minLevel: 'trace', maxEntries: 100, mirrorToConsole: false });
+    const provider = new OllamaEmbeddingProvider(
+      'http://localhost:11434',
+      'stuck-embedding-model:latest',
+      undefined,
+      {
+        logger,
+        retry: {
+          requestTimeoutMs: 25,
+        },
+      },
+    );
+    vi.mocked(requestUrl).mockImplementation(() => pendingRequest());
+
+    const promise = provider.embedBatch(['stuck input']);
+    const assertion = expect(promise).rejects.toThrow(
+      /Embedding request timed out after 25ms.*stuck-embedding-model:latest/,
+    );
+    await vi.advanceTimersByTimeAsync(25);
+
+    await assertion;
+    const timeoutLog = logger
+      .getEntries()
+      .find((entry) => entry.message === 'Embedding request timed out.');
+    expect(timeoutLog?.level).toBe('error');
+    expect(timeoutLog?.source).toBe('embedding.ollama');
+    expect(timeoutLog?.data).toMatchObject({
+      endpoint: 'http://localhost:11434/api/embed',
+      model: 'stuck-embedding-model:latest',
+      timeoutMs: 25,
+    });
+
+    vi.useRealTimers();
+  });
 });
 
 describe('OpenAIEmbeddingProvider', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.mocked(requestUrl).mockReset();
   });
 
