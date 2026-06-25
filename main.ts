@@ -68,13 +68,13 @@ import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status
 import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
-import { LOG_VIEW_TYPE, LogView } from './src/logs/view';
 import {
   AGENT_DIAGNOSTICS_VIEW_TYPE,
   AgentDiagnosticsView,
 } from './src/diagnostics/view';
 import {
   AgentDiagnosticsService,
+  type AgentDiagnosticsBreadcrumbInput,
   type AgentDiagnosticsServiceSnapshotState,
 } from './src/diagnostics/service';
 import {
@@ -265,7 +265,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
-    this.registerView(LOG_VIEW_TYPE, (leaf) => new LogView(leaf, this));
     this.registerView(
       AGENT_DIAGNOSTICS_VIEW_TYPE,
       (leaf) => new AgentDiagnosticsView(leaf, this),
@@ -279,10 +278,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     this.addRibbonIcon('git-branch', t('cmdOpenGraphRagView'), () => {
       void this.openGraphRagView();
-    });
-
-    this.addRibbonIcon('scroll-text', t('cmdOpenLogView'), () => {
-      this.openLogView();
     });
 
     // 명령어
@@ -344,11 +339,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       callback: () => this.openGraphRagView(),
     });
 
-    this.addCommand({
-      id: 'open-log-view',
-      name: t('cmdOpenLogView'),
-      callback: () => this.openLogView(),
-    });
     this.addCommand({
       id: 'open-agent-diagnostics-view',
       name: t('cmdOpenAgentDiagnosticsView'),
@@ -500,6 +490,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await service.clearDetailedLogging();
   }
 
+  private async recordAgentDiagnosticsBreadcrumb(
+    input: AgentDiagnosticsBreadcrumbInput,
+  ): Promise<void> {
+    await this.agentDiagnosticsService?.recordBreadcrumb(input);
+  }
+
   private async configureAgentDiagnosticsService(): Promise<void> {
     if (this.settings.agentDiagnostics.enabled) {
       const service = this.getOrCreateAgentDiagnosticsService();
@@ -537,8 +533,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       settings: this.settings,
       runtime: this.collectAgentDiagnosticsRuntimeState(),
       session: state.session,
+      previousSession: state.previousSession,
       heartbeat: state.heartbeat,
       refreshEvents: state.refreshEvents,
+      breadcrumbs: state.breadcrumbs,
       logs: state.logs,
       fileWrite: state.fileWrite,
       now: Date.now(),
@@ -555,6 +553,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         endedAt: now,
         endReason: 'disabled',
       },
+      previousSession: null,
       heartbeat: {
         lastStartedAt: null,
         lastFinishedAt: null,
@@ -563,6 +562,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         tickCount: 0,
       },
       refreshEvents: [],
+      breadcrumbs: [],
       logs: this.getLogger().getEntries().slice(-200),
       fileWrite: {
         path: this.getAgentDiagnosticsFilePath(),
@@ -1575,6 +1575,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   ): Promise<T> {
     const startedAt = Date.now();
     this.lastRagRuntimeInitStage = stage;
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: stage,
+    });
     this.getLogger().info('RAG runtime initialization step started.', {
       source: 'rag',
       data: { stage },
@@ -2359,6 +2364,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
     const runId = ++this.mcpConnectionRunId;
     this.clearMcpRetryTimers();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'mcp.connections',
+      action: 'enter',
+      detail: 'run-start',
+      data: {
+        runId,
+        retryFailed: options.retryFailed,
+        serverCount: this.settings.mcpServers.length,
+      },
+    });
     this.getLogger().info('MCP connection run started.', {
       source: 'mcp',
       data: {
@@ -2580,17 +2595,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     void leaf.setViewState({ type: GRAPH_RAG_VIEW_TYPE, active: true });
-    void this.app.workspace.revealLeaf(leaf);
-  }
-
-  openLogView(): void {
-    const existingLeaf = this.app.workspace.getLeavesOfType(LOG_VIEW_TYPE)[0];
-    if (existingLeaf) {
-      void this.app.workspace.revealLeaf(existingLeaf);
-      return;
-    }
-    const leaf = this.app.workspace.getLeaf('tab');
-    void leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
   }
 

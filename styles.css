@@ -707,13 +707,11 @@
   border-color: var(--background-modifier-border);
 }
 
-.superpower-inside-logs-view {
-  padding: 20px;
-  height: 100%;
-  min-height: 520px;
+.superpower-inside-agent-diagnostics-logs {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .superpower-inside-logs-header {
@@ -721,6 +719,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .superpower-inside-logs-heading {

@@ -27,6 +27,11 @@ class RecordingAdapter {
     return Promise.resolve();
   }
 
+  read(path: string): Promise<string> {
+    const value = this.files.get(path);
+    return value === undefined ? Promise.reject(new Error('missing file')) : Promise.resolve(value);
+  }
+
   rename(from: string, to: string): Promise<void> {
     this.renamePairs.push([from, to]);
     const value = this.files.get(from);
@@ -46,6 +51,10 @@ class RecordingAdapter {
     return this.files.get(path);
   }
 
+  writeRaw(path: string, value: string): void {
+    this.files.set(path, value);
+  }
+
   asDataAdapter(): never {
     return this as never;
   }
@@ -53,7 +62,11 @@ class RecordingAdapter {
 
 const diagnosticsPath = '.obsidian/plugins/superpower-inside/agent-diagnostics.json';
 
-function createService(options: { enabled: boolean; adapter?: RecordingAdapter }) {
+function createService(options: {
+  enabled: boolean;
+  adapter?: RecordingAdapter;
+  maxBreadcrumbs?: number;
+}) {
   const adapter = options.adapter ?? new RecordingAdapter();
   const refreshBus = new RefreshBus();
   const logger = createLogger({ minLevel: 'trace', maxEntries: 10, mirrorToConsole: false });
@@ -66,12 +79,15 @@ function createService(options: { enabled: boolean; adapter?: RecordingAdapter }
     heartbeatIntervalMs: 1000,
     maxRefreshEvents: 2,
     maxLogEntries: 3,
+    maxBreadcrumbs: options.maxBreadcrumbs,
     now: () => Date.now(),
     buildSnapshot: (state) => {
       snapshots.push(state);
       return {
         session: state.session,
+        previousSession: state.previousSession,
         refreshEvents: state.refreshEvents,
+        breadcrumbs: state.breadcrumbs,
         heartbeat: state.heartbeat,
         logs: state.logs,
         fileWrite: state.fileWrite,
@@ -169,5 +185,84 @@ describe('AgentDiagnosticsService', () => {
     };
     expect(parsed.heartbeat.tickCount).toBeGreaterThan(0);
     expect(parsed.heartbeat.maxLagMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('flags a previous running session as an unclean shutdown suspect', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.writeRaw(
+      diagnosticsPath,
+      JSON.stringify({
+        generatedAt: Date.parse('2026-06-24T23:59:55.000Z'),
+        session: {
+          id: 'agent-diagnostics-old',
+          status: 'running',
+          startedAt: Date.parse('2026-06-24T23:59:50.000Z'),
+          endedAt: null,
+          endReason: null,
+        },
+        heartbeat: {
+          lastStartedAt: Date.parse('2026-06-24T23:59:55.000Z'),
+          lastFinishedAt: Date.parse('2026-06-24T23:59:55.010Z'),
+          lastLagMs: 10,
+          maxLagMs: 10,
+          tickCount: 1,
+        },
+      }),
+    );
+    const { service } = createService({ enabled: false, adapter });
+
+    await service.setEnabled(true);
+    await service.writeNow('manual');
+
+    const parsed = JSON.parse(adapter.readRaw(diagnosticsPath) ?? '{}') as {
+      previousSession: {
+        status: string;
+        suspectedUncleanShutdown: boolean;
+        id: string;
+        lastGeneratedAt: number;
+      } | null;
+    };
+    expect(parsed.previousSession).toEqual(
+      expect.objectContaining({
+        status: 'running',
+        suspectedUncleanShutdown: true,
+        id: 'agent-diagnostics-old',
+        lastGeneratedAt: Date.parse('2026-06-24T23:59:55.000Z'),
+      }),
+    );
+  });
+
+  it('records bounded breadcrumbs before risky work starts', async () => {
+    const { adapter, service } = createService({ enabled: true, maxBreadcrumbs: 1 });
+
+    await service.recordBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: 'vector-store-open',
+      data: { fileCount: 1 },
+    });
+    await service.recordBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: 'bm25-load',
+      data: { apiKey: 'sk-secretsecretsecret', fileCount: 3 },
+    });
+
+    const parsed = JSON.parse(adapter.readRaw(diagnosticsPath) ?? '{}') as {
+      breadcrumbs: Array<{
+        phase: string;
+        action: string;
+        detail?: string;
+        data?: Record<string, unknown>;
+      }>;
+    };
+    expect(parsed.breadcrumbs).toEqual([
+      expect.objectContaining({
+        phase: 'rag.runtime',
+        action: 'enter',
+        detail: 'bm25-load',
+        data: { apiKey: '[REDACTED]', fileCount: 3 },
+      }),
+    ]);
   });
 });

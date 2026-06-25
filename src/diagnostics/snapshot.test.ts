@@ -175,6 +175,22 @@ describe('agent diagnostics snapshot', () => {
       }),
       runtime: buildRuntime(),
       session: buildSession(),
+      previousSession: {
+        id: 'diag-previous',
+        status: 'running',
+        startedAt: 1_780_370_000_000,
+        endedAt: null,
+        endReason: null,
+        lastGeneratedAt: 1_780_370_100_000,
+        lastHeartbeat: {
+          lastStartedAt: 1_780_370_099_000,
+          lastFinishedAt: 1_780_370_099_010,
+          lastLagMs: 10,
+          maxLagMs: 10,
+          tickCount: 1,
+        },
+        suspectedUncleanShutdown: true,
+      },
       heartbeat: {
         lastStartedAt: 1_780_371_001_000,
         lastFinishedAt: 1_780_371_001_013,
@@ -189,6 +205,16 @@ describe('agent diagnostics snapshot', () => {
           domain: 'rag',
           status: 'partial',
           detail: 'indexing',
+        },
+      ],
+      breadcrumbs: [
+        {
+          id: 1,
+          timestamp: 1_780_371_002_500,
+          phase: 'rag.runtime',
+          action: 'enter',
+          detail: 'bm25-load',
+          data: { authorization: 'Bearer abcdefgh', fileCount: 7 },
         },
       ],
       logs: logger.getEntries(),
@@ -228,6 +254,14 @@ describe('agent diagnostics snapshot', () => {
       PATH: 'C:/tools',
     });
     expect(snapshot.refreshEvents[0]?.domain).toBe('rag');
+    expect(snapshot.previousSession?.suspectedUncleanShutdown).toBe(true);
+    expect(snapshot.breadcrumbs[0]).toEqual(
+      expect.objectContaining({
+        phase: 'rag.runtime',
+        action: 'enter',
+        data: { authorization: '[REDACTED]', fileCount: 7 },
+      }),
+    );
     expect(snapshot.logs[0]?.source).toBe('llm');
     expect(snapshot.heartbeat.maxLagMs).toBe(42);
 

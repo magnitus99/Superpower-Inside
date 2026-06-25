@@ -31,17 +31,9 @@ export interface I18nKeys {
   langKo: string;
   langEn: string;
   languageChangeConfirm: string;
-  loggingDebugPanelTitle: string;
-  loggingDebugPanelDesc: string;
   loggingMinLevel: string;
-  loggingMinLevelDesc: string;
   loggingMirrorConsole: string;
-  loggingMirrorConsoleDesc: string;
   loggingMaxEntries: string;
-  loggingMaxEntriesDesc: string;
-  loggingOpenViewer: string;
-  loggingOpenViewerDesc: string;
-  loggingOpenViewerButton: string;
   loggingViewerTitle: string;
   loggingViewerDesc: string;
   loggingCopyVisible: string;
@@ -1299,7 +1291,6 @@ export interface I18nKeys {
   cmdOpenAiChat: string;
   cmdReindexVault: string;
   cmdOpenGraphRagView: string;
-  cmdOpenLogView: string;
   cmdOpenAgentDiagnosticsView: string;
   graphRagViewTabTitle: string;
   graphRagViewTabEntities: string;
@@ -1373,19 +1364,12 @@ const ko: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
-  loggingDebugPanelTitle: '디버깅',
-  loggingDebugPanelDesc: '통합 로그 수집과 표시 범위를 제어합니다.',
   loggingMinLevel: '최소 로그 레벨',
-  loggingMinLevelDesc: '이 레벨보다 낮은 로그는 저장하지 않습니다.',
   loggingMirrorConsole: '콘솔에도 출력',
-  loggingMirrorConsoleDesc: '통합 로그를 Obsidian 개발자 콘솔에도 함께 출력합니다.',
   loggingMaxEntries: '로그 보존 개수',
-  loggingMaxEntriesDesc: '메모리에 유지할 최근 로그 개수입니다. 오래된 항목부터 제거됩니다.',
-  loggingOpenViewer: '통합 로그 보기',
-  loggingOpenViewerDesc: '현재 세션의 플러그인 로그를 전체 페이지로 확인합니다.',
-  loggingOpenViewerButton: '로그 페이지 열기',
-  loggingViewerTitle: '통합 로그',
-  loggingViewerDesc: '플러그인 런타임, RAG, GraphRAG, MCP, 임베딩 오류를 한 곳에서 확인합니다.',
+  loggingViewerTitle: '진단 로그',
+  loggingViewerDesc:
+    '플러그인 런타임, RAG, GraphRAG, MCP, 임베딩 오류를 에이전트 진단 화면에서 확인합니다.',
   loggingCopyVisible: '보이는 로그 복사',
   loggingClear: '로그 비우기',
   loggingFilterLevel: '레벨',
@@ -2743,7 +2727,6 @@ const ko: I18nKeys = {
   cmdOpenAiChat: 'AI 채팅 열기',
   cmdReindexVault: '볼트 RAG 재인덱싱',
   cmdOpenGraphRagView: 'GraphRAG 탐색기 열기',
-  cmdOpenLogView: '통합 로그 페이지 열기',
   graphRagViewTabTitle: 'GraphRAG 탐색기',
   graphRagViewTabEntities: '엔티티',
   graphRagViewTabRelations: '관계',
@@ -2788,20 +2771,12 @@ const en: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
-  loggingDebugPanelTitle: 'Debugging',
-  loggingDebugPanelDesc: 'Control integrated log collection and display scope.',
   loggingMinLevel: 'Minimum log level',
-  loggingMinLevelDesc: 'Logs below this level are not stored.',
   loggingMirrorConsole: 'Mirror to console',
-  loggingMirrorConsoleDesc: 'Also write integrated logs to the Obsidian developer console.',
   loggingMaxEntries: 'Retained log entries',
-  loggingMaxEntriesDesc: 'Recent log entries kept in memory. Older entries are removed first.',
-  loggingOpenViewer: 'View integrated logs',
-  loggingOpenViewerDesc: 'Open a full-page view of the current plugin session logs.',
-  loggingOpenViewerButton: 'Open log page',
-  loggingViewerTitle: 'Integrated Logs',
+  loggingViewerTitle: 'Diagnostic logs',
   loggingViewerDesc:
-    'Inspect plugin runtime, RAG, GraphRAG, MCP, and embedding errors in one place.',
+    'Inspect plugin runtime, RAG, GraphRAG, MCP, and embedding errors inside Agent Diagnostics.',
   loggingCopyVisible: 'Copy visible logs',
   loggingClear: 'Clear logs',
   loggingFilterLevel: 'Level',
@@ -4209,7 +4184,6 @@ const en: I18nKeys = {
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
   cmdOpenGraphRagView: 'Open GraphRAG Explorer',
-  cmdOpenLogView: 'Open Integrated Logs',
   cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
   graphRagViewTabTitle: 'GraphRAG Explorer',
   graphRagViewTabEntities: 'Entities',

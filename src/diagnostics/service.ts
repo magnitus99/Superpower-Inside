@@ -1,14 +1,17 @@
 import type { DataAdapter } from 'obsidian';
 
 import type {
+  AgentDiagnosticsBreadcrumb,
+  AgentDiagnosticsBreadcrumbAction,
   AgentDiagnosticsFileWriteState,
   AgentDiagnosticsHeartbeatState,
+  AgentDiagnosticsPreviousSessionState,
   AgentDiagnosticsRefreshEvent,
   AgentDiagnosticsSessionState,
 } from './snapshot';
 import type { RefreshBus, RefreshDomain } from '../utils/refresh-bus';
 import type { RefreshResult } from '../utils/refresh-action';
-import type { AppLogger, LogEntry, LoggerChangeEvent } from '../utils/logger';
+import { redactLogValue, type AppLogger, type LogEntry, type LoggerChangeEvent } from '../utils/logger';
 import { writeJsonToVault } from '../utils/vault';
 
 const REFRESH_DOMAINS: readonly RefreshDomain[] = [
@@ -24,13 +27,23 @@ const REFRESH_DOMAINS: readonly RefreshDomain[] = [
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 const DEFAULT_MAX_REFRESH_EVENTS = 100;
 const DEFAULT_MAX_LOG_ENTRIES = 200;
+const DEFAULT_MAX_BREADCRUMBS = 100;
 
 export interface AgentDiagnosticsServiceSnapshotState {
   session: AgentDiagnosticsSessionState;
+  previousSession: AgentDiagnosticsPreviousSessionState | null;
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: readonly AgentDiagnosticsRefreshEvent[];
+  breadcrumbs: readonly AgentDiagnosticsBreadcrumb[];
   logs: readonly LogEntry[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
+}
+
+export interface AgentDiagnosticsBreadcrumbInput {
+  phase: string;
+  action: AgentDiagnosticsBreadcrumbAction;
+  detail?: string;
+  data?: unknown;
 }
 
 export interface AgentDiagnosticsServiceOptions {
@@ -42,6 +55,7 @@ export interface AgentDiagnosticsServiceOptions {
   heartbeatIntervalMs?: number;
   maxRefreshEvents?: number;
   maxLogEntries?: number;
+  maxBreadcrumbs?: number;
   now?: () => number;
 }
 
@@ -54,15 +68,19 @@ export class AgentDiagnosticsService {
   private readonly heartbeatIntervalMs: number;
   private readonly maxRefreshEvents: number;
   private readonly maxLogEntries: number;
+  private readonly maxBreadcrumbs: number;
   private readonly now: () => number;
   private refreshEvents: AgentDiagnosticsRefreshEvent[] = [];
+  private breadcrumbs: AgentDiagnosticsBreadcrumb[] = [];
   private unsubscribers: Array<() => void> = [];
   private heartbeatTimer: number | null = null;
   private nextHeartbeatExpectedAt: number | null = null;
   private session: AgentDiagnosticsSessionState | null = null;
+  private previousSession: AgentDiagnosticsPreviousSessionState | null = null;
   private heartbeat: AgentDiagnosticsHeartbeatState = createInitialHeartbeat();
   private fileWrite: AgentDiagnosticsFileWriteState | null = null;
   private nextEventId = 1;
+  private nextBreadcrumbId = 1;
   private writeInProgress = false;
 
   constructor(options: AgentDiagnosticsServiceOptions) {
@@ -80,12 +98,20 @@ export class AgentDiagnosticsService {
       Math.floor(options.maxRefreshEvents ?? DEFAULT_MAX_REFRESH_EVENTS),
     );
     this.maxLogEntries = Math.max(1, Math.floor(options.maxLogEntries ?? DEFAULT_MAX_LOG_ENTRIES));
+    this.maxBreadcrumbs = Math.max(
+      1,
+      Math.floor(options.maxBreadcrumbs ?? DEFAULT_MAX_BREADCRUMBS),
+    );
     this.now = options.now ?? (() => Date.now());
   }
 
   async setEnabled(enabled: boolean): Promise<void> {
     if (enabled) {
+      const shouldReadPreviousSession = !this.isRunning();
       this.start();
+      if (shouldReadPreviousSession) {
+        this.previousSession = await this.readPreviousSessionSuspect();
+      }
       return;
     }
     await this.stop('disabled');
@@ -94,6 +120,8 @@ export class AgentDiagnosticsService {
   start(): void {
     if (this.session?.status === 'running') return;
     const startedAt = this.now();
+    this.previousSession = null;
+    this.breadcrumbs = [];
     this.session = {
       id: createSessionId(startedAt),
       status: 'running',
@@ -138,9 +166,28 @@ export class AgentDiagnosticsService {
     await this.writeSnapshot('manual');
   }
 
+  async recordBreadcrumb(input: AgentDiagnosticsBreadcrumbInput): Promise<void> {
+    if (!this.isRunning()) return;
+    const breadcrumb: AgentDiagnosticsBreadcrumb = {
+      id: this.nextBreadcrumbId++,
+      timestamp: this.now(),
+      phase: input.phase,
+      action: input.action,
+      detail: input.detail,
+      data: input.data === undefined ? undefined : redactLogValue(input.data),
+    };
+    this.breadcrumbs.push(breadcrumb);
+    if (this.breadcrumbs.length > this.maxBreadcrumbs) {
+      this.breadcrumbs.splice(0, this.breadcrumbs.length - this.maxBreadcrumbs);
+    }
+    await this.writeSnapshot('breadcrumb');
+  }
+
   async clearDetailedLogging(): Promise<void> {
     this.logger.clear();
     this.refreshEvents = [];
+    this.breadcrumbs = [];
+    this.previousSession = null;
     this.heartbeat = createInitialHeartbeat();
     this.fileWrite = {
       path: this.filePath,
@@ -284,11 +331,24 @@ export class AgentDiagnosticsService {
     const logs = this.logger.getEntries().slice(-this.maxLogEntries);
     return {
       session: this.session,
+      previousSession: this.previousSession,
       heartbeat: this.heartbeat,
       refreshEvents: [...this.refreshEvents],
+      breadcrumbs: [...this.breadcrumbs],
       logs,
       fileWrite: this.fileWrite,
     };
+  }
+
+  private async readPreviousSessionSuspect(): Promise<AgentDiagnosticsPreviousSessionState | null> {
+    try {
+      if (!(await this.adapter.exists(this.filePath))) return null;
+      const raw = await this.adapter.read(this.filePath);
+      const parsed = JSON.parse(raw) as unknown;
+      return parsePreviousSessionSuspect(parsed);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -305,4 +365,48 @@ function createInitialHeartbeat(): AgentDiagnosticsHeartbeatState {
 function createSessionId(startedAt: number): string {
   const random = Math.random().toString(36).slice(2, 8);
   return `agent-diagnostics-${startedAt.toString(36)}-${random}`;
+}
+
+function parsePreviousSessionSuspect(
+  value: unknown,
+): AgentDiagnosticsPreviousSessionState | null {
+  if (!isRecord(value)) return null;
+  const session = value.session;
+  if (!isRecord(session)) return null;
+  const status = session.status;
+  if (status !== 'running') return null;
+  const id = typeof session.id === 'string' ? session.id : null;
+  const startedAt = typeof session.startedAt === 'number' ? session.startedAt : null;
+  if (!id || startedAt === null) return null;
+  const endedAt = typeof session.endedAt === 'number' ? session.endedAt : null;
+  const endReason = typeof session.endReason === 'string' ? session.endReason : null;
+  if (endedAt !== null || endReason !== null) return null;
+  return {
+    id,
+    status,
+    startedAt,
+    endedAt,
+    endReason,
+    lastGeneratedAt: typeof value.generatedAt === 'number' ? value.generatedAt : null,
+    lastHeartbeat: parseHeartbeat(value.heartbeat),
+    suspectedUncleanShutdown: true,
+  };
+}
+
+function parseHeartbeat(value: unknown): AgentDiagnosticsHeartbeatState | null {
+  if (!isRecord(value)) return null;
+  const maxLagMs = typeof value.maxLagMs === 'number' ? value.maxLagMs : null;
+  const tickCount = typeof value.tickCount === 'number' ? value.tickCount : null;
+  if (maxLagMs === null || tickCount === null) return null;
+  return {
+    lastStartedAt: typeof value.lastStartedAt === 'number' ? value.lastStartedAt : null,
+    lastFinishedAt: typeof value.lastFinishedAt === 'number' ? value.lastFinishedAt : null,
+    lastLagMs: typeof value.lastLagMs === 'number' ? value.lastLagMs : null,
+    maxLagMs,
+    tickCount,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

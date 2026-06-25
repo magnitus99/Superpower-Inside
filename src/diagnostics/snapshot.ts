@@ -88,6 +88,28 @@ export interface AgentDiagnosticsHeartbeatState {
   tickCount: number;
 }
 
+export interface AgentDiagnosticsPreviousSessionState {
+  id: string;
+  status: AgentDiagnosticsSessionState['status'];
+  startedAt: number;
+  endedAt: number | null;
+  endReason: string | null;
+  lastGeneratedAt: number | null;
+  lastHeartbeat: AgentDiagnosticsHeartbeatState | null;
+  suspectedUncleanShutdown: boolean;
+}
+
+export type AgentDiagnosticsBreadcrumbAction = 'enter' | 'leave' | 'error' | 'mark';
+
+export interface AgentDiagnosticsBreadcrumb {
+  id: number;
+  timestamp: number;
+  phase: string;
+  action: AgentDiagnosticsBreadcrumbAction;
+  detail?: string;
+  data?: unknown;
+}
+
 export interface AgentDiagnosticsRefreshEvent {
   id: number;
   timestamp: number;
@@ -111,8 +133,10 @@ export interface AgentDiagnosticsSnapshotInput {
   settings: SuperpowerInsideSettings;
   runtime: AgentDiagnosticsRuntimeState;
   session: AgentDiagnosticsSessionState;
+  previousSession: AgentDiagnosticsPreviousSessionState | null;
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: readonly AgentDiagnosticsRefreshEvent[];
+  breadcrumbs: readonly AgentDiagnosticsBreadcrumb[];
   logs: readonly LogEntry[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
   now: number;
@@ -134,6 +158,7 @@ export interface AgentDiagnosticsSnapshot {
   manifest: AgentDiagnosticsManifestInfo;
   vault: AgentDiagnosticsVaultInfo;
   session: AgentDiagnosticsSessionState;
+  previousSession: AgentDiagnosticsPreviousSessionState | null;
   diagnosticFile: {
     path: string;
   };
@@ -183,6 +208,7 @@ export interface AgentDiagnosticsSnapshot {
   runtimeFlags: AgentDiagnosticsRuntimeFlags;
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: AgentDiagnosticsRefreshEvent[];
+  breadcrumbs: AgentDiagnosticsBreadcrumb[];
   logs: AgentDiagnosticsLogSnapshot[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
 }
@@ -227,6 +253,7 @@ export function buildAgentDiagnosticsSnapshot(
         typeof input.vault.adapterBasePath === 'string' ? input.vault.adapterBasePath : null,
     },
     session: input.session,
+    previousSession: input.previousSession,
     diagnosticFile: {
       path: diagnosticFilePath,
     },
@@ -254,6 +281,7 @@ export function buildAgentDiagnosticsSnapshot(
     runtimeFlags: input.runtime.runtimeFlags,
     heartbeat: input.heartbeat,
     refreshEvents: input.refreshEvents.map((event) => ({ ...event })),
+    breadcrumbs: input.breadcrumbs.map(toBreadcrumbSnapshot),
     logs: input.logs.map(toLogSnapshot),
     fileWrite: input.fileWrite,
   };
@@ -347,6 +375,15 @@ function toLogSnapshot(entry: LogEntry): AgentDiagnosticsLogSnapshot {
     message: entry.message,
     data: entry.data === undefined ? undefined : redactLogValue(entry.data),
     error: entry.error ? redactString(entry.error) : undefined,
+  };
+}
+
+function toBreadcrumbSnapshot(
+  entry: AgentDiagnosticsBreadcrumb,
+): AgentDiagnosticsBreadcrumb {
+  return {
+    ...entry,
+    data: entry.data === undefined ? undefined : redactLogValue(entry.data),
   };
 }
 
