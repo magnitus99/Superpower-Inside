@@ -28,7 +28,7 @@ flowchart LR
 | 실패가 조용히 숨겨지는가 | 사용자가 행동해야 할 때만 짧고 구체적인 이유와 next action을 보여줍니다. |
 | 내부 복잡도가 사용자 언어로 새는가 | Rust/WASM, index, cache, ontology 같은 내부어는 사용자가 판단해야 할 때만 노출합니다. |
 | 복구 기능이 기본 workflow가 되는가 | reindex, reset, migrate, rebuild, retry는 문제 해결용으로 두고 첫 사용법이나 주요 CTA로 만들지 않습니다. |
-| UI를 바꿨는가 | 실제 화면 스크린샷으로 밀도, 정렬, 대비, overflow, 상태 변화를 확인합니다. |
+| UI를 바꿨는가 | 가능하면 실제 화면으로 밀도, 정렬, 대비, overflow, 상태 변화를 확인합니다. 릴리즈 절차의 필수 스크린샷 게이트로 만들지는 않습니다. |
 
 ### 기능별 적용
 
@@ -177,7 +177,7 @@ UI 규칙:
 - 모델 출력이나 사용자 입력을 `innerHTML`로 직접 렌더링하지 않습니다.
 - 긴 텍스트, 빈 상태, 스트리밍 중단, provider 미설정 상태를 함께 확인합니다.
 - CSS 클래스는 `superpower-inside-` 프리픽스를 유지합니다.
-- UI/DOM/CSS/레이아웃/카피/상태 표시를 바꾸면 실제 실행 화면 스크린샷을 확인합니다.
+- UI/DOM/CSS/레이아웃/카피/상태 표시를 바꾸면 가능하면 실제 실행 화면을 확인합니다. 릴리즈 자체는 스크린샷 확인을 요구하지 않습니다.
 
 ### MCP 도구 연결과 자동 실행 정책
 
@@ -232,16 +232,17 @@ UI 규칙:
 | RAG/GraphRAG 상태 | missing, stale, partial, schema-error, failed retry 케이스 |
 | mention parsing | 공백 경로, 중복 제거, 서버 멘션 테스트 |
 | persistence | legacy load, latest load, round-trip 저장 테스트 |
-| Obsidian 런타임 UI | `.test-vault`에서 실제 화면 QA와 스크린샷 확인 |
+| Obsidian 런타임 UI | 필요할 때 `.test-vault`에서 실제 화면 QA |
 
 ## 로컬 QA 체크리스트
 
 - [ ] `npm run security:full`
 - [ ] `npm run build`
 - [ ] `npm run review -- --tag <manifest-version> --built`
-- [ ] UI/DOM/CSS/설정/채팅 변경 시 실제 화면 스크린샷 확인
 - [ ] Obsidian에서 플러그인 로드, 설정 탭, 채팅 뷰, 변경한 기능의 실패/빈 상태 확인
 - [ ] `git status --short`로 `.test-vault/`, generated, build 산출물 범위 확인
+
+릴리즈 준비 자체에는 별도 비주얼 체크나 스크린샷 확인 단계를 추가하지 않습니다.
 
 ## DevTools 스니펫
 
