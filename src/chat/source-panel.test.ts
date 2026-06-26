@@ -17,6 +17,7 @@ describe('SourcePanel view model contract', () => {
         score: 0.8123,
         status: 'verified',
         preview: '근거 내용',
+        selectionReason: 'keyword-vector',
       },
       {
         id: 'rag-2',
@@ -35,7 +36,7 @@ describe('SourcePanel view model contract', () => {
           className: 'superpower-inside-chat-citation-card verified',
           filePath: 'Notes/A.md',
           headingText: ' # 개요',
-          metaText: 'line 3 · score 0.812 · status verified',
+          metaText: '3행 · 키워드+벡터 근거 · 관련도 0.812',
         }),
         expect.objectContaining({
           id: 'rag-2',

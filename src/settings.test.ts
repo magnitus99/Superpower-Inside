@@ -922,6 +922,7 @@ describe('RAG indexing ETA settings label', () => {
               lowerRemainingMs: 14000,
               upperRemainingMs: 21000,
               confidenceReason: 'calibrated-estimate',
+              etaConfidenceReason: 'calibrated-estimate',
             },
           },
         },
@@ -930,7 +931,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 3/10 files, ETA about 18s',
+      'Indexing: Full reindex - 3/10 files, ETA about 18s (calibrated speed from completed files)',
     );
   });
 
@@ -984,6 +985,7 @@ describe('RAG indexing ETA settings label', () => {
               lowerRemainingMs: 0,
               upperRemainingMs: 198000,
               confidenceReason: 'batch-rate-only',
+              etaConfidenceReason: 'batch-rate-only',
             },
           },
         },
@@ -992,7 +994,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 0/4 files, calculating ETA',
+      'Indexing: Full reindex - 0/4 files, calculating ETA (recent batch speed only)',
     );
   });
 });

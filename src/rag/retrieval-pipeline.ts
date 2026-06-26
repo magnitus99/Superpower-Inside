@@ -26,6 +26,7 @@ export type RetrievalCandidateSource =
   | 'graph-local'
   | 'graph-global'
   | 'evidence';
+export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'reranker';
 
 export interface RagRetrievalRequest {
   question: string;
@@ -75,7 +76,7 @@ export type RetrievalProviderStatus = 'ok' | 'timeout' | 'error' | 'skipped';
 
 export interface RetrievalProviderDiagnostic {
   providerId: string;
-  source: RetrievalCandidateSource;
+  source: RetrievalDiagnosticSource;
   status: RetrievalProviderStatus;
   durationMs: number;
   candidateCount: number;
@@ -274,7 +275,8 @@ export class BM25CandidateProvider implements CandidateProvider {
 
     const candidates: RetrievalCandidate[] = [];
     for (const item of plan) {
-      const entry = item.entrySet === 'found' ? foundEntries[item.entryIndex] : pathEntries[item.entryIndex];
+      const entry =
+        item.entrySet === 'found' ? foundEntries[item.entryIndex] : pathEntries[item.entryIndex];
       if (!entry) {
         continue;
       }
@@ -289,10 +291,7 @@ export class BM25CandidateProvider implements CandidateProvider {
   }
 }
 
-function toBm25EntryInput(
-  entry: VectorEntry,
-  request: RagRetrievalRequest,
-): RustBm25EntryInput {
+function toBm25EntryInput(entry: VectorEntry, request: RagRetrievalRequest): RustBm25EntryInput {
   return {
     id: entry.id,
     filePath: entry.metadata.filePath,
@@ -674,10 +673,11 @@ function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetri
       sources,
       sourceScores,
       sourceRanks,
-      reasons: collectCandidateReasonsRust(
-        candidates.map((candidate) => candidate.reason),
-        group.candidateIndexes,
-      ) ?? [],
+      reasons:
+        collectCandidateReasonsRust(
+          candidates.map((candidate) => candidate.reason),
+          group.candidateIndexes,
+        ) ?? [],
     });
   }
   return merged;

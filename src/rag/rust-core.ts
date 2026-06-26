@@ -203,7 +203,16 @@ export interface RustQueryResultScorePlan {
   hasGraphOrStructuralEvidence: boolean;
   hasStrongGraphOrStructuralEvidence: boolean;
   combinedScore: number;
+  selectionReason: RustSourceSelectionReason;
 }
+
+export type RustSourceSelectionReason =
+  | 'strong-graph-evidence'
+  | 'graph-structural-evidence'
+  | 'keyword-vector'
+  | 'keyword'
+  | 'vector'
+  | 'hybrid';
 
 export interface RustRerankMessageCandidate {
   id: string;
@@ -215,6 +224,17 @@ export interface RustRerankMessageCandidate {
 export interface RustRerankMessagesPlan {
   systemContent: string;
   userContent: string;
+}
+
+export type RustRerankStatus =
+  | 'applied'
+  | 'empty-rank-plan'
+  | 'invalid-json'
+  | 'skipped-empty-allowed-ids';
+
+export interface RustRerankResponsePlan {
+  rankedIds: string[];
+  rerankStatus: RustRerankStatus;
 }
 
 export interface RustRelevantResultInput {
@@ -796,6 +816,7 @@ export interface RustRagIndexingEtaPlan {
   lowerRemainingMs: number | null;
   upperRemainingMs: number | null;
   confidenceReason: string;
+  etaConfidenceReason: string;
 }
 
 export type RustGraphRagIndexState =
@@ -1091,6 +1112,7 @@ export interface RustContextSourceInput {
   score?: number;
   vectorScore?: number;
   bm25Score?: number;
+  selectionReason?: RustSourceSelectionReason;
 }
 
 export interface RustContextSourceVerification {
@@ -1111,6 +1133,8 @@ export interface RustContextCitationPlan {
   status: RustContextSourceStatus;
   detail?: string;
   preview: string;
+  previewTruncated: boolean;
+  selectionReason?: RustSourceSelectionReason;
   graphType?: RustContextGraphType;
 }
 
@@ -1139,7 +1163,16 @@ export interface RustChatContextMentionPlan {
   entityIndices: number[];
   serverIndices: number[];
   useAutoRag: boolean;
+  autoRagReason: RustAutoRagReason;
 }
+
+export type RustAutoRagReason =
+  | 'no-mentions'
+  | 'server-only'
+  | 'server-and-vault'
+  | 'vault-mention'
+  | 'implicit'
+  | 'disabled';
 
 export interface RustContextGraphVerificationPlan {
   isGraphSource: boolean;
@@ -1154,7 +1187,11 @@ export interface RustVaultLinkCandidatePlan {
 export interface RustFolderMentionFilePlan {
   indices: number[];
   partial: boolean;
+  matchedCount: number;
+  limitReason: RustFolderLimitReason;
 }
+
+export type RustFolderLimitReason = 'complete' | 'max-files';
 
 export type RustExcludeValidationLevel = 'error' | 'warning';
 
@@ -4543,6 +4580,13 @@ export function planRerankResponseRust(
   rawResponse: string,
   allowedIds: readonly string[],
 ): string[] | null {
+  return planRerankResponseWithStatusRust(rawResponse, allowedIds)?.rankedIds ?? null;
+}
+
+export function planRerankResponseWithStatusRust(
+  rawResponse: string,
+  allowedIds: readonly string[],
+): RustRerankResponsePlan | null {
   if (!allowedIds.every(isStringValue)) return null;
   if (!ensureRustCore()) return null;
 
@@ -4550,7 +4594,7 @@ export function planRerankResponseRust(
     const raw = plan_rerank_response_json(rawResponse, JSON.stringify(allowedIds));
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
+    if (!isRerankResponsePlan(parsed)) return null;
     return parsed;
   } catch {
     return null;
@@ -6113,6 +6157,7 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     hasGraphOrStructuralEvidence,
     hasStrongGraphOrStructuralEvidence,
     combinedScore,
+    selectionReason,
   } = plan;
   if (
     typeof combinedBase !== 'number' ||
@@ -6126,7 +6171,8 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     typeof hasGraphOrStructuralEvidence !== 'boolean' ||
     typeof hasStrongGraphOrStructuralEvidence !== 'boolean' ||
     typeof combinedScore !== 'number' ||
-    !Number.isFinite(combinedScore)
+    !Number.isFinite(combinedScore) ||
+    !isSourceSelectionReason(selectionReason)
   ) {
     return null;
   }
@@ -6146,6 +6192,7 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     hasGraphOrStructuralEvidence,
     hasStrongGraphOrStructuralEvidence,
     combinedScore,
+    selectionReason,
   };
 }
 
@@ -6162,6 +6209,36 @@ function isRerankMessagesPlan(value: unknown): value is RustRerankMessagesPlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as Partial<RustRerankMessagesPlan>;
   return isStringValue(plan.systemContent) && isStringValue(plan.userContent);
+}
+
+function isRerankResponsePlan(value: unknown): value is RustRerankResponsePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRerankResponsePlan>;
+  return (
+    Array.isArray(plan.rankedIds) &&
+    plan.rankedIds.every(isStringValue) &&
+    isRerankStatus(plan.rerankStatus)
+  );
+}
+
+function isRerankStatus(value: unknown): value is RustRerankStatus {
+  return (
+    value === 'applied' ||
+    value === 'empty-rank-plan' ||
+    value === 'invalid-json' ||
+    value === 'skipped-empty-allowed-ids'
+  );
+}
+
+function isSourceSelectionReason(value: unknown): value is RustSourceSelectionReason {
+  return (
+    value === 'strong-graph-evidence' ||
+    value === 'graph-structural-evidence' ||
+    value === 'keyword-vector' ||
+    value === 'keyword' ||
+    value === 'vector' ||
+    value === 'hybrid'
+  );
 }
 
 function isEntityResolutionCandidate(value: RustEntityResolutionCandidate): boolean {
@@ -6800,7 +6877,8 @@ function isRagIndexingEtaPlan(value: unknown): value is RustRagIndexingEtaPlan {
     isRagIndexingEtaBasis(plan.basis) &&
     isNullableFiniteNonNegativeNumber(plan.lowerRemainingMs) &&
     isNullableFiniteNonNegativeNumber(plan.upperRemainingMs) &&
-    isStringValue(plan.confidenceReason)
+    isStringValue(plan.confidenceReason) &&
+    isStringValue(plan.etaConfidenceReason)
   );
 }
 
@@ -7361,12 +7439,24 @@ function isChatContextMentionPlan(
     isBoundedIndexArray(plan.folderIndices, mentionCount) &&
     isBoundedIndexArray(plan.entityIndices, mentionCount) &&
     isBoundedIndexArray(plan.serverIndices, mentionCount) &&
-    typeof plan.useAutoRag === 'boolean'
+    typeof plan.useAutoRag === 'boolean' &&
+    isAutoRagReason(plan.autoRagReason)
   );
 }
 
 function isChatContextMentionType(value: string): boolean {
   return value === 'file' || value === 'folder' || value === 'entity' || value === 'server';
+}
+
+function isAutoRagReason(value: unknown): value is RustAutoRagReason {
+  return (
+    value === 'no-mentions' ||
+    value === 'server-only' ||
+    value === 'server-and-vault' ||
+    value === 'vault-mention' ||
+    value === 'implicit' ||
+    value === 'disabled'
+  );
 }
 
 function isContextCitationPlan(value: unknown): value is RustContextCitationPlan {
@@ -7384,6 +7474,8 @@ function isContextCitationPlan(value: unknown): value is RustContextCitationPlan
     isContextSourceStatus(citation.status) &&
     (citation.detail === undefined || isStringValue(citation.detail)) &&
     isStringValue(citation.preview) &&
+    typeof citation.previewTruncated === 'boolean' &&
+    (citation.selectionReason === undefined || isSourceSelectionReason(citation.selectionReason)) &&
     (citation.graphType === undefined || isContextGraphType(citation.graphType))
   );
 }
@@ -7416,7 +7508,8 @@ function isValidContextSourceInput(input: RustContextSourceInput): boolean {
     isStringValue(input.text) &&
     (input.score === undefined || Number.isFinite(input.score)) &&
     (input.vectorScore === undefined || Number.isFinite(input.vectorScore)) &&
-    (input.bm25Score === undefined || Number.isFinite(input.bm25Score))
+    (input.bm25Score === undefined || Number.isFinite(input.bm25Score)) &&
+    (input.selectionReason === undefined || isSourceSelectionReason(input.selectionReason))
   );
 }
 
@@ -7460,7 +7553,16 @@ function isFolderMentionFilePlan(
 ): value is RustFolderMentionFilePlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as Partial<RustFolderMentionFilePlan>;
-  return isBoundedIndexArray(plan.indices, maxExclusive) && typeof plan.partial === 'boolean';
+  return (
+    isBoundedIndexArray(plan.indices, maxExclusive) &&
+    typeof plan.partial === 'boolean' &&
+    isValidNonNegativeInteger(plan.matchedCount) &&
+    isFolderLimitReason(plan.limitReason)
+  );
+}
+
+function isFolderLimitReason(value: unknown): value is RustFolderLimitReason {
+  return value === 'complete' || value === 'max-files';
 }
 
 function isValidStructuralLinkEdge(edge: RustStructuralLinkEdge): boolean {

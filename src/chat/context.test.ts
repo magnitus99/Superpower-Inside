@@ -1,6 +1,7 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { GraphEntityRecord, GraphRelationRecord, KnowledgeGraphStore } from '../graph/store';
+import type { MCPRegistry } from '../mcp/registry';
 import { createContentHash } from '../rag/hash';
 import type { QueryResult } from '../rag/query';
 import { buildChatContext, type RagQueryLike } from './context';
@@ -64,7 +65,8 @@ describe('buildChatContext RAG 출처 검증', () => {
     const file = createFile('note.md', '현재 내용', 1000);
     const app = createApp(new Map([['note.md', file]]));
     const ragEngine = {
-      query: () => Promise.resolve([createResult('note.md', '현재 내용', createContentHash('현재 내용'))]),
+      query: () =>
+        Promise.resolve([createResult('note.md', '현재 내용', createContentHash('현재 내용'))]),
       getLastRetrievalDiagnostics: () => [
         {
           providerId: 'exact-vector',
@@ -99,10 +101,8 @@ describe('buildChatContext RAG 출처 검증', () => {
 
     const context = await buildChatContext('질문', { app, ragEngine });
 
-    expect(context.attachments[0]).toEqual(
-      expect.objectContaining({
-        detail: '검색 진단: exact-vector ok/ready 5개, bm25 timeout/ready 0개',
-      }),
+    expect(context.attachments[0]?.detail).toContain(
+      'exact-vector ok/ready 5개, bm25 timeout/ready 0개',
     );
   });
 
@@ -142,8 +142,18 @@ describe('buildChatContext RAG 출처 검증', () => {
         createEntity('entity::mark', 'Mark', [], '마가'),
       ],
       [
-        createRelation('relation::paul-barnabas', 'entity::paul', 'entity::barnabas', 'worked_with'),
-        createRelation('relation::mark-barnabas', 'entity::mark', 'entity::barnabas', 'worked_with'),
+        createRelation(
+          'relation::paul-barnabas',
+          'entity::paul',
+          'entity::barnabas',
+          'worked_with',
+        ),
+        createRelation(
+          'relation::mark-barnabas',
+          'entity::mark',
+          'entity::barnabas',
+          'worked_with',
+        ),
       ],
     );
 
@@ -234,7 +244,9 @@ describe('buildChatContext 참조 문서 확장', () => {
       { app },
     );
 
-    expect(context.systemPrompt).toContain('[File: 제품문서/고객 입장에서의 제품/데모 및 제품 기획.md]');
+    expect(context.systemPrompt).toContain(
+      '[File: 제품문서/고객 입장에서의 제품/데모 및 제품 기획.md]',
+    );
     expect(context.systemPrompt).toContain(
       '[Reference File: 제품문서/고객 입장에서의 제품/제품 개념 정리.md]',
     );
@@ -259,7 +271,9 @@ describe('buildChatContext 참조 문서 확장', () => {
         [ragFile.path, ragFile],
       ]),
     );
-    const ragEngine = createRagEngine([createResult('RAG.md', 'RAG 내용', createContentHash('RAG 내용'))]);
+    const ragEngine = createRagEngine([
+      createResult('RAG.md', 'RAG 내용', createContentHash('RAG 내용')),
+    ]);
 
     const context = await buildChatContext('@[제품문서/데모 및 제품 기획.md] 질문', {
       app,
@@ -295,6 +309,130 @@ describe('buildChatContext 참조 문서 확장', () => {
         }),
       ]),
     );
+  });
+});
+
+describe('buildChatContext UX reason metadata', () => {
+  it('server-only mentions skip auto RAG with an explicit reason', async () => {
+    const app = createApp(new Map());
+    const query = vi.fn(() => Promise.resolve([]));
+    const ragEngine = { query } satisfies RagQueryLike;
+
+    const context = await buildChatContext('@web search latest docs', {
+      app,
+      ragEngine,
+      mcpRegistry: createMcpRegistry('web'),
+    });
+
+    expect(query).not.toHaveBeenCalled();
+    const autoRagAttachment = context.attachments.find(
+      (attachment) => attachment.id === 'rag:auto',
+    );
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'rag:auto',
+          type: 'rag',
+          status: 'missing',
+          autoRagReason: 'server-only',
+        }),
+        expect.objectContaining({
+          id: 'mcp:web',
+          type: 'mcp-server',
+          status: 'attached',
+        }),
+      ]),
+    );
+    expect(typeof autoRagAttachment?.detail).toBe('string');
+  });
+
+  it('folder mention exposes max-files as the partial attachment reason', async () => {
+    const folder = createFolder('docs');
+    const first = createFile('docs/a.md', 'first', 1000);
+    const second = createFile('docs/b.md', 'second', 1000);
+    const app = createApp(
+      new Map([
+        [first.path, first],
+        [second.path, second],
+      ]),
+      new Map([[folder.path, folder]]),
+    );
+
+    const context = await buildChatContext('@[docs] summarize', {
+      app,
+      maxFolderFiles: 1,
+    });
+
+    const folderAttachment = context.attachments.find(
+      (attachment) => attachment.type === 'folder' && attachment.name === 'docs',
+    );
+    expect(folderAttachment).toEqual(
+      expect.objectContaining({
+        type: 'folder',
+        name: 'docs',
+        status: 'partial',
+        filteredCount: 1,
+        folderLimitReason: 'max-files',
+      }),
+    );
+    expect(typeof folderAttachment?.detail).toBe('string');
+  });
+
+  it('folder mention exposes budget as the partial attachment reason', async () => {
+    const folder = createFolder('docs');
+    const first = createFile(
+      'docs/a.md',
+      'This document is intentionally longer than the budget.',
+      1000,
+    );
+    const app = createApp(new Map([[first.path, first]]), new Map([[folder.path, folder]]));
+
+    const context = await buildChatContext('@[docs] summarize', {
+      app,
+      maxContextChars: 12,
+    });
+
+    const folderAttachment = context.attachments.find(
+      (attachment) => attachment.type === 'folder' && attachment.name === 'docs',
+    );
+    expect(folderAttachment).toEqual(
+      expect.objectContaining({
+        type: 'folder',
+        name: 'docs',
+        status: 'partial',
+        folderLimitReason: 'budget',
+      }),
+    );
+    expect(typeof folderAttachment?.detail).toBe('string');
+  });
+
+  it('folder mention exposes read errors as the partial attachment reason', async () => {
+    const folder = createFolder('docs');
+    const unreadable = createFile('docs/a.md', 'unreadable', 1000);
+    const readable = createFile('docs/b.md', 'readable', 1000);
+    const app = createApp(
+      new Map([
+        [unreadable.path, unreadable],
+        [readable.path, readable],
+      ]),
+      new Map([[folder.path, folder]]),
+      new Set([unreadable.path]),
+    );
+
+    const context = await buildChatContext('@[docs] summarize', { app });
+
+    const folderAttachment = context.attachments.find(
+      (attachment) => attachment.type === 'folder' && attachment.name === 'docs',
+    );
+    expect(folderAttachment).toEqual(
+      expect.objectContaining({
+        type: 'folder',
+        name: 'docs',
+        status: 'partial',
+        folderLimitReason: 'read-error',
+      }),
+    );
+    expect(typeof folderAttachment?.detail).toBe('string');
   });
 });
 
@@ -357,11 +495,15 @@ function createFolder(path: string): TFolder & { path: string } {
 function createApp(
   files: Map<string, TFile & { content: string }>,
   folders = new Map<string, TFolder & { path: string }>(),
+  readErrors = new Set<string>(),
 ): App {
   return {
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path) ?? folders.get(path) ?? null,
-      cachedRead: (file: TFile & { content: string }) => Promise.resolve(file.content),
+      cachedRead: (file: TFile & { content: string }) =>
+        readErrors.has(file.path)
+          ? Promise.reject(new Error(`read failed: ${file.path}`))
+          : Promise.resolve(file.content),
       getMarkdownFiles: () => [...files.values()],
       getFiles: () => [...files.values()],
     },
@@ -382,6 +524,18 @@ function createApp(
       },
     },
   } as unknown as App;
+}
+
+function createMcpRegistry(...serverNames: string[]): MCPRegistry {
+  return {
+    getEnabledServers: () => serverNames.map((name) => ({ name })),
+    getClient: (name: string) =>
+      serverNames.includes(name)
+        ? {
+            listTools: () => Promise.resolve([]),
+          }
+        : null,
+  } as unknown as MCPRegistry;
 }
 
 function createGraphStore(

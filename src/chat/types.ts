@@ -45,6 +45,24 @@ export interface AssistantQuestion {
   source: 'answer' | 'reasoning-leak';
 }
 
+export type SourceSelectionReason =
+  | 'strong-graph-evidence'
+  | 'graph-structural-evidence'
+  | 'keyword-vector'
+  | 'keyword'
+  | 'vector'
+  | 'hybrid';
+
+export type AutoRagReason =
+  | 'no-mentions'
+  | 'server-only'
+  | 'server-and-vault'
+  | 'vault-mention'
+  | 'implicit'
+  | 'disabled';
+
+export type FolderLimitReason = 'max-files' | 'budget' | 'read-error';
+
 export interface SourceCitation {
   id: string;
   filePath: string;
@@ -57,6 +75,8 @@ export interface SourceCitation {
   status?: 'candidate' | 'verified' | 'missing' | 'stale' | 'low-relevance';
   detail?: string;
   preview: string;
+  previewTruncated?: boolean;
+  selectionReason?: SourceSelectionReason;
   graphType?: 'entity' | 'relation' | 'community';
 }
 
@@ -82,6 +102,8 @@ export interface ContextAttachment {
   excluded?: boolean;
   fileCount?: number;
   filteredCount?: number;
+  autoRagReason?: AutoRagReason;
+  folderLimitReason?: FolderLimitReason;
 }
 
 export type ChatAction =

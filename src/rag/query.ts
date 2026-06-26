@@ -21,9 +21,11 @@ import {
   planQueryResultScoreRust,
   planRerankMessagesRust,
   selectRelevantResultIndicesRust,
-  planRerankResponseRust,
+  planRerankResponseWithStatusRust,
   planRerankResultOrderRust,
   tokenizeRust,
+  type RustRerankStatus,
+  type RustSourceSelectionReason,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 
@@ -37,6 +39,7 @@ export interface RAGResultReranker {
     results: readonly QueryResult[],
     signal?: AbortSignal,
   ): Promise<readonly string[]>;
+  getLastRerankStatus?(): RustRerankStatus | null;
 }
 
 export interface QueryResult {
@@ -50,6 +53,7 @@ export interface QueryResult {
   bestEvidenceRank?: number;
   hasGraphOrStructuralEvidence?: boolean;
   hasStrongGraphOrStructuralEvidence?: boolean;
+  selectionReason?: RustSourceSelectionReason;
   sourcePath: string;
   chunkRange: {
     startLine: number;
@@ -180,6 +184,7 @@ export class RAGQueryEngine {
         bestEvidenceRank: scorePlan.bestEvidenceRank,
         hasGraphOrStructuralEvidence: scorePlan.hasGraphOrStructuralEvidence,
         hasStrongGraphOrStructuralEvidence: scorePlan.hasStrongGraphOrStructuralEvidence,
+        selectionReason: scorePlan.selectionReason,
         sourcePath: entry.metadata.filePath,
         chunkRange: {
           startLine: entry.metadata.startLine,
@@ -243,18 +248,53 @@ export class RAGQueryEngine {
     if (!this.reranker || results.length <= 1) return [...results];
 
     const candidates = results.slice(0, this.rerankCandidateLimit);
+    const startedAt = Date.now();
     try {
       const rankedIds = await this.reranker.rerank(question, candidates);
+      const rerankStatus =
+        this.reranker.getLastRerankStatus?.() ??
+        (rankedIds.length > 0 ? 'applied' : 'empty-rank-plan');
       const order = planRerankResultOrderRust(
         results.map((result) => result.entry.id),
         rankedIds,
       );
-      if (!order || order.length !== results.length) return [...results];
+      if (!order || order.length !== results.length) {
+        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
+        return [...results];
+      }
       const reranked = selectByRustIndices(results, order, { dedupe: true });
-      return reranked.length === results.length ? reranked : [...results];
-    } catch {
+      if (reranked.length === results.length) {
+        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
+        return reranked;
+      }
+      this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
+      return [...results];
+    } catch (error) {
+      this.recordRerankDiagnostic('error', Date.now() - startedAt, candidates.length, error);
       return [...results];
     }
+  }
+
+  private recordRerankDiagnostic(
+    status: RustRerankStatus | 'error',
+    durationMs: number,
+    candidateCount: number,
+    error?: unknown,
+  ): void {
+    this.lastRetrievalDiagnostics = [
+      ...this.lastRetrievalDiagnostics,
+      {
+        providerId: 'llm-reranker',
+        source: 'reranker',
+        status: status === 'applied' ? 'ok' : 'error',
+        durationMs,
+        candidateCount,
+        readiness: 'ready',
+        estimatedCost: 'medium',
+        skippedReason: status,
+        ...(error instanceof Error ? { error: error.message } : {}),
+      },
+    ];
   }
 }
 
@@ -263,6 +303,8 @@ function defaultGraphRagReadiness(): RetrievalProviderReadiness {
 }
 
 export class LLMRAGResultReranker implements RAGResultReranker {
+  private lastRerankStatus: RustRerankStatus | null = null;
+
   constructor(
     private readonly provider: LLMProvider,
     private readonly timeoutMs = DEFAULT_RERANK_TIMEOUT_MS,
@@ -273,6 +315,7 @@ export class LLMRAGResultReranker implements RAGResultReranker {
     results: readonly QueryResult[],
     signal?: AbortSignal,
   ): Promise<readonly string[]> {
+    this.lastRerankStatus = null;
     if (results.length === 0) return [];
     const messagePlan = planRerankMessagesRust(
       question,
@@ -304,10 +347,16 @@ export class LLMRAGResultReranker implements RAGResultReranker {
       this.timeoutMs,
       signal,
     );
-    return planRerankResponseRust(
+    const responsePlan = planRerankResponseWithStatusRust(
       response,
       results.map((result) => result.entry.id),
-    ) ?? [];
+    );
+    this.lastRerankStatus = responsePlan?.rerankStatus ?? 'invalid-json';
+    return responsePlan?.rankedIds ?? [];
+  }
+
+  getLastRerankStatus(): RustRerankStatus | null {
+    return this.lastRerankStatus;
   }
 }
 

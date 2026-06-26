@@ -46,6 +46,16 @@ describe('RAGQueryEngine', () => {
     const results = await engine.query('Paul과 Barnabas 관계', 1);
 
     expect(results[0]?.entry.metadata.filePath).toBe('direct.md');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'llm-reranker',
+          source: 'reranker',
+          status: 'ok',
+          skippedReason: 'applied',
+        }),
+      ]),
+    );
   });
 
   it('재랭커가 실패하면 기존 점수 정렬로 fallback한다', async () => {
@@ -64,6 +74,16 @@ describe('RAGQueryEngine', () => {
     const results = await engine.query('Paul과 Barnabas 관계', 1);
 
     expect(results[0]?.entry.metadata.filePath).toBe('semantic.md');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'llm-reranker',
+          source: 'reranker',
+          status: 'error',
+          skippedReason: 'error',
+        }),
+      ]),
+    );
   });
 
   it('LLM 재랭커 응답의 JSON 추출, 외부 id 제거, 중복 제거, 최종 순서 계획은 Rust bridge를 따른다', async () => {
@@ -76,8 +96,9 @@ describe('RAGQueryEngine', () => {
     const provider = createRerankProvider(
       '결과입니다.\n```json\n{"rankedIds":["direct.md::0","missing.md::0","semantic.md::0","direct.md::0"]}\n```',
     );
+    const reranker = new LLMRAGResultReranker(provider);
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker: new LLMRAGResultReranker(provider),
+      reranker,
       rerankCandidateLimit: 20,
     });
 
@@ -88,6 +109,38 @@ describe('RAGQueryEngine', () => {
       'semantic.md',
       'tail.md',
     ]);
+    expect(reranker.getLastRerankStatus()).toBe('applied');
+  });
+
+  it('LLM reranker invalid JSON records a fallback diagnostic', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], 'semantic match'),
+      createEntry('direct.md', [0.98, 0.2], 'direct evidence'),
+    ]);
+    const reranker = new LLMRAGResultReranker(createRerankProvider('not-json'));
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      reranker,
+      rerankCandidateLimit: 20,
+    });
+
+    const results = await engine.query('direct evidence', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'semantic.md',
+      'direct.md',
+    ]);
+    expect(reranker.getLastRerankStatus()).toBe('invalid-json');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'llm-reranker',
+          source: 'reranker',
+          status: 'error',
+          skippedReason: 'invalid-json',
+        }),
+      ]),
+    );
   });
 
   it('벡터 상위 후보 밖의 BM25 전용 후보도 최종 후보에 포함한다', async () => {
@@ -249,6 +302,9 @@ describe('RAGQueryEngine', () => {
     const results = await engine.query('Paul과 Barnabas 관계', 2);
 
     expect(results.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
+    expect(
+      results.find((result) => result.entry.metadata.filePath === 'graph.md')?.selectionReason,
+    ).toBe('strong-graph-evidence');
     expect(engine.getLastRetrievalDiagnostics()).toEqual([
       expect.objectContaining({ providerId: 'exact-vector' }),
       expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),

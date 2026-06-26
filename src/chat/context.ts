@@ -12,20 +12,17 @@ import {
   planContextGraphVerificationRust,
   planContextSourcesRust,
   planFolderMentionFilesRust,
+  type RustAutoRagReason,
   type RustContextSourceInput,
   type RustContextSourceVerification,
   type RustGraphMentionEntityInput,
   type RustGraphMentionRelationInput,
 } from '../rag/rust-core';
-import type { ContextAttachment, SourceCitation } from './types';
+import type { ContextAttachment, FolderLimitReason, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
 import { createContextBudgetSnapshot } from './context-composer';
 import { expandReferencedVaultFiles } from './context-expansion';
-import {
-  type ParsedMention,
-  parseMentions,
-  type MentionResolver,
-} from './mention-parser';
+import { type ParsedMention, parseMentions, type MentionResolver } from './mention-parser';
 import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 export {
@@ -100,6 +97,7 @@ export async function buildChatContext(
     entityIndices: [],
     serverIndices: [],
     useAutoRag: false,
+    autoRagReason: 'disabled',
   };
   const shouldUseAutoRag = mentionPlan.useAutoRag;
 
@@ -130,7 +128,9 @@ export async function buildChatContext(
     }
   }
 
-  for (const mention of selectByRustIndices(mentions, mentionPlan.folderIndices, { dedupe: true })) {
+  for (const mention of selectByRustIndices(mentions, mentionPlan.folderIndices, {
+    dedupe: true,
+  })) {
     await appendFolderMention(
       mention.name,
       options.app,
@@ -153,10 +153,10 @@ export async function buildChatContext(
         );
         const verified =
           graphPlan?.isGraphSource === true
-            ? graphPlan.verification ?? {
+            ? (graphPlan.verification ?? {
                 status: 'missing',
                 detail: t('contextUnsupportedGraphRagSource'),
-              }
+              })
             : await verifyQueryResult(result, options.app);
         sourceInputs.push(contextSourceInputFromQueryResult(result));
         verifications.push(verified);
@@ -183,6 +183,7 @@ export async function buildChatContext(
         detail:
           sourcePlan.sourceIds.length > 0
             ? combineAttachmentDetails([
+                formatAutoRagReason(mentionPlan.autoRagReason),
                 sourcePlan.rejectedCount > 0
                   ? t('contextRejectedCandidatesExcluded', { count: sourcePlan.rejectedCount })
                   : null,
@@ -193,6 +194,7 @@ export async function buildChatContext(
         estimatedChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
         actualChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
         sourceIds: sourcePlan.sourceIds,
+        autoRagReason: mentionPlan.autoRagReason,
       });
     } catch (err) {
       appLogger.warn('Auto RAG context build failed.', {
@@ -209,13 +211,22 @@ export async function buildChatContext(
         detail: stringifyError(err),
       });
     }
+  } else if (options.ragEngine && !shouldUseAutoRag) {
+    attachments.push({
+      id: 'rag:auto',
+      type: 'rag',
+      name: 'auto',
+      label: t('contextAutoRagTitle'),
+      status: 'missing',
+      detail: formatAutoRagReason(mentionPlan.autoRagReason),
+      reason: t('contextAutoRagTitle'),
+      autoRagReason: mentionPlan.autoRagReason,
+    });
   }
 
-  const entityMentions: ParsedMention[] = selectByRustIndices(
-    mentions,
-    mentionPlan.entityIndices,
-    { dedupe: true },
-  );
+  const entityMentions: ParsedMention[] = selectByRustIndices(mentions, mentionPlan.entityIndices, {
+    dedupe: true,
+  });
   if (entityMentions.length > 0 && options.knowledgeGraphStore) {
     await appendGraphEntityContext(
       entityMentions,
@@ -227,7 +238,9 @@ export async function buildChatContext(
     );
   }
 
-  for (const mention of selectByRustIndices(mentions, mentionPlan.serverIndices, { dedupe: true })) {
+  for (const mention of selectByRustIndices(mentions, mentionPlan.serverIndices, {
+    dedupe: true,
+  })) {
     await appendServerMention(mention.name, options.mcpRegistry, appendBlock, attachments);
   }
 
@@ -290,6 +303,7 @@ function contextSourceInputFromQueryResult(result: QueryResult): RustContextSour
     score: result.score,
     vectorScore: result.vectorScore,
     bm25Score: result.bm25Score,
+    selectionReason: result.selectionReason,
   };
 }
 
@@ -298,16 +312,55 @@ function formatRetrievalDiagnostics(
 ): string | null {
   if (diagnostics.length === 0) return null;
   const summary = diagnostics
-    .map((diagnostic) =>
-      t('contextDiagnosticProviderSummary', {
+    .map((diagnostic) => {
+      if (diagnostic.source === 'reranker') {
+        return t('contextDiagnosticRerankerSummary', {
+          status: formatRerankDiagnosticStatus(diagnostic.skippedReason, diagnostic.status),
+          count: diagnostic.candidateCount,
+        });
+      }
+      return t('contextDiagnosticProviderSummary', {
         provider: diagnostic.providerId,
         status: diagnostic.status,
         readiness: diagnostic.readiness,
         count: diagnostic.candidateCount,
-      }),
-    )
+      });
+    })
     .join(', ');
   return t('contextSearchDiagnostic', { summary });
+}
+
+function formatRerankDiagnosticStatus(
+  reason: string | undefined,
+  status: RetrievalProviderDiagnostic['status'],
+): string {
+  if (status === 'ok') return t('contextRerankStatusApplied');
+  switch (reason) {
+    case 'empty-rank-plan':
+    case 'skipped-empty-allowed-ids':
+      return t('contextRerankStatusEmpty');
+    case 'invalid-json':
+      return t('contextRerankStatusInvalidJson');
+    default:
+      return t('contextRerankStatusError');
+  }
+}
+
+function formatAutoRagReason(reason: RustAutoRagReason): string {
+  switch (reason) {
+    case 'server-only':
+      return t('contextAutoRagReasonServerOnly');
+    case 'server-and-vault':
+      return t('contextAutoRagReasonServerAndVault');
+    case 'vault-mention':
+      return t('contextAutoRagReasonVaultMention');
+    case 'no-mentions':
+      return t('contextAutoRagReasonNoMentions');
+    case 'implicit':
+      return t('contextAutoRagReasonImplicit');
+    case 'disabled':
+      return t('contextAutoRagReasonDisabled');
+  }
 }
 
 function combineAttachmentDetails(
@@ -476,6 +529,9 @@ async function appendFolderMention(
   const files = selectByRustIndices(markdownFiles, filePlan?.indices, { dedupe: true });
   const sourceIds: string[] = [];
   let partial = filePlan?.partial ?? false;
+  let folderLimitReason: FolderLimitReason | undefined =
+    filePlan?.limitReason === 'max-files' ? 'max-files' : undefined;
+  let readErrorCount = 0;
 
   for (const file of files) {
     try {
@@ -493,10 +549,13 @@ async function appendFolderMention(
       });
       if (!attachedFully) {
         partial = true;
+        folderLimitReason = 'budget';
         break;
       }
     } catch {
       partial = true;
+      readErrorCount += 1;
+      folderLimitReason = 'read-error';
     }
   }
 
@@ -506,12 +565,32 @@ async function appendFolderMention(
     name: path,
     label: path,
     status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
-    detail: partial ? t('contextFolderAttachedLimited', { count: maxFolderFiles }) : undefined,
+    detail: partial
+      ? formatFolderPartialDetail(folderLimitReason, maxFolderFiles, readErrorCount)
+      : undefined,
     reason: t('chatFolderMentionChip', { name: path }),
     fileCount: files.length,
-    filteredCount: filePlan?.partial ? Math.max(0, markdownFiles.length - files.length) : 0,
+    filteredCount: filePlan?.matchedCount ? Math.max(0, filePlan.matchedCount - files.length) : 0,
     sourceIds,
+    folderLimitReason,
   });
+}
+
+function formatFolderPartialDetail(
+  reason: FolderLimitReason | undefined,
+  maxFolderFiles: number,
+  readErrorCount: number,
+): string {
+  switch (reason) {
+    case 'max-files':
+      return t('contextFolderPartialMaxFiles', { count: maxFolderFiles });
+    case 'budget':
+      return t('contextFolderPartialBudget');
+    case 'read-error':
+      return t('contextFolderPartialReadError', { count: readErrorCount });
+    default:
+      return t('contextFolderAttachedLimited', { count: maxFolderFiles });
+  }
 }
 
 async function appendServerMention(

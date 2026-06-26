@@ -2011,23 +2011,28 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (progress && progress.totalFiles > 0) {
         const completed = Math.min(progress.completedFiles, progress.totalFiles);
         const phase = this.formatRagIndexingPhase(status.phase);
+        const etaReason = this.formatRagEtaConfidenceReason(
+          progress.eta?.etaConfidenceReason ?? progress.eta?.confidenceReason,
+        );
         if (
           !progress.eta ||
           progress.eta.remainingMs === null ||
           progress.eta.confidence === 'calculating' ||
           progress.eta.confidence === 'low'
         ) {
-          return t('ragIndexingRunningEtaCalculating', {
+          return t('ragIndexingRunningEtaCalculatingReason', {
             phase,
             completed: String(completed),
             total: String(progress.totalFiles),
+            reason: etaReason,
           });
         }
-        return t('ragIndexingRunningWithEta', {
+        return t('ragIndexingRunningWithEtaReason', {
           phase,
           completed: String(completed),
           total: String(progress.totalFiles),
           eta: this.formatRagEtaDuration(progress.eta.remainingMs),
+          reason: etaReason,
         });
       }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
@@ -2059,6 +2064,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  private formatRagEtaConfidenceReason(reason: string | undefined): string {
+    switch (reason) {
+      case 'complete':
+        return t('ragEtaReasonComplete');
+      case 'planned-stable':
+        return t('ragEtaReasonPlannedStable');
+      case 'planned-variable-rate':
+        return t('ragEtaReasonPlannedVariableRate');
+      case 'planned-partial':
+        return t('ragEtaReasonPlannedPartial');
+      case 'insufficient-samples':
+        return t('ragEtaReasonInsufficientSamples');
+      case 'calibration-variable':
+        return t('ragEtaReasonCalibrationVariable');
+      case 'calibrated-estimate':
+        return t('ragEtaReasonCalibratedEstimate');
+      case 'batch-rate-only':
+        return t('ragEtaReasonBatchRateOnly');
+      case 'elapsed-rate-only':
+        return t('ragEtaReasonElapsedRateOnly');
+      default:
+        return t('ragEtaReasonInsufficientSamples');
+    }
   }
 
   private clearRAG(): void {

@@ -47,7 +47,9 @@ export interface SourcePanelHandlers {
   repairSourceWarning?(warning: SourceValidationWarning): void | Promise<void>;
 }
 
-export function createCitationSectionView(citations: readonly SourceCitation[]): CitationSectionView {
+export function createCitationSectionView(
+  citations: readonly SourceCitation[],
+): CitationSectionView {
   const verifiedCount = citations.filter((citation) => citation.status === 'verified').length;
   return {
     labelText:
@@ -61,12 +63,13 @@ export function createCitationSectionView(citations: readonly SourceCitation[]):
 export function createCitationCardView(citation: SourceCitation): CitationCardView {
   const status = citation.status ?? 'candidate';
   const metaParts = [
-    citation.line !== undefined ? `line ${citation.line}` : '',
-    citation.endLine !== undefined ? `end ${citation.endLine}` : '',
-    citation.score !== undefined ? `score ${citation.score.toFixed(3)}` : '',
-    citation.vectorScore !== undefined ? `vector ${citation.vectorScore.toFixed(3)}` : '',
-    citation.bm25Score !== undefined ? `bm25 ${citation.bm25Score.toFixed(3)}` : '',
-    `status ${status}`,
+    citation.line !== undefined ? t('sourceLineMeta', { line: citation.line }) : '',
+    citation.endLine !== undefined ? t('sourceEndLineMeta', { line: citation.endLine }) : '',
+    citation.selectionReason ? getCitationSelectionReasonText(citation.selectionReason) : '',
+    citation.score !== undefined
+      ? t('sourceRelevanceMeta', { score: citation.score.toFixed(3) })
+      : '',
+    citation.previewTruncated ? t('sourcePreviewTruncated') : '',
   ].filter(Boolean);
   return {
     id: citation.id,
@@ -142,7 +145,9 @@ export function createDataBoundaryView(snapshot: DataBoundarySnapshot): DataBoun
   const providerName = [snapshot.providerLabel, snapshot.model].filter(Boolean).join(' / ');
   return {
     title: t('dataBoundaryTitle'),
-    providerLabel: providerName ? `${t('dataBoundaryProvider')}: ${providerName}` : t('dataBoundaryProvider'),
+    providerLabel: providerName
+      ? `${t('dataBoundaryProvider')}: ${providerName}`
+      : t('dataBoundaryProvider'),
     localLabel: t('dataBoundaryLocal'),
     mcpLabel: t('dataBoundaryMcp'),
     providerItems: snapshot.sentToProvider,
@@ -227,10 +232,7 @@ export class SourcePanel {
     }
   }
 
-  renderSourceWarningsSection(
-    container: HTMLElement,
-    warnings: SourceValidationWarning[],
-  ): void {
+  renderSourceWarningsSection(container: HTMLElement, warnings: SourceValidationWarning[]): void {
     let section = container.querySelector('.superpower-inside-chat-source-warnings');
     if (warnings.length === 0) {
       section?.remove();
@@ -267,10 +269,7 @@ export class SourcePanel {
     }
   }
 
-  renderContextAttachmentsSection(
-    container: HTMLElement,
-    attachments: ContextAttachment[],
-  ): void {
+  renderContextAttachmentsSection(container: HTMLElement, attachments: ContextAttachment[]): void {
     let section = container.querySelector('.superpower-inside-chat-context-attachments');
     if (attachments.length === 0) {
       section?.remove();
@@ -306,7 +305,10 @@ export class SourcePanel {
     section.empty();
     const view = createContextBudgetView(snapshot);
     section.className = view.className;
-    section.createSpan({ cls: 'superpower-inside-chat-context-budget-usage', text: view.usageText });
+    section.createSpan({
+      cls: 'superpower-inside-chat-context-budget-usage',
+      text: view.usageText,
+    });
     section.createSpan({
       cls: 'superpower-inside-chat-context-budget-detail',
       text: view.detailText,
@@ -391,8 +393,12 @@ export class SourcePanel {
         marker.setAttribute('data-citation-id', citationId);
         marker.setAttribute('aria-label', t('citationMarkerAria', { id: citationId }));
         marker.setText(citationId);
-        marker.addEventListener('focus', () => this.setCitationHighlight(container, citationId, true));
-        marker.addEventListener('blur', () => this.setCitationHighlight(container, citationId, false));
+        marker.addEventListener('focus', () =>
+          this.setCitationHighlight(container, citationId, true),
+        );
+        marker.addEventListener('blur', () =>
+          this.setCitationHighlight(container, citationId, false),
+        );
         marker.addEventListener('mouseenter', () =>
           this.setCitationHighlight(container, citationId, true),
         );
@@ -460,6 +466,25 @@ function getGraphKindText(graphType: NonNullable<SourceCitation['graphType']>): 
       return t('sourceGraphRelation');
     case 'community':
       return t('sourceGraphCommunity');
+  }
+}
+
+function getCitationSelectionReasonText(
+  reason: NonNullable<SourceCitation['selectionReason']>,
+): string {
+  switch (reason) {
+    case 'strong-graph-evidence':
+      return t('sourceReasonStrongGraph');
+    case 'graph-structural-evidence':
+      return t('sourceReasonGraphStructural');
+    case 'keyword-vector':
+      return t('sourceReasonKeywordVector');
+    case 'keyword':
+      return t('sourceReasonKeyword');
+    case 'vector':
+      return t('sourceReasonVector');
+    case 'hybrid':
+      return t('sourceReasonHybrid');
   }
 }
 

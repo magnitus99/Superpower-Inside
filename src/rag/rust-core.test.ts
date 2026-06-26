@@ -65,6 +65,7 @@ import {
   planEvidenceCandidateOrderRust,
   planRerankMessagesRust,
   planRerankResponseRust,
+  planRerankResponseWithStatusRust,
   planRerankResultOrderRust,
   planBm25CandidateResolutionRust,
   planBm25HitLookupRust,
@@ -200,6 +201,7 @@ describe('Rust WASM RAG core bridge', () => {
       confidence: 'medium',
       basis: 'calibrated-estimate',
       confidenceReason: 'calibrated-estimate',
+      etaConfidenceReason: 'calibrated-estimate',
     });
     expect(typeof calibratedEta?.lowerRemainingMs).toBe('number');
     expect(typeof calibratedEta?.upperRemainingMs).toBe('number');
@@ -562,7 +564,18 @@ describe('Rust WASM RAG core bridge', () => {
       ),
     ).toEqual(['b', 'a', 'c']);
 
+    expect(
+      planRerankResponseWithStatusRust(
+        '결과입니다.\n```json\n{"rankedIds":["b","missing","a","b",3,"c"]}\n```',
+        ['a', 'b', 'c'],
+      ),
+    ).toEqual({ rankedIds: ['b', 'a', 'c'], rerankStatus: 'applied' });
+
     expect(planRerankResponseRust('not-json', ['a'])).toEqual([]);
+    expect(planRerankResponseWithStatusRust('not-json', ['a'])).toEqual({
+      rankedIds: [],
+      rerankStatus: 'invalid-json',
+    });
 
     expect(planRerankResultOrderRust(['a', 'b', 'c', 'd'], ['b', 'a', 'b', 'missing'])).toEqual([
       1, 0, 2, 3,
@@ -952,6 +965,7 @@ describe('Rust WASM RAG core bridge', () => {
     expect(plan?.hasGraphOrStructuralEvidence).toBe(true);
     expect(plan?.hasStrongGraphOrStructuralEvidence).toBe(true);
     expect(plan?.combinedScore).toBeCloseTo(Math.min(0.58 + 0.9 * 0.25 + expectedRrf * 0.08, 0.88));
+    expect(plan?.selectionReason).toBe('strong-graph-evidence');
   });
 
   it('evaluates RAG relevance threshold decisions through Rust', () => {
@@ -1336,10 +1350,14 @@ describe('Rust WASM RAG core bridge', () => {
     ).toEqual({
       indices: [0],
       partial: true,
+      matchedCount: 2,
+      limitReason: 'max-files',
     });
     expect(planFolderMentionFilesRust('Missing', ['Notes/a.md'], 12)).toEqual({
       indices: [],
       partial: false,
+      matchedCount: 0,
+      limitReason: 'complete',
     });
   });
 
@@ -1429,6 +1447,58 @@ describe('Rust WASM RAG core bridge', () => {
           indexable: false,
           recommendationReason: 'unreadable',
         },
+      ],
+    });
+  });
+
+  it('excludes secret-like RAG files while keeping ordinary config and log text files', () => {
+    const files = [
+      { filePath: '.npmrc', fileName: '.npmrc', extension: '', size: 10 },
+      { filePath: 'id_ed25519', fileName: 'id_ed25519', extension: '', size: 10 },
+      { filePath: 'cert.pem', fileName: 'cert.pem', extension: 'pem', size: 10 },
+      { filePath: 'private.key', fileName: 'private.key', extension: 'key', size: 10 },
+      { filePath: 'secrets.json', fileName: 'secrets.json', extension: 'json', size: 10 },
+      { filePath: 'credentials.toml', fileName: 'credentials.toml', extension: 'toml', size: 10 },
+      { filePath: 'app.config', fileName: 'app.config', extension: 'config', size: 10 },
+      { filePath: 'app.log', fileName: 'app.log', extension: 'log', size: 10 },
+    ];
+
+    expect(planRagFileIndexabilityRust(files, [], [], [])).toEqual({
+      candidateIndices: [6, 7],
+      summaryInputs: [
+        { filePath: '.npmrc', extension: '', indexable: false, recommendationReason: 'sensitive' },
+        {
+          filePath: 'id_ed25519',
+          extension: '',
+          indexable: false,
+          recommendationReason: 'sensitive',
+        },
+        {
+          filePath: 'cert.pem',
+          extension: 'pem',
+          indexable: false,
+          recommendationReason: 'sensitive',
+        },
+        {
+          filePath: 'private.key',
+          extension: 'key',
+          indexable: false,
+          recommendationReason: 'sensitive',
+        },
+        {
+          filePath: 'secrets.json',
+          extension: 'json',
+          indexable: false,
+          recommendationReason: 'sensitive',
+        },
+        {
+          filePath: 'credentials.toml',
+          extension: 'toml',
+          indexable: false,
+          recommendationReason: 'sensitive',
+        },
+        { filePath: 'app.config', extension: 'config', indexable: true },
+        { filePath: 'app.log', extension: 'log', indexable: true },
       ],
     });
   });
@@ -1736,6 +1806,7 @@ describe('Rust WASM RAG core bridge', () => {
           score: 0.91,
           vectorScore: 0.8,
           bm25Score: 0.2,
+          selectionReason: 'keyword-vector',
         },
         {
           filePath: 'stale.md',
@@ -1766,6 +1837,8 @@ describe('Rust WASM RAG core bridge', () => {
           bm25Score: 0.2,
           status: 'verified',
           preview: firstPreview,
+          previewTruncated: true,
+          selectionReason: 'keyword-vector',
         },
         {
           id: 'rag-8',
@@ -1777,6 +1850,7 @@ describe('Rust WASM RAG core bridge', () => {
           status: 'stale',
           detail: '파일이 변경됨',
           preview: '오래된 본문',
+          previewTruncated: false,
         },
       ],
       blocks: [
@@ -1812,6 +1886,7 @@ describe('Rust WASM RAG core bridge', () => {
       entityIndices: [3],
       serverIndices: [0, 4],
       useAutoRag: true,
+      autoRagReason: 'server-and-vault',
     });
     expect(planChatContextMentionsRust(['server'])).toEqual({
       fileIndices: [],
@@ -1819,6 +1894,7 @@ describe('Rust WASM RAG core bridge', () => {
       entityIndices: [],
       serverIndices: [0],
       useAutoRag: false,
+      autoRagReason: 'server-only',
     });
   });
 

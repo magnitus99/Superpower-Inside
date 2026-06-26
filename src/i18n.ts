@@ -383,6 +383,16 @@ export interface I18nKeys {
   sourceGraphEntity: string;
   sourceGraphRelation: string;
   sourceGraphCommunity: string;
+  sourceLineMeta: string;
+  sourceEndLineMeta: string;
+  sourceRelevanceMeta: string;
+  sourcePreviewTruncated: string;
+  sourceReasonStrongGraph: string;
+  sourceReasonGraphStructural: string;
+  sourceReasonKeywordVector: string;
+  sourceReasonKeyword: string;
+  sourceReasonVector: string;
+  sourceReasonHybrid: string;
   citationMarkerAria: string;
   variantCompareTitle: string;
   variantCompareActive: string;
@@ -924,6 +934,18 @@ export interface I18nKeys {
   ragIndexingRunningWithEta: string;
   ragIndexingRunningWithApproxEta: string;
   ragIndexingRunningEtaCalculating: string;
+  ragIndexingRunningWithEtaReason: string;
+  ragIndexingRunningWithApproxEtaReason: string;
+  ragIndexingRunningEtaCalculatingReason: string;
+  ragEtaReasonComplete: string;
+  ragEtaReasonPlannedStable: string;
+  ragEtaReasonPlannedVariableRate: string;
+  ragEtaReasonPlannedPartial: string;
+  ragEtaReasonInsufficientSamples: string;
+  ragEtaReasonCalibrationVariable: string;
+  ragEtaReasonCalibratedEstimate: string;
+  ragEtaReasonBatchRateOnly: string;
+  ragEtaReasonElapsedRateOnly: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
   ragPhasePending: string;
@@ -1217,7 +1239,18 @@ export interface I18nKeys {
   contextNoRelevantDocs: string;
   contextRagLoadFailed: string;
   contextAutoRagTitle: string;
+  contextAutoRagReasonNoMentions: string;
+  contextAutoRagReasonServerOnly: string;
+  contextAutoRagReasonServerAndVault: string;
+  contextAutoRagReasonVaultMention: string;
+  contextAutoRagReasonImplicit: string;
+  contextAutoRagReasonDisabled: string;
   contextDiagnosticProviderSummary: string;
+  contextDiagnosticRerankerSummary: string;
+  contextRerankStatusApplied: string;
+  contextRerankStatusEmpty: string;
+  contextRerankStatusInvalidJson: string;
+  contextRerankStatusError: string;
   contextSearchDiagnostic: string;
   contextFileMissing: string;
   contextLegacyIndexNeedsReindex: string;
@@ -1228,6 +1261,9 @@ export interface I18nKeys {
   contextPartialBudget: string;
   contextFolderNotFound: string;
   contextFolderAttachedLimited: string;
+  contextFolderPartialMaxFiles: string;
+  contextFolderPartialBudget: string;
+  contextFolderPartialReadError: string;
   contextMcpDisconnected: string;
   contextMcpNoTools: string;
   contextMcpServerBlock: string;
@@ -1723,6 +1759,16 @@ const ko: I18nKeys = {
   sourceGraphEntity: 'GraphRAG entity',
   sourceGraphRelation: 'GraphRAG relation',
   sourceGraphCommunity: 'GraphRAG community',
+  sourceLineMeta: '{line}행',
+  sourceEndLineMeta: '끝 {line}행',
+  sourceRelevanceMeta: '관련도 {score}',
+  sourcePreviewTruncated: '미리보기 일부',
+  sourceReasonStrongGraph: '강한 그래프 근거',
+  sourceReasonGraphStructural: '그래프/구조 근거',
+  sourceReasonKeywordVector: '키워드+벡터 근거',
+  sourceReasonKeyword: '키워드 근거',
+  sourceReasonVector: '벡터 근거',
+  sourceReasonHybrid: '복합 근거',
   citationMarkerAria: '{id} 출처 카드로 이동',
   variantCompareTitle: '답변 variant 비교',
   variantCompareActive: '선택됨',
@@ -2306,6 +2352,21 @@ const ko: I18nKeys = {
   ragIndexingRunningWithEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta}',
   ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
+  ragIndexingRunningWithEtaReason:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta} ({reason})',
+  ragIndexingRunningWithApproxEtaReason:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta} ({reason})',
+  ragIndexingRunningEtaCalculatingReason:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중 ({reason})',
+  ragEtaReasonComplete: '완료됨',
+  ragEtaReasonPlannedStable: '계획된 청크와 안정적인 최근 속도 기준',
+  ragEtaReasonPlannedVariableRate: '계획은 끝났지만 최근 속도 변동이 큼',
+  ragEtaReasonPlannedPartial: '계획된 청크와 일부 진행 샘플 기준',
+  ragEtaReasonInsufficientSamples: '아직 진행 샘플이 부족함',
+  ragEtaReasonCalibrationVariable: '이전 파일 예측 오차가 큼',
+  ragEtaReasonCalibratedEstimate: '완료된 파일의 보정된 속도 기준',
+  ragEtaReasonBatchRateOnly: '최근 배치 속도만 기준',
+  ragEtaReasonElapsedRateOnly: '전체 경과 속도만 기준',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
   ragPhasePending: '필요 문서 업데이트',
@@ -2478,8 +2539,7 @@ const ko: I18nKeys = {
   pluginDataResetRunning: '초기화 중...',
   pluginDataResetConfirm:
     'Superpower Inside 내부 데이터를 모두 초기화하시겠습니까? 설정과 API Key도 기본값으로 돌아갑니다.',
-  pluginDataResetSecondConfirm:
-    '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
+  pluginDataResetSecondConfirm: '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
   pluginDataResetDone: 'Superpower Inside 내부 데이터가 초기화되었습니다.',
   pluginDataResetFailed: '전체 플러그인 데이터 초기화 실패: {message}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
@@ -2653,7 +2713,21 @@ const ko: I18nKeys = {
   contextNoRelevantDocs: '유사도 임계치를 충족하는 관련 문서가 없습니다.',
   contextRagLoadFailed: 'RAG 컨텍스트를 불러오지 못했습니다: {error}',
   contextAutoRagTitle: '자동 RAG',
+  contextAutoRagReasonNoMentions: '질문과 가까운 vault 문서를 자동으로 검색했습니다.',
+  contextAutoRagReasonServerOnly:
+    '@server만 명시되어 vault 자동 검색은 건너뛰었습니다. vault 문서도 필요하면 파일이나 폴더를 함께 멘션하세요.',
+  contextAutoRagReasonServerAndVault:
+    '@server와 vault 멘션이 함께 있어 외부 도구 정보와 vault 문서를 같이 준비했습니다.',
+  contextAutoRagReasonVaultMention:
+    '명시한 vault 파일/폴더를 기준으로 관련 문서를 함께 검색했습니다.',
+  contextAutoRagReasonImplicit: '질문 흐름상 vault 문서를 자동으로 검색했습니다.',
+  contextAutoRagReasonDisabled: '자동 RAG가 이 턴에서 비활성화되었습니다.',
   contextDiagnosticProviderSummary: '{provider} {status}/{readiness} {count}개',
+  contextDiagnosticRerankerSummary: '재정렬 {status} {count}개',
+  contextRerankStatusApplied: '적용됨',
+  contextRerankStatusEmpty: '응답 순서 없음',
+  contextRerankStatusInvalidJson: '응답 형식 불일치',
+  contextRerankStatusError: '실패',
   contextSearchDiagnostic: '검색 진단: {summary}',
   contextFileMissing: '파일이 vault에 존재하지 않습니다.',
   contextLegacyIndexNeedsReindex: '이전 형식의 인덱스라 재인덱싱이 필요합니다.',
@@ -2664,6 +2738,9 @@ const ko: I18nKeys = {
   contextPartialBudget: '컨텍스트 예산 때문에 일부만 첨부했습니다.',
   contextFolderNotFound: '폴더를 찾을 수 없습니다.',
   contextFolderAttachedLimited: '최대 {count}개 파일 및 컨텍스트 예산 안에서 첨부했습니다.',
+  contextFolderPartialMaxFiles: '폴더 파일이 많아 최대 {count}개만 첨부했습니다.',
+  contextFolderPartialBudget: '컨텍스트 예산에 맞춰 폴더 내용 일부만 첨부했습니다.',
+  contextFolderPartialReadError: '폴더 파일 {count}개를 읽지 못해 일부만 첨부했습니다.',
   contextMcpDisconnected: '연결되지 않은 MCP 서버입니다.',
   contextMcpNoTools: '(사용 가능한 툴 없음)',
   contextMcpServerBlock:
@@ -3157,6 +3234,16 @@ const en: I18nKeys = {
   sourceGraphEntity: 'GraphRAG entity',
   sourceGraphRelation: 'GraphRAG relation',
   sourceGraphCommunity: 'GraphRAG community',
+  sourceLineMeta: 'line {line}',
+  sourceEndLineMeta: 'ends line {line}',
+  sourceRelevanceMeta: 'relevance {score}',
+  sourcePreviewTruncated: 'preview truncated',
+  sourceReasonStrongGraph: 'strong graph evidence',
+  sourceReasonGraphStructural: 'graph/structural evidence',
+  sourceReasonKeywordVector: 'keyword+vector evidence',
+  sourceReasonKeyword: 'keyword evidence',
+  sourceReasonVector: 'vector evidence',
+  sourceReasonHybrid: 'hybrid evidence',
   citationMarkerAria: 'Jump to source card {id}',
   variantCompareTitle: 'Compare answer variants',
   variantCompareActive: 'Selected',
@@ -3748,10 +3835,24 @@ const en: I18nKeys = {
   ragIndexingInProgress: 'Indexing',
   ragIndexingRunning: 'Indexing: {phase}',
   ragIndexingRunningWithEta: 'Indexing: {phase} - {completed}/{total} files, ETA {eta}',
-  ragIndexingRunningWithApproxEta:
-    'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
+  ragIndexingRunningWithApproxEta: 'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
   ragIndexingRunningEtaCalculating:
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
+  ragIndexingRunningWithEtaReason:
+    'Indexing: {phase} - {completed}/{total} files, ETA {eta} ({reason})',
+  ragIndexingRunningWithApproxEtaReason:
+    'Indexing: {phase} - {completed}/{total} files, ETA about {eta} ({reason})',
+  ragIndexingRunningEtaCalculatingReason:
+    'Indexing: {phase} - {completed}/{total} files, calculating ETA ({reason})',
+  ragEtaReasonComplete: 'complete',
+  ragEtaReasonPlannedStable: 'planned chunks and stable recent speed',
+  ragEtaReasonPlannedVariableRate: 'planning is complete, but recent speed varies',
+  ragEtaReasonPlannedPartial: 'planned chunks with partial progress samples',
+  ragEtaReasonInsufficientSamples: 'not enough progress samples yet',
+  ragEtaReasonCalibrationVariable: 'previous file estimates varied',
+  ragEtaReasonCalibratedEstimate: 'calibrated speed from completed files',
+  ragEtaReasonBatchRateOnly: 'recent batch speed only',
+  ragEtaReasonElapsedRateOnly: 'overall elapsed speed only',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
   ragPhasePending: 'Update pending documents',
@@ -4112,7 +4213,21 @@ const en: I18nKeys = {
   contextNoRelevantDocs: 'No relevant documents met the similarity threshold.',
   contextRagLoadFailed: 'Unable to load RAG context: {error}',
   contextAutoRagTitle: 'Auto RAG',
+  contextAutoRagReasonNoMentions: 'Automatically searched nearby vault notes for this question.',
+  contextAutoRagReasonServerOnly:
+    'Only @server was mentioned, so vault auto-search was skipped. Mention a file or folder if vault notes are also needed.',
+  contextAutoRagReasonServerAndVault:
+    '@server and vault mentions were both present, so external tools and vault notes were prepared together.',
+  contextAutoRagReasonVaultMention:
+    'Searched related notes around the mentioned vault file or folder.',
+  contextAutoRagReasonImplicit: 'Automatically searched vault notes for this turn.',
+  contextAutoRagReasonDisabled: 'Auto RAG is disabled for this turn.',
   contextDiagnosticProviderSummary: '{provider} {status}/{readiness} {count}',
+  contextDiagnosticRerankerSummary: 'reranker {status} {count}',
+  contextRerankStatusApplied: 'applied',
+  contextRerankStatusEmpty: 'no returned order',
+  contextRerankStatusInvalidJson: 'response format mismatch',
+  contextRerankStatusError: 'failed',
   contextSearchDiagnostic: 'Search diagnostics: {summary}',
   contextFileMissing: 'File does not exist in the vault.',
   contextLegacyIndexNeedsReindex: 'This is an older index format and needs reindexing.',
@@ -4123,6 +4238,10 @@ const en: I18nKeys = {
   contextPartialBudget: 'Only part of this was attached because of the context budget.',
   contextFolderNotFound: 'Folder not found.',
   contextFolderAttachedLimited: 'Attached up to {count} files within the context budget.',
+  contextFolderPartialMaxFiles: 'The folder has many files, so only {count} were attached.',
+  contextFolderPartialBudget: 'Only part of the folder was attached to fit the context budget.',
+  contextFolderPartialReadError:
+    'Only part of the folder was attached because {count} files could not be read.',
   contextMcpDisconnected: 'MCP server is not connected.',
   contextMcpNoTools: '(no available tools)',
   contextMcpServerBlock:

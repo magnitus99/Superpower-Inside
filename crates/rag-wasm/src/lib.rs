@@ -1342,17 +1342,22 @@ pub fn plan_rerank_response_json(raw_response: &str, allowed_ids_json: &str) -> 
     };
     let allowed_ids = allowed_ids.into_iter().collect::<BTreeSet<_>>();
     if allowed_ids.is_empty() {
-        return "[]".to_owned();
+        return serialize_rerank_response_plan_json(&[], "skipped-empty-allowed-ids");
     }
     let Some(json_text) = extract_json_object(raw_response) else {
-        return "[]".to_owned();
+        return serialize_rerank_response_plan_json(&[], "invalid-json");
     };
     let Ok(value) = serde_json::from_str::<JsonValue>(json_text) else {
-        return "[]".to_owned();
+        return serialize_rerank_response_plan_json(&[], "invalid-json");
     };
 
     let ranked_ids = extract_allowed_rerank_ids(&value, &allowed_ids);
-    serialize_string_array_json(&ranked_ids)
+    let status = if ranked_ids.is_empty() {
+        "empty-rank-plan"
+    } else {
+        "applied"
+    };
+    serialize_rerank_response_plan_json(&ranked_ids, status)
 }
 
 /// RAG reranker ranked id 목록을 전체 result index 순서 plan으로 변환한다.
@@ -4981,6 +4986,8 @@ struct QueryResultScorePlan {
     has_strong_graph_or_structural_evidence: bool,
     /// final combined score.
     combined_score: f64,
+    /// machine-readable source selection reason.
+    selection_reason: &'static str,
 }
 
 /// LLM reranker message candidate snapshot.
@@ -5640,6 +5647,11 @@ fn plan_query_result_score(input: &QueryResultScoreInput) -> QueryResultScorePla
         best_evidence_rank,
         &retrieval_source_codes,
     );
+    let selection_reason = query_result_selection_reason(
+        &retrieval_source_codes,
+        has_graph_or_structural_evidence,
+        has_strong_graph_or_structural_evidence,
+    );
 
     QueryResultScorePlan {
         combined_base,
@@ -5650,6 +5662,33 @@ fn plan_query_result_score(input: &QueryResultScoreInput) -> QueryResultScorePla
         has_graph_or_structural_evidence,
         has_strong_graph_or_structural_evidence,
         combined_score,
+        selection_reason,
+    }
+}
+
+/// Query result가 최종 후보로 유지된 주된 machine reason을 계산한다.
+fn query_result_selection_reason(
+    retrieval_source_codes: &[u8],
+    has_graph_or_structural_evidence: bool,
+    has_strong_graph_or_structural_evidence: bool,
+) -> &'static str {
+    if has_strong_graph_or_structural_evidence {
+        return "strong-graph-evidence";
+    }
+    if has_graph_or_structural_evidence {
+        return "graph-structural-evidence";
+    }
+
+    let has_keyword = retrieval_source_codes.contains(&SOURCE_BM25);
+    let has_vector = retrieval_source_codes
+        .iter()
+        .copied()
+        .any(|source| matches!(source, SOURCE_VECTOR | SOURCE_ANN));
+    match (has_keyword, has_vector) {
+        (true, true) => "keyword-vector",
+        (true, false) => "keyword",
+        (false, true) => "vector",
+        (false, false) => "hybrid",
     }
 }
 
@@ -11113,7 +11152,7 @@ fn serialize_index_pending_plan_json(plan: &IndexPendingPlan) -> String {
 /// RAG indexing ETA plan을 JSON 문자열로 serialize한다.
 fn serialize_rag_indexing_eta_plan_json(plan: &RagIndexingEtaPlan) -> String {
     format!(
-        "{{\"totalFiles\":{},\"completedFiles\":{},\"currentFileProgress\":{},\"progressRatio\":{},\"elapsedMs\":{},\"remainingMs\":{},\"estimatedCompletionMs\":{},\"confidence\":\"{}\",\"basis\":\"{}\",\"lowerRemainingMs\":{},\"upperRemainingMs\":{},\"confidenceReason\":\"{}\"}}",
+        "{{\"totalFiles\":{},\"completedFiles\":{},\"currentFileProgress\":{},\"progressRatio\":{},\"elapsedMs\":{},\"remainingMs\":{},\"estimatedCompletionMs\":{},\"confidence\":\"{}\",\"basis\":\"{}\",\"lowerRemainingMs\":{},\"upperRemainingMs\":{},\"confidenceReason\":\"{}\",\"etaConfidenceReason\":\"{}\"}}",
         plan.total_files,
         plan.completed_files,
         finite_json_number(plan.current_file_progress).unwrap_or_else(|| "0".to_owned()),
@@ -11125,6 +11164,7 @@ fn serialize_rag_indexing_eta_plan_json(plan: &RagIndexingEtaPlan) -> String {
         plan.basis.as_str(),
         optional_finite_json_number_string(plan.lower_remaining_ms),
         optional_finite_json_number_string(plan.upper_remaining_ms),
+        escape_json_string(plan.confidence_reason),
         escape_json_string(plan.confidence_reason),
     )
 }
@@ -11202,7 +11242,7 @@ fn serialize_query_result_score_plan_json(plan: &QueryResultScorePlan) -> String
         return String::new();
     };
     format!(
-        "{{\"combinedBase\":{},\"rrfScore\":{},\"sourcePrior\":{},\"sourceEvidenceScore\":{},\"bestEvidenceRank\":{},\"hasGraphOrStructuralEvidence\":{},\"hasStrongGraphOrStructuralEvidence\":{},\"combinedScore\":{}}}",
+        "{{\"combinedBase\":{},\"rrfScore\":{},\"sourcePrior\":{},\"sourceEvidenceScore\":{},\"bestEvidenceRank\":{},\"hasGraphOrStructuralEvidence\":{},\"hasStrongGraphOrStructuralEvidence\":{},\"combinedScore\":{},\"selectionReason\":\"{}\"}}",
         combined_base,
         rrf_score,
         source_prior,
@@ -11211,6 +11251,16 @@ fn serialize_query_result_score_plan_json(plan: &QueryResultScorePlan) -> String
         plan.has_graph_or_structural_evidence,
         plan.has_strong_graph_or_structural_evidence,
         combined_score,
+        plan.selection_reason,
+    )
+}
+
+/// LLM reranker response plan을 JSON 문자열로 serialize한다.
+fn serialize_rerank_response_plan_json(ranked_ids: &[String], rerank_status: &str) -> String {
+    format!(
+        "{{\"rankedIds\":{},\"rerankStatus\":\"{}\"}}",
+        serialize_string_array_json(ranked_ids),
+        escape_json_string(rerank_status),
     )
 }
 
@@ -13923,6 +13973,8 @@ struct ChatContextMentionPlan {
     server_indices: Vec<usize>,
     /// 자동 RAG 실행 여부.
     use_auto_rag: bool,
+    /// 자동 RAG 실행/비실행 machine-readable reason.
+    auto_rag_reason: &'static str,
 }
 
 /// `GraphRAG` virtual source verification plan.
@@ -14111,12 +14163,27 @@ fn plan_chat_context_mentions(mention_types: &[String]) -> Option<ChatContextMen
         }
     }
 
+    let use_auto_rag = !has_server_mention || has_vault_mention;
+    let auto_rag_reason = if mention_types.is_empty() {
+        "no-mentions"
+    } else if has_server_mention && !has_vault_mention {
+        "server-only"
+    } else if has_server_mention && has_vault_mention {
+        "server-and-vault"
+    } else if has_vault_mention {
+        "vault-mention"
+    } else if use_auto_rag {
+        "implicit"
+    } else {
+        "disabled"
+    };
     Some(ChatContextMentionPlan {
         file_indices,
         folder_indices,
         entity_indices,
         server_indices,
-        use_auto_rag: !has_server_mention || has_vault_mention,
+        use_auto_rag,
+        auto_rag_reason,
     })
 }
 
@@ -14214,14 +14281,17 @@ fn context_source_citation_json(
     copy_optional_json_number_as(result, &mut citation, "score", "score");
     copy_optional_json_number_as(result, &mut citation, "vectorScore", "vectorScore");
     copy_optional_json_number_as(result, &mut citation, "bm25Score", "bm25Score");
+    copy_optional_json_string(result, &mut citation, "selectionReason");
     citation.insert("status".to_owned(), JsonValue::String(status.to_owned()));
     if let Some(verification) = verification {
         copy_optional_json_string(verification, &mut citation, "detail");
         copy_optional_json_string(verification, &mut citation, "graphType");
     }
+    let preview = plan_context_preview(text);
+    citation.insert("preview".to_owned(), JsonValue::String(preview.preview));
     citation.insert(
-        "preview".to_owned(),
-        JsonValue::String(build_context_preview(text)),
+        "previewTruncated".to_owned(),
+        JsonValue::Bool(preview.truncated),
     );
     JsonValue::Object(citation)
 }
@@ -14283,8 +14353,22 @@ fn copy_optional_json_number_as(
     }
 }
 
+/// Context preview plan.
+struct ContextPreviewPlan {
+    /// collapsed preview text.
+    preview: String,
+    /// whether the original collapsed preview exceeded the display budget.
+    truncated: bool,
+}
+
 /// context preview를 whitespace collapse와 220자 제한으로 만든다.
 fn build_context_preview(text: &str) -> String {
+    plan_context_preview(text).preview
+}
+
+/// context preview와 truncation 여부를 계산한다.
+fn plan_context_preview(text: &str) -> ContextPreviewPlan {
+    const CONTEXT_PREVIEW_MAX_CHARS: usize = 220;
     let mut output = String::new();
     let mut previous_space = false;
     for character in text.chars() {
@@ -14298,7 +14382,11 @@ fn build_context_preview(text: &str) -> String {
         previous_space = false;
         output.push(character);
     }
-    truncate_context_preview(output.trim(), 220)
+    let trimmed = output.trim();
+    ContextPreviewPlan {
+        preview: truncate_context_preview(trimmed, CONTEXT_PREVIEW_MAX_CHARS),
+        truncated: trimmed.chars().count() > CONTEXT_PREVIEW_MAX_CHARS,
+    }
 }
 
 /// context preview를 max char 기준으로 자른다.
@@ -14914,12 +15002,13 @@ fn serialize_context_budget_append_plan_json(plan: &ContextBudgetAppendPlan) -> 
 /// chat context mention plan을 JSON 문자열로 직렬화한다.
 fn serialize_chat_context_mention_plan_json(plan: &ChatContextMentionPlan) -> String {
     format!(
-        "{{\"fileIndices\":{},\"folderIndices\":{},\"entityIndices\":{},\"serverIndices\":{},\"useAutoRag\":{}}}",
+        "{{\"fileIndices\":{},\"folderIndices\":{},\"entityIndices\":{},\"serverIndices\":{},\"useAutoRag\":{},\"autoRagReason\":\"{}\"}}",
         serialize_usize_array_json(&plan.file_indices),
         serialize_usize_array_json(&plan.folder_indices),
         serialize_usize_array_json(&plan.entity_indices),
         serialize_usize_array_json(&plan.server_indices),
         plan.use_auto_rag,
+        plan.auto_rag_reason,
     )
 }
 
@@ -15313,6 +15402,10 @@ struct FolderMentionFilePlan {
     indices: Vec<usize>,
     /// folder 내부 파일이 max selection 개수를 초과했는지 여부다.
     partial: bool,
+    /// folder 내부 전체 markdown file 수다.
+    matched_count: usize,
+    /// machine-readable limit reason.
+    limit_reason: &'static str,
 }
 
 /// folder mention용 markdown file index와 초과 여부를 고른다.
@@ -15335,8 +15428,11 @@ fn plan_folder_mention_file_indices(
         }
     }
 
+    let partial = matched_count > indices.len();
     FolderMentionFilePlan {
-        partial: matched_count > indices.len(),
+        partial,
+        matched_count,
+        limit_reason: if partial { "max-files" } else { "complete" },
         indices,
     }
 }
@@ -15560,7 +15656,14 @@ fn rag_file_extension(file: &RagFileEligibilityInput) -> String {
 fn is_sensitive_rag_file(file: &RagFileEligibilityInput) -> bool {
     let name = file.file_name.to_lowercase();
     let extension = rag_file_extension(file);
-    name == ".env" || name.starts_with(".env.") || extension == "env"
+    name.starts_with(".env")
+        || matches!(
+            name.as_str(),
+            ".npmrc" | ".pypirc" | ".netrc" | "id_rsa" | "id_ed25519"
+        )
+        || name.starts_with("secrets.")
+        || name.starts_with("credentials.")
+        || matches!(extension.as_str(), "env" | "pem" | "key")
 }
 
 /// 확장자 기반으로 바로 text file임을 판단한다.
@@ -18237,9 +18340,11 @@ fn serialize_optional_index_plan_json(index: Option<usize>) -> String {
 /// folder mention file plan을 JSON object로 serialize한다.
 fn serialize_folder_mention_file_plan_json(plan: &FolderMentionFilePlan) -> String {
     format!(
-        "{{\"indices\":{},\"partial\":{}}}",
+        "{{\"indices\":{},\"partial\":{},\"matchedCount\":{},\"limitReason\":\"{}\"}}",
         serialize_usize_array_json(&plan.indices),
-        if plan.partial { "true" } else { "false" }
+        if plan.partial { "true" } else { "false" },
+        plan.matched_count,
+        plan.limit_reason,
     )
 }
 
@@ -18972,11 +19077,11 @@ mod tests {
                 r#"["Notes/a.md","Other/a.md","Notes/nested/b.md","NotesExtra/c.md"]"#,
                 1,
             ),
-            "{\"indices\":[0],\"partial\":true}",
+            "{\"indices\":[0],\"partial\":true,\"matchedCount\":2,\"limitReason\":\"max-files\"}",
         );
         assert_eq!(
             plan_folder_mention_file_indices_json("Missing", r#"["Notes/a.md"]"#, 12),
-            "{\"indices\":[],\"partial\":false}",
+            "{\"indices\":[],\"partial\":false,\"matchedCount\":0,\"limitReason\":\"complete\"}",
         );
     }
 
@@ -19021,6 +19126,17 @@ mod tests {
                 r#"[{"index":4,"readable":true,"sample":"plain text content"},{"index":5,"readable":true,"sample":"\u0000binary"}]"#,
             ),
             "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}]}",
+        );
+    }
+
+    /// 민감한 설정/키 파일은 사용자가 따로 제외하지 않아도 기본 RAG 후보에서 빠져야 한다.
+    #[test]
+    fn rag_file_indexability_excludes_sensitive_secret_files_by_default() {
+        let files = r#"[{"filePath":".npmrc","fileName":".npmrc","extension":"","size":10},{"filePath":"id_ed25519","fileName":"id_ed25519","extension":"","size":10},{"filePath":"cert.pem","fileName":"cert.pem","extension":"pem","size":10},{"filePath":"private.key","fileName":"private.key","extension":"key","size":10},{"filePath":"secrets.json","fileName":"secrets.json","extension":"json","size":10},{"filePath":"credentials.toml","fileName":"credentials.toml","extension":"toml","size":10},{"filePath":"app.config","fileName":"app.config","extension":"config","size":10},{"filePath":"app.log","fileName":"app.log","extension":"log","size":10}]"#;
+
+        assert_eq!(
+            plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
+            "{\"candidateIndices\":[6,7],\"summaryInputs\":[{\"filePath\":\".npmrc\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"id_ed25519\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"cert.pem\",\"extension\":\"pem\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"private.key\",\"extension\":\"key\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"secrets.json\",\"extension\":\"json\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"credentials.toml\",\"extension\":\"toml\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"app.config\",\"extension\":\"config\",\"indexable\":true},{\"filePath\":\"app.log\",\"extension\":\"log\",\"indexable\":true}]}",
         );
     }
 
@@ -19226,7 +19342,37 @@ mod tests {
 
         assert_eq!(
             plan_context_sources_json(results, verifications, 7, "rag"),
-            "{\"citations\":[{\"id\":\"rag-7\",\"filePath\":\"note.md\",\"heading\":\"핵심\",\"line\":3,\"endLine\":5,\"score\":0.91,\"vectorScore\":0.8,\"bm25Score\":0.2,\"status\":\"verified\",\"preview\":\"긴 본문 요약\"},{\"id\":\"rag-8\",\"filePath\":\"stale.md\",\"line\":0,\"score\":0.6,\"vectorScore\":0.4,\"bm25Score\":0.3,\"status\":\"stale\",\"detail\":\"파일이 변경됨\",\"preview\":\"오래된 본문\"}],\"blocks\":[{\"sourceId\":\"rag-7\",\"text\":\"[Source rag-7: note.md # 핵심]\\n  긴   본문\\n\\n요약 \"}],\"sourceIds\":[\"rag-7\"],\"rejectedCount\":1}",
+            "{\"citations\":[{\"id\":\"rag-7\",\"filePath\":\"note.md\",\"heading\":\"핵심\",\"line\":3,\"endLine\":5,\"score\":0.91,\"vectorScore\":0.8,\"bm25Score\":0.2,\"status\":\"verified\",\"preview\":\"긴 본문 요약\",\"previewTruncated\":false},{\"id\":\"rag-8\",\"filePath\":\"stale.md\",\"line\":0,\"score\":0.6,\"vectorScore\":0.4,\"bm25Score\":0.3,\"status\":\"stale\",\"detail\":\"파일이 변경됨\",\"preview\":\"오래된 본문\",\"previewTruncated\":false}],\"blocks\":[{\"sourceId\":\"rag-7\",\"text\":\"[Source rag-7: note.md # 핵심]\\n  긴   본문\\n\\n요약 \"}],\"sourceIds\":[\"rag-7\"],\"rejectedCount\":1}",
+        );
+    }
+
+    /// context source preview는 잘림 여부를 별도 flag로 알려야 한다.
+    #[test]
+    fn context_sources_mark_truncated_preview() {
+        let long_text = "가".repeat(221);
+        let results = format!(r#"[{{"filePath":"long.md","text":"{long_text}","score":0.9}}]"#);
+        let output = plan_context_sources_json(&results, r#"[{"status":"verified"}]"#, 1, "rag");
+        let value = serde_json::from_str::<JsonValue>(&output).unwrap_or(JsonValue::Null);
+        let null = JsonValue::Null;
+        let citation = value
+            .get("citations")
+            .and_then(JsonValue::as_array)
+            .and_then(|citations| citations.first())
+            .unwrap_or(&null);
+
+        assert_eq!(
+            citation
+                .get("previewTruncated")
+                .and_then(JsonValue::as_bool),
+            Some(true),
+        );
+        assert_eq!(
+            citation
+                .get("preview")
+                .and_then(JsonValue::as_str)
+                .map(str::chars)
+                .map(Iterator::count),
+            Some(220),
         );
     }
 
@@ -19248,11 +19394,11 @@ mod tests {
     fn chat_context_mentions_are_planned_in_rust() {
         assert_eq!(
             plan_chat_context_mentions_json(r#"["server","file","folder","entity","server"]"#),
-            "{\"fileIndices\":[1],\"folderIndices\":[2],\"entityIndices\":[3],\"serverIndices\":[0,4],\"useAutoRag\":true}",
+            "{\"fileIndices\":[1],\"folderIndices\":[2],\"entityIndices\":[3],\"serverIndices\":[0,4],\"useAutoRag\":true,\"autoRagReason\":\"server-and-vault\"}",
         );
         assert_eq!(
             plan_chat_context_mentions_json(r#"["server"]"#),
-            "{\"fileIndices\":[],\"folderIndices\":[],\"entityIndices\":[],\"serverIndices\":[0],\"useAutoRag\":false}",
+            "{\"fileIndices\":[],\"folderIndices\":[],\"entityIndices\":[],\"serverIndices\":[0],\"useAutoRag\":false,\"autoRagReason\":\"server-only\"}",
         );
     }
 
@@ -20611,6 +20757,11 @@ mod tests {
             rrf.mul_add(0.08, 0.9_f64.mul_add(0.25, 0.58)).min(0.88),
             "combined score mismatch",
         );
+        assert_eq!(
+            value.get("selectionReason").and_then(JsonValue::as_str),
+            Some("strong-graph-evidence"),
+            "selection reason should explain graph evidence priority",
+        );
     }
 
     /// RAG relevance 판단은 graph/evidence, BM25 keyword, semantic threshold 계약을 보존해야 한다.
@@ -20868,12 +21019,12 @@ mod tests {
                 "결과입니다.\n```json\n{\"rankedIds\":[\"b\",\"missing\",\"a\",\"b\",3,\"c\"]}\n```",
                 r#"["a","b","c"]"#,
             ),
-            r#"["b","a","c"]"#,
+            r#"{"rankedIds":["b","a","c"],"rerankStatus":"applied"}"#,
             "허용 id만 순서 보존 dedupe로 반환해야 한다",
         );
         assert_eq!(
             plan_rerank_response_json("not-json", r#"["a"]"#),
-            "[]",
+            r#"{"rankedIds":[],"rerankStatus":"invalid-json"}"#,
             "invalid LLM JSON 응답은 빈 rank plan으로 닫혀야 한다",
         );
         assert_eq!(
@@ -21390,6 +21541,10 @@ mod tests {
             rag_eta_test_string(&calculating, "confidenceReason"),
             Some("insufficient-samples"),
         );
+        assert_eq!(
+            rag_eta_test_string(&calculating, "etaConfidenceReason"),
+            Some("insufficient-samples"),
+        );
 
         let batch_rate = rag_eta_test_plan(&rag_eta_test_input(
             r#""nowMs":5000,"startedAtMs":1000,"totalFiles":4,"completedFiles":0,"currentFileTotalChunks":8,"currentFileEmbeddedChunks":4,"totalEstimatedChunks":32,"completedEstimatedChunks":0,"currentFileEstimatedChunks":8,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":false,"completedBatchDurationsMs":[1000,1200],"completedBatchChunkCounts":[2,2],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[]"#,
@@ -21475,6 +21630,10 @@ mod tests {
             rag_eta_test_string(&stable, "confidenceReason"),
             Some("planned-stable"),
         );
+        assert_eq!(
+            rag_eta_test_string(&stable, "etaConfidenceReason"),
+            Some("planned-stable"),
+        );
 
         let variable = rag_eta_test_plan(&rag_eta_test_input(
             r#""nowMs":50000,"startedAtMs":0,"totalFiles":10,"completedFiles":5,"currentFileTotalChunks":10,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":100,"completedEstimatedChunks":50,"currentFileEstimatedChunks":10,"totalPlannedChunks":100,"completedPlannedChunks":50,"planningComplete":true,"completedBatchDurationsMs":[200,2000,400,1800,600],"completedBatchChunkCounts":[10,10,10,10,10],"completedFileDurationsMs":[300,2100,500,1900,700],"completedFileChunkCounts":[10,10,10,10,10],"completedFileEstimatedChunkCounts":[10,10,10,10,10],"completedFileActualChunkCounts":[10,10,10,10,10]"#,
@@ -21482,6 +21641,10 @@ mod tests {
         assert_eq!(rag_eta_test_string(&variable, "confidence"), Some("medium"));
         assert_eq!(
             rag_eta_test_string(&variable, "confidenceReason"),
+            Some("planned-variable-rate"),
+        );
+        assert_eq!(
+            rag_eta_test_string(&variable, "etaConfidenceReason"),
             Some("planned-variable-rate"),
         );
     }
