@@ -2478,7 +2478,8 @@ const ko: I18nKeys = {
   pluginDataResetRunning: '초기화 중...',
   pluginDataResetConfirm:
     'Superpower Inside 내부 데이터를 모두 초기화하시겠습니까? 설정과 API Key도 기본값으로 돌아갑니다.',
-  pluginDataResetSecondConfirm: '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
+  pluginDataResetSecondConfirm:
+    '정말 계속할까요? 이 작업은 취소하거나 복구할 수 없습니다.',
   pluginDataResetDone: 'Superpower Inside 내부 데이터가 초기화되었습니다.',
   pluginDataResetFailed: '전체 플러그인 데이터 초기화 실패: {message}',
   mcpToolNotFoundInConnectedServers: '연결된 MCP 서버에서 `{tool}` 도구를 찾을 수 없습니다.',
