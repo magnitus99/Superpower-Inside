@@ -452,8 +452,8 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - 로그 source는 기능 경계를 드러내는 점 표기법을 쓴다. 예: `rag.indexer`, `rag.auto`, `graph.indexing`, `embedding.openai`, `mcp`, `chat.context`.
 - 레벨 의미를 지킨다: `trace`는 반복 배치/세부 루프, `debug`는 상태 전환과 스케줄링, `info`는 작업 시작, `notice`는 사용자에게 의미 있는 성공, `warn`은 복구 가능한 문제, `error`는 실패, `fatal`은 플러그인 핵심 흐름 중단이다.
 - API 키, Authorization 헤더, 토큰, 쿠키, 세션, 비밀번호, credential 원문은 로그에 넣지 않는다. 컨텍스트 객체를 넘길 때도 endpoint/model/status/count/path 중심으로 남긴다.
-- API 429, 재시도, backoff, abort/cancel, fallback endpoint, indexing skip 사유는 반드시 로그에 남긴다.
-- 설정 화면의 General -> Debugging -> 통합 로그 페이지에서 확인 가능한 로그를 우선하고, 콘솔 출력은 `mirrorToConsole` 옵션에 종속시킨다.
+- API 429, 재시도, backoff, abort/cancel, fallback endpoint, indexing skip 사유는 반드시 `appLogger` 또는 `plugin.logger`에 남긴다.
+- 에이전트 진단 탭에서 확인 가능한 로그를 우선하고, 콘솔 출력은 `mirrorToConsole` 옵션에만 종속시킨다.
 
 ## ANTI-PATTERNS
 
@@ -462,7 +462,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 | `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반                                                                                   |
 | `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                                      |
 | `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                                         |
-| 새 `console.*` 직접 호출                   | 통합 로그 페이지에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용               |
+| 새 `console.*` 직접 호출                   | 에이전트 진단 탭에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용              |
 | 런타임 TS에서 `.style.*` 직접 대입         | Obsidian 커뮤니티 리뷰의 `obsidianmd/no-static-styles-assignment` Error. CSS class 또는 `setCssProps` 사용     |
 | `innerHTML` / `outerHTML` 대입             | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용                      |
 | `createEl('h1'..'h6')` 직접 생성           | 설정 UI 일관성 리뷰 Error. 설정 화면은 `Setting(...).setHeading()`, 일반 화면은 heading class `createDiv` 사용 |

@@ -31,17 +31,9 @@ export interface I18nKeys {
   langKo: string;
   langEn: string;
   languageChangeConfirm: string;
-  loggingDebugPanelTitle: string;
-  loggingDebugPanelDesc: string;
   loggingMinLevel: string;
-  loggingMinLevelDesc: string;
   loggingMirrorConsole: string;
-  loggingMirrorConsoleDesc: string;
   loggingMaxEntries: string;
-  loggingMaxEntriesDesc: string;
-  loggingOpenViewer: string;
-  loggingOpenViewerDesc: string;
-  loggingOpenViewerButton: string;
   loggingViewerTitle: string;
   loggingViewerDesc: string;
   loggingCopyVisible: string;
@@ -54,6 +46,30 @@ export interface I18nKeys {
   loggingEmpty: string;
   loggingCopied: string;
   loggingCopyFailed: string;
+  agentDiagnosticsPanelTitle: string;
+  agentDiagnosticsPanelDesc: string;
+  agentDiagnosticsToggle: string;
+  agentDiagnosticsToggleDesc: string;
+  agentDiagnosticsOpenView: string;
+  agentDiagnosticsOpenViewDesc: string;
+  agentDiagnosticsOpenViewButton: string;
+  agentDiagnosticsFilePath: string;
+  agentDiagnosticsWriteSnapshot: string;
+  agentDiagnosticsWriteSnapshotDesc: string;
+  agentDiagnosticsWriteButton: string;
+  agentDiagnosticsClearDetailedLogging: string;
+  agentDiagnosticsClearDetailedLoggingDesc: string;
+  agentDiagnosticsClearButton: string;
+  agentDiagnosticsViewTitle: string;
+  agentDiagnosticsViewDesc: string;
+  agentDiagnosticsRefreshButton: string;
+  agentDiagnosticsCopyButton: string;
+  agentDiagnosticsEnabledStatus: string;
+  agentDiagnosticsDisabledStatus: string;
+  agentDiagnosticsWriteDone: string;
+  agentDiagnosticsClearDone: string;
+  agentDiagnosticsCopied: string;
+  agentDiagnosticsCopyFailed: string;
 
   // 프로바이더 탭
   apiKey: string;
@@ -886,6 +902,9 @@ export interface I18nKeys {
   ragIndexerEnterApiKey: string;
   ragIndexerSelectEmbeddingModel: string;
   ragIndexerConnectionFailed: string;
+  ragIndexerLastInitError: string;
+  ragIndexerLastInitSkipped: string;
+  ragRuntimeInitStepTimedOut: string;
   vaultIndexingStarted: string;
   vaultIndexingDone: string;
   indexingCancelled: string;
@@ -902,6 +921,9 @@ export interface I18nKeys {
   ragPerformanceThrottled: string;
   ragIndexingInProgress: string;
   ragIndexingRunning: string;
+  ragIndexingRunningWithEta: string;
+  ragIndexingRunningWithApproxEta: string;
+  ragIndexingRunningEtaCalculating: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
   ragPhasePending: string;
@@ -1272,7 +1294,7 @@ export interface I18nKeys {
   cmdOpenAiChat: string;
   cmdReindexVault: string;
   cmdOpenGraphRagView: string;
-  cmdOpenLogView: string;
+  cmdOpenAgentDiagnosticsView: string;
   graphRagViewTabTitle: string;
   graphRagViewTabEntities: string;
   graphRagViewTabRelations: string;
@@ -1282,6 +1304,34 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  agentDiagnosticsPanelTitle: 'Debugging',
+  agentDiagnosticsPanelDesc:
+    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
+  agentDiagnosticsToggle: 'Enable agent diagnostics',
+  agentDiagnosticsToggleDesc:
+    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
+  agentDiagnosticsOpenView: 'Agent diagnostics status window',
+  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
+  agentDiagnosticsOpenViewButton: 'Open diagnostics',
+  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
+  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
+  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
+  agentDiagnosticsWriteButton: 'Write snapshot',
+  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
+  agentDiagnosticsClearDetailedLoggingDesc:
+    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
+  agentDiagnosticsClearButton: 'Clean detailed logging',
+  agentDiagnosticsViewTitle: 'Agent Diagnostics',
+  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsRefreshButton: 'Refresh',
+  agentDiagnosticsCopyButton: 'Copy JSON',
+  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
+  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
+  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
+  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
+  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
+  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
+  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
   // General
   autoSaveSettings: '설정 자동 저장',
   autoSaveSettingsDesc: '변경 사항 후 자동으로 설정 저장 (디스크 I/O 감소)',
@@ -1316,19 +1366,12 @@ const ko: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
-  loggingDebugPanelTitle: '디버깅',
-  loggingDebugPanelDesc: '통합 로그 수집과 표시 범위를 제어합니다.',
   loggingMinLevel: '최소 로그 레벨',
-  loggingMinLevelDesc: '이 레벨보다 낮은 로그는 저장하지 않습니다.',
   loggingMirrorConsole: '콘솔에도 출력',
-  loggingMirrorConsoleDesc: '통합 로그를 Obsidian 개발자 콘솔에도 함께 출력합니다.',
   loggingMaxEntries: '로그 보존 개수',
-  loggingMaxEntriesDesc: '메모리에 유지할 최근 로그 개수입니다. 오래된 항목부터 제거됩니다.',
-  loggingOpenViewer: '통합 로그 보기',
-  loggingOpenViewerDesc: '현재 세션의 플러그인 로그를 전체 페이지로 확인합니다.',
-  loggingOpenViewerButton: '로그 페이지 열기',
-  loggingViewerTitle: '통합 로그',
-  loggingViewerDesc: '플러그인 런타임, RAG, GraphRAG, MCP, 임베딩 오류를 한 곳에서 확인합니다.',
+  loggingViewerTitle: '진단 로그',
+  loggingViewerDesc:
+    '플러그인 런타임, RAG, GraphRAG, MCP, 임베딩 오류를 에이전트 진단 화면에서 확인합니다.',
   loggingCopyVisible: '보이는 로그 복사',
   loggingClear: '로그 비우기',
   loggingFilterLevel: '레벨',
@@ -2237,6 +2280,10 @@ const ko: I18nKeys = {
     '임베딩 모델이 선택되지 않았습니다. 설정 → RAG에서 모델을 선택하고 저장하세요.',
   ragIndexerConnectionFailed:
     '"{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
+  ragIndexerLastInitError: '마지막 초기화 오류: {message}',
+  ragIndexerLastInitSkipped: '마지막 초기화 중단 사유: {reason}',
+  ragRuntimeInitStepTimedOut:
+    'RAG 런타임 초기화가 "{stage}" 단계에서 {seconds}초 동안 완료되지 않았습니다.',
   vaultIndexingStarted: '볼트 인덱싱 시작...',
   vaultIndexingDone: '{count}개 파일 인덱싱 완료',
   indexingCancelled: '인덱싱이 중단되었습니다.',
@@ -2256,6 +2303,9 @@ const ko: I18nKeys = {
   ragPerformanceThrottled: '속도 조절 중',
   ragIndexingInProgress: '인덱싱 중',
   ragIndexingRunning: '인덱싱 중: {phase}',
+  ragIndexingRunningWithEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta}',
+  ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
+  ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
   ragPhasePending: '필요 문서 업데이트',
@@ -2682,7 +2732,6 @@ const ko: I18nKeys = {
   cmdOpenAiChat: 'AI 채팅 열기',
   cmdReindexVault: '볼트 RAG 재인덱싱',
   cmdOpenGraphRagView: 'GraphRAG 탐색기 열기',
-  cmdOpenLogView: '통합 로그 페이지 열기',
   graphRagViewTabTitle: 'GraphRAG 탐색기',
   graphRagViewTabEntities: '엔티티',
   graphRagViewTabRelations: '관계',
@@ -2727,20 +2776,12 @@ const en: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
-  loggingDebugPanelTitle: 'Debugging',
-  loggingDebugPanelDesc: 'Control integrated log collection and display scope.',
   loggingMinLevel: 'Minimum log level',
-  loggingMinLevelDesc: 'Logs below this level are not stored.',
   loggingMirrorConsole: 'Mirror to console',
-  loggingMirrorConsoleDesc: 'Also write integrated logs to the Obsidian developer console.',
   loggingMaxEntries: 'Retained log entries',
-  loggingMaxEntriesDesc: 'Recent log entries kept in memory. Older entries are removed first.',
-  loggingOpenViewer: 'View integrated logs',
-  loggingOpenViewerDesc: 'Open a full-page view of the current plugin session logs.',
-  loggingOpenViewerButton: 'Open log page',
-  loggingViewerTitle: 'Integrated Logs',
+  loggingViewerTitle: 'Diagnostic logs',
   loggingViewerDesc:
-    'Inspect plugin runtime, RAG, GraphRAG, MCP, and embedding errors in one place.',
+    'Inspect plugin runtime, RAG, GraphRAG, MCP, and embedding errors inside Agent Diagnostics.',
   loggingCopyVisible: 'Copy visible logs',
   loggingClear: 'Clear logs',
   loggingFilterLevel: 'Level',
@@ -2751,6 +2792,33 @@ const en: I18nKeys = {
   loggingEmpty: 'No logs to show.',
   loggingCopied: 'Logs copied.',
   loggingCopyFailed: 'Failed to copy logs: {message}',
+  agentDiagnosticsPanelTitle: 'Debugging',
+  agentDiagnosticsPanelDesc:
+    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
+  agentDiagnosticsToggle: 'Enable agent diagnostics',
+  agentDiagnosticsToggleDesc:
+    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
+  agentDiagnosticsOpenView: 'Agent diagnostics status window',
+  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
+  agentDiagnosticsOpenViewButton: 'Open diagnostics',
+  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
+  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
+  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
+  agentDiagnosticsWriteButton: 'Write snapshot',
+  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
+  agentDiagnosticsClearDetailedLoggingDesc:
+    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
+  agentDiagnosticsClearButton: 'Clean detailed logging',
+  agentDiagnosticsViewTitle: 'Agent Diagnostics',
+  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
+  agentDiagnosticsRefreshButton: 'Refresh',
+  agentDiagnosticsCopyButton: 'Copy JSON',
+  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
+  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
+  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
+  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
+  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
+  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
 
   // Providers
   apiKey: 'API Key',
@@ -3656,6 +3724,10 @@ const en: I18nKeys = {
     'No embedding model is selected. Choose a model in Settings → RAG and save it.',
   ragIndexerConnectionFailed:
     'Failed to connect "{provider}" ({model}). Check the Base URL or API Key.',
+  ragIndexerLastInitError: 'Last initialization error: {message}',
+  ragIndexerLastInitSkipped: 'Last initialization skipped: {reason}',
+  ragRuntimeInitStepTimedOut:
+    'RAG runtime initialization did not finish stage "{stage}" within {seconds} seconds.',
   vaultIndexingStarted: 'Vault indexing started...',
   vaultIndexingDone: 'Indexed {count} files',
   indexingCancelled: 'Indexing was cancelled.',
@@ -3675,6 +3747,11 @@ const en: I18nKeys = {
   ragPerformanceThrottled: 'Throttling',
   ragIndexingInProgress: 'Indexing',
   ragIndexingRunning: 'Indexing: {phase}',
+  ragIndexingRunningWithEta: 'Indexing: {phase} - {completed}/{total} files, ETA {eta}',
+  ragIndexingRunningWithApproxEta:
+    'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
+  ragIndexingRunningEtaCalculating:
+    'Indexing: {phase} - {completed}/{total} files, calculating ETA',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
   ragPhasePending: 'Update pending documents',
@@ -4116,7 +4193,7 @@ const en: I18nKeys = {
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
   cmdOpenGraphRagView: 'Open GraphRAG Explorer',
-  cmdOpenLogView: 'Open Integrated Logs',
+  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
   graphRagViewTabTitle: 'GraphRAG Explorer',
   graphRagViewTabEntities: 'Entities',
   graphRagViewTabRelations: 'Relations',

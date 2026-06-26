@@ -95,6 +95,7 @@ import {
   planRagFileIndexabilityRust,
   planRagFileTypeSummaryRust,
   planRagStatusRust,
+  planRagIndexingEtaRust,
   planReferenceFileIndicesRust,
   planMergedRetrievalCandidatesByEntryIdRust,
   planMergedRetrievalCandidatesRust,
@@ -163,6 +164,134 @@ describe('Rust WASM RAG core bridge', () => {
     });
   });
 
+  it('plans RAG vector indexing ETA through the Rust bridge', () => {
+    const calibratedEta = planRagIndexingEtaRust({
+      nowMs: 10000,
+      startedAtMs: 0,
+      totalFiles: 10,
+      completedFiles: 3,
+      currentFileTotalChunks: 1,
+      currentFileEmbeddedChunks: 0,
+      totalEstimatedChunks: 10,
+      completedEstimatedChunks: 3,
+      currentFileEstimatedChunks: 1,
+      totalPlannedChunks: 0,
+      completedPlannedChunks: 0,
+      planningComplete: false,
+      completedBatchDurationsMs: [500],
+      completedBatchChunkCounts: [1],
+      completedFileDurationsMs: [2000, 3000, 2500],
+      completedFileChunkCounts: [1, 1, 1],
+      completedFileEstimatedChunkCounts: [1, 1, 1],
+      completedFileActualChunkCounts: [1, 1, 1],
+      completedFileOverheadDurationsMs: [],
+      historicalMsPerChunk: null,
+      historicalChunkEstimateRatio: null,
+      historicalVariance: null,
+    });
+    expect(calibratedEta).toMatchObject({
+      totalFiles: 10,
+      completedFiles: 3,
+      currentFileProgress: 0,
+      progressRatio: 0.3,
+      elapsedMs: 10000,
+      remainingMs: 17500,
+      estimatedCompletionMs: 27500,
+      confidence: 'medium',
+      basis: 'calibrated-estimate',
+      confidenceReason: 'calibrated-estimate',
+    });
+    expect(typeof calibratedEta?.lowerRemainingMs).toBe('number');
+    expect(typeof calibratedEta?.upperRemainingMs).toBe('number');
+
+    expect(
+      planRagIndexingEtaRust({
+        nowMs: 5000,
+        startedAtMs: 0,
+        totalFiles: 4,
+        completedFiles: 0,
+        currentFileTotalChunks: 1,
+        currentFileEmbeddedChunks: 1,
+        totalEstimatedChunks: 100,
+        completedEstimatedChunks: 0,
+        currentFileEstimatedChunks: 1,
+        totalPlannedChunks: 0,
+        completedPlannedChunks: 0,
+        planningComplete: false,
+        completedBatchDurationsMs: [1000],
+        completedBatchChunkCounts: [1],
+        completedFileDurationsMs: [],
+        completedFileChunkCounts: [],
+        completedFileEstimatedChunkCounts: [],
+        completedFileActualChunkCounts: [],
+        completedFileOverheadDurationsMs: [],
+        historicalMsPerChunk: null,
+        historicalChunkEstimateRatio: null,
+        historicalVariance: null,
+      })?.remainingMs,
+    ).toBe(99000);
+
+    expect(
+      planRagIndexingEtaRust({
+        nowMs: 5000,
+        startedAtMs: 0,
+        totalFiles: 4,
+        completedFiles: 1,
+        currentFileTotalChunks: 4,
+        currentFileEmbeddedChunks: 2,
+        totalEstimatedChunks: 100,
+        completedEstimatedChunks: 25,
+        currentFileEstimatedChunks: 50,
+        totalPlannedChunks: 10,
+        completedPlannedChunks: 3,
+        planningComplete: true,
+        completedBatchDurationsMs: [1000, 1000, 1000],
+        completedBatchChunkCounts: [1, 1, 1],
+        completedFileDurationsMs: [1200],
+        completedFileChunkCounts: [3],
+        completedFileEstimatedChunkCounts: [25],
+        completedFileActualChunkCounts: [3],
+        completedFileOverheadDurationsMs: [200],
+        historicalMsPerChunk: null,
+        historicalChunkEstimateRatio: null,
+        historicalVariance: null,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        basis: 'planned-chunks',
+        progressRatio: 0.5,
+        currentFileProgress: 0.5,
+      }),
+    );
+
+    expect(
+      planRagIndexingEtaRust({
+        nowMs: Number.NaN,
+        startedAtMs: 0,
+        totalFiles: 10,
+        completedFiles: 0,
+        currentFileTotalChunks: 0,
+        currentFileEmbeddedChunks: 0,
+        totalEstimatedChunks: 10,
+        completedEstimatedChunks: 0,
+        currentFileEstimatedChunks: 0,
+        totalPlannedChunks: 0,
+        completedPlannedChunks: 0,
+        planningComplete: false,
+        completedBatchDurationsMs: [],
+        completedBatchChunkCounts: [],
+        completedFileDurationsMs: [],
+        completedFileChunkCounts: [],
+        completedFileEstimatedChunkCounts: [],
+        completedFileActualChunkCounts: [],
+        completedFileOverheadDurationsMs: [],
+        historicalMsPerChunk: null,
+        historicalChunkEstimateRatio: null,
+        historicalVariance: null,
+      }),
+    ).toBeNull();
+  });
+
   it('판단 경로를 Rust 쪽으로 넘겨 GraphRAG 런타임 재구성을 결정한다', () => {
     expect(
       shouldRebuildGraphRuntimeForGraphStatusRust(
@@ -191,33 +320,17 @@ describe('Rust WASM RAG core bridge', () => {
         false,
       ),
     ).toBe(false);
-    expect(
-      shouldRebuildGraphRuntimeForGraphStatusRust(
-        true,
-        '',
-        'stale',
-        'ready',
-        false,
-      ),
-    ).toBe(false);
+    expect(shouldRebuildGraphRuntimeForGraphStatusRust(true, '', 'stale', 'ready', false)).toBe(
+      false,
+    );
   });
 
   it('MCP 연결 상태 판정을 Rust에서 직접 계산한다', () => {
-    expect(
-      getMcpConnectionStateRust(0, 0, 0, false),
-    ).toBe('idle');
-    expect(
-      getMcpConnectionStateRust(2, 1, 1, true),
-    ).toBe('connecting');
-    expect(
-      getMcpConnectionStateRust(2, 2, 0, false),
-    ).toBe('connected');
-    expect(
-      getMcpConnectionStateRust(2, 1, 1, false),
-    ).toBe('partial-error');
-    expect(
-      getMcpConnectionStateRust(2, 0, 2, false),
-    ).toBe('error');
+    expect(getMcpConnectionStateRust(0, 0, 0, false)).toBe('idle');
+    expect(getMcpConnectionStateRust(2, 1, 1, true)).toBe('connecting');
+    expect(getMcpConnectionStateRust(2, 2, 0, false)).toBe('connected');
+    expect(getMcpConnectionStateRust(2, 1, 1, false)).toBe('partial-error');
+    expect(getMcpConnectionStateRust(2, 0, 2, false)).toBe('error');
   });
 
   it('MCP 경로 보강 힌트는 Rust에서 ENOENT + 상대 명령어일 때만 true', () => {
@@ -356,11 +469,41 @@ describe('Rust WASM RAG core bridge', () => {
           },
         ],
         entries: [
-          { id: 'seed.md::12', filePath: 'seed.md', startLine: 12, compatible: true, heading: 'Main' },
-          { id: 'seed.md::18', filePath: 'seed.md', startLine: 18, compatible: true, heading: 'Main' },
-          { id: 'seed.md::24', filePath: 'seed.md', startLine: 24, compatible: true, heading: 'Sub' },
-          { id: 'seed.md::40', filePath: 'seed.md', startLine: 40, compatible: true, heading: 'Other' },
-          { id: 'seed.md::41', filePath: 'seed.md', startLine: 41, compatible: false, heading: 'Main' },
+          {
+            id: 'seed.md::12',
+            filePath: 'seed.md',
+            startLine: 12,
+            compatible: true,
+            heading: 'Main',
+          },
+          {
+            id: 'seed.md::18',
+            filePath: 'seed.md',
+            startLine: 18,
+            compatible: true,
+            heading: 'Main',
+          },
+          {
+            id: 'seed.md::24',
+            filePath: 'seed.md',
+            startLine: 24,
+            compatible: true,
+            heading: 'Sub',
+          },
+          {
+            id: 'seed.md::40',
+            filePath: 'seed.md',
+            startLine: 40,
+            compatible: true,
+            heading: 'Other',
+          },
+          {
+            id: 'seed.md::41',
+            filePath: 'seed.md',
+            startLine: 41,
+            compatible: false,
+            heading: 'Main',
+          },
         ],
         headings: [
           { filePath: 'seed.md', startLine: 10, level: 2 },
@@ -491,9 +634,7 @@ describe('Rust WASM RAG core bridge', () => {
         ],
         3,
       ),
-    ).toEqual([
-      { index: 1, score: 1 },
-    ]);
+    ).toEqual([{ index: 1, score: 1 }]);
   });
 
   it('plans file index records from vector metadata through Rust', () => {
@@ -800,8 +941,7 @@ describe('Rust WASM RAG core bridge', () => {
       retrievalSources: ['vector', 'graph-local'],
     });
     const expectedRrf =
-      (0.7 * (1 / 61) + 0.12 * (1 / 64) + 0.2 * (1 / 62)) /
-      ((0.7 + 0.12 + 0.2) * (1 / 61));
+      (0.7 * (1 / 61) + 0.12 * (1 / 64) + 0.2 * (1 / 62)) / ((0.7 + 0.12 + 0.2) * (1 / 61));
 
     expect(plan).not.toBeNull();
     expect(plan?.combinedBase).toBeCloseTo(0.26);
@@ -1255,10 +1395,15 @@ describe('Rust WASM RAG core bridge', () => {
     expect(planRagFileContentProbeIndicesRust(files, ['Archive'], ['png'])).toEqual([4, 5]);
 
     expect(
-      planRagFileIndexabilityRust(files, ['Archive'], ['png'], [
-        { index: 4, readable: true, sample: 'plain text content' },
-        { index: 5, readable: true, sample: '\u0000binary' },
-      ]),
+      planRagFileIndexabilityRust(
+        files,
+        ['Archive'],
+        ['png'],
+        [
+          { index: 4, readable: true, sample: 'plain text content' },
+          { index: 5, readable: true, sample: '\u0000binary' },
+        ],
+      ),
     ).toEqual({
       candidateIndices: [0, 1, 4],
       summaryInputs: [
@@ -1332,9 +1477,7 @@ describe('Rust WASM RAG core bridge', () => {
 
     expect(
       references
-        ? planSourceValidationWarningsRust(references, ['rag-1'], ['Existing.md'], [
-            'Docs A.md',
-          ])
+        ? planSourceValidationWarningsRust(references, ['rag-1'], ['Existing.md'], ['Docs A.md'])
         : null,
     ).toEqual([
       {
@@ -1458,7 +1601,12 @@ describe('Rust WASM RAG core bridge', () => {
     ].join('\n');
 
     expect(
-      planChatMessagesRust(body, 1_700_000_000_000, '2026-01-01T00:00:00.000Z', '[decoding failed]'),
+      planChatMessagesRust(
+        body,
+        1_700_000_000_000,
+        '2026-01-01T00:00:00.000Z',
+        '[decoding failed]',
+      ),
     ).toEqual([
       expect.objectContaining({
         id: 'msg-1',
@@ -1598,10 +1746,7 @@ describe('Rust WASM RAG core bridge', () => {
           bm25Score: 0.3,
         },
       ],
-      [
-        { status: 'verified' },
-        { status: 'stale', detail: '파일이 변경됨' },
-      ],
+      [{ status: 'verified' }, { status: 'stale', detail: '파일이 변경됨' }],
       7,
       'rag',
     );
@@ -1755,25 +1900,29 @@ describe('Rust WASM RAG core bridge', () => {
     });
 
     expect(
-      isMcpToolResultEmptyRust({ content: [] }, {
-        displayText: 'text',
-        modelText: 'text',
-      }),
+      isMcpToolResultEmptyRust(
+        { content: [] },
+        {
+          displayText: 'text',
+          modelText: 'text',
+        },
+      ),
     ).toBe(true);
     expect(
-      isMcpToolResultEmptyRust({ content: [{ type: 'text', text: 'ok' }] }, {
-        displayText: 'text',
-        modelText: 'text',
-      }),
+      isMcpToolResultEmptyRust(
+        { content: [{ type: 'text', text: 'ok' }] },
+        {
+          displayText: 'text',
+          modelText: 'text',
+        },
+      ),
     ).toBe(false);
 
-    expect(classifyMcpToolErrorRust("Input validation error: does not match '\\d+'"))
-      .toEqual({
+    expect(classifyMcpToolErrorRust("Input validation error: does not match '\\d+'")).toEqual({
       kind: 'validation-pattern',
       pattern: '\\d+',
     });
-    expect(classifyMcpToolErrorRust("Input validation error: unknown field 'path'"))
-      .toEqual({
+    expect(classifyMcpToolErrorRust("Input validation error: unknown field 'path'")).toEqual({
       kind: 'validation-field',
       field: 'path',
     });
@@ -1969,7 +2118,9 @@ describe('Rust WASM RAG core bridge', () => {
       isGraphSource: true,
       verification: { status: 'missing', detail: '지원하지 않는 GraphRAG 출처입니다.' },
     });
-    expect(planContextGraphVerificationRust('note.md', '지원하지 않는 GraphRAG 출처입니다.')).toEqual({
+    expect(
+      planContextGraphVerificationRust('note.md', '지원하지 않는 GraphRAG 출처입니다.'),
+    ).toEqual({
       isGraphSource: false,
       verification: null,
     });
@@ -1994,7 +2145,10 @@ describe('Rust WASM RAG core bridge', () => {
 
   it('counts files by normalized extension keys through Rust', () => {
     expect(
-      countFilesByExtensionsRust(['md', 'TS', '.png', 'md', 'env', ''], ['TS', 'png', ' .md ', 'md']),
+      countFilesByExtensionsRust(
+        ['md', 'TS', '.png', 'md', 'env', ''],
+        ['TS', 'png', ' .md ', 'md'],
+      ),
     ).toEqual({
       png: 1,
       md: 2,
@@ -2089,10 +2243,7 @@ describe('Rust WASM RAG core bridge', () => {
       'claim::factual-claim::가-나::-',
     );
     expect(
-      createPendingEntityMergeIdRust(
-        'entity::de f@@ult::person::Paul the apostle',
-        'entity::x',
-      ),
+      createPendingEntityMergeIdRust('entity::de f@@ult::person::Paul the apostle', 'entity::x'),
     ).toBe('pending-entity-merge::entity::de-fult::person::paul-the-apostle::entity::x');
   });
 
@@ -2544,11 +2695,12 @@ describe('Rust WASM RAG core bridge', () => {
   });
 
   it('plans pending index file selection through Rust', () => {
-    expect(planIndexPendingFilesRust(['b.md', 'a.md', 'c.md', 'a.md'], ['a.md', 'missing.md']))
-      .toEqual({
-        fileIndices: [1, 3],
-        skipped: 2,
-      });
+    expect(
+      planIndexPendingFilesRust(['b.md', 'a.md', 'c.md', 'a.md'], ['a.md', 'missing.md']),
+    ).toEqual({
+      fileIndices: [1, 3],
+      skipped: 2,
+    });
     expect(planIndexPendingFilesRust(['a.md'], [])).toEqual({
       fileIndices: [],
       skipped: 1,
@@ -2557,10 +2709,10 @@ describe('Rust WASM RAG core bridge', () => {
 
   it('plans GraphRAG status entry lookups through Rust', () => {
     expect(
-      planGraphRagStatusEntryLookupsRust(['note.md::0', 'stale.md::0'], [
-        'note.md::0',
-        'cache-only.md::0',
-      ]),
+      planGraphRagStatusEntryLookupsRust(
+        ['note.md::0', 'stale.md::0'],
+        ['note.md::0', 'cache-only.md::0'],
+      ),
     ).toEqual(['note.md::0', 'stale.md::0', 'cache-only.md::0']);
   });
 
@@ -2957,7 +3109,9 @@ describe('Rust WASM RAG core bridge', () => {
       entryIndices: [1, 0],
     });
 
-    expect(planGraphEvidenceEntryCandidatesRust(['entry-a'], [{ id: 'entry-a', compatible: true }], 0)).toEqual({
+    expect(
+      planGraphEvidenceEntryCandidatesRust(['entry-a'], [{ id: 'entry-a', compatible: true }], 0),
+    ).toEqual({
       candidateIndices: [],
       entryIndices: [],
     });

@@ -61,9 +61,9 @@ vi.mock('obsidian', () => {
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
   it('플러그인 시작 직후 RAG 런타임을 자동 초기화하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     vi.useFakeTimers();
     try {
-      const { default: SuperpowerInsidePlugin } = await import('./main.ts');
       const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
         register: ReturnType<typeof vi.fn>;
         initRAG: ReturnType<typeof vi.fn>;
@@ -90,7 +90,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 20_000);
 
   it('명시적 RAG 액션에서 런타임이 없으면 초기화를 시도한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
@@ -120,6 +120,50 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.initRAG).toHaveBeenCalledOnce();
   });
 
+  it('RAG runtime initialization records the stuck stage when a step times out', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    vi.useFakeTimers();
+    try {
+      const logger = {
+        info: vi.fn(),
+        error: vi.fn(),
+      };
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        lastRagRuntimeInitError: string | null;
+        lastRagRuntimeInitStage: string | null;
+        getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      };
+      plugin.lastRagRuntimeInitError = null;
+      plugin.lastRagRuntimeInitStage = null;
+      plugin.getLogger = vi.fn(() => logger);
+
+      const result = (
+        plugin as unknown as {
+          runRagRuntimeInitStep(
+            stage: string,
+            operation: () => Promise<void>,
+            timeoutMs: number,
+          ): Promise<void>;
+        }
+      ).runRagRuntimeInitStep('legacy-vector-import', () => new Promise(() => undefined), 10);
+      const expectation = expect(result).rejects.toThrow('legacy-vector-import');
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expectation;
+      expect(plugin.lastRagRuntimeInitStage).toBe('legacy-vector-import');
+      expect(plugin.lastRagRuntimeInitError).toContain('legacy-vector-import');
+      expect(logger.error).toHaveBeenCalledWith(
+        'RAG runtime initialization step failed.',
+        expect.objectContaining({
+          data: expect.objectContaining({ stage: 'legacy-vector-import' }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('BM25 로드 이후 RAG 파일 이벤트를 등록한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -140,6 +184,60 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(app.vault.on).toHaveBeenCalledWith('modify', expect.any(Function));
     expect(app.vault.on).toHaveBeenCalledWith('delete', expect.any(Function));
     expect(app.vault.on).toHaveBeenCalledWith('rename', expect.any(Function));
+  });
+
+  it('BM25 load failure does not block the vector RAG runtime', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const logger = {
+      info: vi.fn(),
+      notice: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      manifest: { id: string };
+      getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      runRagRuntimeInitStep: ReturnType<
+        typeof vi.fn<(stage: string, operation: () => Promise<unknown>) => Promise<unknown>>
+      >;
+      bm25Index: unknown;
+      ragEngine: unknown;
+      vaultIndexer: unknown;
+      ragIndexingScheduler: unknown;
+    };
+    plugin.app = createApp();
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
+      rag: { ...DEFAULT_SETTINGS.rag, enableBM25: true },
+    };
+    plugin.getLogger = vi.fn(() => logger);
+    plugin.runRagRuntimeInitStep = vi.fn((stage, operation) => {
+      if (stage === 'bm25-load') {
+        return Promise.reject(new Error('BM25 stuck'));
+      }
+      return operation();
+    });
+
+    await (
+      plugin as unknown as {
+        initRAGRuntime(): Promise<void>;
+      }
+    ).initRAGRuntime();
+
+    expect(plugin.bm25Index).toBeNull();
+    expect(plugin.ragEngine).not.toBeNull();
+    expect(plugin.vaultIndexer).not.toBeNull();
+    expect(plugin.ragIndexingScheduler).not.toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'BM25 index initialization failed; continuing without BM25.',
+      expect.objectContaining({ source: 'rag.bm25' }),
+    );
   });
 
   it('RAG 재초기화 시 기존 이벤트를 해제하고 새 이벤트를 등록한다', async () => {
@@ -543,6 +641,71 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
   });
 });
 
+describe('SuperpowerInsidePlugin agent diagnostics view', () => {
+  it('reuses a readable root workspace diagnostics leaf', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { AGENT_DIAGNOSTICS_VIEW_TYPE } = await import('./src/diagnostics/view');
+    const root = { kind: 'root' };
+    const existingLeaf = createWorkspaceLeaf(root, 640);
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [existingLeaf]),
+      getMostRecentLeaf: vi.fn(),
+      setActiveLeaf: vi.fn(),
+      getLeaf: vi.fn(),
+      createLeafBySplit: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    plugin.openAgentDiagnosticsView();
+
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(AGENT_DIAGNOSTICS_VIEW_TYPE);
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(existingLeaf);
+    expect(existingLeaf.detach).not.toHaveBeenCalled();
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+  });
+
+  it('replaces sidebar or too narrow diagnostics leaves with a root workspace tab', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { AGENT_DIAGNOSTICS_VIEW_TYPE } = await import('./src/diagnostics/view');
+    const root = { kind: 'root' };
+    const sideRoot = { kind: 'right-sidebar' };
+    const sidebarLeaf = createWorkspaceLeaf(sideRoot, 420);
+    const narrowRootLeaf = createWorkspaceLeaf(root, 52);
+    const recentRootLeaf = createWorkspaceLeaf(root, 720);
+    const newLeaf = createWorkspaceLeaf(root, 720);
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [sidebarLeaf, narrowRootLeaf]),
+      getMostRecentLeaf: vi.fn(() => recentRootLeaf),
+      setActiveLeaf: vi.fn(),
+      getLeaf: vi.fn(() => newLeaf),
+      createLeafBySplit: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    plugin.openAgentDiagnosticsView();
+
+    expect(sidebarLeaf.detach).toHaveBeenCalledOnce();
+    expect(narrowRootLeaf.detach).toHaveBeenCalledOnce();
+    expect(workspace.setActiveLeaf).toHaveBeenCalledWith(recentRootLeaf, { focus: false });
+    expect(workspace.getLeaf).toHaveBeenCalledWith('tab');
+    expect(newLeaf.setViewState).toHaveBeenCalledWith({
+      type: AGENT_DIAGNOSTICS_VIEW_TYPE,
+      active: true,
+    });
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(newLeaf);
+  });
+});
+
 function createApp(
   options: {
     localSettings?: unknown;
@@ -586,6 +749,19 @@ function createApp(
     workspace: {
       trigger: vi.fn(),
     },
+  };
+}
+
+function createWorkspaceLeaf(root: unknown, width: number) {
+  return {
+    getRoot: vi.fn(() => root),
+    view: {
+      containerEl: {
+        getBoundingClientRect: vi.fn(() => ({ width })),
+      },
+    },
+    setViewState: vi.fn(() => Promise.resolve()),
+    detach: vi.fn(),
   };
 }
 

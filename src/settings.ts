@@ -20,8 +20,8 @@ import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
 import { runActionWithFeedback } from './utils/action-feedback';
 import type { VectorStore } from './rag/store';
-import { isIndexingCancelledError, type IndexingResult, type VaultIndexer } from './rag/indexer';
-import type { RAGIndexingScheduler } from './rag/indexing-scheduler';
+import { isIndexingCancelledError, type IndexingResult } from './rag/indexer';
+import type { RAGIndexingScheduler, RagIndexingSchedulerStatus } from './rag/indexing-scheduler';
 import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import type { GraphRagCommunityBuildResult, GraphRagIndexingResult } from './graph/indexing-runner';
@@ -275,6 +275,18 @@ export function normalizeChatSaveFolder(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   return value;
 }
+export interface AgentDiagnosticsSettings {
+  enabled: boolean;
+}
+export function normalizeAgentDiagnosticsSettings(value: unknown): AgentDiagnosticsSettings {
+  const raw =
+    typeof value === 'object' && value !== null
+      ? (value as Partial<AgentDiagnosticsSettings>)
+      : undefined;
+  return {
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : false,
+  };
+}
 export interface SuperpowerInsideSettings {
   openai: ProviderConfig;
   claude: ProviderConfig;
@@ -293,6 +305,7 @@ export interface SuperpowerInsideSettings {
   autoSaveDebounceMs: number;
   language: Language;
   logging: LoggerConfig;
+  agentDiagnostics: AgentDiagnosticsSettings;
 }
 export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   openai: {
@@ -383,6 +396,9 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     maxEntries: 1000,
     mirrorToConsole: true,
   },
+  agentDiagnostics: {
+    enabled: false,
+  },
 };
 export interface PluginLike {
   app: App;
@@ -390,6 +406,20 @@ export interface PluginLike {
   graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
   knowledgeGraphStore: import('./graph/store').KnowledgeGraphStore | null;
   vectorStore: import('./rag/store').VectorStore | null;
+  getRagRuntimeState(): {
+    ragStatus: RagStatusSummary | null;
+    graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
+    vectorStore: VectorStore | null;
+    embeddingProvider: { clearCache(): Promise<void> } | null;
+    ragIndexingScheduler: RAGIndexingScheduler | null;
+    ragIndexingStatus: RagIndexingSchedulerStatus | null;
+    hasIndexer: boolean;
+    nextAutoUpdateAt: number | null;
+    lastAutoUpdateSkippedReason: string | null;
+    lastAutoUpdateResult: IndexingResult | null;
+    lastInitError: string | null;
+    lastInitSkippedReason: string | null;
+  };
   saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{
     success: boolean;
     mcpErrors?: string[];
@@ -407,6 +437,10 @@ export interface PluginLike {
   resetPluginData(): Promise<void>;
   hasGraphRagRunner(): boolean;
   openGraphRagView(): void;
+  openAgentDiagnosticsView(): void;
+  getAgentDiagnosticsFilePath(): string;
+  writeAgentDiagnosticsSnapshot(reason: string): Promise<void>;
+  clearAgentDiagnosticsDetailedLogging(): Promise<void>;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   ensureRagRuntimeInitialized(): Promise<boolean>;
@@ -481,7 +515,9 @@ function setHidden(el: HTMLElement | null, hidden: boolean): void {
   el.toggleClass(HIDDEN_CLASS, hidden);
 }
 
-function createProviderValidationFingerprint(config: ProviderConfig | CustomOpenAIProviderConfig): string {
+function createProviderValidationFingerprint(
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): string {
   return JSON.stringify({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl ?? '',
@@ -1001,7 +1037,56 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
+    this.buildAgentDiagnosticsSection(containerEl);
     this.buildPluginDataResetSection(containerEl);
+  }
+
+  private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsPanel(containerEl, t('agentDiagnosticsPanelTitle'), {
+      description: t('agentDiagnosticsPanelDesc'),
+      className: 'superpower-inside-agent-diagnostics-settings',
+    });
+    new Setting(section)
+      .setName(t('agentDiagnosticsToggle'))
+      .setDesc(t('agentDiagnosticsToggleDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.agentDiagnostics.enabled).onChange(async (value) => {
+          this.plugin.settings.agentDiagnostics.enabled = value;
+          await this.plugin.saveSettingsLight();
+          if (value) {
+            await this.plugin.writeAgentDiagnosticsSnapshot('settings-toggle');
+          }
+          this.buildGeneralTab(containerEl);
+        }),
+      );
+    new Setting(section)
+      .setName(t('agentDiagnosticsOpenView'))
+      .setDesc(t('agentDiagnosticsOpenViewDesc'))
+      .addButton((button) =>
+        button
+          .setButtonText(t('agentDiagnosticsOpenViewButton'))
+          .onClick(() => this.plugin.openAgentDiagnosticsView()),
+      );
+    section.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-path',
+      text: t('agentDiagnosticsFilePath', { path: this.plugin.getAgentDiagnosticsFilePath() }),
+    });
+    new Setting(section)
+      .setName(t('agentDiagnosticsWriteSnapshot'))
+      .setDesc(t('agentDiagnosticsWriteSnapshotDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('agentDiagnosticsWriteButton')).onClick(() => {
+          void this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
+        }),
+      );
+    new Setting(section)
+      .setName(t('agentDiagnosticsClearDetailedLogging'))
+      .setDesc(t('agentDiagnosticsClearDetailedLoggingDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('agentDiagnosticsClearButton')).onClick(() => {
+          void this.plugin.clearAgentDiagnosticsDetailedLogging();
+        }),
+      );
   }
 
   private buildPluginDataResetSection(containerEl: HTMLElement): void {
@@ -1062,10 +1147,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {
+    const runtime = this.plugin.getRagRuntimeState();
     const registry = this.plugin.mcpRegistry;
     return {
-      ragStatus: this.plugin.eventDrivenRagStats,
-      graphRagStatus: this.plugin.graphRagStatus,
+      ragStatus: runtime.ragStatus,
+      graphRagStatus: runtime.graphRagStatus,
       mcpConnectionState: this.plugin.mcpConnectionState ?? 'idle',
       mcpServers: this.plugin.settings.mcpServers.map((server) => ({
         name: server.name,
@@ -1243,7 +1329,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const commandCenter = containerEl.createDiv({
       cls: 'superpower-inside-providers-command-center',
     });
-    const commandCopy = commandCenter.createDiv({ cls: 'superpower-inside-providers-command-copy' });
+    const commandCopy = commandCenter.createDiv({
+      cls: 'superpower-inside-providers-command-copy',
+    });
     commandCopy.createDiv({
       cls: 'superpower-inside-providers-command-title',
       text: t('providerCommandCenterTitle'),
@@ -1309,7 +1397,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     for (const target of fixedTargets) {
       this.buildProviderSettings(providerGrid, target);
     }
-    collapseAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, false));
+    collapseAll.addEventListener('click', () =>
+      this.setAllProviderCardsExpanded(containerEl, false),
+    );
     expandAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, true));
     this.buildCustomOpenAIProvidersSection(containerEl);
   }
@@ -1410,7 +1500,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.graphRagSectionContainer = section;
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto029') });
     const rag = this.plugin.settings.rag;
-    const graphState = this.plugin.graphRagStatus;
+    const runtime = this.plugin.getRagRuntimeState();
+    const graphState = runtime.graphRagStatus;
     const statusLabel =
       graphState?.state ??
       getGraphRagStatusLabel({
@@ -1423,7 +1514,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const presentation = getGraphRagStatusPresentation(statusLabel);
     const cost = estimateGraphRagIndexingCost({
       totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
@@ -1437,7 +1528,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       hasModel: rag.graphRagModel.trim().length > 0,
       isRunning: this.plugin.isGraphRagIndexing(),
       totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       failedFileCount: graphState?.failedFileCount ?? 0,
     });
     // 진행 중 배너 (기본 숨김)
@@ -1817,7 +1908,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   updateGraphRagStats(): void {
     if (!this.graphRagSectionContainer) return;
     this.renderGraphRagProgressBanner();
-    const graphState = this.plugin.graphRagStatus;
+    const runtime = this.plugin.getRagRuntimeState();
+    const graphState = runtime.graphRagStatus;
     const rag = this.plugin.settings.rag;
     const statusLabel =
       graphState?.state ??
@@ -1831,7 +1923,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const presentation = getGraphRagStatusPresentation(statusLabel);
     const cost = estimateGraphRagIndexingCost({
       totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
@@ -1845,7 +1937,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       hasModel: rag.graphRagModel.trim().length > 0,
       isRunning: this.plugin.isGraphRagIndexing(),
       totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? this.plugin.eventDrivenRagStats?.totalDocuments ?? 0,
+        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       failedFileCount: graphState?.failedFileCount ?? 0,
     });
     const total = graphState?.totalCandidateFiles ?? 0;
@@ -2165,21 +2257,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderMCPStatus(statusSection);
   }
   private getIndexingStatusLabel(): string {
-    const plugin = this.plugin as unknown as {
-      ragIndexingStatus?: {
-        running: boolean;
-        phase: string;
-        queuedFiles: number;
-        lastResult?: {
-          indexed: number;
-          vectors: number;
-        } | null;
-      };
-    };
-    const status = plugin.ragIndexingStatus;
+    const status = this.plugin.getRagRuntimeState().ragIndexingStatus;
     if (!status) return this.plugin.isRagIndexing() ? t('settingsAuto077') : t('settingsAuto078');
     if (status.running) {
-      return t('settingsAuto079', { v0: String(status.phase), v1: String(status.queuedFiles) });
+      return this.formatRunningRagIndexingStatus(status);
     }
     if (status.lastResult) {
       return t('settingsAuto080', {
@@ -2188,6 +2269,59 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
     return t('settingsAuto078');
+  }
+  private formatRunningRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
+    const progress = status.progress;
+    const phase = this.formatRagIndexingPhase(status.phase);
+    if (!progress || progress.totalFiles <= 0) {
+      return t('settingsAuto079', { v0: phase, v1: String(status.queuedFiles) });
+    }
+    const completed = Math.min(progress.completedFiles, progress.totalFiles);
+    const eta = progress.eta;
+    if (
+      !eta ||
+      eta.remainingMs === null ||
+      eta.confidence === 'calculating' ||
+      eta.confidence === 'low'
+    ) {
+      return t('ragIndexingRunningEtaCalculating', {
+        phase,
+        completed: String(completed),
+        total: String(progress.totalFiles),
+      });
+    }
+    if (eta.confidence === 'medium') {
+      return t('ragIndexingRunningWithApproxEta', {
+        phase,
+        completed: String(completed),
+        total: String(progress.totalFiles),
+        eta: this.formatEtaDuration(eta.remainingMs),
+      });
+    }
+    return t('ragIndexingRunningWithEta', {
+      phase,
+      completed: String(completed),
+      total: String(progress.totalFiles),
+      eta: this.formatEtaDuration(eta.remainingMs),
+    });
+  }
+  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+    if (phase === 'file') return t('ragPhaseFile');
+    if (phase === 'pending') return t('ragPhasePending');
+    if (phase === 'all') return t('ragPhaseAll');
+    return t('ragPhaseIdle');
+  }
+  private formatEtaDuration(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) {
+      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    }
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
     const ANCHOR_CLS = 'si-embedding-anchor';
@@ -2229,7 +2363,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         : {};
     const modelOptions = isOther
       ? []
-      : buildEmbeddingModelOptions(modelsForProvider, providerModels, effectiveModel, modelCapabilities);
+      : buildEmbeddingModelOptions(
+          modelsForProvider,
+          providerModels,
+          effectiveModel,
+          modelCapabilities,
+        );
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
     const providerNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
     providerNotice.setText(t('settingsAuto082'));
@@ -2265,7 +2404,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               '',
               (() => {
                 const nextConfig = this.getEmbeddingProviderConfig(nextProvider);
-                return nextConfig ? this.getProviderModelCapabilities(nextProvider, nextConfig) : {};
+                return nextConfig
+                  ? this.getProviderModelCapabilities(nextProvider, nextConfig)
+                  : {};
               })(),
             );
             this.pendingEmbeddingModel = selectInitialEmbeddingModel(nextModels);
@@ -2411,21 +2552,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 );
                 if (result.valid) {
                   if (effectiveProvider !== 'other') {
-                    await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
-                      connectionTested: true,
-                      serverReachable: true,
-                      lastError: undefined,
-                    });
+                    await this.recordProviderValidation(
+                      effectiveProvider,
+                      getEmbeddingValidationConfig(),
+                      {
+                        connectionTested: true,
+                        serverReachable: true,
+                        lastError: undefined,
+                      },
+                    );
                   }
                   const detail = t('settingsAuto096', { v0: String(result.models.length) });
                   statusEl.setText(detail);
                   return { status: 'success', detail };
                 }
                 if (effectiveProvider !== 'other') {
-                  await this.recordProviderValidation(effectiveProvider, getEmbeddingValidationConfig(), {
-                    connectionTested: false,
-                    lastError: String(result.error),
-                  });
+                  await this.recordProviderValidation(
+                    effectiveProvider,
+                    getEmbeddingValidationConfig(),
+                    {
+                      connectionTested: false,
+                      lastError: String(result.error),
+                    },
+                  );
                 }
                 const detail = t('settingsAuto097', { v0: String(result.error) });
                 statusEl.setText(detail);
@@ -2750,30 +2899,32 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private getAutoUpdateLabel(): string {
     if (!this.plugin.settings.rag.autoUpdateEnabled) return t('settingsAuto136');
-    if (this.plugin.lastAutoUpdateSkippedReason)
-      return t('settingsAuto137', { v0: String(this.plugin.lastAutoUpdateSkippedReason) });
+    const runtime = this.plugin.getRagRuntimeState();
+    if (runtime.lastAutoUpdateSkippedReason)
+      return t('settingsAuto137', { v0: String(runtime.lastAutoUpdateSkippedReason) });
     return t('settingsAuto138');
   }
   private getAutoUpdateDetail(): string | null {
     if (!this.plugin.settings.rag.autoUpdateEnabled) return null;
+    const runtime = this.plugin.getRagRuntimeState();
     const details: string[] = [];
-    if (this.plugin.nextAutoUpdateAt) {
+    if (runtime.nextAutoUpdateAt) {
       details.push(
         t('settingsAuto139', {
-          v0: String(new Date(this.plugin.nextAutoUpdateAt).toLocaleString()),
+          v0: String(new Date(runtime.nextAutoUpdateAt).toLocaleString()),
         }),
       );
     }
-    if (this.plugin.lastAutoUpdateResult) {
+    if (runtime.lastAutoUpdateResult) {
       details.push(
         t('settingsAuto140', {
-          v0: String(this.plugin.lastAutoUpdateResult.indexed),
-          v1: String(this.plugin.lastAutoUpdateResult.vectors),
+          v0: String(runtime.lastAutoUpdateResult.indexed),
+          v1: String(runtime.lastAutoUpdateResult.vectors),
         }),
       );
     }
-    if (this.plugin.lastAutoUpdateSkippedReason) {
-      details.push(t('settingsAuto141', { v0: String(this.plugin.lastAutoUpdateSkippedReason) }));
+    if (runtime.lastAutoUpdateSkippedReason) {
+      details.push(t('settingsAuto141', { v0: String(runtime.lastAutoUpdateSkippedReason) }));
     }
     return details.length > 0 ? details.join(' · ') : null;
   }
@@ -2911,17 +3062,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return t('settingsAuto154');
   }
   private async getRagStatus(signal?: AbortSignal): Promise<RagStatusSummary | null> {
+    const runtime = this.plugin.getRagRuntimeState();
     // 캐시된 eventDrivenRagStats가 있으면 우선 사용 (백그라운드 타이머가 자동 갱신)
-    if (this.plugin.eventDrivenRagStats) {
-      return this.plugin.eventDrivenRagStats;
+    if (runtime.ragStatus) {
+      return runtime.ragStatus;
     }
-    if (!this.plugin.vectorStore) {
+    if (!runtime.vectorStore) {
       const initialized = await this.plugin.ensureRagRuntimeInitialized();
       if (!initialized) {
-        return this.plugin.eventDrivenRagStats ?? null;
+        return this.plugin.getRagRuntimeState().ragStatus;
       }
     }
-    const vectorStore = this.plugin.vectorStore;
+    const latestRuntime = this.plugin.getRagRuntimeState();
+    const vectorStore = latestRuntime.vectorStore;
     if (vectorStore) {
       return calculateRagStatus(
         this.plugin.app.vault,
@@ -2931,7 +3084,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         signal,
       );
     }
-    return this.plugin.eventDrivenRagStats ?? null;
+    return latestRuntime.ragStatus;
   }
   private getEmbeddingProviderConfig(
     providerKey: EmbeddingProviderKey,
@@ -2983,6 +3136,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return null;
   }
   private diagnoseRAGInitFailure(): string {
+    const runtime = this.plugin.getRagRuntimeState();
+    if (runtime.lastInitError) {
+      return t('ragIndexerLastInitError', { message: runtime.lastInitError });
+    }
+    if (runtime.lastInitSkippedReason) {
+      return t('ragIndexerLastInitSkipped', { reason: runtime.lastInitSkippedReason });
+    }
     const rag = this.plugin.settings.rag;
     const providerKey = rag.embeddingProvider;
     if (providerKey !== 'other') {
@@ -3011,7 +3171,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
   private getRagRuntimeAccess(): {
-    vaultIndexer?: VaultIndexer;
     vectorStore?: VectorStore;
     embeddingProvider?: {
       clearCache(): Promise<void>;
@@ -3019,17 +3178,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     ragIndexingScheduler?: RAGIndexingScheduler;
     hasIndexer: boolean;
   } {
-    const p = this.plugin as unknown as {
-      vaultIndexer?: VaultIndexer;
-      vectorStore?: VectorStore;
-      embeddingProvider?: {
-        clearCache(): Promise<void>;
-      };
-      ragIndexingScheduler?: RAGIndexingScheduler;
-    };
+    const runtime = this.plugin.getRagRuntimeState();
     return {
-      ...p,
-      hasIndexer: !!p.vaultIndexer && !!p.ragIndexingScheduler,
+      vectorStore: runtime.vectorStore ?? undefined,
+      embeddingProvider: runtime.embeddingProvider ?? undefined,
+      ragIndexingScheduler: runtime.ragIndexingScheduler ?? undefined,
+      hasIndexer: runtime.hasIndexer,
     };
   }
   private async ensureRagRuntimeAccess(): Promise<ReturnType<typeof this.getRagRuntimeAccess>> {
@@ -3229,12 +3383,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     void this.getRagStatus().then((status) => this.updateRagControlStates(status));
   }
   private updateRagControlStates(status: RagStatusSummary | null): void {
-    const p = this.plugin as unknown as {
-      vaultIndexer?: VaultIndexer;
-      ragIndexingScheduler?: RAGIndexingScheduler;
-    };
+    const runtime = this.plugin.getRagRuntimeState();
     const state = getRagIndexingControlState({
-      hasIndexer: !!p.vaultIndexer && !!p.ragIndexingScheduler,
+      hasIndexer: runtime.hasIndexer,
       isIndexing: this.plugin.isRagIndexing(),
       totalDocuments: status?.totalDocuments ?? null,
       updateRequiredCount: status?.updateRequiredDocuments.length ?? null,
@@ -4243,7 +4394,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       ...current,
       providerFingerprint: createProviderValidationFingerprint(config),
       serverReachable: status === 'success' || current.serverReachable,
-      authenticated: capability === 'chatStatus' && status === 'success' ? true : current.authenticated,
+      authenticated:
+        capability === 'chatStatus' && status === 'success' ? true : current.authenticated,
       generationTested:
         capability === 'chatStatus' && status === 'success' ? true : current.generationTested,
       lastCheckedAt: checkedAt,
@@ -4252,7 +4404,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
     await this.plugin.saveSettingsLight();
   }
-  private getEmbeddingValidationKeyForTarget(target: ProviderSettingsTarget): EmbeddingProviderKey | null {
+  private getEmbeddingValidationKeyForTarget(
+    target: ProviderSettingsTarget,
+  ): EmbeddingProviderKey | null {
     if (target.kind === 'custom') {
       return `customOpenAI:${target.config.id}`;
     }
@@ -4637,7 +4791,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                     ? await testProviderGeneration(target.key, config, model)
                     : await testProviderGeneration('customOpenAI', target.config, model);
                 if (result.valid) {
-                  await this.recordModelCapability(cacheKey, config, model, 'chatStatus', 'success');
+                  await this.recordModelCapability(
+                    cacheKey,
+                    config,
+                    model,
+                    'chatStatus',
+                    'success',
+                  );
                   const detail = t('settingsAuto264', { v0: String(model) });
                   statusContainer.setText(detail);
                   renderModelList();

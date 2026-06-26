@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -7,7 +7,8 @@ const root = resolve(__dirname, '..');
 const styles = readFileSync(resolve(root, 'styles.css'), 'utf8');
 const settingsSource = readFileSync(resolve(root, 'src/settings.ts'), 'utf8');
 const mainSource = readFileSync(resolve(root, 'main.ts'), 'utf8');
-const logViewSource = readFileSync(resolve(root, 'src/logs/view.ts'), 'utf8');
+const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.ts'), 'utf8');
+const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
   it('Overview metric grid는 좁은 116px 카드로 압축되지 않는다', () => {
@@ -227,7 +228,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(sectionRule?.groups?.body).toContain('background: transparent');
   });
 
-  it('통합 로그는 설정 탭이 아니라 별도 Obsidian view/page로 열린다', () => {
+  it('integrated logs are owned by Agent Diagnostics instead of a standalone Obsidian view', () => {
     expect(settingsSource).not.toContain("| 'logs'");
     expect(settingsSource).not.toContain("id: 'logs'");
     expect(settingsSource).not.toContain('buildLogsTab(');
@@ -235,27 +236,30 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).not.toContain('loggingDebugPanelTitle');
     expect(settingsSource).not.toContain('openLogView');
 
-    expect(mainSource).toContain('LOG_VIEW_TYPE');
-    expect(mainSource).toContain('LogView');
-    expect(mainSource).toContain('registerView(LOG_VIEW_TYPE');
-    expect(mainSource).toContain("addRibbonIcon('scroll-text'");
-    expect(mainSource).toContain("id: 'open-log-view'");
+    expect(existsSync(logViewPath)).toBe(false);
+    expect(mainSource).not.toContain('LOG_VIEW_TYPE');
+    expect(mainSource).not.toContain('LogView');
+    expect(mainSource).not.toContain('registerView(LOG_VIEW_TYPE');
+    expect(mainSource).not.toContain("addRibbonIcon('scroll-text'");
+    expect(mainSource).not.toContain("id: 'open-log-view'");
+    expect(mainSource).not.toContain('openLogView');
 
-    expect(logViewSource).toContain('extends ItemView');
-    expect(logViewSource).toContain('saveSettingsLight');
-    expect(logViewSource).toContain('loggingMinLevel');
+    expect(diagnosticsViewSource).toContain('saveSettingsLight');
+    expect(diagnosticsViewSource).toContain('loggingMinLevel');
+    expect(diagnosticsViewSource).toContain('loggingCopyVisible');
+    expect(diagnosticsViewSource).toContain('loggingFilterSource');
   });
 
-  it('통합 로그는 사이드바 leaf가 아니라 root workspace tab으로 연다', () => {
-    const methodStart = mainSource.indexOf('openLogView(): void');
-    const methodEnd = mainSource.indexOf('\n  }\n}', methodStart);
+  it('Agent Diagnostics still opens as a readable root workspace tab', () => {
+    const methodStart = mainSource.indexOf('openAgentDiagnosticsView(): void');
+    const methodEnd = mainSource.indexOf('\n  private clearMcpRetryTimers', methodStart);
     const methodSource = mainSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
     expect(methodSource).not.toContain('getRightLeaf');
     expect(methodSource).not.toContain('getLeftLeaf');
-    expect(methodSource).toContain("getLeaf('tab')");
-    expect(methodSource).toContain('LOG_VIEW_TYPE');
+    expect(methodSource).toContain('createRootWorkspaceTabLeaf');
+    expect(methodSource).toContain('AGENT_DIAGNOSTICS_VIEW_TYPE');
     expect(methodSource).toContain('revealLeaf');
   });
 

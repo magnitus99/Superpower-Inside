@@ -57,7 +57,7 @@ describe('Rust wrapper boundary', () => {
   it('npm build와 dev는 Rust/WASM build를 먼저 실행한다', () => {
     const scripts = readPackageScripts();
 
-    expect(scripts['wasm:build']).toBe('fish scripts/build-rag-wasm.fish');
+    expect(scripts['wasm:build']).toBe('node scripts/run-fish.mjs scripts/build-rag-wasm.fish');
     expect(scripts.build?.startsWith('npm run wasm:build && ')).toBe(true);
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);
   });

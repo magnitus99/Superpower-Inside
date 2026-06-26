@@ -2,15 +2,16 @@
 
 set -x CARGO_HTTP_MULTIPLEXING false
 set -x CARGO_NET_RETRY 10
-set -x PATH "$HOME/.cargo/bin" $PATH
+set -x PATH "$HOME/.local/bin" "$HOME/.cargo/bin" $PATH
 
 function install_cargo_tool --argument-names package tool_version binary
+    set -l install_args $argv[4..-1]
     set -l max_attempts 3
     set -l last_status 1
 
     for attempt in (seq 1 $max_attempts)
         echo "==> cargo install $package $tool_version (attempt $attempt/$max_attempts)"
-        cargo install "$package" --version "$tool_version" --locked --force
+        cargo install "$package" --version "$tool_version" --locked --force $install_args
         set last_status $status
 
         if test "$last_status" -eq 0
@@ -43,7 +44,7 @@ or exit $status
 install_cargo_tool cargo-audit 0.22.2 cargo-audit
 or exit $status
 
-install_cargo_tool cargo-geiger 0.13.0 cargo-geiger
+install_cargo_tool cargo-geiger 0.13.0 cargo-geiger --features vendored-openssl
 or exit $status
 
 install_cargo_tool cargo-vet 0.10.2 cargo-vet

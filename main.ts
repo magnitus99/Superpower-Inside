@@ -1,4 +1,4 @@
-import { Plugin, Notice, Platform, TFile } from 'obsidian';
+import { Plugin, Notice, Platform, TFile, type WorkspaceLeaf } from 'obsidian';
 import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
@@ -8,6 +8,7 @@ import {
   DEFAULT_SETTINGS,
   getCustomOpenAIEmbeddingProviderId,
   isCustomOpenAIEmbeddingProviderKey,
+  normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
   SuperpowerInsideSettingTab,
 } from './src/settings';
@@ -67,7 +68,17 @@ import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status
 import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
-import { LOG_VIEW_TYPE, LogView } from './src/logs/view';
+import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
+import {
+  AgentDiagnosticsService,
+  type AgentDiagnosticsBreadcrumbInput,
+  type AgentDiagnosticsServiceSnapshotState,
+} from './src/diagnostics/service';
+import {
+  buildAgentDiagnosticsSnapshot,
+  getAgentDiagnosticsFilePath,
+  type AgentDiagnosticsRuntimeState,
+} from './src/diagnostics/snapshot';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import { MCPRegistry } from './src/mcp/registry';
 import {
@@ -93,6 +104,8 @@ import {
 } from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
+const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
+const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -213,6 +226,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   nextAutoUpdateAt: number | null = null;
   lastAutoUpdateSkippedReason: string | null = null;
   lastAutoUpdateResult: IndexingResult | null = null;
+  lastRagRuntimeInitError: string | null = null;
+  lastRagRuntimeInitSkippedReason: string | null = null;
+  lastRagRuntimeInitStage: string | null = null;
+  lastRagRuntimeInitStartedAt: number | null = null;
+  lastRagRuntimeInitFinishedAt: number | null = null;
   mcpRegistry: MCPRegistry | null = null;
   mcpConnectionState: MCPConnectionState = 'idle';
   mcpLastErrors: string[] = [];
@@ -233,16 +251,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
   eventDrivenRagStats: RagStatusSummary | null = null;
   private statsDebounceTimer: number | null = null;
   refreshBus: RefreshBus = new RefreshBus();
+  private agentDiagnosticsService: AgentDiagnosticsService | null = null;
 
   async onload(): Promise<void> {
     this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     await this.loadSettings();
+    await this.configureAgentDiagnosticsService();
     this.initProvider();
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
-    this.registerView(LOG_VIEW_TYPE, (leaf) => new LogView(leaf, this));
+    this.registerView(AGENT_DIAGNOSTICS_VIEW_TYPE, (leaf) => new AgentDiagnosticsView(leaf, this));
 
     // 리본 아이콘
     this.registerView(GRAPH_RAG_VIEW_TYPE, (leaf) => new GraphRagView(leaf, this));
@@ -252,10 +272,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     this.addRibbonIcon('git-branch', t('cmdOpenGraphRagView'), () => {
       void this.openGraphRagView();
-    });
-
-    this.addRibbonIcon('scroll-text', t('cmdOpenLogView'), () => {
-      this.openLogView();
     });
 
     // 명령어
@@ -318,19 +334,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: 'open-log-view',
-      name: t('cmdOpenLogView'),
-      callback: () => this.openLogView(),
+      id: 'open-agent-diagnostics-view',
+      name: t('cmdOpenAgentDiagnosticsView'),
+      callback: () => this.openAgentDiagnosticsView(),
     });
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
     this.startDeferredStartupTasks();
+    void this.writeAgentDiagnosticsSnapshot('startup');
     this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
   }
 
   onunload(): void {
     this.unloaded = true;
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
+    void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
@@ -440,6 +458,164 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   getRagPerformanceGuardState(): PerformanceGuardState | null {
     return this.ragPerformanceGuard?.getState() ?? null;
+  }
+
+  getAgentDiagnosticsFilePath(): string {
+    return getAgentDiagnosticsFilePath(
+      this.app.vault.configDir,
+      this.manifest?.id ?? 'superpower-inside',
+    );
+  }
+
+  getAgentDiagnosticsSnapshotText(): string {
+    const state =
+      this.agentDiagnosticsService?.getSnapshotState() ??
+      this.createDisabledAgentDiagnosticsState();
+    return JSON.stringify(this.buildAgentDiagnosticsSnapshot(state), null, 2);
+  }
+
+  async writeAgentDiagnosticsSnapshot(reason: string): Promise<void> {
+    if (!this.settings.agentDiagnostics.enabled) return;
+    const service = this.getOrCreateAgentDiagnosticsService();
+    await service.setEnabled(true);
+    await service.writeNow(reason);
+  }
+
+  async clearAgentDiagnosticsDetailedLogging(): Promise<void> {
+    const service = this.getOrCreateAgentDiagnosticsService();
+    await service.clearDetailedLogging();
+  }
+
+  private async recordAgentDiagnosticsBreadcrumb(
+    input: AgentDiagnosticsBreadcrumbInput,
+  ): Promise<void> {
+    await this.agentDiagnosticsService?.recordBreadcrumb(input);
+  }
+
+  private async configureAgentDiagnosticsService(): Promise<void> {
+    if (this.settings.agentDiagnostics.enabled) {
+      const service = this.getOrCreateAgentDiagnosticsService();
+      await service.setEnabled(true);
+      return;
+    }
+    await this.agentDiagnosticsService?.setEnabled(false);
+  }
+
+  private getOrCreateAgentDiagnosticsService(): AgentDiagnosticsService {
+    if (!this.agentDiagnosticsService) {
+      this.agentDiagnosticsService = new AgentDiagnosticsService({
+        adapter: this.app.vault.adapter,
+        filePath: this.getAgentDiagnosticsFilePath(),
+        refreshBus: this.refreshBus,
+        logger: this.getLogger(),
+        buildSnapshot: (state) => this.buildAgentDiagnosticsSnapshot(state),
+      });
+    }
+    return this.agentDiagnosticsService;
+  }
+
+  private buildAgentDiagnosticsSnapshot(state: AgentDiagnosticsServiceSnapshotState): unknown {
+    return buildAgentDiagnosticsSnapshot({
+      manifest: {
+        id: this.manifest?.id ?? 'superpower-inside',
+        name: this.manifest?.name ?? 'Superpower Inside',
+        version: this.manifest?.version ?? 'unknown',
+      },
+      vault: {
+        name: this.getVaultName(),
+        configDir: this.app.vault.configDir,
+        adapterBasePath: this.getVaultAdapterBasePath(),
+      },
+      settings: this.settings,
+      runtime: this.collectAgentDiagnosticsRuntimeState(),
+      session: state.session,
+      previousSession: state.previousSession,
+      heartbeat: state.heartbeat,
+      refreshEvents: state.refreshEvents,
+      breadcrumbs: state.breadcrumbs,
+      logs: state.logs,
+      fileWrite: state.fileWrite,
+      now: Date.now(),
+    });
+  }
+
+  private createDisabledAgentDiagnosticsState(): AgentDiagnosticsServiceSnapshotState {
+    const now = Date.now();
+    return {
+      session: {
+        id: 'agent-diagnostics-disabled',
+        status: 'stopped',
+        startedAt: now,
+        endedAt: now,
+        endReason: 'disabled',
+      },
+      previousSession: null,
+      heartbeat: {
+        lastStartedAt: null,
+        lastFinishedAt: null,
+        lastLagMs: null,
+        maxLagMs: 0,
+        tickCount: 0,
+      },
+      refreshEvents: [],
+      breadcrumbs: [],
+      logs: this.getLogger().getEntries().slice(-200),
+      fileWrite: {
+        path: this.getAgentDiagnosticsFilePath(),
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      },
+    };
+  }
+
+  private collectAgentDiagnosticsRuntimeState(): AgentDiagnosticsRuntimeState {
+    const registry = this.mcpRegistry;
+    return {
+      ragStatus: this.eventDrivenRagStats,
+      graphRagStatus: this.graphRagStatus,
+      mcpConnectionState: this.mcpConnectionState,
+      mcpServers: this.settings.mcpServers.map((server) => ({
+        name: server.name,
+        command: server.command,
+        args: server.args ?? [],
+        env: server.env ?? {},
+        status: registry?.getConnectionStatus(server.name) ?? 'disconnected',
+        error: registry?.getLastError(server.name),
+      })),
+      isRagIndexing: this.isRagIndexing(),
+      isGraphRagIndexing: this.isGraphRagIndexing(),
+      hasGraphRagRunner: this.hasGraphRagRunner(),
+      ragIndexingStatus: this.ragIndexingStatus,
+      performanceGuardState: this.getRagPerformanceGuardState(),
+      nextAutoUpdateAt: this.nextAutoUpdateAt,
+      lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
+      lastAutoUpdateResult: this.lastAutoUpdateResult,
+      ragRuntimeInit: {
+        running: this.ragRuntimeInitRunner?.isRunning() ?? false,
+        currentStage: this.lastRagRuntimeInitStage,
+        lastError: this.lastRagRuntimeInitError,
+        lastSkippedReason: this.lastRagRuntimeInitSkippedReason,
+        lastStartedAt: this.lastRagRuntimeInitStartedAt,
+        lastFinishedAt: this.lastRagRuntimeInitFinishedAt,
+      },
+      runtimeFlags: {
+        vectorStoreReady: this.vectorStore !== null,
+        knowledgeGraphStoreReady: this.knowledgeGraphStore !== null,
+        ragEngineReady: this.ragEngine !== null,
+        providerReady: this.provider !== null,
+      },
+    };
+  }
+
+  private getVaultName(): string {
+    const vault = this.app.vault as { getName?: () => string };
+    return vault.getName?.() ?? 'unknown-vault';
+  }
+
+  private getVaultAdapterBasePath(): string | null {
+    const adapter = this.app.vault.adapter as { basePath?: unknown };
+    return typeof adapter.basePath === 'string' ? adapter.basePath : null;
   }
 
   async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
@@ -636,35 +812,32 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.graphRagAbortController) {
       const cancelled = await this.awaitGraphRagCancellation();
       if (!cancelled) {
-        this.getLogger().warn('GraphRAG indexing did not stop within timeout during plugin reset.', {
-          source: 'settings.reset',
-        });
+        this.getLogger().warn(
+          'GraphRAG indexing did not stop within timeout during plugin reset.',
+          {
+            source: 'settings.reset',
+          },
+        );
       }
     }
 
     const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
     const activeIndexedDbNames = new Set<string>();
     const vectorStoreClear = this.vectorStore
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
-          hasDeletableIndexedDbStore(this.vectorStore)
-            ? this.vectorStore.deleteDatabase()
-            : this.vectorStore.clear()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
+        hasDeletableIndexedDbStore(this.vectorStore)
+          ? this.vectorStore.deleteDatabase()
+          : this.vectorStore.clear())
       : Promise.resolve();
     const knowledgeGraphClear = this.knowledgeGraphStore
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
-          hasDeletableIndexedDbStore(this.knowledgeGraphStore)
-            ? this.knowledgeGraphStore.deleteDatabase()
-            : this.knowledgeGraphStore.clear()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
+        hasDeletableIndexedDbStore(this.knowledgeGraphStore)
+          ? this.knowledgeGraphStore.deleteDatabase()
+          : this.knowledgeGraphStore.clear())
       : Promise.resolve();
     const bm25Clear = this.bm25Index
-      ? (
-          activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
-          this.bm25Index.deleteDatabase()
-        )
+      ? (activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
+        this.bm25Index.deleteDatabase())
       : Promise.resolve();
     const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
       ? this.embeddingProvider.deleteDatabase
@@ -688,6 +861,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     setLanguage(this.settings.language);
     saveLocalSettings(this.app, this.settings);
     await this.saveData(this.settings);
+    await this.agentDiagnosticsService?.stop('plugin-reset');
+    await this.agentDiagnosticsService?.clearDetailedLogging();
     this.initProvider();
     const mcpErrors = await this.initMCP();
 
@@ -1048,6 +1223,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.logging = normalizeLoggerConfig(
       data.logging as Partial<SuperpowerInsideSettings['logging']> | undefined,
     );
+    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(data.agentDiagnostics);
     this.getLogger().configure(this.settings.logging);
     setLanguage(this.settings.language);
     this.getLogger().info('Settings loaded.', {
@@ -1071,9 +1247,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const reinitRag = options?.reinitRag ?? true;
     const reinitMcp = options?.reinitMcp ?? true;
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(
+      this.settings.agentDiagnostics,
+    );
     this.getLogger().configure(this.settings.logging);
     saveLocalSettings(this.app, this.settings);
     await this.saveData(this.settings);
+    await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved.', {
       source: 'settings',
       data: { reinitRag, reinitMcp },
@@ -1092,9 +1272,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async saveSettingsLight(): Promise<void> {
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
+    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(
+      this.settings.agentDiagnostics,
+    );
     this.getLogger().configure(this.settings.logging);
     saveLocalSettings(this.app, this.settings);
     await this.saveData(this.settings);
+    await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved without runtime reinitialization.', {
       source: 'settings',
     });
@@ -1109,6 +1293,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   get llmProvider(): LLMProvider | null {
     return this.provider;
+  }
+
+  getRagRuntimeState() {
+    const clearableEmbeddingProvider = hasClearableEmbeddingCache(this.embeddingProvider)
+      ? this.embeddingProvider
+      : null;
+    return {
+      ragStatus: this.eventDrivenRagStats,
+      graphRagStatus: this.graphRagStatus,
+      vectorStore: this.vectorStore,
+      embeddingProvider: clearableEmbeddingProvider,
+      ragIndexingScheduler: this.ragIndexingScheduler,
+      ragIndexingStatus: this.ragIndexingStatus,
+      hasIndexer: Boolean(this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler),
+      nextAutoUpdateAt: this.nextAutoUpdateAt,
+      lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
+      lastAutoUpdateResult: this.lastAutoUpdateResult,
+      lastInitError: this.lastRagRuntimeInitError,
+      lastInitSkippedReason: this.lastRagRuntimeInitSkippedReason,
+      initRunning: this.ragRuntimeInitRunner?.isRunning() ?? false,
+      lastInitStage: this.lastRagRuntimeInitStage,
+      lastInitStartedAt: this.lastRagRuntimeInitStartedAt,
+      lastInitFinishedAt: this.lastRagRuntimeInitFinishedAt,
+    };
   }
 
   private initProvider(): void {
@@ -1314,6 +1522,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const rag = this.settings.rag;
     const providerKey = rag.embeddingProvider;
     let reason = t('ragIndexerNotInitializedBase');
+    if (this.lastRagRuntimeInitError) {
+      return `${reason} ${t('ragIndexerLastInitError', {
+        message: this.lastRagRuntimeInitError,
+      })}`;
+    }
+    if (this.lastRagRuntimeInitSkippedReason) {
+      return `${reason} ${t('ragIndexerLastInitSkipped', {
+        reason: this.lastRagRuntimeInitSkippedReason,
+      })}`;
+    }
     const config = this.getEmbeddingProviderConfig(providerKey);
     const providerLabel = this.getEmbeddingProviderLabel(providerKey);
     const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
@@ -1339,6 +1557,71 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.ragRuntimeInitRunner = new CoalescedAsyncRunner(() => this.initRAGRuntime());
     }
     return this.ragRuntimeInitRunner;
+  }
+
+  private async runRagRuntimeInitStep<T>(
+    stage: string,
+    operation: () => Promise<T>,
+    timeoutMs = RAG_RUNTIME_INIT_STEP_TIMEOUT_MS,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    this.lastRagRuntimeInitStage = stage;
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: stage,
+    });
+    this.getLogger().info('RAG runtime initialization step started.', {
+      source: 'rag',
+      data: { stage },
+    });
+    try {
+      const result = await this.withRagRuntimeInitTimeout(
+        Promise.resolve().then(operation),
+        stage,
+        timeoutMs,
+      );
+      this.getLogger().info('RAG runtime initialization step completed.', {
+        source: 'rag',
+        data: { stage, durationMs: Date.now() - startedAt },
+      });
+      return result;
+    } catch (err) {
+      this.lastRagRuntimeInitError = err instanceof Error ? err.message : String(err);
+      this.getLogger().error('RAG runtime initialization step failed.', {
+        source: 'rag',
+        data: { stage, durationMs: Date.now() - startedAt },
+        error: err,
+      });
+      throw err;
+    }
+  }
+
+  private async withRagRuntimeInitTimeout<T>(
+    operation: Promise<T>,
+    stage: string,
+    timeoutMs: number,
+  ): Promise<T> {
+    let timeoutId: number | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(
+          new Error(
+            t('ragRuntimeInitStepTimedOut', {
+              stage,
+              seconds: String(Math.ceil(timeoutMs / 1000)),
+            }),
+          ),
+        );
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
   }
 
   private captureRagRuntimeSnapshot(): RagRuntimeSnapshot {
@@ -1401,6 +1684,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const previousRuntime = this.captureRagRuntimeSnapshot();
     // Clear any existing timer
     this.clearRAG();
+    this.lastRagRuntimeInitError = null;
+    this.lastRagRuntimeInitSkippedReason = null;
+    this.lastRagRuntimeInitStage = 'starting';
+    this.lastRagRuntimeInitStartedAt = Date.now();
+    this.lastRagRuntimeInitFinishedAt = null;
 
     try {
       const rag = this.settings.rag;
@@ -1419,6 +1707,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const config = this.getEmbeddingProviderConfig(providerKey);
       const embeddingModel = rag.embeddingModel.trim();
       if (!config?.enabled) {
+        this.lastRagRuntimeInitSkippedReason = t('ragIndexerEnableProvider', {
+          provider: this.getEmbeddingProviderLabel(providerKey),
+        });
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
         this.getLogger().warn('RAG embedding provider is disabled.', {
           source: 'rag',
           data: { embeddingProvider: providerKey },
@@ -1426,6 +1719,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         return;
       }
       if (!embeddingModel) {
+        this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
         this.getLogger().warn('RAG embedding model is not selected.', {
           source: 'rag',
           data: { embeddingProvider: providerKey },
@@ -1478,30 +1774,44 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       // Vector store
       const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
-      await importLegacyJsonVectorStore(
-        this.app.vault.adapter,
-        vectorStore,
-        '.superpower-inside/vectors.json',
+      await this.runRagRuntimeInitStep('legacy-vector-import', () =>
+        importLegacyJsonVectorStore(
+          this.app.vault.adapter,
+          vectorStore,
+          '.superpower-inside/vectors.json',
+        ),
       );
       this.vectorStore = vectorStore;
       this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
         this.createIndexedDbName('KnowledgeGraph'),
       );
-      await this.computeAndEmitGraphRagStatus();
+      await this.runRagRuntimeInitStep('graph-status-initial', () =>
+        this.computeAndEmitGraphRagStatus(),
+      );
 
       // BM25 index
       let bm25Index: IndexedDbBM25Index | undefined;
       if (rag.enableBM25) {
-        bm25Index = new IndexedDbBM25Index(
+        const nextBm25Index = new IndexedDbBM25Index(
           this.createIndexedDbName('BM25Index'),
           this.app.vault.adapter,
         );
-        await bm25Index.load();
-        if (!bm25Index.isTokenizerCurrent) {
-          this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+        try {
+          await this.runRagRuntimeInitStep('bm25-load', () => nextBm25Index.load());
+          if (!nextBm25Index.isTokenizerCurrent) {
+            this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
+              source: 'rag.bm25',
+            });
+            await this.runRagRuntimeInitStep('bm25-rebuild', () =>
+              this.rebuildBM25Index(nextBm25Index),
+            );
+          }
+          bm25Index = nextBm25Index;
+        } catch (err) {
+          this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
             source: 'rag.bm25',
+            error: err,
           });
-          await this.rebuildBM25Index(bm25Index);
         }
       }
       this.bm25Index = bm25Index ?? null;
@@ -1599,7 +1909,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
               },
             })
           : null;
-      await this.computeAndEmitGraphRagStatus();
+      await this.runRagRuntimeInitStep('graph-status-runner', () =>
+        this.computeAndEmitGraphRagStatus(),
+      );
 
       const performanceSettings = resolveRagPerformanceSettings(rag);
       this.ragPerformanceGuard = new PerformanceGuard({
@@ -1663,11 +1975,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
         data: {
           hasVectorStore: this.vectorStore !== null,
           hasGraphRagRunner: this.graphRagIndexingRunner !== null,
-          hasBM25: rag.enableBM25,
+          hasBM25: this.bm25Index !== null,
         },
       });
+      this.lastRagRuntimeInitError = null;
+      this.lastRagRuntimeInitSkippedReason = null;
+      this.lastRagRuntimeInitStage = null;
+      this.lastRagRuntimeInitFinishedAt = Date.now();
     } catch (err) {
       const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
+      this.lastRagRuntimeInitError =
+        this.lastRagRuntimeInitError ?? (err instanceof Error ? err.message : String(err));
+      this.lastRagRuntimeInitFinishedAt = Date.now();
       this.getLogger().error(
         restored
           ? 'RAG runtime initialization failed; restored previous runtime.'
@@ -1688,6 +2007,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return t('ragPerformanceThrottled');
     }
     if (status.running) {
+      const progress = status.progress;
+      if (progress && progress.totalFiles > 0) {
+        const completed = Math.min(progress.completedFiles, progress.totalFiles);
+        const phase = this.formatRagIndexingPhase(status.phase);
+        if (
+          !progress.eta ||
+          progress.eta.remainingMs === null ||
+          progress.eta.confidence === 'calculating' ||
+          progress.eta.confidence === 'low'
+        ) {
+          return t('ragIndexingRunningEtaCalculating', {
+            phase,
+            completed: String(completed),
+            total: String(progress.totalFiles),
+          });
+        }
+        return t('ragIndexingRunningWithEta', {
+          phase,
+          completed: String(completed),
+          total: String(progress.totalFiles),
+          eta: this.formatRagEtaDuration(progress.eta.remainingMs),
+        });
+      }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
     }
     if (status.lastResult) {
@@ -1704,6 +2046,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (phase === 'pending') return t('ragPhasePending');
     if (phase === 'all') return t('ragPhaseAll');
     return t('ragPhaseIdle');
+  }
+
+  private formatRagEtaDuration(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) {
+      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    }
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
 
   private clearRAG(): void {
@@ -2033,6 +2388,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
     const runId = ++this.mcpConnectionRunId;
     this.clearMcpRetryTimers();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'mcp.connections',
+      action: 'enter',
+      detail: 'run-start',
+      data: {
+        runId,
+        retryFailed: options.retryFailed,
+        serverCount: this.settings.mcpServers.length,
+      },
+    });
     this.getLogger().info('MCP connection run started.', {
       source: 'mcp',
       data: {
@@ -2257,14 +2622,47 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void this.app.workspace.revealLeaf(leaf);
   }
 
-  openLogView(): void {
-    const existingLeaf = this.app.workspace.getLeavesOfType(LOG_VIEW_TYPE)[0];
-    if (existingLeaf) {
-      void this.app.workspace.revealLeaf(existingLeaf);
-      return;
+  private isRootWorkspaceLeaf(leaf: WorkspaceLeaf): boolean {
+    return leaf.getRoot() === this.app.workspace.rootSplit;
+  }
+
+  private isReadableAgentDiagnosticsLeaf(leaf: WorkspaceLeaf): boolean {
+    const width = leaf.view.containerEl.getBoundingClientRect().width;
+    return width === 0 || width >= AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH;
+  }
+
+  private createRootWorkspaceTabLeaf(): WorkspaceLeaf {
+    const rootLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
+    if (rootLeaf) {
+      this.app.workspace.setActiveLeaf(rootLeaf, { focus: false });
     }
     const leaf = this.app.workspace.getLeaf('tab');
-    void leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
+    if (this.isRootWorkspaceLeaf(leaf)) {
+      return leaf;
+    }
+    leaf.detach();
+    if (rootLeaf) {
+      return this.app.workspace.createLeafBySplit(rootLeaf, 'vertical');
+    }
+    return this.app.workspace.getLeaf(true);
+  }
+
+  openAgentDiagnosticsView(): void {
+    const existingLeaves = this.app.workspace.getLeavesOfType(AGENT_DIAGNOSTICS_VIEW_TYPE);
+    const readableRootLeaf = existingLeaves.find(
+      (leaf) => this.isRootWorkspaceLeaf(leaf) && this.isReadableAgentDiagnosticsLeaf(leaf),
+    );
+    if (readableRootLeaf) {
+      void this.app.workspace.revealLeaf(readableRootLeaf);
+      return;
+    }
+
+    for (const leaf of existingLeaves) {
+      leaf.detach();
+    }
+
+    const leaf = this.createRootWorkspaceTabLeaf();
+    void leaf.setViewState({ type: AGENT_DIAGNOSTICS_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
   }
 }

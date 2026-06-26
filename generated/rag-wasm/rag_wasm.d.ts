@@ -466,7 +466,7 @@ export function plan_graph_community_replacement_delete_ids_json(communities_jso
 export function plan_graph_community_summary_groups_json(assignments_json: string, entity_ids_json: string, relations_json: string, claims_json: string, community_ids_json: string): string;
 
 /**
- * graph store record key snapshot에서 삭제할 record index plan을 만든다.
+ * RAG vector indexing progress snapshot에서 ETA plan JSON을 만든다.
  */
 export function plan_graph_deletion_indices_json(record_keys_json: string, requested_keys_json: string): string;
 
@@ -614,6 +614,11 @@ export function plan_rag_file_indexability_json(files_json: string, exclude_path
  * RAG file type summary의 집계/정렬 plan을 `JSON` 문자열로 만든다.
  */
 export function plan_rag_file_type_summary_json(files_json: string, no_extension_label: string): string;
+
+/**
+ * graph store record key snapshot에서 삭제할 record index plan을 만든다.
+ */
+export function plan_rag_indexing_eta_json(input_json: string): string;
 
 /**
  * RAG index status summary와 update 대상 document plan을 만든다.
@@ -929,6 +934,7 @@ export interface InitOutput {
     readonly plan_rag_file_content_probe_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_file_indexability_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_rag_file_type_summary_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_rag_indexing_eta_json: (a: number, b: number) => [number, number];
     readonly plan_rag_status_json: (a: number, b: number) => [number, number];
     readonly plan_reference_file_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_rerank_messages_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
