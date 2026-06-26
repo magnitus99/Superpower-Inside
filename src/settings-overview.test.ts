@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({
   App: class {},
+  Modal: class {
+    contentEl = document.createElement('div');
+    open(): void {}
+    close(): void {}
+  },
   Notice: class {},
   Platform: { isDesktopApp: true },
   Plugin: class {},

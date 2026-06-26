@@ -1,5 +1,6 @@
 import {
   App,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -987,12 +988,171 @@ function mergeSaveOptions(
   };
 }
 
+interface ProviderModelImportCandidate {
+  id: string;
+  name?: string;
+  contextLength?: number;
+}
+
+class ProviderModelImportModal extends Modal {
+  private readonly candidates: ProviderModelImportCandidate[];
+  private readonly existingIds: ReadonlySet<string>;
+  private readonly selectedIds = new Set<string>();
+  private listEl: HTMLElement | null = null;
+  private countEl: HTMLElement | null = null;
+  private addButton: HTMLButtonElement | null = null;
+  private query = '';
+
+  constructor(
+    app: App,
+    options: {
+      providerName: string;
+      candidates: readonly ProviderModelImportCandidate[];
+      existingIds: ReadonlySet<string>;
+      onSubmit: (modelIds: string[]) => void;
+    },
+  ) {
+    super(app);
+    this.candidates = [...options.candidates]
+      .filter((model) => model.id.trim() && !options.existingIds.has(model.id))
+      .sort((a, b) => a.id.localeCompare(b.id, 'en'));
+    this.existingIds = options.existingIds;
+    this.onSubmit = options.onSubmit;
+    this.providerName = options.providerName;
+  }
+
+  private readonly providerName: string;
+  private readonly onSubmit: (modelIds: string[]) => void;
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass('superpower-inside-provider-import-modal');
+    contentEl.createDiv({
+      cls: 'superpower-inside-provider-import-title',
+      text: t('providerImportModelsTitle'),
+    });
+    contentEl.createDiv({
+      cls: 'superpower-inside-provider-import-desc',
+      text: t('providerImportModelsDesc', { v0: this.providerName }),
+    });
+
+    const searchRow = contentEl.createDiv({ cls: 'superpower-inside-provider-import-search-row' });
+    const searchInput = searchRow.createEl('input', {
+      cls: 'superpower-inside-provider-import-search',
+      attr: { type: 'text', placeholder: t('providerImportSearchPlaceholder') },
+    });
+    this.countEl = searchRow.createDiv({ cls: 'superpower-inside-provider-import-count' });
+    searchInput.addEventListener('input', () => {
+      this.query = searchInput.value.trim().toLowerCase();
+      this.renderList();
+    });
+
+    this.listEl = contentEl.createDiv({ cls: 'superpower-inside-provider-import-list' });
+    const footer = contentEl.createDiv({ cls: 'superpower-inside-provider-import-footer' });
+    const cancelButton = footer.createEl('button', {
+      text: t('cancel'),
+      attr: { type: 'button' },
+    });
+    cancelButton.addEventListener('click', () => this.close());
+    this.addButton = footer.createEl('button', {
+      cls: 'mod-cta',
+      text: t('providerImportAddSelected'),
+      attr: { type: 'button' },
+    });
+    this.addButton.addEventListener('click', () => {
+      if (this.selectedIds.size === 0) return;
+      this.onSubmit([...this.selectedIds]);
+      this.close();
+    });
+
+    this.renderList();
+    searchInput.focus();
+  }
+
+  private renderList(): void {
+    if (!this.listEl || !this.countEl) return;
+    this.listEl.empty();
+    const filtered = this.candidates.filter((model) => {
+      if (!this.query) return true;
+      return (
+        model.id.toLowerCase().includes(this.query) ||
+        (model.name?.toLowerCase().includes(this.query) ?? false)
+      );
+    });
+    const visible = filtered.slice(0, 150);
+    this.countEl.setText(
+      t('providerImportCount', {
+        v0: String(this.selectedIds.size),
+        v1: String(filtered.length),
+      }),
+    );
+    if (this.addButton) {
+      this.addButton.disabled = this.selectedIds.size === 0;
+    }
+    if (this.candidates.length === 0) {
+      this.listEl.createDiv({
+        cls: 'superpower-inside-provider-import-empty',
+        text: t('providerImportNoNewModels'),
+      });
+      return;
+    }
+    if (filtered.length === 0) {
+      this.listEl.createDiv({
+        cls: 'superpower-inside-provider-import-empty',
+        text: t('providerImportNoMatches'),
+      });
+      return;
+    }
+    for (const model of visible) {
+      const row = this.listEl.createEl('label', {
+        cls: 'superpower-inside-provider-import-row',
+      });
+      const checkbox = row.createEl('input', {
+        attr: { type: 'checkbox' },
+      });
+      checkbox.checked = this.selectedIds.has(model.id);
+      checkbox.disabled = this.existingIds.has(model.id);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+          this.selectedIds.add(model.id);
+        } else {
+          this.selectedIds.delete(model.id);
+        }
+        this.renderList();
+      });
+      const copy = row.createSpan({ cls: 'superpower-inside-provider-import-row-copy' });
+      copy.createSpan({ cls: 'superpower-inside-provider-import-model-id', text: model.id });
+      const metaParts = [
+        model.name && model.name !== model.id ? model.name : '',
+        model.contextLength ? t('providerImportContext', { v0: String(model.contextLength) }) : '',
+      ].filter(Boolean);
+      if (metaParts.length > 0) {
+        copy.createSpan({
+          cls: 'superpower-inside-provider-import-model-meta',
+          text: metaParts.join(' / '),
+        });
+      }
+    }
+    if (filtered.length > visible.length) {
+      this.listEl.createDiv({
+        cls: 'superpower-inside-provider-import-empty',
+        text: t('providerImportMoreResults', { v0: String(filtered.length - visible.length) }),
+      });
+    }
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
   private activeTab: SettingsTabId = 'general';
   private tabButtons: Map<SettingsTabId, HTMLButtonElement> = new Map();
   private tabPanels: Map<SettingsTabId, HTMLDivElement> = new Map();
+  private builtTabPanelIds: Set<SettingsTabId> = new Set();
   private validationCache: ProviderValidationCache = {};
   private saveTimeout: number | null = null;
   private pendingSave = false;
@@ -1023,6 +1183,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private graphRagModelSelectEl: HTMLSelectElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
+  private collapsedProviderProfileIds: Set<string> = new Set();
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
     this.plugin = plugin;
@@ -1082,11 +1243,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.mcpStatusRefresh?.detach();
     this.mcpStatusRefresh = null;
     this.excludeCountRenderer = null;
-    // RefreshBus 구독 해제
-    for (const unsub of this.refreshBusUnsubscribers) {
-      unsub();
-    }
-    this.refreshBusUnsubscribers = [];
+    this.unregisterRefreshBusSubscriptions();
     // DOM 참조 초기화
     this.ragStatusGrid = null;
     this.ragStatusTimestamp = null;
@@ -1107,6 +1264,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   display(): void {
     const { containerEl } = this;
+    this.unregisterRefreshBusSubscriptions();
+    this.tabButtons.clear();
+    this.tabPanels.clear();
+    this.builtTabPanelIds.clear();
     containerEl.empty();
     // RefreshBus 구독: 이벤트 수신 시 부분 업데이트
     const bus = this.plugin.refreshBus;
@@ -1168,34 +1329,47 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         cls: 'superpower-inside-settings-tab-content',
       });
       this.tabPanels.set(tab.id, panel);
-      // 각 탭 콘텐츠 구성
-      switch (tab.id) {
-        case 'general':
-          this.buildGeneralTab(panel);
-          break;
-        case 'providers':
-          this.buildProvidersTab(panel);
-          break;
-        case 'rag':
-          this.buildRAGTab(panel);
-          break;
-        case 'chat':
-          this.buildChatTab(panel);
-          break;
-        case 'mcp':
-          this.buildMCPTab(panel);
-          break;
-        case 'advanced':
-          this.buildAdvancedTab(panel);
-          break;
-      }
     });
     // 첫 번째 탭을 활성 상태로 초기화
     this.switchTab(this.activeTab);
   }
+  private unregisterRefreshBusSubscriptions(): void {
+    for (const unsub of this.refreshBusUnsubscribers) {
+      unsub();
+    }
+    this.refreshBusUnsubscribers = [];
+  }
+  private buildTabPanel(tabId: SettingsTabId): void {
+    if (this.builtTabPanelIds.has(tabId)) return;
+    const panel = this.tabPanels.get(tabId);
+    if (!panel) return;
+    panel.empty();
+    switch (tabId) {
+      case 'general':
+        this.buildGeneralTab(panel);
+        break;
+      case 'providers':
+        this.buildProvidersTab(panel);
+        break;
+      case 'rag':
+        this.buildRAGTab(panel);
+        break;
+      case 'chat':
+        this.buildChatTab(panel);
+        break;
+      case 'mcp':
+        this.buildMCPTab(panel);
+        break;
+      case 'advanced':
+        this.buildAdvancedTab(panel);
+        break;
+    }
+    this.builtTabPanelIds.add(tabId);
+  }
   private switchTab(tabId: SettingsTabId): void {
     // 활성 탭 업데이트
     this.activeTab = tabId;
+    this.buildTabPanel(tabId);
     // 버튼 클래스 토글
     this.tabButtons.forEach((button, id) => {
       if (id === tabId) {
@@ -4964,15 +5138,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.createProviderSummaryCard(summaryGrid, {
       iconName: 'sparkles',
       value: String(generalModelCount),
-      label: 'General models',
-      detail: 'Chat and GraphRAG generation',
+      label: t('providerGeneralModels'),
+      detail: t('providerGeneralModelsDesc'),
       tone: generalModelCount > 0 ? 'ready' : 'needs-models',
     });
     this.createProviderSummaryCard(summaryGrid, {
       iconName: 'scan-search',
       value: String(embeddingModelCount),
-      label: 'Embedding models',
-      detail: 'RAG indexing and retrieval',
+      label: t('providerEmbeddingModels'),
+      detail: t('providerEmbeddingModelsDesc'),
       tone: embeddingModelCount > 0 ? 'ready' : 'needs-models',
     });
     const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
@@ -5007,13 +5181,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     containerEl: HTMLElement,
     profile: ProviderProfileConfig,
   ): void {
+    const isCollapsed = this.collapsedProviderProfileIds.has(profile.id);
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-provider-shell superpower-inside-provider-card is-expanded',
+      cls: `superpower-inside-provider-shell superpower-inside-provider-card ${isCollapsed ? 'is-collapsed' : 'is-expanded'}`,
     });
     section.setAttribute('data-provider-key', `profile:${profile.id}`);
     const hero = section.createEl('button', {
       cls: 'superpower-inside-provider-hero',
-      attr: { type: 'button', 'aria-expanded': 'true' },
+      attr: { type: 'button', 'aria-expanded': String(!isCollapsed) },
     });
     const brandIcon = hero.createSpan({ cls: 'superpower-inside-provider-brand-icon' });
     setIcon(brandIcon, profile.enabled ? 'badge-check' : 'power-off');
@@ -5033,6 +5208,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     statusToken.setAttribute('aria-live', 'polite');
     const chevron = hero.createSpan({ cls: 'superpower-inside-provider-chevron' });
     setIcon(chevron, 'chevron-right');
+    hero.addEventListener('click', () => {
+      const nextCollapsed = !section.hasClass('is-collapsed');
+      section.toggleClass('is-collapsed', nextCollapsed);
+      section.toggleClass('is-expanded', !nextCollapsed);
+      hero.setAttribute('aria-expanded', String(!nextCollapsed));
+      if (nextCollapsed) {
+        this.collapsedProviderProfileIds.add(profile.id);
+      } else {
+        this.collapsedProviderProfileIds.delete(profile.id);
+      }
+    });
 
     const body = section.createDiv({
       cls: 'superpower-inside-provider-body superpower-inside-provider-profile-body',
@@ -5060,21 +5246,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         }),
     );
-    new Setting(connectionSection).setName('Provider strategy').addDropdown((dropdown) => {
-      for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
-        dropdown.addOption(value, label);
-      }
-      dropdown.setValue(profile.strategy);
-      dropdown.onChange((value) => {
-        profile.strategy = value as ProviderStrategyKey;
-        if (!profile.baseUrl?.trim()) {
-          profile.baseUrl = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
-        }
-        delete this.plugin.settings.providerValidation[`profile:${profile.id}`];
-        this.debouncedSave();
-        this.display();
-      });
-    });
+    this.buildProviderStrategySelector(connectionSection, profile);
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
       new Setting(connectionSection).setName(t('apiKey')).addText((text) =>
         text
@@ -5086,7 +5258,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
     }
-    new Setting(connectionSection).setName('Base URL').addText((text) =>
+    new Setting(connectionSection).setName(t('providerBaseUrl')).addText((text) =>
       text
         .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
         .setValue(profile.baseUrl ?? '')
@@ -5115,6 +5287,43 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
 
+  private buildProviderStrategySelector(
+    containerEl: HTMLElement,
+    profile: ProviderProfileConfig,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(t('providerStrategyLabel'))
+      .setDesc(t('providerStrategyDesc'));
+    const group = setting.controlEl.createDiv({
+      cls: 'superpower-inside-provider-strategy-grid',
+    });
+    for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
+      const strategy = value as ProviderStrategyKey;
+      const button = group.createEl('button', {
+        cls: `superpower-inside-provider-strategy-option${profile.strategy === strategy ? ' is-selected' : ''}`,
+        attr: {
+          type: 'button',
+          'aria-pressed': String(profile.strategy === strategy),
+        },
+      });
+      button.createSpan({ cls: 'superpower-inside-provider-strategy-name', text: label });
+      button.createSpan({
+        cls: 'superpower-inside-provider-strategy-detail',
+        text: this.getProviderStrategyDefaultBaseUrl(strategy).replace(/^https?:\/\//, ''),
+      });
+      button.addEventListener('click', () => {
+        if (profile.strategy === strategy) return;
+        profile.strategy = strategy;
+        if (!profile.baseUrl?.trim()) {
+          profile.baseUrl = this.getProviderStrategyDefaultBaseUrl(strategy);
+        }
+        delete this.plugin.settings.providerValidation[`profile:${profile.id}`];
+        this.debouncedSave();
+        this.display();
+      });
+    }
+  }
+
   private buildProviderProfileModelSection(
     containerEl: HTMLElement,
     profile: ProviderProfileConfig,
@@ -5126,7 +5335,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     section.createDiv({
       cls: 'superpower-inside-provider-section-title',
-      text: kind === 'embedding' ? 'Embedding models' : 'General models',
+      text: kind === 'embedding' ? t('providerEmbeddingModels') : t('providerGeneralModels'),
     });
     const addRow = section.createDiv({ cls: 'superpower-inside-provider-model-controls' });
     const input = addRow.createEl('input', {
@@ -5139,7 +5348,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       attr: { type: 'button' },
     });
     setIcon(addButton, 'plus');
-    addButton.createSpan({ text: kind === 'embedding' ? 'Add embedding model' : 'Add general model' });
+    addButton.createSpan({
+      text: kind === 'embedding' ? t('providerAddEmbeddingModel') : t('providerAddGeneralModel'),
+    });
     addButton.addEventListener('click', () => {
       const id = input.value.trim();
       if (!id) return;
@@ -5175,16 +5386,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               statusEl.setText(detail);
               return { status: 'error', detail, notice: detail };
             }
-            for (const model of result.models) {
-              profile.models = upsertProviderProfileModel(
-                profile.models,
-                createProviderModel(model, 'general'),
-              );
-            }
-            await this.plugin.saveSettingsLight();
-            statusEl.setText(t('settingsAuto258', { v0: String(result.models.length) }));
-            this.display();
-            return { status: 'success', detail: String(result.models.length) };
+            const candidates =
+              result.modelDetails && result.modelDetails.length > 0
+                ? result.modelDetails
+                : result.models.map((id) => ({ id }));
+            this.openProviderModelImportModal(profile, candidates, statusEl);
+            return { status: 'success', detail: String(candidates.length) };
           },
         });
       });
@@ -5199,7 +5406,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     for (const model of models) {
       const item = list.createDiv({ cls: 'superpower-inside-settings-model-item' });
-      item.createSpan({ text: model.id });
+      item.createSpan({ cls: 'superpower-inside-provider-model-name', text: model.id });
       const capabilityRow = item.createSpan({
         cls: 'superpower-inside-provider-model-capabilities',
       });
@@ -5235,6 +5442,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.display();
       });
     }
+  }
+
+  private openProviderModelImportModal(
+    profile: ProviderProfileConfig,
+    candidates: readonly ProviderModelImportCandidate[],
+    statusEl: HTMLElement,
+  ): void {
+    const modal = new ProviderModelImportModal(this.app, {
+      providerName: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      candidates,
+      existingIds: new Set(profile.models.map((model) => model.id)),
+      onSubmit: (modelIds) => {
+        for (const modelId of modelIds) {
+          profile.models = upsertProviderProfileModel(
+            profile.models,
+            createProviderModel(modelId, 'general'),
+          );
+        }
+        statusEl.setText(t('providerImportAdded', { v0: String(modelIds.length) }));
+        void this.plugin.saveSettingsLight();
+        this.display();
+      },
+    });
+    modal.open();
   }
 
   private async verifyProviderProfileModel(

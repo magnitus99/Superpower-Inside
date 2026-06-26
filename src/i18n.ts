@@ -921,6 +921,25 @@ export interface I18nKeys {
   providerQuickType: string;
   providerCustomDockTitle: string;
   providerCustomDockDesc: string;
+  providerStrategyLabel: string;
+  providerStrategyDesc: string;
+  providerBaseUrl: string;
+  providerGeneralModels: string;
+  providerEmbeddingModels: string;
+  providerGeneralModelsDesc: string;
+  providerEmbeddingModelsDesc: string;
+  providerAddGeneralModel: string;
+  providerAddEmbeddingModel: string;
+  providerImportModelsTitle: string;
+  providerImportModelsDesc: string;
+  providerImportSearchPlaceholder: string;
+  providerImportAddSelected: string;
+  providerImportCount: string;
+  providerImportNoNewModels: string;
+  providerImportNoMatches: string;
+  providerImportContext: string;
+  providerImportMoreResults: string;
+  providerImportAdded: string;
   tabRag: string;
   tabChat: string;
   tabMcp: string;
@@ -2215,16 +2234,16 @@ const ko: I18nKeys = {
   settingsAuto247: 'CORS 우회 (requestUrl)',
   settingsAuto248: 'Obsidian 내부 API로 요청을 보내 CORS 문제를 우회합니다. ',
   settingsAuto249: '스트리밍이 비활성화되므로, 서버가 CORS를 지원하면 해제하는 것을 권장합니다.',
-  settingsAuto250: '모델 검색...',
+  settingsAuto250: '모델 가져오기...',
   settingsAuto251: '선택됨만 보기',
   settingsAuto252: '{v0}개 선택됨',
   settingsAuto253: '{v0}/{v1}개 모델 표시',
   settingsAuto254: '검색 조건에 맞는 모델이 없습니다.',
-  settingsAuto255: '모델 검색',
+  settingsAuto255: '모델 가져오기',
   settingsAuto256: '모델/태그 목록만 조회합니다. 토큰 생성 요청을 보내지 않습니다.',
   settingsAuto257: '모델 가져오기',
   settingsAuto258: '✅ 모델 {v0}개를 가져왔습니다.',
-  settingsAuto259: '❌ 모델 검색 실패: {v0}',
+  settingsAuto259: '❌ 모델 가져오기 실패: {v0}',
   settingsAuto260: '✅ 연결 성공: 모델 {v0}개 확인됨',
   settingsAuto261: '최소 생성 테스트',
   settingsAuto262:
@@ -2234,8 +2253,8 @@ const ko: I18nKeys = {
   settingsAuto265: '❌ 최소 생성 실패: {v0}',
   settingsAuto266:
     'LM Studio, vLLM, LiteLLM처럼 OpenAI v1 인터페이스를 제공하는 서버를 등록합니다.',
-  settingsAuto267: '커스텀 프로바이더 삭제',
-  settingsAuto268: '커스텀 프로바이더 추가',
+  settingsAuto267: '프로바이더 삭제',
+  settingsAuto268: '프로바이더 추가',
   settingsAuto269: 'MCP 재연결',
   settingsAuto270: '{v0}개 서버 실패',
   settingsAuto271: 'reconnectMCP 는 함수가 없습니다.',
@@ -2315,7 +2334,7 @@ const ko: I18nKeys = {
   providerModelsSection: '모델 선택',
   providerActionsSection: '테스트 및 동작',
   selectedOnly: '선택됨만 보기',
-  fetchModels: '모델 검색',
+  fetchModels: '모델 가져오기',
   testGeneration: '최소 생성 테스트',
   providerCommandCenterTitle: 'LLM 연결 관제판',
   providerCommandCenterDesc:
@@ -2357,6 +2376,25 @@ const ko: I18nKeys = {
   providerQuickType: '유형',
   providerCustomDockTitle: 'Custom OpenAI-Compatible',
   providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 endpoint를 같은 카드 흐름에서 관리합니다.',
+  providerStrategyLabel: '프로바이더 종류',
+  providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
+  providerBaseUrl: '엔드포인트 URL',
+  providerGeneralModels: '일반 모델',
+  providerEmbeddingModels: '임베딩 모델',
+  providerGeneralModelsDesc: '채팅과 GraphRAG 생성',
+  providerEmbeddingModelsDesc: 'RAG 인덱싱과 검색',
+  providerAddGeneralModel: '일반 모델 추가',
+  providerAddEmbeddingModel: '임베딩 모델 추가',
+  providerImportModelsTitle: '가져올 모델 선택',
+  providerImportModelsDesc: '{v0}에서 가져온 모델 중 사용할 모델만 선택합니다.',
+  providerImportSearchPlaceholder: '모델 이름 검색',
+  providerImportAddSelected: '선택한 모델 추가',
+  providerImportCount: '{v0}개 선택 / {v1}개 표시',
+  providerImportNoNewModels: '새로 추가할 모델이 없습니다.',
+  providerImportNoMatches: '검색 결과가 없습니다.',
+  providerImportContext: '컨텍스트 {v0}',
+  providerImportMoreResults: '{v0}개 더 있습니다. 검색어를 입력해 좁혀 보세요.',
+  providerImportAdded: '{v0}개 모델을 추가했습니다.',
   tabRag: 'RAG',
   tabChat: '채팅',
   tabMcp: 'MCP',
@@ -3720,16 +3758,16 @@ const en: I18nKeys = {
   settingsAuto247: 'Bypass CORS (requestUrl)',
   settingsAuto248: 'Send requests through the Obsidian internal API to bypass CORS issues. ',
   settingsAuto249: 'Streaming is disabled, so turn this off if the server supports CORS.',
-  settingsAuto250: 'Search models...',
+  settingsAuto250: 'Import models...',
   settingsAuto251: 'Show selected only',
   settingsAuto252: '{v0} selected',
   settingsAuto253: 'Showing {v0}/{v1} models',
   settingsAuto254: 'No models match the search.',
-  settingsAuto255: 'Search models',
+  settingsAuto255: 'Import models',
   settingsAuto256: 'Only fetches the model/tag list. It does not send a token generation request.',
   settingsAuto257: 'Fetch models',
   settingsAuto258: 'Fetched {v0} models.',
-  settingsAuto259: 'Model search failed: {v0}',
+  settingsAuto259: 'Model import failed: {v0}',
   settingsAuto260: 'Connection successful: found {v0} models.',
   settingsAuto261: 'Minimal generation test',
   settingsAuto262:
@@ -3739,8 +3777,8 @@ const en: I18nKeys = {
   settingsAuto265: 'Minimal generation failed: {v0}',
   settingsAuto266:
     'Register a server that provides an OpenAI v1 interface, such as LM Studio, vLLM, or LiteLLM.',
-  settingsAuto267: 'Delete custom provider',
-  settingsAuto268: 'Add custom provider',
+  settingsAuto267: 'Delete provider',
+  settingsAuto268: 'Add provider',
   settingsAuto269: 'Reconnect MCP',
   settingsAuto270: '{v0} servers failed',
   settingsAuto271: 'reconnectMCP is not a function.',
@@ -3821,7 +3859,7 @@ const en: I18nKeys = {
   providerModelsSection: 'Model Selection',
   providerActionsSection: 'Test & Actions',
   selectedOnly: 'Selected only',
-  fetchModels: 'Fetch Models',
+  fetchModels: 'Import models',
   testGeneration: 'Test Generation',
   providerCommandCenterTitle: 'LLM Connection Console',
   providerCommandCenterDesc:
@@ -3864,6 +3902,25 @@ const en: I18nKeys = {
   providerCustomDockTitle: 'Custom OpenAI-Compatible',
   providerCustomDockDesc:
     'Manage local servers or internal OpenAI-compatible endpoints in the same card flow.',
+  providerStrategyLabel: 'Provider type',
+  providerStrategyDesc: 'Choose how this profile connects to the model API.',
+  providerBaseUrl: 'Endpoint URL',
+  providerGeneralModels: 'General models',
+  providerEmbeddingModels: 'Embedding models',
+  providerGeneralModelsDesc: 'Chat and GraphRAG generation',
+  providerEmbeddingModelsDesc: 'RAG indexing and retrieval',
+  providerAddGeneralModel: 'Add general model',
+  providerAddEmbeddingModel: 'Add embedding model',
+  providerImportModelsTitle: 'Choose models to import',
+  providerImportModelsDesc: 'Select only the models you want to use from {v0}.',
+  providerImportSearchPlaceholder: 'Search model names',
+  providerImportAddSelected: 'Add selected models',
+  providerImportCount: '{v0} selected / {v1} shown',
+  providerImportNoNewModels: 'There are no new models to add.',
+  providerImportNoMatches: 'No matching models.',
+  providerImportContext: '{v0} context',
+  providerImportMoreResults: '{v0} more models. Search to narrow the list.',
+  providerImportAdded: 'Added {v0} models.',
   tabRag: 'RAG',
   tabChat: 'Chat',
   tabMcp: 'MCP',
