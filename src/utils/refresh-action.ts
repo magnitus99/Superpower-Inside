@@ -1,5 +1,6 @@
 import { Notice } from 'obsidian';
 import { t } from '../i18n';
+import { isDomInstance } from './dom';
 
 // ── 타입 ────────────────────────────────────────────────────────────
 
@@ -74,15 +75,13 @@ export class RefreshAction {
     };
   }
 
-  /** 버튼이 HTMLButtonElement인지 duck-typing으로 확인 (jsdom 등에서 instanceof 실패 방지) */
+  /** 버튼이 HTMLButtonElement인지 확인하고, 테스트 mock에서는 duck-typing으로 보완합니다. */
   private isButton(el: HTMLElement | null): boolean {
     if (!el) return false;
-    try {
-      return el instanceof HTMLButtonElement;
-    } catch {
-      // instanceof가 실패하면 disabled/textContent 등의 존재 여부로 판단
-      return 'disabled' in el && 'textContent' in el;
+    if (typeof HTMLButtonElement !== 'undefined' && isDomInstance(el, HTMLButtonElement)) {
+      return true;
     }
+    return 'disabled' in el && 'textContent' in el;
   }
 
   /** 현재 상태 */

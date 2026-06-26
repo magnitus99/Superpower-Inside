@@ -1,18 +1,19 @@
-import { MarkdownRenderer, Component } from 'obsidian';
+import { App, MarkdownRenderer, Component } from 'obsidian';
 import { t } from '../i18n';
 
 /**
  * Markdown 콘텐츠를 지정한 HTMLElement에 렌더링합니다.
- * Obsidian의 MarkdownRenderer.renderMarkdown 래퍼입니다.
+ * Obsidian MarkdownRenderer API 래퍼입니다.
  */
 export async function renderMarkdownToElement(
+  app: App,
   el: HTMLElement,
   content: string,
   sourcePath: string,
   component: Component,
 ): Promise<void> {
   el.empty();
-  await MarkdownRenderer.renderMarkdown(content, el, sourcePath, component);
+  await MarkdownRenderer.render(app, content, el, sourcePath, component);
 }
 
 /**
@@ -28,7 +29,7 @@ export function enhanceCodeBlocks(container: HTMLElement): void {
       continue;
     }
 
-    const wrapper = document.createElement('div');
+    const wrapper = container.ownerDocument.createElement('div');
     wrapper.className = 'superpower-inside-code-block-wrapper';
     preEl.parentNode?.insertBefore(wrapper, preEl);
     wrapper.appendChild(preEl);

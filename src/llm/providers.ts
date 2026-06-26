@@ -111,9 +111,7 @@ export function normalizeForOpenAI(messages: ChatMessage[]): Record<string, unkn
 }
 
 /** Anthropic Claude: flat role → content block format (tool_use/tool_result) */
-export function normalizeForClaude(
-  messages: ChatMessage[],
-): Record<string, unknown>[] {
+export function normalizeForClaude(messages: ChatMessage[]): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
@@ -185,7 +183,6 @@ class OpenAICompatibleProvider implements LLMProvider {
   protected endpoint: string;
   protected modelOverride?: string;
   protected reasoningExtractor: ReasoningExtractor;
-  protected useRequestUrl: boolean;
 
   constructor(
     config: ProviderConfig,
@@ -199,7 +196,6 @@ class OpenAICompatibleProvider implements LLMProvider {
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
     this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
-    this.useRequestUrl = useRequestUrl;
     this.capability =
       capability ??
       resolveProviderCapability({
@@ -221,34 +217,20 @@ class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<string> {
     throwIfChatAborted(options?.signal);
     const body = this.buildChatBody(messages, temperature, false, tools);
-    if (this.useRequestUrl) {
-      const res = await requestUrl({
-        url: this.endpoint,
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (res.status >= 400) {
-        throw new Error(`LLM chat failed: ${res.status} ${res.text}`);
-      }
-      const data = res.json as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      throwIfChatAborted(options?.signal);
-      return data.choices?.[0]?.message?.content ?? '';
-    }
-    const res = await fetch(this.endpoint, {
+    const res = await requestUrl({
+      url: this.endpoint,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`LLM chat failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`LLM chat failed: ${res.status} ${res.text}`);
     }
-    const data = (await res.json()) as {
+    const data = res.json as {
       choices?: Array<{ message?: { content?: string } }>;
     };
+    throwIfChatAborted(options?.signal);
     return data.choices?.[0]?.message?.content ?? '';
   }
 
@@ -278,56 +260,23 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: StreamChatOptions,
   ): Promise<void> {
     const body = this.buildChatBody(messages, temperature, true, tools);
-    if (this.useRequestUrl) {
-      const res = await requestUrl({
-        url: this.endpoint,
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (res.status >= 400) {
-        throw new Error(`LLM stream failed: ${res.status} ${res.text}`);
-      }
-      const lines = res.text.split('\n');
-      for (const line of lines) {
-        if (options?.signal?.aborted) {
-          onChunk({ content: '', done: true });
-          return;
-        }
-        if (this.processSSELine(line, onChunk)) return;
-      }
-      onChunk({ content: '', done: true });
-      return;
-    }
-    const res = await fetch(this.endpoint, {
+    const res = await requestUrl({
+      url: this.endpoint,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`LLM stream failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`LLM stream failed: ${res.status} ${res.text}`);
     }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
+    const lines = res.text.split('\n');
+    for (const line of lines) {
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (this.processSSELine(line, onChunk)) return;
-      }
+      if (this.processSSELine(line, onChunk)) return;
     }
     onChunk({ content: '', done: true });
   }
@@ -342,10 +291,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     return h;
   }
 
-  private processSSELine(
-    line: string,
-    onChunk: (chunk: StreamChunk) => void,
-  ): boolean {
+  private processSSELine(line: string, onChunk: (chunk: StreamChunk) => void): boolean {
     if (!line.startsWith('data: ')) return false;
     const data = line.slice(6).trim();
     if (data === '[DONE]') return true;
@@ -444,7 +390,8 @@ class ClaudeProvider implements LLMProvider {
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    const res = await requestUrl({
+      url: ANTHROPIC_MESSAGES_URL,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -452,14 +399,15 @@ class ClaudeProvider implements LLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`Claude chat failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`Claude chat failed: ${res.status} ${res.text}`);
     }
-    const data = (await res.json()) as {
+    const data = res.json as {
       content?: Array<{ type: string; text?: string }>;
     };
+    throwIfChatAborted(options?.signal);
     return data.content?.find((c) => c.type === 'text')?.text ?? '';
   }
 
@@ -485,7 +433,8 @@ class ClaudeProvider implements LLMProvider {
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    const res = await requestUrl({
+      url: ANTHROPIC_MESSAGES_URL,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -493,77 +442,62 @@ class ClaudeProvider implements LLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`Claude stream failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`Claude stream failed: ${res.status} ${res.text}`);
     }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const lines = res.text.split('\n');
 
-    while (true) {
+    for (const line of lines) {
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data) continue;
-        try {
-          const event = JSON.parse(data) as {
-            type: string;
-            content_block?: { type: string; id?: string; name?: string };
-            index?: number;
-            delta?: {
-              type?: string;
-              text?: string;
-              thinking?: string;
-              partial_json?: string;
-            };
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (!data) continue;
+      try {
+        const event = JSON.parse(data) as {
+          type: string;
+          content_block?: { type: string; id?: string; name?: string };
+          index?: number;
+          delta?: {
+            type?: string;
+            text?: string;
+            thinking?: string;
+            partial_json?: string;
           };
-          if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
-            const toolCall: ToolCallDelta = {
-              index: event.index ?? 0,
-              id: event.content_block.id ?? '',
-              type: 'function',
-              function: { name: event.content_block.name ?? '', arguments: '' },
-            };
-            onChunk({ content: '', done: false, toolCalls: [toolCall] });
-          } else if (
-            event.type === 'content_block_delta' &&
-            event.delta?.type === 'thinking_delta'
-          ) {
-            onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
-          } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            onChunk({ content: event.delta.text ?? '', done: false });
-          } else if (
-            event.type === 'content_block_delta' &&
-            event.delta?.type === 'input_json_delta'
-          ) {
-            const toolCall: ToolCallDelta = {
-              index: event.index ?? 0,
-              function: { arguments: event.delta.partial_json ?? '' },
-            };
-            onChunk({ content: '', done: false, toolCalls: [toolCall] });
-          } else if (event.type === 'content_block_delta' && !event.delta?.type) {
-            onChunk({ content: event.delta?.text ?? '', done: false });
-          } else if (event.type === 'message_stop') {
-            onChunk({ content: '', done: true });
-            return;
-          }
-        } catch {
-          // malformed SSE line — skip
+        };
+        if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+          const toolCall: ToolCallDelta = {
+            index: event.index ?? 0,
+            id: event.content_block.id ?? '',
+            type: 'function',
+            function: { name: event.content_block.name ?? '', arguments: '' },
+          };
+          onChunk({ content: '', done: false, toolCalls: [toolCall] });
+        } else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+          onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
+        } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          onChunk({ content: event.delta.text ?? '', done: false });
+        } else if (
+          event.type === 'content_block_delta' &&
+          event.delta?.type === 'input_json_delta'
+        ) {
+          const toolCall: ToolCallDelta = {
+            index: event.index ?? 0,
+            function: { arguments: event.delta.partial_json ?? '' },
+          };
+          onChunk({ content: '', done: false, toolCalls: [toolCall] });
+        } else if (event.type === 'content_block_delta' && !event.delta?.type) {
+          onChunk({ content: event.delta?.text ?? '', done: false });
+        } else if (event.type === 'message_stop') {
+          onChunk({ content: '', done: true });
+          return;
         }
+      } catch {
+        // malformed SSE line — skip
       }
     }
     onChunk({ content: '', done: true });
@@ -691,52 +625,40 @@ class OllamaProvider implements LLMProvider {
       onChunk({ content: '', done: true });
       return;
     }
-    const res = await fetch(targetUrl, {
+    const res = await requestUrl({
+      url: targetUrl,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`Ollama stream failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw new Error(`Ollama stream failed: ${res.status} ${res.text}`);
     }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
 
-    while (true) {
+    for (const line of res.text.split('\n')) {
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const data = JSON.parse(trimmed) as OllamaChatResponse;
-          if (data.error) {
-            throw new Error(`Ollama chat failed: ${data.error}`);
-          }
-          const chunk = toOllamaStreamChunk(data);
-          if (chunk) {
-            onChunk(chunk);
-          }
-          if (data.done) {
-            onChunk({ content: '', done: true });
-            return;
-          }
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const data = JSON.parse(trimmed) as OllamaChatResponse;
+        if (data.error) {
+          throw new Error(`Ollama chat failed: ${data.error}`);
         }
+        const chunk = toOllamaStreamChunk(data);
+        if (chunk) {
+          onChunk(chunk);
+        }
+        if (data.done) {
+          onChunk({ content: '', done: true });
+          return;
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
       }
     }
     onChunk({ content: '', done: true });

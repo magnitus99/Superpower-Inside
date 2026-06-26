@@ -1,5 +1,6 @@
 import { Notice } from 'obsidian';
 import { t } from '../i18n';
+import { confirmWithModal } from '../utils/modal-prompts';
 import {
   CHAT_PROVIDER_KEYS,
   PROVIDER_LABELS,
@@ -101,7 +102,11 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   const deleteSelectedPrompt = async (): Promise<void> => {
     const entry = getSelectedEntry();
     if (!entry || entry.id === DEFAULT_OBSIDIAN_PROMPT_ID) return;
-    const confirmed = window.confirm(t('promptDeleteConfirm', { title: entry.title }));
+    const confirmed = await confirmWithModal(
+      options.plugin.app,
+      t('promptDeleteConfirm', { title: entry.title }),
+      { confirmText: t('deleteLabel') },
+    );
     if (!confirmed) return;
     options.plugin.settings.chat.promptLibrary = options.plugin.settings.chat.promptLibrary.filter(
       (item) => item.id !== entry.id,

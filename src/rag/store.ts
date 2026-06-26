@@ -17,10 +17,7 @@ import {
   type RustVectorScore,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
-import {
-  createPagedVectorMatrix,
-  enforceRuntimePayloadBudget,
-} from './runtime-boundary';
+import { createPagedVectorMatrix, enforceRuntimePayloadBudget } from './runtime-boundary';
 
 export interface VectorEntry {
   id: string;
@@ -170,13 +167,12 @@ class VectorStoreDB extends Dexie {
       vectors: 'id, filePath, updated',
       fileIndex: 'filePath, updated',
     });
-    this.version(3)
-      .stores({
-        vectors:
-          'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
-        fileIndex: 'filePath, updated',
-        meta: 'key',
-      });
+    this.version(3).stores({
+      vectors:
+        'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+      fileIndex: 'filePath, updated',
+      meta: 'key',
+    });
   }
 }
 
@@ -335,11 +331,7 @@ function matchesVectorRecordSearchFilter(
   ) {
     return false;
   }
-  if (
-    filter.embeddingModel &&
-    embeddingModel &&
-    embeddingModel !== filter.embeddingModel
-  ) {
+  if (filter.embeddingModel && embeddingModel && embeddingModel !== filter.embeddingModel) {
     return false;
   }
   if (
@@ -372,7 +364,9 @@ function vectorEntryFromRecord(record: IndexedDbVectorRecord): VectorEntry {
   };
 }
 
-function vectorEntryFromRecordWithUpdated(record: IndexedDbVectorRecord): VectorEntry & { updated?: number } {
+function vectorEntryFromRecordWithUpdated(
+  record: IndexedDbVectorRecord,
+): VectorEntry & { updated?: number } {
   return {
     ...vectorEntryFromRecord(record),
     updated: record.updated,
@@ -406,7 +400,12 @@ function isVectorEntryLike(value: unknown): value is VectorEntry {
     return false;
   }
   const metadata = value.metadata;
-  return isRecord(metadata) && typeof metadata.filePath === 'string' && typeof metadata.startLine === 'number' && typeof metadata.text === 'string';
+  return (
+    isRecord(metadata) &&
+    typeof metadata.filePath === 'string' &&
+    typeof metadata.startLine === 'number' &&
+    typeof metadata.text === 'string'
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -450,8 +449,8 @@ class BoundedLruCache<K, V> {
     this.values.set(key, value);
     while (this.values.size > this.limit) {
       const oldest = this.values.keys().next();
+      if (oldest.done === true) break;
       const oldestKey = oldest.value;
-      if (oldestKey === undefined) break;
       const oldestValue = this.values.get(oldestKey);
       this.values.delete(oldestKey);
       if (oldestValue !== undefined) {
@@ -480,10 +479,7 @@ export class IndexedDbVectorStore implements VectorStore {
   private readonly pageSize: number;
   private readonly maxRuntimePayloadBytes: number;
 
-  constructor(
-    dbName = 'SuperpowerInsideVectorStore',
-    options: IndexedDbVectorStoreOptions = {},
-  ) {
+  constructor(dbName = 'SuperpowerInsideVectorStore', options: IndexedDbVectorStoreOptions = {}) {
     this.db = new VectorStoreDB(dbName);
     this.hydrateAllEntryLimit = Math.max(
       1,
@@ -685,10 +681,7 @@ export class IndexedDbVectorStore implements VectorStore {
     return this.entriesCache;
   }
 
-  private async getSearchEntries(
-    key: string,
-    filter?: VectorSearchFilter,
-  ): Promise<VectorEntry[]> {
+  private async getSearchEntries(key: string, filter?: VectorSearchFilter): Promise<VectorEntry[]> {
     const cached = this.searchEntriesCache.get(key);
     if (cached) return cached;
     const entries = await this.getCachedEntries();
@@ -962,7 +955,9 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null> {
-    return (await this.getFileIndexRecords()).find((record) => record.filePath === filePath) ?? null;
+    return (
+      (await this.getFileIndexRecords()).find((record) => record.filePath === filePath) ?? null
+    );
   }
 
   getFileIndexRecords(): Promise<FileIndexRecord[]> {
@@ -971,13 +966,20 @@ export class MemoryVectorStore implements VectorStore {
 
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
     return Promise.resolve(
-      copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByFilePaths(this.entries, filePaths))),
+      copyEntries(
+        selectEntriesByIndexPlan(
+          this.entries,
+          vectorStoreLookupByFilePaths(this.entries, filePaths),
+        ),
+      ),
     );
   }
 
   getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
     return Promise.resolve(
-      copyEntries(selectEntriesByIndexPlan(this.entries, vectorStoreLookupByIds(this.entries, ids))),
+      copyEntries(
+        selectEntriesByIndexPlan(this.entries, vectorStoreLookupByIds(this.entries, ids)),
+      ),
     );
   }
 
@@ -1015,7 +1017,10 @@ function createVectorRuntimeIndex(entries: readonly VectorEntry[]): RustVectorRu
   return RustVectorRuntimeIndex.build(entries.map((entry) => entry.vector));
 }
 
-function fileIndexRecordsFromRust(entries: readonly VectorEntry[], updated: number): FileIndexRecord[] {
+function fileIndexRecordsFromRust(
+  entries: readonly VectorEntry[],
+  updated: number,
+): FileIndexRecord[] {
   const records = planFileIndexRecordsRust(
     entries.map((entry) => {
       const indexedRecord = entry as VectorEntry & { updated?: number };
@@ -1231,11 +1236,17 @@ function replaceFileEntriesFallback(
   return copyEntries(nextEntries);
 }
 
-function removeFileEntriesFallback(existingEntries: readonly VectorEntry[], filePath: string): VectorEntry[] {
+function removeFileEntriesFallback(
+  existingEntries: readonly VectorEntry[],
+  filePath: string,
+): VectorEntry[] {
   return copyEntries(existingEntries.filter((entry) => entry.metadata.filePath !== filePath));
 }
 
-function countEntriesForFilePath(existingEntries: readonly VectorEntry[], filePath: string): number {
+function countEntriesForFilePath(
+  existingEntries: readonly VectorEntry[],
+  filePath: string,
+): number {
   let removedCount = 0;
   for (let index = 0; index < existingEntries.length; index++) {
     const entry = existingEntries[index];
@@ -1277,7 +1288,10 @@ function vectorStoreLookupByFilePathsFallback(
   return indexes;
 }
 
-function vectorStoreLookupByIdsFallback(entryIds: readonly string[], requestedIds: readonly string[]): number[] {
+function vectorStoreLookupByIdsFallback(
+  entryIds: readonly string[],
+  requestedIds: readonly string[],
+): number[] {
   const locationById = new Map<string, number>();
   for (let index = 0; index < entryIds.length; index++) {
     const entryId = entryIds[index];

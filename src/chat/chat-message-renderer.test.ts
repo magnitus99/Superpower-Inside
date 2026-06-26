@@ -21,11 +21,11 @@ describe('ChatMessageRenderer meta contract', () => {
       providerCapability: {
         providerKey: 'openai',
         model: 'gpt-test',
-        streaming: true,
-        transport: 'fetch-sse',
+        streaming: false,
+        transport: 'request-url-buffered',
         toolCalling: true,
         reasoning: true,
-        abort: 'native',
+        abort: 'best-effort',
         fileReference: true,
         maxToolRounds: 10,
         knownLimitations: [],
@@ -37,7 +37,7 @@ describe('ChatMessageRenderer meta contract', () => {
       ['role', 'superpower-inside-chat-role', 'AI'],
       ['timestamp', 'superpower-inside-chat-timestamp', expect.any(String)],
       ['model', 'superpower-inside-chat-model-meta', 'OpenAI / gpt-test'],
-      ['capability', 'superpower-inside-chat-capability-meta', 'streaming · reasoning'],
+      ['capability', 'superpower-inside-chat-capability-meta', 'buffered'],
       ['status', 'superpower-inside-chat-message-status streaming', '툴 실행'],
     ]);
   });

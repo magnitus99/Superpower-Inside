@@ -74,6 +74,8 @@ import {
 } from './turn-state';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
+import { isDomInstance } from '../utils/dom';
+import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 
@@ -502,7 +504,9 @@ export class ChatView extends ItemView {
       text: t('chatSearchButton'),
       attr: { 'aria-label': t('chatMessageSearchAria') },
     });
-    searchBtn.addEventListener('click', () => this.focusMessageSearch());
+    searchBtn.addEventListener('click', () => {
+      void this.focusMessageSearch();
+    });
 
     this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
     this.renderContextPreview('');
@@ -543,8 +547,10 @@ export class ChatView extends ItemView {
     this.renderChatReadiness();
   }
 
-  private focusMessageSearch(): void {
-    const query = window.prompt(t('chatMessageSearchPrompt'));
+  private async focusMessageSearch(): Promise<void> {
+    const query = await promptWithModal(this.app, t('chatMessageSearchPrompt'), {
+      confirmText: t('chatSearchButton'),
+    });
     if (!query) return;
     const lowered = query.toLowerCase();
     const match = this.messages.find((message) => message.content.toLowerCase().includes(lowered));
@@ -962,7 +968,7 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = targetIndex;
     for (let i = 0; i < items.length; i++) {
       items[i].toggleClass('selected', i === targetIndex);
-      if (items[i] instanceof HTMLElement) {
+      if (isDomInstance(items[i], HTMLElement)) {
         items[i].setAttribute('aria-selected', i === targetIndex ? 'true' : 'false');
       }
     }
@@ -1191,7 +1197,7 @@ export class ChatView extends ItemView {
       );
       if (message) {
         const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
-        if (bubbleContainer instanceof HTMLElement) {
+        if (isDomInstance(bubbleContainer, HTMLElement)) {
           this.renderMessageContextSections(bubbleContainer, message);
         }
       }
@@ -1203,13 +1209,13 @@ export class ChatView extends ItemView {
 
     if (isTool) {
       const bubble = wrapper.querySelector('.superpower-inside-chat-bubble.tool');
-      if (bubble instanceof HTMLElement) {
+      if (isDomInstance(bubble, HTMLElement)) {
         const status = isDone ? 'success' : 'running';
         this.renderToolBubble(bubble, content, status);
       }
     } else {
       const bubble = wrapper.querySelector('.superpower-inside-chat-bubble');
-      if (bubble instanceof HTMLElement) {
+      if (isDomInstance(bubble, HTMLElement)) {
         if (!isDone) {
           renderPlainTextWithBreaks(bubble, content);
         } else {
@@ -1220,7 +1226,7 @@ export class ChatView extends ItemView {
 
     if (message) {
       const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
-      if (bubbleContainer instanceof HTMLElement) {
+      if (isDomInstance(bubbleContainer, HTMLElement)) {
         this.renderMessageContextSections(bubbleContainer, message);
       }
     }
@@ -1301,10 +1307,10 @@ export class ChatView extends ItemView {
     assistantQuestion?: AssistantQuestion,
   ): void {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
-    if (!(bubbleContainer instanceof HTMLElement)) return;
+    if (!isDomInstance(bubbleContainer, HTMLElement)) return;
 
     let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
-    if (!(thinking instanceof HTMLDetailsElement)) {
+    if (!isDomInstance(thinking, HTMLDetailsElement)) {
       this.createAssistantLayers(
         bubbleContainer,
         content,
@@ -1317,11 +1323,11 @@ export class ChatView extends ItemView {
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
 
-    if (thinking instanceof HTMLDetailsElement) {
+    if (isDomInstance(thinking, HTMLDetailsElement)) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
       setHidden(thinking, !(hasReasoning || !isDone));
       const thinkingContent = thinking.querySelector('.superpower-inside-chat-thinking-content');
-      if (thinkingContent instanceof HTMLElement) {
+      if (isDomInstance(thinkingContent, HTMLElement)) {
         if (!isDone) {
           const text = hasReasoning ? reasoning : t('thinkingPlaceholder');
           renderPlainTextWithBreaks(thinkingContent, text ?? '');
@@ -1339,14 +1345,14 @@ export class ChatView extends ItemView {
     }
 
     const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
-    if (toolCallsSection instanceof HTMLElement) {
+    if (isDomInstance(toolCallsSection, HTMLElement)) {
       const calls = toolCalls ?? [];
       setHidden(toolCallsSection, !(calls.length > 0 || !isDone));
       this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, !isDone);
     }
 
     const bubble = bubbleContainer.querySelector('.superpower-inside-chat-bubble.assistant');
-    if (bubble instanceof HTMLElement) {
+    if (isDomInstance(bubble, HTMLElement)) {
       const meta = bubbleContainer.querySelector('.superpower-inside-chat-meta');
       const generatingLabel = meta?.querySelector('.superpower-inside-chat-generating-label');
       if (!isDone) {
@@ -1361,7 +1367,7 @@ export class ChatView extends ItemView {
           const label = bubbleContainer.ownerDocument.createElement('span');
           label.className = 'superpower-inside-chat-generating-label';
           label.textContent = t('chatGeneratingResponse');
-          if (meta instanceof HTMLElement) {
+          if (isDomInstance(meta, HTMLElement)) {
             meta.appendChild(label);
           }
         }
@@ -1375,7 +1381,7 @@ export class ChatView extends ItemView {
             this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, citations ?? []),
           );
         }
-        if (generatingLabel instanceof HTMLElement) {
+        if (isDomInstance(generatingLabel, HTMLElement)) {
           generatingLabel.remove();
         }
         wrapper.classList.remove('generating');
@@ -1576,13 +1582,14 @@ export class ChatView extends ItemView {
   }
 
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
-    await renderMarkdownToElement(bubble, content, '', this);
+    await renderMarkdownToElement(this.app, bubble, content, '', this);
     enhanceCodeBlocks(bubble);
     this.stylizeMentions(bubble);
   }
 
   private stylizeMentions(container: HTMLElement): void {
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const doc = container.ownerDocument;
+    const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) {
@@ -1599,16 +1606,16 @@ export class ChatView extends ItemView {
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-          fragments.push(document.createTextNode(text.slice(lastIndex, match.index)));
+          fragments.push(doc.createTextNode(text.slice(lastIndex, match.index)));
         }
-        const span = document.createElement('span');
+        const span = doc.createElement('span');
         span.addClass('superpower-inside-mention-inline');
         span.setText(match[1]);
         fragments.push(span);
         lastIndex = regex.lastIndex;
       }
       if (lastIndex < text.length) {
-        fragments.push(document.createTextNode(text.slice(lastIndex)));
+        fragments.push(doc.createTextNode(text.slice(lastIndex)));
       }
       if (fragments.length === 0) continue;
       const parent = textNode.parentNode;
@@ -1647,7 +1654,7 @@ export class ChatView extends ItemView {
 
   private updateMessageMeta(wrapper: HTMLElement, msg: ChatMessageWithMeta): void {
     const meta = wrapper.querySelector('.superpower-inside-chat-meta');
-    if (meta instanceof HTMLElement) {
+    if (isDomInstance(meta, HTMLElement)) {
       this.renderMessageMeta(meta, msg);
     }
   }
@@ -1675,13 +1682,13 @@ export class ChatView extends ItemView {
       section?.remove();
       return;
     }
-    if (!(section instanceof HTMLElement)) {
+    if (!isDomInstance(section, HTMLElement)) {
       section = bubbleContainer.createEl('details', {
         cls: 'superpower-inside-chat-variant-compare',
       });
     }
     section.empty();
-    if (section instanceof HTMLDetailsElement) {
+    if (isDomInstance(section, HTMLDetailsElement)) {
       section.open = rows.some((row) => row.active && row.id === msg.id);
     }
     section.createEl('summary', { text: t('variantCompareTitle') });
@@ -2126,7 +2133,7 @@ export class ChatView extends ItemView {
     }
 
     const currentTitle = this.session.title || t('chatSessionTitle');
-    const input = document.createElement('input');
+    const input = (this.sessionTitleEl?.ownerDocument ?? activeDocument).createElement('input');
     input.type = 'text';
     input.value = currentTitle;
     input.className = 'superpower-inside-session-rename-input';
@@ -2194,9 +2201,8 @@ export class ChatView extends ItemView {
     this.previousUserQueries.push(text);
     if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
 
-    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } = await import(
-      '../llm/providers'
-    );
+    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
+      await import('../llm/providers');
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
@@ -2684,7 +2690,7 @@ export class ChatView extends ItemView {
         const generatingLabel = assistantWrapper.querySelector(
           '.superpower-inside-chat-generating-label',
         );
-        if (generatingLabel instanceof HTMLElement) {
+        if (isDomInstance(generatingLabel, HTMLElement)) {
           generatingLabel.remove();
         }
       }
@@ -2741,7 +2747,7 @@ export class ChatView extends ItemView {
           const generatingLabel = assistantWrapper.querySelector(
             '.superpower-inside-chat-generating-label',
           );
-          if (generatingLabel instanceof HTMLElement) {
+          if (isDomInstance(generatingLabel, HTMLElement)) {
             generatingLabel.remove();
           }
         }
@@ -3299,21 +3305,21 @@ export class ChatView extends ItemView {
             resolvedProfileModel.profile.id,
           )
         : message.providerKey.startsWith('customOpenAI:')
-        ? (() => {
-            const providerId = message.providerKey?.split(':')[1] ?? '';
-            const customProvider = this.plugin.settings.customOpenAIProviders.find(
-              (item) => item.id === providerId,
+          ? (() => {
+              const providerId = message.providerKey?.split(':')[1] ?? '';
+              const customProvider = this.plugin.settings.customOpenAIProviders.find(
+                (item) => item.id === providerId,
+              );
+              if (!customProvider) {
+                throw new Error(t('customProviderNotFound'));
+              }
+              return createCustomOpenAIProvider(customProvider, message.model);
+            })()
+          : createProvider(
+              message.providerKey as ProviderKey,
+              this.plugin.settings[message.providerKey as ProviderKey],
+              message.model,
             );
-            if (!customProvider) {
-              throw new Error(t('customProviderNotFound'));
-            }
-            return createCustomOpenAIProvider(customProvider, message.model);
-          })()
-        : createProvider(
-            message.providerKey as ProviderKey,
-            this.plugin.settings[message.providerKey as ProviderKey],
-            message.model,
-          );
       const mentionedServers = this.getEffectiveMcpServerNames(this.lastUserPrompt ?? '');
       const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
       const systemPrompt = promptContext.systemPrompt;

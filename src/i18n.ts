@@ -131,6 +131,7 @@ export interface I18nKeys {
   embeddingModelIdDesc: string;
   save: string;
   cancel: string;
+  confirmLabel: string;
   embeddingChangedNotice: string;
   embeddingSavedNotice: string;
   testConnection: string;
@@ -1527,6 +1528,7 @@ const ko: I18nKeys = {
   embeddingModelIdDesc: '임베딩 모델 ID를 직접 입력하세요',
   save: '저장',
   cancel: '취소',
+  confirmLabel: '확인',
   embeddingChangedNotice: '임베딩 설정 변경이 취소되었습니다.',
   embeddingSavedNotice: '임베딩 설정이 저장되었습니다.',
   testConnection: '연결 테스트',
@@ -1808,12 +1810,9 @@ const ko: I18nKeys = {
   dataBoundaryCitationPreview: '출처 미리보기 {count}개',
   dataBoundaryDraftStore: '초안과 출처 카드 상태',
   dataBoundarySourceCardState: '출처 카드 상태',
-  dataBoundaryExcludedAttachmentNote:
-    '제외된 항목 {count}개는 전송하지 않았습니다.',
-  dataBoundaryExcludedAttachmentNoteSingular:
-    '제외된 항목 {count}개는 전송하지 않았습니다.',
-  dataBoundaryExcludedAttachmentNotePlural:
-    '제외된 항목 {count}개는 전송하지 않았습니다.',
+  dataBoundaryExcludedAttachmentNote: '제외된 항목 {count}개는 전송하지 않았습니다.',
+  dataBoundaryExcludedAttachmentNoteSingular: '제외된 항목 {count}개는 전송하지 않았습니다.',
+  dataBoundaryExcludedAttachmentNotePlural: '제외된 항목 {count}개는 전송하지 않았습니다.',
   sourceStatusVerified: '확인됨',
   sourceStatusCandidate: '확인 필요',
   sourceStatusMissing: '찾지 못함',
@@ -3048,6 +3047,7 @@ const en: I18nKeys = {
   embeddingModelIdDesc: 'Enter the embedding model ID directly',
   save: 'Save',
   cancel: 'Cancel',
+  confirmLabel: 'Confirm',
   embeddingChangedNotice: 'Embedding settings change was cancelled.',
   embeddingSavedNotice: 'Embedding settings saved.',
   testConnection: 'Test Connection',

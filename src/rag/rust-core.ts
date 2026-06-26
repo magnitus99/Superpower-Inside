@@ -5417,8 +5417,9 @@ export function validateOntologySchemaRust(schema: unknown): string[] | null {
   if (!ensureRustCore()) return null;
   try {
     const parsed: unknown = JSON.parse(validate_ontology_schema_json(JSON.stringify(schema)));
-    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) return [];
-    return parsed;
+    if (!Array.isArray(parsed)) return [];
+    const issues = parsed.filter((entry): entry is string => typeof entry === 'string');
+    return issues.length === parsed.length ? issues : [];
   } catch {
     return null;
   }
@@ -5426,7 +5427,8 @@ export function validateOntologySchemaRust(schema: unknown): string[] | null {
 
 export function isExcludedPathRust(filePath: string, patterns: readonly string[]): boolean | null {
   if (!ensureRustCore()) return null;
-  return is_excluded_path(filePath, patterns.join('\0'));
+  const result: unknown = is_excluded_path(filePath, patterns.join('\0'));
+  return typeof result === 'boolean' ? result : null;
 }
 
 export function isExcludedExtRust(
@@ -5435,7 +5437,8 @@ export function isExcludedExtRust(
 ): boolean | null {
   if (!isStringValue(filePath) || !excludeExtensions.every(isStringValue)) return null;
   if (!ensureRustCore()) return null;
-  return is_excluded_ext_json(filePath, JSON.stringify(excludeExtensions));
+  const result: unknown = is_excluded_ext_json(filePath, JSON.stringify(excludeExtensions));
+  return typeof result === 'boolean' ? result : null;
 }
 
 export function countFilesByExtensionsRust(

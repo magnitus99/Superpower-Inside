@@ -16,11 +16,7 @@ import {
 
 const requestUrlMock = vi.mocked(requestUrl);
 
-function tc(
-  id: string,
-  name: string,
-  args: string,
-): ToolCallInfo {
+function tc(id: string, name: string, args: string): ToolCallInfo {
   return { id, type: 'function', function: { name, arguments: args } };
 }
 
@@ -40,14 +36,6 @@ function createTool(): ToolDefinition {
   };
 }
 
-function parseFetchBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> {
-  const [, init] = fetchMock.mock.calls[0] as [RequestInfo | URL, RequestInit];
-  if (typeof init.body !== 'string') {
-    throw new Error('fetch body should be a JSON string');
-  }
-  return JSON.parse(init.body) as Record<string, unknown>;
-}
-
 function parseRequestUrlBody(): Record<string, unknown> {
   const call = requestUrlMock.mock.calls[0]?.[0];
   if (typeof call === 'string' || call === undefined) {
@@ -57,21 +45,6 @@ function parseRequestUrlBody(): Record<string, unknown> {
     throw new Error('requestUrl body should be a JSON string');
   }
   return JSON.parse(call.body) as Record<string, unknown>;
-}
-
-function createStreamResponse(lines: string[]): Response {
-  const encoder = new TextEncoder();
-  return new Response(
-    new ReadableStream({
-      start(controller) {
-        for (const line of lines) {
-          controller.enqueue(encoder.encode(`${line}\n`));
-        }
-        controller.close();
-      },
-    }),
-    { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
-  );
 }
 
 beforeEach(() => {
@@ -173,7 +146,11 @@ describe('normalizeForOpenAI', () => {
       role: 'assistant',
       content: null,
       tool_calls: [
-        { id: 'call_x', type: 'function', function: { name: 'list_allowed_directories', arguments: '{}' } },
+        {
+          id: 'call_x',
+          type: 'function',
+          function: { name: 'list_allowed_directories', arguments: '{}' },
+        },
       ],
     });
     expect(result[3]).toEqual({
@@ -218,15 +195,13 @@ describe('OpenAI-compatible chat request body', () => {
   });
 
   it('OpenAI 비스트리밍 chat 요청은 Ollama 전용 options/think 필드를 보내지 않는다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { choices: [{ message: { content: 'ok' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'openai',
       { apiKey: 'test-key', enabled: true, models: ['gpt-test'] },
@@ -235,7 +210,7 @@ describe('OpenAI-compatible chat request body', () => {
 
     await provider.chat([{ role: 'user', content: 'Hello' }], 0.4, [createTool()]);
 
-    const body = parseFetchBody(fetchMock);
+    const body = parseRequestUrlBody();
     expect(body).toMatchObject({
       model: 'gpt-override',
       temperature: 0.4,
@@ -247,15 +222,13 @@ describe('OpenAI-compatible chat request body', () => {
   });
 
   it('OpenRouter 비스트리밍 chat 요청도 OpenAI 호환 필드만 보낸다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { choices: [{ message: { content: 'ok' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'openRouter',
       { apiKey: 'test-key', enabled: true, models: ['openrouter-test'] },
@@ -264,7 +237,7 @@ describe('OpenAI-compatible chat request body', () => {
 
     await provider.chat([{ role: 'user', content: 'Hello' }], 0.2);
 
-    const body = parseFetchBody(fetchMock);
+    const body = parseRequestUrlBody();
     expect(body.temperature).toBe(0.2);
     expect(body.stream).toBe(false);
     expect(body.options).toBeUndefined();
@@ -320,11 +293,11 @@ describe('provider capability matrix', () => {
     ).toMatchObject({
       providerKey: 'openai',
       model: 'gpt-test',
-      streaming: true,
-      transport: 'fetch-sse',
+      streaming: false,
+      transport: 'request-url-buffered',
       toolCalling: true,
       reasoning: true,
-      abort: 'native',
+      abort: 'best-effort',
       fileReference: true,
       maxToolRounds: 10,
     });
@@ -386,15 +359,13 @@ describe('provider capability matrix', () => {
   });
 
   it('custom OpenAI-compatible capability override가 tools/reasoning/abort 계약을 명시적으로 바꾼다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { choices: [{ message: { content: 'ok' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createCustomOpenAIProvider(
       {
         id: 'custom',
@@ -422,7 +393,7 @@ describe('provider capability matrix', () => {
       providerKey: 'customOpenAI:custom',
       model: 'custom-test',
       streaming: true,
-      transport: 'fetch-sse',
+      transport: 'request-url-buffered',
       toolCalling: true,
       reasoning: true,
       abort: 'native',
@@ -430,23 +401,24 @@ describe('provider capability matrix', () => {
       maxToolRounds: 3,
     });
     expect(provider.capability.knownLimitations).toContain('검증된 사내 endpoint');
-    const body = parseFetchBody(fetchMock);
+    const body = parseRequestUrlBody();
     expect(body.tools).toEqual([createTool()]);
   });
 });
 
 describe('provider reasoning stream normalization', () => {
   it('OpenAI 호환 SSE의 reasoning_content와 content 내부 think 태그를 분리한다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        createStreamResponse([
-          'data: {"choices":[{"delta":{"reasoning_content":"구조화 생각"}}]}',
-          'data: {"choices":[{"delta":{"content":"<think>태그 생각</think>최종"}}]}',
-          'data: [DONE]',
-        ]),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        'data: {"choices":[{"delta":{"reasoning_content":"구조화 생각"}}]}',
+        'data: {"choices":[{"delta":{"content":"<think>태그 생각</think>최종"}}]}',
+        'data: [DONE]',
+      ].join('\n'),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'openai',
       { apiKey: 'test-key', enabled: true, models: ['gpt-test'] },
@@ -469,15 +441,16 @@ describe('provider reasoning stream normalization', () => {
   });
 
   it('OpenRouter SSE의 reasoning 필드를 reasoning chunk로 분리한다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        createStreamResponse([
-          'data: {"choices":[{"delta":{"reasoning":"openrouter 생각","content":"답변"}}]}',
-          'data: [DONE]',
-        ]),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        'data: {"choices":[{"delta":{"reasoning":"openrouter 생각","content":"답변"}}]}',
+        'data: [DONE]',
+      ].join('\n'),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'openRouter',
       { apiKey: 'test-key', enabled: true, models: ['openrouter-test'] },
@@ -495,16 +468,17 @@ describe('provider reasoning stream normalization', () => {
   });
 
   it('Claude thinking_delta는 reasoning으로, text_delta는 content로 전달한다', async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        createStreamResponse([
-          'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"claude 생각"}}',
-          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"claude 답변"}}',
-          'data: {"type":"message_stop"}',
-        ]),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"claude 생각"}}',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"claude 답변"}}',
+        'data: {"type":"message_stop"}',
+      ].join('\n'),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'claude',
       { apiKey: 'test-key', enabled: true, models: ['claude-test'] },
@@ -526,8 +500,6 @@ describe('provider reasoning stream normalization', () => {
 
 describe('Ollama streamChat transport', () => {
   it('Ollama Cloud 스트리밍은 브라우저 fetch 대신 requestUrl 비스트리밍 요청을 사용한다', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: '{"message":{"content":"cloud answer"},"done":true}',
@@ -544,7 +516,6 @@ describe('Ollama streamChat transport', () => {
 
     await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.3, [createTool()]);
 
-    expect(fetchMock).not.toHaveBeenCalled();
     expect(requestUrlMock).toHaveBeenCalledOnce();
     const call = requestUrlMock.mock.calls[0]?.[0];
     if (typeof call === 'string' || call === undefined) {
@@ -567,29 +538,17 @@ describe('Ollama streamChat transport', () => {
     expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
   });
 
-  it('Ollama Local 스트리밍은 기존처럼 fetch 기반 NDJSON 스트림을 사용한다', async () => {
-    const encoder = new TextEncoder();
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      void input;
-      void init;
-      return Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(
-                encoder.encode('{"message":{"content":"local "},"done":false}\n'),
-              );
-              controller.enqueue(
-                encoder.encode('{"message":{"content":"answer"},"done":true}\n'),
-              );
-              controller.close();
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
-        ),
-      );
+  it('Ollama Local 스트리밍은 requestUrl NDJSON 텍스트를 순서대로 처리한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        '{"message":{"content":"local "},"done":false}',
+        '{"message":{"content":"answer"},"done":true}',
+      ].join('\n'),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
     });
-    vi.stubGlobal('fetch', fetchMock);
     const provider = createProvider(
       'ollama',
       { apiKey: '', enabled: true, models: ['llama3.1'] },
@@ -599,11 +558,13 @@ describe('Ollama streamChat transport', () => {
 
     await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.5);
 
-    expect(requestUrlMock).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const url = fetchMock.mock.calls[0]?.[0] as string;
-    expect(url).toBe('http://localhost:11434/api/chat');
-    const body = parseFetchBody(fetchMock);
+    expect(requestUrlMock).toHaveBeenCalledOnce();
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) {
+      throw new Error('requestUrl should be called with RequestUrlParam');
+    }
+    expect(call.url).toBe('http://localhost:11434/api/chat');
+    const body = parseRequestUrlBody();
     expect(body).toMatchObject({
       model: 'llama3.1',
       options: { temperature: 0.5 },
@@ -616,26 +577,16 @@ describe('Ollama streamChat transport', () => {
   });
 
   it('Ollama thinking 필드와 content 내부 think 태그를 reasoning으로 분리한다', async () => {
-    const encoder = new TextEncoder();
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(
-                encoder.encode(
-                  '{"message":{"thinking":"ollama 생각","content":"<think>태그 생각</think>답변"},"done":false}\n',
-                ),
-              );
-              controller.enqueue(encoder.encode('{"done":true}\n'));
-              controller.close();
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
-        ),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        '{"message":{"thinking":"ollama 생각","content":"<think>태그 생각</think>답변"},"done":false}',
+        '{"done":true}',
+      ].join('\n'),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     const provider = createProvider(
       'ollama',
       { apiKey: '', enabled: true, models: ['llama3.1'] },
@@ -715,15 +666,18 @@ describe('normalizeForClaude', () => {
 
   it('tool role → user message with tool_result content block', () => {
     const messages: ChatMessage[] = [
-      { role: 'tool', content: '[FILE] test.md', tool_call_id: 'toolu_abc', name: 'list_directory' },
+      {
+        role: 'tool',
+        content: '[FILE] test.md',
+        tool_call_id: 'toolu_abc',
+        name: 'list_directory',
+      },
     ];
     const result = normalizeForClaude(messages);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
       role: 'user',
-      content: [
-        { type: 'tool_result', tool_use_id: 'toolu_abc', content: '[FILE] test.md' },
-      ],
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_abc', content: '[FILE] test.md' }],
     });
   });
 
@@ -748,14 +702,16 @@ describe('normalizeForClaude', () => {
     expect(result[0]).toEqual({ role: 'user', content: 'List files.' });
     expect(result[1]).toEqual({
       role: 'assistant',
-      content: [
-        { type: 'tool_use', id: 'toolu_1', name: 'list_allowed_directories', input: {} },
-      ],
+      content: [{ type: 'tool_use', id: 'toolu_1', name: 'list_allowed_directories', input: {} }],
     });
     expect(result[2]).toEqual({
       role: 'user',
       content: [
-        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'Allowed directories:\n/Users/test' },
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: 'Allowed directories:\n/Users/test',
+        },
       ],
     });
   });
@@ -786,9 +742,7 @@ describe('normalizeForOllama', () => {
     expect(result[0]).toEqual({
       role: 'assistant',
       content: '',
-      tool_calls: [
-        { function: { name: 'list_directory', arguments: { path: '/test' } } },
-      ],
+      tool_calls: [{ function: { name: 'list_directory', arguments: { path: '/test' } } }],
     });
   });
 
@@ -805,9 +759,7 @@ describe('normalizeForOllama', () => {
   });
 
   it('tool role without name uses fallback', () => {
-    const messages: ChatMessage[] = [
-      { role: 'tool', content: 'result', tool_call_id: 'call_1' },
-    ];
+    const messages: ChatMessage[] = [{ role: 'tool', content: 'result', tool_call_id: 'call_1' }];
     const result = normalizeForOllama(messages);
     expect(result[0]).toEqual({
       role: 'tool',

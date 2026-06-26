@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const modalPromptMocks = vi.hoisted(() => ({
+  confirmWithModal: vi.fn(() => Promise.resolve(true)),
+  promptWithModal: vi.fn(),
+}));
+
 vi.mock('obsidian', () => ({
   App: class {},
   Modal: class {
@@ -13,6 +18,8 @@ vi.mock('obsidian', () => ({
   PluginSettingTab: class {},
   Setting: class {},
 }));
+
+vi.mock('./utils/modal-prompts', () => modalPromptMocks);
 
 import {
   buildEmbeddingModelOptions,
@@ -50,6 +57,8 @@ import { setLanguage, t } from './i18n';
 
 afterEach(() => {
   vi.useRealTimers();
+  modalPromptMocks.confirmWithModal.mockClear();
+  modalPromptMocks.promptWithModal.mockClear();
   setLanguage('ko');
 });
 
@@ -777,34 +786,21 @@ describe('RAG 설정 표시 헬퍼', () => {
       state: { disabled: false, reason: null },
       tone: 'danger' as const,
     };
-    const globalWindow = globalThis as { confirm?: () => boolean };
-    const originalConfirm = globalWindow.confirm;
-    const confirmSpy = vi.fn(() => true);
-    globalWindow.confirm = confirmSpy;
-
-    try {
-      await (
-        tab as unknown as {
-          handleGraphRagAction: (
-            action: {
-              id: 'resetGraphRag';
-            },
-            cost: { costLabel: string },
-          ) => Promise<void>;
-        }
-      ).handleGraphRagAction(action, { costLabel: 'local' });
-
-      expect(confirmSpy).toHaveBeenCalledOnce();
-      expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
-      expect(spy).toHaveBeenCalledOnce();
-    } finally {
-      if (originalConfirm === undefined) {
-        delete globalWindow.confirm;
-      } else {
-        globalWindow.confirm = originalConfirm;
+    await (
+      tab as unknown as {
+        handleGraphRagAction: (
+          action: {
+            id: 'resetGraphRag';
+          },
+          cost: { costLabel: string },
+        ) => Promise<void>;
       }
-      spy.mockRestore();
-    }
+    ).handleGraphRagAction(action, { costLabel: 'local' });
+
+    expect(modalPromptMocks.confirmWithModal).toHaveBeenCalledOnce();
+    expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalledOnce();
+    spy.mockRestore();
   });
 
   it('GraphRAG 추출 모델이 없으면 provider 상태보다 모델 선택 안내를 먼저 표시한다', () => {

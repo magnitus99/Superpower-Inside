@@ -1,4 +1,5 @@
 import { t } from '../i18n';
+import { isDomInstance } from '../utils/dom';
 import type {
   ContextAttachment,
   ContextBudgetSnapshot,
@@ -256,7 +257,9 @@ function normalizeProviderBoundaryItem(item: string): string {
 }
 
 function normalizeLocalBoundaryItems(items: readonly string[]): string[] {
-  const hasDraftStore = items.some((item) => item === 'Draft store' || item === t('dataBoundaryDraftStore'));
+  const hasDraftStore = items.some(
+    (item) => item === 'Draft store' || item === t('dataBoundaryDraftStore'),
+  );
   const hasSourceCardState = items.some(
     (item) => item === 'Source card UI state' || item === t('dataBoundarySourceCardState'),
   );
@@ -296,7 +299,7 @@ export class SourcePanel {
       section?.remove();
       return;
     }
-    if (!(section instanceof HTMLElement)) {
+    if (!isDomInstance(section, HTMLElement)) {
       section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
     }
     section.empty();
@@ -368,7 +371,7 @@ export class SourcePanel {
       section?.remove();
       return;
     }
-    if (!(section instanceof HTMLElement)) {
+    if (!isDomInstance(section, HTMLElement)) {
       section = container.createDiv({ cls: 'superpower-inside-chat-source-warnings' });
     }
     section.empty();
@@ -405,7 +408,7 @@ export class SourcePanel {
       section?.remove();
       return;
     }
-    if (!(section instanceof HTMLElement)) {
+    if (!isDomInstance(section, HTMLElement)) {
       section = container.createDiv({ cls: 'superpower-inside-chat-context-attachments' });
     }
     section.empty();
@@ -429,7 +432,7 @@ export class SourcePanel {
       section?.remove();
       return;
     }
-    if (!(section instanceof HTMLElement)) {
+    if (!isDomInstance(section, HTMLElement)) {
       section = container.createDiv();
     }
     section.empty();
@@ -460,15 +463,14 @@ export class SourcePanel {
       section?.remove();
       return;
     }
-    const boundarySection =
-      section instanceof HTMLElement
-        ? section
-        : container.createEl('details', {
-            cls: 'superpower-inside-chat-data-boundary',
-          });
+    const boundarySection = isDomInstance(section, HTMLElement)
+      ? section
+      : container.createEl('details', {
+          cls: 'superpower-inside-chat-data-boundary',
+        });
     boundarySection.empty();
     const view = createDataBoundaryView(snapshot);
-    const details = boundarySection instanceof HTMLDetailsElement ? boundarySection : null;
+    const details = isDomInstance(boundarySection, HTMLDetailsElement) ? boundarySection : null;
     if (details) details.open = false;
     boundarySection.createEl('summary', {
       cls: 'superpower-inside-chat-data-boundary-title',
@@ -490,11 +492,12 @@ export class SourcePanel {
   linkAnswerCitationMarkers(container: HTMLElement, citations: readonly SourceCitation[]): void {
     if (citations.length === 0) return;
     const bubble = container.querySelector('.superpower-inside-chat-bubble.assistant');
-    if (!(bubble instanceof HTMLElement)) return;
+    if (!isDomInstance(bubble, HTMLElement)) return;
     const ids = citations.map((citation) => citation.id).filter(Boolean);
     if (ids.length === 0) return;
     const pattern = new RegExp(`\\b(${ids.map(escapeRegExp).join('|')})\\b`, 'g');
-    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    const doc = container.ownerDocument;
+    const walker = doc.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) {
@@ -514,10 +517,10 @@ export class SourcePanel {
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(text)) !== null) {
         if (match.index > lastIndex) {
-          fragments.push(document.createTextNode(text.slice(lastIndex, match.index)));
+          fragments.push(doc.createTextNode(text.slice(lastIndex, match.index)));
         }
         const citationId = match[1] ?? '';
-        const marker = document.createElement('span');
+        const marker = doc.createElement('span');
         marker.addClass('superpower-inside-chat-citation-marker');
         marker.setAttribute('tabindex', '0');
         marker.setAttribute('data-citation-id', citationId);
@@ -539,7 +542,7 @@ export class SourcePanel {
         lastIndex = pattern.lastIndex;
       }
       if (lastIndex < text.length) {
-        fragments.push(document.createTextNode(text.slice(lastIndex)));
+        fragments.push(doc.createTextNode(text.slice(lastIndex)));
       }
       const parent = textNode.parentNode;
       if (!parent) continue;
@@ -566,7 +569,7 @@ export class SourcePanel {
   private setCitationHighlight(container: HTMLElement, citationId: string, active: boolean): void {
     const selector = `[data-citation-id="${cssEscape(citationId)}"]`;
     for (const target of Array.from(container.querySelectorAll(selector))) {
-      if (target instanceof HTMLElement) {
+      if (isDomInstance(target, HTMLElement)) {
         target.toggleClass('linked', active);
       }
     }

@@ -1,4 +1,5 @@
 import { t } from '../i18n';
+import { isDomInstance } from '../utils/dom';
 import type { ToolCallRecord } from './types';
 
 export interface ToolCallPlaceholderView {
@@ -72,8 +73,11 @@ export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView
     availableActions: getAvailableActions(toolCall),
     argumentsPreview: toolCall.arguments.trim(),
     result: toolCall.result,
-    resultSummary: summarizeToolResult(toolCall.resultSummary ?? toolCall.normalizedResult ?? toolCall.result),
-    resultApplied: toolCall.status === 'success' && Boolean(toolCall.normalizedResult || toolCall.resultSummary),
+    resultSummary: summarizeToolResult(
+      toolCall.resultSummary ?? toolCall.normalizedResult ?? toolCall.result,
+    ),
+    resultApplied:
+      toolCall.status === 'success' && Boolean(toolCall.normalizedResult || toolCall.resultSummary),
   };
 }
 
@@ -131,8 +135,14 @@ export class ToolCallPanel {
       const existingPlaceholder = section.querySelector('.superpower-inside-tool-call.placeholder');
       if (!existingPlaceholder) {
         const row = section.createDiv({ cls: view.placeholder.className });
-        row.createSpan({ cls: 'superpower-inside-tool-call-icon', text: view.placeholder.iconText });
-        row.createSpan({ cls: 'superpower-inside-tool-call-name', text: view.placeholder.nameText });
+        row.createSpan({
+          cls: 'superpower-inside-tool-call-icon',
+          text: view.placeholder.iconText,
+        });
+        row.createSpan({
+          cls: 'superpower-inside-tool-call-name',
+          text: view.placeholder.nameText,
+        });
         const statusBadge = row.createSpan({ cls: view.placeholder.statusClassName });
         this.renderRunningDots(statusBadge);
       }
@@ -148,7 +158,7 @@ export class ToolCallPanel {
       if (!rowView) continue;
       let callRow = Array.from(section.querySelectorAll('.superpower-inside-tool-call')).find(
         (el): el is HTMLElement =>
-          el instanceof HTMLElement && el.getAttribute('data-tool-call-id') === rowView.rowId,
+          isDomInstance(el, HTMLElement) && el.getAttribute('data-tool-call-id') === rowView.rowId,
       );
 
       if (!callRow) {
@@ -163,14 +173,14 @@ export class ToolCallPanel {
         this.renderToolCallStatus(statusBadge, rowView);
       } else {
         const statusBadge = callRow.querySelector('.superpower-inside-tool-call-status');
-        if (statusBadge instanceof HTMLElement) {
+        if (isDomInstance(statusBadge, HTMLElement)) {
           statusBadge.className = rowView.statusClassName;
           this.renderToolCallStatus(statusBadge, rowView);
         }
       }
 
       const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');
-      if (staleApproveBtn instanceof HTMLElement && !rowView.approvalRequired) {
+      if (isDomInstance(staleApproveBtn, HTMLElement) && !rowView.approvalRequired) {
         staleApproveBtn.remove();
       }
       if (
@@ -185,7 +195,8 @@ export class ToolCallPanel {
           const messageId = section
             .closest('.superpower-inside-chat-bubble-container')
             ?.getAttribute('data-message-id');
-          if (messageId) void this.handlers.approveToolCall(messageId, toolCall.id || toolCall.name);
+          if (messageId)
+            void this.handlers.approveToolCall(messageId, toolCall.id || toolCall.name);
         });
       }
 
@@ -193,13 +204,15 @@ export class ToolCallPanel {
         section.querySelectorAll('.superpower-inside-tool-arguments'),
       ).find(
         (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowView.rowId,
+          isDomInstance(el, HTMLDetailsElement) &&
+          el.getAttribute('data-tool-call-id') === rowView.rowId,
       );
       const existingResult = Array.from(
         section.querySelectorAll('.superpower-inside-tool-result-details'),
       ).find(
         (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowView.rowId,
+          isDomInstance(el, HTMLDetailsElement) &&
+          el.getAttribute('data-tool-call-id') === rowView.rowId,
       );
       const argsOpen = existingArgs?.open ?? false;
       const resultOpen = existingResult?.open ?? false;
