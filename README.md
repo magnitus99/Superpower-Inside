@@ -1,6 +1,6 @@
 # Superpower Inside
 
-![version](https://img.shields.io/badge/version-1.3.7-blue)
+![version](https://img.shields.io/badge/version-1.4.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
@@ -14,7 +14,7 @@ Superpower Inside is built for people who use Obsidian as a working knowledge ba
 | --- | --- |
 | Find answers in your vault | Uses local indexes and graph-aware context when they are available |
 | Work with sources | Shows source cards, evidence, and citation actions beside the answer |
-| Use your preferred model | Supports OpenAI, Claude, Ollama, OpenRouter, Ollama Cloud, and custom OpenAI-compatible providers |
+| Use your preferred model | Pick a model first, then let Superpower Inside prepare the matching provider profile |
 | Extend the assistant | Lets a trusted local MCP stdio server help when you mention it |
 
 > [!IMPORTANT]
@@ -44,7 +44,7 @@ flowchart LR
 | MCP mentions | Use `@server` when you want a trusted MCP server to help. |
 | Source cards | Open source notes, copy Obsidian links, and insert citations into the active note. |
 | Chat history | Save and reopen useful research sessions inside your vault. |
-| Provider choice | Use local or remote chat, embedding, and graph extraction providers. |
+| Model-centered providers | Choose ready-made or custom model profiles for chat, embedding, and graph extraction without hand-tuning every provider field. |
 
 ## Install
 
@@ -64,7 +64,7 @@ flowchart LR
 
 ## First Setup
 
-Connect a chat provider first. If you use local Ollama, set the local base URL and model. If you use a remote provider, add the API key in Obsidian's local plugin storage.
+Choose the model profile you want to use first. Superpower Inside fills in the matching provider shape for chat, embedding, and graph extraction, while still letting you adjust advanced fields when a custom endpoint needs them. If you use local Ollama, set the local base URL and model. If you use a remote provider, add the API key in Obsidian's local plugin storage.
 
 After that, open the chat sidebar and ask a question. When RAG or GraphRAG needs preparation, Superpower Inside shows the current state and the next useful action instead of making you manage index files directly. Manual actions such as reindexing, retrying failed graph extraction, or resetting graph data stay available for recovery, but they are not the normal workflow.
 
