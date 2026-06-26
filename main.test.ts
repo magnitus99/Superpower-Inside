@@ -176,7 +176,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.settings = {
       ...DEFAULT_SETTINGS,
       openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
-      rag: { ...DEFAULT_SETTINGS.rag, enableBM25: true },
+      providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
+      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, { enableBM25: true }),
     };
 
     await plugin.initRAG();
@@ -214,7 +215,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.settings = {
       ...DEFAULT_SETTINGS,
       openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
-      rag: { ...DEFAULT_SETTINGS.rag, enableBM25: true },
+      providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
+      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, { enableBM25: true }),
     };
     plugin.getLogger = vi.fn(() => logger);
     plugin.runRagRuntimeInitStep = vi.fn((stage, operation) => {
@@ -252,7 +254,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.settings = {
       ...DEFAULT_SETTINGS,
       openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
-      rag: { ...DEFAULT_SETTINGS.rag, enableBM25: true },
+      providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
+      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, { enableBM25: true }),
     };
 
     await plugin.initRAG();
@@ -351,8 +354,9 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.settings = {
       ...DEFAULT_SETTINGS,
       openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
+      providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
       rag: {
-        ...DEFAULT_SETTINGS.rag,
+        ...createRagWithEmbedding(DEFAULT_SETTINGS.rag),
         autoUpdateEnabled: false,
         graphRagEnabled: false,
         graphRagModel: 'openai:gpt-test',
@@ -705,6 +709,40 @@ describe('SuperpowerInsidePlugin agent diagnostics view', () => {
     expect(workspace.revealLeaf).toHaveBeenCalledWith(newLeaf);
   });
 });
+
+function createOpenAiEmbeddingProfile(apiKey: string) {
+  return {
+    id: 'openai',
+    name: 'OpenAI',
+    strategy: 'openai' as const,
+    apiKey,
+    baseUrl: 'https://api.openai.com',
+    enabled: true,
+    models: [
+      {
+        id: 'text-embedding-3-small',
+        kind: 'embedding' as const,
+        verification: {
+          chatStatus: 'unknown' as const,
+          embeddingStatus: 'success' as const,
+        },
+      },
+    ],
+  };
+}
+
+function createRagWithEmbedding<T extends Record<string, unknown>>(
+  rag: T,
+  override: Partial<T> = {},
+): T {
+  return {
+    ...rag,
+    embeddingProvider: 'openai',
+    embeddingModel: 'text-embedding-3-small',
+    embeddingModelRef: 'profile:openai:text-embedding-3-small',
+    ...override,
+  } as T;
+}
 
 function createApp(
   options: {

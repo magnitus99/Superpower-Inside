@@ -30,10 +30,15 @@ import {
   buildEmbeddingProviderOptions,
   buildMcpJsonEditorValue,
   buildChatModelOptions,
+  buildEmbeddingProfileModelOptions,
+  buildProviderModelRef,
   DEFAULT_SETTINGS,
+  migrateLegacyProviderProfiles,
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
+  parseProviderModelRef,
   SuperpowerInsideSettingTab,
+  upsertProviderProfileModel,
 } from './settings';
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
@@ -44,6 +49,134 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
+  it('provider profile model refs preserve provider id and colon-containing model ids', () => {
+    const value = buildProviderModelRef('local-ollama', 'qwen3:8b-q8_0');
+
+    expect(value).toBe('profile:local-ollama:qwen3:8b-q8_0');
+    expect(parseProviderModelRef(value)).toEqual({
+      kind: 'profile',
+      profileId: 'local-ollama',
+      modelId: 'qwen3:8b-q8_0',
+    });
+    expect(parseProviderModelRef('openai:gpt-4o-mini')).toEqual({
+      kind: 'legacy',
+      providerKey: 'openai',
+      modelId: 'gpt-4o-mini',
+    });
+    expect(parseProviderModelRef('customOpenAI:local:auto')).toEqual({
+      kind: 'legacy-custom-openai',
+      providerId: 'local',
+      modelId: 'auto',
+    });
+  });
+
+  it('provider profile model classification is exclusive and embedding wins conflicts', () => {
+    const models = upsertProviderProfileModel(
+      upsertProviderProfileModel([], {
+        id: 'qwen3',
+        kind: 'general',
+        verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+      }),
+      {
+        id: 'qwen3',
+        kind: 'embedding',
+        verification: { chatStatus: 'success', embeddingStatus: 'success' },
+      },
+    );
+
+    expect(models).toEqual([
+      {
+        id: 'qwen3',
+        kind: 'embedding',
+        verification: { chatStatus: 'success', embeddingStatus: 'success' },
+      },
+    ]);
+  });
+
+  it('model selectors split general chat models from embedding models', () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'local',
+          name: 'Local',
+          strategy: 'ollama' as const,
+          apiKey: '',
+          baseUrl: 'http://localhost:11434',
+          enabled: true,
+          models: [
+            {
+              id: 'llama3.1',
+              kind: 'general' as const,
+              verification: { chatStatus: 'success' as const, embeddingStatus: 'unknown' as const },
+            },
+            {
+              id: 'qwen3-embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'success' as const },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      buildChatModelOptions(settings, {
+        currentModel: '',
+      }).map((option) => option.value),
+    ).toEqual(['profile:local:llama3.1']);
+    expect(
+      buildEmbeddingProfileModelOptions(settings, {
+        currentModel: '',
+      }).map((option) => option.value),
+    ).toEqual(['profile:local:qwen3-embed']);
+  });
+
+  it('does not create provider profiles from untouched default RAG embedding settings', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [],
+    });
+
+    expect(migrated.providerProfiles).toEqual([]);
+    expect(migrated.rag.embeddingModelRef).toBe('');
+  });
+
+  it('legacy provider settings migrate to profiles and embedding classification wins default chat conflicts', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      openai: {
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com',
+        enabled: true,
+        models: ['gpt-4o-mini', 'text-embedding-3-small'],
+      },
+      chat: {
+        ...DEFAULT_SETTINGS.chat,
+        defaultModel: 'openai:text-embedding-3-small',
+      },
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      },
+    });
+
+    expect(migrated.providerProfiles).toEqual([
+      expect.objectContaining({
+        id: 'openai',
+        name: 'OpenAI',
+        strategy: 'openai',
+        models: [
+          expect.objectContaining({ id: 'gpt-4o-mini', kind: 'general' }),
+          expect.objectContaining({ id: 'text-embedding-3-small', kind: 'embedding' }),
+        ],
+      }),
+    ]);
+    expect(migrated.chat.defaultModel).toBe('');
+    expect(migrated.rag.embeddingModelRef).toBe('profile:openai:text-embedding-3-small');
+  });
+
   it('설정 탭 라벨은 현재 언어로 매번 다시 계산한다', () => {
     setLanguage('ko');
     expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('프로바이더');
@@ -221,7 +354,7 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(options).toContainEqual({
       value: 'customOpenAI:custom-1:auto',
-      label: 'Onyx Graph Provider — auto',
+      label: 'Onyx Graph Provider / auto',
     });
     expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
   });

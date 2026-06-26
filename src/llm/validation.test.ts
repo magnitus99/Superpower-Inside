@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderConfig } from '../settings';
 import {
   fetchProviderModels,
+  fetchProviderModelsForStrategy,
   normalizeOpenAICompatibleBaseUrl,
   testEmbeddingGeneration,
+  testEmbeddingGenerationForStrategy,
   testProviderGeneration,
   validateEmbeddingConnection,
   validateProviderConnection,
@@ -210,6 +212,38 @@ describe('provider validation', () => {
         url: 'http://127.0.0.1:11555/api/embed',
       }),
     );
+  });
+
+  it('OpenAI-compatible profile strategy fetches models from the configured base URL', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ id: 'local-chat' }] },
+      text: '',
+    });
+
+    const result = await fetchProviderModelsForStrategy('openAICompatible', {
+      apiKey: 'local-key',
+      baseUrl: 'http://localhost:1234/v1',
+      models: [],
+      enabled: true,
+    });
+
+    expect(result.models).toEqual(['local-chat']);
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'http://localhost:1234/v1/models',
+        headers: { Authorization: 'Bearer local-key' },
+        throw: false,
+      }),
+    );
+  });
+
+  it('embedding validation fails before network calls for unsupported profile strategies', async () => {
+    const result = await testEmbeddingGenerationForStrategy('claude', 'claude-sonnet', baseConfig);
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe('Embedding is not supported by this provider profile.');
+    expect(requestUrlMock).not.toHaveBeenCalled();
   });
 
   it('Custom OpenAI 호환 모델 검색 URL을 /v1/models로 정규화한다', async () => {

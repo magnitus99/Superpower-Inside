@@ -10,7 +10,7 @@ import type {
   ProviderKey,
   SuperpowerInsideSettings,
 } from './settings';
-import { PROVIDER_KEYS, PROVIDER_LABELS } from './settings';
+import { PROVIDER_KEYS, PROVIDER_LABELS, PROVIDER_STRATEGY_LABELS } from './settings';
 
 export type SettingsOverviewTone = 'neutral' | 'success' | 'warning' | 'danger';
 export type SettingsOverviewTarget = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
@@ -152,6 +152,17 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
 }
 
 function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[] {
+  if (settings.providerProfiles.length > 0) {
+    return settings.providerProfiles.map((profile) => ({
+      id: `profile-${profile.id}`,
+      label: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      key: profile.strategy === 'openAICompatible' ? ('customOpenAI' as const) : profile.strategy,
+      config: {
+        ...profile,
+        models: profile.models.map((model) => model.id),
+      },
+    }));
+  }
   const fixed = PROVIDER_KEYS.map((key) => ({
     id: key,
     label: PROVIDER_LABELS[key],

@@ -2,25 +2,23 @@ import { Plugin, Notice, Platform, TFile, type WorkspaceLeaf } from 'obsidian';
 import { getEffectiveExcludePaths } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
-  type ProviderConfig,
-  type CustomOpenAIProviderConfig,
-  type EmbeddingProviderKey,
   DEFAULT_SETTINGS,
-  getCustomOpenAIEmbeddingProviderId,
   isCustomOpenAIEmbeddingProviderKey,
+  migrateLegacyProviderProfiles,
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
+  resolveProviderModelRef,
   SuperpowerInsideSettingTab,
 } from './src/settings';
 import {
   normalizeRagPerformanceTuningMode,
   resolveRagPerformanceSettings,
-  shouldRequireProviderApiKey,
   shouldShowProviderApiKey,
   getGraphRagStatusPresentation,
 } from './src/rag/settings-display';
 import {
   createCustomOpenAIProvider,
+  createProviderForStrategy,
   createProvider,
   type ProviderKey,
   type LLMProvider,
@@ -1004,6 +1002,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data.customOpenAIProviders = [];
     }
 
+    if (!Array.isArray(data.providerProfiles)) {
+      data.providerProfiles = [];
+    }
+
     if (
       typeof data.providerValidation !== 'object' ||
       data.providerValidation === null ||
@@ -1220,6 +1222,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       ...DEFAULT_SETTINGS.rag,
       ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
     };
+    this.settings = migrateLegacyProviderProfiles(this.settings);
     this.settings.logging = normalizeLoggerConfig(
       data.logging as Partial<SuperpowerInsideSettings['logging']> | undefined,
     );
@@ -1326,6 +1329,38 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().warn('Default chat model is empty.', { source: 'provider' });
       return;
     }
+    const resolvedProfileModel = resolveProviderModelRef(this.settings, defaultModel, 'general');
+    if (resolvedProfileModel) {
+      const { profile, modelId } = resolvedProfileModel;
+      if (!profile.enabled) {
+        this.provider = null;
+        this.getLogger().warn('Configured provider profile is disabled.', {
+          source: 'provider',
+          data: { profileId: profile.id, model: modelId },
+        });
+        return;
+      }
+      try {
+        this.provider = createProviderForStrategy(
+          profile.strategy,
+          { ...profile, models: profile.models.map((model) => model.id) },
+          modelId,
+          profile.id,
+        );
+        this.getLogger().info('Chat provider initialized.', {
+          source: 'provider',
+          data: { provider: `profile:${profile.id}`, strategy: profile.strategy, model: modelId },
+        });
+      } catch (err) {
+        this.provider = null;
+        this.getLogger().error('Profile chat provider initialization failed.', {
+          source: 'provider',
+          data: { profileId: profile.id, model: modelId },
+          error: err,
+        });
+      }
+      return;
+    }
     const parts = defaultModel.split(':');
     if (parts.length < 2) {
       this.provider = null;
@@ -1408,6 +1443,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private createProviderForModel(modelKey: string): LLMProvider | null {
     const normalizedModelKey = modelKey.trim();
     if (!normalizedModelKey) return null;
+    const resolvedProfileModel = resolveProviderModelRef(
+      this.settings,
+      normalizedModelKey,
+      'general',
+    );
+    if (resolvedProfileModel) {
+      const { profile, modelId } = resolvedProfileModel;
+      if (!profile.enabled) return null;
+      try {
+        return createProviderForStrategy(
+          profile.strategy,
+          { ...profile, models: profile.models.map((model) => model.id) },
+          modelId,
+          profile.id,
+        );
+      } catch {
+        return null;
+      }
+    }
     const parts = normalizedModelKey.split(':');
     if (parts.length < 2) return null;
     if (parts[0] === 'customOpenAI') {
@@ -1442,27 +1496,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     } catch {
       return null;
     }
-  }
-
-  private getEmbeddingProviderConfig(
-    providerKey: EmbeddingProviderKey,
-  ): ProviderConfig | CustomOpenAIProviderConfig | null {
-    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
-      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
-      return (
-        this.settings.customOpenAIProviders.find((provider) => provider.id === providerId) ?? null
-      );
-    }
-    return this.settings[providerKey as ProviderKey];
-  }
-
-  private getEmbeddingProviderLabel(providerKey: EmbeddingProviderKey): string {
-    if (isCustomOpenAIEmbeddingProviderKey(providerKey)) {
-      const providerId = getCustomOpenAIEmbeddingProviderId(providerKey);
-      const provider = this.settings.customOpenAIProviders.find((item) => item.id === providerId);
-      return provider?.name.trim() || 'Custom OpenAI-Compatible';
-    }
-    return providerKey;
   }
 
   private debouncedRefreshStats(): void {
@@ -1520,7 +1553,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private getRagIndexerNotInitializedReason(): string {
     const rag = this.settings.rag;
-    const providerKey = rag.embeddingProvider;
+    const resolvedEmbeddingModel = resolveProviderModelRef(
+      this.settings,
+      rag.embeddingModelRef ?? '',
+      'embedding',
+    );
     let reason = t('ragIndexerNotInitializedBase');
     if (this.lastRagRuntimeInitError) {
       return `${reason} ${t('ragIndexerLastInitError', {
@@ -1532,21 +1569,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
         reason: this.lastRagRuntimeInitSkippedReason,
       })}`;
     }
-    const config = this.getEmbeddingProviderConfig(providerKey);
-    const providerLabel = this.getEmbeddingProviderLabel(providerKey);
-    const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-      ? 'customOpenAI'
-      : providerKey;
-    if (!config?.enabled) {
-      reason += ` ${t('ragIndexerEnableProvider', { provider: providerLabel })}`;
-    } else if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
-      reason += ` ${t('ragIndexerEnterApiKey', { provider: providerLabel })}`;
-    } else if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
+    if (!resolvedEmbeddingModel) {
       reason += ` ${t('ragIndexerSelectEmbeddingModel')}`;
+    } else if (!resolvedEmbeddingModel.profile.enabled) {
+      reason += ` ${t('ragIndexerEnableProvider', {
+        provider: resolvedEmbeddingModel.profile.name.trim() || resolvedEmbeddingModel.profile.strategy,
+      })}`;
     } else {
       reason += ` ${t('ragIndexerConnectionFailed', {
-        provider: providerLabel,
-        model: rag.embeddingModel,
+        provider: resolvedEmbeddingModel.profile.name.trim() || resolvedEmbeddingModel.profile.strategy,
+        model: resolvedEmbeddingModel.modelId,
       })}`;
     }
     return reason;
@@ -1692,67 +1724,89 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     try {
       const rag = this.settings.rag;
-      const providerKey = rag.embeddingProvider;
+      const resolvedEmbeddingModel = resolveProviderModelRef(
+        this.settings,
+        rag.embeddingModelRef ?? '',
+        'embedding',
+      );
+      const providerKey = resolvedEmbeddingModel
+        ? `profile:${resolvedEmbeddingModel.profile.id}`
+        : '';
       this.getLogger().info('RAG runtime initialization started.', {
         source: 'rag',
         data: {
           embeddingProvider: providerKey,
-          embeddingModel: rag.embeddingModel,
+          embeddingModel: resolvedEmbeddingModel?.modelId ?? '',
           vectorStore: 'indexeddb',
           bm25Enabled: rag.enableBM25,
           graphRagEnabled: rag.graphRagEnabled,
         },
       });
 
-      const config = this.getEmbeddingProviderConfig(providerKey);
-      const embeddingModel = rag.embeddingModel.trim();
-      if (!config?.enabled) {
-        this.lastRagRuntimeInitSkippedReason = t('ragIndexerEnableProvider', {
-          provider: this.getEmbeddingProviderLabel(providerKey),
-        });
-        this.lastRagRuntimeInitStage = null;
-        this.lastRagRuntimeInitFinishedAt = Date.now();
-        this.getLogger().warn('RAG embedding provider is disabled.', {
-          source: 'rag',
-          data: { embeddingProvider: providerKey },
-        });
-        return;
-      }
-      if (!embeddingModel) {
+      if (!resolvedEmbeddingModel) {
         this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
         this.lastRagRuntimeInitStage = null;
         this.lastRagRuntimeInitFinishedAt = Date.now();
         this.getLogger().warn('RAG embedding model is not selected.', {
           source: 'rag',
+          data: { embeddingModelRef: rag.embeddingModelRef },
+        });
+        return;
+      }
+
+      const { profile, modelId: embeddingModel } = resolvedEmbeddingModel;
+      if (!profile.enabled) {
+        this.lastRagRuntimeInitSkippedReason = t('ragIndexerEnableProvider', {
+          provider: profile.name.trim() || profile.strategy,
+        });
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
+        this.getLogger().warn('RAG embedding provider profile is disabled.', {
+          source: 'rag',
           data: { embeddingProvider: providerKey },
+        });
+        return;
+      }
+      if (
+        profile.strategy !== 'ollama' &&
+        profile.strategy !== 'openai' &&
+        profile.strategy !== 'openRouter' &&
+        profile.strategy !== 'openAICompatible'
+      ) {
+        this.lastRagRuntimeInitSkippedReason =
+          'Embedding is not supported by this provider profile.';
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
+        this.getLogger().warn('RAG embedding provider profile is unsupported.', {
+          source: 'rag',
+          data: { embeddingProvider: providerKey, strategy: profile.strategy },
         });
         return;
       }
 
       let baseUrl: string | undefined;
       let apiKey = '';
-      const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-        ? 'customOpenAI'
-        : providerKey;
+      const apiKeyVisibilityKey =
+        profile.strategy === 'openAICompatible' ? 'customOpenAI' : profile.strategy;
       if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
-        apiKey = config.apiKey;
-        if (config.baseUrl) {
-          baseUrl = config.baseUrl;
+        apiKey = profile.apiKey;
+        if (profile.baseUrl) {
+          baseUrl = profile.baseUrl;
         }
       }
       if (!baseUrl) {
-        if (providerKey === 'openai') {
+        if (profile.strategy === 'openai') {
           baseUrl = 'https://api.openai.com';
-        } else if (providerKey === 'openRouter') {
+        } else if (profile.strategy === 'openRouter') {
           baseUrl = 'https://openrouter.ai/api';
-        } else if (providerKey === 'ollama') {
+        } else if (profile.strategy === 'ollama') {
           baseUrl = 'http://localhost:11434';
         }
       }
 
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
-      if (providerKey === 'ollama') {
+      if (profile.strategy === 'ollama') {
         rawProvider = new OllamaEmbeddingProvider(
           baseUrl ?? 'http://localhost:11434',
           embeddingModel,

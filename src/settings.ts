@@ -64,7 +64,10 @@ import {
 } from './utils/rag-exclude-validation';
 import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
 import { type Language, t } from './i18n';
-import type { ProviderCapabilityOverrides } from './llm/provider-capabilities';
+import {
+  normalizeProviderCapabilityOverrides,
+  type ProviderCapabilityOverrides,
+} from './llm/provider-capabilities';
 import {
   createDefaultContext7McpServer,
   shouldShowPluginAwareContext7Warning,
@@ -133,6 +136,142 @@ export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openRouter: 'OpenRouter',
 };
 export type ProviderKey = (typeof PROVIDER_KEYS)[number];
+export type ProviderStrategyKey = ProviderKey | 'openAICompatible';
+export type ProviderModelKind = 'general' | 'embedding';
+export interface ProviderModelVerification {
+  chatStatus: ModelCapabilityStatus;
+  embeddingStatus: ModelCapabilityStatus;
+  lastCheckedAt?: number;
+  lastError?: string;
+}
+export interface ProviderModelConfig {
+  id: string;
+  kind: ProviderModelKind;
+  verification: ProviderModelVerification;
+}
+export interface ProviderProfileConfig {
+  id: string;
+  name: string;
+  strategy: ProviderStrategyKey;
+  apiKey: string;
+  baseUrl?: string;
+  enabled: boolean;
+  models: ProviderModelConfig[];
+  useRequestUrl?: boolean;
+  capabilityOverrides?: ProviderCapabilityOverrides;
+}
+export type ParsedProviderModelRef =
+  | {
+      kind: 'profile';
+      profileId: string;
+      modelId: string;
+    }
+  | {
+      kind: 'legacy';
+      providerKey: ProviderKey;
+      modelId: string;
+    }
+  | {
+      kind: 'legacy-custom-openai';
+      providerId: string;
+      modelId: string;
+    }
+  | {
+      kind: 'invalid';
+      raw: string;
+    };
+
+export function buildProviderModelRef(profileId: string, modelId: string): string {
+  return `profile:${profileId}:${modelId}`;
+}
+
+export function parseProviderModelRef(value: string): ParsedProviderModelRef {
+  const raw = value.trim();
+  const parts = raw.split(':');
+  if (parts[0] === 'profile') {
+    const profileId = parts[1] ?? '';
+    const modelId = parts.slice(2).join(':');
+    if (profileId && modelId) return { kind: 'profile', profileId, modelId };
+    return { kind: 'invalid', raw };
+  }
+  if (parts[0] === 'customOpenAI') {
+    const providerId = parts[1] ?? '';
+    const modelId = parts.slice(2).join(':');
+    if (providerId && modelId) return { kind: 'legacy-custom-openai', providerId, modelId };
+    return { kind: 'invalid', raw };
+  }
+  if (PROVIDER_KEYS.includes(parts[0] as ProviderKey)) {
+    const modelId = parts.slice(1).join(':');
+    if (modelId) return { kind: 'legacy', providerKey: parts[0] as ProviderKey, modelId };
+  }
+  return { kind: 'invalid', raw };
+}
+
+export function upsertProviderProfileModel(
+  models: readonly ProviderModelConfig[],
+  candidate: ProviderModelConfig,
+): ProviderModelConfig[] {
+  const id = candidate.id.trim();
+  if (!id) return [...models];
+  const existing = models.find((model) => model.id === id);
+  const kind: ProviderModelKind =
+    existing?.kind === 'embedding' || candidate.kind === 'embedding' ? 'embedding' : 'general';
+  const merged: ProviderModelConfig = {
+    id,
+    kind,
+    verification: {
+      chatStatus:
+        candidate.verification.chatStatus ?? existing?.verification.chatStatus ?? 'unknown',
+      embeddingStatus:
+        candidate.verification.embeddingStatus ??
+        existing?.verification.embeddingStatus ??
+        'unknown',
+      ...(candidate.verification.lastCheckedAt !== undefined
+        ? { lastCheckedAt: candidate.verification.lastCheckedAt }
+        : existing?.verification.lastCheckedAt !== undefined
+          ? { lastCheckedAt: existing.verification.lastCheckedAt }
+          : {}),
+      ...(candidate.verification.lastError
+        ? { lastError: candidate.verification.lastError }
+        : existing?.verification.lastError
+          ? { lastError: existing.verification.lastError }
+          : {}),
+    },
+  };
+  return [...models.filter((model) => model.id !== id), merged];
+}
+
+function createProviderModel(
+  id: string,
+  kind: ProviderModelKind,
+  verification: Partial<ProviderModelVerification> = {},
+): ProviderModelConfig {
+  return {
+    id,
+    kind,
+    verification: {
+      chatStatus: verification.chatStatus ?? 'unknown',
+      embeddingStatus: verification.embeddingStatus ?? 'unknown',
+      ...(verification.lastCheckedAt !== undefined
+        ? { lastCheckedAt: verification.lastCheckedAt }
+        : {}),
+      ...(verification.lastError ? { lastError: verification.lastError } : {}),
+    },
+  };
+}
+
+export const PROVIDER_STRATEGY_LABELS: Record<ProviderStrategyKey, string> = {
+  ...PROVIDER_LABELS,
+  openAICompatible: 'OpenAI-Compatible',
+};
+
+const LEGACY_PROFILE_IDS: Record<ProviderKey, string> = {
+  openai: 'openai',
+  claude: 'claude',
+  ollama: 'ollama',
+  ollamaCloud: 'ollama-cloud',
+  openRouter: 'openrouter',
+};
 export interface MCPServerConfig {
   name: string;
   command: string;
@@ -234,6 +373,7 @@ export interface RAGConfig {
   overlap: number;
   embeddingProvider: EmbeddingProviderKey;
   embeddingModel: string;
+  embeddingModelRef?: string;
   autoUpdateEnabled: boolean;
   autoUpdateIntervalMin: number;
   minScore: number;
@@ -294,6 +434,7 @@ export interface SuperpowerInsideSettings {
   ollamaCloud: ProviderConfig;
   openRouter: ProviderConfig;
   customOpenAIProviders: CustomOpenAIProviderConfig[];
+  providerProfiles: ProviderProfileConfig[];
   providerValidation: Record<string, ProviderValidationSnapshot>;
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
@@ -339,6 +480,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     enabled: false,
   },
   customOpenAIProviders: [],
+  providerProfiles: [],
   providerValidation: {},
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
@@ -348,6 +490,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     overlap: 100,
     embeddingProvider: 'openai',
     embeddingModel: 'text-embedding-3-small',
+    embeddingModelRef: '',
     autoUpdateEnabled: false,
     autoUpdateIntervalMin: 5,
     minScore: 0.5,
@@ -378,7 +521,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   mcpIncludeWslPath: false,
   chat: {
     saveFolder: DEFAULT_CHAT_SAVE_FOLDER,
-    defaultModel: 'ollama:llama3.1',
+    defaultModel: '',
     systemPrompt: '',
     promptLibrary: [createDefaultPromptEntry()],
     activePromptId: 'default-obsidian-knowledge-work',
@@ -400,6 +543,273 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     enabled: false,
   },
 };
+
+function sameStringList(left: readonly string[] = [], right: readonly string[] = []): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort((a, b) => a.localeCompare(b, 'en'));
+  const sortedRight = [...right].sort((a, b) => a.localeCompare(b, 'en'));
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function hasLegacyProviderTrace(key: ProviderKey, config: ProviderConfig): boolean {
+  const defaults = DEFAULT_SETTINGS[key];
+  return (
+    config.enabled ||
+    config.apiKey.trim().length > 0 ||
+    (config.baseUrl ?? '') !== (defaults.baseUrl ?? '') ||
+    !sameStringList(config.models, defaults.models)
+  );
+}
+
+function normalizeProviderProfileModel(value: unknown): ProviderModelConfig | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  if (!id) return null;
+  const kind: ProviderModelKind = source.kind === 'embedding' ? 'embedding' : 'general';
+  const verificationSource =
+    typeof source.verification === 'object' &&
+    source.verification !== null &&
+    !Array.isArray(source.verification)
+      ? (source.verification as Partial<ProviderModelVerification>)
+      : {};
+  return createProviderModel(id, kind, verificationSource);
+}
+
+function normalizeProviderProfile(value: unknown, fallbackIndex: number): ProviderProfileConfig | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const id =
+    typeof source.id === 'string' && source.id.trim()
+      ? source.id.trim()
+      : `profile-${fallbackIndex + 1}`;
+  const strategy = PROVIDER_KEYS.includes(source.strategy as ProviderKey)
+    ? (source.strategy as ProviderKey)
+    : source.strategy === 'openAICompatible'
+      ? 'openAICompatible'
+      : null;
+  if (!strategy) return null;
+  const rawModels = Array.isArray(source.models) ? source.models : [];
+  const models = rawModels.reduce<ProviderModelConfig[]>((acc, model) => {
+    const normalized = normalizeProviderProfileModel(model);
+    return normalized ? upsertProviderProfileModel(acc, normalized) : acc;
+  }, []);
+  const capabilityOverrides = normalizeProviderCapabilityOverrides(source.capabilityOverrides);
+  return {
+    id,
+    name:
+      typeof source.name === 'string' && source.name.trim()
+        ? source.name.trim()
+        : PROVIDER_STRATEGY_LABELS[strategy],
+    strategy,
+    apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
+    baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl.trim() : undefined,
+    enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
+    models,
+    ...(typeof source.useRequestUrl === 'boolean' ? { useRequestUrl: source.useRequestUrl } : {}),
+    ...(capabilityOverrides ? { capabilityOverrides } : {}),
+  };
+}
+
+function legacyProfileIdForCustomOpenAI(
+  provider: Pick<CustomOpenAIProviderConfig, 'id'>,
+  existingIds: ReadonlySet<string>,
+): string {
+  if (!existingIds.has(provider.id)) return provider.id;
+  return `custom-${provider.id}`;
+}
+
+function findProfileForParsedRef(
+  profiles: readonly ProviderProfileConfig[],
+  parsed: ParsedProviderModelRef,
+): ProviderProfileConfig | undefined {
+  if (parsed.kind === 'profile') {
+    return profiles.find((profile) => profile.id === parsed.profileId);
+  }
+  if (parsed.kind === 'legacy') {
+    const profileId = LEGACY_PROFILE_IDS[parsed.providerKey];
+    return profiles.find((profile) => profile.id === profileId);
+  }
+  if (parsed.kind === 'legacy-custom-openai') {
+    return profiles.find(
+      (profile) =>
+        profile.id === parsed.providerId ||
+        (profile.id === `custom-${parsed.providerId}` && profile.strategy === 'openAICompatible'),
+    );
+  }
+  return undefined;
+}
+
+function migrateModelRef(
+  profiles: readonly ProviderProfileConfig[],
+  value: string,
+  requiredKind: ProviderModelKind,
+): string {
+  const parsed = parseProviderModelRef(value);
+  const profile = findProfileForParsedRef(profiles, parsed);
+  const modelId =
+    parsed.kind === 'profile' || parsed.kind === 'legacy' || parsed.kind === 'legacy-custom-openai'
+      ? parsed.modelId
+      : '';
+  if (!profile || !modelId) return '';
+  const model = profile.models.find((item) => item.id === modelId);
+  if (!model || model.kind !== requiredKind) return '';
+  return buildProviderModelRef(profile.id, modelId);
+}
+
+export interface ResolvedProviderModelRef {
+  profile: ProviderProfileConfig;
+  model: ProviderModelConfig;
+  modelId: string;
+}
+
+export function resolveProviderModelRef(
+  settings: SuperpowerInsideSettings,
+  value: string,
+  requiredKind: ProviderModelKind,
+): ResolvedProviderModelRef | null {
+  const parsed = parseProviderModelRef(value);
+  const profile = findProfileForParsedRef(settings.providerProfiles, parsed);
+  const modelId =
+    parsed.kind === 'profile' || parsed.kind === 'legacy' || parsed.kind === 'legacy-custom-openai'
+      ? parsed.modelId
+      : '';
+  if (!profile || !modelId) return null;
+  const model = profile.models.find((item) => item.id === modelId);
+  if (!model || model.kind !== requiredKind) return null;
+  return { profile, model, modelId };
+}
+
+export function migrateLegacyProviderProfiles(
+  settings: SuperpowerInsideSettings,
+): SuperpowerInsideSettings {
+  const normalizedProfiles =
+    settings.providerProfiles.length > 0
+      ? settings.providerProfiles.reduce<ProviderProfileConfig[]>((acc, profile, index) => {
+          const normalized = normalizeProviderProfile(profile, index);
+          return normalized ? [...acc, normalized] : acc;
+        }, [])
+      : [];
+
+  const profiles = normalizedProfiles;
+  if (profiles.length === 0) {
+    const embeddingProvider = settings.rag.embeddingProvider;
+    const embeddingModel = settings.rag.embeddingModel.trim();
+    const embeddingSelectionChanged =
+      embeddingProvider !== DEFAULT_SETTINGS.rag.embeddingProvider ||
+      embeddingModel !== DEFAULT_SETTINGS.rag.embeddingModel;
+    const legacyRefs = [settings.chat.defaultModel, settings.rag.graphRagModel]
+      .map((value) => parseProviderModelRef(value))
+      .filter((parsed): parsed is Exclude<ParsedProviderModelRef, { kind: 'invalid' }> => {
+        return parsed.kind !== 'invalid';
+      });
+
+    const existingIds = new Set<string>();
+    for (const key of PROVIDER_KEYS) {
+      const config = settings[key];
+      const profileId = LEGACY_PROFILE_IDS[key];
+      const hasProviderTrace = hasLegacyProviderTrace(key, config);
+      const referenced = legacyRefs.some(
+        (ref) => ref.kind === 'legacy' && ref.providerKey === key,
+      );
+      const isEmbeddingProvider =
+        embeddingProvider === key &&
+        embeddingModel.length > 0 &&
+        (hasProviderTrace || embeddingSelectionChanged);
+      if (!hasProviderTrace && !referenced && !isEmbeddingProvider) continue;
+      existingIds.add(profileId);
+      let models = config.models.reduce<ProviderModelConfig[]>((acc, model) => {
+        if (!model.trim()) return acc;
+        const kind: ProviderModelKind =
+          isEmbeddingProvider && model === embeddingModel ? 'embedding' : 'general';
+        return upsertProviderProfileModel(
+          acc,
+          createProviderModel(model, kind, {
+            chatStatus: kind === 'general' ? 'unknown' : 'unknown',
+            embeddingStatus: kind === 'embedding' ? 'success' : 'unknown',
+          }),
+        );
+      }, []);
+      if (isEmbeddingProvider && !models.some((model) => model.id === embeddingModel)) {
+        models = upsertProviderProfileModel(
+          models,
+          createProviderModel(embeddingModel, 'embedding', { embeddingStatus: 'success' }),
+        );
+      }
+      profiles.push({
+        id: profileId,
+        name: PROVIDER_LABELS[key],
+        strategy: key,
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        enabled: config.enabled,
+        models,
+      });
+    }
+
+    for (const provider of settings.customOpenAIProviders) {
+      const profileId = legacyProfileIdForCustomOpenAI(provider, existingIds);
+      existingIds.add(profileId);
+      const embeddingKey = `customOpenAI:${provider.id}`;
+      const isEmbeddingProvider = embeddingProvider === embeddingKey && embeddingModel.length > 0;
+      let models = provider.models.reduce<ProviderModelConfig[]>((acc, model) => {
+        if (!model.trim()) return acc;
+        const kind: ProviderModelKind =
+          isEmbeddingProvider && model === embeddingModel ? 'embedding' : 'general';
+        return upsertProviderProfileModel(
+          acc,
+          createProviderModel(model, kind, {
+            embeddingStatus: kind === 'embedding' ? 'success' : 'unknown',
+          }),
+        );
+      }, []);
+      if (isEmbeddingProvider && !models.some((model) => model.id === embeddingModel)) {
+        models = upsertProviderProfileModel(
+          models,
+          createProviderModel(embeddingModel, 'embedding', { embeddingStatus: 'success' }),
+        );
+      }
+      profiles.push({
+        id: profileId,
+        name: provider.name.trim() || 'OpenAI-Compatible',
+        strategy: 'openAICompatible',
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl,
+        enabled: provider.enabled,
+        models,
+        useRequestUrl: provider.useRequestUrl ?? true,
+        ...(provider.capabilityOverrides
+          ? { capabilityOverrides: provider.capabilityOverrides }
+          : {}),
+      });
+    }
+  }
+
+  const nextRag = {
+    ...settings.rag,
+    embeddingModelRef:
+      settings.rag.embeddingModelRef?.trim() ||
+      migrateModelRef(
+        profiles,
+        settings.rag.embeddingProvider === 'other'
+          ? ''
+          : `${settings.rag.embeddingProvider}:${settings.rag.embeddingModel}`,
+        'embedding',
+      ),
+  };
+  const nextChat = {
+    ...settings.chat,
+    defaultModel: migrateModelRef(profiles, settings.chat.defaultModel, 'general'),
+  };
+
+  return {
+    ...settings,
+    providerProfiles: profiles,
+    rag: nextRag,
+    chat: nextChat,
+  };
+}
+
 export interface PluginLike {
   app: App;
   settings: SuperpowerInsideSettings;
@@ -815,10 +1225,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private repopulateDefaultModelDropdown(): void {
     const dropdown = this.defaultModelDropdownEl;
     if (!dropdown) return;
-    const allModels: {
-      value: string;
-      label: string;
-    }[] = [];
+    const allModels = buildChatModelOptions(this.plugin.settings, {
+      currentModel: this.plugin.settings.chat.defaultModel,
+    });
+    if (this.plugin.settings.providerProfiles.length === 0) {
     for (const key of CHAT_PROVIDER_KEYS) {
       const conf = this.plugin.settings[key];
       if (!conf.enabled) continue;
@@ -837,6 +1247,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
     }
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
+    }
     const defaultModel = this.plugin.settings.chat.defaultModel;
     dropdown.empty();
     if (allModels.length === 0) {
@@ -995,10 +1406,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }
         });
       });
-    const allModels: {
-      value: string;
-      label: string;
-    }[] = [];
+    const allModels = buildChatModelOptions(this.plugin.settings, {
+      currentModel: this.plugin.settings.chat.defaultModel,
+    });
+    if (this.plugin.settings.providerProfiles.length === 0) {
     for (const key of CHAT_PROVIDER_KEYS) {
       const conf = this.plugin.settings[key];
       if (!conf.enabled) continue;
@@ -1017,6 +1428,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
     }
     allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
+    }
     new Setting(basics)
       .setName(t('defaultModel'))
       .setDesc(t('defaultModelDesc'))
@@ -1266,6 +1678,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderOverviewSection(containerEl, titleText, rows);
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
+    this.buildProviderProfilesTab(containerEl);
+    return;
     const fixedTargets: ProviderSettingsTarget[] = [
       {
         kind: 'fixed',
@@ -2374,6 +2788,154 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const newAnchor = createDiv({ cls: ANCHOR_CLS });
     section.after(newAnchor);
     section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto081') });
+    {
+    const ragConfig = this.plugin.settings.rag;
+    const effectiveModelRef = this.pendingEmbeddingModel ?? ragConfig.embeddingModelRef ?? '';
+    const profileModelOptions = buildEmbeddingProfileModelOptions(this.plugin.settings, {
+      currentModel: effectiveModelRef,
+      includeEmpty: true,
+      emptyLabel: t('settingsAuto008'),
+    });
+    const isProfilePending = this.pendingEmbeddingModel !== null;
+    const profileNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
+    profileNotice.setText(t('settingsAuto087'));
+    if (isProfilePending) {
+      const warningEl = section.createDiv({
+        cls: `${WARNING_CLS} superpower-inside-settings-warning superpower-inside-embedding-pending-warning`,
+      });
+      warningEl.setText(t('settingsAuto083'));
+    }
+    new Setting(section)
+      .setName(t('embeddingModel'))
+      .setDesc(t('settingsAuto087'))
+      .addDropdown((dropdown) => {
+        for (const option of profileModelOptions) {
+          dropdown.addOption(option.value, option.label);
+        }
+        dropdown.setValue(effectiveModelRef);
+        dropdown.onChange((value) => {
+          if (this.isRebuildingEmbeddingSection) return;
+          this.pendingEmbeddingModel = value;
+          this.isRebuildingEmbeddingSection = true;
+          try {
+            this.buildEmbeddingProviderSection(containerEl);
+          } finally {
+            this.isRebuildingEmbeddingSection = false;
+          }
+        });
+      });
+    if (isProfilePending) {
+      const btnRow = section.createDiv({
+        cls: 'superpower-inside-rag-controls superpower-inside-embedding-pending-actions',
+      });
+      const saveBtn = btnRow.createEl('button', { text: t('settingsAuto088') });
+      saveBtn.addEventListener('click', () => {
+        void (async () => {
+          if (this.isRebuildingEmbeddingSection) return;
+          const nextRef = this.pendingEmbeddingModel ?? '';
+          const resolved = resolveProviderModelRef(this.plugin.settings, nextRef, 'embedding');
+          ragConfig.embeddingModelRef = nextRef;
+          if (resolved) {
+            ragConfig.embeddingModel = resolved.modelId;
+            ragConfig.embeddingProvider =
+              resolved.profile.strategy === 'openAICompatible'
+                ? `customOpenAI:${resolved.profile.id}`
+                : (resolved.profile.strategy as EmbeddingProviderKey);
+          }
+          this.pendingEmbeddingModel = null;
+          await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          this.isRebuildingEmbeddingSection = true;
+          try {
+            this.buildEmbeddingProviderSection(containerEl);
+          } finally {
+            this.isRebuildingEmbeddingSection = false;
+          }
+        })();
+      });
+      const cancelBtn = btnRow.createEl('button', { text: t('settingsAuto092') });
+      cancelBtn.addEventListener('click', () => {
+        if (this.isRebuildingEmbeddingSection) return;
+        this.pendingEmbeddingModel = null;
+        this.isRebuildingEmbeddingSection = true;
+        try {
+          this.buildEmbeddingProviderSection(containerEl);
+          new Notice(t('settingsAuto093'));
+        } finally {
+          this.isRebuildingEmbeddingSection = false;
+        }
+      });
+    }
+    const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
+    statusEl.setAttribute('role', 'status');
+    statusEl.setAttribute('aria-live', 'polite');
+    new Setting(section)
+      .setName(t('settingsAuto099'))
+      .setDesc(t('settingsAuto100'))
+      .addButton((button) => {
+        button.setButtonText(t('settingsAuto099'));
+        button.onClick(async () => {
+          await runActionWithFeedback({
+            button,
+            loadingText: t('testing'),
+            action: async () => {
+              statusEl.setText(t('testing'));
+              const resolved = resolveProviderModelRef(
+                this.plugin.settings,
+                effectiveModelRef,
+                'embedding',
+              );
+              if (!resolved) {
+                const detail = t('ragIndexerSelectEmbeddingModel');
+                statusEl.setText(detail);
+                return { status: 'noop', detail };
+              }
+              try {
+                const { testEmbeddingGenerationForStrategy } = await import('./llm/validation');
+                const result = await testEmbeddingGenerationForStrategy(
+                  resolved.profile.strategy,
+                  resolved.modelId,
+                  {
+                    ...resolved.profile,
+                    models: resolved.profile.models.map((model) => model.id),
+                  },
+                );
+                if (result.valid) {
+                  resolved.profile.models = upsertProviderProfileModel(
+                    resolved.profile.models,
+                    createProviderModel(resolved.modelId, 'embedding', {
+                      embeddingStatus: 'success',
+                      lastCheckedAt: Date.now(),
+                    }),
+                  );
+                  await this.plugin.saveSettingsLight();
+                  const detail = t('settingsAuto101', { v0: String(resolved.modelId) });
+                  statusEl.setText(detail);
+                  return { status: 'success', detail };
+                }
+                resolved.profile.models = upsertProviderProfileModel(
+                  resolved.profile.models,
+                  createProviderModel(resolved.modelId, 'embedding', {
+                    embeddingStatus: 'failed',
+                    lastError: String(result.error),
+                    lastCheckedAt: Date.now(),
+                  }),
+                );
+                await this.plugin.saveSettingsLight();
+                const detail = t('settingsAuto102', { v0: String(result.error) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: String(result.error), notice: detail };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const detail = t('settingsAuto098', { v0: String(msg) });
+                statusEl.setText(detail);
+                return { status: 'error', detail: msg, notice: detail };
+              }
+            },
+          });
+        });
+      });
+    return;
+    }
     const rag = this.plugin.settings.rag;
     const effectiveProvider = this.pendingEmbeddingProvider ?? rag.embeddingProvider;
     const effectiveModel = this.pendingEmbeddingModel ?? rag.embeddingModel;
@@ -2381,15 +2943,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       ? null
       : effectiveProvider;
     const embeddingModels = buildEmbeddingModels();
-    const modelsForProvider = builtInProvider ? embeddingModels[builtInProvider] : [];
+    const modelsForProvider =
+      builtInProvider === null ? [] : embeddingModels[builtInProvider as BuiltInEmbeddingProviderKey];
     const isOther = effectiveProvider === 'other';
     const embeddingValidationConfig = isOther
       ? null
       : this.getEmbeddingProviderConfig(effectiveProvider);
-    const providerModels = isOther ? [] : this.getEmbeddingProviderModels(effectiveProvider);
+    const providerModels =
+      isOther || effectiveProvider === null
+        ? []
+        : this.getEmbeddingProviderModels(effectiveProvider);
     const modelCapabilities =
-      !isOther && embeddingValidationConfig
-        ? this.getProviderModelCapabilities(effectiveProvider, embeddingValidationConfig)
+      !isOther && effectiveProvider !== null && embeddingValidationConfig
+        ? this.getProviderModelCapabilities(
+            effectiveProvider,
+            embeddingValidationConfig as ProviderConfig | CustomOpenAIProviderConfig,
+          )
         : {};
     const modelOptions = isOther
       ? []
@@ -4334,6 +4903,440 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
   }
+  private buildProviderProfilesTab(containerEl: HTMLElement): void {
+    const profiles = this.plugin.settings.providerProfiles;
+    const readyCount = profiles.filter(
+      (profile) =>
+        profile.enabled &&
+        profile.models.some((model) => model.kind === 'general') &&
+        (!shouldRequireProviderApiKey(this.getProfileApiKeyVisibilityKey(profile)) ||
+          profile.apiKey.trim()),
+    ).length;
+    const enabledCount = profiles.filter((profile) => profile.enabled).length;
+    const generalModelCount = profiles.reduce(
+      (count, profile) => count + profile.models.filter((model) => model.kind === 'general').length,
+      0,
+    );
+    const embeddingModelCount = profiles.reduce(
+      (count, profile) =>
+        count + profile.models.filter((model) => model.kind === 'embedding').length,
+      0,
+    );
+
+    const introPanel = this.createSettingsPanel(containerEl, t('settingsAuto011'), {
+      description: t('providerCommandCenterDesc'),
+      meta: t('settingsAuto025', { v0: String(profiles.length) }),
+      className: 'superpower-inside-settings-intro-panel',
+    });
+    introPanel.addClass('superpower-inside-providers-intro');
+
+    const commandCenter = containerEl.createDiv({
+      cls: 'superpower-inside-providers-command-center',
+    });
+    const commandCopy = commandCenter.createDiv({
+      cls: 'superpower-inside-providers-command-copy',
+    });
+    commandCopy.createDiv({
+      cls: 'superpower-inside-providers-command-title',
+      text: t('providerCommandCenterTitle'),
+    });
+    commandCopy.createDiv({
+      cls: 'superpower-inside-providers-command-desc',
+      text: t('providerCommandCenterDesc'),
+    });
+    const summaryGrid = commandCenter.createDiv({
+      cls: 'superpower-inside-provider-summary-grid',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'badge-check',
+      value: String(readyCount),
+      label: t('providerDashboardReady'),
+      detail: t('providerDashboardReadyDetail'),
+      tone: readyCount > 0 ? 'ready' : 'disabled',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'power',
+      value: String(enabledCount),
+      label: t('providerDashboardEnabled'),
+      detail: t('providerDashboardEnabledDetail'),
+      tone: enabledCount > 0 ? 'ready' : 'disabled',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'sparkles',
+      value: String(generalModelCount),
+      label: 'General models',
+      detail: 'Chat and GraphRAG generation',
+      tone: generalModelCount > 0 ? 'ready' : 'needs-models',
+    });
+    this.createProviderSummaryCard(summaryGrid, {
+      iconName: 'scan-search',
+      value: String(embeddingModelCount),
+      label: 'Embedding models',
+      detail: 'RAG indexing and retrieval',
+      tone: embeddingModelCount > 0 ? 'ready' : 'needs-models',
+    });
+    const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
+    const addButton = toolbar.createEl('button', {
+      cls: 'superpower-inside-provider-toolbar-btn',
+      attr: { type: 'button' },
+    });
+    setIcon(addButton, 'plus');
+    addButton.createSpan({ text: t('settingsAuto268') });
+    addButton.addEventListener('click', () => {
+      this.plugin.settings.providerProfiles.push({
+        id: this.createProviderProfileId(),
+        name: 'New provider',
+        strategy: 'openAICompatible',
+        apiKey: '',
+        baseUrl: '',
+        enabled: false,
+        models: [],
+        useRequestUrl: true,
+      });
+      this.debouncedSave();
+      this.display();
+    });
+
+    const providerGrid = containerEl.createDiv({ cls: 'superpower-inside-provider-grid' });
+    for (const profile of profiles) {
+      this.buildProviderProfileCard(providerGrid, profile);
+    }
+  }
+
+  private buildProviderProfileCard(
+    containerEl: HTMLElement,
+    profile: ProviderProfileConfig,
+  ): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-provider-shell superpower-inside-provider-card is-expanded',
+    });
+    section.setAttribute('data-provider-key', `profile:${profile.id}`);
+    const hero = section.createEl('button', {
+      cls: 'superpower-inside-provider-hero',
+      attr: { type: 'button', 'aria-expanded': 'true' },
+    });
+    const brandIcon = hero.createSpan({ cls: 'superpower-inside-provider-brand-icon' });
+    setIcon(brandIcon, profile.enabled ? 'badge-check' : 'power-off');
+    const titleCopy = hero.createSpan({ cls: 'superpower-inside-provider-title-copy' });
+    titleCopy.createSpan({
+      cls: 'superpower-inside-provider-title-text',
+      text: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+    });
+    titleCopy.createSpan({
+      cls: 'superpower-inside-provider-subtitle',
+      text: PROVIDER_STRATEGY_LABELS[profile.strategy],
+    });
+    const statusToken = hero.createSpan({
+      cls: `superpower-inside-provider-status-token is-${profile.enabled ? 'ready' : 'disabled'}`,
+      text: profile.enabled ? t('providerStatusReady') : t('providerStatusOff'),
+    });
+    statusToken.setAttribute('aria-live', 'polite');
+    const chevron = hero.createSpan({ cls: 'superpower-inside-provider-chevron' });
+    setIcon(chevron, 'chevron-right');
+
+    const body = section.createDiv({
+      cls: 'superpower-inside-provider-body superpower-inside-provider-profile-body',
+    });
+    const connectionSection = body.createDiv({
+      cls: 'superpower-inside-provider-section superpower-inside-provider-connection-panel',
+    });
+    connectionSection.createDiv({
+      cls: 'superpower-inside-provider-section-title',
+      text: t('providerConnectionSection'),
+    });
+    new Setting(connectionSection).setName(t('enabled')).addToggle((toggle) =>
+      toggle.setValue(profile.enabled).onChange((value) => {
+        profile.enabled = value;
+        this.debouncedSave();
+        this.display();
+      }),
+    );
+    new Setting(connectionSection).setName(t('settingsAuto244')).addText((text) =>
+      text
+        .setPlaceholder(t('settingsAuto245'))
+        .setValue(profile.name)
+        .onChange((value) => {
+          profile.name = value.trim();
+          this.debouncedSave();
+        }),
+    );
+    new Setting(connectionSection).setName('Provider strategy').addDropdown((dropdown) => {
+      for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
+        dropdown.addOption(value, label);
+      }
+      dropdown.setValue(profile.strategy);
+      dropdown.onChange((value) => {
+        profile.strategy = value as ProviderStrategyKey;
+        if (!profile.baseUrl?.trim()) {
+          profile.baseUrl = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
+        }
+        delete this.plugin.settings.providerValidation[`profile:${profile.id}`];
+        this.debouncedSave();
+        this.display();
+      });
+    });
+    if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
+      new Setting(connectionSection).setName(t('apiKey')).addText((text) =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(profile.apiKey)
+          .onChange((value) => {
+            profile.apiKey = value.trim();
+            this.debouncedSave();
+          }),
+      );
+    }
+    new Setting(connectionSection).setName('Base URL').addText((text) =>
+      text
+        .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
+        .setValue(profile.baseUrl ?? '')
+        .onChange((value) => {
+          profile.baseUrl = value.trim();
+          this.debouncedSave();
+        }),
+    );
+    const statusEl = body.createDiv({ cls: 'superpower-inside-provider-validation-status' });
+    statusEl.setAttribute('role', 'status');
+    statusEl.setAttribute('aria-live', 'polite');
+    this.buildProviderProfileModelSection(body, profile, 'general', statusEl);
+    this.buildProviderProfileModelSection(body, profile, 'embedding', statusEl);
+    const removeButton = body.createEl('button', {
+      cls: 'superpower-inside-provider-remove-btn',
+      attr: { type: 'button', 'aria-label': t('settingsAuto267') },
+    });
+    setIcon(removeButton, 'trash-2');
+    removeButton.createSpan({ text: t('settingsAuto267') });
+    removeButton.addEventListener('click', () => {
+      this.plugin.settings.providerProfiles = this.plugin.settings.providerProfiles.filter(
+        (item) => item.id !== profile.id,
+      );
+      this.debouncedSave();
+      this.display();
+    });
+  }
+
+  private buildProviderProfileModelSection(
+    containerEl: HTMLElement,
+    profile: ProviderProfileConfig,
+    kind: ProviderModelKind,
+    statusEl: HTMLElement,
+  ): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-provider-section superpower-inside-provider-model-shell superpower-inside-provider-profile-model-section',
+    });
+    section.createDiv({
+      cls: 'superpower-inside-provider-section-title',
+      text: kind === 'embedding' ? 'Embedding models' : 'General models',
+    });
+    const addRow = section.createDiv({ cls: 'superpower-inside-provider-model-controls' });
+    const input = addRow.createEl('input', {
+      type: 'text',
+      placeholder: kind === 'embedding' ? 'text-embedding-3-small' : 'gpt-4o-mini',
+      cls: 'superpower-inside-provider-model-search',
+    });
+    const addButton = addRow.createEl('button', {
+      cls: 'superpower-inside-provider-action-btn',
+      attr: { type: 'button' },
+    });
+    setIcon(addButton, 'plus');
+    addButton.createSpan({ text: kind === 'embedding' ? 'Add embedding model' : 'Add general model' });
+    addButton.addEventListener('click', () => {
+      const id = input.value.trim();
+      if (!id) return;
+      profile.models = upsertProviderProfileModel(
+        profile.models,
+        createProviderModel(id, kind, {
+          chatStatus: kind === 'general' ? 'unknown' : 'unknown',
+          embeddingStatus: kind === 'embedding' ? 'unknown' : 'unknown',
+        }),
+      );
+      input.value = '';
+      this.debouncedSave();
+      this.display();
+    });
+    if (kind === 'general') {
+      const fetchButton = addRow.createEl('button', {
+        cls: 'superpower-inside-provider-action-btn',
+        attr: { type: 'button' },
+      });
+      setIcon(fetchButton, 'download');
+      fetchButton.createSpan({ text: t('fetchModels') });
+      fetchButton.addEventListener('click', () => {
+        void runActionWithFeedback({
+          button: fetchButton,
+          action: async () => {
+            const { fetchProviderModelsForStrategy } = await import('./llm/validation');
+            const result = await fetchProviderModelsForStrategy(profile.strategy, {
+              ...profile,
+              models: profile.models.map((model) => model.id),
+            });
+            if (!result.valid) {
+              const detail = String(result.error);
+              statusEl.setText(detail);
+              return { status: 'error', detail, notice: detail };
+            }
+            for (const model of result.models) {
+              profile.models = upsertProviderProfileModel(
+                profile.models,
+                createProviderModel(model, 'general'),
+              );
+            }
+            await this.plugin.saveSettingsLight();
+            statusEl.setText(t('settingsAuto258', { v0: String(result.models.length) }));
+            this.display();
+            return { status: 'success', detail: String(result.models.length) };
+          },
+        });
+      });
+    }
+    const list = section.createDiv({
+      cls: 'superpower-inside-settings-model-list superpower-inside-provider-model-list',
+    });
+    const models = profile.models.filter((model) => model.kind === kind);
+    if (models.length === 0) {
+      list.createDiv({ cls: 'superpower-inside-provider-empty-models', text: t('noModelsFound') });
+      return;
+    }
+    for (const model of models) {
+      const item = list.createDiv({ cls: 'superpower-inside-settings-model-item' });
+      item.createSpan({ text: model.id });
+      const capabilityRow = item.createSpan({
+        cls: 'superpower-inside-provider-model-capabilities',
+      });
+      const status =
+        kind === 'embedding'
+          ? model.verification.embeddingStatus
+          : model.verification.chatStatus;
+      capabilityRow.createSpan({
+        cls: `superpower-inside-provider-model-capability is-${status}`,
+        text: this.getCapabilityLabel(kind === 'embedding' ? 'embedding' : 'chat', status),
+      });
+      const actions = item.createSpan({ cls: 'superpower-inside-provider-model-actions' });
+      const verifyButton = actions.createEl('button', {
+        cls: 'superpower-inside-provider-model-action-btn',
+        attr: {
+          type: 'button',
+          'aria-label':
+            kind === 'embedding' ? t('providerTestEmbeddingModel') : t('providerTestChatModel'),
+        },
+      });
+      setIcon(verifyButton, kind === 'embedding' ? 'scan-search' : 'sparkles');
+      verifyButton.addEventListener('click', () => {
+        void this.verifyProviderProfileModel(profile, model.id, kind, verifyButton, statusEl);
+      });
+      const removeButton = actions.createEl('button', {
+        cls: 'superpower-inside-provider-model-action-btn',
+        attr: { type: 'button', 'aria-label': t('settingsAuto267') },
+      });
+      setIcon(removeButton, 'x');
+      removeButton.addEventListener('click', () => {
+        profile.models = profile.models.filter((itemModel) => itemModel.id !== model.id);
+        this.debouncedSave();
+        this.display();
+      });
+    }
+  }
+
+  private async verifyProviderProfileModel(
+    profile: ProviderProfileConfig,
+    modelId: string,
+    kind: ProviderModelKind,
+    button: HTMLButtonElement,
+    statusEl: HTMLElement,
+  ): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      loadingText: t('testing'),
+      action: async () => {
+        const validationConfig = { ...profile, models: profile.models.map((model) => model.id) };
+        if (kind === 'embedding') {
+          const { testEmbeddingGenerationForStrategy } = await import('./llm/validation');
+          const result = await testEmbeddingGenerationForStrategy(
+            profile.strategy,
+            modelId,
+            validationConfig,
+          );
+          profile.models = upsertProviderProfileModel(
+            profile.models,
+            createProviderModel(modelId, 'embedding', {
+              embeddingStatus: result.valid ? 'success' : 'failed',
+              lastError: result.valid ? undefined : String(result.error),
+              lastCheckedAt: Date.now(),
+            }),
+          );
+          await this.plugin.saveSettingsLight();
+          const detail = result.valid
+            ? t('settingsAuto101', { v0: String(modelId) })
+            : t('settingsAuto102', { v0: String(result.error) });
+          statusEl.setText(detail);
+          return result.valid
+            ? { status: 'success' as const, detail }
+            : { status: 'error' as const, detail: String(result.error), notice: detail };
+        }
+        const { testProviderGenerationForStrategy } = await import('./llm/validation');
+        const result = await testProviderGenerationForStrategy(
+          profile.strategy,
+          validationConfig,
+          modelId,
+        );
+        const existing = profile.models.find((model) => model.id === modelId);
+        profile.models = upsertProviderProfileModel(
+          profile.models,
+          createProviderModel(modelId, existing?.kind === 'embedding' ? 'embedding' : 'general', {
+            chatStatus: result.valid ? 'success' : 'failed',
+            lastError: result.valid ? undefined : String(result.error),
+            lastCheckedAt: Date.now(),
+          }),
+        );
+        await this.plugin.saveSettingsLight();
+        const detail = result.valid
+          ? t('settingsAuto264', { v0: String(modelId) })
+          : t('settingsAuto265', { v0: String(result.error) });
+        statusEl.setText(detail);
+        return result.valid
+          ? { status: 'success' as const, detail }
+          : { status: 'error' as const, detail: String(result.error), notice: detail };
+      },
+    });
+    this.display();
+  }
+
+  private getProfileApiKeyVisibilityKey(
+    profile: ProviderProfileConfig,
+  ): 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter' | 'customOpenAI' {
+    return profile.strategy === 'openAICompatible' ? 'customOpenAI' : profile.strategy;
+  }
+
+  private getProviderStrategyDefaultBaseUrl(strategy: ProviderStrategyKey): string {
+    switch (strategy) {
+      case 'openai':
+        return 'https://api.openai.com';
+      case 'claude':
+        return 'https://api.anthropic.com';
+      case 'ollama':
+        return 'http://localhost:11434';
+      case 'ollamaCloud':
+        return 'https://ollama.com';
+      case 'openRouter':
+        return 'https://openrouter.ai/api';
+      case 'openAICompatible':
+        return 'http://localhost:1234/v1';
+      default:
+        return '';
+    }
+  }
+
+  private createProviderProfileId(): string {
+    const existing = new Set(this.plugin.settings.providerProfiles.map((profile) => profile.id));
+    let index = this.plugin.settings.providerProfiles.length + 1;
+    let id = `profile-${index}`;
+    while (existing.has(id)) {
+      index += 1;
+      id = `profile-${index}`;
+    }
+    return id;
+  }
+
   private createProviderSummaryCard(
     containerEl: HTMLElement,
     summary: {
@@ -5296,6 +6299,50 @@ export interface ChatModelOption {
   value: string;
   label: string;
 }
+
+function buildProfileModelOptions(
+  settings: SuperpowerInsideSettings,
+  kind: ProviderModelKind,
+  currentModel: string,
+): ChatModelOption[] {
+  const result: ChatModelOption[] = [];
+  for (const profile of settings.providerProfiles) {
+    if (!profile.enabled) continue;
+    const profileLabel = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    for (const model of profile.models) {
+      if (model.kind !== kind) continue;
+      result.push({
+        value: buildProviderModelRef(profile.id, model.id),
+        label: `${profileLabel} / ${model.id}`,
+      });
+    }
+  }
+  result.sort((a, b) => a.label.localeCompare(b.label, 'en'));
+  const current = currentModel.trim();
+  if (current && !result.some((option) => option.value === current)) {
+    result.push({ value: current, label: t('settingsAuto274', { v0: String(current) }) });
+  }
+  return result;
+}
+
+export function buildEmbeddingProfileModelOptions(
+  settings: SuperpowerInsideSettings,
+  options: {
+    currentModel: string;
+    includeEmpty?: boolean;
+    emptyLabel?: string;
+  },
+): ChatModelOption[] {
+  const result: ChatModelOption[] = [];
+  if (options.includeEmpty) {
+    result.push({ value: '', label: options.emptyLabel ?? t('settingsAuto008') });
+  }
+  return [
+    ...result,
+    ...buildProfileModelOptions(settings, 'embedding', options.currentModel),
+  ];
+}
+
 export function buildChatModelOptions(
   settings: SuperpowerInsideSettings,
   options: {
@@ -5307,6 +6354,12 @@ export function buildChatModelOptions(
   const result: ChatModelOption[] = [];
   if (options.includeEmpty) {
     result.push({ value: '', label: options.emptyLabel ?? t('settingsAuto008') });
+  }
+  if (settings.providerProfiles.length > 0) {
+    return [
+      ...result,
+      ...buildProfileModelOptions(settings, 'general', options.currentModel),
+    ];
   }
   const providers = [
     { key: 'openai', prefix: 'openai', label: PROVIDER_LABELS.openai, config: settings.openai },
@@ -5329,7 +6382,7 @@ export function buildChatModelOptions(
     if (!config.enabled) continue;
     for (const model of config.models) {
       const value = `${prefix}:${model}`;
-      result.push({ value, label: `${label} — ${model}` });
+      result.push({ value, label: `${label} / ${model}` });
     }
   }
   for (const provider of settings.customOpenAIProviders) {
@@ -5337,7 +6390,7 @@ export function buildChatModelOptions(
     const providerLabel = provider.name.trim() || 'Custom OpenAI-Compatible';
     for (const model of provider.models) {
       const value = `customOpenAI:${provider.id}:${model}`;
-      result.push({ value, label: `${providerLabel} — ${model}` });
+      result.push({ value, label: `${providerLabel} / ${model}` });
     }
   }
   const current = options.currentModel.trim();

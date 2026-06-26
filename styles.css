@@ -4610,6 +4610,11 @@
   display: grid;
 }
 
+.superpower-inside-provider-card.is-expanded .superpower-inside-provider-profile-body {
+  display: flex;
+  flex-direction: column;
+}
+
 .superpower-inside-provider-hero {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -4910,6 +4915,10 @@
 .superpower-inside-provider-model-shell {
   grid-area: models;
   border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-provider-profile-model-section {
+  grid-area: auto;
 }
 
 .superpower-inside-provider-section-title {

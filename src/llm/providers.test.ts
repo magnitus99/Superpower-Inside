@@ -7,6 +7,7 @@ import type { ChatMessage, ToolCallInfo } from './providers';
 import {
   createCustomOpenAIProvider,
   createProvider,
+  createProviderForStrategy,
   normalizeForClaude,
   normalizeForOllama,
   normalizeForOpenAI,
@@ -185,6 +186,37 @@ describe('normalizeForOpenAI', () => {
 });
 
 describe('OpenAI-compatible chat request body', () => {
+  it('profile strategy factory creates OpenAI-compatible providers from profile config', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { choices: [{ message: { content: 'ok' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'openAICompatible',
+      {
+        apiKey: 'test-key',
+        baseUrl: 'http://localhost:1234/v1',
+        enabled: true,
+        models: [],
+        useRequestUrl: true,
+      },
+      'custom-model',
+      'local',
+    );
+
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.1);
+
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) {
+      throw new Error('requestUrl should be called with RequestUrlParam');
+    }
+    expect(call.url).toBe('http://localhost:1234/v1/chat/completions');
+    expect(provider.capability.providerKey).toBe('customOpenAI:local');
+  });
+
   it('OpenAI 비스트리밍 chat 요청은 Ollama 전용 options/think 필드를 보내지 않는다', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(

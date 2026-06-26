@@ -1,5 +1,5 @@
 import { requestUrl } from 'obsidian';
-import type { CustomOpenAIProviderConfig, ProviderConfig } from '../settings';
+import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
   normalizeReasoningChunk,
@@ -896,4 +896,25 @@ export function createCustomOpenAIProvider(
     useRequestUrl,
     capability,
   );
+}
+
+export function createProviderForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig & Partial<CustomOpenAIProviderConfig>,
+  modelOverride?: string,
+  profileId = 'profile',
+): LLMProvider {
+  if (key === 'openAICompatible') {
+    return createCustomOpenAIProvider(
+      {
+        ...config,
+        id: config.id ?? profileId,
+        name: config.name ?? 'OpenAI-Compatible',
+        useRequestUrl: config.useRequestUrl ?? true,
+        capabilityOverrides: config.capabilityOverrides,
+      },
+      modelOverride,
+    );
+  }
+  return createProvider(key, config, modelOverride);
 }

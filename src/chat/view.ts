@@ -1,7 +1,9 @@
 import { ItemView, WorkspaceLeaf, Notice, TFile, type Events } from 'obsidian';
 import {
+  buildChatModelOptions,
   CHAT_PROVIDER_KEYS,
   PROVIDER_LABELS,
+  resolveProviderModelRef,
   type PluginLike,
   type ProviderKey,
 } from '../settings';
@@ -593,24 +595,9 @@ export class ChatView extends ItemView {
     if (!this.modelSelectEl) return;
     this.modelSelectEl.empty();
 
-    const allModels: { value: string; label: string }[] = [];
-    for (const key of CHAT_PROVIDER_KEYS) {
-      const conf = this.plugin.settings[key];
-      if (!conf.enabled) continue;
-      for (const model of conf.models) {
-        allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
-      }
-    }
-    for (const provider of this.plugin.settings.customOpenAIProviders) {
-      if (!provider.enabled) continue;
-      const label = provider.name.trim() || 'Custom OpenAI-Compatible';
-      for (const model of provider.models) {
-        allModels.push({
-          value: `customOpenAI:${provider.id}:${model}`,
-          label: `${label} — ${model}`,
-        });
-      }
-    }
+    const allModels = buildChatModelOptions(this.plugin.settings, {
+      currentModel: this.plugin.settings.chat.defaultModel,
+    });
 
     if (allModels.length === 0) {
       const opt = this.modelSelectEl.createEl('option');
@@ -678,6 +665,9 @@ export class ChatView extends ItemView {
   }
 
   private getEnabledProviderCount(): number {
+    if (this.plugin.settings.providerProfiles.length > 0) {
+      return this.plugin.settings.providerProfiles.filter((profile) => profile.enabled).length;
+    }
     const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
     const custom = this.plugin.settings.customOpenAIProviders.filter(
       (provider) => provider.enabled,
@@ -686,6 +676,15 @@ export class ChatView extends ItemView {
   }
 
   private getAvailableModelCount(): number {
+    if (this.plugin.settings.providerProfiles.length > 0) {
+      return this.plugin.settings.providerProfiles.reduce(
+        (count, profile) =>
+          profile.enabled
+            ? count + profile.models.filter((model) => model.kind === 'general').length
+            : count,
+        0,
+      );
+    }
     const builtIn = CHAT_PROVIDER_KEYS.reduce(
       (count, key) =>
         this.plugin.settings[key].enabled ? count + this.plugin.settings[key].models.length : count,
@@ -2195,7 +2194,9 @@ export class ChatView extends ItemView {
     this.previousUserQueries.push(text);
     if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
 
-    const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
+    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } = await import(
+      '../llm/providers'
+    );
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
@@ -2214,7 +2215,27 @@ export class ChatView extends ItemView {
     let providerLabel: string;
     let provider: LLMProvider;
 
-    if (parts[0] === 'customOpenAI') {
+    const resolvedProfileModel = resolveProviderModelRef(
+      this.plugin.settings,
+      selectedModel,
+      'general',
+    );
+    if (resolvedProfileModel) {
+      const { profile, modelId } = resolvedProfileModel;
+      if (!profile.enabled) {
+        new Notice(t('noActiveProviderNotice'));
+        return;
+      }
+      key = `profile:${profile.id}`;
+      modelName = modelId;
+      providerLabel = profile.name.trim() || profile.strategy;
+      provider = createProviderForStrategy(
+        profile.strategy,
+        { ...profile, models: profile.models.map((model) => model.id) },
+        modelName,
+        profile.id,
+      );
+    } else if (parts[0] === 'customOpenAI') {
       if (parts.length < 3) {
         new Notice(t('customModelSettingInvalid'));
         return;
@@ -3259,8 +3280,25 @@ export class ChatView extends ItemView {
       (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
     );
     if (successfulToolCalls.length > 0 && message.providerKey && message.model) {
-      const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
-      const provider = message.providerKey.startsWith('customOpenAI:')
+      const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
+        await import('../llm/providers');
+      const profileRef = message.providerKey.startsWith('profile:')
+        ? `${message.providerKey}:${message.model}`
+        : '';
+      const resolvedProfileModel = profileRef
+        ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
+        : null;
+      const provider = resolvedProfileModel
+        ? createProviderForStrategy(
+            resolvedProfileModel.profile.strategy,
+            {
+              ...resolvedProfileModel.profile,
+              models: resolvedProfileModel.profile.models.map((model) => model.id),
+            },
+            resolvedProfileModel.modelId,
+            resolvedProfileModel.profile.id,
+          )
+        : message.providerKey.startsWith('customOpenAI:')
         ? (() => {
             const providerId = message.providerKey?.split(':')[1] ?? '';
             const customProvider = this.plugin.settings.customOpenAIProviders.find(

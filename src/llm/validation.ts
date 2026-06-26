@@ -1,6 +1,11 @@
 import { requestUrl } from 'obsidian';
 import { t } from '../i18n';
-import type { CustomOpenAIProviderConfig, EmbeddingProviderKey, ProviderConfig } from '../settings';
+import type {
+  CustomOpenAIProviderConfig,
+  EmbeddingProviderKey,
+  ProviderConfig,
+  ProviderStrategyKey,
+} from '../settings';
 import type { ProviderKey } from './providers';
 
 export interface ProviderModelInfo {
@@ -463,7 +468,7 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
 }
 
 function createProviderValidator(
-  key: ProviderValidationKey,
+  key: ProviderValidationKey | ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): ProviderConnectionValidator | null {
   if (key === 'claude') {
@@ -475,7 +480,7 @@ function createProviderValidator(
   if (key === 'openRouter') {
     return new OpenAICompatibleValidator(config, OPENROUTER_BASE_URL, true);
   }
-  if (key === 'customOpenAI') {
+  if (key === 'customOpenAI' || key === 'openAICompatible') {
     if (!config.baseUrl?.trim()) {
       return null;
     }
@@ -493,7 +498,7 @@ function createProviderValidator(
 }
 
 function createEmbeddingValidator(
-  providerKey: EmbeddingProviderKey,
+  providerKey: EmbeddingProviderKey | ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): EmbeddingConnectionValidator | null {
   if (providerKey === 'ollama') {
@@ -502,6 +507,15 @@ function createEmbeddingValidator(
   if (providerKey === 'openai' || providerKey === 'openRouter') {
     const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
     return new OpenAICompatibleEmbeddingValidator(config, baseUrl);
+  }
+  if (providerKey === 'openAICompatible') {
+    if (!config.baseUrl?.trim()) {
+      return null;
+    }
+    return new OpenAICompatibleEmbeddingValidator(
+      config,
+      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+    );
   }
   if (providerKey.startsWith('customOpenAI:')) {
     if (!config.baseUrl?.trim()) {
@@ -528,6 +542,13 @@ export async function fetchProviderModels(
     };
   }
   return validator.fetchModels();
+}
+
+export async function fetchProviderModelsForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): Promise<ValidationResult> {
+  return fetchProviderModels(key === 'openAICompatible' ? 'customOpenAI' : key, config);
 }
 
 export async function validateProviderConnection(
@@ -561,6 +582,14 @@ export async function testProviderGeneration(
   return validator.testGeneration(modelId);
 }
 
+export async function testProviderGenerationForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  modelId: string,
+): Promise<ValidationResult> {
+  return testProviderGeneration(key === 'openAICompatible' ? 'customOpenAI' : key, config, modelId);
+}
+
 export async function validateProviderApi(
   key: ProviderKey,
   config: ProviderConfig,
@@ -588,6 +617,22 @@ export async function testEmbeddingGeneration(
   const validator = createEmbeddingValidator(providerKey, config);
   if (!validator) {
     return { valid: false, models: [], error: 'Unknown embedding provider' };
+  }
+  return validator.testEmbedding(modelId);
+}
+
+export async function testEmbeddingGenerationForStrategy(
+  providerKey: ProviderStrategyKey,
+  modelId: string,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): Promise<ValidationResult> {
+  const validator = createEmbeddingValidator(providerKey, config);
+  if (!validator) {
+    return {
+      valid: false,
+      models: [],
+      error: 'Embedding is not supported by this provider profile.',
+    };
   }
   return validator.testEmbedding(modelId);
 }
