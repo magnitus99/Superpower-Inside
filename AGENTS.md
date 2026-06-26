@@ -460,6 +460,12 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - DOM은 Obsidian `createEl`, `createDiv`, `createSpan` 계열을 우선한다. 사용자/모델 출력에 `innerHTML` 직접 할당하지 않는다.
 - Obsidian 커뮤니티 정적 리뷰 Error를 피하기 위해 런타임 TypeScript에서 `.style.*`, `innerHTML`/`outerHTML` 대입, `createEl('h1'..'h6')`, `attr: { style: ... }`를 사용하지 않는다. 표시/숨김은 CSS class, 동적 수치는 `setCssProps`, 아이콘은 `setIcon`, heading UI는 설정 화면에서는 `new Setting(containerEl).setName(...).setHeading()`, 그 외 화면에서는 heading class가 붙은 `createDiv`를 사용한다.
 - UI 표시 텍스트 줄바꿈이 필요하면 HTML 문자열을 만들지 말고 text node와 `br`를 조합한다. 문서 객체가 필요하면 전역 `document` 대신 `container.ownerDocument`나 Obsidian API를 우선한다.
+- Obsidian popout window 호환성을 위해 런타임 DOM 생성은 `container.ownerDocument`를 우선하고, 전역 문서가 정말 필요할 때만 Obsidian의 `activeDocument`를 사용한다. `document.createElement`, `document.createTextNode`, `document.createTreeWalker`를 새로 쓰지 않는다.
+- DOM 타입 narrowing은 cross-window 안전한 `node.instanceOf(...)` 또는 `src/utils/dom.ts`의 `isDomInstance(...)`를 사용한다. `instanceof HTMLElement`, `instanceof HTMLDetailsElement`, `instanceof HTMLButtonElement`를 새로 쓰지 않는다.
+- 네트워크 요청은 Obsidian `requestUrl`을 사용한다. 런타임 provider/validation 코드에서 browser `fetch`를 새로 쓰지 않는다. `requestUrl` 기반 응답은 buffered이므로 capability도 `request-url-buffered`와 `best-effort` abort로 솔직하게 표시한다.
+- 사용자 확인/텍스트 입력은 `src/utils/modal-prompts.ts`의 `confirmWithModal`/`promptWithModal`을 사용한다. `confirm()`/`prompt()`/`window.confirm()`/`window.prompt()`는 새로 쓰지 않는다.
+- Markdown 렌더링은 `MarkdownRenderer.render(app, markdown, el, sourcePath, component)`를 사용한다. deprecated 렌더링 API를 다시 쓰지 않는다.
+- 설정 탭 내부 refresh는 private render helper를 호출하고, 내부 이벤트 핸들러에서 `this.display()`를 직접 재호출하지 않는다.
 - 설정 탭의 범위값 입력에는 슬라이더를 사용하지 않는다. 숫자 텍스트 입력(`addText` + `inputEl.type = 'number'`)으로 범위와 step을 지정한다.
 - Provider 추가 시 `PROVIDER_KEYS`, `PROVIDER_LABELS`, `DEFAULT_SETTINGS`, 설정 UI, `createProvider`, validation 경로를 함께 확인한다.
 - RAG 설정의 `vectorStoreType`에는 `indexeddb` 옵션이 보이지만 현재 `main.ts`는 항상 `JsonFileVectorStore('.superpower-inside/vectors.json')`를 생성한다. UI 옵션과 실제 구현 차이를 수정 없이 전제하지 않는다.
@@ -486,6 +492,10 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 | `innerHTML` / `outerHTML` 대입             | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용                      |
 | `createEl('h1'..'h6')` 직접 생성           | 설정 UI 일관성 리뷰 Error. 설정 화면은 `Setting(...).setHeading()`, 일반 화면은 heading class `createDiv` 사용 |
 | `attr: { style: ... }` inline style        | Obsidian 커뮤니티 리뷰 Error. `styles.css` class로 이동                                                        |
+| `document.create*` 런타임 호출             | popout window 호환성 경고. `container.ownerDocument` 또는 `activeDocument` 사용                               |
+| DOM `instanceof HTMLElement` 계열          | cross-window 타입 체크 경고. `.instanceOf(...)` 또는 `isDomInstance(...)` 사용                                 |
+| `fetch()` 런타임 네트워크 호출             | Obsidian 커뮤니티 리뷰 경고. `requestUrl` 사용, streaming capability는 buffered로 표시                         |
+| `confirm()` / `prompt()`                   | blocking browser dialog 경고. Obsidian `Modal` 기반 helper 사용                                               |
 | 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                                |
 | 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                                     |
 | 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                               |
