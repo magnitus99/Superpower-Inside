@@ -38,6 +38,16 @@ export interface ComposerDraftSnapshot {
   hasContext: boolean;
 }
 
+export interface ContextPreviewMention {
+  type: 'file' | 'server' | 'folder' | 'entity';
+  name: string;
+}
+
+export interface ContextPreviewChip {
+  label: string;
+  cls: string;
+}
+
 export function createComposerLoadingState(loading: boolean): ComposerLoadingState {
   return {
     isStreaming: loading,
@@ -49,6 +59,18 @@ export function createComposerLoadingState(loading: boolean): ComposerLoadingSta
     toolsDisabled: loading,
     modelSelectDisabled: loading,
   };
+}
+
+export function createContextPreviewChips(
+  mentions: readonly ContextPreviewMention[],
+): ContextPreviewChip[] {
+  return [
+    { label: t('chatAutoRagChip'), cls: 'rag' },
+    ...mentions.map((mention) => ({
+      label: createMentionChipLabel(mention),
+      cls: mention.type,
+    })),
+  ];
 }
 
 export function resolveComposerKeyAction(input: ComposerKeyInput): ComposerKeyAction {
@@ -64,6 +86,13 @@ export function resolveComposerKeyAction(input: ComposerKeyInput): ComposerKeyAc
   if (input.shiftKey) return 'newline';
   if (input.metaKey || input.ctrlKey) return 'force-send';
   return 'send';
+}
+
+function createMentionChipLabel(mention: ContextPreviewMention): string {
+  if (mention.type === 'server') return t('chatToolMentionChip', { name: mention.name });
+  if (mention.type === 'folder') return t('chatFolderMentionChip', { name: mention.name });
+  if (mention.type === 'entity') return t('contextChipKnowledgeGraph');
+  return t('chatFileMentionChip', { name: mention.name });
 }
 
 export function createComposerDraftSnapshot(input: {

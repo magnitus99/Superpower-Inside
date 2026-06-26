@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { setLanguage } from '../i18n';
 import {
+  createContextPreviewChips,
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
@@ -48,5 +50,24 @@ describe('ChatComposer state contract', () => {
       updatedAt: '2026-05-16T00:00:00.000Z',
       hasContext: true,
     });
+  });
+
+  it('context preview chips use work language instead of transport acronyms', () => {
+    setLanguage('en');
+
+    expect(
+      createContextPreviewChips([
+        { type: 'server', name: 'search' },
+        { type: 'folder', name: 'Research' },
+        { type: 'file', name: 'Notes/A.md' },
+      ]),
+    ).toEqual([
+      { label: 'Related notes', cls: 'rag' },
+      { label: 'Tool search', cls: 'server' },
+      { label: 'Folder Research', cls: 'folder' },
+      { label: 'File Notes/A.md', cls: 'file' },
+    ]);
+
+    setLanguage('ko');
   });
 });

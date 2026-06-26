@@ -42,6 +42,7 @@ import { classifyAssistantResponse } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
 import { classifyChatError, redactDebugDetail } from './chat-error-actions';
 import {
+  createContextPreviewChips,
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
@@ -560,18 +561,7 @@ export class ChatView extends ItemView {
     if (!this.contextPreviewEl) return;
     this.contextPreviewEl.empty();
     const mentions = text.trim() ? this.parseMentions(text) : [];
-    const chips = [
-      { label: t('chatAutoRagChip'), cls: 'rag' },
-      ...mentions.map((mention) => ({
-        label:
-          mention.type === 'server'
-            ? `MCP ${mention.name}`
-            : mention.type === 'folder'
-              ? t('chatFolderMentionChip', { name: mention.name })
-              : t('chatFileMentionChip', { name: mention.name }),
-        cls: mention.type,
-      })),
-    ];
+    const chips = createContextPreviewChips(mentions);
     for (const chip of chips.slice(0, 8)) {
       this.contextPreviewEl.createSpan({
         cls: `superpower-inside-chat-context-chip ${chip.cls}`,

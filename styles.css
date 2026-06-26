@@ -2730,12 +2730,12 @@
 }
 
 .superpower-inside-chat-context-chip.error,
-.superpower-inside-chat-context-chip.missing,
-.superpower-inside-chat-context-chip.low-relevance {
+.superpower-inside-chat-context-chip.missing {
   border-color: var(--text-error);
   color: var(--text-error);
 }
 
+.superpower-inside-chat-context-chip.low-relevance,
 .superpower-inside-chat-context-chip.partial {
   border-color: var(--text-warning);
   color: var(--text-warning);
@@ -2848,12 +2848,12 @@
   font-weight: 600;
 }
 
-.superpower-inside-chat-citation-card.missing,
-.superpower-inside-chat-citation-card.stale,
-.superpower-inside-chat-citation-card.low-relevance {
+.superpower-inside-chat-citation-card.missing {
   border-color: var(--text-error);
 }
 
+.superpower-inside-chat-citation-card.stale,
+.superpower-inside-chat-citation-card.low-relevance,
 .superpower-inside-chat-citation-card.candidate {
   border-color: var(--text-warning);
 }

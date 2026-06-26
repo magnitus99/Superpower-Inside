@@ -102,7 +102,14 @@ export function createDataBoundarySnapshot(input: DataBoundaryInput): DataBounda
     sentToMcp: [...input.mcpServerNames],
     privacyNotes:
       excludedCount > 0
-        ? [t('dataBoundaryExcludedAttachmentNote', { count: excludedCount })]
+        ? [
+            t(
+              excludedCount === 1
+                ? 'dataBoundaryExcludedAttachmentNoteSingular'
+                : 'dataBoundaryExcludedAttachmentNotePlural',
+              { count: excludedCount },
+            ),
+          ]
         : [],
   };
 }

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { setLanguage } from '../i18n';
 import {
   createContextAttachmentViews,
   createContextBudgetSnapshot,
@@ -7,6 +8,10 @@ import {
 import type { ContextAttachment, SourceCitation } from './types';
 
 describe('context composer contract', () => {
+  beforeEach(() => {
+    setLanguage('en');
+  });
+
   const attachments: ContextAttachment[] = [
     {
       id: 'file:Notes/A.md',
@@ -14,7 +19,7 @@ describe('context composer contract', () => {
       name: 'Notes/A.md',
       label: 'Notes/A.md',
       status: 'attached',
-      reason: '명시 파일 멘션',
+      reason: 'Explicit file mention',
       estimatedChars: 1200,
       actualChars: 1180,
       pinned: true,
@@ -24,10 +29,10 @@ describe('context composer contract', () => {
       id: 'rag:auto',
       type: 'rag',
       name: 'auto',
-      label: '자동 RAG',
+      label: 'Related notes',
       status: 'partial',
-      detail: '일부 후보 제외',
-      reason: '질문과 관련된 최근 인덱스',
+      detail: 'Some candidates left out',
+      reason: 'Nearby notes for this question',
       estimatedChars: 4000,
       actualChars: 2200,
       sourceIds: ['rag-1'],
@@ -38,37 +43,38 @@ describe('context composer contract', () => {
       name: 'search',
       label: 'search',
       status: 'missing',
-      detail: '연결 끊김',
+      detail: 'Not connected',
       excluded: true,
     },
   ];
+
   const citations: SourceCitation[] = [
-    { id: 'file-1', filePath: 'Notes/A.md', status: 'verified', preview: '근거' },
-    { id: 'rag-1', filePath: 'Notes/B.md', status: 'low-relevance', preview: '후보' },
+    { id: 'file-1', filePath: 'Notes/A.md', status: 'verified', preview: 'Evidence' },
+    { id: 'rag-1', filePath: 'Notes/B.md', status: 'low-relevance', preview: 'Candidate' },
   ];
 
-  it('attachment 상태/이유/크기를 전송 전 composer view로 만든다', () => {
+  it('creates composer attachment view state with status, reason, and size', () => {
     expect(createContextAttachmentViews(attachments)).toEqual([
       expect.objectContaining({
         id: 'file:Notes/A.md',
-        statusText: '포함됨',
-        reasonText: '명시 파일 멘션',
-        sizeText: '1,180자',
+        statusText: 'Included',
+        reasonText: 'Explicit file mention',
+        sizeText: '1,180 chars',
         pinned: true,
       }),
       expect.objectContaining({
         id: 'rag:auto',
-        statusText: '일부 포함',
-        detail: '일부 후보 제외',
+        statusText: 'Partially included',
+        detail: 'Some candidates left out',
       }),
       expect.objectContaining({
         id: 'mcp:search',
-        statusText: '제외됨',
+        statusText: 'Excluded',
       }),
     ]);
   });
 
-  it('per-turn budget snapshot은 포함/제외/truncated 상태를 저장한다', () => {
+  it('stores included, excluded, and truncated state in a per-turn budget snapshot', () => {
     expect(
       createContextBudgetSnapshot({
         maxChars: 6000,
@@ -88,7 +94,7 @@ describe('context composer contract', () => {
     });
   });
 
-  it('provider/MCP로 나가는 데이터 경계를 per-turn snapshot으로 만든다', () => {
+  it('creates a per-turn data boundary snapshot in user-facing language', () => {
     expect(
       createDataBoundarySnapshot({
         providerLabel: 'Ollama',
@@ -101,10 +107,10 @@ describe('context composer contract', () => {
     ).toEqual({
       providerLabel: 'Ollama',
       model: 'llama3.1',
-      localOnly: ['초안 저장소', '출처 카드 UI 상태'],
-      sentToProvider: ['시스템 프롬프트', '첨부 컨텍스트 2개', '출처 preview 2개'],
+      localOnly: ['Draft and source-card state', 'Source-card state'],
+      sentToProvider: ['Answer instructions', '2 notes and references', '2 source previews'],
       sentToMcp: ['search'],
-      privacyNotes: ['제외된 attachment 1개는 provider 요청에 포함하지 않습니다.'],
+      privacyNotes: ['1 item was left out and was not sent.'],
     });
   });
 });

@@ -66,9 +66,6 @@ export function createCitationCardView(citation: SourceCitation): CitationCardVi
     citation.line !== undefined ? t('sourceLineMeta', { line: citation.line }) : '',
     citation.endLine !== undefined ? t('sourceEndLineMeta', { line: citation.endLine }) : '',
     citation.selectionReason ? getCitationSelectionReasonText(citation.selectionReason) : '',
-    citation.score !== undefined
-      ? t('sourceRelevanceMeta', { score: citation.score.toFixed(3) })
-      : '',
     citation.previewTruncated ? t('sourcePreviewTruncated') : '',
   ].filter(Boolean);
   return {
@@ -78,8 +75,8 @@ export function createCitationCardView(citation: SourceCitation): CitationCardVi
     statusText: getCitationStatusText(status),
     filePath: citation.filePath,
     headingText: citation.heading ? ` # ${citation.heading}` : undefined,
-    metaText: metaParts.length > 0 ? metaParts.join(' · ') : undefined,
-    detail: citation.detail,
+    metaText: metaParts.length > 0 ? metaParts.join(' / ') : undefined,
+    detail: normalizeSourceDetail(citation.detail),
     preview: citation.preview,
     graphKindText: citation.graphType ? getGraphKindText(citation.graphType) : undefined,
   };
@@ -102,9 +99,9 @@ export function createContextAttachmentChipViews(
 ): ContextAttachmentChipView[] {
   return attachments.map((attachment) => ({
     id: attachment.id,
-    className: `superpower-inside-chat-context-chip ${attachment.type} ${attachment.status}`,
-    label: attachment.label,
-    title: attachment.detail,
+    className: createContextAttachmentClassName(attachment),
+    label: createContextAttachmentLabel(attachment),
+    title: normalizeContextAttachmentDetail(attachment),
   }));
 }
 
@@ -116,15 +113,17 @@ export interface ContextBudgetView {
 }
 
 export function createContextBudgetView(snapshot: ContextBudgetSnapshot): ContextBudgetView {
+  const includedCount = snapshot.includedAttachmentIds?.length ?? snapshot.attachmentCount;
+  const excludedCount = snapshot.excludedAttachmentIds?.length ?? 0;
   return {
     className: `superpower-inside-chat-context-budget ${snapshot.truncated ? 'truncated' : 'ok'}`,
-    usageText: t('contextBudgetUsage', {
-      used: snapshot.usedChars.toLocaleString(),
-      max: snapshot.maxChars.toLocaleString(),
+    usageText: t('contextBudgetItemsPrepared', {
+      count: includedCount,
+      itemLabel: formatItemLabel(includedCount),
     }),
-    detailText: t('contextBudgetIncludedExcluded', {
-      included: snapshot.includedAttachmentIds?.length ?? snapshot.attachmentCount,
-      excluded: snapshot.excludedAttachmentIds?.length ?? 0,
+    detailText: t('contextBudgetItemsLeftOut', {
+      count: excludedCount,
+      itemLabel: formatItemLabel(excludedCount),
     }),
     truncatedText: snapshot.truncated ? t('contextBudgetTruncated') : undefined,
   };
@@ -146,15 +145,146 @@ export function createDataBoundaryView(snapshot: DataBoundarySnapshot): DataBoun
   return {
     title: t('dataBoundaryTitle'),
     providerLabel: providerName
-      ? `${t('dataBoundaryProvider')}: ${providerName}`
+      ? `${t('dataBoundaryProvider')} ${providerName}`
       : t('dataBoundaryProvider'),
     localLabel: t('dataBoundaryLocal'),
     mcpLabel: t('dataBoundaryMcp'),
-    providerItems: snapshot.sentToProvider,
-    localItems: snapshot.localOnly,
+    providerItems: snapshot.sentToProvider.map(normalizeProviderBoundaryItem),
+    localItems: normalizeLocalBoundaryItems(snapshot.localOnly),
     mcpItems: snapshot.sentToMcp,
-    privacyNotes: snapshot.privacyNotes,
+    privacyNotes: snapshot.privacyNotes.map(normalizePrivacyBoundaryNote),
   };
+}
+
+function createContextAttachmentLabel(attachment: ContextAttachment): string {
+  const name = attachment.name || attachment.label;
+  const sourceCount = attachment.sourceIds?.length ?? attachment.fileCount ?? 0;
+
+  switch (attachment.type) {
+    case 'rag':
+      if (isVaultSearchSkipped(attachment)) return t('contextChipVaultSearchSkipped');
+      if (attachment.status === 'attached' || attachment.status === 'partial') {
+        return sourceCount > 0
+          ? t('contextChipRelatedNotes', {
+              count: sourceCount,
+              noteLabel: formatNoteLabel(sourceCount),
+            })
+          : t('contextChipNoRelatedNotes');
+      }
+      return t('contextChipNoRelatedNotes');
+    case 'graph-rag':
+      return attachment.status === 'attached' || attachment.status === 'partial'
+        ? t('contextChipKnowledgeGraph')
+        : t('contextChipKnowledgeGraphMissing');
+    case 'folder': {
+      const fileCount = attachment.fileCount ?? attachment.sourceIds?.length ?? 0;
+      return fileCount > 0
+        ? t('contextChipFolderNotesUsed', {
+            name,
+            count: fileCount,
+            noteLabel: formatNoteLabel(fileCount),
+          })
+        : name;
+    }
+    case 'reference':
+      return t('contextChipReferenceAttached', { name });
+    case 'file':
+      return t('contextChipFileAttached', { name });
+    case 'mcp-server':
+      return attachment.status === 'attached' || attachment.status === 'partial'
+        ? t('contextChipToolReady', { name })
+        : t('contextChipToolUnavailable', { name });
+  }
+}
+
+function createContextAttachmentClassName(attachment: ContextAttachment): string {
+  const displayStatus = isVaultSearchSkipped(attachment) ? 'skipped' : attachment.status;
+  return `superpower-inside-chat-context-chip ${attachment.type} ${displayStatus}`;
+}
+
+function normalizeContextAttachmentDetail(attachment: ContextAttachment): string | undefined {
+  if (!attachment.detail) return undefined;
+  if (attachment.type === 'rag') {
+    if (isVaultSearchSkipped(attachment)) return t('contextChipDetailSkipped');
+    if (attachment.status === 'attached' || attachment.status === 'partial') {
+      return t('contextChipDetailAuto');
+    }
+  }
+  if (
+    attachment.status === 'partial' ||
+    attachment.folderLimitReason === 'budget' ||
+    attachment.detail.toLowerCase().includes('context budget')
+  ) {
+    return t('contextChipDetailShortened');
+  }
+  return normalizeSourceDetail(attachment.detail);
+}
+
+function isVaultSearchSkipped(attachment: ContextAttachment): boolean {
+  return (
+    attachment.autoRagReason === 'disabled' ||
+    attachment.autoRagReason === 'server-only' ||
+    attachment.detail?.toLowerCase().includes('auto rag is disabled') === true
+  );
+}
+
+function normalizeSourceDetail(detail: string | undefined): string | undefined {
+  return detail;
+}
+
+function formatNoteLabel(count: number): string {
+  return count === 1 ? t('contextNoteSingular') : t('contextNotePlural');
+}
+
+function formatItemLabel(count: number): string {
+  return count === 1 ? t('contextItemSingular') : t('contextItemPlural');
+}
+
+function normalizeProviderBoundaryItem(item: string): string {
+  if (item === 'System prompt' || item === t('dataBoundarySystemPrompt')) {
+    return t('dataBoundarySystemPrompt');
+  }
+  const contextMatch = item.match(/^(\d+)\s+(?:context attachments?|notes and references)\b/i);
+  if (contextMatch?.[1]) {
+    return t('dataBoundaryAttachedContext', { count: Number(contextMatch[1]) });
+  }
+  const previewMatch = item.match(/^(\d+)\s+source previews?\b/i);
+  if (previewMatch?.[1]) {
+    return t('dataBoundaryCitationPreview', { count: Number(previewMatch[1]) });
+  }
+  return item;
+}
+
+function normalizeLocalBoundaryItems(items: readonly string[]): string[] {
+  const hasDraftStore = items.some((item) => item === 'Draft store' || item === t('dataBoundaryDraftStore'));
+  const hasSourceCardState = items.some(
+    (item) => item === 'Source card UI state' || item === t('dataBoundarySourceCardState'),
+  );
+  if (hasDraftStore && hasSourceCardState) {
+    return [t('dataBoundaryDraftStore')];
+  }
+
+  return Array.from(new Set(items.map(normalizeLocalBoundaryItem)));
+}
+
+function normalizeLocalBoundaryItem(item: string): string {
+  if (item === 'Draft store') return t('dataBoundaryDraftStore');
+  if (item === 'Source card UI state') return t('dataBoundarySourceCardState');
+  return item;
+}
+
+function normalizePrivacyBoundaryNote(note: string): string {
+  const excludedMatch = note.match(/^(\d+)\s+(?:excluded attachments?|items?)\b/i);
+  if (excludedMatch?.[1]) {
+    return formatExcludedBoundaryNote(Number(excludedMatch[1]));
+  }
+  return note;
+}
+
+function formatExcludedBoundaryNote(count: number): string {
+  return count === 1
+    ? t('dataBoundaryExcludedAttachmentNoteSingular', { count })
+    : t('dataBoundaryExcludedAttachmentNotePlural', { count });
 }
 
 export class SourcePanel {
