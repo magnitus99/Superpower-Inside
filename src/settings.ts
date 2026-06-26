@@ -852,8 +852,11 @@ export interface PluginLike {
   openGraphRagView(): void;
   openAgentDiagnosticsView(): void;
   getAgentDiagnosticsFilePath(): string;
+  getAgentDiagnosticsEventLogPath(): string;
+  getAgentDiagnosticsSafeModeFilePath(): string;
   writeAgentDiagnosticsSnapshot(reason: string): Promise<void>;
   clearAgentDiagnosticsDetailedLogging(): Promise<void>;
+  enableAgentDiagnosticsSafeMode(): Promise<void>;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   ensureRagRuntimeInitialized(): Promise<boolean>;

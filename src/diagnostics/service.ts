@@ -3,6 +3,8 @@ import type { DataAdapter } from 'obsidian';
 import type {
   AgentDiagnosticsBreadcrumb,
   AgentDiagnosticsBreadcrumbAction,
+  AgentDiagnosticsActiveOperationState,
+  AgentDiagnosticsEventLogState,
   AgentDiagnosticsFileWriteState,
   AgentDiagnosticsHeartbeatState,
   AgentDiagnosticsPreviousSessionState,
@@ -24,10 +26,10 @@ const REFRESH_DOMAINS: readonly RefreshDomain[] = [
   'graph-data',
 ];
 
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_REFRESH_EVENTS = 100;
 const DEFAULT_MAX_LOG_ENTRIES = 200;
-const DEFAULT_MAX_BREADCRUMBS = 100;
+const DEFAULT_MAX_BREADCRUMBS = 200;
 
 export interface AgentDiagnosticsServiceSnapshotState {
   session: AgentDiagnosticsSessionState;
@@ -35,8 +37,10 @@ export interface AgentDiagnosticsServiceSnapshotState {
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: readonly AgentDiagnosticsRefreshEvent[];
   breadcrumbs: readonly AgentDiagnosticsBreadcrumb[];
+  activeOperations: readonly AgentDiagnosticsActiveOperationState[];
   logs: readonly LogEntry[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
+  eventLog: AgentDiagnosticsEventLogState | null;
 }
 
 export interface AgentDiagnosticsBreadcrumbInput {
@@ -49,6 +53,7 @@ export interface AgentDiagnosticsBreadcrumbInput {
 export interface AgentDiagnosticsServiceOptions {
   adapter: DataAdapter;
   filePath: string;
+  eventLogPath: string;
   refreshBus: RefreshBus;
   logger: AppLogger;
   buildSnapshot: (state: AgentDiagnosticsServiceSnapshotState) => unknown;
@@ -62,6 +67,7 @@ export interface AgentDiagnosticsServiceOptions {
 export class AgentDiagnosticsService {
   private readonly adapter: DataAdapter;
   private readonly filePath: string;
+  private readonly eventLogPath: string;
   private readonly refreshBus: RefreshBus;
   private readonly logger: AppLogger;
   private readonly buildSnapshot: (state: AgentDiagnosticsServiceSnapshotState) => unknown;
@@ -72,6 +78,7 @@ export class AgentDiagnosticsService {
   private readonly now: () => number;
   private refreshEvents: AgentDiagnosticsRefreshEvent[] = [];
   private breadcrumbs: AgentDiagnosticsBreadcrumb[] = [];
+  private activeOperations = new Map<string, AgentDiagnosticsActiveOperationState>();
   private unsubscribers: Array<() => void> = [];
   private heartbeatTimer: number | null = null;
   private nextHeartbeatExpectedAt: number | null = null;
@@ -79,6 +86,7 @@ export class AgentDiagnosticsService {
   private previousSession: AgentDiagnosticsPreviousSessionState | null = null;
   private heartbeat: AgentDiagnosticsHeartbeatState = createInitialHeartbeat();
   private fileWrite: AgentDiagnosticsFileWriteState | null = null;
+  private eventLog: AgentDiagnosticsEventLogState | null = null;
   private nextEventId = 1;
   private nextBreadcrumbId = 1;
   private writeInProgress = false;
@@ -86,6 +94,7 @@ export class AgentDiagnosticsService {
   constructor(options: AgentDiagnosticsServiceOptions) {
     this.adapter = options.adapter;
     this.filePath = options.filePath;
+    this.eventLogPath = options.eventLogPath;
     this.refreshBus = options.refreshBus;
     this.logger = options.logger;
     this.buildSnapshot = options.buildSnapshot;
@@ -122,6 +131,7 @@ export class AgentDiagnosticsService {
     const startedAt = this.now();
     this.previousSession = null;
     this.breadcrumbs = [];
+    this.activeOperations.clear();
     this.session = {
       id: createSessionId(startedAt),
       status: 'running',
@@ -136,8 +146,19 @@ export class AgentDiagnosticsService {
       lastSuccessAt: null,
       lastError: null,
     };
+    this.eventLog = {
+      path: this.eventLogPath,
+      lastAppendAt: null,
+      lastError: null,
+    };
     this.subscribe();
     this.startHeartbeat();
+    void this.appendEventLog({
+      type: 'session_start',
+      data: {
+        sessionId: this.session.id,
+      },
+    });
   }
 
   async stop(reason: string): Promise<void> {
@@ -152,6 +173,12 @@ export class AgentDiagnosticsService {
         endedAt: this.now(),
         endReason: reason,
       };
+      await this.appendEventLog({
+        type: 'session_stop',
+        data: {
+          reason,
+        },
+      });
       await this.writeSnapshot('stop');
     }
     this.cleanupSubscriptions();
@@ -177,9 +204,11 @@ export class AgentDiagnosticsService {
       data: input.data === undefined ? undefined : redactLogValue(input.data),
     };
     this.breadcrumbs.push(breadcrumb);
+    this.updateActiveOperation(breadcrumb);
     if (this.breadcrumbs.length > this.maxBreadcrumbs) {
       this.breadcrumbs.splice(0, this.breadcrumbs.length - this.maxBreadcrumbs);
     }
+    await this.appendEventLog(toBreadcrumbEventLogInput(breadcrumb));
     await this.writeSnapshot('breadcrumb');
   }
 
@@ -187,6 +216,7 @@ export class AgentDiagnosticsService {
     this.logger.clear();
     this.refreshEvents = [];
     this.breadcrumbs = [];
+    this.activeOperations.clear();
     this.previousSession = null;
     this.heartbeat = createInitialHeartbeat();
     this.fileWrite = {
@@ -195,8 +225,16 @@ export class AgentDiagnosticsService {
       lastSuccessAt: null,
       lastError: null,
     };
+    this.eventLog = {
+      path: this.eventLogPath,
+      lastAppendAt: null,
+      lastError: null,
+    };
     if (await this.adapter.exists(this.filePath)) {
       await this.adapter.remove(this.filePath);
+    }
+    if (await this.adapter.exists(this.eventLogPath)) {
+      await this.adapter.remove(this.eventLogPath);
     }
   }
 
@@ -239,6 +277,19 @@ export class AgentDiagnosticsService {
     this.nextHeartbeatExpectedAt = this.now() + this.heartbeatIntervalMs;
     this.heartbeatTimer = window.setInterval(() => {
       this.recordHeartbeat();
+      void this.appendEventLog({
+        type: 'session_heartbeat',
+        data: this.heartbeat,
+      });
+      if ((this.heartbeat.lastLagMs ?? 0) > 250) {
+        void this.appendEventLog({
+          type: 'event_loop_lag',
+          data: {
+            lagMs: this.heartbeat.lastLagMs,
+            maxLagMs: this.heartbeat.maxLagMs,
+          },
+        });
+      }
       void this.writeSnapshot('heartbeat');
     }, this.heartbeatIntervalMs);
   }
@@ -259,7 +310,7 @@ export class AgentDiagnosticsService {
   }
 
   private recordRefreshEvent(domain: RefreshDomain, result: RefreshResult): void {
-    this.refreshEvents.push({
+    const event = {
       id: this.nextEventId++,
       timestamp: this.now(),
       domain,
@@ -267,13 +318,25 @@ export class AgentDiagnosticsService {
       detail: result.detail,
       runId: result.runId,
       source: result.source,
-    });
+    };
+    this.refreshEvents.push(event);
     if (this.refreshEvents.length > this.maxRefreshEvents) {
       this.refreshEvents.splice(0, this.refreshEvents.length - this.maxRefreshEvents);
     }
+    void this.appendEventLog({
+      type: 'refresh_event',
+      data: event,
+    });
   }
 
   private handleLoggerEvent(event: LoggerChangeEvent): void {
+    if (event.type === 'entry') {
+      void this.appendEventLog({
+        type: 'log_entry',
+        data: event.entry,
+      });
+      return;
+    }
     if (event.type === 'clear') {
       this.refreshEvents.push({
         id: this.nextEventId++,
@@ -284,6 +347,82 @@ export class AgentDiagnosticsService {
       });
       if (this.refreshEvents.length > this.maxRefreshEvents) {
         this.refreshEvents.splice(0, this.refreshEvents.length - this.maxRefreshEvents);
+      }
+    }
+  }
+
+  private updateActiveOperation(breadcrumb: AgentDiagnosticsBreadcrumb): void {
+    const key = activeOperationKey(breadcrumb.phase, breadcrumb.detail);
+    if (breadcrumb.action === 'enter') {
+      this.activeOperations.set(key, {
+        id: breadcrumb.id,
+        phase: breadcrumb.phase,
+        detail: breadcrumb.detail,
+        startedAt: breadcrumb.timestamp,
+        lastUpdatedAt: breadcrumb.timestamp,
+        data: breadcrumb.data,
+      });
+      return;
+    }
+    if (breadcrumb.action === 'leave' || breadcrumb.action === 'error') {
+      this.activeOperations.delete(key);
+      return;
+    }
+    const existing = this.activeOperations.get(key);
+    if (!existing) return;
+    this.activeOperations.set(key, {
+      ...existing,
+      lastUpdatedAt: breadcrumb.timestamp,
+      data: breadcrumb.data ?? existing.data,
+    });
+  }
+
+  private async appendEventLog(event: AgentDiagnosticsEventLogInput): Promise<void> {
+    if (!this.session) return;
+    const timestamp = this.now();
+    const payload = {
+      schemaVersion: 1,
+      id: `${this.session.id}:${timestamp}:${this.nextEventId++}`,
+      timestamp,
+      sessionId: this.session.id,
+      type: event.type,
+      ...(event.phase ? { phase: event.phase } : {}),
+      ...(event.action ? { action: event.action } : {}),
+      ...(event.detail ? { detail: event.detail } : {}),
+      ...(event.data === undefined ? {} : { data: redactLogValue(event.data) }),
+    };
+    try {
+      const append = (this.adapter as Partial<Pick<DataAdapter, 'append'>>).append;
+      if (typeof append !== 'function') {
+        this.eventLog = {
+          path: this.eventLogPath,
+          lastAppendAt: this.eventLog?.lastAppendAt ?? null,
+          lastError: 'append unavailable',
+        };
+        return;
+      }
+      const dir = this.eventLogPath.split('/').slice(0, -1).join('/');
+      if (dir) {
+        await this.adapter.mkdir(dir);
+      }
+      await append.call(this.adapter, this.eventLogPath, `${JSON.stringify(payload)}\n`);
+      this.eventLog = {
+        path: this.eventLogPath,
+        lastAppendAt: timestamp,
+        lastError: null,
+      };
+    } catch (err) {
+      this.eventLog = {
+        path: this.eventLogPath,
+        lastAppendAt: this.eventLog?.lastAppendAt ?? null,
+        lastError: err instanceof Error ? err.message : String(err),
+      };
+      if (event.type !== 'log_entry') {
+        this.logger.warn('Agent diagnostics event log append failed.', {
+          source: 'diagnostics',
+          data: { path: this.eventLogPath, eventType: event.type },
+          error: err,
+        });
       }
     }
   }
@@ -335,8 +474,12 @@ export class AgentDiagnosticsService {
       heartbeat: this.heartbeat,
       refreshEvents: [...this.refreshEvents],
       breadcrumbs: [...this.breadcrumbs],
+      activeOperations: [...this.activeOperations.values()].sort(
+        (left, right) => left.startedAt - right.startedAt,
+      ),
       logs,
       fileWrite: this.fileWrite,
+      eventLog: this.eventLog,
     };
   }
 
@@ -389,7 +532,80 @@ function parsePreviousSessionSuspect(
     endReason,
     lastGeneratedAt: typeof value.generatedAt === 'number' ? value.generatedAt : null,
     lastHeartbeat: parseHeartbeat(value.heartbeat),
+    lastActiveOperation: parseLastActiveOperation(value.activeOperations),
     suspectedUncleanShutdown: true,
+  };
+}
+
+interface AgentDiagnosticsEventLogInput {
+  type:
+    | 'session_start'
+    | 'session_stop'
+    | 'session_heartbeat'
+    | 'event_loop_lag'
+    | 'operation_start'
+    | 'operation_end'
+    | 'operation_error'
+    | 'operation_mark'
+    | 'refresh_event'
+    | 'log_entry';
+  phase?: string;
+  action?: AgentDiagnosticsBreadcrumbAction;
+  detail?: string;
+  data?: unknown;
+}
+
+function toBreadcrumbEventLogInput(
+  breadcrumb: AgentDiagnosticsBreadcrumb,
+): AgentDiagnosticsEventLogInput {
+  return {
+    type: toBreadcrumbEventType(breadcrumb.action),
+    phase: breadcrumb.phase,
+    action: breadcrumb.action,
+    detail: breadcrumb.detail,
+    data: breadcrumb.data,
+  };
+}
+
+function toBreadcrumbEventType(
+  action: AgentDiagnosticsBreadcrumbAction,
+): AgentDiagnosticsEventLogInput['type'] {
+  if (action === 'enter') return 'operation_start';
+  if (action === 'leave') return 'operation_end';
+  if (action === 'error') return 'operation_error';
+  return 'operation_mark';
+}
+
+function activeOperationKey(phase: string, detail: string | undefined): string {
+  return `${phase}\u0000${detail ?? ''}`;
+}
+
+function parseLastActiveOperation(value: unknown): AgentDiagnosticsActiveOperationState | null {
+  if (!Array.isArray(value)) return null;
+  const operations = value
+    .map(parseActiveOperation)
+    .filter((operation): operation is AgentDiagnosticsActiveOperationState => operation !== null)
+    .sort((left, right) => left.startedAt - right.startedAt);
+  return operations.at(-1) ?? null;
+}
+
+function parseActiveOperation(value: unknown): AgentDiagnosticsActiveOperationState | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.id !== 'number' ||
+    typeof value.phase !== 'string' ||
+    typeof value.startedAt !== 'number' ||
+    typeof value.lastUpdatedAt !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    phase: value.phase,
+    detail: typeof value.detail === 'string' ? value.detail : undefined,
+    startedAt: value.startedAt,
+    lastUpdatedAt: value.lastUpdatedAt,
+    data: value.data,
   };
 }
 

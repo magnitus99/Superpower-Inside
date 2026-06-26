@@ -45,6 +45,7 @@ flowchart LR
 | Source cards | Open source notes, copy Obsidian links, and insert citations into the active note. |
 | Chat history | Save and reopen useful research sessions inside your vault. |
 | Model-centered providers | Choose ready-made or custom model profiles for chat, embedding, and graph extraction without hand-tuning every provider field. |
+| Agent diagnostics | Shows readable runtime diagnosis, recent operations, event logs, and a safe-mode recovery action when plugin startup or indexing gets stuck. |
 
 ## Install
 
@@ -101,6 +102,10 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 ### Let Indexes Stay Out Of The Way
 
 RAG and GraphRAG maintain local state for this vault. When notes, models, or graph evidence need attention, the settings view surfaces a clear status and the smallest next action. The goal is not to make you operate an index dashboard; it is to keep answers grounded while staying out of your way.
+
+### Recover From Startup Problems
+
+The Agent Diagnostics view writes a local JSON snapshot and append-only event log while the plugin runs. If Obsidian reopens after a stuck startup, white screen, indexing hang, or MCP connection stall, the view highlights the last visible operation, the likely cause, and a safe-mode action that reopens the plugin with heavy indexing disabled.
 
 <details>
 <summary><strong>Security and data access</strong></summary>

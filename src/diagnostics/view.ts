@@ -8,6 +8,11 @@ import {
   type LogEntry,
   type LogLevel,
 } from '../utils/logger';
+import type {
+  AgentDiagnosticsActiveOperationState,
+  AgentDiagnosticsRecommendedActionSnapshot,
+  AgentDiagnosticsSnapshot,
+} from './snapshot';
 
 export const AGENT_DIAGNOSTICS_VIEW_TYPE = 'superpower-inside-agent-diagnostics';
 
@@ -16,15 +21,19 @@ interface AgentDiagnosticsPluginLike {
   logger: AppLogger;
   saveSettingsLight(): Promise<void>;
   getAgentDiagnosticsFilePath(): string;
+  getAgentDiagnosticsEventLogPath(): string;
+  getAgentDiagnosticsSafeModeFilePath(): string;
   getAgentDiagnosticsSnapshotText(): string;
   writeAgentDiagnosticsSnapshot(reason: string): Promise<void>;
   clearAgentDiagnosticsDetailedLogging(): Promise<void>;
+  enableAgentDiagnosticsSafeMode(): Promise<void>;
 }
 
 export class AgentDiagnosticsView extends ItemView {
   private readonly plugin: AgentDiagnosticsPluginLike;
   private snapshotEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  private diagnosisEl: HTMLElement | null = null;
   private entriesContainer: HTMLElement | null = null;
   private countEl: HTMLElement | null = null;
   private levelFilter: LogLevel | 'all' = 'all';
@@ -74,6 +83,7 @@ export class AgentDiagnosticsView extends ItemView {
     this.loggerUnsubscribe = null;
     this.snapshotEl = null;
     this.statusEl = null;
+    this.diagnosisEl = null;
     this.entriesContainer = null;
     this.countEl = null;
   }
@@ -124,6 +134,9 @@ export class AgentDiagnosticsView extends ItemView {
     });
 
     this.statusEl = containerEl.createDiv({ cls: 'superpower-inside-agent-diagnostics-status' });
+    this.diagnosisEl = containerEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis',
+    });
     this.buildLogSection(containerEl);
     this.snapshotEl = containerEl.createEl('pre', {
       cls: 'superpower-inside-agent-diagnostics-snapshot',
@@ -229,14 +242,145 @@ export class AgentDiagnosticsView extends ItemView {
   }
 
   private refresh(): void {
-    const enabled = this.plugin.settings.agentDiagnostics.enabled;
+    const snapshotText = this.plugin.getAgentDiagnosticsSnapshotText();
+    const snapshot = this.parseSnapshot(snapshotText);
+    const jsonPath = snapshot?.diagnosticFile.path ?? this.plugin.getAgentDiagnosticsFilePath();
+    const eventLogPath =
+      snapshot?.diagnosticFile.eventLogPath ?? this.plugin.getAgentDiagnosticsEventLogPath();
     this.statusEl?.setText(
-      enabled
-        ? t('agentDiagnosticsEnabledStatus', { path: this.plugin.getAgentDiagnosticsFilePath() })
-        : t('agentDiagnosticsDisabledStatus'),
+      `Enabled. JSON: ${jsonPath}; events: ${eventLogPath}`,
     );
-    this.snapshotEl?.setText(this.plugin.getAgentDiagnosticsSnapshotText());
+    this.renderDiagnosis(snapshot);
+    this.snapshotEl?.setText(snapshotText);
     this.refreshLogs();
+  }
+
+  private parseSnapshot(text: string): AgentDiagnosticsSnapshot | null {
+    try {
+      const value: unknown = JSON.parse(text);
+      return isAgentDiagnosticsSnapshot(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private renderDiagnosis(snapshot: AgentDiagnosticsSnapshot | null): void {
+    if (!this.diagnosisEl) return;
+    this.diagnosisEl.empty();
+    if (!snapshot) {
+      this.diagnosisEl.createDiv({
+        cls: 'superpower-inside-agent-diagnostics-diagnosis-summary',
+        text: 'Diagnostics snapshot is not readable yet. Write a snapshot or reopen Obsidian.',
+      });
+      return;
+    }
+
+    const diagnosis = snapshot.diagnosis;
+    const header = this.diagnosisEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-header',
+    });
+    header.createSpan({
+      cls: `superpower-inside-agent-diagnostics-diagnosis-badge superpower-inside-agent-diagnostics-diagnosis-badge--${diagnosis.status}`,
+      text: diagnosis.status,
+    });
+    const title = header.createDiv({ cls: 'superpower-inside-agent-diagnostics-diagnosis-title' });
+    title.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-heading',
+      text: 'Current diagnosis',
+    });
+    title.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-summary',
+      text: diagnosis.summary,
+    });
+
+    const details = this.diagnosisEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-grid',
+    });
+    this.renderDiagnosisRow(details, 'Likely cause', diagnosis.suspectedCause ?? 'None visible');
+    this.renderDiagnosisRow(
+      details,
+      'Last operation',
+      this.formatActiveOperation(diagnosis.lastActiveOperation, diagnosis.status),
+    );
+    this.renderDiagnosisRow(details, 'JSON snapshot', snapshot.diagnosticFile.path);
+    this.renderDiagnosisRow(details, 'Event log', snapshot.diagnosticFile.eventLogPath);
+    this.renderDiagnosisRow(details, 'Safe-mode flag', snapshot.diagnosticFile.safeModeFlagPath);
+
+    this.renderRecommendedActions(this.diagnosisEl, diagnosis.recommendedActions);
+  }
+
+  private renderDiagnosisRow(containerEl: HTMLElement, label: string, value: string): void {
+    const labelEl = containerEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-label',
+      text: label,
+    });
+    labelEl.setAttr('aria-label', label);
+    containerEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-value',
+      text: value,
+    });
+  }
+
+  private renderRecommendedActions(
+    containerEl: HTMLElement,
+    actions: readonly AgentDiagnosticsRecommendedActionSnapshot[],
+  ): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-actions-panel',
+    });
+    const header = section.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-actions-header',
+    });
+    header.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-actions-title',
+      text: 'Recovery',
+    });
+    const safeModeButton = header.createEl('button', {
+      attr: { type: 'button' },
+      text: 'Enable safe mode',
+    });
+    safeModeButton.addEventListener('click', () => {
+      void this.enableSafeMode();
+    });
+
+    const actionList = section.createDiv({
+      cls: 'superpower-inside-agent-diagnostics-diagnosis-actions-list',
+    });
+    for (const action of actions.slice(0, 3)) {
+      const item = actionList.createDiv({
+        cls: 'superpower-inside-agent-diagnostics-diagnosis-action',
+      });
+      item.createDiv({
+        cls: 'superpower-inside-agent-diagnostics-diagnosis-action-label',
+        text: action.label,
+      });
+      item.createDiv({
+        cls: 'superpower-inside-agent-diagnostics-diagnosis-action-detail',
+        text: action.detail,
+      });
+    }
+  }
+
+  private formatActiveOperation(
+    operation: AgentDiagnosticsActiveOperationState | null,
+    status: AgentDiagnosticsSnapshot['diagnosis']['status'],
+  ): string {
+    if (!operation) return 'None visible';
+    const label = operation.detail ? `${operation.phase}:${operation.detail}` : operation.phase;
+    if (status === 'unclean-shutdown') {
+      return `${label} (previous session, last seen ${this.formatTimestamp(operation.lastUpdatedAt)})`;
+    }
+    const activeSeconds = Math.max(0, Math.round((Date.now() - operation.startedAt) / 1000));
+    return `${label} (${activeSeconds}s active)`;
+  }
+
+  private formatTimestamp(timestamp: number): string {
+    return new Date(timestamp).toLocaleTimeString(undefined, {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
   }
 
   private refreshLogs(): void {
@@ -381,4 +525,30 @@ export class AgentDiagnosticsView extends ItemView {
     this.refresh();
     new Notice(t('agentDiagnosticsClearDone'));
   }
+
+  private async enableSafeMode(): Promise<void> {
+    try {
+      await this.plugin.enableAgentDiagnosticsSafeMode();
+      this.refresh();
+      new Notice(
+        'Agent diagnostics safe mode enabled. Restart Obsidian to reopen with heavy indexing disabled.',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Failed to enable Agent diagnostics safe mode: ${message}`, 5000);
+    }
+  }
+}
+
+function isAgentDiagnosticsSnapshot(value: unknown): value is AgentDiagnosticsSnapshot {
+  if (!isRecord(value)) return false;
+  return (
+    value.schemaVersion === 1 &&
+    isRecord(value.diagnosis) &&
+    isRecord(value.diagnosticFile)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

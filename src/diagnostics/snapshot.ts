@@ -17,6 +17,8 @@ import { redactLogValue, type LogEntry } from '../utils/logger';
 import type { IndexingResult } from '../rag/indexer';
 
 const AGENT_DIAGNOSTICS_FILE_NAME = 'agent-diagnostics.json';
+const AGENT_DIAGNOSTICS_EVENT_LOG_FILE_NAME = 'agent-diagnostics.ndjson';
+const AGENT_DIAGNOSTICS_SAFE_MODE_FILE_NAME = 'agent-diagnostics-safe-mode.json';
 
 export interface AgentDiagnosticsManifestInfo {
   id: string;
@@ -96,6 +98,7 @@ export interface AgentDiagnosticsPreviousSessionState {
   endReason: string | null;
   lastGeneratedAt: number | null;
   lastHeartbeat: AgentDiagnosticsHeartbeatState | null;
+  lastActiveOperation: AgentDiagnosticsActiveOperationState | null;
   suspectedUncleanShutdown: boolean;
 }
 
@@ -107,6 +110,15 @@ export interface AgentDiagnosticsBreadcrumb {
   phase: string;
   action: AgentDiagnosticsBreadcrumbAction;
   detail?: string;
+  data?: unknown;
+}
+
+export interface AgentDiagnosticsActiveOperationState {
+  id: number;
+  phase: string;
+  detail?: string;
+  startedAt: number;
+  lastUpdatedAt: number;
   data?: unknown;
 }
 
@@ -127,6 +139,12 @@ export interface AgentDiagnosticsFileWriteState {
   lastError: string | null;
 }
 
+export interface AgentDiagnosticsEventLogState {
+  path: string;
+  lastAppendAt: number | null;
+  lastError: string | null;
+}
+
 export interface AgentDiagnosticsSnapshotInput {
   manifest: AgentDiagnosticsManifestInfo;
   vault: AgentDiagnosticsVaultInfo;
@@ -137,8 +155,10 @@ export interface AgentDiagnosticsSnapshotInput {
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: readonly AgentDiagnosticsRefreshEvent[];
   breadcrumbs: readonly AgentDiagnosticsBreadcrumb[];
+  activeOperations: readonly AgentDiagnosticsActiveOperationState[];
   logs: readonly LogEntry[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
+  eventLog: AgentDiagnosticsEventLogState | null;
   now: number;
 }
 
@@ -161,7 +181,10 @@ export interface AgentDiagnosticsSnapshot {
   previousSession: AgentDiagnosticsPreviousSessionState | null;
   diagnosticFile: {
     path: string;
+    eventLogPath: string;
+    safeModeFlagPath: string;
   };
+  diagnosis: AgentDiagnosticsDiagnosisSnapshot;
   providers: {
     enabledCount: number;
     rows: AgentDiagnosticsProviderRow[];
@@ -209,8 +232,25 @@ export interface AgentDiagnosticsSnapshot {
   heartbeat: AgentDiagnosticsHeartbeatState;
   refreshEvents: AgentDiagnosticsRefreshEvent[];
   breadcrumbs: AgentDiagnosticsBreadcrumb[];
+  activeOperations: AgentDiagnosticsActiveOperationState[];
   logs: AgentDiagnosticsLogSnapshot[];
   fileWrite: AgentDiagnosticsFileWriteState | null;
+  eventLog: AgentDiagnosticsEventLogState | null;
+}
+
+export interface AgentDiagnosticsDiagnosisSnapshot {
+  status: 'ok' | 'running' | 'attention' | 'unclean-shutdown';
+  summary: string;
+  lastActiveOperation: AgentDiagnosticsActiveOperationState | null;
+  suspectedCause: string | null;
+  recommendedActions: AgentDiagnosticsRecommendedActionSnapshot[];
+}
+
+export interface AgentDiagnosticsRecommendedActionSnapshot {
+  id: string;
+  label: string;
+  detail: string;
+  settingsPatch?: unknown;
 }
 
 export interface AgentDiagnosticsMcpServerSnapshot {
@@ -236,6 +276,14 @@ export function getAgentDiagnosticsFilePath(configDir: string, pluginId: string)
   return joinVaultPath(configDir, 'plugins', pluginId, AGENT_DIAGNOSTICS_FILE_NAME);
 }
 
+export function getAgentDiagnosticsEventLogPath(configDir: string, pluginId: string): string {
+  return joinVaultPath(configDir, 'plugins', pluginId, AGENT_DIAGNOSTICS_EVENT_LOG_FILE_NAME);
+}
+
+export function getAgentDiagnosticsSafeModeFilePath(configDir: string, pluginId: string): string {
+  return joinVaultPath(configDir, 'plugins', pluginId, AGENT_DIAGNOSTICS_SAFE_MODE_FILE_NAME);
+}
+
 export function buildAgentDiagnosticsSnapshot(
   input: AgentDiagnosticsSnapshotInput,
 ): AgentDiagnosticsSnapshot {
@@ -243,6 +291,13 @@ export function buildAgentDiagnosticsSnapshot(
     input.vault.configDir,
     input.manifest.id,
   );
+  const eventLogPath =
+    input.eventLog?.path ?? getAgentDiagnosticsEventLogPath(input.vault.configDir, input.manifest.id);
+  const safeModeFlagPath = getAgentDiagnosticsSafeModeFilePath(
+    input.vault.configDir,
+    input.manifest.id,
+  );
+  const diagnosis = buildDiagnosisSnapshot(input, safeModeFlagPath);
   return {
     schemaVersion: 1,
     generatedAt: input.now,
@@ -256,7 +311,10 @@ export function buildAgentDiagnosticsSnapshot(
     previousSession: input.previousSession,
     diagnosticFile: {
       path: diagnosticFilePath,
+      eventLogPath,
+      safeModeFlagPath,
     },
+    diagnosis,
     providers: buildProviderSnapshot(input.settings),
     settingsSummary: buildSettingsSummary(input.settings),
     rag: {
@@ -282,9 +340,125 @@ export function buildAgentDiagnosticsSnapshot(
     heartbeat: input.heartbeat,
     refreshEvents: input.refreshEvents.map((event) => ({ ...event })),
     breadcrumbs: input.breadcrumbs.map(toBreadcrumbSnapshot),
+    activeOperations: input.activeOperations.map(toActiveOperationSnapshot),
     logs: input.logs.map(toLogSnapshot),
     fileWrite: input.fileWrite,
+    eventLog: input.eventLog,
   };
+}
+
+function buildDiagnosisSnapshot(
+  input: AgentDiagnosticsSnapshotInput,
+  safeModeFlagPath: string,
+): AgentDiagnosticsDiagnosisSnapshot {
+  const lastActiveOperation =
+    input.activeOperations.at(-1) ?? input.previousSession?.lastActiveOperation ?? null;
+  const suspectedCause = inferSuspectedCause(lastActiveOperation, input);
+  const recommendedActions = buildRecommendedActions(lastActiveOperation, safeModeFlagPath);
+  if (input.previousSession?.suspectedUncleanShutdown) {
+    return {
+      status: 'unclean-shutdown',
+      summary: lastActiveOperation
+        ? `Previous Obsidian session stopped while ${formatOperation(lastActiveOperation)} was active.`
+        : 'Previous Obsidian session stopped without a clean plugin unload.',
+      lastActiveOperation,
+      suspectedCause,
+      recommendedActions,
+    };
+  }
+  if (input.activeOperations.length > 0) {
+    return {
+      status: 'running',
+      summary: `Currently active: ${formatOperation(lastActiveOperation)}`,
+      lastActiveOperation,
+      suspectedCause,
+      recommendedActions,
+    };
+  }
+  if ((input.heartbeat.lastLagMs ?? 0) > 1_000 || input.heartbeat.maxLagMs > 1_000) {
+    return {
+      status: 'attention',
+      summary: `Renderer event loop lag peaked at ${Math.round(input.heartbeat.maxLagMs)} ms.`,
+      lastActiveOperation,
+      suspectedCause: 'event-loop-lag',
+      recommendedActions,
+    };
+  }
+  return {
+    status: 'ok',
+    summary: 'No stuck operation is currently visible in Agent Diagnostics.',
+    lastActiveOperation,
+    suspectedCause,
+    recommendedActions,
+  };
+}
+
+function inferSuspectedCause(
+  operation: AgentDiagnosticsActiveOperationState | null,
+  input: AgentDiagnosticsSnapshotInput,
+): string | null {
+  if (!operation) {
+    if (input.runtime.isRagIndexing) return 'rag-indexing';
+    if (input.runtime.isGraphRagIndexing) return 'graph-rag-indexing';
+    if (input.runtime.mcpConnectionState === 'connecting') return 'mcp-connection';
+    return null;
+  }
+  if (operation.phase.startsWith('rag.')) return 'rag-runtime-or-indexing';
+  if (operation.phase.startsWith('graph.')) return 'graph-rag-indexing';
+  if (operation.phase.startsWith('mcp.')) return 'mcp-connection';
+  if (operation.phase.startsWith('plugin.')) return 'plugin-startup';
+  return operation.phase;
+}
+
+function buildRecommendedActions(
+  operation: AgentDiagnosticsActiveOperationState | null,
+  safeModeFlagPath: string,
+): AgentDiagnosticsRecommendedActionSnapshot[] {
+  const actions: AgentDiagnosticsRecommendedActionSnapshot[] = [
+    {
+      id: 'safe-mode-flag',
+      label: 'Create safe mode flag and restart Obsidian',
+      detail: `Write {"enabled":true} to ${safeModeFlagPath} to start with heavy Superpower indexing disabled.`,
+      settingsPatch: {
+        rag: {
+          autoUpdateEnabled: false,
+          enableBM25: false,
+          structuralGraphEnabled: false,
+          annEnabled: false,
+          graphRagAutoSyncEnabled: false,
+        },
+      },
+    },
+  ];
+  if (!operation) return actions;
+  if (operation.phase.startsWith('rag.')) {
+    actions.unshift({
+      id: 'disable-rag-startup-work',
+      label: 'Disable RAG startup work',
+      detail: 'Turn off RAG auto update, BM25, structural graph, and ANN before reopening the vault.',
+      settingsPatch: {
+        rag: {
+          autoUpdateEnabled: false,
+          enableBM25: false,
+          structuralGraphEnabled: false,
+          annEnabled: false,
+        },
+      },
+    });
+  }
+  if (operation.phase.startsWith('mcp.')) {
+    actions.unshift({
+      id: 'disable-mcp-autoconnect',
+      label: 'Disconnect MCP servers',
+      detail: 'Disable or fix MCP server commands before reconnecting.',
+    });
+  }
+  return actions;
+}
+
+function formatOperation(operation: AgentDiagnosticsActiveOperationState | null): string {
+  if (!operation) return 'no active operation';
+  return operation.detail ? `${operation.phase}:${operation.detail}` : operation.phase;
 }
 
 function buildProviderSnapshot(settings: SuperpowerInsideSettings): {
@@ -381,6 +555,15 @@ function toLogSnapshot(entry: LogEntry): AgentDiagnosticsLogSnapshot {
 function toBreadcrumbSnapshot(
   entry: AgentDiagnosticsBreadcrumb,
 ): AgentDiagnosticsBreadcrumb {
+  return {
+    ...entry,
+    data: entry.data === undefined ? undefined : redactLogValue(entry.data),
+  };
+}
+
+function toActiveOperationSnapshot(
+  entry: AgentDiagnosticsActiveOperationState,
+): AgentDiagnosticsActiveOperationState {
   return {
     ...entry,
     data: entry.data === undefined ? undefined : redactLogValue(entry.data),

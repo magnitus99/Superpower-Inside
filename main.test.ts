@@ -132,10 +132,12 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         lastRagRuntimeInitError: string | null;
         lastRagRuntimeInitStage: string | null;
         getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+        recordAgentDiagnosticsBreadcrumb: ReturnType<typeof vi.fn>;
       };
       plugin.lastRagRuntimeInitError = null;
       plugin.lastRagRuntimeInitStage = null;
       plugin.getLogger = vi.fn(() => logger);
+      plugin.recordAgentDiagnosticsBreadcrumb = vi.fn(() => Promise.resolve());
 
       const result = (
         plugin as unknown as {
@@ -159,9 +161,90 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
           data: expect.objectContaining({ stage: 'legacy-vector-import' }),
         }),
       );
+      expect(plugin.recordAgentDiagnosticsBreadcrumb).toHaveBeenCalledWith({
+        phase: 'rag.runtime',
+        action: 'enter',
+        detail: 'legacy-vector-import',
+      });
+      expect(plugin.recordAgentDiagnosticsBreadcrumb).toHaveBeenCalledWith({
+        phase: 'rag.runtime',
+        action: 'error',
+        detail: 'legacy-vector-import',
+        data: expect.objectContaining({ durationMs: 10 }),
+      });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('RAG runtime initialization records completion breadcrumbs for finished steps', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = {
+      info: vi.fn(),
+      error: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      lastRagRuntimeInitError: string | null;
+      lastRagRuntimeInitStage: string | null;
+      getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      recordAgentDiagnosticsBreadcrumb: ReturnType<typeof vi.fn>;
+    };
+    plugin.lastRagRuntimeInitError = null;
+    plugin.lastRagRuntimeInitStage = null;
+    plugin.getLogger = vi.fn(() => logger);
+    plugin.recordAgentDiagnosticsBreadcrumb = vi.fn(() => Promise.resolve());
+
+    await (
+      plugin as unknown as {
+        runRagRuntimeInitStep(
+          stage: string,
+          operation: () => Promise<string>,
+          timeoutMs: number,
+        ): Promise<string>;
+      }
+    ).runRagRuntimeInitStep('bm25-load', () => Promise.resolve('done'), 1000);
+
+    expect(plugin.recordAgentDiagnosticsBreadcrumb).toHaveBeenCalledWith({
+      phase: 'rag.runtime',
+      action: 'leave',
+      detail: 'bm25-load',
+      data: expect.objectContaining({ durationMs: expect.any(Number) }),
+    });
+  });
+
+  it('RAG indexing operations record active-operation breadcrumbs', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      ragIndexAbortController: AbortController | null;
+      getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      notifyRagStatsRefresh: ReturnType<typeof vi.fn>;
+      recordAgentDiagnosticsBreadcrumb: ReturnType<typeof vi.fn>;
+    };
+    plugin.ragIndexAbortController = null;
+    plugin.getLogger = vi.fn(() => logger);
+    plugin.notifyRagStatsRefresh = vi.fn();
+    plugin.recordAgentDiagnosticsBreadcrumb = vi.fn(() => Promise.resolve());
+
+    const result = await plugin.runRagIndexing(() => Promise.resolve('indexed'));
+
+    expect(result).toBe('indexed');
+    expect(plugin.recordAgentDiagnosticsBreadcrumb).toHaveBeenCalledWith({
+      phase: 'rag.indexing',
+      action: 'enter',
+      detail: 'operation',
+    });
+    expect(plugin.recordAgentDiagnosticsBreadcrumb).toHaveBeenCalledWith({
+      phase: 'rag.indexing',
+      action: 'leave',
+      detail: 'operation',
+      data: expect.objectContaining({ durationMs: expect.any(Number) }),
+    });
   });
 
   it('BM25 로드 이후 RAG 파일 이벤트를 등록한다', async () => {
@@ -646,6 +729,167 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 });
 
 describe('SuperpowerInsidePlugin agent diagnostics view', () => {
+  it('starts background file diagnostics even when detailed diagnostics are disabled', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const service = {
+      setEnabled: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      settings: typeof DEFAULT_SETTINGS;
+      agentDiagnosticsService: typeof service | null;
+      getOrCreateAgentDiagnosticsService: () => typeof service;
+    };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      agentDiagnostics: { enabled: false },
+    };
+    plugin.agentDiagnosticsService = null;
+    plugin.getOrCreateAgentDiagnosticsService = () => service;
+
+    await (
+      plugin as unknown as {
+        configureAgentDiagnosticsService(): Promise<void>;
+      }
+    ).configureAgentDiagnosticsService();
+
+    expect(service.setEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('applies the diagnostics safe mode flag before startup work can re-enter RAG', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const writtenSettings: unknown[] = [];
+    const adapter = {
+      exists: vi.fn(() => Promise.resolve(true)),
+      read: vi.fn(() => Promise.resolve(JSON.stringify({ enabled: true }))),
+    };
+    const logger = {
+      warn: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: {
+        vault: { configDir: string; adapter: typeof adapter };
+        saveLocalStorage: ReturnType<typeof vi.fn>;
+      };
+      manifest: { id: string };
+      settings: typeof DEFAULT_SETTINGS;
+      saveData: (settings: unknown) => Promise<void>;
+      getLogger: () => typeof logger;
+    };
+    plugin.app = { vault: { configDir: '.obsidian', adapter }, saveLocalStorage: vi.fn() };
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        autoUpdateEnabled: true,
+        enableBM25: true,
+        structuralGraphEnabled: true,
+        annEnabled: true,
+        graphRagAutoSyncEnabled: true,
+      },
+    };
+    plugin.saveData = (settings: unknown) => {
+      writtenSettings.push(settings);
+      return Promise.resolve();
+    };
+    plugin.getLogger = () => logger;
+
+    await (
+      plugin as unknown as {
+        applyAgentDiagnosticsSafeModeFlag(): Promise<void>;
+      }
+    ).applyAgentDiagnosticsSafeModeFlag();
+
+    expect(plugin.settings.rag).toEqual(
+      expect.objectContaining({
+        autoUpdateEnabled: false,
+        enableBM25: false,
+        structuralGraphEnabled: false,
+        annEnabled: false,
+        graphRagAutoSyncEnabled: false,
+      }),
+    );
+    expect(writtenSettings).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Agent diagnostics safe mode flag applied.',
+      expect.objectContaining({ source: 'diagnostics' }),
+    );
+  });
+
+  it('writes the diagnostics safe mode flag from the recovery action', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const files = new Map<string, string>();
+    const adapter = {
+      exists: vi.fn((path: string) => Promise.resolve(files.has(path))),
+      read: vi.fn((path: string) => Promise.resolve(files.get(path) ?? 'null')),
+      mkdir: vi.fn(() => Promise.resolve()),
+      write: vi.fn((path: string, data: string) => {
+        files.set(path, data);
+        return Promise.resolve();
+      }),
+      rename: vi.fn((oldPath: string, newPath: string) => {
+        const data = files.get(oldPath);
+        if (data === undefined) return Promise.reject(new Error(`Missing ${oldPath}`));
+        files.set(newPath, data);
+        files.delete(oldPath);
+        return Promise.resolve();
+      }),
+      remove: vi.fn((path: string) => {
+        files.delete(path);
+        return Promise.resolve();
+      }),
+    };
+    const logger = {
+      warn: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: {
+        vault: { configDir: string; adapter: typeof adapter };
+        saveLocalStorage: ReturnType<typeof vi.fn>;
+      };
+      manifest: { id: string };
+      settings: typeof DEFAULT_SETTINGS;
+      saveData: (settings: unknown) => Promise<void>;
+      getLogger: () => typeof logger;
+      writeAgentDiagnosticsSnapshot: ReturnType<typeof vi.fn>;
+    };
+    plugin.app = { vault: { configDir: '.obsidian', adapter }, saveLocalStorage: vi.fn() };
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        autoUpdateEnabled: true,
+        enableBM25: true,
+        structuralGraphEnabled: true,
+        annEnabled: true,
+        graphRagAutoSyncEnabled: true,
+      },
+    };
+    plugin.saveData = () => Promise.resolve();
+    plugin.getLogger = () => logger;
+    plugin.writeAgentDiagnosticsSnapshot = vi.fn(() => Promise.resolve());
+
+    await plugin.enableAgentDiagnosticsSafeMode();
+
+    expect(files.get('.obsidian/plugins/superpower-inside/agent-diagnostics-safe-mode.json')).toBe(
+      JSON.stringify({ enabled: true }),
+    );
+    expect(plugin.settings.rag).toEqual(
+      expect.objectContaining({
+        autoUpdateEnabled: false,
+        enableBM25: false,
+        structuralGraphEnabled: false,
+        annEnabled: false,
+        graphRagAutoSyncEnabled: false,
+      }),
+    );
+    expect(plugin.writeAgentDiagnosticsSnapshot).toHaveBeenCalledWith('safe-mode-enabled');
+  });
+
   it('reuses a readable root workspace diagnostics leaf', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { AGENT_DIAGNOSTICS_VIEW_TYPE } = await import('./src/diagnostics/view');

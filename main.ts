@@ -1,5 +1,5 @@
 import { Plugin, Notice, Platform, TFile, type WorkspaceLeaf } from 'obsidian';
-import { getEffectiveExcludePaths } from './src/utils/vault';
+import { getEffectiveExcludePaths, readJsonFromVault, writeJsonToVault } from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
   DEFAULT_SETTINGS,
@@ -74,7 +74,9 @@ import {
 } from './src/diagnostics/service';
 import {
   buildAgentDiagnosticsSnapshot,
+  getAgentDiagnosticsEventLogPath,
   getAgentDiagnosticsFilePath,
+  getAgentDiagnosticsSafeModeFilePath,
   type AgentDiagnosticsRuntimeState,
 } from './src/diagnostics/snapshot';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
@@ -187,6 +189,14 @@ function hasDeletableIndexedDbStore(store: unknown): store is DeletableIndexedDb
   );
 }
 
+function isSafeModeFlagEnabled(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { enabled?: unknown }).enabled === true
+  );
+}
+
 interface RagRuntimeSnapshot {
   vectorStore: VectorStore | null;
   knowledgeGraphStore: KnowledgeGraphStore | null;
@@ -252,10 +262,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private agentDiagnosticsService: AgentDiagnosticsService | null = null;
 
   async onload(): Promise<void> {
+    const startedAt = Date.now();
     this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     await this.loadSettings();
     await this.configureAgentDiagnosticsService();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'plugin.lifecycle',
+      action: 'enter',
+      detail: 'onload',
+      data: { manifestVersion: this.manifest?.version ?? 'unknown' },
+    });
+    await this.applyAgentDiagnosticsSafeModeFlag();
     this.initProvider();
 
     // 채팅 뷰 등록
@@ -341,6 +359,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.startDeferredStartupTasks();
     void this.writeAgentDiagnosticsSnapshot('startup');
     this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'plugin.lifecycle',
+      action: 'leave',
+      detail: 'onload',
+      data: { durationMs: Date.now() - startedAt },
+    });
   }
 
   onunload(): void {
@@ -465,6 +489,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
     );
   }
 
+  getAgentDiagnosticsEventLogPath(): string {
+    return getAgentDiagnosticsEventLogPath(
+      this.app.vault.configDir,
+      this.manifest?.id ?? 'superpower-inside',
+    );
+  }
+
+  getAgentDiagnosticsSafeModeFilePath(): string {
+    return getAgentDiagnosticsSafeModeFilePath(
+      this.app.vault.configDir,
+      this.manifest?.id ?? 'superpower-inside',
+    );
+  }
+
   getAgentDiagnosticsSnapshotText(): string {
     const state =
       this.agentDiagnosticsService?.getSnapshotState() ??
@@ -473,7 +511,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async writeAgentDiagnosticsSnapshot(reason: string): Promise<void> {
-    if (!this.settings.agentDiagnostics.enabled) return;
     const service = this.getOrCreateAgentDiagnosticsService();
     await service.setEnabled(true);
     await service.writeNow(reason);
@@ -484,6 +521,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await service.clearDetailedLogging();
   }
 
+  async enableAgentDiagnosticsSafeMode(): Promise<void> {
+    await writeJsonToVault(this.app.vault.adapter, this.getAgentDiagnosticsSafeModeFilePath(), {
+      enabled: true,
+    });
+    await this.applyAgentDiagnosticsSafeModeFlag();
+    await this.writeAgentDiagnosticsSnapshot('safe-mode-enabled');
+  }
+
   private async recordAgentDiagnosticsBreadcrumb(
     input: AgentDiagnosticsBreadcrumbInput,
   ): Promise<void> {
@@ -491,25 +536,60 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async configureAgentDiagnosticsService(): Promise<void> {
-    if (this.settings.agentDiagnostics.enabled) {
-      const service = this.getOrCreateAgentDiagnosticsService();
-      await service.setEnabled(true);
-      return;
-    }
-    await this.agentDiagnosticsService?.setEnabled(false);
+    const service = this.getOrCreateAgentDiagnosticsService();
+    await service.setEnabled(true);
   }
 
   private getOrCreateAgentDiagnosticsService(): AgentDiagnosticsService {
+    if (!this.refreshBus) {
+      this.refreshBus = new RefreshBus();
+    }
     if (!this.agentDiagnosticsService) {
       this.agentDiagnosticsService = new AgentDiagnosticsService({
         adapter: this.app.vault.adapter,
         filePath: this.getAgentDiagnosticsFilePath(),
+        eventLogPath: this.getAgentDiagnosticsEventLogPath(),
         refreshBus: this.refreshBus,
         logger: this.getLogger(),
         buildSnapshot: (state) => this.buildAgentDiagnosticsSnapshot(state),
       });
     }
     return this.agentDiagnosticsService;
+  }
+
+  private async applyAgentDiagnosticsSafeModeFlag(): Promise<void> {
+    const raw = await readJsonFromVault(
+      this.app.vault.adapter,
+      this.getAgentDiagnosticsSafeModeFilePath(),
+    );
+    if (!isSafeModeFlagEnabled(raw)) return;
+    this.settings = {
+      ...this.settings,
+      rag: {
+        ...this.settings.rag,
+        autoUpdateEnabled: false,
+        enableBM25: false,
+        structuralGraphEnabled: false,
+        annEnabled: false,
+        graphRagAutoSyncEnabled: false,
+      },
+    };
+    saveLocalSettings(this.app, this.settings);
+    await this.saveData(this.settings);
+    this.getLogger().warn('Agent diagnostics safe mode flag applied.', {
+      source: 'diagnostics',
+      data: {
+        flagPath: this.getAgentDiagnosticsSafeModeFilePath(),
+      },
+    });
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'plugin.safe-mode',
+      action: 'mark',
+      detail: 'applied',
+      data: {
+        flagPath: this.getAgentDiagnosticsSafeModeFilePath(),
+      },
+    });
   }
 
   private buildAgentDiagnosticsSnapshot(state: AgentDiagnosticsServiceSnapshotState): unknown {
@@ -531,8 +611,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       heartbeat: state.heartbeat,
       refreshEvents: state.refreshEvents,
       breadcrumbs: state.breadcrumbs,
+      activeOperations: state.activeOperations,
       logs: state.logs,
       fileWrite: state.fileWrite,
+      eventLog: state.eventLog,
       now: Date.now(),
     });
   }
@@ -557,11 +639,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
       refreshEvents: [],
       breadcrumbs: [],
+      activeOperations: [],
       logs: this.getLogger().getEntries().slice(-200),
       fileWrite: {
         path: this.getAgentDiagnosticsFilePath(),
         lastAttemptAt: null,
         lastSuccessAt: null,
+        lastError: null,
+      },
+      eventLog: {
+        path: this.getAgentDiagnosticsEventLogPath(),
+        lastAppendAt: null,
         lastError: null,
       },
     };
@@ -626,15 +714,37 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const controller = new AbortController();
     this.ragIndexAbortController = controller;
     this.notifyRagStatsRefresh();
+    const startedAt = Date.now();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'rag.indexing',
+      action: 'enter',
+      detail: 'operation',
+    });
     try {
       this.getLogger().info('RAG operation started.', { source: 'rag.indexing' });
-      return await operation(controller.signal);
+      const result = await operation(controller.signal);
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.indexing',
+        action: 'leave',
+        detail: 'operation',
+        data: { durationMs: Date.now() - startedAt },
+      });
+      return result;
     } catch (err) {
       if (isIndexingCancelledError(err)) {
         this.getLogger().warn('RAG operation cancelled.', { source: 'rag.indexing' });
       } else {
         this.getLogger().error('RAG operation failed.', { source: 'rag.indexing', error: err });
       }
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.indexing',
+        action: 'error',
+        detail: 'operation',
+        data: {
+          durationMs: Date.now() - startedAt,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
       throw err;
     } finally {
       if (this.ragIndexAbortController === controller) {
@@ -660,6 +770,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const controller = new AbortController();
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
+    const startedAt = Date.now();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'graph.indexing',
+      action: 'enter',
+      detail: options.resumeFailed ? 'resume-failed' : 'run',
+      data: {
+        failedFilePaths: options.failedFilePaths ?? [],
+      },
+    });
     try {
       this.getLogger().info('GraphRAG indexing operation started.', {
         source: 'graph.indexing',
@@ -685,12 +804,34 @@ export default class SuperpowerInsidePlugin extends Plugin {
           cancelled: result.cancelled,
         },
       });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'graph.indexing',
+        action: 'leave',
+        detail: options.resumeFailed ? 'resume-failed' : 'run',
+        data: {
+          durationMs: Date.now() - startedAt,
+          processedFiles: result.processedFiles,
+          failedFiles: result.failedFiles,
+          processedChunks: result.processedChunks,
+          failedChunks: result.failedChunks,
+          cancelled: result.cancelled,
+        },
+      });
       this.emitGraphDataRefresh('graph-run', result.runId);
       return result;
     } catch (err) {
       this.getLogger().error('GraphRAG indexing operation failed.', {
         source: 'graph.indexing',
         error: err,
+      });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'graph.indexing',
+        action: 'error',
+        detail: options.resumeFailed ? 'resume-failed' : 'run',
+        data: {
+          durationMs: Date.now() - startedAt,
+          message: err instanceof Error ? err.message : String(err),
+        },
       });
       throw err;
     } finally {
@@ -715,6 +856,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const controller = new AbortController();
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
+    const startedAt = Date.now();
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'graph.indexing',
+      action: 'enter',
+      detail: 'sync-stale',
+      data: { staleFileCount: staleFilePaths.length },
+    });
     try {
       this.getLogger().info('GraphRAG stale sync started.', {
         source: 'graph.indexing',
@@ -735,6 +883,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
         data: { processedFiles: result.processedFiles, failedFiles: result.failedFiles },
       });
       this.emitGraphDataRefresh('graph-run', result.runId);
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'graph.indexing',
+        action: 'leave',
+        detail: 'sync-stale',
+        data: {
+          durationMs: Date.now() - startedAt,
+          processedFiles: result.processedFiles,
+          failedFiles: result.failedFiles,
+          cancelled: result.cancelled,
+        },
+      });
       new Notice(
         t('graphRagStaleSyncStatusNotice', {
           label: presentation.label,
@@ -746,6 +905,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().error('GraphRAG stale sync failed.', {
         source: 'graph.indexing',
         error: err,
+      });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'graph.indexing',
+        action: 'error',
+        detail: 'sync-stale',
+        data: {
+          durationMs: Date.now() - startedAt,
+          message: err instanceof Error ? err.message : String(err),
+        },
       });
       throw err;
     } finally {
@@ -1617,6 +1785,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'rag',
         data: { stage, durationMs: Date.now() - startedAt },
       });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.runtime',
+        action: 'leave',
+        detail: stage,
+        data: { durationMs: Date.now() - startedAt },
+      });
       return result;
     } catch (err) {
       this.lastRagRuntimeInitError = err instanceof Error ? err.message : String(err);
@@ -1624,6 +1798,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'rag',
         data: { stage, durationMs: Date.now() - startedAt },
         error: err,
+      });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.runtime',
+        action: 'error',
+        detail: stage,
+        data: {
+          durationMs: Date.now() - startedAt,
+          message: this.lastRagRuntimeInitError,
+        },
       });
       throw err;
     }
@@ -1944,6 +2127,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
               },
               isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
               onProgress: (progress) => {
+                void this.recordAgentDiagnosticsBreadcrumb({
+                  phase: 'graph.indexing',
+                  action: 'mark',
+                  detail: 'run',
+                  data: {
+                    phase: progress.phase,
+                    currentFile: progress.currentFile,
+                    processedFiles: progress.processedFiles,
+                    failedFiles: progress.failedFiles,
+                    selectedFiles: progress.selectedFiles,
+                    runId: progress.runId,
+                    processedChunks: progress.processedChunks,
+                    failedChunks: progress.failedChunks,
+                  },
+                });
                 this.getLogger().debug('GraphRAG indexing progress updated.', {
                   source: 'graph.progress',
                   data: {
@@ -1998,10 +2196,39 @@ export default class SuperpowerInsidePlugin extends Plugin {
             this.ragPerformanceGuard?.recordBatchDuration(durationMs);
             void this.ragPerformanceGuard?.measureEventLoopLag();
           },
+          onProgress: (progress) => {
+            void this.recordAgentDiagnosticsBreadcrumb({
+              phase: 'rag.indexing',
+              action: 'mark',
+              detail: 'operation',
+              data: {
+                event: progress.event,
+                processed: progress.completedFiles,
+                total: progress.totalFiles,
+                currentFile: progress.currentFilePath ?? null,
+                currentFileEmbeddedChunks: progress.currentFileEmbeddedChunks,
+                currentFileTotalChunks: progress.currentFileTotalChunks,
+              },
+            });
+          },
           getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
         }),
         onStatusChange: (status) => {
           this.ragIndexingStatus = status;
+          if (status.running) {
+            void this.recordAgentDiagnosticsBreadcrumb({
+              phase: 'rag.indexing',
+              action: 'mark',
+              detail: 'operation',
+              data: {
+                phase: status.phase,
+                queuedFiles: status.queuedFiles,
+                currentFile: status.progress?.currentFilePath ?? null,
+                completedFiles: status.progress?.completedFiles ?? null,
+                totalFiles: status.progress?.totalFiles ?? null,
+              },
+            });
+          }
           this.getLogger().debug('RAG indexing scheduler status changed.', {
             source: 'rag.indexing',
             data: {
@@ -2471,6 +2698,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
     const runId = ++this.mcpConnectionRunId;
+    const startedAt = Date.now();
     this.clearMcpRetryTimers();
     await this.recordAgentDiagnosticsBreadcrumb({
       phase: 'mcp.connections',
@@ -2516,6 +2744,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'mcp',
         data: { serverCount: enabledServers.length },
       });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'mcp.connections',
+        action: 'error',
+        detail: 'run-start',
+        data: {
+          runId,
+          durationMs: Date.now() - startedAt,
+          errorCount: errors.length,
+          reason: desktopOnlyMessage,
+        },
+      });
       return errors;
     }
 
@@ -2554,6 +2793,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().notice('MCP connection run completed.', {
       source: 'mcp',
       data: { runId, errorCount: errors.length },
+    });
+    await this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'mcp.connections',
+      action: errors.length > 0 ? 'error' : 'leave',
+      detail: 'run-start',
+      data: {
+        runId,
+        durationMs: Date.now() - startedAt,
+        errorCount: errors.length,
+      },
     });
     return errors;
   }

@@ -192,6 +192,13 @@ describe('agent diagnostics snapshot', () => {
           maxLagMs: 10,
           tickCount: 1,
         },
+        lastActiveOperation: {
+          id: 9,
+          phase: 'rag.runtime',
+          detail: 'bm25-load',
+          startedAt: 1_780_370_099_000,
+          lastUpdatedAt: 1_780_370_099_000,
+        },
         suspectedUncleanShutdown: true,
       },
       heartbeat: {
@@ -220,11 +227,33 @@ describe('agent diagnostics snapshot', () => {
           data: { authorization: 'Bearer abcdefgh', fileCount: 7 },
         },
       ],
+      activeOperations: [
+        {
+          id: 2,
+          timestamp: 1_780_371_002_700,
+          phase: 'rag.indexing',
+          action: 'enter',
+          detail: 'file-index',
+          data: { currentFile: 'a.md' },
+        },
+      ].map((entry) => ({
+        id: entry.id,
+        phase: entry.phase,
+        detail: entry.detail,
+        startedAt: entry.timestamp,
+        lastUpdatedAt: entry.timestamp,
+        data: entry.data,
+      })),
       logs: logger.getEntries(),
       fileWrite: {
         path: '.obsidian/plugins/superpower-inside/agent-diagnostics.json',
         lastAttemptAt: 1_780_371_003_000,
         lastSuccessAt: 1_780_371_003_001,
+        lastError: null,
+      },
+      eventLog: {
+        path: '.obsidian/plugins/superpower-inside/agent-diagnostics.ndjson',
+        lastAppendAt: 1_780_371_003_100,
         lastError: null,
       },
       now: 1_780_371_004_000,
@@ -258,6 +287,15 @@ describe('agent diagnostics snapshot', () => {
     });
     expect(snapshot.refreshEvents[0]?.domain).toBe('rag');
     expect(snapshot.previousSession?.suspectedUncleanShutdown).toBe(true);
+    expect(snapshot.diagnosticFile.eventLogPath).toBe(
+      '.obsidian/plugins/superpower-inside/agent-diagnostics.ndjson',
+    );
+    expect(snapshot.diagnosticFile.safeModeFlagPath).toBe(
+      '.obsidian/plugins/superpower-inside/agent-diagnostics-safe-mode.json',
+    );
+    expect(snapshot.diagnosis.status).toBe('unclean-shutdown');
+    expect(snapshot.diagnosis.lastActiveOperation?.phase).toBe('rag.indexing');
+    expect(snapshot.diagnosis.recommendedActions[0]?.id).toBe('disable-rag-startup-work');
     expect(snapshot.breadcrumbs[0]).toEqual(
       expect.objectContaining({
         phase: 'rag.runtime',

@@ -989,6 +989,134 @@
   overflow-wrap: anywhere;
 }
 
+.superpower-inside-agent-diagnostics-diagnosis {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-badge {
+  flex: 0 0 auto;
+  min-width: 72px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-badge--ok {
+  color: var(--text-success);
+  border-color: var(--background-modifier-success);
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-badge--running {
+  color: var(--text-accent);
+  border-color: var(--interactive-accent);
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-badge--attention,
+.superpower-inside-agent-diagnostics-diagnosis-badge--unclean-shutdown {
+  color: var(--text-error);
+  border-color: var(--text-error);
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-title {
+  min-width: 0;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-heading {
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-summary {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-grid {
+  display: grid;
+  grid-template-columns: minmax(112px, 180px) minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-value {
+  min-width: 0;
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-actions-panel {
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-actions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-actions-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-action {
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-action-label {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.superpower-inside-agent-diagnostics-diagnosis-action-detail {
+  margin-top: 2px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-agent-diagnostics-snapshot {
   flex: 1;
   min-height: 320px;
@@ -1006,6 +1134,14 @@
 }
 
 @media (max-width: 520px) {
+  .superpower-inside-agent-diagnostics-diagnosis-header {
+    flex-direction: column;
+  }
+
+  .superpower-inside-agent-diagnostics-diagnosis-grid {
+    grid-template-columns: 1fr;
+  }
+
   .superpower-inside-overview-header,
   .superpower-inside-overview-panel-header {
     align-items: flex-start;

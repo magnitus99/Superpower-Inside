@@ -10,6 +10,7 @@ import {
 class RecordingAdapter {
   private files = new Map<string, string>();
   readonly writePaths: string[] = [];
+  readonly appendPaths: string[] = [];
   readonly renamePairs: Array<[string, string]> = [];
   readonly removePaths: string[] = [];
 
@@ -24,6 +25,12 @@ class RecordingAdapter {
   write(path: string, value: string): Promise<void> {
     this.writePaths.push(path);
     this.files.set(path, value);
+    return Promise.resolve();
+  }
+
+  append(path: string, value: string): Promise<void> {
+    this.appendPaths.push(path);
+    this.files.set(path, `${this.files.get(path) ?? ''}${value}`);
     return Promise.resolve();
   }
 
@@ -61,6 +68,7 @@ class RecordingAdapter {
 }
 
 const diagnosticsPath = '.obsidian/plugins/superpower-inside/agent-diagnostics.json';
+const eventLogPath = '.obsidian/plugins/superpower-inside/agent-diagnostics.ndjson';
 
 function createService(options: {
   enabled: boolean;
@@ -74,6 +82,7 @@ function createService(options: {
   const service = new AgentDiagnosticsService({
     adapter: adapter.asDataAdapter(),
     filePath: diagnosticsPath,
+    eventLogPath,
     refreshBus,
     logger,
     heartbeatIntervalMs: 1000,
@@ -91,6 +100,8 @@ function createService(options: {
         heartbeat: state.heartbeat,
         logs: state.logs,
         fileWrite: state.fileWrite,
+        eventLog: state.eventLog,
+        activeOperations: state.activeOperations,
       };
     },
   });
@@ -264,5 +275,63 @@ describe('AgentDiagnosticsService', () => {
         data: { apiKey: '[REDACTED]', fileCount: 3 },
       }),
     ]);
+  });
+
+  it('appends NDJSON events and exposes the unfinished active operation for postmortems', async () => {
+    const { adapter, service } = createService({ enabled: true, maxBreadcrumbs: 5 });
+
+    await service.recordBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: 'bm25-load',
+      data: { fileCount: 42, apiKey: 'sk-secretsecretsecret' },
+    });
+
+    const snapshot = JSON.parse(adapter.readRaw(diagnosticsPath) ?? '{}') as {
+      activeOperations: Array<{
+        phase: string;
+        detail?: string;
+        startedAt: number;
+        data?: Record<string, unknown>;
+      }>;
+      eventLog: { path: string; lastAppendAt: number | null; lastError: string | null };
+    };
+    expect(snapshot.eventLog.path).toBe(eventLogPath);
+    expect(snapshot.eventLog.lastAppendAt).toBe(Date.parse('2026-06-25T00:00:00.000Z'));
+    expect(snapshot.eventLog.lastError).toBeNull();
+    expect(snapshot.activeOperations).toEqual([
+      expect.objectContaining({
+        phase: 'rag.runtime',
+        detail: 'bm25-load',
+        data: { fileCount: 42, apiKey: '[REDACTED]' },
+      }),
+    ]);
+
+    const events = (adapter.readRaw(eventLogPath) ?? '')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; phase?: string; detail?: string });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'session_start' }),
+        expect.objectContaining({
+          type: 'operation_start',
+          phase: 'rag.runtime',
+          detail: 'bm25-load',
+        }),
+      ]),
+    );
+  });
+
+  it('removes an active operation when the matching breadcrumb leaves or errors', async () => {
+    const { adapter, service } = createService({ enabled: true, maxBreadcrumbs: 5 });
+
+    await service.recordBreadcrumb({ phase: 'rag.runtime', action: 'enter', detail: 'bm25-load' });
+    await service.recordBreadcrumb({ phase: 'rag.runtime', action: 'leave', detail: 'bm25-load' });
+
+    const parsed = JSON.parse(adapter.readRaw(diagnosticsPath) ?? '{}') as {
+      activeOperations: unknown[];
+    };
+    expect(parsed.activeOperations).toEqual([]);
   });
 });
