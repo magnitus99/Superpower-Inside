@@ -8,6 +8,20 @@
 > TypeScript strict 모드, esbuild CJS 번들, Obsidian DOM API 기반 UI.
 > JS/TS는 UI와 Obsidian host boundary를 담당하는 프론트엔드/wrapper다. 실질 기능의 결정적 로직은 Rust/WASM 코어가 담당한다.
 
+## PRODUCT PHILOSOPHY
+
+- 0번째 제품 철학은 "2000-2010년대 스티브잡스 시절 애플 감성, 사용자가 신경쓰지 않아도 정말 알아서 다 되는 편안함, 사용자가 신경 쓰지 않아도 괜찮은 롤스로이스 감성"이다.
+- 모든 기능은 조용히 유능하고, 고급스럽고, 마찰이 적어야 한다. 내부 복잡도, fragile settings, maintenance state를 사용자가 계속 관리하게 만들지 않는다.
+- RAG, GraphRAG, MCP, provider 설정 같은 고급 기능도 전문가용 계기판이 아니라 정제된 럭셔리 컨트롤 표면처럼 느껴져야 한다.
+- 자동화는 기본적으로 믿을 수 있어야 하며, 사용자가 행동해야 할 때만 이유와 다음 행동을 명확하게 보여준다.
+- 멀티 플랫폼/멀티 에이전트 개발에서도 이 철학을 우선 적용한다. 플랫폼 제약 때문에 완전히 자동화할 수 없을 때만 사용자가 눌러야 하는 단계와 남은 리스크를 짧고 구체적으로 남긴다.
+- 작업자는 이 철학을 취향 문구가 아니라 설계 gate로 적용한다. 기능이 아래 기준을 통과하지 못하면 구현을 시작하지 말고 UX/범위/자동화 방식을 먼저 바꾼다.
+- 설정을 추가하기 전에 자동 감지, 안전한 기본값, 기존 설정 재사용, 점진적 공개로 해결할 수 있는지 확인한다. 새 설정은 사용자가 의미 있는 선택을 해야 하고 기본값으로는 안전하게 작동해야 할 때만 추가한다.
+- 상태 UI를 추가하기 전에 사용자가 해야 할 행동이 있는지 확인한다. 행동이 없으면 조용한 로그/진단으로 충분하다. 행동이 있으면 상태 설명은 한 문장, primary action은 하나, 보조 action은 필요한 경우에만 둔다.
+- RAG/GraphRAG/index/cache/ontology/provider/MCP 같은 내부 용어는 사용자가 판단해야 할 때만 노출한다. 일반 흐름에서는 "준비 중", "출처 확인", "다시 시도", "연결 필요"처럼 작업 언어로 표현한다.
+- 복구 기능은 숨기지 않되 일상 workflow의 중심으로 만들지 않는다. reindex, reset, migrate, rebuild, retry는 기본 사용법이 아니라 문제 해결과 진단의 마지막 수단이어야 한다.
+- README와 개발 문서는 이 철학을 반복 설명하는 문서가 아니라, 각 작업자가 어떤 구현 결정을 해야 하는지 지시해야 한다. 표어만 있고 구체적인 판단 기준이 없으면 문서 품질 미달이다.
+
 ## NON-NEGOTIABLE QUALITY BAR
 
 - 수익화 관련 기능은 보류한다. 플러그인은 완전 무료/오픈소스로 유지한다.
@@ -71,7 +85,7 @@
 │   ├── chat/                     # ItemView 채팅 UI, 저장, 멘션/컨텍스트, 세션 모달
 │   ├── mcp/                      # MCP stdio client/registry
 │   └── utils/                    # vault adapter JSON IO, 플러그인 탐지, MCP JSON 검증
-├── scripts/                      # fish 스크립트(setup-dev, launch-obsidian-debug, bump-version)
+├── scripts/                      # Windows PowerShell, macOS fish 개발 진입점 + Rust/WASM helper
 ├── docs/                         # 개발/제출 문서
 ├── crates/rag-wasm/              # Rust/WASM RAG 계산 코어
 ├── Cargo.toml                    # Rust workspace, strict lint 기준
@@ -377,14 +391,19 @@
 
 ## DEVELOPMENT WORKFLOW
 
-```fish
-# 1회성 개발 볼트/심링크/hot-reload 준비
-./scripts/setup-dev.fish
+Windows:
 
-# 터미널 1: esbuild watch
+```powershell
+.\scripts\setup-dev.ps1
 npm run dev
+.\scripts\launch-obsidian-debug.ps1
+```
 
-# 터미널 2: Obsidian 디버그 모드로 .test-vault 열기
+macOS:
+
+```fish
+./scripts/setup-dev.fish
+npm run dev
 ./scripts/launch-obsidian-debug.fish
 ```
 
@@ -408,7 +427,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - 실시간성은 snapshot id/revision id로 보장한다. UI는 최신 revision만 반영하고, 오래된 Rust worker 결과는 폐기한다.
 - Rust 변경은 `npm run security:full`를 통과해야 한다. 이 명령은 `rustfmt`, `clippy`, test, `wasm32-unknown-unknown` build, `cargo-deny`, `cargo-audit`, `cargo-vet`, `cargo-geiger`, npm audit, generated WASM 최신성 검사를 실행한다.
 - `npm run build`와 `npm run dev`는 반드시 `npm run wasm:build`를 먼저 실행한다. generated glue/base64를 손으로 고치지 않는다.
-- 세부 전환 계획은 `docs/rust-wasm-migration.md`를 기준으로 삼는다.
+- Rust/WASM 경계의 현재 계약은 이 문서와 `docs/README_FOR_DEV.md`를 기준으로 삼는다. 완료된 전환 일지나 단계별 작업 로그를 새 source of truth로 되살리지 않는다.
 
 ## VERSIONING AND RELEASES
 
@@ -434,7 +453,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 - 모든 사용자 표시 텍스트, UI 레이블, 버튼, placeholder, Notice, 상태/오류 메시지, 기본 프롬프트, 도구 설명은 반드시 `src/i18n.ts`에 한국어와 영어를 모두 준비하고 `t()`로 호출한다.
 - `src/i18n.ts` 외 런타임 TypeScript 파일에 한국어 문자열/템플릿 리터럴을 직접 두지 않는다. 예외는 테스트/문서가 아닌 이상 만들지 않는다.
 - i18n 변경 후에는 `npm run check:i18n`으로 한국어 문자열이 `src/i18n.ts` 밖에 남지 않았고 영어 번역 객체에 한국어가 섞이지 않았는지 확인한다.
-- 터미널 스크립트와 예시는 fish 문법을 사용한다. `export`, `&&`, `||`, `if [` 대신 `set`, `and`, `or`, `if test`를 사용한다.
+- 로컬 개발 명령과 문서는 실행 플랫폼을 명시한다. Windows 절차는 PowerShell, macOS 절차는 fish를 사용하며, Rust/WASM 보조 스크립트는 npm script 또는 `scripts/run-fish.mjs`를 통해 실행한다.
 - 이 프로젝트는 Node/npm 기반 Obsidian 플러그인이다. Python/uv는 별도 지시가 없으면 사용하지 않는다.
 - Obsidian 파일 접근은 `this.app.vault`, `vault.adapter`, `cachedRead`, `modify`, `create`를 우선한다. 런타임 코드에서 직접 `fs` 접근을 늘리지 않는다.
 - 대부분 named import/export와 `import type`을 사용한다. 하위 디렉터리 barrel 파일은 없다.
@@ -476,7 +495,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 
 ## COMMANDS
 
-```fish
+```powershell
 npm run dev        # esbuild watch, 개발 중 main.js 자동 재빌드
 npm run security:full # 전체 보안·정합성 게이트
 npm run wasm:build # Rust/WASM glue와 embedded bytes 생성
@@ -484,10 +503,15 @@ npm run build      # Rust/WASM 빌드 후 production 번들(minify, no sourcemap
 npm run format     # Prettier --write src/ main.ts
 ```
 
+```powershell
+.\scripts\setup-dev.ps1             # Windows .test-vault 생성, 플러그인 junction, hot-reload 설치
+.\scripts\launch-obsidian-debug.ps1 # Windows Obsidian 디버그 실행, isolated profile, remote debugging port
+npm run build                       # release asset용 main.js 생성
+```
+
 ```fish
-./scripts/setup-dev.fish             # .test-vault 생성, 플러그인 심링크, hot-reload 설치
+./scripts/setup-dev.fish             # macOS .test-vault 생성, 플러그인 symlink, hot-reload 설치
 ./scripts/launch-obsidian-debug.fish # macOS Obsidian 디버그 실행, remote debugging port 9222
-./scripts/bump-version.fish patch    # main에서 manifest/package/versions 버전, build, commit, tag, push
 ```
 
 ## NOTES

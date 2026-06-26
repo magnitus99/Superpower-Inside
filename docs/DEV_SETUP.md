@@ -1,17 +1,22 @@
 # 개발 환경 설정 가이드
 
-> 이 문서는 로컬 테스트 볼트와 디버깅 환경을 준비하는 데 집중합니다. 코드 구조와 기능 추가 흐름은 [README_FOR_DEV.md](README_FOR_DEV.md)를 보세요.
+> 이 문서는 Superpower Inside 테스트 볼트와 Obsidian 디버그 실행을 준비하는 현재 권장 절차를 다룹니다. 코드 구조와 변경 흐름은 [README_FOR_DEV.md](README_FOR_DEV.md)를 보세요.
 
 ## 요약
 
-```fish
-# 1회성 설정
-./scripts/setup-dev.fish
+Windows:
 
-# 터미널 1: esbuild watch
+```powershell
+.\scripts\setup-dev.ps1
 npm run dev
+.\scripts\launch-obsidian-debug.ps1
+```
 
-# 터미널 2: Obsidian 디버그 모드
+macOS:
+
+```fish
+./scripts/setup-dev.fish
+npm run dev
 ./scripts/launch-obsidian-debug.fish
 ```
 
@@ -19,15 +24,21 @@ npm run dev
 
 | 항목 | 기준 |
 | --- | --- |
-| OS | macOS |
-| Shell | fish |
+| OS | Windows 11 또는 macOS |
+| Shell | PowerShell on Windows, fish on macOS |
 | Node.js | 22 이상 권장 |
 | Package manager | npm |
 | Obsidian | Desktop app |
 
+Rust/WASM 보안과 빌드 보조 스크립트는 fish로 작성되어 있습니다. Windows에서는 `scripts/run-fish.mjs`가 WSL fish를 호출하므로 `npm run wasm:build`, `npm run rust:security`, `npm run security:full`, `npm run build`를 npm script로 실행하면 됩니다.
+
 ## 자동 설정
 
-권장 방식입니다.
+현재 플랫폼에 맞는 스크립트를 사용합니다.
+
+```powershell
+.\scripts\setup-dev.ps1
+```
 
 ```fish
 ./scripts/setup-dev.fish
@@ -35,130 +46,94 @@ npm run dev
 
 스크립트가 하는 일:
 
-| 단계 | 설명 |
-| --- | --- |
-| 테스트 볼트 생성 | `repo/.test-vault/` 생성 |
-| 플러그인 심링크 생성 | `.test-vault/.obsidian/plugins/superpower-inside/` -> 저장소 루트 |
-| hot-reload 설치 | `pjeby/hot-reload` 클론 |
-| 플러그인 활성화 준비 | 테스트 볼트의 community plugin 설정 갱신 |
+| 단계 | Windows | macOS |
+| --- | --- | --- |
+| 테스트 볼트 생성 | `repo\.test-vault\` | `repo/.test-vault/` |
+| 플러그인 링크 | junction to repo root | symlink to repo root |
+| hot-reload 설치 | `pjeby/hot-reload` clone | `pjeby/hot-reload` clone |
+| 플러그인 활성화 준비 | community plugin 설정 갱신 | community plugin 설정 갱신 |
+| Obsidian vault 등록 | Windows Obsidian 설정에 등록 | macOS Obsidian config path 사용 |
 
 > [!IMPORTANT]
-> 테스트 볼트에는 저장된 채팅, RAG 벡터, workspace 상태 같은 런타임 산출물이 생깁니다. 일반 기능 변경 커밋에 `.test-vault/` 내용을 포함하지 마세요.
-
-## 수동 설정
-
-자동 설정이 실패할 때만 사용하세요.
-
-### 테스트 볼트 생성
-
-```fish
-set -l vault "$PWD/.test-vault"
-mkdir -p "$vault/.obsidian/plugins"
-printf "# Dev Test Vault\n" > "$vault/Welcome.md"
-```
-
-### 플러그인 심링크 생성
-
-복사본이 아니라 심링크여야 `npm run dev`의 빌드 결과가 즉시 반영됩니다.
-
-```fish
-set -l repo "$PWD"
-set -l plugin_dir "$repo/.test-vault/.obsidian/plugins/superpower-inside"
-rm -rf "$plugin_dir"
-ln -s "$repo" "$plugin_dir"
-```
-
-### hot-reload 설치
-
-```fish
-set -l plugins_dir "$PWD/.test-vault/.obsidian/plugins"
-git clone https://github.com/pjeby/hot-reload.git "$plugins_dir/hot-reload"
-```
-
-Obsidian에서 **hot-reload** 플러그인을 활성화하면 `main.js` 변경 시 Superpower Inside가 자동으로 리로드됩니다.
+> 테스트 볼트에는 저장된 채팅, RAG 벡터, GraphRAG 데이터, workspace 상태 같은 런타임 산출물이 생깁니다. 일반 기능 변경 커밋에 `.test-vault/` 내용을 포함하지 마세요.
 
 ## 개발 워크플로우
 
-### 터미널 1: esbuild watch
+### 터미널 1: 빌드 감시
 
-```fish
+```powershell
 npm run dev
 ```
 
-`main.ts` 또는 `src/**/*.ts`를 저장하면 `main.js`가 자동으로 다시 빌드됩니다.
+`npm run dev`는 먼저 WASM을 빌드한 뒤 esbuild watch를 시작합니다. `main.ts` 또는 `src/**/*.ts`를 저장하면 `main.js`가 다시 빌드되고, hot-reload가 활성화되어 있으면 Obsidian 쪽 플러그인도 다시 로드됩니다.
 
-### 터미널 2: Obsidian 디버그 모드
+### 터미널 2: Obsidian 디버그 실행
+
+Windows:
+
+```powershell
+.\scripts\launch-obsidian-debug.ps1
+```
+
+macOS:
 
 ```fish
 ./scripts/launch-obsidian-debug.fish
 ```
 
-수동 실행이 필요하면:
+Windows 스크립트는 `.test-vault\.obsidian-dev-profile`을 별도 프로필로 쓰고, 사용 가능한 remote debugging port를 찾아 Obsidian을 실행한 뒤 `superpower-inside`와 `hot-reload`를 활성화합니다.
+
+macOS 스크립트는 `/Applications/Obsidian.app`을 기본으로 열고 `--remote-debugging-port=9222`로 테스트 볼트를 실행합니다. 다른 위치에 설치했다면 `OBSIDIAN_APP` 환경 변수를 지정합니다.
 
 ```fish
-set -l vault "$PWD/.test-vault"
-open -a Obsidian --args --remote-debugging-port=9222 "$vault"
+set -x OBSIDIAN_APP /path/to/Obsidian.app
+./scripts/launch-obsidian-debug.fish
 ```
 
-### DevTools
+Windows에서 Obsidian 설치 경로를 자동으로 찾지 못하면 환경 변수나 인자로 지정합니다.
 
-Obsidian에서 `Cmd+Option+I`를 누릅니다.
+```powershell
+$env:OBSIDIAN_EXE = "$env:LOCALAPPDATA\Programs\Obsidian\Obsidian.exe"
+.\scripts\launch-obsidian-debug.ps1
+```
 
-확인할 곳:
+```powershell
+.\scripts\launch-obsidian-debug.ps1 -ObsidianPath "C:\Path\To\Obsidian.exe"
+```
 
-| 탭 | 용도 |
-| --- | --- |
-| Console | provider/RAG/MCP 오류 확인 |
-| Network | LLM/embedding 요청 확인 |
-| Application | IndexedDB 임베딩 캐시 확인 |
-| Elements | 채팅 UI DOM 확인 |
+## 확인할 런타임 상태
 
-### VS Code 디버깅
+Obsidian 조작 자동화가 불안정하면 DevTools나 remote debugging runtime에서 아래 상태를 확인합니다.
 
-1. Obsidian을 `--remote-debugging-port=9222`로 실행합니다.
-2. VS Code에서 "Attach to Obsidian Renderer" 구성을 선택합니다.
-3. TypeScript 파일에 breakpoint를 설정합니다.
-4. Obsidian에서 해당 플러그인 동작을 실행합니다.
+```javascript
+app.vault.getName();
+app.vault.adapter.basePath;
+Boolean(app.plugins.plugins['superpower-inside']);
+Boolean(app.plugins.plugins['hot-reload']);
+Object.keys(app.commands.commands).filter((id) => id.startsWith('superpower-inside:'));
+```
 
 ## 검증 명령어
 
-문서나 코드 변경 후 적용 가능한 검증을 실행합니다.
+문서만 바꾼 경우에는 링크와 stale 문구 검색으로 충분합니다. 코드, UI, 설정, Rust/WASM, 빌드 산출물이 바뀐 경우에는 아래 순서를 기본으로 합니다.
 
-```fish
-npm run lint
-npm run typecheck
-npm run test
+```powershell
+npm run security:full
 npm run build
+npm run review -- --tag <manifest-version> --built
 ```
 
-Obsidian 커뮤니티 제출 또는 릴리스 전에는 CI와 같은 설치 흐름도 확인합니다.
-
-```fish
-npm ci
-npm run lint
-npm run typecheck
-npm run test
-npm run build
-```
-
-## BRAT로 베타 테스트
-
-[BRAT](https://github.com/TfTHacker/obsidian42-brat)을 사용하면 GitHub Release를 통해 베타 버전을 설치할 수 있습니다.
-
-1. Obsidian 커뮤니티 플러그인에서 **BRAT**을 설치합니다.
-2. BRAT 설정에서 **Add Beta plugin**을 선택합니다.
-3. Repository에 `magnitus99/Superpower-Inside`를 입력합니다.
-4. 설치 후 Superpower Inside를 활성화합니다.
+UI/DOM/CSS/설정 화면/채팅 화면을 바꾸면 테스트 통과만으로 끝내지 말고 실제 화면 스크린샷을 확인합니다.
 
 ## 문제 해결
 
 | 증상 | 확인할 것 | 해결 |
 | --- | --- | --- |
-| 플러그인이 보이지 않음 | `main.js`, `manifest.json` 존재 여부 | `npm run build` 실행 후 Obsidian 리로드 |
-| watch 결과가 반영되지 않음 | 심링크가 저장소 루트를 가리키는지 | `ls -la .test-vault/.obsidian/plugins/` 확인 |
-| hot-reload가 작동하지 않음 | hot-reload 플러그인 활성화 여부 | Obsidian에서 hot-reload 활성화 후 `main.js` 저장 |
-| 디버거 연결 실패 | 9222 포트 사용 여부 | `lsof -i :9222`로 점유 프로세스 확인 |
-| RAG 상태가 이상함 | 벡터 저장소와 설정 불일치 | 설정 저장 후 필요한 문서만 업데이트하거나 전체 재인덱싱 |
+| 플러그인이 보이지 않음 | `main.js`, `manifest.json`, plugin link 존재 여부 | OS별 setup script 후 `npm run build` 실행 |
+| watch 결과가 반영되지 않음 | plugin link가 저장소 루트를 가리키는지 | Windows는 junction, macOS는 symlink 확인 |
+| Obsidian 실행 실패 | Obsidian 설치 위치 | Windows는 `OBSIDIAN_EXE`, macOS는 `OBSIDIAN_APP` 지정 |
+| remote debugging 실패 | 9222 근처 포트 점유 | 기존 Obsidian 프로세스 종료 또는 Windows 스크립트의 선택 port 확인 |
+| Graph/RAG 상태가 이상함 | 모델/provider 변경, stale 상태, 실패 파일 | 설정 화면의 상태와 next action을 보고 필요한 최소 작업만 실행 |
 
 ## 산출물 주의
 
@@ -167,12 +142,12 @@ npm run build
 | 경로 | 성격 |
 | --- | --- |
 | `.test-vault/.obsidian/workspace.json` | 개인 UI 상태 |
-| `.test-vault/.superpower-inside/vectors.json` | RAG 벡터 저장소 |
+| `.test-vault/.superpower-inside/` | RAG/GraphRAG 런타임 저장소 |
 | `.test-vault/SuperpowerInsideChats/` | 저장된 채팅 세션 |
 | `main.js` | 빌드 산출물, 릴리스 때만 확인 |
 
 작업 전후에 범위를 확인하세요.
 
-```fish
+```powershell
 git status --short
 ```
