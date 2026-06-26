@@ -10,9 +10,7 @@ function listSourceFiles(path: string): string[] {
   const absolutePath = resolve(root, path);
   const stats = statSync(absolutePath);
   if (stats.isFile()) {
-    return absolutePath.endsWith('.ts') && !absolutePath.endsWith('.test.ts')
-      ? [absolutePath]
-      : [];
+    return absolutePath.endsWith('.ts') && !absolutePath.endsWith('.test.ts') ? [absolutePath] : [];
   }
 
   return readdirSync(absolutePath).flatMap((entry) => {
@@ -78,8 +76,7 @@ describe('Obsidian community static review guards', () => {
   });
 
   it('uses window timer APIs for popout-compatible runtime scheduling', () => {
-    const timerCallPattern =
-      /(?:^|[^\w.])(setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
+    const timerCallPattern = /(?:^|[^\w.])(setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
     const timerTypePattern = /typeof\s+(setTimeout|setInterval|clearTimeout|clearInterval)\b/;
     const offenders = sources.flatMap(({ file, source }) =>
       source
@@ -133,8 +130,41 @@ describe('Obsidian community static review guards', () => {
       source
         .split('\n')
         .map((line, index) => ({ file, line, index: index + 1 }))
-        .filter(({ line }) => /createDiv\(\{\s*cls:\s*['"]superpower-inside-mcp-tool-item/.test(line))
+        .filter(({ line }) =>
+          /createDiv\(\{\s*cls:\s*['"]superpower-inside-mcp-tool-item/.test(line),
+        )
         .map(({ file, line, index }) => `${file}:${index}: ${line.trim()}`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('uses popout-safe Obsidian DOM and browser API alternatives', () => {
+    const forbiddenPatterns: Array<[RegExp, string]> = [
+      [
+        /\bdocument\.(createElement|createTextNode|createTreeWalker)\b/,
+        'global document DOM creation',
+      ],
+      [
+        /\binstanceof\s+HTML(?:Button|Details)?Element\b/,
+        'cross-window unsafe HTMLElement instanceof',
+      ],
+      [/\b(?:window\.)?confirm\s*\(/, 'blocking browser confirm'],
+      [/\b(?:window\.)?prompt\s*\(/, 'blocking browser prompt'],
+      [/\bfetch\s*\(/, 'browser fetch network request'],
+      [/MarkdownRenderer\.renderMarkdown\s*\(/, 'deprecated MarkdownRenderer.renderMarkdown'],
+      [/\bthis\.display\s*\(/, 'deprecated PluginSettingTab.display refresh call'],
+    ];
+
+    const offenders = sources.flatMap(({ file, source }) =>
+      source
+        .split('\n')
+        .map((line, index) => ({ file, line, index: index + 1 }))
+        .flatMap(({ file, line, index }) =>
+          forbiddenPatterns
+            .filter(([pattern]) => pattern.test(line))
+            .map(([, label]) => `${file}:${index}: ${label}: ${line.trim()}`),
+        ),
     );
 
     expect(offenders).toEqual([]);
