@@ -45,6 +45,7 @@ flowchart LR
 | Source cards | Open source notes, copy Obsidian links, and insert citations into the active note. |
 | Chat history | Save and reopen useful research sessions inside your vault. |
 | Model-centered providers | Choose ready-made or custom model profiles for chat, embedding, and graph extraction without hand-tuning every provider field. |
+| Built-in local embeddings | Use Ternlight on-device embeddings without an API key, Ollama server, or per-call network request. |
 | Agent diagnostics | Shows readable runtime diagnosis, recent operations, event logs, and a safe-mode recovery action when plugin startup or indexing gets stuck. |
 
 ## Install
@@ -59,13 +60,15 @@ flowchart LR
 ### Manual Install
 
 1. Download the latest release from [GitHub Releases](https://github.com/magnitus99/Superpower-Inside/releases).
-2. Copy `manifest.json`, `main.js`, and `styles.css` into `.obsidian/plugins/superpower-inside/`.
+2. Copy `manifest.json`, `main.js`, `styles.css`, and `tern_engine_bg.wasm` into `.obsidian/plugins/superpower-inside/`.
 3. Reload community plugins in Obsidian.
 4. Enable **Superpower Inside**.
 
 ## First Setup
 
 Choose the model profile you want to use first. Superpower Inside fills in the matching provider shape for chat, embedding, and graph extraction, while still letting you adjust advanced fields when a custom endpoint needs them. If you use local Ollama, set the local base URL and model. If you use a remote provider, add the API key in Obsidian's local plugin storage.
+
+Ternlight is always available as the built-in embedding option and is the default for new installations. It runs entirely on this device. If its WASM model file is missing, Superpower Inside downloads the asset for the installed plugin version from this repository's GitHub Release, verifies its size and SHA-256 checksum, and then reuses it offline.
 
 After that, open the chat sidebar and ask a question. When RAG or GraphRAG needs preparation, Superpower Inside shows the current state and the next useful action instead of making you manage index files directly. Manual actions such as reindexing, retrying failed graph extraction, or resetting graph data stay available for recovery, but they are not the normal workflow.
 
@@ -118,6 +121,7 @@ The Agent Diagnostics view writes a local JSON snapshot and append-only event lo
 - MCP stdio launches local commands that you configure. Only add MCP servers you trust.
 - When you mention an MCP server with `@server`, Superpower Inside treats that mention as intent to use the trusted server and may auto-run non-destructive model-requested tools from it. Tool arguments and results may be sent back to the configured LLM provider to generate the final answer.
 - Local Ollama and local MCP servers can run on your machine, but provider settings may still send data over the network.
+- If the built-in Ternlight model file is missing, the plugin downloads `tern_engine_bg.wasm` once from the matching Superpower Inside GitHub Release and verifies it before execution. No note content is included in this download request.
 
 </details>
 
@@ -157,10 +161,13 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | 출처 카드 | 출처 열기, Obsidian 링크 복사, 활성 노트에 인용 삽입을 지원합니다. |
 | 채팅 저장 | 채팅 세션을 볼트 안의 Markdown 파일로 저장하고 다시 열 수 있습니다. |
 | Provider 선택 | 채팅, 임베딩, graph extraction에 로컬 또는 원격 provider를 사용할 수 있습니다. |
+| 내장 로컬 임베딩 | API 키, Ollama 서버, 호출별 네트워크 요청 없이 Ternlight 온디바이스 임베딩을 사용합니다. |
 
 ## 첫 설정
 
 먼저 채팅 provider를 연결합니다. 로컬 Ollama를 쓰면 로컬 base URL과 모델을 지정하고, 원격 provider를 쓰면 API 키를 Obsidian 로컬 플러그인 저장소에 입력합니다.
+
+Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치의 기본값입니다. 모델은 기기 안에서만 실행됩니다. WASM 모델 파일이 없으면 설치된 플러그인과 같은 버전의 GitHub Release에서 내려받아 크기와 SHA-256을 검증한 뒤 오프라인으로 재사용합니다.
 
 그 다음 사이드바를 열고 질문하면 됩니다. RAG나 GraphRAG 준비가 필요할 때는 Superpower Inside가 상태와 다음 행동을 보여줍니다. 재인덱싱, 실패 재시도, GraphRAG 데이터 초기화 같은 수동 작업은 복구용으로 남아 있지만, 일반 사용 흐름의 중심은 아닙니다.
 
@@ -205,6 +212,7 @@ RAG와 GraphRAG는 이 볼트의 로컬 상태를 유지합니다. 노트, 모�
 - MCP stdio는 사용자가 설정한 로컬 명령을 실행합니다. 신뢰하는 MCP 서버만 추가하세요.
 - `@server`로 MCP 서버를 멘션하면 Superpower Inside는 해당 멘션을 신뢰한 서버를 사용하겠다는 의사로 보고, 모델이 요청한 non-destructive 툴을 자동 실행할 수 있습니다. 툴 인자와 결과는 최종 답변 생성을 위해 설정한 LLM provider로 다시 전달될 수 있습니다.
 - 로컬 Ollama와 로컬 MCP 서버는 사용자의 기기에서 실행될 수 있지만, provider 설정에 따라 데이터가 네트워크로 전송될 수 있습니다.
+- 내장 Ternlight 모델 파일이 없으면 같은 버전의 Superpower Inside GitHub Release에서 `tern_engine_bg.wasm`을 한 번 내려받고 실행 전에 무결성을 검증합니다. 이 다운로드 요청에는 노트 내용이 포함되지 않습니다.
 
 </details>
 
@@ -214,6 +222,7 @@ Development documentation lives in:
 
 - [Developer guide](docs/README_FOR_DEV.md)
 - [Development setup](docs/DEV_SETUP.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## License
 

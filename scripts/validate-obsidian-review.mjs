@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const args = new Set(process.argv.slice(2));
@@ -118,9 +119,24 @@ function validateCss() {
 
 function validateBuiltAssets() {
   if (!built) return;
-  for (const asset of ['manifest.json', 'main.js', 'styles.css']) {
+  for (const asset of [
+    'manifest.json',
+    'main.js',
+    'styles.css',
+    'tern_engine_bg.wasm',
+    'THIRD_PARTY_NOTICES.md',
+  ]) {
     if (!existsSync(path.join(root, asset))) {
       errors.push(`release asset is missing: ${asset}`);
+    }
+  }
+  const ternlightPath = path.join(root, 'tern_engine_bg.wasm');
+  if (existsSync(ternlightPath)) {
+    const bytes = readFileSync(ternlightPath);
+    const checksum = createHash('sha256').update(bytes).digest('hex');
+    const expectedChecksum = '27819b70b83fb24a493792db7bdf6b9cae4a1531df408809d1e57d580a3e9087';
+    if (checksum !== expectedChecksum) {
+      errors.push(`tern_engine_bg.wasm checksum mismatch: ${checksum}`);
     }
   }
 }
