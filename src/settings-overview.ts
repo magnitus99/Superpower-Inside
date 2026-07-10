@@ -74,7 +74,7 @@ export interface SettingsOverviewSnapshot {
 interface ProviderSource {
   id: string;
   label: string;
-  key: ProviderKey | 'customOpenAI';
+  key: ProviderKey | 'customOpenAI' | 'ternlight';
   config: ProviderConfig | CustomOpenAIProviderConfig;
 }
 

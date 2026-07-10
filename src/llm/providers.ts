@@ -826,6 +826,9 @@ export function createProviderForStrategy(
   modelOverride?: string,
   profileId = 'profile',
 ): LLMProvider {
+  if (key === 'ternlight') {
+    throw new Error('Ternlight is an embedding-only provider.');
+  }
   if (key === 'openAICompatible') {
     return createCustomOpenAIProvider(
       {

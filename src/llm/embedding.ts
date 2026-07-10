@@ -3,6 +3,7 @@ import Dexie from 'dexie';
 import { t } from '../i18n';
 import { createContentHash } from '../rag/hash';
 import { assertValidEmbeddingBatch } from './embedding-validation';
+import { getTernlightEmbedder, type TernlightRuntimeOptions } from './ternlight-runtime';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 export { assertValidEmbeddingBatch } from './embedding-validation';
 
@@ -46,6 +47,47 @@ export interface EmbeddingRetryOptions {
 export interface EmbeddingProviderRuntimeOptions {
   logger?: AppLogger | ScopedLogger;
   retry?: Partial<EmbeddingRetryOptions>;
+}
+
+export class TernlightEmbeddingProvider implements EmbeddingProvider {
+  private logger: ScopedLogger;
+
+  constructor(
+    private readonly model: string,
+    private readonly runtime: TernlightRuntimeOptions,
+    options: Pick<EmbeddingProviderRuntimeOptions, 'logger'> = {},
+  ) {
+    if (model !== 'ternlight-base') {
+      throw new Error(`Unsupported Ternlight embedding model: ${model}`);
+    }
+    this.logger = createScopedEmbeddingLogger(options.logger, 'embedding.ternlight');
+  }
+
+  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    throwIfAborted(options?.signal);
+    const embed = await getTernlightEmbedder(this.runtime);
+    const vector = Array.from(embed(text));
+    throwIfAborted(options?.signal);
+    return vector;
+  }
+
+  async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    throwIfAborted(options?.signal);
+    this.logger.debug('Ternlight embedding batch started.', {
+      data: { model: this.model, batchSize: texts.length },
+    });
+    const embed = await getTernlightEmbedder(this.runtime);
+    const vectors = texts.map((text) => {
+      throwIfAborted(options?.signal);
+      return Array.from(embed(text));
+    });
+    throwIfAborted(options?.signal);
+    assertValidEmbeddingBatch(vectors, texts.length, 'Ternlight embedding batch');
+    this.logger.debug('Ternlight embedding batch completed.', {
+      data: { model: this.model, batchSize: texts.length },
+    });
+    return vectors;
+  }
 }
 
 interface RetryRequestContext {

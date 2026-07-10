@@ -44,6 +44,7 @@ import {
   getGraphRagControlState,
   getGraphRagIndexingResultNotice,
   estimateGraphRagIndexingCost,
+  type GraphRagActionId,
   type GraphRagActionDefinition,
   type GraphRagIndexingResultNoticeScope,
   type ModelCapabilitySnapshot,
@@ -70,6 +71,7 @@ import {
   normalizeProviderCapabilityOverrides,
   type ProviderCapabilityOverrides,
 } from './llm/provider-capabilities';
+import type { TernlightRuntimeOptions } from './llm/ternlight-runtime';
 import {
   createDefaultContext7McpServer,
   shouldShowPluginAwareContext7Warning,
@@ -138,7 +140,7 @@ export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openRouter: 'OpenRouter',
 };
 export type ProviderKey = (typeof PROVIDER_KEYS)[number];
-export type ProviderStrategyKey = ProviderKey | 'openAICompatible';
+export type ProviderStrategyKey = ProviderKey | 'openAICompatible' | 'ternlight';
 export type ProviderModelKind = 'general' | 'embedding';
 export interface ProviderModelVerification {
   chatStatus: ModelCapabilityStatus;
@@ -265,6 +267,7 @@ function createProviderModel(
 export const PROVIDER_STRATEGY_LABELS: Record<ProviderStrategyKey, string> = {
   ...PROVIDER_LABELS,
   openAICompatible: 'OpenAI-Compatible',
+  ternlight: 'Ternlight (Local)',
 };
 
 const LEGACY_PROFILE_IDS: Record<ProviderKey, string> = {
@@ -274,13 +277,20 @@ const LEGACY_PROFILE_IDS: Record<ProviderKey, string> = {
   ollamaCloud: 'ollama-cloud',
   openRouter: 'openrouter',
 };
+const TERNLIGHT_PROFILE_ID = 'ternlight';
+const TERNLIGHT_MODEL_ID = 'ternlight-base';
 export interface MCPServerConfig {
   name: string;
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
-export type BuiltInEmbeddingProviderKey = 'openai' | 'ollama' | 'openRouter' | 'other';
+export type BuiltInEmbeddingProviderKey =
+  | 'ternlight'
+  | 'openai'
+  | 'ollama'
+  | 'openRouter'
+  | 'other';
 export type CustomOpenAIEmbeddingProviderKey = `customOpenAI:${string}`;
 export type EmbeddingProviderKey = BuiltInEmbeddingProviderKey | CustomOpenAIEmbeddingProviderKey;
 export interface EmbeddingModelInfo {
@@ -291,6 +301,14 @@ export interface EmbeddingModelInfo {
 }
 export function buildEmbeddingModels(): Record<BuiltInEmbeddingProviderKey, EmbeddingModelInfo[]> {
   return {
+    ternlight: [
+      {
+        id: 'ternlight-base',
+        name: '@ternlight/base',
+        dimensions: 384,
+        description: t('settingsAuto006'),
+      },
+    ],
     openai: [
       {
         id: 'text-embedding-3-small',
@@ -330,6 +348,7 @@ export function buildEmbeddingModels(): Record<BuiltInEmbeddingProviderKey, Embe
   };
 }
 export const EMBEDDING_PROVIDER_LABELS: Record<BuiltInEmbeddingProviderKey, string> = {
+  ternlight: 'Ternlight (Local)',
   openai: 'OpenAI',
   ollama: 'Ollama (Local)',
   openRouter: 'OpenRouter',
@@ -490,8 +509,8 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     excludeChatFolder: true,
     chunkSize: 1000,
     overlap: 100,
-    embeddingProvider: 'openai',
-    embeddingModel: 'text-embedding-3-small',
+    embeddingProvider: 'ternlight',
+    embeddingModel: 'ternlight-base',
     embeddingModelRef: '',
     autoUpdateEnabled: false,
     autoUpdateIntervalMin: 5,
@@ -592,6 +611,8 @@ function normalizeProviderProfile(
     ? (source.strategy as ProviderKey)
     : source.strategy === 'openAICompatible'
       ? 'openAICompatible'
+      : source.strategy === 'ternlight'
+        ? 'ternlight'
       : null;
   if (!strategy) return null;
   const rawModels = Array.isArray(source.models) ? source.models : [];
@@ -622,6 +643,44 @@ function legacyProfileIdForCustomOpenAI(
 ): string {
   if (!existingIds.has(provider.id)) return provider.id;
   return `custom-${provider.id}`;
+}
+
+function ensureTernlightProviderProfile(profiles: ProviderProfileConfig[]): string {
+  const existingIndex = profiles.findIndex((profile) => profile.strategy === 'ternlight');
+  const model = createProviderModel(TERNLIGHT_MODEL_ID, 'embedding', {
+    embeddingStatus: 'success',
+  });
+  if (existingIndex >= 0) {
+    const existing = profiles[existingIndex];
+    profiles[existingIndex] = {
+      ...existing,
+      name: 'Ternlight',
+      strategy: 'ternlight',
+      apiKey: '',
+      baseUrl: '',
+      enabled: true,
+      models: upsertProviderProfileModel(existing.models, model),
+    };
+    return existing.id;
+  }
+
+  const existingIds = new Set(profiles.map((profile) => profile.id));
+  let profileId = TERNLIGHT_PROFILE_ID;
+  let suffix = 2;
+  while (existingIds.has(profileId)) {
+    profileId = `${TERNLIGHT_PROFILE_ID}-${suffix}`;
+    suffix += 1;
+  }
+  profiles.push({
+    id: profileId,
+    name: 'Ternlight',
+    strategy: 'ternlight',
+    apiKey: '',
+    baseUrl: '',
+    enabled: true,
+    models: [model],
+  });
+  return profileId;
 }
 
 function findProfileForParsedRef(
@@ -788,15 +847,24 @@ export function migrateLegacyProviderProfiles(
     }
   }
 
+  const ternlightProfileId = ensureTernlightProviderProfile(profiles);
+  const currentEmbeddingModelRef = migrateModelRef(
+    profiles,
+    settings.rag.embeddingModelRef?.trim() ?? '',
+    'embedding',
+  );
+
   const nextRag = {
     ...settings.rag,
     embeddingModelRef:
-      settings.rag.embeddingModelRef?.trim() ||
+      currentEmbeddingModelRef ||
       migrateModelRef(
         profiles,
         settings.rag.embeddingProvider === 'other'
           ? ''
-          : `${settings.rag.embeddingProvider}:${settings.rag.embeddingModel}`,
+          : settings.rag.embeddingProvider === 'ternlight'
+            ? buildProviderModelRef(ternlightProfileId, settings.rag.embeddingModel)
+            : `${settings.rag.embeddingProvider}:${settings.rag.embeddingModel}`,
         'embedding',
       ),
   };
@@ -815,6 +883,7 @@ export function migrateLegacyProviderProfiles(
 
 export interface PluginLike {
   app: App;
+  manifest?: { id?: string; version?: string };
   settings: SuperpowerInsideSettings;
   graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
   knowledgeGraphStore: import('./graph/store').KnowledgeGraphStore | null;
@@ -1184,11 +1253,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private graphRagStatusGrid: HTMLElement | null = null;
   private graphRagActionsGroup: HTMLElement | null = null;
   private graphRagSectionContainer: HTMLElement | null = null;
+  private graphRagOverviewContainer: HTMLElement | null = null;
   private graphRagProgressBanner: HTMLElement | null = null;
   private graphRagModelSelectEl: HTMLSelectElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
-  private collapsedProviderProfileIds: Set<string> = new Set();
+  private expandedProviderProfileId: string | null = null;
   constructor(app: App, plugin: PluginLike) {
     super(app, plugin as unknown as Plugin);
     this.plugin = plugin;
@@ -1259,6 +1329,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
+    this.graphRagOverviewContainer = null;
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
       this.pendingEmbeddingProvider = null;
       this.pendingEmbeddingModel = null;
@@ -1320,14 +1391,38 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     warning.setText(t('securityWarning'));
     // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'superpower-inside-settings-tabs' });
+    tabBar.setAttribute('role', 'tablist');
+    tabBar.setAttribute('aria-label', t('settingsTitle'));
     const tabs = buildSettingsTabs();
-    tabs.forEach((tab) => {
+    tabs.forEach((tab, index) => {
+      const tabId = `superpower-inside-settings-tab-${tab.id}`;
+      const panelId = `superpower-inside-settings-panel-${tab.id}`;
       const button = tabBar.createEl('button', {
         text: tab.label,
         cls: 'superpower-inside-settings-tab',
+        attr: {
+          id: tabId,
+          type: 'button',
+          role: 'tab',
+          'aria-controls': panelId,
+          'aria-selected': 'false',
+          tabindex: '-1',
+        },
       });
       this.tabButtons.set(tab.id, button);
       button.addEventListener('click', () => this.switchTab(tab.id));
+      button.addEventListener('keydown', (event) => {
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+        if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        if (nextIndex === null) return;
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        this.switchTab(nextTab.id);
+        this.tabButtons.get(nextTab.id)?.focus();
+      });
     });
     // 탭 콘텐츠 패널
     const tabContentContainer = containerEl.createDiv({
@@ -1336,7 +1431,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     tabs.forEach((tab) => {
       const panel = tabContentContainer.createDiv({
         cls: 'superpower-inside-settings-tab-content',
+        attr: {
+          id: `superpower-inside-settings-panel-${tab.id}`,
+          role: 'tabpanel',
+          'aria-labelledby': `superpower-inside-settings-tab-${tab.id}`,
+          tabindex: '0',
+        },
       });
+      panel.hidden = true;
       this.tabPanels.set(tab.id, panel);
     });
     // 첫 번째 탭을 활성 상태로 초기화
@@ -1383,16 +1485,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.tabButtons.forEach((button, id) => {
       if (id === tabId) {
         button.classList.add('is-active');
+        button.setAttribute('aria-selected', 'true');
+        button.tabIndex = 0;
       } else {
         button.classList.remove('is-active');
+        button.setAttribute('aria-selected', 'false');
+        button.tabIndex = -1;
       }
     });
     // 패널 클래스 토글
     this.tabPanels.forEach((panel, id) => {
       if (id === tabId) {
         panel.classList.add('is-active');
+        panel.hidden = false;
       } else {
         panel.classList.remove('is-active');
+        panel.hidden = true;
       }
     });
     if (tabId === 'general') {
@@ -1862,154 +1970,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
     this.buildProviderProfilesTab(containerEl);
-    return;
-    const fixedTargets: ProviderSettingsTarget[] = [
-      {
-        kind: 'fixed',
-        key: 'openai',
-        label: 'OpenAI',
-        config: this.plugin.settings.openai,
-      },
-      {
-        kind: 'fixed',
-        key: 'claude',
-        label: 'Claude (Anthropic)',
-        config: this.plugin.settings.claude,
-      },
-      {
-        kind: 'fixed',
-        key: 'ollama',
-        label: 'Ollama (Local)',
-        config: this.plugin.settings.ollama,
-      },
-      {
-        kind: 'fixed',
-        key: 'ollamaCloud',
-        label: 'Ollama (Cloud)',
-        config: this.plugin.settings.ollamaCloud,
-      },
-      {
-        kind: 'fixed',
-        key: 'openRouter',
-        label: 'OpenRouter',
-        config: this.plugin.settings.openRouter,
-      },
-    ];
-    const customTargets: ProviderSettingsTarget[] = this.plugin.settings.customOpenAIProviders.map(
-      (provider) => ({
-        kind: 'custom',
-        key: `customOpenAI:${provider.id}`,
-        label: provider.name.trim() || 'Custom OpenAI-Compatible',
-        config: provider,
-      }),
-    );
-    const providerTargets = [...fixedTargets, ...customTargets];
-    const providerStates = providerTargets.map((target) => this.getProviderVisualState(target));
-    const readyCount = providerStates.filter((state) => state.tone === 'ready').length;
-    const attentionCount = providerStates.filter(
-      (state) => state.tone === 'needs-key' || state.tone === 'needs-models',
-    ).length;
-    const enabledCount = providerTargets.filter((target) => target.config.enabled).length;
-    const selectedModelCount = providerTargets.reduce(
-      (count, target) => count + target.config.models.length,
-      0,
-    );
-    const introPanel = this.createSettingsPanel(containerEl, t('settingsAuto011'), {
-      description: t('settingsAuto024'),
-      meta: t('settingsAuto025', {
-        v0: String(providerTargets.length),
-      }),
-      className: 'superpower-inside-settings-intro-panel',
-    });
-    introPanel.addClass('superpower-inside-providers-intro');
-
-    const commandCenter = containerEl.createDiv({
-      cls: 'superpower-inside-providers-command-center',
-    });
-    const commandCopy = commandCenter.createDiv({
-      cls: 'superpower-inside-providers-command-copy',
-    });
-    commandCopy.createDiv({
-      cls: 'superpower-inside-providers-command-title',
-      text: t('providerCommandCenterTitle'),
-    });
-    commandCopy.createDiv({
-      cls: 'superpower-inside-providers-command-desc',
-      text: t('providerCommandCenterDesc'),
-    });
-
-    const summaryGrid = commandCenter.createDiv({
-      cls: 'superpower-inside-provider-summary-grid',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'badge-check',
-      value: String(readyCount),
-      label: t('providerDashboardReady'),
-      detail: t('providerDashboardReadyDetail'),
-      tone: 'ready',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'triangle-alert',
-      value: String(attentionCount),
-      label: t('providerDashboardAttention'),
-      detail: t('providerDashboardAttentionDetail'),
-      tone: attentionCount > 0 ? 'needs-key' : 'ready',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'power',
-      value: String(enabledCount),
-      label: t('providerDashboardEnabled'),
-      detail: t('providerDashboardEnabledDetail'),
-      tone: enabledCount > 0 ? 'ready' : 'disabled',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'layers-3',
-      value: String(selectedModelCount),
-      label: t('providerDashboardModels'),
-      detail: t('providerDashboardModelsDetail'),
-      tone: selectedModelCount > 0 ? 'ready' : 'needs-models',
-    });
-
-    const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
-    const collapseAll = toolbar.createEl('button', {
-      cls: 'superpower-inside-provider-toolbar-btn',
-      attr: { type: 'button' },
-    });
-    setIcon(collapseAll, 'minimize-2');
-    collapseAll.createSpan({ text: t('collapseAll') });
-    const expandAll = toolbar.createEl('button', {
-      cls: 'superpower-inside-provider-toolbar-btn',
-      attr: { type: 'button' },
-    });
-    setIcon(expandAll, 'maximize-2');
-    expandAll.createSpan({ text: t('expandAll') });
-
-    if (readyCount === 0) {
-      const banner = commandCenter.createDiv({ cls: 'superpower-inside-provider-banner' });
-      setIcon(banner, 'circle-alert');
-      banner.createSpan({ text: t('noProviderEnabledBanner') });
-    }
-
-    const providerGrid = containerEl.createDiv({ cls: 'superpower-inside-provider-grid' });
-    for (const target of fixedTargets) {
-      this.buildProviderSettings(providerGrid, target);
-    }
-    collapseAll.addEventListener('click', () =>
-      this.setAllProviderCardsExpanded(containerEl, false),
-    );
-    expandAll.addEventListener('click', () => this.setAllProviderCardsExpanded(containerEl, true));
-    this.buildCustomOpenAIProvidersSection(containerEl);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
     const dashboard = containerEl.createDiv({ cls: 'superpower-inside-rag-dashboard' });
     this.buildRagStatusPanel(dashboard);
     this.buildControlsSection(dashboard);
+    this.buildGraphRagOverview(dashboard);
 
     const coreSettings = containerEl.createDiv({ cls: 'superpower-inside-rag-settings-stack' });
     this.buildEmbeddingProviderSection(coreSettings);
     this.buildExcludeOptionsSection(coreSettings);
 
-    this.buildGraphRagOperationsSection(containerEl);
+    const graphRagDetails = containerEl.createEl('details', {
+      cls: 'superpower-inside-rag-details',
+    });
+    graphRagDetails.createEl('summary', { text: t('graphRagDetailsSummary') });
+    const graphRagDetailsBody = graphRagDetails.createDiv({
+      cls: 'superpower-inside-rag-details-body',
+    });
+    this.buildGraphRagOperationsSection(graphRagDetailsBody);
     this.buildRagAdvancedSection(containerEl);
   }
   private buildRagAdvancedSection(containerEl: HTMLElement): void {
@@ -2052,10 +2031,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const statusGrid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
     const actionEl = section.createDiv({ cls: 'superpower-inside-rag-status-action' });
     const detailsEl = section.createDiv({ cls: 'superpower-inside-rag-status-details' });
-    const warning = this.getRagSetupWarning();
-    if (warning) {
-      section.createDiv({ cls: 'superpower-inside-settings-warning', text: warning });
-    }
     const timestampEl = section.createDiv({
       cls: 'superpower-inside-rag-status-timestamp',
       text: t('settingsAuto028'),
@@ -2090,6 +2065,127 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       item.createDiv({ cls: 'superpower-inside-rag-status-description', text: description });
     }
   }
+  private buildGraphRagOverview(containerEl: HTMLElement): void {
+    const section = containerEl.createDiv({
+      cls: 'superpower-inside-rag-overview-row superpower-inside-graph-rag-overview',
+    });
+    this.graphRagOverviewContainer = section;
+    this.renderGraphRagOverview(section);
+  }
+
+  private renderGraphRagOverview(containerEl: HTMLElement): void {
+    containerEl.empty();
+    const rag = this.plugin.settings.rag;
+    const runtime = this.plugin.getRagRuntimeState();
+    const graphState = runtime.graphRagStatus;
+    const statusLabel =
+      graphState?.state ??
+      getGraphRagStatusLabel({
+        enabled: rag.graphRagEnabled,
+        hasGraphIndex: false,
+        isRunning: this.plugin.isGraphRagIndexing(),
+        isStale: false,
+        partialFailureCount: 0,
+      });
+    const presentation = getGraphRagStatusPresentation(statusLabel);
+    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
+    const stale = graphState?.staleFileCount ?? 0;
+    const failed = graphState?.failedFileCount ?? 0;
+    const done = graphState?.graphEvidenceCount ?? 0;
+    const copy = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
+    copy.createDiv({
+      cls: 'superpower-inside-rag-overview-title',
+      text: t('graphRagOverviewTitle'),
+    });
+    const status = copy.createDiv({
+      cls: `superpower-inside-rag-overview-status is-${presentation.tone}`,
+      text: presentation.label,
+    });
+    status.setAttribute('role', 'status');
+    copy.createDiv({
+      cls: 'superpower-inside-rag-overview-detail',
+      text: t('graphRagOverviewDetail', {
+        total: String(total),
+        done: String(done),
+        stale: String(stale),
+        failed: String(failed),
+      }),
+    });
+
+    const actions = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-actions' });
+    const controls = getGraphRagControlState({
+      enabled: rag.graphRagEnabled,
+      hasProvider: this.plugin.hasGraphRagRunner(),
+      hasModel: rag.graphRagModel.trim().length > 0,
+      isRunning: this.plugin.isGraphRagIndexing(),
+      totalCandidateFiles: total,
+      failedFileCount: failed,
+    });
+    const syncStale = getGraphRagControlState({
+      enabled: rag.graphRagEnabled,
+      hasProvider: this.plugin.hasGraphRagRunner(),
+      hasModel: rag.graphRagModel.trim().length > 0,
+      isRunning: this.plugin.isGraphRagIndexing(),
+      totalCandidateFiles: stale,
+      failedFileCount: 0,
+    }).start;
+    const enabledState = {
+      disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
+      reason: null,
+    };
+    const availableState = { disabled: done === 0, reason: null };
+    const groups = buildGraphRagActionGroups({
+      controls,
+      syncStale,
+      buildCommunities: enabledState,
+      resetGraphRag: enabledState,
+      openExplorer: availableState,
+      totalCandidateFiles: total,
+      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+      failedFileCount: failed,
+      staleFileCount: stale,
+    });
+    const recommendedActionId: GraphRagActionId | null = this.plugin.isGraphRagIndexing()
+      ? 'cancel'
+      : stale > 0
+        ? 'syncStale'
+        : failed > 0
+          ? 'resumeFailed'
+          : statusLabel === 'not-built' && total > 0
+            ? 'start'
+            : null;
+    const recommendedAction = groups
+      .flatMap((group) => group.actions)
+      .find((action) => action.id === recommendedActionId && !action.state.disabled);
+    const cost = estimateGraphRagIndexingCost({
+      totalCandidateFiles: recommendedActionId === 'syncStale' ? stale : total,
+      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+      averageChunksPerFile: 3,
+      averageTokensPerChunk: 900,
+      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:')
+        ? 'local'
+        : 'remote',
+    });
+    if (recommendedAction) {
+      const button = actions.createEl('button', {
+        cls: 'mod-cta superpower-inside-rag-overview-primary',
+        attr: { type: 'button' },
+      });
+      setIcon(button, recommendedAction.iconName);
+      button.createSpan({ text: recommendedAction.label });
+      button.addEventListener('click', () => {
+        void this.handleGraphRagAction(recommendedAction, cost);
+      });
+    }
+    if (done > 0) {
+      const explorerButton = actions.createEl('button', {
+        text: t('graphRagOpenExplorer'),
+        attr: { type: 'button' },
+      });
+      explorerButton.addEventListener('click', () => this.plugin.openGraphRagView());
+    }
+  }
+
   private buildGraphRagOperationsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
       cls: 'superpower-inside-rag-section superpower-inside-rag-graph-panel',
@@ -2503,6 +2599,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   /** GraphRAG 대시보드를 부분 업데이트합니다. */
   updateGraphRagStats(): void {
+    if (this.graphRagOverviewContainer) {
+      this.renderGraphRagOverview(this.graphRagOverviewContainer);
+    }
     if (!this.graphRagSectionContainer) return;
     this.renderGraphRagProgressBanner();
     const runtime = this.plugin.getRagRuntimeState();
@@ -2958,14 +3057,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const existingAnchor = containerEl.querySelector(`:scope > .${ANCHOR_CLS}`);
     let section: HTMLElement;
     if (existingAnchor) {
-      section = createDiv({ cls: 'superpower-inside-rag-section' });
+      section = createDiv({
+        cls: 'superpower-inside-rag-section superpower-inside-rag-embedding-panel',
+      });
       const oldSection = existingAnchor.previousElementSibling;
       if (oldSection?.classList.contains('superpower-inside-rag-section')) {
         oldSection.remove();
       }
       existingAnchor.replaceWith(section);
     } else {
-      section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
+      section = containerEl.createDiv({
+        cls: 'superpower-inside-rag-section superpower-inside-rag-embedding-panel',
+      });
     }
     // Place new anchor after section for future rebuilds
     const newAnchor = createDiv({ cls: ANCHOR_CLS });
@@ -3007,6 +3110,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             }
           });
         });
+      const localNote = section.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
+      const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
+      setIcon(icon, 'shield-check');
+      const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-title',
+        text: t('ragLocalEmbeddingTitle'),
+      });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-detail',
+        text: t('ragLocalEmbeddingDetail'),
+      });
       if (isProfilePending) {
         const btnRow = section.createDiv({
           cls: 'superpower-inside-rag-controls superpower-inside-embedding-pending-actions',
@@ -3081,6 +3196,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                       ...resolved.profile,
                       models: resolved.profile.models.map((model) => model.id),
                     },
+                    this.getTernlightRuntimeOptions(),
                   );
                   if (result.valid) {
                     resolved.profile.models = upsertProviderProfileModel(
@@ -3156,6 +3272,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const isPending = this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null;
     const providerNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
     providerNotice.setText(t('settingsAuto082'));
+    if (effectiveProvider === 'ternlight') {
+      const localNote = section.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
+      const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
+      setIcon(icon, 'shield-check');
+      const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-title',
+        text: t('ragLocalEmbeddingTitle'),
+      });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-detail',
+        text: t('ragLocalEmbeddingDetail'),
+      });
+    }
     if (isPending) {
       const warningEl = section.createDiv({
         cls: `${WARNING_CLS} superpower-inside-settings-warning superpower-inside-embedding-pending-warning`,
@@ -3333,6 +3463,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                   effectiveProvider,
                   effectiveModel,
                   getEmbeddingValidationConfig(),
+                  this.getTernlightRuntimeOptions(),
                 );
                 if (result.valid) {
                   if (effectiveProvider !== 'other') {
@@ -3390,6 +3521,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                   effectiveProvider,
                   effectiveModel,
                   getEmbeddingValidationConfig(),
+                  this.getTernlightRuntimeOptions(),
                 );
                 if (result.valid) {
                   if (effectiveProvider !== 'other') {
@@ -3588,6 +3720,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           : t('settingsAuto028'),
       );
       try {
+        const setupWarning = this.getRagSetupWarning();
+        if (setupWarning) {
+          this.renderRagUnavailableState(setupWarning);
+          this.updateRagControlStates(null);
+          return;
+        }
         const status = await this.getRagStatus();
         if (status) {
           this.renderRagStatusSummary(status, indexingDetail);
@@ -3606,63 +3744,89 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         // RAG 통계 섹션도 부분 업데이트
         this.updateRagStatsSection();
         this.updateRagUpdateList();
-      } catch {
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : this.diagnoseRAGInitFailure();
+        this.renderRagUnavailableState(detail);
+        this.updateRagControlStates(null);
         this.ragStatusTimestamp!.setText(t('settingsAuto104'));
       }
     })();
   }
+  private renderRagUnavailableState(detail: string): void {
+    if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
+    this.ragStatusGrid.empty();
+    const row = this.ragStatusGrid.createDiv({ cls: 'superpower-inside-rag-overview-row' });
+    const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
+    copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
+    const statusEl = copy.createDiv({
+      cls: 'superpower-inside-rag-overview-status is-danger',
+      text: t('ragOverviewUnavailable'),
+    });
+    statusEl.setAttribute('role', 'status');
+    copy.createDiv({ cls: 'superpower-inside-rag-overview-detail', text: detail });
+
+    const actions = row.createDiv({ cls: 'superpower-inside-rag-overview-actions' });
+    const resolved = resolveProviderModelRef(
+      this.plugin.settings,
+      this.plugin.settings.rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    const action = actions.createEl('button', {
+      cls: 'mod-cta',
+      text: resolved ? t('ragOverviewCheckProvider') : t('ragOverviewFixEmbedding'),
+      attr: { type: 'button' },
+    });
+    action.addEventListener('click', () => {
+      if (resolved) {
+        this.switchTab('providers');
+        return;
+      }
+      const embeddingPanel = this.tabPanels
+        .get('rag')
+        ?.querySelector<HTMLElement>('.superpower-inside-rag-embedding-panel');
+      embeddingPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      embeddingPanel?.querySelector<HTMLSelectElement>('select')?.focus();
+    });
+    this.ragStatusAction.empty();
+    this.ragStatusDetails.empty();
+  }
   private renderRagStatusSummary(status: RagStatusSummary, indexingDetail?: string): void {
     if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
-    const rag = this.plugin.settings.rag;
     const guardState = this.plugin.getRagPerformanceGuardState();
     const updateCount = status.updateRequiredDocuments.length;
+    const healthyCount = Math.max(0, status.totalDocuments - updateCount);
+    const isRunning = this.plugin.isRagIndexing();
+    const isPaused = guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0;
+    const tone = isPaused ? 'danger' : isRunning || updateCount > 0 ? 'warning' : 'success';
+    const statusLabel = isRunning
+      ? (indexingDetail ?? this.getIndexingStatusLabel())
+      : isPaused
+        ? t('ragPerformancePaused')
+        : updateCount > 0
+          ? t('ragOverviewNeedsUpdate', { count: String(updateCount) })
+          : status.totalDocuments > 0
+            ? t('ragOverviewReady')
+            : t('ragOverviewEmpty');
     this.ragStatusGrid.empty();
-    this.createRagStatusItem(
-      this.ragStatusGrid,
-      t('settingsAuto118'),
-      indexingDetail ?? this.getIndexingStatusLabel(),
-    );
-    this.createRagStatusItem(
-      this.ragStatusGrid,
-      t('settingsAuto119'),
-      this.getRagNextActionLabel(status, guardState),
-    );
-    this.createRagStatusItem(
-      this.ragStatusGrid,
-      t('settingsAuto110'),
-      t('settingsAuto022', { v0: String(updateCount) }),
-    );
-    this.createRagStatusItem(this.ragStatusGrid, t('settingsAuto120'), this.getAutoUpdateLabel());
+    const row = this.ragStatusGrid.createDiv({ cls: 'superpower-inside-rag-overview-row' });
+    const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
+    copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
+    const statusEl = copy.createDiv({
+      cls: `superpower-inside-rag-overview-status is-${tone}`,
+      text: statusLabel,
+    });
+    statusEl.setAttribute('role', 'status');
+    copy.createDiv({
+      cls: 'superpower-inside-rag-overview-detail',
+      text: t('ragOverviewDetail', {
+        healthy: String(healthyCount),
+        total: String(status.totalDocuments),
+        auto: this.getAutoUpdateLabel(),
+      }),
+    });
     this.ragStatusAction.empty();
     this.ragStatusAction.setText(this.getRagActionMessage(status, guardState));
     this.ragStatusDetails.empty();
-    const detailItems = [
-      t('settingsAuto121', {
-        v0: String(this.getEmbeddingProviderLabel(rag.embeddingProvider)),
-        v1: String(rag.embeddingModel || t('settingsAuto122')),
-      }),
-      t('settingsAuto123', { v0: 'IndexedDB' }),
-      t('settingsAuto124', { v0: String(this.getPerformanceGuardLabel(guardState)) }),
-    ];
-    const autoUpdateDetail = this.getAutoUpdateDetail();
-    if (autoUpdateDetail) detailItems.push(autoUpdateDetail);
-    for (const item of detailItems) {
-      this.ragStatusDetails.createDiv({ cls: 'superpower-inside-rag-status-detail', text: item });
-    }
-  }
-  private getRagNextActionLabel(
-    status: RagStatusSummary,
-    guardState: PerformanceGuardState | null,
-  ): string {
-    if (this.plugin.isRagIndexing()) return t('settingsAuto125');
-    if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
-      return t('settingsAuto126', {
-        v0: String(Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)),
-      });
-    }
-    if (status.updateRequiredDocuments.length > 0) return t('settingsAuto127');
-    if (status.totalDocuments > 0) return t('settingsAuto128');
-    return t('settingsAuto129');
   }
   private getRagActionMessage(
     status: RagStatusSummary,
@@ -3687,48 +3851,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (runtime.lastAutoUpdateSkippedReason)
       return t('settingsAuto137', { v0: String(runtime.lastAutoUpdateSkippedReason) });
     return t('settingsAuto138');
-  }
-  private getAutoUpdateDetail(): string | null {
-    if (!this.plugin.settings.rag.autoUpdateEnabled) return null;
-    const runtime = this.plugin.getRagRuntimeState();
-    const details: string[] = [];
-    if (runtime.nextAutoUpdateAt) {
-      details.push(
-        t('settingsAuto139', {
-          v0: String(new Date(runtime.nextAutoUpdateAt).toLocaleString()),
-        }),
-      );
-    }
-    if (runtime.lastAutoUpdateResult) {
-      details.push(
-        t('settingsAuto140', {
-          v0: String(runtime.lastAutoUpdateResult.indexed),
-          v1: String(runtime.lastAutoUpdateResult.vectors),
-        }),
-      );
-    }
-    if (runtime.lastAutoUpdateSkippedReason) {
-      details.push(t('settingsAuto141', { v0: String(runtime.lastAutoUpdateSkippedReason) }));
-    }
-    return details.length > 0 ? details.join(' · ') : null;
-  }
-  private getPerformanceGuardLabel(guardState: PerformanceGuardState | null): string {
-    if (!guardState) return t('settingsAuto142');
-    if (guardState.mode === 'paused') {
-      return t('settingsAuto143', {
-        v0: String(Math.ceil((guardState.remainingPauseMs ?? 0) / 1000)),
-      });
-    }
-    if (guardState.mode === 'throttled') {
-      return t('settingsAuto144', {
-        v0: String(guardState.currentBatchSize),
-        v1: String(guardState.currentYieldMs),
-      });
-    }
-    return t('settingsAuto145', {
-      v0: String(guardState.currentBatchSize),
-      v1: String(guardState.currentYieldMs),
-    });
   }
   /** RAG 통계 섹션을 부분 업데이트합니다. */
   private updateRagStatsSection(): void {
@@ -3883,6 +4005,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (providerKey === 'other') {
       return null;
     }
+    if (providerKey === 'ternlight') {
+      return {
+        apiKey: '',
+        baseUrl: '',
+        models: buildEmbeddingModels().ternlight.map((model) => model.id),
+        enabled: true,
+      };
+    }
     return this.plugin.settings[providerKey];
   }
   private getEmbeddingProviderModels(providerKey: EmbeddingProviderKey): string[] {
@@ -3900,22 +4030,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private getRagSetupWarning(): string | null {
     const rag = this.plugin.settings.rag;
-    const providerKey = rag.embeddingProvider;
-    if (providerKey !== 'other') {
-      const config = this.getEmbeddingProviderConfig(providerKey);
-      const label = this.getEmbeddingProviderLabel(providerKey);
-      if (!config?.enabled) {
-        return t('settingsAuto155', { v0: String(label) });
-      }
-      const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
-        ? 'customOpenAI'
-        : providerKey;
-      if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
-        return t('settingsAuto156', { v0: String(label) });
-      }
+    const resolved = resolveProviderModelRef(
+      this.plugin.settings,
+      rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    if (!resolved) return t('ragIndexerSelectEmbeddingModel');
+    const label =
+      resolved.profile.name.trim() || PROVIDER_STRATEGY_LABELS[resolved.profile.strategy];
+    if (!resolved.profile.enabled) {
+      return t('ragIndexerEnableProvider', { provider: label });
     }
-    if (!rag.embeddingModel.trim()) {
-      return t('settingsAuto157');
+    if (
+      shouldRequireProviderApiKey(this.getProfileApiKeyVisibilityKey(resolved.profile)) &&
+      !resolved.profile.apiKey.trim()
+    ) {
+      return t('settingsAuto156', { v0: label });
     }
     return null;
   }
@@ -4040,7 +4170,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     });
-    primaryControls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
+    const recoveryDetails = controls.createEl('details', {
+      cls: 'superpower-inside-rag-recovery-details',
+    });
+    recoveryDetails.createEl('summary', { text: t('ragRecoverySummary') });
+    const recoveryControls = recoveryDetails.createDiv({
+      cls: 'superpower-inside-rag-recovery-controls',
+    });
+    recoveryControls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
       this.reindexAllButton = btn;
       btn.disabled = isIndexing || !hasIndexer;
       btn.addEventListener('click', () => {
@@ -4124,11 +4261,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     });
-    this.ragControlsHint = controls.createDiv({
+    this.ragControlsHint = recoveryControls.createDiv({
       cls: 'superpower-inside-rag-controls-hint',
       text: t('settingsAuto175'),
     });
-    const dangerControls = controls.createDiv({
+    const dangerControls = recoveryControls.createDiv({
       cls: 'superpower-inside-rag-controls-group is-danger',
     });
     dangerControls.createEl('button', { text: t('settingsAuto176') }, (btn) => {
@@ -4179,6 +4316,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.applyButtonState(this.reindexAllButton, state.reindexAll);
     this.applyButtonState(this.cancelIndexingButton, state.cancel);
     this.applyButtonState(this.resumeIndexingButton, state.resume);
+    if (this.updatePendingButton) {
+      this.updatePendingButton.hidden = state.updatePending.disabled;
+    }
+    if (this.cancelIndexingButton) {
+      this.cancelIndexingButton.hidden = state.cancel.disabled;
+    }
+    if (this.resumeIndexingButton) {
+      this.resumeIndexingButton.hidden = state.resume.disabled;
+    }
     const firstReason = state.updatePending.reason ?? state.reindexAll.reason;
     if (this.ragControlsHint) {
       this.ragControlsHint.setText(firstReason ?? t('settingsAuto180'));
@@ -5089,15 +5235,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private buildProviderProfilesTab(containerEl: HTMLElement): void {
-    const profiles = this.plugin.settings.providerProfiles;
+    const profiles = this.plugin.settings.providerProfiles.filter(
+      (profile) => profile.strategy !== 'ternlight',
+    );
     const readyCount = profiles.filter(
-      (profile) =>
-        profile.enabled &&
-        profile.models.some((model) => model.kind === 'general') &&
-        (!shouldRequireProviderApiKey(this.getProfileApiKeyVisibilityKey(profile)) ||
-          profile.apiKey.trim()),
+      (profile) => this.getProviderProfileTone(profile) === 'ready',
     ).length;
-    const enabledCount = profiles.filter((profile) => profile.enabled).length;
+    const attentionCount = profiles.filter((profile) => {
+      const tone = this.getProviderProfileTone(profile);
+      return tone === 'needs-key' || tone === 'needs-models';
+    }).length;
     const generalModelCount = profiles.reduce(
       (count, profile) => count + profile.models.filter((model) => model.kind === 'general').length,
       0,
@@ -5108,57 +5255,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       0,
     );
 
-    const introPanel = this.createSettingsPanel(containerEl, t('settingsAuto011'), {
-      description: t('providerCommandCenterDesc'),
-      meta: t('settingsAuto025', { v0: String(profiles.length) }),
-      className: 'superpower-inside-settings-intro-panel',
-    });
-    introPanel.addClass('superpower-inside-providers-intro');
-
-    const commandCenter = containerEl.createDiv({
-      cls: 'superpower-inside-providers-command-center',
-    });
+    const commandCenter = containerEl.createDiv({ cls: 'superpower-inside-provider-summary-bar' });
     const commandCopy = commandCenter.createDiv({
       cls: 'superpower-inside-providers-command-copy',
     });
     commandCopy.createDiv({
       cls: 'superpower-inside-providers-command-title',
-      text: t('providerCommandCenterTitle'),
+      text: t('providerConnectionTitle'),
     });
     commandCopy.createDiv({
       cls: 'superpower-inside-providers-command-desc',
-      text: t('providerCommandCenterDesc'),
-    });
-    const summaryGrid = commandCenter.createDiv({
-      cls: 'superpower-inside-provider-summary-grid',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'badge-check',
-      value: String(readyCount),
-      label: t('providerDashboardReady'),
-      detail: t('providerDashboardReadyDetail'),
-      tone: readyCount > 0 ? 'ready' : 'disabled',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'power',
-      value: String(enabledCount),
-      label: t('providerDashboardEnabled'),
-      detail: t('providerDashboardEnabledDetail'),
-      tone: enabledCount > 0 ? 'ready' : 'disabled',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'sparkles',
-      value: String(generalModelCount),
-      label: t('providerGeneralModels'),
-      detail: t('providerGeneralModelsDesc'),
-      tone: generalModelCount > 0 ? 'ready' : 'needs-models',
-    });
-    this.createProviderSummaryCard(summaryGrid, {
-      iconName: 'scan-search',
-      value: String(embeddingModelCount),
-      label: t('providerEmbeddingModels'),
-      detail: t('providerEmbeddingModelsDesc'),
-      tone: embeddingModelCount > 0 ? 'ready' : 'needs-models',
+      text:
+        profiles.length === 0
+          ? t('providerSummaryNoProfiles')
+          : t('providerSummaryLine', {
+              ready: String(readyCount),
+              attention: String(attentionCount),
+              general: String(generalModelCount),
+              embedding: String(embeddingModelCount),
+            }),
     });
     const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
     const addButton = toolbar.createEl('button', {
@@ -5168,8 +5283,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     setIcon(addButton, 'plus');
     addButton.createSpan({ text: t('settingsAuto268') });
     addButton.addEventListener('click', () => {
+      const id = this.createProviderProfileId();
       this.plugin.settings.providerProfiles.push({
-        id: this.createProviderProfileId(),
+        id,
         name: 'New provider',
         strategy: 'openAICompatible',
         apiKey: '',
@@ -5178,6 +5294,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         models: [],
         useRequestUrl: true,
       });
+      this.expandedProviderProfileId = id;
       this.debouncedSave();
       this.renderSettingsView();
     });
@@ -5189,17 +5306,26 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
 
   private buildProviderProfileCard(containerEl: HTMLElement, profile: ProviderProfileConfig): void {
-    const isCollapsed = this.collapsedProviderProfileIds.has(profile.id);
+    const isCollapsed = this.expandedProviderProfileId !== profile.id;
+    const tone = this.getProviderProfileTone(profile);
     const section = containerEl.createDiv({
-      cls: `superpower-inside-provider-shell superpower-inside-provider-card ${isCollapsed ? 'is-collapsed' : 'is-expanded'}`,
+      cls: `superpower-inside-provider-shell superpower-inside-provider-card is-${tone} ${isCollapsed ? 'is-collapsed' : 'is-expanded'}`,
     });
     section.setAttribute('data-provider-key', `profile:${profile.id}`);
+    const bodyId = `superpower-inside-provider-${profile.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     const hero = section.createEl('button', {
       cls: 'superpower-inside-provider-hero',
-      attr: { type: 'button', 'aria-expanded': String(!isCollapsed) },
+      attr: {
+        type: 'button',
+        'aria-expanded': String(!isCollapsed),
+        'aria-controls': bodyId,
+      },
     });
     const brandIcon = hero.createSpan({ cls: 'superpower-inside-provider-brand-icon' });
-    setIcon(brandIcon, profile.enabled ? 'badge-check' : 'power-off');
+    setIcon(
+      brandIcon,
+      tone === 'ready' ? 'badge-check' : profile.enabled ? 'circle-alert' : 'power-off',
+    );
     const titleCopy = hero.createSpan({ cls: 'superpower-inside-provider-title-copy' });
     titleCopy.createSpan({
       cls: 'superpower-inside-provider-title-text',
@@ -5207,30 +5333,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     titleCopy.createSpan({
       cls: 'superpower-inside-provider-subtitle',
-      text: PROVIDER_STRATEGY_LABELS[profile.strategy],
+      text: t('providerModelCountLine', {
+        provider: PROVIDER_STRATEGY_LABELS[profile.strategy],
+        general: String(profile.models.filter((model) => model.kind === 'general').length),
+        embedding: String(profile.models.filter((model) => model.kind === 'embedding').length),
+      }),
     });
     const statusToken = hero.createSpan({
-      cls: `superpower-inside-provider-status-token is-${profile.enabled ? 'ready' : 'disabled'}`,
-      text: profile.enabled ? t('providerStatusReady') : t('providerStatusOff'),
+      cls: `superpower-inside-provider-status-token is-${tone}`,
+      text: this.getProviderProfileStatusLabel(tone),
     });
     statusToken.setAttribute('aria-live', 'polite');
     const chevron = hero.createSpan({ cls: 'superpower-inside-provider-chevron' });
     setIcon(chevron, 'chevron-right');
     hero.addEventListener('click', () => {
-      const nextCollapsed = !section.hasClass('is-collapsed');
-      section.toggleClass('is-collapsed', nextCollapsed);
-      section.toggleClass('is-expanded', !nextCollapsed);
-      hero.setAttribute('aria-expanded', String(!nextCollapsed));
-      if (nextCollapsed) {
-        this.collapsedProviderProfileIds.add(profile.id);
-      } else {
-        this.collapsedProviderProfileIds.delete(profile.id);
-      }
+      this.expandedProviderProfileId =
+        this.expandedProviderProfileId === profile.id ? null : profile.id;
+      this.refreshProviderProfileExpansion(containerEl);
     });
 
     const body = section.createDiv({
       cls: 'superpower-inside-provider-body superpower-inside-provider-profile-body',
     });
+    body.id = bodyId;
     const connectionSection = body.createDiv({
       cls: 'superpower-inside-provider-section superpower-inside-provider-connection-panel',
     });
@@ -5256,29 +5381,51 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
     this.buildProviderStrategySelector(connectionSection, profile);
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
-      new Setting(connectionSection).setName(t('apiKey')).addText((text) =>
+      let apiKeyInput: HTMLInputElement | null = null;
+      new Setting(connectionSection)
+        .setName(t('apiKey'))
+        .addText((text) => {
+          apiKeyInput = text.inputEl;
+          text.inputEl.type = 'password';
+          text.inputEl.autocomplete = 'off';
+          text.inputEl.setAttribute('aria-label', t('apiKey'));
+          text
+            .setPlaceholder('sk-...')
+            .setValue(profile.apiKey)
+            .onChange((value) => {
+              profile.apiKey = value.trim();
+              this.debouncedSave();
+            });
+        })
+        .addExtraButton((button) => {
+          button.setIcon('eye').setTooltip(t('providerApiKeyShow'));
+          button.onClick(() => {
+            if (!apiKeyInput) return;
+            const isVisible = apiKeyInput.type === 'text';
+            apiKeyInput.type = isVisible ? 'password' : 'text';
+            button
+              .setIcon(isVisible ? 'eye' : 'eye-off')
+              .setTooltip(isVisible ? t('providerApiKeyShow') : t('providerApiKeyHide'));
+          });
+        });
+    }
+    if (profile.strategy !== 'ternlight') {
+      new Setting(connectionSection).setName(t('providerBaseUrl')).addText((text) =>
         text
-          .setPlaceholder('sk-...')
-          .setValue(profile.apiKey)
+          .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
+          .setValue(profile.baseUrl ?? '')
           .onChange((value) => {
-            profile.apiKey = value.trim();
+            profile.baseUrl = value.trim();
             this.debouncedSave();
           }),
       );
     }
-    new Setting(connectionSection).setName(t('providerBaseUrl')).addText((text) =>
-      text
-        .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
-        .setValue(profile.baseUrl ?? '')
-        .onChange((value) => {
-          profile.baseUrl = value.trim();
-          this.debouncedSave();
-        }),
-    );
     const statusEl = body.createDiv({ cls: 'superpower-inside-provider-validation-status' });
     statusEl.setAttribute('role', 'status');
     statusEl.setAttribute('aria-live', 'polite');
-    this.buildProviderProfileModelSection(body, profile, 'general', statusEl);
+    if (profile.strategy !== 'ternlight') {
+      this.buildProviderProfileModelSection(body, profile, 'general', statusEl);
+    }
     this.buildProviderProfileModelSection(body, profile, 'embedding', statusEl);
     const removeButton = body.createEl('button', {
       cls: 'superpower-inside-provider-remove-btn',
@@ -5290,46 +5437,79 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.plugin.settings.providerProfiles = this.plugin.settings.providerProfiles.filter(
         (item) => item.id !== profile.id,
       );
+      if (this.expandedProviderProfileId === profile.id) {
+        this.expandedProviderProfileId = null;
+      }
       this.debouncedSave();
       this.renderSettingsView();
     });
+  }
+
+  private getProviderProfileTone(
+    profile: ProviderProfileConfig,
+  ): 'ready' | 'needs-key' | 'needs-models' | 'disabled' {
+    if (!profile.enabled) return 'disabled';
+    if (
+      shouldRequireProviderApiKey(this.getProfileApiKeyVisibilityKey(profile)) &&
+      !profile.apiKey.trim()
+    ) {
+      return 'needs-key';
+    }
+    if (profile.models.length === 0) return 'needs-models';
+    return 'ready';
+  }
+
+  private getProviderProfileStatusLabel(
+    tone: 'ready' | 'needs-key' | 'needs-models' | 'disabled',
+  ): string {
+    if (tone === 'ready') return t('providerStatusReady');
+    if (tone === 'needs-key') return t('providerStatusNeedsKey');
+    if (tone === 'needs-models') return t('providerStatusNeedsModels');
+    return t('providerStatusOff');
+  }
+
+  private refreshProviderProfileExpansion(containerEl: HTMLElement): void {
+    const grid = containerEl.closest('.superpower-inside-provider-grid');
+    if (!grid) return;
+    const cards = Array.from(
+      grid.querySelectorAll<HTMLElement>('.superpower-inside-provider-card'),
+    );
+    for (const card of cards) {
+      const key = card.dataset.providerKey?.replace(/^profile:/, '') ?? '';
+      const expanded = key === this.expandedProviderProfileId;
+      card.toggleClass('is-collapsed', !expanded);
+      card.toggleClass('is-expanded', expanded);
+      card
+        .querySelector<HTMLElement>('.superpower-inside-provider-hero')
+        ?.setAttribute('aria-expanded', String(expanded));
+    }
   }
 
   private buildProviderStrategySelector(
     containerEl: HTMLElement,
     profile: ProviderProfileConfig,
   ): void {
-    const setting = new Setting(containerEl)
+    new Setting(containerEl)
       .setName(t('providerStrategyLabel'))
-      .setDesc(t('providerStrategyDesc'));
-    const group = setting.controlEl.createDiv({
-      cls: 'superpower-inside-provider-strategy-grid',
-    });
-    for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
-      const strategy = value as ProviderStrategyKey;
-      const button = group.createEl('button', {
-        cls: `superpower-inside-provider-strategy-option${profile.strategy === strategy ? ' is-selected' : ''}`,
-        attr: {
-          type: 'button',
-          'aria-pressed': String(profile.strategy === strategy),
-        },
-      });
-      button.createSpan({ cls: 'superpower-inside-provider-strategy-name', text: label });
-      button.createSpan({
-        cls: 'superpower-inside-provider-strategy-detail',
-        text: this.getProviderStrategyDefaultBaseUrl(strategy).replace(/^https?:\/\//, ''),
-      });
-      button.addEventListener('click', () => {
-        if (profile.strategy === strategy) return;
-        profile.strategy = strategy;
-        if (!profile.baseUrl?.trim()) {
-          profile.baseUrl = this.getProviderStrategyDefaultBaseUrl(strategy);
+      .setDesc(t('providerStrategyDesc'))
+      .addDropdown((dropdown) => {
+        for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
+          dropdown.addOption(value, label);
         }
-        delete this.plugin.settings.providerValidation[`profile:${profile.id}`];
-        this.debouncedSave();
-        this.renderSettingsView();
+        dropdown.setValue(profile.strategy).onChange((value) => {
+          const strategy = value as ProviderStrategyKey;
+          if (profile.strategy === strategy) return;
+          const previousDefault = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
+          const nextDefault = this.getProviderStrategyDefaultBaseUrl(strategy);
+          if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
+            profile.baseUrl = nextDefault;
+          }
+          profile.strategy = strategy;
+          delete this.plugin.settings.providerValidation[`profile:${profile.id}`];
+          this.debouncedSave();
+          this.renderSettingsView();
+        });
       });
-    }
   }
 
   private buildProviderProfileModelSection(
@@ -5341,42 +5521,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const section = containerEl.createDiv({
       cls: 'superpower-inside-provider-section superpower-inside-provider-model-shell superpower-inside-provider-profile-model-section',
     });
-    section.createDiv({
+    const header = section.createDiv({
+      cls: 'superpower-inside-provider-model-section-header',
+    });
+    header.createDiv({
       cls: 'superpower-inside-provider-section-title',
       text: kind === 'embedding' ? t('providerEmbeddingModels') : t('providerGeneralModels'),
     });
-    const addRow = section.createDiv({ cls: 'superpower-inside-provider-model-controls' });
-    const input = addRow.createEl('input', {
-      type: 'text',
-      placeholder: kind === 'embedding' ? 'text-embedding-3-small' : 'gpt-4o-mini',
-      cls: 'superpower-inside-provider-model-search',
-    });
-    const addButton = addRow.createEl('button', {
-      cls: 'superpower-inside-provider-action-btn',
-      attr: { type: 'button' },
-    });
-    setIcon(addButton, 'plus');
-    addButton.createSpan({
-      text: kind === 'embedding' ? t('providerAddEmbeddingModel') : t('providerAddGeneralModel'),
-    });
-    addButton.addEventListener('click', () => {
-      const id = input.value.trim();
-      if (!id) return;
-      profile.models = upsertProviderProfileModel(
-        profile.models,
-        createProviderModel(id, kind, {
-          chatStatus: kind === 'general' ? 'unknown' : 'unknown',
-          embeddingStatus: kind === 'embedding' ? 'unknown' : 'unknown',
-        }),
-      );
-      input.value = '';
-      this.debouncedSave();
-      this.renderSettingsView();
-    });
+    const toolbar = header.createDiv({ cls: 'superpower-inside-provider-model-toolbar' });
     if (kind === 'general') {
-      const fetchButton = addRow.createEl('button', {
-        cls: 'superpower-inside-provider-action-btn',
-        attr: { type: 'button' },
+      const fetchButton = toolbar.createEl('button', {
+        cls: 'superpower-inside-provider-model-sync-btn',
+        attr: { type: 'button', 'aria-label': t('fetchModels'), title: t('fetchModels') },
       });
       setIcon(fetchButton, 'download');
       fetchButton.createSpan({ text: t('fetchModels') });
@@ -5404,6 +5560,47 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     }
+    const addRow = section.createDiv({ cls: 'superpower-inside-provider-model-add-row' });
+    const input = addRow.createEl('input', {
+      type: 'text',
+      placeholder: kind === 'embedding' ? 'text-embedding-3-small' : 'gpt-4o-mini',
+      cls: 'superpower-inside-provider-model-add-input',
+    });
+    const addButton = addRow.createEl('button', {
+      cls: 'superpower-inside-provider-model-add-btn',
+      attr: {
+        type: 'button',
+        'aria-label':
+          kind === 'embedding' ? t('providerAddEmbeddingModel') : t('providerAddGeneralModel'),
+        title: kind === 'embedding' ? t('providerAddEmbeddingModel') : t('providerAddGeneralModel'),
+      },
+    });
+    setIcon(addButton, 'plus');
+    const updateAddButtonState = (): void => {
+      addButton.disabled = !input.value.trim();
+    };
+    const addModel = (): void => {
+      const id = input.value.trim();
+      if (!id) return;
+      profile.models = upsertProviderProfileModel(
+        profile.models,
+        createProviderModel(id, kind, {
+          chatStatus: kind === 'general' ? 'unknown' : 'unknown',
+          embeddingStatus: kind === 'embedding' ? 'unknown' : 'unknown',
+        }),
+      );
+      input.value = '';
+      this.debouncedSave();
+      this.renderSettingsView();
+    };
+    addButton.addEventListener('click', addModel);
+    input.addEventListener('input', updateAddButtonState);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || !input.value.trim()) return;
+      event.preventDefault();
+      addModel();
+    });
+    updateAddButtonState();
     const list = section.createDiv({
       cls: 'superpower-inside-settings-model-list superpower-inside-provider-model-list',
     });
@@ -5492,6 +5689,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             profile.strategy,
             modelId,
             validationConfig,
+            this.getTernlightRuntimeOptions(),
           );
           profile.models = upsertProviderProfileModel(
             profile.models,
@@ -5540,8 +5738,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private getProfileApiKeyVisibilityKey(
     profile: ProviderProfileConfig,
-  ): 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter' | 'customOpenAI' {
+  ): 'ternlight' | 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter' | 'customOpenAI' {
     return profile.strategy === 'openAICompatible' ? 'customOpenAI' : profile.strategy;
+  }
+
+  private getTernlightRuntimeOptions(): TernlightRuntimeOptions {
+    return {
+      app: this.plugin.app,
+      pluginId: this.plugin.manifest?.id ?? 'superpower-inside',
+      pluginVersion: this.plugin.manifest?.version ?? 'development',
+    };
   }
 
   private getProviderStrategyDefaultBaseUrl(strategy: ProviderStrategyKey): string {
@@ -5558,6 +5764,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         return 'https://openrouter.ai/api';
       case 'openAICompatible':
         return 'http://localhost:1234/v1';
+      case 'ternlight':
+        return '';
       default:
         return '';
     }
@@ -5574,35 +5782,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return id;
   }
 
-  private createProviderSummaryCard(
-    containerEl: HTMLElement,
-    summary: {
-      iconName: string;
-      value: string;
-      label: string;
-      detail: string;
-      tone: ProviderVisualTone;
-    },
-  ): void {
-    const card = containerEl.createDiv({
-      cls: `superpower-inside-provider-summary-card is-${summary.tone}`,
-    });
-    const icon = card.createDiv({ cls: 'superpower-inside-provider-summary-icon' });
-    setIcon(icon, summary.iconName);
-    const copy = card.createDiv({ cls: 'superpower-inside-provider-summary-copy' });
-    copy.createDiv({ cls: 'superpower-inside-provider-summary-value', text: summary.value });
-    copy.createDiv({ cls: 'superpower-inside-provider-summary-label', text: summary.label });
-    card.createDiv({ cls: 'superpower-inside-provider-summary-detail', text: summary.detail });
-  }
-  private setAllProviderCardsExpanded(containerEl: HTMLElement, expanded: boolean): void {
-    const cards = containerEl.querySelectorAll<HTMLElement>('.superpower-inside-provider-card');
-    cards.forEach((card) => {
-      card.toggleClass('is-expanded', expanded);
-      card.toggleClass('is-collapsed', !expanded);
-      const header = card.querySelector<HTMLElement>('.superpower-inside-provider-hero');
-      header?.setAttribute('aria-expanded', String(expanded));
-    });
-  }
   private getFreshProviderValidation(
     providerKey: string,
     config: ProviderConfig | CustomOpenAIProviderConfig,
@@ -6361,7 +6540,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     fetchedModels.forEach((model) => models.add(model));
     return Array.from(models).sort((a, b) => a.localeCompare(b, 'en'));
   }
-  private buildCustomOpenAIProvidersSection(containerEl: HTMLElement): void {
+  buildCustomOpenAIProvidersSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
       cls: 'superpower-inside-provider-custom-dock',
     });

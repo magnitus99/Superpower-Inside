@@ -27,6 +27,7 @@ import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabil
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
+  TernlightEmbeddingProvider,
   CachedEmbeddingProvider,
   createEmbeddingCacheNamespace,
   type EmbeddingProvider,
@@ -1240,6 +1241,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const embeddingProvider = migratedRag.embeddingProvider;
       const isKnownEmbeddingProvider =
         embeddingProvider === 'openai' ||
+        embeddingProvider === 'ternlight' ||
         embeddingProvider === 'ollama' ||
         embeddingProvider === 'openRouter' ||
         (typeof embeddingProvider === 'string' &&
@@ -1954,7 +1956,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         profile.strategy !== 'ollama' &&
         profile.strategy !== 'openai' &&
         profile.strategy !== 'openRouter' &&
-        profile.strategy !== 'openAICompatible'
+        profile.strategy !== 'openAICompatible' &&
+        profile.strategy !== 'ternlight'
       ) {
         this.lastRagRuntimeInitSkippedReason =
           'Embedding is not supported by this provider profile.';
@@ -1989,7 +1992,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
-      if (profile.strategy === 'ollama') {
+      if (profile.strategy === 'ternlight') {
+        rawProvider = new TernlightEmbeddingProvider(
+          embeddingModel,
+          {
+            app: this.app,
+            pluginId: this.manifest.id,
+            pluginVersion: this.manifest.version,
+          },
+          { logger: this.getLogger() },
+        );
+      } else if (profile.strategy === 'ollama') {
         rawProvider = new OllamaEmbeddingProvider(
           baseUrl ?? 'http://localhost:11434',
           embeddingModel,

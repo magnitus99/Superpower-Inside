@@ -4,8 +4,8 @@
   "description": "Desktop AI copilot with LLM chat, RAG, MCP tools, and source-aware context.",
   "main": "main.js",
   "scripts": {
-    "dev": "npm run wasm:build && node esbuild.config.mjs",
-    "build": "npm run wasm:build && node esbuild.config.mjs production",
+    "dev": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs",
+    "build": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
@@ -14,12 +14,14 @@
     "rag:perf-gate": "node scripts/bench-rag-wrapper.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "wasm:build": "node scripts/run-fish.mjs scripts/build-rag-wasm.fish",
+    "ternlight:assets": "node scripts/run-fish.mjs scripts/copy-ternlight-assets.fish",
     "rust:security": "node scripts/run-fish.mjs scripts/check-rust-security.fish",
     "security:full": "npm run lint && npm run typecheck && npm run test && npm run rag:perf-gate && npm run rust:security",
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@ternlight/base": "0.1.0",
     "cytoscape": "^3.33.4",
     "dexie": "^4.0.11"
   },

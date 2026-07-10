@@ -146,14 +146,72 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual(['profile:local:qwen3-embed']);
   });
 
-  it('does not create provider profiles from untouched default RAG embedding settings', () => {
+  it('untouched default RAG settings create the built-in Ternlight embedding profile', () => {
     const migrated = migrateLegacyProviderProfiles({
       ...DEFAULT_SETTINGS,
       providerProfiles: [],
     });
 
-    expect(migrated.providerProfiles).toEqual([]);
-    expect(migrated.rag.embeddingModelRef).toBe('');
+    const ternlight = migrated.providerProfiles.find((profile) => profile.id === 'ternlight');
+    const ternlightModel = ternlight?.models.find((model) => model.id === 'ternlight-base');
+
+    expect(ternlight).toMatchObject({
+      id: 'ternlight',
+      name: 'Ternlight',
+      strategy: 'ternlight',
+      enabled: true,
+    });
+    expect(ternlightModel).toMatchObject({
+      id: 'ternlight-base',
+      kind: 'embedding',
+      verification: { embeddingStatus: 'success' },
+    });
+    expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:ternlight-base');
+  });
+
+  it('기존 프로바이더 프로필이 있어도 Ternlight 옵션을 추가하고 현재 임베딩 선택은 보존한다', () => {
+    const openAiRef = 'profile:openai:text-embedding-3-small';
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'openai',
+          name: 'OpenAI',
+          strategy: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com',
+          enabled: true,
+          models: [
+            {
+              id: 'text-embedding-3-small',
+              kind: 'embedding',
+              verification: { chatStatus: 'unknown', embeddingStatus: 'success' },
+            },
+          ],
+        },
+      ],
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingModelRef: openAiRef,
+      },
+    });
+
+    expect(migrated.providerProfiles).toContainEqual(
+      expect.objectContaining({
+        id: 'ternlight',
+        strategy: 'ternlight',
+        enabled: true,
+        models: [
+          expect.objectContaining({
+            id: 'ternlight-base',
+            kind: 'embedding',
+          }),
+        ],
+      }),
+    );
+    expect(migrated.rag.embeddingModelRef).toBe(openAiRef);
   });
 
   it('legacy provider settings migrate to profiles and embedding classification wins default chat conflicts', () => {
@@ -176,17 +234,20 @@ describe('RAG 설정 표시 헬퍼', () => {
       },
     });
 
-    expect(migrated.providerProfiles).toEqual([
-      expect.objectContaining({
-        id: 'openai',
-        name: 'OpenAI',
-        strategy: 'openai',
-        models: [
-          expect.objectContaining({ id: 'gpt-4o-mini', kind: 'general' }),
-          expect.objectContaining({ id: 'text-embedding-3-small', kind: 'embedding' }),
-        ],
-      }),
-    ]);
+    expect(migrated.providerProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'openai',
+          name: 'OpenAI',
+          strategy: 'openai',
+          models: [
+            expect.objectContaining({ id: 'gpt-4o-mini', kind: 'general' }),
+            expect.objectContaining({ id: 'text-embedding-3-small', kind: 'embedding' }),
+          ],
+        }),
+        expect.objectContaining({ id: 'ternlight', strategy: 'ternlight' }),
+      ]),
+    );
     expect(migrated.chat.defaultModel).toBe('');
     expect(migrated.rag.embeddingModelRef).toBe('profile:openai:text-embedding-3-small');
   });
@@ -320,6 +381,22 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('Ollama Local 임베딩 모델은 하드코딩 preset을 제공하지 않는다', () => {
     expect(buildEmbeddingModels().ollama).toEqual([]);
+  });
+
+  it('Ternlight 임베딩은 플러그인 내장 로컬 provider와 기본 모델로 제공한다', () => {
+    const models = buildEmbeddingModels();
+    const providerOptions = buildEmbeddingProviderOptions([]);
+
+    expect(providerOptions).toContainEqual({ value: 'ternlight', label: 'Ternlight (Local)' });
+    expect(models.ternlight.map((model) => model.id)).toEqual(['ternlight-base']);
+    expect(models.ternlight[0]).toMatchObject({
+      name: '@ternlight/base',
+      dimensions: 384,
+    });
+    expect(DEFAULT_SETTINGS.rag.embeddingProvider).toBe('ternlight');
+    expect(DEFAULT_SETTINGS.rag.embeddingModel).toBe('ternlight-base');
+    expect(DEFAULT_SETTINGS.ollama.enabled).toBe(false);
+    expect(DEFAULT_SETTINGS.ollama.models).not.toContain('ternlight-base');
   });
 
   it('RAG 임베딩 프로바이더 옵션에는 활성화된 custom OpenAI-compatible provider를 포함한다', () => {

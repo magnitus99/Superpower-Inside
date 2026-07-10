@@ -6,6 +6,8 @@ import type {
   ProviderConfig,
   ProviderStrategyKey,
 } from '../settings';
+import { TernlightEmbeddingProvider } from './embedding';
+import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import type { ProviderKey } from './providers';
 
 export interface ProviderModelInfo {
@@ -467,6 +469,43 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
   }
 }
 
+class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
+  constructor(private readonly runtime: TernlightRuntimeOptions | undefined) {}
+
+  async validateConnection(modelId: string): Promise<ValidationResult> {
+    if (modelId !== 'ternlight-base') {
+      return {
+        valid: false,
+        models: [],
+        error: `Unknown Ternlight model: ${modelId}`,
+      };
+    }
+    const result = await this.testEmbedding(modelId);
+    return result.valid
+      ? {
+          valid: true,
+          models: ['ternlight-base'],
+          modelDetails: [{ id: 'ternlight-base' }],
+        }
+      : result;
+  }
+
+  async testEmbedding(modelId: string): Promise<ValidationResult> {
+    if (!this.runtime) {
+      return { valid: false, models: [], error: 'Ternlight runtime context is unavailable.' };
+    }
+    try {
+      const provider = new TernlightEmbeddingProvider(modelId, this.runtime);
+      const vector = await provider.embed('test');
+      return vector.length === 384
+        ? { valid: true, models: [modelId] }
+        : { valid: false, models: [], error: `Unexpected Ternlight vector size: ${vector.length}` };
+    } catch (err) {
+      return { valid: false, models: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
 function createProviderValidator(
   key: ProviderValidationKey | ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
@@ -500,9 +539,13 @@ function createProviderValidator(
 function createEmbeddingValidator(
   providerKey: EmbeddingProviderKey | ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
 ): EmbeddingConnectionValidator | null {
   if (providerKey === 'ollama') {
     return new OllamaEmbeddingValidator(config);
+  }
+  if (providerKey === 'ternlight') {
+    return new TernlightEmbeddingValidator(ternlightRuntime);
   }
   if (providerKey === 'openai' || providerKey === 'openRouter') {
     const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
@@ -548,6 +591,13 @@ export async function fetchProviderModelsForStrategy(
   key: ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): Promise<ValidationResult> {
+  if (key === 'ternlight') {
+    return {
+      valid: false,
+      models: [],
+      error: 'Ternlight provides embeddings locally and does not expose chat models.',
+    };
+  }
   return fetchProviderModels(key === 'openAICompatible' ? 'customOpenAI' : key, config);
 }
 
@@ -587,6 +637,13 @@ export async function testProviderGenerationForStrategy(
   config: ProviderConfig | CustomOpenAIProviderConfig,
   modelId: string,
 ): Promise<ValidationResult> {
+  if (key === 'ternlight') {
+    return {
+      valid: false,
+      models: [],
+      error: 'Ternlight is an embedding-only provider.',
+    };
+  }
   return testProviderGeneration(key === 'openAICompatible' ? 'customOpenAI' : key, config, modelId);
 }
 
@@ -601,8 +658,9 @@ export async function validateEmbeddingConnection(
   providerKey: EmbeddingProviderKey,
   modelId: string,
   config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
 ): Promise<ValidationResult> {
-  const validator = createEmbeddingValidator(providerKey, config);
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
   if (!validator) {
     return { valid: false, models: [], error: 'Unknown embedding provider' };
   }
@@ -613,8 +671,9 @@ export async function testEmbeddingGeneration(
   providerKey: EmbeddingProviderKey,
   modelId: string,
   config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
 ): Promise<ValidationResult> {
-  const validator = createEmbeddingValidator(providerKey, config);
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
   if (!validator) {
     return { valid: false, models: [], error: 'Unknown embedding provider' };
   }
@@ -625,8 +684,9 @@ export async function testEmbeddingGenerationForStrategy(
   providerKey: ProviderStrategyKey,
   modelId: string,
   config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
 ): Promise<ValidationResult> {
-  const validator = createEmbeddingValidator(providerKey, config);
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
   if (!validator) {
     return {
       valid: false,

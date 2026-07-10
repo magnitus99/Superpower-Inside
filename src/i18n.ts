@@ -239,6 +239,28 @@ export interface I18nKeys {
   ragBannerLatest: string;
   ragBannerNoDocs: string;
   ragBannerPaused: string;
+  ragWorkflowStatusTitle: string;
+  ragWorkflowStatusDetail: string;
+  ragWorkflowEmbeddingTitle: string;
+  ragWorkflowEmbeddingDetail: string;
+  ragWorkflowIndexTitle: string;
+  ragWorkflowIndexDetail: string;
+  ragWorkflowTuneTitle: string;
+  ragWorkflowTuneDetail: string;
+  ragLocalEmbeddingTitle: string;
+  ragLocalEmbeddingDetail: string;
+  ragOverviewTitle: string;
+  ragOverviewReady: string;
+  ragOverviewNeedsUpdate: string;
+  ragOverviewEmpty: string;
+  ragOverviewDetail: string;
+  ragOverviewUnavailable: string;
+  ragOverviewFixEmbedding: string;
+  ragOverviewCheckProvider: string;
+  ragRecoverySummary: string;
+  graphRagOverviewTitle: string;
+  graphRagOverviewDetail: string;
+  graphRagDetailsSummary: string;
 
   // RAG 버튼
   btnUpdatePending: string;
@@ -542,6 +564,7 @@ export interface I18nKeys {
   settingsAuto003: string;
   settingsAuto004: string;
   settingsAuto005: string;
+  settingsAuto006: string;
   settingsAuto007: string;
   settingsAuto008: string;
   settingsAuto009: string;
@@ -885,6 +908,12 @@ export interface I18nKeys {
   testGeneration: string;
   providerCommandCenterTitle: string;
   providerCommandCenterDesc: string;
+  providerConnectionTitle: string;
+  providerSummaryLine: string;
+  providerSummaryNoProfiles: string;
+  providerModelCountLine: string;
+  providerApiKeyShow: string;
+  providerApiKeyHide: string;
   providerDashboardReady: string;
   providerDashboardReadyDetail: string;
   providerDashboardAttention: string;
@@ -893,6 +922,14 @@ export interface I18nKeys {
   providerDashboardEnabledDetail: string;
   providerDashboardModels: string;
   providerDashboardModelsDetail: string;
+  providerSetupEnableTitle: string;
+  providerSetupEnableDetail: string;
+  providerSetupAuthTitle: string;
+  providerSetupAuthDetail: string;
+  providerSetupModelsTitle: string;
+  providerSetupModelsDetail: string;
+  providerSetupValidateTitle: string;
+  providerSetupValidateDetail: string;
   providerStatusReady: string;
   providerStatusNeedsKey: string;
   providerStatusNeedsModels: string;
@@ -1650,6 +1687,29 @@ const ko: I18nKeys = {
   ragBannerNoDocs:
     '현재 설정 기준으로 RAG 대상 문서가 없습니다. 제외 경로나 파일 형식을 확인하세요.',
   ragBannerPaused: '성능 보호 때문에 잠시 대기 중입니다. 원인: {reason}',
+  ragWorkflowStatusTitle: '상태 확인',
+  ragWorkflowStatusDetail: '현재 인덱스가 최신인지 먼저 확인합니다.',
+  ragWorkflowEmbeddingTitle: '임베딩 선택',
+  ragWorkflowEmbeddingDetail: '기본값은 내장 Ternlight이고, 필요하면 원격 provider로 바꿉니다.',
+  ragWorkflowIndexTitle: '인덱싱 실행',
+  ragWorkflowIndexDetail: '변경분만 갱신하고, 모델을 바꿨을 때만 전체 재인덱싱합니다.',
+  ragWorkflowTuneTitle: '고급 조정',
+  ragWorkflowTuneDetail: '검색 품질과 GraphRAG는 기본 흐름이 안정된 뒤 조정합니다.',
+  ragLocalEmbeddingTitle: '기본 제공: Ternlight 온디바이스 임베딩',
+  ragLocalEmbeddingDetail:
+    '노트는 기기를 벗어나지 않으며 API 키나 Ollama 서버가 필요 없습니다. 모델 파일이 없으면 한 번 자동으로 내려받아 무결성을 확인한 뒤 오프라인으로 사용합니다.',
+  ragOverviewTitle: '일반 검색',
+  ragOverviewReady: '최신',
+  ragOverviewNeedsUpdate: '{count}개 업데이트 필요',
+  ragOverviewEmpty: '인덱싱 대상 없음',
+  ragOverviewDetail: '{healthy}/{total}개 문서 최신 · 자동 업데이트 {auto}',
+  ragOverviewUnavailable: '연결 필요',
+  ragOverviewFixEmbedding: '임베딩 모델 선택',
+  ragOverviewCheckProvider: '프로바이더 확인',
+  ragRecoverySummary: '문제 해결 및 복구',
+  graphRagOverviewTitle: '연결 기반 검색 (GraphRAG)',
+  graphRagOverviewDetail: '대상 {total} · 증거 {done} · 동기화 {stale} · 실패 {failed}',
+  graphRagDetailsSummary: 'GraphRAG 세부 설정 및 복구',
 
   // RAG 버튼
   btnUpdatePending: '필요 문서 업데이트',
@@ -1963,6 +2023,8 @@ const ko: I18nKeys = {
   settingsAuto003: 'OpenRouter 경유. 동일 품질, OpenRouter API 키 사용.',
   settingsAuto004: '다국어(한국어 포함) 최적화. 8K 컨텍스트.',
   settingsAuto005: '32K 컨텍스트 지원. 긴 문서에 적합.',
+  settingsAuto006:
+    '플러그인에 함께 포함된 온디바이스 WASM 임베딩 모델입니다. API 키나 로컬 서버 없이 CPU에서 실행됩니다.',
   settingsAuto007:
     '임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)',
   settingsAuto008: '모델 선택 안 함',
@@ -2338,6 +2400,13 @@ const ko: I18nKeys = {
   providerCommandCenterTitle: 'LLM 연결 관제판',
   providerCommandCenterDesc:
     '채팅, RAG, GraphRAG가 사용할 provider 준비 상태를 한 화면에서 정리합니다.',
+  providerConnectionTitle: '프로바이더 연결',
+  providerSummaryLine:
+    '{ready}개 사용 가능 · {attention}개 확인 필요 · 채팅 {general} · 임베딩 {embedding}',
+  providerSummaryNoProfiles: '연결된 프로바이더가 없습니다.',
+  providerModelCountLine: '{provider} · 채팅 {general} · 임베딩 {embedding}',
+  providerApiKeyShow: 'API 키 보기',
+  providerApiKeyHide: 'API 키 숨기기',
   providerDashboardReady: '준비 완료',
   providerDashboardReadyDetail: '바로 사용할 수 있는 provider',
   providerDashboardAttention: '조치 필요',
@@ -2346,6 +2415,14 @@ const ko: I18nKeys = {
   providerDashboardEnabledDetail: '켜져 있는 provider',
   providerDashboardModels: '선택 모델',
   providerDashboardModelsDetail: '등록된 채팅 모델',
+  providerSetupEnableTitle: 'Provider 켜기',
+  providerSetupEnableDetail: '쓸 서비스만 활성화해 설정 화면 밀도를 낮춥니다.',
+  providerSetupAuthTitle: '인증 입력',
+  providerSetupAuthDetail: '로컬 provider는 키 없이, 원격 provider는 API 키로 연결합니다.',
+  providerSetupModelsTitle: '모델 정리',
+  providerSetupModelsDetail: '모델 검색 후 실제로 쓸 모델만 카드에 남깁니다.',
+  providerSetupValidateTitle: '짧게 검증',
+  providerSetupValidateDetail: '연결 테스트와 최소 생성 테스트로 실패 지점을 바로 확인합니다.',
   providerStatusReady: '준비됨',
   providerStatusNeedsKey: '키 필요',
   providerStatusNeedsModels: '모델 필요',
@@ -3166,6 +3243,31 @@ const en: I18nKeys = {
     'Index is up to date. Full reindex is only needed if model or storage was changed.',
   ragBannerNoDocs: 'No RAG-eligible documents found. Check exclusion paths or file types.',
   ragBannerPaused: 'Paused for performance protection. Reason: {reason}',
+  ragWorkflowStatusTitle: 'Check Status',
+  ragWorkflowStatusDetail: 'Start by seeing whether the index is current.',
+  ragWorkflowEmbeddingTitle: 'Choose Embeddings',
+  ragWorkflowEmbeddingDetail:
+    'The default is bundled Ternlight; switch to a remote provider only if needed.',
+  ragWorkflowIndexTitle: 'Run Indexing',
+  ragWorkflowIndexDetail:
+    'Update changed notes first; reindex everything only after model changes.',
+  ragWorkflowTuneTitle: 'Tune Advanced',
+  ragWorkflowTuneDetail: 'Adjust search quality and GraphRAG after the base flow is stable.',
+  ragLocalEmbeddingTitle: 'Included by default: Ternlight on-device embeddings',
+  ragLocalEmbeddingDetail:
+    'Notes stay on this device with no API key or Ollama server. If the model file is missing, it is downloaded once, verified, and then used offline.',
+  ragOverviewTitle: 'Standard search',
+  ragOverviewReady: 'Up to date',
+  ragOverviewNeedsUpdate: '{count} need updating',
+  ragOverviewEmpty: 'No indexing targets',
+  ragOverviewDetail: '{healthy}/{total} documents current · auto update {auto}',
+  ragOverviewUnavailable: 'Connection needed',
+  ragOverviewFixEmbedding: 'Choose embedding model',
+  ragOverviewCheckProvider: 'Review provider',
+  ragRecoverySummary: 'Troubleshooting and recovery',
+  graphRagOverviewTitle: 'Connected search (GraphRAG)',
+  graphRagOverviewDetail: '{total} targets · {done} evidence · {stale} to sync · {failed} failed',
+  graphRagDetailsSummary: 'GraphRAG details and recovery',
 
   // RAG Buttons
   btnUpdatePending: 'Update Pending',
@@ -3480,6 +3582,8 @@ const en: I18nKeys = {
   settingsAuto003: 'Via OpenRouter. Same quality, uses an OpenRouter API key.',
   settingsAuto004: 'Optimized for multilingual use including Korean. 8K context.',
   settingsAuto005: 'Supports 32K context. Suitable for long documents.',
+  settingsAuto006:
+    'Bundled on-device WASM embedding model. Runs on CPU without an API key or local server.',
   settingsAuto007:
     'Embedding setting changes were cancelled. Unsaved changes are discarded when closing the settings tab.',
   settingsAuto008: 'No model selected',
@@ -3864,6 +3968,13 @@ const en: I18nKeys = {
   providerCommandCenterTitle: 'LLM Connection Console',
   providerCommandCenterDesc:
     'Review the provider readiness used by chat, RAG, and GraphRAG in one place.',
+  providerConnectionTitle: 'Provider connections',
+  providerSummaryLine:
+    '{ready} ready · {attention} need attention · {general} chat · {embedding} embedding',
+  providerSummaryNoProfiles: 'No providers are connected.',
+  providerModelCountLine: '{provider} · {general} chat · {embedding} embedding',
+  providerApiKeyShow: 'Show API key',
+  providerApiKeyHide: 'Hide API key',
   providerDashboardReady: 'Ready',
   providerDashboardReadyDetail: 'Providers ready to use',
   providerDashboardAttention: 'Needs action',
@@ -3872,6 +3983,16 @@ const en: I18nKeys = {
   providerDashboardEnabledDetail: 'Providers currently turned on',
   providerDashboardModels: 'Selected models',
   providerDashboardModelsDetail: 'Registered chat models',
+  providerSetupEnableTitle: 'Enable Provider',
+  providerSetupEnableDetail:
+    'Turn on only the services you use to keep the page dense but readable.',
+  providerSetupAuthTitle: 'Add Auth',
+  providerSetupAuthDetail: 'Local providers can stay keyless; remote providers need their API key.',
+  providerSetupModelsTitle: 'Trim Models',
+  providerSetupModelsDetail: 'Fetch models, then keep only the models you actually use.',
+  providerSetupValidateTitle: 'Validate Fast',
+  providerSetupValidateDetail:
+    'Run connection and minimal generation tests to see the failing step immediately.',
   providerStatusReady: 'Ready',
   providerStatusNeedsKey: 'Key needed',
   providerStatusNeedsModels: 'Models needed',

@@ -564,8 +564,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 
     await plugin.loadSettings();
 
-    expect(plugin.settings.rag.embeddingProvider).toBe('openai');
-    expect(plugin.settings.rag.embeddingModel).toBe('text-embedding-3-small');
+    expect(plugin.settings.rag.embeddingProvider).toBe('ternlight');
+    expect(plugin.settings.rag.embeddingModel).toBe('ternlight-base');
   });
 
   it('localStorage 설정이 없으면 data.json에서 복구하고 localStorage에도 다시 저장한다', async () => {

@@ -3,6 +3,7 @@ import type { GraphRagIndexingPhase } from '../graph/indexing-progress';
 
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
+  | 'ternlight'
   | 'openai'
   | 'claude'
   | 'ollama'
@@ -290,7 +291,7 @@ export function getChatFolderExcludeDescription(saveFolder: string): string {
 }
 
 export function shouldShowProviderApiKey(key: string): boolean {
-  return key !== 'ollama';
+  return key !== 'ollama' && key !== 'ternlight';
 }
 
 export function shouldRequireProviderApiKey(key: string): boolean {

@@ -65,6 +65,7 @@ describe('설정 화면 리디자인 구조', () => {
     const expectedOrder = [
       'buildRagStatusPanel',
       'buildControlsSection',
+      'buildGraphRagOverview',
       'buildEmbeddingProviderSection',
       'buildExcludeOptionsSection',
       'buildGraphRagOperationsSection',
@@ -80,7 +81,27 @@ describe('설정 화면 리디자인 구조', () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
-  it('RAG 인덱싱 제어는 실행 버튼과 위험 작업을 시각적으로 분리한다', () => {
+  it('RAG 탭은 정적 단계 안내를 반복하지 않고 상세 작업을 점진적으로 공개한다', () => {
+    const methodStart = settingsSource.indexOf('private buildRAGTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildRagAdvancedSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+    const embeddingStart = settingsSource.indexOf('private buildEmbeddingProviderSection');
+    const embeddingEnd = settingsSource.indexOf('\n  private buildStatsSection', embeddingStart);
+    const embeddingSource = settingsSource.slice(embeddingStart, embeddingEnd);
+    const profileBranchEnd = embeddingSource.indexOf('\n      return;');
+    const profileBranchSource = embeddingSource.slice(0, profileBranchEnd);
+
+    expect(methodSource).not.toContain('buildRagWorkflowStrip');
+    expect(methodSource).toContain("createEl('details'");
+    expect(methodSource).toContain("t('graphRagDetailsSummary')");
+    expect(profileBranchSource).toContain('superpower-inside-rag-local-embedding-note');
+    expect(profileBranchSource).toContain("t('ragLocalEmbeddingTitle')");
+    expect(profileBranchSource).toContain("t('ragLocalEmbeddingDetail')");
+    expect(styles).toContain('.superpower-inside-rag-details');
+    expect(styles).toContain('.superpower-inside-rag-local-embedding-note');
+  });
+
+  it('RAG 인덱싱 제어는 현재 가능한 실행만 보이고 위험 작업은 복구 메뉴에 둔다', () => {
     const methodStart = settingsSource.indexOf('private buildControlsSection');
     const methodEnd = settingsSource.indexOf('\n  private updateRagControlStates', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
@@ -88,53 +109,116 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodStart).toBeGreaterThanOrEqual(0);
     expect(methodSource).toContain('superpower-inside-rag-controls-panel');
     expect(methodSource).toContain('superpower-inside-rag-controls-group');
+    expect(methodSource).toContain('superpower-inside-rag-recovery-details');
+    expect(methodSource).toContain("t('ragRecoverySummary')");
     expect(methodSource).toContain('is-danger');
     expect(styles).toContain('.superpower-inside-rag-controls-panel');
     expect(styles).toContain('.superpower-inside-rag-dashboard');
+    expect(styles).toContain('.superpower-inside-rag-recovery-details');
+    expect(styles).toContain('.superpower-inside-rag-controls-group button[hidden]');
   });
 
-  it('Providers 탭은 상단 상태 대시보드와 카드 그리드로 빠르게 훑을 수 있다', () => {
-    const methodStart = settingsSource.indexOf('private buildProvidersTab(containerEl: HTMLElement)');
-    const methodEnd = settingsSource.indexOf('\n  private buildRAGTab', methodStart);
+  it('RAG 런타임을 만들 수 없을 때 빈 카드 대신 원인과 한 가지 복구 행동을 표시한다', () => {
+    const methodStart = settingsSource.indexOf('private renderRagUnavailableState(');
+    const methodEnd = settingsSource.indexOf('\n  private renderRagStatusSummary', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-providers-command-center');
-    expect(methodSource).toContain('superpower-inside-provider-summary-grid');
-    expect(methodSource).toContain('superpower-inside-provider-grid');
-    expect(methodSource).toContain('getProviderVisualState');
-    expect(methodSource).toContain('setAllProviderCardsExpanded');
+    expect(methodSource).toContain("t('ragOverviewUnavailable')");
+    expect(methodSource).toContain("t('ragOverviewFixEmbedding')");
+    expect(methodSource).toContain("t('ragOverviewCheckProvider')");
+    expect(methodSource).toContain('resolveProviderModelRef(');
+    expect(methodSource).toContain("this.switchTab('providers')");
+    expect(methodSource).toContain('superpower-inside-rag-embedding-panel');
+  });
 
-    expect(styles).toContain('.superpower-inside-providers-command-center');
-    expect(styles).toContain('.superpower-inside-provider-summary-grid');
+  it('Providers 탭은 간결한 연결 요약과 세로 카드 목록으로 빠르게 훑을 수 있다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderProfilesTab(');
+    const methodEnd = settingsSource.indexOf('\n  private buildProviderProfileCard', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-provider-summary-bar');
+    expect(methodSource).toContain('superpower-inside-provider-grid');
+    expect(methodSource).toContain("t('providerSummaryLine'");
+    expect(methodSource).toContain('this.expandedProviderProfileId = id');
+
+    expect(styles).toContain('.superpower-inside-provider-summary-bar');
     expect(styles).toContain('.superpower-inside-provider-grid');
   });
 
-  it('Provider 카드는 상태 토큰, 모델 프리뷰, 액션 레일을 같은 화면에서 보여준다', () => {
-    const methodStart = settingsSource.indexOf('private buildProviderSettings');
-    const methodEnd = settingsSource.indexOf('\n  private getInitialProviderModels', methodStart);
+  it('Providers 탭은 동시에 하나의 카드만 펼쳐 설정 밀도를 낮춘다', () => {
+    const cardStart = settingsSource.indexOf('private buildProviderProfileCard(');
+    const cardEnd = settingsSource.indexOf('\n  private getProviderProfileTone', cardStart);
+    const cardSource = settingsSource.slice(cardStart, cardEnd);
+    const refreshStart = settingsSource.indexOf('private refreshProviderProfileExpansion(');
+    const refreshEnd = settingsSource.indexOf(
+      '\n  private buildProviderStrategySelector',
+      refreshStart,
+    );
+    const refreshSource = settingsSource.slice(refreshStart, refreshEnd);
+
+    expect(cardSource).toContain(
+      'this.expandedProviderProfileId === profile.id ? null : profile.id',
+    );
+    expect(cardSource).toContain('this.refreshProviderProfileExpansion(containerEl)');
+    expect(refreshSource).toContain('key === this.expandedProviderProfileId');
+    expect(refreshSource).toContain("setAttribute('aria-expanded', String(expanded))");
+  });
+
+  it('Provider 모델 관리는 수동 추가 composer와 원격 가져오기 액션을 분리한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderProfileModelSection');
+    const methodEnd = settingsSource.indexOf(
+      '\n  private openProviderModelImportModal',
+      methodStart,
+    );
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-provider-model-section-header');
+    expect(methodSource).toContain('superpower-inside-provider-model-toolbar');
+    expect(methodSource).toContain('superpower-inside-provider-model-sync-btn');
+    expect(methodSource).toContain('superpower-inside-provider-model-add-row');
+    expect(methodSource).toContain('superpower-inside-provider-model-add-input');
+    expect(methodSource).toContain('superpower-inside-provider-model-add-btn');
+    expect(methodSource).toContain('addButton.disabled = !input.value.trim()');
+    expect(methodSource).toContain("input.addEventListener('input'");
+    expect(methodSource).toContain("input.addEventListener('keydown'");
+
+    const controlsStart = methodSource.indexOf('superpower-inside-provider-model-add-row');
+    const listStart = methodSource.indexOf('superpower-inside-settings-model-list');
+    const composerSource = methodSource.slice(controlsStart, listStart);
+
+    expect(composerSource).not.toContain('fetchProviderModelsForStrategy');
+    expect(styles).toContain('.superpower-inside-provider-model-section-header');
+    expect(styles).toContain('.superpower-inside-provider-model-toolbar');
+    expect(styles).toContain('.superpower-inside-provider-model-add-row');
+    expect(styles).toContain('.superpower-inside-provider-model-add-btn:disabled');
+  });
+
+  it('Provider 카드는 상태와 모델 수를 요약하고 민감한 키를 기본 마스킹한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderProfileCard(');
+    const methodEnd = settingsSource.indexOf('\n  private getProviderProfileTone', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
     expect(methodSource).toContain('superpower-inside-provider-shell');
     expect(methodSource).toContain('superpower-inside-provider-hero');
     expect(methodSource).toContain('superpower-inside-provider-status-token');
-    expect(methodSource).toContain('superpower-inside-provider-model-preview');
-    expect(methodSource).toContain('superpower-inside-provider-action-rail');
-    expect(methodSource).toContain('superpower-inside-provider-model-shell');
+    expect(methodSource).toContain("t('providerModelCountLine'");
+    expect(methodSource).toContain("text.inputEl.type = 'password'");
+    expect(methodSource).toContain("setTooltip(t('providerApiKeyShow'))");
+    expect(methodSource).toContain("profile.strategy !== 'ternlight'");
     expect(methodSource).toContain('aria-expanded');
+    expect(methodSource).toContain('aria-controls');
 
     expect(styles).toContain('.superpower-inside-provider-status-token.is-ready');
     expect(styles).toContain('.superpower-inside-provider-status-token.is-needs-key');
     expect(styles).toContain('.superpower-inside-provider-status-token.is-needs-models');
-    expect(styles).toContain('.superpower-inside-provider-action-rail');
-    expect(styles).toContain('.superpower-inside-provider-model-shell');
   });
 
   it('Provider 카드는 중간 폭에서 2열 빈 칸을 만들지 않는 full-width 목록으로 배치한다', () => {
-    const gridRule = styles.match(
-      /\.superpower-inside-provider-grid\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
+    const gridRule = styles.match(/\.superpower-inside-provider-grid\s*\{(?<body>[\s\S]*?)\n\}/);
 
     expect(gridRule?.groups?.body).toContain('display: flex');
     expect(gridRule?.groups?.body).toContain('flex-direction: column');
@@ -147,14 +231,12 @@ describe('설정 화면 리디자인 구조', () => {
   });
 
   it('Provider 카드 기본 레이아웃은 Obsidian 설정 모달의 좁은 content 폭에서도 눌리지 않는다', () => {
-    const heroRule = styles.match(
-      /\.superpower-inside-provider-hero\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
+    const heroRule = styles.match(/\.superpower-inside-provider-hero\s*\{(?<body>[\s\S]*?)\n\}/);
     const bodyRule = styles.match(
       /(?:^|\n)\.superpower-inside-provider-body\s*\{(?<body>[\s\S]*?)\n\}/,
     );
     const summaryRule = styles.match(
-      /\.superpower-inside-provider-summary-grid\s*\{(?<body>[\s\S]*?)\n\}/,
+      /\.superpower-inside-provider-summary-bar\s*\{(?<body>[\s\S]*?)\n\}/,
     );
 
     expect(heroRule?.groups?.body).toContain('grid-template-columns: auto minmax(0, 1fr) auto');
@@ -163,10 +245,25 @@ describe('설정 화면 리디자인 구조', () => {
     expect(bodyRule?.groups?.body).toContain('grid-template-columns: 1fr');
     expect(bodyRule?.groups?.body).not.toContain('minmax(220px, 0.8fr) minmax(320px, 1.2fr)');
     expect(bodyRule?.groups?.body).toContain('grid-template-areas:');
-    expect(bodyRule?.groups?.body).toContain('"quick"');
-    expect(bodyRule?.groups?.body).toContain('"actions"');
-    expect(bodyRule?.groups?.body).toContain('"models"');
-    expect(summaryRule?.groups?.body).toContain('repeat(auto-fit, minmax(260px, 1fr))');
+    expect(bodyRule?.groups?.body).toMatch(/['"]quick['"]/);
+    expect(bodyRule?.groups?.body).toMatch(/['"]actions['"]/);
+    expect(bodyRule?.groups?.body).toMatch(/['"]models['"]/);
+    expect(summaryRule?.groups?.body).toContain('display: flex');
+    expect(summaryRule?.groups?.body).toContain('justify-content: space-between');
+  });
+
+  it('설정 탭은 키보드 이동과 tab/tabpanel 관계를 제공한다', () => {
+    expect(settingsSource).toContain("tabBar.setAttribute('role', 'tablist')");
+    expect(settingsSource).toContain("role: 'tab'");
+    expect(settingsSource).toContain("'aria-controls': panelId");
+    expect(settingsSource).toContain("role: 'tabpanel'");
+    expect(settingsSource).toContain(
+      "'aria-labelledby': `superpower-inside-settings-tab-${tab.id}`",
+    );
+    expect(settingsSource).toContain("event.key === 'ArrowRight'");
+    expect(settingsSource).toContain("event.key === 'ArrowLeft'");
+    expect(settingsSource).toContain("event.key === 'Home'");
+    expect(settingsSource).toContain("event.key === 'End'");
   });
 
   it('Provider 접힘 카드는 펼침 카드와 다른 2줄 compact header로 잘림을 피한다', () => {
@@ -184,10 +281,14 @@ describe('설정 화면 리디자인 구조', () => {
     );
 
     expect(collapsedHeroRule?.groups?.body).toContain('grid-template-areas:');
-    expect(collapsedHeroRule?.groups?.body).toContain('"icon copy status chevron"');
-    expect(collapsedHeroRule?.groups?.body).toContain('"icon copy preview chevron"');
-    expect(collapsedHeroRule?.groups?.body).toContain('grid-template-columns: auto minmax(0, 1fr) auto auto');
-    expect(collapsedHeroRule?.groups?.body).toContain('grid-template-rows: minmax(22px, auto) minmax(22px, auto)');
+    expect(collapsedHeroRule?.groups?.body).toMatch(/['"]icon copy status chevron['"]/);
+    expect(collapsedHeroRule?.groups?.body).toMatch(/['"]icon copy preview chevron['"]/);
+    expect(collapsedHeroRule?.groups?.body).toContain(
+      'grid-template-columns: auto minmax(0, 1fr) auto auto',
+    );
+    expect(collapsedHeroRule?.groups?.body).toContain(
+      'grid-template-rows: minmax(22px, auto) minmax(22px, auto)',
+    );
     expect(collapsedHeroRule?.groups?.body).toContain('align-content: center');
     expect(collapsedHeroRule?.groups?.body).toContain('min-height: 72px');
     expect(collapsedIconRule?.groups?.body).toContain('grid-area: icon');
