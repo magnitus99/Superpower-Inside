@@ -148,6 +148,9 @@ obsidian vault=".test-vault" dev:screenshot path=/tmp/superpower-inside-ui.png
 | Chat 현재 동작 | 활성 프롬프트·자동 저장·도구 정책이 상태와 근거 문장으로 요약되는지 |
 | Chat 세부 조정 | 프리셋·초기화, 저장 지연, 도구 재시도가 disclosure 안에서만 노출되는지 |
 | Chat 도구 정책 | 항상 자동 실행에서 warning이 보이고 다른 정책에서는 사라지는지 |
+| MCP 현재 연결 | 전체·서버별 상태와 오류, 재연결 행동이 한 영역에서 읽히는지 |
+| MCP 서버 설정 | JSON 편집기와 검증·저장 상태가 잘리지 않고 가까이 표시되는지 |
+| MCP 실행 환경 | PATH·WSL·자동 탐지·저장이 disclosure 안에서만 노출되는지 |
 | 접힘/펼침 | 아이콘, 제목, 설명, `aria-expanded`가 상태와 일치하는지 |
 | 진행 중·disabled | 상태 변화가 텍스트로 전달되고 비활성 이유가 반복되지 않는지 |
 | 빈 상태·오류 | 빈 카드 대신 이유와 가능한 다음 행동이 보이는지 |

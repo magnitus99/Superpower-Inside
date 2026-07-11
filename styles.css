@@ -636,6 +636,16 @@
   display: grid;
 }
 
+.superpower-inside-settings-status-list > .setting-item {
+  margin: 0;
+  padding: var(--superpower-inside-settings-row-padding) 0;
+  border: 0;
+  border-top: 1px solid var(--superpower-inside-settings-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .superpower-inside-settings-status-row {
   appearance: none;
   display: grid;
@@ -879,6 +889,17 @@ button.superpower-inside-settings-status-row:focus-visible {
   resize: vertical;
 }
 
+.superpower-inside-mcp-settings-workspace .superpower-inside-mcp-json-editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.superpower-inside-mcp-settings-workspace .superpower-inside-mcp-lint-status {
+  padding-bottom: var(--superpower-inside-settings-row-padding);
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-chat-preset-list {
   display: grid;
 }
@@ -988,6 +1009,15 @@ button.superpower-inside-settings-status-row:focus-visible {
 
   .superpower-inside-chat-preset-row > button {
     justify-self: start;
+  }
+
+  .superpower-inside-mcp-settings-workspace .superpower-inside-mcp-path-row {
+    grid-template-columns: 1fr;
+  }
+
+  .superpower-inside-mcp-settings-workspace .superpower-inside-mcp-path-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 }
 

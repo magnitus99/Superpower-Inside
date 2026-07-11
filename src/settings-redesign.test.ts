@@ -150,6 +150,39 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('enforceMcpTools');
   });
 
+  it('MCP 탭은 현재 연결, 서버 설정, 실행 환경 순서의 공통 section을 사용한다', () => {
+    const methodStart = settingsSource.indexOf('private buildMCPTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildDetailedMcpError', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-settings-workspace');
+    expect(methodSource).toContain('superpower-inside-mcp-settings-workspace');
+    expect(methodSource).not.toContain('createSettingsPanel');
+    expect(methodSource).toContain("'mcp-environment-details'");
+    expect(methodSource).not.toContain('superpower-inside-mcp-collapsible-header');
+    expect(methodSource).not.toContain("text: '▶'");
+    const positions = [
+      "t('mcpStatusSectionTitle')",
+      "t('mcpServersSectionTitle')",
+      "t('mcpEnvironmentSectionTitle')",
+    ].map((text) => methodSource.indexOf(text));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('MCP 연결 상태와 서버별 오류는 공통 status row와 하나의 재연결 행동을 사용한다', () => {
+    const methodStart = settingsSource.indexOf('private renderMCPStatus(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private unregisterMcpStatusEvent', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain('createSettingsStatusRow');
+    expect(methodSource).toContain('new RefreshAction');
+    expect(methodSource).toContain("setButtonText(t('mcpReconnect'))");
+    expect(methodSource).not.toContain('superpower-inside-mcp-status-box');
+    expect(methodSource).not.toContain('superpower-inside-mcp-status-dot');
+  });
+
   it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {
     const renderStatsStart = settingsSource.indexOf('private async renderStats(');
     const getStatusIndex = settingsSource.indexOf(

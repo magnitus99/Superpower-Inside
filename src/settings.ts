@@ -5256,30 +5256,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildMCPTab(containerEl: HTMLElement): void {
     containerEl.empty();
-    const mcpSection = containerEl.createDiv({ cls: 'superpower-inside-mcp-tab' });
-    const statusPanel = this.createSettingsPanel(mcpSection, t('settingsAuto221'), {
-      description: t('settingsAuto222'),
+    const workspace = containerEl.createDiv({
+      cls: 'superpower-inside-settings-workspace superpower-inside-mcp-settings-workspace',
     });
-    const pathPanel = this.createSettingsPanel(mcpSection, t('mcpPathTitle'), {
-      description: t('mcpPathDesc'),
+    const statusSection = this.createSettingsSection(workspace, t('mcpStatusSectionTitle'), {
+      description: t('mcpStatusSectionDesc'),
     });
-    const editorPanel = this.createSettingsPanel(mcpSection, t('mcpJsonEditor'), {
-      description: t('settingsAuto223'),
+    const serversSection = this.createSettingsSection(workspace, t('mcpServersSectionTitle'), {
+      description: t('mcpServersSectionDesc'),
     });
-    const pathHeader = pathPanel.createEl('div', {
-      cls: 'superpower-inside-mcp-collapsible-header',
-    });
-    const pathChevron = pathHeader.createEl('span', {
-      cls: 'superpower-inside-mcp-collapsible-chevron',
-      text: '▶',
-    });
-    pathHeader.createEl('span', {
-      cls: 'superpower-inside-mcp-collapsible-title',
-      text: t('mcpPathTitle'),
-    });
-    const pathContent = pathPanel.createDiv({
-      cls: 'superpower-inside-mcp-collapsible-content',
-    });
+    const environmentSection = this.createSettingsSection(
+      workspace,
+      t('mcpEnvironmentSectionTitle'),
+      { description: t('mcpEnvironmentSectionDesc') },
+    );
+    const environmentDetails = this.createSettingsDisclosure(
+      environmentSection.body,
+      'mcp-environment-details',
+      t('mcpEnvironmentDetailsTitle'),
+      t('mcpEnvironmentDetailsDesc'),
+    );
+    const pathContent = environmentDetails.content;
     if (Platform.isWin) {
       new Setting(pathContent)
         .setName(t('mcpIncludeWslPath'))
@@ -5291,7 +5288,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
         );
     }
-    const pathRow = pathContent.createDiv({ cls: 'superpower-inside-mcp-path-row' });
+    const pathRow = pathContent.createDiv({
+      cls: 'superpower-inside-mcp-path-row superpower-inside-settings-row',
+    });
     const pathText = pathRow.createEl('textarea', {
       cls: 'superpower-inside-mcp-json-editor',
       attr: { placeholder: t('mcpPathPlaceholder'), rows: '3' },
@@ -5334,28 +5333,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         new Notice(t('mcpJsonSaved'));
       })();
     });
-    pathHeader.addEventListener('click', () => {
-      const isExpanded = !pathContent.hasClass(HIDDEN_CLASS);
-      if (isExpanded) {
-        pathContent.addClass(HIDDEN_CLASS);
-        pathChevron.textContent = '▶';
-        pathHeader.removeClass('is-expanded');
-      } else {
-        pathContent.removeClass(HIDDEN_CLASS);
-        pathChevron.textContent = '▼';
-        pathHeader.addClass('is-expanded');
-      }
+    const statusBody = statusSection.body.createDiv({
+      cls: 'superpower-inside-mcp-status superpower-inside-settings-status-list',
     });
-    pathContent.addClass(HIDDEN_CLASS);
-    const statusSection = statusPanel.createDiv({ cls: 'superpower-inside-mcp-status' });
-    this.renderMCPStatus(statusSection);
+    this.renderMCPStatus(statusBody);
     this.unregisterMcpStatusEvent();
     this.mcpStatusEventRef = (this.app.workspace as unknown as Events).on(
       MCP_STATUS_CHANGE_EVENT,
       () => {
-        this.renderMCPStatus(statusSection);
+        this.renderMCPStatus(statusBody);
       },
     );
+    const editorPanel = serversSection.body;
     const lintStatus = editorPanel.createDiv({ cls: 'superpower-inside-mcp-lint-status' });
     lintStatus.setText('');
     const defaultJson = buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
@@ -5448,8 +5437,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             const errorDetails = saveResult.mcpErrors.map((err) => `• ${err}`).join('\n');
             new Notice(t('settingsAuto227', { v0: String(errorDetails) }), 10000);
           }
-          statusSection.empty();
-          this.renderMCPStatus(statusSection);
+          statusBody.empty();
+          this.renderMCPStatus(statusBody);
         } else {
           const detailedError = this.buildDetailedMcpError(result.error ?? '');
           lintStatus.setText(`❌ ${detailedError.short}`);
@@ -6929,18 +6918,46 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const servers = this.plugin.settings.mcpServers;
     const totalCount = servers.length;
     const connectedCount = registry?.getConnectedCount() ?? 0;
-    const statusBox = containerEl.createDiv({ cls: 'superpower-inside-mcp-status-box' });
-    const headerRow = statusBox.createDiv({ cls: 'superpower-inside-mcp-status-header-row' });
-    headerRow.createDiv({
-      cls: 'superpower-inside-mcp-status-title',
-      text: t('mcpConnectionHealth'),
+    const state = plugin.mcpConnectionState ?? 'idle';
+    const overallTone =
+      state === 'error'
+        ? 'danger'
+        : state === 'connecting' || state === 'partial-error'
+          ? 'warning'
+          : totalCount > 0 && connectedCount === totalCount
+            ? 'success'
+            : 'neutral';
+    const overallLabel =
+      totalCount === 0
+        ? t('mcpNoActiveServers')
+        : state === 'connecting'
+          ? t('mcpStatusConnecting')
+          : state === 'error'
+            ? t('mcpConnectionFailed')
+            : state === 'partial-error'
+              ? t('mcpPartialError')
+              : connectedCount === totalCount
+                ? t('mcpStatusConnected')
+                : t('mcpStatusDisconnected');
+    this.createSettingsStatusRow(containerEl, {
+      label: t('mcpConnectionHealth'),
+      value: `${connectedCount}/${totalCount}`,
+      statusLabel: overallLabel,
+      detail:
+        totalCount === 0
+          ? t('mcpStatusNoServersDetail')
+          : t('mcpStatusSummaryDetail', { connected: connectedCount, total: totalCount }),
+      tone: overallTone,
     });
-    const actionsRow = headerRow.createDiv({ cls: 'superpower-inside-mcp-status-actions' });
-    const refreshBtn = actionsRow.createEl('button', {
-      cls: 'superpower-inside-mcp-refresh-btn',
-      attr: { 'aria-label': t('settingsAuto269') },
+    const reconnectSetting = new Setting(containerEl)
+      .setName(t('mcpReconnect'))
+      .setDesc(t('mcpReconnectDesc'));
+    let refreshBtn: HTMLButtonElement | null = null;
+    reconnectSetting.addButton((button) => {
+      button.setButtonText(t('mcpReconnect')).setCta();
+      refreshBtn = button.buttonEl;
     });
-    setIcon(refreshBtn, 'refresh-cw');
+    if (!refreshBtn) return;
     this.mcpStatusRefresh = new RefreshAction({
       action: async (_signal) => {
         if (plugin.reconnectMCP) {
@@ -6966,29 +6983,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       errorNotice: false,
     });
     this.mcpStatusRefresh.attach(refreshBtn);
-    const countEl = statusBox.createDiv({ cls: 'superpower-inside-mcp-status-count' });
-    const state = plugin.mcpConnectionState ?? 'idle';
-    const statusText =
-      state === 'connecting'
-        ? `${t('mcpConnecting')} | ${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
-        : state === 'partial-error'
-          ? `${t('mcpPartialError')} | ${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
-          : state === 'error'
-            ? `${t('mcpConnectionFailed')} | ${t('totalLabel')}: ${totalCount}`
-            : registry
-              ? `${t('mcpConnected')}: ${connectedCount} | ${t('totalLabel')}: ${totalCount}`
-              : t('mcpTotalActive', { count: connectedCount, total: totalCount });
-    countEl.setText(statusText);
     if (totalCount > 0) {
-      const list = statusBox.createDiv({ cls: 'superpower-inside-mcp-status-list' });
+      const list = containerEl.createDiv({ cls: 'superpower-inside-settings-status-list' });
       for (const server of servers) {
-        const item = list.createDiv({ cls: 'superpower-inside-mcp-status-item' });
         let status: MCPServerConnectionStatus = 'disconnected';
         if (registry) {
           status = registry.getConnectionStatus(server.name);
         }
-        item.createDiv({ cls: `superpower-inside-mcp-status-dot ${status}` });
-        item.createSpan({ text: server.name, cls: 'superpower-inside-mcp-status-name' });
         const labelText =
           status === 'connected'
             ? t('mcpStatusConnected')
@@ -6997,17 +6998,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               : status === 'error'
                 ? t('mcpStatusError')
                 : t('mcpStatusDisconnected');
-        item.createSpan({
-          text: labelText,
-          cls: `superpower-inside-mcp-status-label ${status}`,
-        });
         const error = registry?.getLastError(server.name);
-        if (error) {
-          item.createDiv({
-            text: error,
-            cls: 'superpower-inside-mcp-status-error-detail',
-          });
-        }
+        this.createSettingsStatusRow(list, {
+          label: server.name,
+          value: server.command,
+          statusLabel: labelText,
+          detail: error ?? t('mcpStatusServerDetail'),
+          tone:
+            status === 'connected'
+              ? 'success'
+              : status === 'error'
+                ? 'danger'
+                : status === 'connecting'
+                  ? 'warning'
+                  : 'neutral',
+        });
       }
     }
   }

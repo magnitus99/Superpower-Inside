@@ -71,6 +71,18 @@ export interface I18nKeys {
   chatToolDetailsTitle: string;
   chatToolDetailsDesc: string;
   chatAlwaysAutoWarning: string;
+  mcpStatusSectionTitle: string;
+  mcpStatusSectionDesc: string;
+  mcpServersSectionTitle: string;
+  mcpServersSectionDesc: string;
+  mcpEnvironmentSectionTitle: string;
+  mcpEnvironmentSectionDesc: string;
+  mcpEnvironmentDetailsTitle: string;
+  mcpEnvironmentDetailsDesc: string;
+  mcpStatusNoServersDetail: string;
+  mcpStatusSummaryDetail: string;
+  mcpReconnectDesc: string;
+  mcpStatusServerDetail: string;
   loggingMinLevel: string;
   loggingMirrorConsole: string;
   loggingMaxEntries: string;
@@ -1570,6 +1582,18 @@ const ko: I18nKeys = {
   chatToolDetailsDesc: '모델이 요청된 도구를 사용하지 않았을 때의 재시도를 조정합니다.',
   chatAlwaysAutoWarning:
     '항상 자동 실행을 선택하면 멘션하지 않은 일반 MCP 도구도 별도 승인 없이 실행될 수 있습니다.',
+  mcpStatusSectionTitle: '현재 연결',
+  mcpStatusSectionDesc: 'MCP 서버 연결 상태와 필요한 복구 행동을 확인합니다.',
+  mcpServersSectionTitle: '서버 설정',
+  mcpServersSectionDesc: '표준 mcpServers JSON으로 사용할 서버를 관리합니다.',
+  mcpEnvironmentSectionTitle: '실행 환경',
+  mcpEnvironmentSectionDesc: '서버 명령을 찾는 데 필요한 로컬 실행 환경을 관리합니다.',
+  mcpEnvironmentDetailsTitle: '실행 환경 세부 조정',
+  mcpEnvironmentDetailsDesc: 'PATH 자동 탐지와 수동 값을 문제 해결이 필요할 때 조정합니다.',
+  mcpStatusNoServersDetail: '서버 설정에 mcpServers 항목을 추가하면 연결을 시작합니다.',
+  mcpStatusSummaryDetail: '전체 {total}개 중 {connected}개 서버가 연결되어 있습니다.',
+  mcpReconnectDesc: '현재 서버 설정으로 연결을 다시 시도합니다.',
+  mcpStatusServerDetail: '현재 서버 명령과 연결 상태입니다.',
   loggingMinLevel: '최소 로그 레벨',
   loggingMirrorConsole: '콘솔에도 출력',
   loggingMaxEntries: '로그 보존 개수',
@@ -3153,6 +3177,18 @@ const en: I18nKeys = {
   chatToolDetailsDesc: 'Adjust retries when the model does not use a requested tool.',
   chatAlwaysAutoWarning:
     'Always auto-run can execute normal MCP tools that were not mentioned without separate approval.',
+  mcpStatusSectionTitle: 'Current connections',
+  mcpStatusSectionDesc: 'Check MCP server connections and the nearest recovery action.',
+  mcpServersSectionTitle: 'Server setup',
+  mcpServersSectionDesc: 'Manage available servers with standard mcpServers JSON.',
+  mcpEnvironmentSectionTitle: 'Runtime environment',
+  mcpEnvironmentSectionDesc: 'Manage the local environment used to find server commands.',
+  mcpEnvironmentDetailsTitle: 'Runtime environment details',
+  mcpEnvironmentDetailsDesc: 'Adjust PATH detection and manual values only when troubleshooting.',
+  mcpStatusNoServersDetail: 'Add an mcpServers entry in Server setup to begin connecting.',
+  mcpStatusSummaryDetail: '{connected} of {total} servers are connected.',
+  mcpReconnectDesc: 'Try connecting again with the current server setup.',
+  mcpStatusServerDetail: 'Current server command and connection state.',
   loggingMinLevel: 'Minimum log level',
   loggingMirrorConsole: 'Mirror to console',
   loggingMaxEntries: 'Retained log entries',
