@@ -145,6 +145,10 @@ obsidian vault=".test-vault" dev:screenshot path=/tmp/superpower-inside-ui.png
 | General 상태 | Provider·검색·MCP·채팅 상태가 평평한 행으로 읽히고 primary action이 하나인지 |
 | General 진단 | 접힌 상태에서 사용 여부가 보이고, 펼쳤을 때 경로·기록·정리 작업이 잘리지 않는지 |
 | General 복구 | 저장 세부값과 전체 초기화가 기본 흐름에서 접혀 있고 위험 설명 뒤에만 버튼이 보이는지 |
+| Providers 상태 | 전체·활성·준비 상태와 첫 설정 필요 행동, 추가 행동의 위계가 명확한지 |
+| Providers 연결 | 한 번에 하나의 provider만 펼쳐지고 연결 설정과 상태가 평평하게 읽히는지 |
+| Providers 모델 | 일반·임베딩 모델 추가, 가져오기, 검증, 삭제가 긴 ID에서도 잘리지 않는지 |
+| Providers 위험 | 제거가 마지막 danger disclosure와 확인 modal 뒤에만 노출되는지 |
 | Chat 현재 동작 | 활성 프롬프트·자동 저장·도구 정책이 상태와 근거 문장으로 요약되는지 |
 | Chat 세부 조정 | 프리셋·초기화, 저장 지연, 도구 재시도가 disclosure 안에서만 노출되는지 |
 | Chat 도구 정책 | 항상 자동 실행에서 warning이 보이고 다른 정책에서는 사라지는지 |

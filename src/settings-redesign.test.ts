@@ -318,38 +318,45 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('private resetRagDomReferences(): void');
   });
 
-  it('Providers 탭은 간결한 연결 요약과 세로 카드 목록으로 빠르게 훑을 수 있다', () => {
-    const methodStart = settingsSource.indexOf('private buildProviderProfilesTab(');
-    const methodEnd = settingsSource.indexOf('\n  private buildProviderProfileCard', methodStart);
+  it('Providers 탭은 현재 상태와 연결 목록 순서로 공통 workspace를 사용한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProvidersTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildRAGTab', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-provider-summary-bar');
-    expect(methodSource).toContain('superpower-inside-provider-grid');
-    expect(methodSource).toContain("t('providerSummaryLine'");
-    expect(methodSource).toContain('this.expandedProviderProfileId = id');
-
-    expect(styles).toContain('.superpower-inside-provider-summary-bar');
-    expect(styles).toContain('.superpower-inside-provider-grid');
+    expect(methodSource).toContain('superpower-inside-settings-workspace');
+    expect(methodSource).toContain('superpower-inside-provider-workspace');
+    expect(methodSource).toContain('buildProviderStatusSection');
+    expect(methodSource).toContain('buildProviderConnectionsSection');
+    expect(methodSource.indexOf('buildProviderStatusSection')).toBeLessThan(
+      methodSource.indexOf('buildProviderConnectionsSection'),
+    );
   });
 
-  it('Providers 탭은 동시에 하나의 카드만 펼쳐 설정 밀도를 낮춘다', () => {
-    const cardStart = settingsSource.indexOf('private buildProviderProfileCard(');
+  it('Providers 상태는 첫 attention만 primary action으로 표시하고 추가 행동을 유지한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderStatusSection(');
+    const methodEnd = settingsSource.indexOf('\n  private buildProviderConnectionsSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain('createSettingsSection');
+    expect(methodSource).toContain('createSettingsStatusRow');
+    expect(methodSource).toContain('createSettingsActionRow');
+    expect(methodSource).toContain('const firstAttention = profiles.find');
+    expect(methodSource).toContain('createProviderProfile');
+    expect(methodSource).not.toContain('superpower-inside-provider-summary-bar');
+  });
+
+  it('Provider 목록은 공통 disclosure로 동시에 하나만 펼친다', () => {
+    const cardStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
     const cardEnd = settingsSource.indexOf('\n  private getProviderProfileTone', cardStart);
     const cardSource = settingsSource.slice(cardStart, cardEnd);
-    const refreshStart = settingsSource.indexOf('private refreshProviderProfileExpansion(');
-    const refreshEnd = settingsSource.indexOf(
-      '\n  private buildProviderStrategySelector',
-      refreshStart,
-    );
-    const refreshSource = settingsSource.slice(refreshStart, refreshEnd);
 
-    expect(cardSource).toContain(
-      'this.expandedProviderProfileId === profile.id ? null : profile.id',
-    );
-    expect(cardSource).toContain('this.refreshProviderProfileExpansion(containerEl)');
-    expect(refreshSource).toContain('key === this.expandedProviderProfileId');
-    expect(refreshSource).toContain("setAttribute('aria-expanded', String(expanded))");
+    expect(cardSource).toContain('createSettingsDisclosure');
+    expect(cardSource).toContain('this.expandedProviderProfileId === profile.id ? null : profile.id');
+    expect(cardSource).toContain('this.refreshProviderProfileDisclosures(containerEl)');
+    expect(cardSource).toContain("'aria-expanded'");
+    expect(cardSource).not.toContain('superpower-inside-provider-shell');
+    expect(cardSource).not.toContain('superpower-inside-provider-hero');
   });
 
   it('Provider 모델 관리는 수동 추가 composer와 원격 가져오기 액션을 분리한다', () => {
@@ -361,9 +368,9 @@ describe('설정 화면 리디자인 구조', () => {
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-provider-model-section-header');
-    expect(methodSource).toContain('superpower-inside-provider-model-toolbar');
-    expect(methodSource).toContain('superpower-inside-provider-model-sync-btn');
+    expect(methodSource).toContain('superpower-inside-provider-model-group');
+    expect(methodSource).toContain('superpower-inside-provider-model-group-header');
+    expect(methodSource).toContain('superpower-inside-provider-model-fetch-btn');
     expect(methodSource).toContain('superpower-inside-provider-model-add-row');
     expect(methodSource).toContain('superpower-inside-provider-model-add-input');
     expect(methodSource).toContain('superpower-inside-provider-model-add-btn');
@@ -376,66 +383,27 @@ describe('설정 화면 리디자인 구조', () => {
     const composerSource = methodSource.slice(controlsStart, listStart);
 
     expect(composerSource).not.toContain('fetchProviderModelsForStrategy');
-    expect(styles).toContain('.superpower-inside-provider-model-section-header');
-    expect(styles).toContain('.superpower-inside-provider-model-toolbar');
+    expect(styles).toContain('.superpower-inside-provider-model-group');
+    expect(styles).toContain('.superpower-inside-provider-model-group-header');
     expect(styles).toContain('.superpower-inside-provider-model-add-row');
     expect(styles).toContain('.superpower-inside-provider-model-add-btn:disabled');
   });
 
-  it('Provider 카드는 상태와 모델 수를 요약하고 민감한 키를 기본 마스킹한다', () => {
-    const methodStart = settingsSource.indexOf('private buildProviderProfileCard(');
+  it('Provider disclosure는 연결, 모델, 위험 작업 순서와 API key 마스킹을 유지한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
     const methodEnd = settingsSource.indexOf('\n  private getProviderProfileTone', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-provider-shell');
-    expect(methodSource).toContain('superpower-inside-provider-hero');
-    expect(methodSource).toContain('superpower-inside-provider-status-token');
+    expect(methodSource).toContain('buildProviderConnectionSettings');
+    expect(methodSource).toContain('buildProviderProfileModelSection');
+    expect(methodSource).toContain("'provider-danger'");
     expect(methodSource).toContain("t('providerModelCountLine'");
     expect(methodSource).toContain("text.inputEl.type = 'password'");
     expect(methodSource).toContain("setTooltip(t('providerApiKeyShow'))");
-    expect(methodSource).toContain("profile.strategy !== 'ternlight'");
-    expect(methodSource).toContain('aria-expanded');
-    expect(methodSource).toContain('aria-controls');
-
-    expect(styles).toContain('.superpower-inside-provider-status-token.is-ready');
-    expect(styles).toContain('.superpower-inside-provider-status-token.is-needs-key');
-    expect(styles).toContain('.superpower-inside-provider-status-token.is-needs-models');
-  });
-
-  it('Provider 카드는 중간 폭에서 2열 빈 칸을 만들지 않는 full-width 목록으로 배치한다', () => {
-    const gridRule = styles.match(/\.superpower-inside-provider-grid\s*\{(?<body>[\s\S]*?)\n\}/);
-
-    expect(gridRule?.groups?.body).toContain('display: flex');
-    expect(gridRule?.groups?.body).toContain('flex-direction: column');
-    expect(gridRule?.groups?.body).not.toContain('auto-fit');
-    expect(gridRule?.groups?.body).not.toContain('repeat(2');
-    expect(gridRule?.groups?.body).not.toContain('minmax(280px, 1fr)');
-    expect(styles).not.toMatch(
-      /@media[\s\S]*\.superpower-inside-provider-grid\s*,[\s\S]*grid-template-columns:\s*1fr/,
-    );
-  });
-
-  it('Provider 카드 기본 레이아웃은 Obsidian 설정 모달의 좁은 content 폭에서도 눌리지 않는다', () => {
-    const heroRule = styles.match(/\.superpower-inside-provider-hero\s*\{(?<body>[\s\S]*?)\n\}/);
-    const bodyRule = styles.match(
-      /(?:^|\n)\.superpower-inside-provider-body\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const summaryRule = styles.match(
-      /\.superpower-inside-provider-summary-bar\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-
-    expect(heroRule?.groups?.body).toContain('grid-template-columns: auto minmax(0, 1fr) auto');
-    expect(heroRule?.groups?.body).toContain('min-height: 78px');
-    expect(heroRule?.groups?.body).not.toContain('auto minmax(0, 1fr) auto auto auto');
-    expect(bodyRule?.groups?.body).toContain('grid-template-columns: 1fr');
-    expect(bodyRule?.groups?.body).not.toContain('minmax(220px, 0.8fr) minmax(320px, 1.2fr)');
-    expect(bodyRule?.groups?.body).toContain('grid-template-areas:');
-    expect(bodyRule?.groups?.body).toMatch(/['"]quick['"]/);
-    expect(bodyRule?.groups?.body).toMatch(/['"]actions['"]/);
-    expect(bodyRule?.groups?.body).toMatch(/['"]models['"]/);
-    expect(summaryRule?.groups?.body).toContain('display: flex');
-    expect(summaryRule?.groups?.body).toContain('justify-content: space-between');
+    expect(settingsSource).toContain("confirmWithModal(this.app, t('providerRemoveConfirm'");
+    expect(styles).toContain('.superpower-inside-provider-profile-content');
+    expect(styles).toContain('@container superpower-inside-settings (max-width: 520px)');
   });
 
   it('설정 탭은 키보드 이동과 tab/tabpanel 관계를 제공한다', () => {
@@ -452,68 +420,6 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain("event.key === 'End'");
   });
 
-  it('Provider 접힘 카드는 펼침 카드와 다른 2줄 compact header로 잘림을 피한다', () => {
-    const collapsedHeroRule = styles.match(
-      /\.superpower-inside-provider-card\.is-collapsed \.superpower-inside-provider-hero\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const collapsedIconRule = styles.match(
-      /\.superpower-inside-provider-card\.is-collapsed \.superpower-inside-provider-brand-icon\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const collapsedStatusRule = styles.match(
-      /\.superpower-inside-provider-card\.is-collapsed \.superpower-inside-provider-status-token\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const collapsedPreviewRule = styles.match(
-      /\.superpower-inside-provider-card\.is-collapsed \.superpower-inside-provider-model-preview\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-
-    expect(collapsedHeroRule?.groups?.body).toContain('grid-template-areas:');
-    expect(collapsedHeroRule?.groups?.body).toMatch(/['"]icon copy status chevron['"]/);
-    expect(collapsedHeroRule?.groups?.body).toMatch(/['"]icon copy preview chevron['"]/);
-    expect(collapsedHeroRule?.groups?.body).toContain(
-      'grid-template-columns: auto minmax(0, 1fr) auto auto',
-    );
-    expect(collapsedHeroRule?.groups?.body).toContain(
-      'grid-template-rows: minmax(22px, auto) minmax(22px, auto)',
-    );
-    expect(collapsedHeroRule?.groups?.body).toContain('align-content: center');
-    expect(collapsedHeroRule?.groups?.body).toContain('min-height: 72px');
-    expect(collapsedIconRule?.groups?.body).toContain('grid-area: icon');
-    expect(collapsedStatusRule?.groups?.body).toContain('grid-area: status');
-    expect(collapsedStatusRule?.groups?.body).toContain('min-height: 22px');
-    expect(collapsedStatusRule?.groups?.body).toContain('align-self: center');
-    expect(collapsedPreviewRule?.groups?.body).toContain('grid-area: preview');
-    expect(collapsedPreviewRule?.groups?.body).toContain('justify-content: flex-end');
-    expect(collapsedPreviewRule?.groups?.body).toContain('flex-wrap: nowrap');
-    expect(collapsedPreviewRule?.groups?.body).toContain('overflow: hidden');
-  });
-
-  it('Provider 펼침 영역은 중첩 카드보다 정돈된 설정 surface로 보인다', () => {
-    const expandedHeroRule = styles.match(
-      /\.superpower-inside-provider-card\.is-expanded \.superpower-inside-provider-hero\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const bodyRule = styles.match(
-      /(?:^|\n)\.superpower-inside-provider-body\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const quickFactRule = styles.match(
-      /\.superpower-inside-provider-quick-fact\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const sectionRule = styles.match(
-      /\.superpower-inside-provider-connection-panel,\n\.superpower-inside-provider-model-shell\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-    const expandedPreviewRule = styles.match(
-      /\.superpower-inside-provider-card\.is-expanded \.superpower-inside-provider-model-preview\s*\{(?<body>[\s\S]*?)\n\}/,
-    );
-
-    expect(expandedHeroRule?.groups?.body).toContain('background: var(--background-secondary)');
-    expect(expandedHeroRule?.groups?.body).toContain('border-bottom: 1px solid');
-    expect(expandedPreviewRule?.groups?.body).toContain('display: none');
-    expect(bodyRule?.groups?.body).toContain('gap: 0');
-    expect(bodyRule?.groups?.body).toContain('background: var(--background-primary)');
-    expect(quickFactRule?.groups?.body).toContain('border: 0');
-    expect(quickFactRule?.groups?.body).toContain('background: transparent');
-    expect(sectionRule?.groups?.body).toContain('border: 0');
-    expect(sectionRule?.groups?.body).toContain('background: transparent');
-  });
 
   it('integrated logs are owned by Agent Diagnostics instead of a standalone Obsidian view', () => {
     expect(settingsSource).not.toContain("| 'logs'");

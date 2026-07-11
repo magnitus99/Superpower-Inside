@@ -973,6 +973,24 @@ export interface I18nKeys {
   providerConnectionTitle: string;
   providerSummaryLine: string;
   providerSummaryNoProfiles: string;
+  providerStatusSectionTitle: string;
+  providerStatusSectionDesc: string;
+  providerStatusNone: string;
+  providerStatusNeedsSetup: string;
+  providerStatusSummaryDetail: string;
+  providerAttentionTitle: string;
+  providerContinueSetup: string;
+  providerAddTitle: string;
+  providerAddDesc: string;
+  providerConnectionsSectionTitle: string;
+  providerConnectionsSectionDesc: string;
+  providerConnectionsEmpty: string;
+  providerNewName: string;
+  providerDangerTitle: string;
+  providerDangerDesc: string;
+  providerRemoveWarning: string;
+  providerRemoveConfirm: string;
+  providerRemoved: string;
   providerModelCountLine: string;
   providerApiKeyShow: string;
   providerApiKeyHide: string;
@@ -2534,6 +2552,24 @@ const ko: I18nKeys = {
   providerSummaryLine:
     '{ready}개 사용 가능 · {attention}개 확인 필요 · 채팅 {general} · 임베딩 {embedding}',
   providerSummaryNoProfiles: '연결된 프로바이더가 없습니다.',
+  providerStatusSectionTitle: '현재 상태',
+  providerStatusSectionDesc: '채팅과 검색에 사용할 프로바이더의 준비 상태를 확인합니다.',
+  providerStatusNone: '아직 없음',
+  providerStatusNeedsSetup: '{count}개 설정 필요',
+  providerStatusSummaryDetail: '전체 {total}개 중 {enabled}개 활성, {ready}개 준비됨',
+  providerAttentionTitle: '{provider} 설정을 마무리하세요',
+  providerContinueSetup: '설정 계속',
+  providerAddTitle: '새 프로바이더 연결',
+  providerAddDesc: 'OpenAI, Claude, Ollama 또는 OpenAI 호환 서버를 추가합니다.',
+  providerConnectionsSectionTitle: '연결 목록',
+  providerConnectionsSectionDesc: '프로바이더를 펼쳐 연결 정보와 사용할 모델을 관리합니다.',
+  providerConnectionsEmpty: '연결된 프로바이더가 없습니다. 위에서 새 연결을 추가하세요.',
+  providerNewName: '새 프로바이더',
+  providerDangerTitle: '프로바이더 제거',
+  providerDangerDesc: '이 연결과 저장된 모델 설정을 삭제합니다.',
+  providerRemoveWarning: '{provider} 연결과 모델 목록이 설정에서 제거됩니다.',
+  providerRemoveConfirm: '{provider} 프로바이더를 제거할까요?',
+  providerRemoved: '{provider} 프로바이더를 제거했습니다.',
   providerModelCountLine: '{provider} · 채팅 {general} · 임베딩 {embedding}',
   providerApiKeyShow: 'API 키 보기',
   providerApiKeyHide: 'API 키 숨기기',
@@ -4170,6 +4206,24 @@ const en: I18nKeys = {
   providerSummaryLine:
     '{ready} ready · {attention} need attention · {general} chat · {embedding} embedding',
   providerSummaryNoProfiles: 'No providers are connected.',
+  providerStatusSectionTitle: 'Current status',
+  providerStatusSectionDesc: 'Check whether providers for chat and search are ready.',
+  providerStatusNone: 'None yet',
+  providerStatusNeedsSetup: '{count} need setup',
+  providerStatusSummaryDetail: '{enabled} of {total} enabled, {ready} ready',
+  providerAttentionTitle: 'Finish setting up {provider}',
+  providerContinueSetup: 'Continue setup',
+  providerAddTitle: 'Connect a new provider',
+  providerAddDesc: 'Add OpenAI, Claude, Ollama, or an OpenAI-compatible server.',
+  providerConnectionsSectionTitle: 'Connections',
+  providerConnectionsSectionDesc: 'Expand a provider to manage its connection and models.',
+  providerConnectionsEmpty: 'No providers are connected. Add a new connection above.',
+  providerNewName: 'New provider',
+  providerDangerTitle: 'Remove provider',
+  providerDangerDesc: 'Delete this connection and its saved model settings.',
+  providerRemoveWarning: '{provider} and its model list will be removed from settings.',
+  providerRemoveConfirm: 'Remove the {provider} provider?',
+  providerRemoved: 'Removed the {provider} provider.',
   providerModelCountLine: '{provider} · {general} chat · {embedding} embedding',
   providerApiKeyShow: 'Show API key',
   providerApiKeyHide: 'Hide API key',

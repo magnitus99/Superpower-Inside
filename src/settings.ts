@@ -2176,7 +2176,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
-    this.buildProviderProfilesTab(containerEl);
+    containerEl.empty();
+    const workspace = containerEl.createDiv({
+      cls: 'superpower-inside-settings-workspace superpower-inside-provider-workspace',
+    });
+    const profiles = this.plugin.settings.providerProfiles.filter(
+      (profile) => profile.strategy !== 'ternlight',
+    );
+    this.buildProviderStatusSection(workspace, profiles);
+    this.buildProviderConnectionsSection(workspace, profiles);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
     const workspace = containerEl.createDiv({
@@ -5518,143 +5526,201 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       icon: 'info',
     });
   }
-  private buildProviderProfilesTab(containerEl: HTMLElement): void {
-    const profiles = this.plugin.settings.providerProfiles.filter(
-      (profile) => profile.strategy !== 'ternlight',
-    );
+  private buildProviderStatusSection(
+    containerEl: HTMLElement,
+    profiles: readonly ProviderProfileConfig[],
+  ): void {
     const readyCount = profiles.filter(
       (profile) => this.getProviderProfileTone(profile) === 'ready',
     ).length;
+    const enabledCount = profiles.filter((profile) => profile.enabled).length;
     const attentionCount = profiles.filter((profile) => {
       const tone = this.getProviderProfileTone(profile);
       return tone === 'needs-key' || tone === 'needs-models';
     }).length;
-    const generalModelCount = profiles.reduce(
-      (count, profile) => count + profile.models.filter((model) => model.kind === 'general').length,
-      0,
-    );
-    const embeddingModelCount = profiles.reduce(
-      (count, profile) =>
-        count + profile.models.filter((model) => model.kind === 'embedding').length,
-      0,
-    );
-
-    const commandCenter = containerEl.createDiv({ cls: 'superpower-inside-provider-summary-bar' });
-    const commandCopy = commandCenter.createDiv({
-      cls: 'superpower-inside-providers-command-copy',
+    const firstAttention = profiles.find((profile) => {
+      const tone = this.getProviderProfileTone(profile);
+      return tone === 'needs-key' || tone === 'needs-models';
     });
-    commandCopy.createDiv({
-      cls: 'superpower-inside-providers-command-title',
-      text: t('providerConnectionTitle'),
+    const firstAttentionName = firstAttention
+      ? firstAttention.name.trim() || PROVIDER_STRATEGY_LABELS[firstAttention.strategy]
+      : '';
+    const section = this.createSettingsSection(containerEl, t('providerStatusSectionTitle'), {
+      description: t('providerStatusSectionDesc'),
     });
-    commandCopy.createDiv({
-      cls: 'superpower-inside-providers-command-desc',
-      text:
+    this.createSettingsStatusRow(section.body, {
+      label: t('providerConnectionTitle'),
+      value: `${readyCount}/${enabledCount}`,
+      statusLabel:
+        profiles.length === 0
+          ? t('providerStatusNone')
+          : attentionCount > 0
+            ? t('providerStatusNeedsSetup', { count: attentionCount })
+            : enabledCount === 0
+              ? t('providerStatusOff')
+              : t('providerStatusReady'),
+      detail:
         profiles.length === 0
           ? t('providerSummaryNoProfiles')
-          : t('providerSummaryLine', {
-              ready: String(readyCount),
-              attention: String(attentionCount),
-              general: String(generalModelCount),
-              embedding: String(embeddingModelCount),
+          : t('providerStatusSummaryDetail', {
+              total: profiles.length,
+              enabled: enabledCount,
+              ready: readyCount,
             }),
+      tone:
+        attentionCount > 0 ? 'warning' : readyCount > 0 ? 'success' : 'neutral',
     });
-    const toolbar = commandCenter.createDiv({ cls: 'superpower-inside-providers-toolbar' });
-    const addButton = toolbar.createEl('button', {
-      cls: 'superpower-inside-provider-toolbar-btn',
-      attr: { type: 'button' },
-    });
-    setIcon(addButton, 'plus');
-    addButton.createSpan({ text: t('settingsAuto268') });
-    addButton.addEventListener('click', () => {
-      const id = this.createProviderProfileId();
-      this.plugin.settings.providerProfiles.push({
-        id,
-        name: 'New provider',
-        strategy: 'openAICompatible',
-        apiKey: '',
-        baseUrl: '',
-        enabled: false,
-        models: [],
-        useRequestUrl: true,
+    if (firstAttention) {
+      const tone = this.getProviderProfileTone(firstAttention);
+      this.createSettingsActionRow(section.body, {
+        label: t('providerAttentionTitle', { provider: firstAttentionName }),
+        detail:
+          tone === 'needs-key'
+            ? t('providerSummaryNeedsKey')
+            : t('providerSummaryNeedsModels'),
+        actionLabel: t('providerContinueSetup'),
+        tone: 'warning',
+        onActivate: () => {
+          this.expandedProviderProfileId = firstAttention.id;
+          this.refreshProvidersTab();
+        },
       });
-      this.expandedProviderProfileId = id;
-      this.debouncedSave();
-      this.renderSettingsView();
-    });
+    }
+    new Setting(section.body)
+      .setName(t('providerAddTitle'))
+      .setDesc(t('providerAddDesc'))
+      .addButton((button) => {
+        button.setButtonText(t('settingsAuto268'));
+        if (!firstAttention) button.setCta();
+        button.onClick(() => this.createProviderProfile());
+      });
+  }
 
-    const providerGrid = containerEl.createDiv({ cls: 'superpower-inside-provider-grid' });
+  private buildProviderConnectionsSection(
+    containerEl: HTMLElement,
+    profiles: readonly ProviderProfileConfig[],
+  ): void {
+    const section = this.createSettingsSection(containerEl, t('providerConnectionsSectionTitle'), {
+      description: t('providerConnectionsSectionDesc'),
+    });
+    if (profiles.length === 0) {
+      this.createSettingsNotice(section.body, {
+        text: t('providerConnectionsEmpty'),
+        tone: 'info',
+        icon: 'plug-zap',
+      });
+      return;
+    }
+    const list = section.body.createDiv({ cls: 'superpower-inside-provider-connection-list' });
     for (const profile of profiles) {
-      this.buildProviderProfileCard(providerGrid, profile);
+      this.buildProviderProfileDisclosure(list, profile);
     }
   }
 
-  private buildProviderProfileCard(containerEl: HTMLElement, profile: ProviderProfileConfig): void {
-    const isCollapsed = this.expandedProviderProfileId !== profile.id;
+  private buildProviderProfileDisclosure(
+    containerEl: HTMLElement,
+    profile: ProviderProfileConfig,
+  ): void {
     const tone = this.getProviderProfileTone(profile);
-    const section = containerEl.createDiv({
-      cls: `superpower-inside-provider-shell superpower-inside-provider-card is-${tone} ${isCollapsed ? 'is-collapsed' : 'is-expanded'}`,
-    });
-    section.setAttribute('data-provider-key', `profile:${profile.id}`);
-    const bodyId = `superpower-inside-provider-${profile.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-    const hero = section.createEl('button', {
-      cls: 'superpower-inside-provider-hero',
-      attr: {
-        type: 'button',
-        'aria-expanded': String(!isCollapsed),
-        'aria-controls': bodyId,
-      },
-    });
-    const brandIcon = hero.createSpan({ cls: 'superpower-inside-provider-brand-icon' });
-    setIcon(
-      brandIcon,
-      tone === 'ready' ? 'badge-check' : profile.enabled ? 'circle-alert' : 'power-off',
-    );
-    const titleCopy = hero.createSpan({ cls: 'superpower-inside-provider-title-copy' });
-    titleCopy.createSpan({
-      cls: 'superpower-inside-provider-title-text',
-      text: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
-    });
-    titleCopy.createSpan({
-      cls: 'superpower-inside-provider-subtitle',
-      text: t('providerModelCountLine', {
+    const disclosure = this.createSettingsDisclosure(
+      containerEl,
+      `provider-${profile.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+      profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      t('providerModelCountLine', {
         provider: PROVIDER_STRATEGY_LABELS[profile.strategy],
         general: String(profile.models.filter((model) => model.kind === 'general').length),
         embedding: String(profile.models.filter((model) => model.kind === 'embedding').length),
       }),
-    });
-    const statusToken = hero.createSpan({
-      cls: `superpower-inside-provider-status-token is-${tone}`,
+      { idPrefix: 'superpower-inside-provider-disclosure' },
+    );
+    const root = disclosure.button.parentElement;
+    root?.addClass('superpower-inside-provider-disclosure');
+    root?.setAttribute('data-provider-key', profile.id);
+    const icon = disclosure.button.querySelector('.superpower-inside-settings-disclosure-icon');
+    const status = disclosure.button.createSpan({
+      cls: `superpower-inside-provider-disclosure-status is-${tone}`,
       text: this.getProviderProfileStatusLabel(tone),
     });
-    statusToken.setAttribute('aria-live', 'polite');
-    const chevron = hero.createSpan({ cls: 'superpower-inside-provider-chevron' });
-    setIcon(chevron, 'chevron-right');
-    hero.addEventListener('click', () => {
+    status.setAttribute('aria-live', 'polite');
+    if (icon) disclosure.button.insertBefore(status, icon);
+    disclosure.content.addClass('superpower-inside-provider-profile-content');
+    disclosure.button.addEventListener('click', () => {
       this.expandedProviderProfileId =
         this.expandedProviderProfileId === profile.id ? null : profile.id;
-      this.refreshProviderProfileExpansion(containerEl);
+      this.refreshProviderProfileDisclosures(containerEl);
     });
+    if (this.expandedProviderProfileId === profile.id) {
+      disclosure.button.setAttribute('aria-expanded', 'true');
+      root?.addClass('is-open');
+      disclosure.content.removeClass('is-collapsed');
+    }
+    if (tone === 'needs-key' || tone === 'needs-models') {
+      this.createSettingsNotice(disclosure.content, {
+        text: tone === 'needs-key' ? t('providerSummaryNeedsKey') : t('providerSummaryNeedsModels'),
+        tone: 'warning',
+        icon: tone === 'needs-key' ? 'key-round' : 'list-plus',
+      });
+    }
+    this.buildProviderConnectionSettings(disclosure.content, profile);
+    if (profile.strategy !== 'ternlight') {
+      this.buildProviderProfileModelSection(
+        disclosure.content,
+        profile,
+        'general',
+        this.getProviderStatusElement(disclosure.content),
+      );
+    }
+    this.buildProviderProfileModelSection(
+      disclosure.content,
+      profile,
+      'embedding',
+      this.getProviderStatusElement(disclosure.content),
+    );
+    const danger = this.createSettingsDisclosure(
+      disclosure.content,
+      'provider-danger',
+      t('providerDangerTitle'),
+      t('providerDangerDesc'),
+      { idPrefix: `superpower-inside-provider-${profile.id}` },
+    );
+    danger.button.addClass('is-danger');
+    const profileName = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    this.createSettingsNotice(danger.content, {
+      text: t('providerRemoveWarning', { provider: profileName }),
+      tone: 'danger',
+      icon: 'triangle-alert',
+    });
+    const dangerActions = danger.content.createDiv({
+      cls: 'superpower-inside-settings-danger-actions',
+    });
+    const removeButton = dangerActions.createEl('button', {
+      cls: 'superpower-inside-settings-danger-button',
+      attr: { type: 'button' },
+    });
+    setIcon(removeButton, 'trash-2');
+    removeButton.createSpan({ text: t('settingsAuto267') });
+    removeButton.addEventListener('click', () => {
+      void this.removeProviderProfile(profile, removeButton);
+    });
+  }
 
-    const body = section.createDiv({
-      cls: 'superpower-inside-provider-body superpower-inside-provider-profile-body',
-    });
-    body.id = bodyId;
-    const connectionSection = body.createDiv({
-      cls: 'superpower-inside-provider-section superpower-inside-provider-connection-panel',
-    });
-    connectionSection.createDiv({
-      cls: 'superpower-inside-provider-section-title',
+  private buildProviderConnectionSettings(
+    containerEl: HTMLElement,
+    profile: ProviderProfileConfig,
+  ): void {
+    const group = containerEl.createDiv({ cls: 'superpower-inside-provider-connection-group' });
+    group.createDiv({
+      cls: 'superpower-inside-provider-group-title',
       text: t('providerConnectionSection'),
     });
-    new Setting(connectionSection).setName(t('enabled')).addToggle((toggle) =>
+    new Setting(group).setName(t('enabled')).addToggle((toggle) =>
       toggle.setValue(profile.enabled).onChange((value) => {
         profile.enabled = value;
         this.debouncedSave();
         this.renderSettingsView();
       }),
     );
-    new Setting(connectionSection).setName(t('settingsAuto244')).addText((text) =>
+    new Setting(group).setName(t('settingsAuto244')).addText((text) =>
       text
         .setPlaceholder(t('settingsAuto245'))
         .setValue(profile.name)
@@ -5663,10 +5729,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         }),
     );
-    this.buildProviderStrategySelector(connectionSection, profile);
+    this.buildProviderStrategySelector(group, profile);
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
       let apiKeyInput: HTMLInputElement | null = null;
-      new Setting(connectionSection)
+      new Setting(group)
         .setName(t('apiKey'))
         .addText((text) => {
           apiKeyInput = text.inputEl;
@@ -5694,7 +5760,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
     }
     if (profile.strategy !== 'ternlight') {
-      new Setting(connectionSection).setName(t('providerBaseUrl')).addText((text) =>
+      new Setting(group).setName(t('providerBaseUrl')).addText((text) =>
         text
           .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
           .setValue(profile.baseUrl ?? '')
@@ -5704,29 +5770,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
     }
-    const statusEl = body.createDiv({ cls: 'superpower-inside-provider-validation-status' });
-    statusEl.setAttribute('role', 'status');
-    statusEl.setAttribute('aria-live', 'polite');
-    if (profile.strategy !== 'ternlight') {
-      this.buildProviderProfileModelSection(body, profile, 'general', statusEl);
-    }
-    this.buildProviderProfileModelSection(body, profile, 'embedding', statusEl);
-    const removeButton = body.createEl('button', {
-      cls: 'superpower-inside-provider-remove-btn',
-      attr: { type: 'button', 'aria-label': t('settingsAuto267') },
-    });
-    setIcon(removeButton, 'trash-2');
-    removeButton.createSpan({ text: t('settingsAuto267') });
-    removeButton.addEventListener('click', () => {
-      this.plugin.settings.providerProfiles = this.plugin.settings.providerProfiles.filter(
-        (item) => item.id !== profile.id,
-      );
-      if (this.expandedProviderProfileId === profile.id) {
-        this.expandedProviderProfileId = null;
-      }
-      this.debouncedSave();
-      this.renderSettingsView();
-    });
+  }
+
+  private getProviderStatusElement(containerEl: HTMLElement): HTMLElement {
+    const existing = containerEl.querySelector<HTMLElement>(
+      '.superpower-inside-provider-validation-status',
+    );
+    if (existing) return existing;
+    const status = containerEl.createDiv({ cls: 'superpower-inside-provider-validation-status' });
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    return status;
   }
 
   private getProviderProfileTone(
@@ -5752,21 +5806,69 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return t('providerStatusOff');
   }
 
-  private refreshProviderProfileExpansion(containerEl: HTMLElement): void {
-    const grid = containerEl.closest('.superpower-inside-provider-grid');
-    if (!grid) return;
-    const cards = Array.from(
-      grid.querySelectorAll<HTMLElement>('.superpower-inside-provider-card'),
+  private refreshProviderProfileDisclosures(containerEl: HTMLElement): void {
+    const list = containerEl.closest('.superpower-inside-provider-connection-list');
+    if (!list) return;
+    const disclosures = Array.from(
+      list.querySelectorAll<HTMLElement>('.superpower-inside-provider-disclosure'),
     );
-    for (const card of cards) {
-      const key = card.dataset.providerKey?.replace(/^profile:/, '') ?? '';
+    for (const disclosure of disclosures) {
+      const key = disclosure.dataset.providerKey ?? '';
       const expanded = key === this.expandedProviderProfileId;
-      card.toggleClass('is-collapsed', !expanded);
-      card.toggleClass('is-expanded', expanded);
-      card
-        .querySelector<HTMLElement>('.superpower-inside-provider-hero')
+      disclosure.toggleClass('is-open', expanded);
+      disclosure
+        .querySelector<HTMLElement>('.superpower-inside-settings-disclosure-button')
         ?.setAttribute('aria-expanded', String(expanded));
+      disclosure
+        .querySelector<HTMLElement>('.superpower-inside-settings-disclosure-content')
+        ?.toggleClass('is-collapsed', !expanded);
     }
+  }
+
+  private createProviderProfile(): void {
+    const id = this.createProviderProfileId();
+    this.plugin.settings.providerProfiles.push({
+      id,
+      name: t('providerNewName'),
+      strategy: 'openAICompatible',
+      apiKey: '',
+      baseUrl: '',
+      enabled: false,
+      models: [],
+      useRequestUrl: true,
+    });
+    this.expandedProviderProfileId = id;
+    this.debouncedSave();
+    this.refreshProvidersTab();
+  }
+
+  private refreshProvidersTab(): void {
+    const panel = this.tabPanels.get('providers');
+    if (panel?.isConnected) this.buildProvidersTab(panel);
+  }
+
+  private async removeProviderProfile(
+    profile: ProviderProfileConfig,
+    button: HTMLButtonElement,
+  ): Promise<void> {
+    const profileName = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        if (!(await confirmWithModal(this.app, t('providerRemoveConfirm', { provider: profileName })))) {
+          return { status: 'noop', detail: t('actionCancelledNotice') };
+        }
+        this.plugin.settings.providerProfiles = this.plugin.settings.providerProfiles.filter(
+          (item) => item.id !== profile.id,
+        );
+        if (this.expandedProviderProfileId === profile.id) {
+          this.expandedProviderProfileId = null;
+        }
+        await this.plugin.saveSettingsLight();
+        return { status: 'success', detail: t('providerRemoved', { provider: profileName }) };
+      },
+    });
+    this.refreshProvidersTab();
   }
 
   private buildProviderStrategySelector(
@@ -5803,19 +5905,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     statusEl: HTMLElement,
   ): void {
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-provider-section superpower-inside-provider-model-shell superpower-inside-provider-profile-model-section',
+      cls: 'superpower-inside-provider-model-group superpower-inside-provider-profile-model-section',
     });
     const header = section.createDiv({
-      cls: 'superpower-inside-provider-model-section-header',
+      cls: 'superpower-inside-provider-model-group-header',
     });
     header.createDiv({
-      cls: 'superpower-inside-provider-section-title',
+      cls: 'superpower-inside-provider-group-title',
       text: kind === 'embedding' ? t('providerEmbeddingModels') : t('providerGeneralModels'),
     });
-    const toolbar = header.createDiv({ cls: 'superpower-inside-provider-model-toolbar' });
+    const toolbar = header.createDiv({ cls: 'superpower-inside-provider-model-actions' });
     if (kind === 'general') {
       const fetchButton = toolbar.createEl('button', {
-        cls: 'superpower-inside-provider-model-sync-btn',
+        cls: 'superpower-inside-provider-model-fetch-btn',
         attr: { type: 'button', 'aria-label': t('fetchModels'), title: t('fetchModels') },
       });
       setIcon(fetchButton, 'download');
