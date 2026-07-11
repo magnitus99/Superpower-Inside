@@ -83,6 +83,12 @@ export interface I18nKeys {
   mcpStatusSummaryDetail: string;
   mcpReconnectDesc: string;
   mcpStatusServerDetail: string;
+  advancedPluginAwareTitle: string;
+  advancedPluginAwareDesc: string;
+  advancedEnabledStatus: string;
+  advancedDisabledStatus: string;
+  advancedPluginAwareOnDetail: string;
+  advancedPluginAwareOffDetail: string;
   loggingMinLevel: string;
   loggingMirrorConsole: string;
   loggingMaxEntries: string;
@@ -1594,6 +1600,12 @@ const ko: I18nKeys = {
   mcpStatusSummaryDetail: '전체 {total}개 중 {connected}개 서버가 연결되어 있습니다.',
   mcpReconnectDesc: '현재 서버 설정으로 연결을 다시 시도합니다.',
   mcpStatusServerDetail: '현재 서버 명령과 연결 상태입니다.',
+  advancedPluginAwareTitle: '플러그인 인식 생성',
+  advancedPluginAwareDesc: '활성 플러그인 정보를 활용해 Obsidian 문법 호환성을 높입니다.',
+  advancedEnabledStatus: '사용 중',
+  advancedDisabledStatus: '꺼짐',
+  advancedPluginAwareOnDetail: '새 요청에 활성 플러그인 정보가 제한된 범위로 포함됩니다.',
+  advancedPluginAwareOffDetail: '새 요청에 활성 플러그인 정보를 추가하지 않습니다.',
   loggingMinLevel: '최소 로그 레벨',
   loggingMirrorConsole: '콘솔에도 출력',
   loggingMaxEntries: '로그 보존 개수',
@@ -3189,6 +3201,12 @@ const en: I18nKeys = {
   mcpStatusSummaryDetail: '{connected} of {total} servers are connected.',
   mcpReconnectDesc: 'Try connecting again with the current server setup.',
   mcpStatusServerDetail: 'Current server command and connection state.',
+  advancedPluginAwareTitle: 'Plugin-aware generation',
+  advancedPluginAwareDesc: 'Use active plugin information to improve Obsidian syntax compatibility.',
+  advancedEnabledStatus: 'On',
+  advancedDisabledStatus: 'Off',
+  advancedPluginAwareOnDetail: 'New requests include a limited summary of active plugins.',
+  advancedPluginAwareOffDetail: 'New requests do not include active plugin information.',
   loggingMinLevel: 'Minimum log level',
   loggingMirrorConsole: 'Mirror to console',
   loggingMaxEntries: 'Retained log entries',

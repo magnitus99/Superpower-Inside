@@ -15,7 +15,6 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toMatch(
       /\.superpower-inside-settings-tab-content\.is-active\s*\{[\s\S]*display:\s*flex/,
     );
-    expect(styles).toContain('.superpower-inside-settings-panel');
     expect(styles).toMatch(
       /\.superpower-inside-settings-tabs\s*\{[\s\S]*flex-wrap:\s*wrap/,
     );
@@ -181,6 +180,22 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain("setButtonText(t('mcpReconnect'))");
     expect(methodSource).not.toContain('superpower-inside-mcp-status-box');
     expect(methodSource).not.toContain('superpower-inside-mcp-status-dot');
+  });
+
+  it('Advanced 탭은 플러그인 인식 상태와 한계를 공통 status와 notice로 표현한다', () => {
+    const methodStart = settingsSource.indexOf('private buildAdvancedTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildProviderProfilesTab', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain('superpower-inside-settings-workspace');
+    expect(methodSource).toContain('superpower-inside-advanced-settings-workspace');
+    expect(methodSource).toContain('createSettingsSection');
+    expect(methodSource).toContain('createSettingsStatusRow');
+    expect(methodSource.match(/createSettingsNotice/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(methodSource).toContain('shouldShowPluginAwareContext7Warning');
+    expect(methodSource).not.toContain('createSettingsPanel');
+    expect(methodSource).not.toContain('superpower-inside-settings-help');
+    expect(methodSource).not.toContain('superpower-inside-settings-warning');
   });
 
   it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {

@@ -151,6 +151,7 @@ obsidian vault=".test-vault" dev:screenshot path=/tmp/superpower-inside-ui.png
 | MCP 현재 연결 | 전체·서버별 상태와 오류, 재연결 행동이 한 영역에서 읽히는지 |
 | MCP 서버 설정 | JSON 편집기와 검증·저장 상태가 잘리지 않고 가까이 표시되는지 |
 | MCP 실행 환경 | PATH·WSL·자동 탐지·저장이 disclosure 안에서만 노출되는지 |
+| Advanced | 플러그인 인식 상태·toggle·Context7 경고·기능 한계가 한 section에서 읽히는지 |
 | 접힘/펼침 | 아이콘, 제목, 설명, `aria-expanded`가 상태와 일치하는지 |
 | 진행 중·disabled | 상태 변화가 텍스트로 전달되고 비활성 이유가 반복되지 않는지 |
 | 빈 상태·오류 | 빈 카드 대신 이유와 가능한 다음 행동이 보이는지 |

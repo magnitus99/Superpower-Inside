@@ -1607,32 +1607,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         : '';
     }
   }
-  private createSettingsPanel(
-    containerEl: HTMLElement,
-    titleText: string,
-    options: {
-      description?: string;
-      meta?: string;
-      className?: string;
-    } = {},
-  ): HTMLElement {
-    const panel = containerEl.createDiv({
-      cls: `superpower-inside-settings-panel${options.className ? ` ${options.className}` : ''}`,
-    });
-    const header = panel.createDiv({ cls: 'superpower-inside-settings-panel-header' });
-    const titleGroup = header.createDiv({ cls: 'superpower-inside-settings-panel-title-group' });
-    titleGroup.createDiv({ cls: 'superpower-inside-settings-panel-title', text: titleText });
-    if (options.description) {
-      titleGroup.createDiv({
-        cls: 'superpower-inside-settings-panel-desc',
-        text: options.description,
-      });
-    }
-    if (options.meta) {
-      header.createDiv({ cls: 'superpower-inside-settings-panel-meta', text: options.meta });
-    }
-    return panel;
-  }
   private createSettingsSection(
     containerEl: HTMLElement,
     titleText: string,
@@ -5501,33 +5475,48 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
   }
   private buildAdvancedTab(containerEl: HTMLElement): void {
-    const pluginAwarePanel = this.createSettingsPanel(containerEl, t('settingsAuto242'), {
-      description: t('settingsAuto243'),
+    containerEl.empty();
+    const workspace = containerEl.createDiv({
+      cls: 'superpower-inside-settings-workspace superpower-inside-advanced-settings-workspace',
     });
-    new Setting(pluginAwarePanel)
+    const { body } = this.createSettingsSection(workspace, t('advancedPluginAwareTitle'), {
+      description: t('advancedPluginAwareDesc'),
+    });
+    const enabled = this.plugin.settings.pluginAwareEnabled;
+    this.createSettingsStatusRow(body, {
+      label: t('pluginAwareGeneration'),
+      value: enabled ? t('advancedEnabledStatus') : t('advancedDisabledStatus'),
+      statusLabel: enabled ? t('advancedEnabledStatus') : t('advancedDisabledStatus'),
+      detail: enabled ? t('advancedPluginAwareOnDetail') : t('advancedPluginAwareOffDetail'),
+      tone: enabled ? 'success' : 'neutral',
+    });
+    if (
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: enabled,
+        servers: this.plugin.settings.mcpServers,
+      })
+    ) {
+      this.createSettingsNotice(body, {
+        text: t('pluginAwareContext7MissingWarning'),
+        tone: 'warning',
+        icon: 'triangle-alert',
+      });
+    }
+    new Setting(body)
       .setName(t('pluginAwareGeneration'))
       .setDesc(t('pluginAwareGenerationDesc'))
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.pluginAwareEnabled).onChange((value) => {
           this.plugin.settings.pluginAwareEnabled = value;
           this.debouncedSave();
+          this.buildAdvancedTab(containerEl);
         }),
       );
-    pluginAwarePanel.createDiv({
-      cls: 'superpower-inside-settings-help',
+    this.createSettingsNotice(body, {
       text: t('pluginAwareGenerationLimitNotice'),
+      tone: 'info',
+      icon: 'info',
     });
-    if (
-      shouldShowPluginAwareContext7Warning({
-        pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
-        servers: this.plugin.settings.mcpServers,
-      })
-    ) {
-      pluginAwarePanel.createDiv({
-        cls: 'superpower-inside-settings-warning',
-        text: t('pluginAwareContext7MissingWarning'),
-      });
-    }
   }
   private buildProviderProfilesTab(containerEl: HTMLElement): void {
     const profiles = this.plugin.settings.providerProfiles.filter(
