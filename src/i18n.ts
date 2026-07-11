@@ -249,6 +249,15 @@ export interface I18nKeys {
   ragWorkflowTuneDetail: string;
   ragLocalEmbeddingTitle: string;
   ragLocalEmbeddingDetail: string;
+  ragStatusSectionDescription: string;
+  ragFoundationTitle: string;
+  ragFoundationDescription: string;
+  ragGraphSectionDescription: string;
+  ragGraphDisclosureTitle: string;
+  ragGraphDisclosureDescription: string;
+  ragDiagnosticsTitle: string;
+  ragDiagnosticsDescription: string;
+  ragDiagnosticsDisclosureTitle: string;
   ragOverviewTitle: string;
   ragOverviewReady: string;
   ragOverviewNeedsUpdate: string;
@@ -258,9 +267,18 @@ export interface I18nKeys {
   ragOverviewFixEmbedding: string;
   ragOverviewCheckProvider: string;
   ragRecoverySummary: string;
+  ragRecoveryDescription: string;
   graphRagOverviewTitle: string;
   graphRagOverviewDetail: string;
   graphRagDetailsSummary: string;
+  graphRagQueryModeLabel: string;
+  graphRagQueryAutoLabel: string;
+  graphRagQueryLocalLabel: string;
+  graphRagQueryGlobalLabel: string;
+  graphRagQueryHybridLabel: string;
+  graphRagMergeThresholdLabel: string;
+  graphRagPendingMergeLabel: string;
+  graphRagModularityDetail: string;
 
   // RAG 버튼
   btnUpdatePending: string;
@@ -1698,6 +1716,16 @@ const ko: I18nKeys = {
   ragLocalEmbeddingTitle: '기본 제공: Ternlight 온디바이스 임베딩',
   ragLocalEmbeddingDetail:
     '노트는 기기를 벗어나지 않으며 API 키나 Ollama 서버가 필요 없습니다. 모델 파일이 없으면 한 번 자동으로 내려받아 무결성을 확인한 뒤 오프라인으로 사용합니다.',
+  ragStatusSectionDescription: '검색 준비 상태와 지금 필요한 행동을 확인합니다.',
+  ragFoundationTitle: '검색 기반 설정',
+  ragFoundationDescription: '검색에 사용할 모델과 인덱싱 범위를 정합니다.',
+  ragGraphSectionDescription:
+    '연결 정보를 보강하며, 세부 추출과 운영 도구는 필요할 때만 펼칩니다.',
+  ragGraphDisclosureTitle: '세부 설정과 작업',
+  ragGraphDisclosureDescription: '모델, 동기화, 추출과 결과 확인을 관리합니다.',
+  ragDiagnosticsTitle: '진단 및 복구',
+  ragDiagnosticsDescription: '일상 사용에 필요하지 않은 통계와 복구 도구입니다.',
+  ragDiagnosticsDisclosureTitle: '세부 진단 보기',
   ragOverviewTitle: '일반 검색',
   ragOverviewReady: '최신',
   ragOverviewNeedsUpdate: '{count}개 업데이트 필요',
@@ -1707,9 +1735,18 @@ const ko: I18nKeys = {
   ragOverviewFixEmbedding: '임베딩 모델 선택',
   ragOverviewCheckProvider: '프로바이더 확인',
   ragRecoverySummary: '문제 해결 및 복구',
+  ragRecoveryDescription: '전체 재인덱싱과 데이터 초기화는 문제가 있을 때만 사용합니다.',
   graphRagOverviewTitle: '연결 기반 검색 (GraphRAG)',
   graphRagOverviewDetail: '대상 {total} · 증거 {done} · 동기화 {stale} · 실패 {failed}',
   graphRagDetailsSummary: 'GraphRAG 세부 설정 및 복구',
+  graphRagQueryModeLabel: 'GraphRAG 검색 방식',
+  graphRagQueryAutoLabel: '자동',
+  graphRagQueryLocalLabel: '로컬',
+  graphRagQueryGlobalLabel: '글로벌',
+  graphRagQueryHybridLabel: '하이브리드',
+  graphRagMergeThresholdLabel: '병합 기준',
+  graphRagPendingMergeLabel: '병합 검토 대기',
+  graphRagModularityDetail: '모듈성 {value}',
 
   // RAG 버튼
   btnUpdatePending: '필요 문서 업데이트',
@@ -3256,6 +3293,16 @@ const en: I18nKeys = {
   ragLocalEmbeddingTitle: 'Included by default: Ternlight on-device embeddings',
   ragLocalEmbeddingDetail:
     'Notes stay on this device with no API key or Ollama server. If the model file is missing, it is downloaded once, verified, and then used offline.',
+  ragStatusSectionDescription: 'See search readiness and the one action that matters now.',
+  ragFoundationTitle: 'Search foundation',
+  ragFoundationDescription: 'Choose the search model and what the index should include.',
+  ragGraphSectionDescription:
+    'Add connected context while keeping extraction and maintenance tools out of the daily flow.',
+  ragGraphDisclosureTitle: 'Detailed settings and actions',
+  ragGraphDisclosureDescription: 'Manage the model, sync, extraction, and result inspection.',
+  ragDiagnosticsTitle: 'Diagnostics and recovery',
+  ragDiagnosticsDescription: 'Statistics and recovery tools that are not part of daily use.',
+  ragDiagnosticsDisclosureTitle: 'Show detailed diagnostics',
   ragOverviewTitle: 'Standard search',
   ragOverviewReady: 'Up to date',
   ragOverviewNeedsUpdate: '{count} need updating',
@@ -3265,9 +3312,18 @@ const en: I18nKeys = {
   ragOverviewFixEmbedding: 'Choose embedding model',
   ragOverviewCheckProvider: 'Review provider',
   ragRecoverySummary: 'Troubleshooting and recovery',
+  ragRecoveryDescription: 'Use full reindex and data reset only when troubleshooting.',
   graphRagOverviewTitle: 'Connected search (GraphRAG)',
   graphRagOverviewDetail: '{total} targets · {done} evidence · {stale} to sync · {failed} failed',
   graphRagDetailsSummary: 'GraphRAG details and recovery',
+  graphRagQueryModeLabel: 'GraphRAG search mode',
+  graphRagQueryAutoLabel: 'Auto',
+  graphRagQueryLocalLabel: 'Local',
+  graphRagQueryGlobalLabel: 'Global',
+  graphRagQueryHybridLabel: 'Hybrid',
+  graphRagMergeThresholdLabel: 'Merge thresholds',
+  graphRagPendingMergeLabel: 'Pending merge review',
+  graphRagModularityDetail: 'Modularity {value}',
 
   // RAG Buttons
   btnUpdatePending: 'Update Pending',

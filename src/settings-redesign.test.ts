@@ -58,64 +58,80 @@ describe('설정 화면 리디자인 구조', () => {
     expect(emptyIndex).toBeGreaterThan(getStatusIndex);
   });
 
-  it('RAG 탭은 운영 대시보드 흐름으로 핵심 섹션을 배치한다', () => {
+  it('RAG 탭은 작업 중심 흐름으로 네 개의 공통 섹션을 배치한다', () => {
     const methodStart = settingsSource.indexOf('private buildRAGTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildRagAdvancedSection', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
     const expectedOrder = [
       'buildRagStatusPanel',
-      'buildControlsSection',
-      'buildGraphRagOverview',
-      'buildEmbeddingProviderSection',
-      'buildExcludeOptionsSection',
-      'buildGraphRagOperationsSection',
+      'buildRagFoundationSection',
+      'buildGraphRagSection',
       'buildRagAdvancedSection',
     ];
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-rag-dashboard');
-    expect(methodSource).toContain('superpower-inside-rag-settings-stack');
+    expect(methodSource).toContain('superpower-inside-rag-workspace');
+    expect(methodSource).not.toContain('superpower-inside-rag-dashboard');
+    expect(methodSource).not.toContain('superpower-inside-rag-settings-stack');
 
     const positions = expectedOrder.map((name) => methodSource.indexOf(name));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
-  it('RAG 탭은 정적 단계 안내를 반복하지 않고 상세 작업을 점진적으로 공개한다', () => {
+  it('RAG 탭은 공통 section, group, disclosure helper로 디자인 언어를 통일한다', () => {
     const methodStart = settingsSource.indexOf('private buildRAGTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildRagAdvancedSection', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
-    const embeddingStart = settingsSource.indexOf('private buildEmbeddingProviderSection');
-    const embeddingEnd = settingsSource.indexOf('\n  private buildStatsSection', embeddingStart);
-    const embeddingSource = settingsSource.slice(embeddingStart, embeddingEnd);
-    const profileBranchEnd = embeddingSource.indexOf('\n      return;');
-    const profileBranchSource = embeddingSource.slice(0, profileBranchEnd);
 
-    expect(methodSource).not.toContain('buildRagWorkflowStrip');
-    expect(methodSource).toContain("createEl('details'");
-    expect(methodSource).toContain("t('graphRagDetailsSummary')");
-    expect(profileBranchSource).toContain('superpower-inside-rag-local-embedding-note');
-    expect(profileBranchSource).toContain("t('ragLocalEmbeddingTitle')");
-    expect(profileBranchSource).toContain("t('ragLocalEmbeddingDetail')");
-    expect(styles).toContain('.superpower-inside-rag-details');
-    expect(styles).toContain('.superpower-inside-rag-local-embedding-note');
+    expect(methodSource).not.toContain("createEl('details'");
+    expect(settingsSource).toContain('private createRagSection(');
+    expect(settingsSource).toContain('private createRagGroup(');
+    expect(settingsSource).toContain('private createRagDisclosure(');
+    expect(settingsSource).toContain("'aria-expanded': 'false'");
+    expect(settingsSource).toContain("'aria-controls': contentId");
+    expect(settingsSource).toContain("setIcon(icon, 'chevron-right')");
+    expect(styles).toContain('--superpower-inside-rag-section-gap');
+    expect(styles).toContain('.superpower-inside-rag-section');
+    expect(styles).toContain('.superpower-inside-rag-row');
+    expect(styles).toContain('.superpower-inside-rag-disclosure');
+    expect(styles).toContain('container-type: inline-size');
+    expect(styles).toContain('@container superpower-inside-rag');
   });
 
-  it('RAG 인덱싱 제어는 현재 가능한 실행만 보이고 위험 작업은 복구 메뉴에 둔다', () => {
+  it('RAG 인덱싱 상태와 필요한 행동은 하나의 운영 섹션에 배치한다', () => {
+    const statusStart = settingsSource.indexOf('private buildRagStatusPanel');
+    const statusEnd = settingsSource.indexOf('\n  private createRagStatusItem', statusStart);
+    const statusSource = settingsSource.slice(statusStart, statusEnd);
     const methodStart = settingsSource.indexOf('private buildControlsSection');
     const methodEnd = settingsSource.indexOf('\n  private updateRagControlStates', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('superpower-inside-rag-controls-panel');
+    expect(statusSource).toContain('buildControlsSection(section.body)');
+    expect(methodSource).not.toContain('superpower-inside-rag-section');
+    expect(methodSource).toContain('superpower-inside-rag-primary-actions');
     expect(methodSource).toContain('superpower-inside-rag-controls-group');
-    expect(methodSource).toContain('superpower-inside-rag-recovery-details');
-    expect(methodSource).toContain("t('ragRecoverySummary')");
+    expect(methodSource).toContain('createRagDisclosure');
     expect(methodSource).toContain('is-danger');
-    expect(styles).toContain('.superpower-inside-rag-controls-panel');
-    expect(styles).toContain('.superpower-inside-rag-dashboard');
-    expect(styles).toContain('.superpower-inside-rag-recovery-details');
+    expect(styles).toContain('.superpower-inside-rag-primary-actions');
     expect(styles).toContain('.superpower-inside-rag-controls-group button[hidden]');
+  });
+
+  it('GraphRAG 작업은 중첩 카드와 반복 disabled reason 대신 평평한 action row를 사용한다', () => {
+    const renderStart = settingsSource.indexOf('private renderGraphRagActions(');
+    const renderEnd = settingsSource.indexOf('\n  private async handleGraphRagAction', renderStart);
+    const renderSource = settingsSource.slice(renderStart, renderEnd);
+
+    expect(renderStart).toBeGreaterThanOrEqual(0);
+    expect(renderSource).toContain('createGraphRagActionRow');
+    expect(renderSource).not.toContain('createGraphRagActionCard');
+    expect(renderSource).not.toContain('superpower-inside-rag-action-card');
+    expect(renderSource).not.toContain('superpower-inside-rag-action-disabled-reason');
+    expect(styles).toContain('.superpower-inside-rag-action-row');
+    expect(styles).not.toContain('.superpower-inside-rag-action-row.is-primary');
+    expect(styles).not.toContain('.superpower-inside-rag-action-card');
+    expect(styles).not.toContain('.superpower-inside-rag-action-disabled-reason');
   });
 
   it('RAG 런타임을 만들 수 없을 때 빈 카드 대신 원인과 한 가지 복구 행동을 표시한다', () => {
@@ -130,6 +146,18 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('resolveProviderModelRef(');
     expect(methodSource).toContain("this.switchTab('providers')");
     expect(methodSource).toContain('superpower-inside-rag-embedding-panel');
+  });
+
+  it('RAG 비동기 상태 결과는 현재 연결된 설정 DOM에만 반영한다', () => {
+    const methodStart = settingsSource.indexOf('updateRagStats(indexingDetail?: string): void');
+    const methodEnd = settingsSource.indexOf('\n  private renderRagUnavailableState', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('const isCurrentView = (): boolean =>');
+    expect(methodSource).toContain('timestampEl.isConnected');
+    expect(methodSource).toContain('if (!isCurrentView()) return;');
+    expect(settingsSource).toContain('private resetRagDomReferences(): void');
   });
 
   it('Providers 탭은 간결한 연결 요약과 세로 카드 목록으로 빠르게 훑을 수 있다', () => {

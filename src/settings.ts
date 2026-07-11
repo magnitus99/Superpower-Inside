@@ -1319,7 +1319,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.mcpStatusRefresh = null;
     this.excludeCountRenderer = null;
     this.unregisterRefreshBusSubscriptions();
-    // DOM 참조 초기화
+    this.resetRagDomReferences();
+    if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
+      this.pendingEmbeddingProvider = null;
+      this.pendingEmbeddingModel = null;
+      new Notice(t('settingsAuto007'));
+    }
+    this.flushSave();
+    super.hide();
+  }
+  private resetRagDomReferences(): void {
     this.ragStatusGrid = null;
     this.ragStatusTimestamp = null;
     this.ragStatusAction = null;
@@ -1329,14 +1338,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
+    this.graphRagSummaryBanner = null;
+    this.graphRagStatusGrid = null;
+    this.graphRagActionsGroup = null;
+    this.graphRagSectionContainer = null;
     this.graphRagOverviewContainer = null;
-    if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
-      this.pendingEmbeddingProvider = null;
-      this.pendingEmbeddingModel = null;
-      new Notice(t('settingsAuto007'));
-    }
-    this.flushSave();
-    super.hide();
+    this.graphRagProgressBanner = null;
+    this.graphRagModelSelectEl = null;
   }
   display(): void {
     this.renderSettingsView();
@@ -1345,6 +1353,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private renderSettingsView(): void {
     const { containerEl } = this;
     this.unregisterRefreshBusSubscriptions();
+    this.resetRagDomReferences();
     this.tabButtons.clear();
     this.tabPanels.clear();
     this.builtTabPanelIds.clear();
@@ -1608,6 +1617,82 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       header.createDiv({ cls: 'superpower-inside-settings-panel-meta', text: options.meta });
     }
     return panel;
+  }
+  private createRagSection(
+    containerEl: HTMLElement,
+    titleText: string,
+    options: {
+      description?: string;
+      className?: string;
+    } = {},
+  ): { section: HTMLElement; body: HTMLElement } {
+    const section = containerEl.createDiv({
+      cls: `superpower-inside-rag-section${options.className ? ` ${options.className}` : ''}`,
+    });
+    const header = section.createDiv({ cls: 'superpower-inside-rag-section-header' });
+    const copy = header.createDiv({ cls: 'superpower-inside-rag-section-copy' });
+    copy.createDiv({ cls: 'superpower-inside-rag-section-title', text: titleText });
+    if (options.description) {
+      copy.createDiv({
+        cls: 'superpower-inside-rag-section-description',
+        text: options.description,
+      });
+    }
+    const body = section.createDiv({ cls: 'superpower-inside-rag-section-body' });
+    return { section, body };
+  }
+  private createRagGroup(
+    containerEl: HTMLElement,
+    titleText: string,
+    description?: string,
+    className?: string,
+  ): HTMLElement {
+    const group = containerEl.createDiv({
+      cls: `superpower-inside-rag-group${className ? ` ${className}` : ''}`,
+    });
+    group.createDiv({ cls: 'superpower-inside-rag-group-title', text: titleText });
+    if (description) {
+      group.createDiv({ cls: 'superpower-inside-rag-group-description', text: description });
+    }
+    return group;
+  }
+  private createRagDisclosure(
+    containerEl: HTMLElement,
+    id: string,
+    titleText: string,
+    description?: string,
+  ): { button: HTMLButtonElement; content: HTMLElement } {
+    const contentId = `superpower-inside-rag-disclosure-${id}`;
+    const disclosure = containerEl.createDiv({ cls: 'superpower-inside-rag-disclosure' });
+    const button = disclosure.createEl('button', {
+      cls: 'superpower-inside-rag-disclosure-button',
+      attr: {
+        type: 'button',
+        'aria-expanded': 'false',
+        'aria-controls': contentId,
+      },
+    });
+    const copy = button.createSpan({ cls: 'superpower-inside-rag-disclosure-copy' });
+    copy.createSpan({ cls: 'superpower-inside-rag-disclosure-title', text: titleText });
+    if (description) {
+      copy.createSpan({
+        cls: 'superpower-inside-rag-disclosure-description',
+        text: description,
+      });
+    }
+    const icon = button.createSpan({ cls: 'superpower-inside-rag-disclosure-icon' });
+    setIcon(icon, 'chevron-right');
+    const content = disclosure.createDiv({
+      cls: 'superpower-inside-rag-disclosure-content is-collapsed',
+      attr: { id: contentId },
+    });
+    button.addEventListener('click', () => {
+      const isOpen = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!isOpen));
+      disclosure.toggleClass('is-open', !isOpen);
+      content.toggleClass('is-collapsed', isOpen);
+    });
+    return { button, content };
   }
   private buildGeneralTab(containerEl: HTMLElement): void {
     containerEl.empty();
@@ -1972,69 +2057,63 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.buildProviderProfilesTab(containerEl);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
-    const dashboard = containerEl.createDiv({ cls: 'superpower-inside-rag-dashboard' });
-    this.buildRagStatusPanel(dashboard);
-    this.buildControlsSection(dashboard);
-    this.buildGraphRagOverview(dashboard);
-
-    const coreSettings = containerEl.createDiv({ cls: 'superpower-inside-rag-settings-stack' });
-    this.buildEmbeddingProviderSection(coreSettings);
-    this.buildExcludeOptionsSection(coreSettings);
-
-    const graphRagDetails = containerEl.createEl('details', {
-      cls: 'superpower-inside-rag-details',
+    const workspace = containerEl.createDiv({ cls: 'superpower-inside-rag-workspace' });
+    this.buildRagStatusPanel(workspace);
+    this.buildRagFoundationSection(workspace);
+    this.buildGraphRagSection(workspace);
+    this.buildRagAdvancedSection(workspace);
+  }
+  private buildRagFoundationSection(containerEl: HTMLElement): void {
+    const section = this.createRagSection(containerEl, t('ragFoundationTitle'), {
+      description: t('ragFoundationDescription'),
+      className: 'superpower-inside-rag-foundation-section',
     });
-    graphRagDetails.createEl('summary', { text: t('graphRagDetailsSummary') });
-    const graphRagDetailsBody = graphRagDetails.createDiv({
-      cls: 'superpower-inside-rag-details-body',
+    this.buildEmbeddingProviderSection(section.body);
+    this.buildExcludeOptionsSection(section.body);
+  }
+  private buildGraphRagSection(containerEl: HTMLElement): void {
+    const section = this.createRagSection(containerEl, t('graphRagOverviewTitle'), {
+      description: t('ragGraphSectionDescription'),
+      className: 'superpower-inside-rag-graph-section',
     });
-    this.buildGraphRagOperationsSection(graphRagDetailsBody);
-    this.buildRagAdvancedSection(containerEl);
+    this.buildGraphRagOverview(section.body);
+    const disclosure = this.createRagDisclosure(
+      section.body,
+      'graph-operations',
+      t('ragGraphDisclosureTitle'),
+      t('ragGraphDisclosureDescription'),
+    );
+    this.buildGraphRagOperationsSection(disclosure.content);
   }
   private buildRagAdvancedSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-advanced',
+    const section = this.createRagSection(containerEl, t('ragDiagnosticsTitle'), {
+      description: t('ragDiagnosticsDescription'),
+      className: 'superpower-inside-rag-diagnostics-section',
     });
-    const header = section.createEl('button', {
-      cls: 'superpower-inside-rag-collapsible-header',
-      attr: { type: 'button', 'aria-expanded': 'false' },
-    });
-    const chevron = header.createSpan({
-      cls: 'superpower-inside-rag-collapsible-chevron',
-      text: '▶',
-    });
-    header.createSpan({
-      cls: 'superpower-inside-rag-collapsible-title',
-      text: t('settingsAuto026'),
-    });
-    const content = section.createDiv({
-      cls: 'superpower-inside-rag-collapsible-content is-collapsed',
-    });
-    this.buildIndexingOptionsSection(content);
-    this.buildSearchQualitySection(content);
-    this.buildStatsSection(content);
-    this.buildTargetFileTypesSection(content);
-    this.buildUpdateRequiredDocumentsSection(content);
-    header.addEventListener('click', () => {
-      const isCollapsed = content.hasClass('is-collapsed');
-      content.toggleClass('is-collapsed', !isCollapsed);
-      header.setAttr('aria-expanded', isCollapsed ? 'true' : 'false');
-      chevron.setText(isCollapsed ? '▼' : '▶');
-    });
+    const disclosure = this.createRagDisclosure(
+      section.body,
+      'diagnostics',
+      t('ragDiagnosticsDisclosureTitle'),
+    );
+    this.buildIndexingOptionsSection(disclosure.content);
+    this.buildSearchQualitySection(disclosure.content);
+    this.buildStatsSection(disclosure.content);
+    this.buildTargetFileTypesSection(disclosure.content);
+    this.buildUpdateRequiredDocumentsSection(disclosure.content);
   }
   private buildRagStatusPanel(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-section superpower-inside-rag-status-panel',
+    const section = this.createRagSection(containerEl, t('settingsAuto027'), {
+      description: t('ragStatusSectionDescription'),
+      className: 'superpower-inside-rag-status-panel',
     });
-    const header = section.createDiv({ cls: 'superpower-inside-rag-status-header' });
-    header.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto027') });
-    const statusGrid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
-    const actionEl = section.createDiv({ cls: 'superpower-inside-rag-status-action' });
-    const detailsEl = section.createDiv({ cls: 'superpower-inside-rag-status-details' });
-    const timestampEl = section.createDiv({
+    const statusGrid = section.body.createDiv({ cls: 'superpower-inside-rag-status-grid' });
+    const actionEl = section.body.createDiv({ cls: 'superpower-inside-rag-status-action' });
+    const detailsEl = section.body.createDiv({ cls: 'superpower-inside-rag-status-details' });
+    const timestampEl = section.body.createDiv({
       cls: 'superpower-inside-rag-status-timestamp',
       text: t('settingsAuto028'),
     });
+    this.buildControlsSection(section.body);
     // DOM 참조 저장 (부분 업데이트용)
     this.ragStatusGrid = statusGrid;
     this.ragStatusAction = actionEl;
@@ -2044,7 +2123,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     void this.updateRagStats();
   }
   private createRagStatusItem(containerEl: HTMLElement, label: string, value: string): void {
-    const item = containerEl.createDiv({ cls: 'superpower-inside-rag-status-item' });
+    const item = containerEl.createDiv({
+      cls: 'superpower-inside-rag-row superpower-inside-rag-status-item',
+    });
     item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
     item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
   }
@@ -2055,7 +2136,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     description: string,
     tone: 'neutral' | 'success' | 'warning' | 'danger' = 'neutral',
   ): void {
-    const item = containerEl.createDiv({ cls: 'superpower-inside-rag-status-item' });
+    const item = containerEl.createDiv({
+      cls: 'superpower-inside-rag-row superpower-inside-rag-status-item',
+    });
     item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
     const valueEl = item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
     if (tone !== 'neutral') {
@@ -2067,7 +2150,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildGraphRagOverview(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-overview-row superpower-inside-graph-rag-overview',
+      cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row superpower-inside-graph-rag-overview',
     });
     this.graphRagOverviewContainer = section;
     this.renderGraphRagOverview(section);
@@ -2095,7 +2178,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const copy = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
     copy.createDiv({
       cls: 'superpower-inside-rag-overview-title',
-      text: t('graphRagOverviewTitle'),
+      text: t('ragStatusCurrentState'),
     });
     const status = copy.createDiv({
       cls: `superpower-inside-rag-overview-status is-${presentation.tone}`,
@@ -2188,10 +2271,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private buildGraphRagOperationsSection(containerEl: HTMLElement): void {
     const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-section superpower-inside-rag-graph-panel',
+      cls: 'superpower-inside-rag-graph-operations',
     });
     this.graphRagSectionContainer = section;
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto029') });
     const rag = this.plugin.settings.rag;
     const runtime = this.plugin.getRagRuntimeState();
     const graphState = runtime.graphRagStatus;
@@ -2328,29 +2410,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         `modularity ${lastCommunity.modularity.toFixed(3)}`,
       );
     }
-    // 접이식 비용 상세
-    const costToggle = section.createDiv({
-      cls: 'superpower-inside-rag-graph-cost-toggle',
-      text: t('settingsAuto045'),
-    });
-    const costDetail = section.createDiv({
-      cls: 'superpower-inside-rag-graph-cost-detail is-collapsed',
-    });
-    costToggle.addEventListener('click', () => {
-      const isCollapsed = costDetail.hasClass('is-collapsed');
-      costDetail.toggleClass('is-collapsed', !isCollapsed);
-      costToggle.setText(isCollapsed ? t('settingsAuto046') : t('settingsAuto045'));
-    });
+    // 비용 상세는 같은 disclosure 언어로 점진적으로 공개
+    const costDetail = this.createRagDisclosure(
+      section,
+      'graph-cost',
+      t('settingsAuto045'),
+    ).content;
+    costDetail.addClass('superpower-inside-rag-graph-cost-detail');
     this.createRagStatusItem(costDetail, t('settingsAuto047'), String(cost.estimatedFiles));
     this.createRagStatusItem(costDetail, t('settingsAuto048'), String(cost.estimatedCalls));
     this.createRagStatusItem(costDetail, t('settingsAuto049'), String(cost.estimatedInputTokens));
     this.createRagStatusItem(
       costDetail,
-      'Pending merge',
+      t('graphRagPendingMergeLabel'),
       String(graphState?.pendingMergeCount ?? 0),
     );
-    section.appendChild(costToggle);
-    section.appendChild(costDetail);
     // 기본 설정
     new Setting(section)
       .setName(t('settingsAuto050'))
@@ -2408,14 +2482,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '10000';
       });
     new Setting(section)
-      .setName('GraphRAG query mode')
+      .setName(t('graphRagQueryModeLabel'))
       .setDesc(t('settingsAuto056'))
       .addDropdown((dropdown) =>
         dropdown
-          .addOption('auto', 'Auto')
-          .addOption('local', 'Local')
-          .addOption('global', 'Global')
-          .addOption('hybrid', 'Hybrid')
+          .addOption('auto', t('graphRagQueryAutoLabel'))
+          .addOption('local', t('graphRagQueryLocalLabel'))
+          .addOption('global', t('graphRagQueryGlobalLabel'))
+          .addOption('hybrid', t('graphRagQueryHybridLabel'))
           .setValue(rag.graphRagQueryMode)
           .onChange((value) => {
             this.plugin.settings.rag.graphRagQueryMode =
@@ -2424,7 +2498,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(section)
-      .setName('Merge threshold')
+      .setName(t('graphRagMergeThresholdLabel'))
       .setDesc(t('settingsAuto057'))
       .addText((text) => {
         text.setValue(String(rag.ontologyAutoMergeThreshold)).onChange((value) => {
@@ -2699,7 +2773,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.graphRagStatusGrid,
           t('settingsAuto044'),
           String(lastCommunity.communityCount),
-          `modularity ${lastCommunity.modularity.toFixed(3)}`,
+          t('graphRagModularityDetail', { value: lastCommunity.modularity.toFixed(3) }),
         );
       }
     }
@@ -2796,16 +2870,26 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       failedFileCount: input.failedFileCount,
       staleFileCount: input.staleFileCount,
     });
+    const actions = groups.flatMap((group) => group.actions);
+    const unavailableReason = actions.every((action) => action.state.disabled)
+      ? actions.find((action) => action.state.reason)?.state.reason
+      : null;
+    if (unavailableReason) {
+      containerEl.createDiv({
+        cls: 'superpower-inside-rag-action-availability',
+        text: unavailableReason,
+      });
+    }
     for (const group of groups) {
       const groupEl = containerEl.createDiv({ cls: 'superpower-inside-rag-action-group' });
       groupEl.createDiv({ cls: 'superpower-inside-rag-action-group-title', text: group.label });
       const listEl = groupEl.createDiv({ cls: 'superpower-inside-rag-action-list' });
       for (const action of group.actions) {
-        this.createGraphRagActionCard(listEl, action, input.cost);
+        this.createGraphRagActionRow(listEl, action, input.cost);
       }
     }
   }
-  private createGraphRagActionCard(
+  private createGraphRagActionRow(
     containerEl: HTMLElement,
     action: GraphRagActionDefinition,
     cost: {
@@ -2813,8 +2897,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     },
   ): void {
     const item = containerEl.createDiv({
-      cls: `superpower-inside-rag-action-card is-${action.tone}`,
+      cls: `superpower-inside-rag-row superpower-inside-rag-action-row is-${action.tone}`,
     });
+    const copy = item.createDiv({ cls: 'superpower-inside-rag-action-copy' });
+    copy.createDiv({ cls: 'superpower-inside-rag-action-label', text: action.label });
+    copy.createDiv({ cls: 'superpower-inside-rag-action-desc', text: action.description });
     const button = item.createEl('button', { attr: { type: 'button' } });
     setIcon(button, action.iconName);
     button.createSpan({ text: action.label });
@@ -2823,13 +2910,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     button.addEventListener('click', () => {
       void this.handleGraphRagAction(action, cost);
     });
-    item.createDiv({ cls: 'superpower-inside-rag-action-desc', text: action.description });
-    if (action.state.reason) {
-      item.createDiv({
-        cls: 'superpower-inside-rag-action-disabled-reason',
-        text: action.state.reason,
-      });
-    }
   }
   private async handleGraphRagAction(
     action: GraphRagActionDefinition,
@@ -3057,23 +3137,28 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const existingAnchor = containerEl.querySelector(`:scope > .${ANCHOR_CLS}`);
     let section: HTMLElement;
     if (existingAnchor) {
-      section = createDiv({
-        cls: 'superpower-inside-rag-section superpower-inside-rag-embedding-panel',
-      });
+      section = this.createRagGroup(
+        containerEl,
+        t('settingsAuto081'),
+        undefined,
+        'superpower-inside-rag-embedding-panel',
+      );
       const oldSection = existingAnchor.previousElementSibling;
-      if (oldSection?.classList.contains('superpower-inside-rag-section')) {
+      if (oldSection?.classList.contains('superpower-inside-rag-group')) {
         oldSection.remove();
       }
       existingAnchor.replaceWith(section);
     } else {
-      section = containerEl.createDiv({
-        cls: 'superpower-inside-rag-section superpower-inside-rag-embedding-panel',
-      });
+      section = this.createRagGroup(
+        containerEl,
+        t('settingsAuto081'),
+        undefined,
+        'superpower-inside-rag-embedding-panel',
+      );
     }
     // Place new anchor after section for future rebuilds
     const newAnchor = createDiv({ cls: ANCHOR_CLS });
     section.after(newAnchor);
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto081') });
     {
       const ragConfig = this.plugin.settings.rag;
       const effectiveModelRef = this.pendingEmbeddingModel ?? ragConfig.embeddingModelRef ?? '';
@@ -3562,8 +3647,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
   }
   private buildStatsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto103') });
+    const section = this.createRagGroup(containerEl, t('settingsAuto103'));
     const grid = section.createDiv({ cls: 'superpower-inside-stats-grid' });
     // 통계 비동기 로드
     this.renderStats(grid).catch(() => {
@@ -3600,24 +3684,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       },
     ];
     for (const stat of stats) {
-      const card = gridEl.createDiv({ cls: 'superpower-inside-stat-card' });
-      card.createDiv({ cls: 'superpower-inside-stat-value', text: stat.value });
-      card.createDiv({ cls: 'superpower-inside-stat-label', text: stat.label });
-      card.createDiv({ cls: 'superpower-inside-stat-desc', text: stat.desc });
+      const item = gridEl.createDiv({ cls: 'superpower-inside-rag-metric' });
+      item.createDiv({ cls: 'superpower-inside-stat-value', text: stat.value });
+      item.createDiv({ cls: 'superpower-inside-stat-label', text: stat.label });
+      item.createDiv({ cls: 'superpower-inside-stat-desc', text: stat.desc });
     }
   }
   private buildTargetFileTypesSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    const header = section.createDiv({ cls: 'superpower-inside-rag-file-types-header' });
-    const titleGroup = header.createDiv();
-    titleGroup.createDiv({
-      cls: 'superpower-inside-rag-section-title',
-      text: t('targetFileTypes'),
-    });
-    titleGroup.createDiv({
-      cls: 'superpower-inside-rag-file-types-desc',
-      text: t('targetFileTypesDesc'),
-    });
+    const section = this.createRagGroup(
+      containerEl,
+      t('targetFileTypes'),
+      t('targetFileTypesDesc'),
+    );
     const contentEl = section.createDiv({ cls: 'superpower-inside-rag-file-types' });
     void (async () => {
       contentEl.setText(t('settingsAuto075'));
@@ -3653,9 +3731,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     const grid = containerEl.createDiv({ cls: 'superpower-inside-rag-file-type-grid' });
     for (const item of targetTypes) {
-      const card = grid.createDiv({ cls: 'superpower-inside-rag-file-type-card' });
-      card.createDiv({ cls: 'superpower-inside-rag-file-type-label', text: item.label });
-      card.createDiv({
+      const row = grid.createDiv({ cls: 'superpower-inside-rag-file-type-row' });
+      row.createDiv({ cls: 'superpower-inside-rag-file-type-label', text: item.label });
+      row.createDiv({
         cls: 'superpower-inside-rag-file-type-count',
         text: t('settingsAuto022', { v0: String(item.count) }),
       });
@@ -3712,9 +3790,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    * (전체 rebuild 대신 statusGrid, timestamp, updateList 등만 갱신)
    */
   updateRagStats(indexingDetail?: string): void {
-    if (!this.ragStatusGrid || !this.ragStatusTimestamp) return;
+    const statusGrid = this.ragStatusGrid;
+    const timestampEl = this.ragStatusTimestamp;
+    const actionEl = this.ragStatusAction;
+    const detailsEl = this.ragStatusDetails;
+    if (!statusGrid || !timestampEl || !actionEl || !detailsEl || !timestampEl.isConnected) return;
+    const isCurrentView = (): boolean =>
+      timestampEl.isConnected &&
+      this.ragStatusGrid === statusGrid &&
+      this.ragStatusTimestamp === timestampEl &&
+      this.ragStatusAction === actionEl &&
+      this.ragStatusDetails === detailsEl;
     void (async () => {
-      this.ragStatusTimestamp!.setText(
+      timestampEl.setText(
         indexingDetail
           ? t('settingsAuto115', { v0: String(indexingDetail) })
           : t('settingsAuto028'),
@@ -3727,9 +3815,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           return;
         }
         const status = await this.getRagStatus();
+        if (!isCurrentView()) return;
         if (status) {
           this.renderRagStatusSummary(status, indexingDetail);
-          this.ragStatusTimestamp!.setText(
+          timestampEl.setText(
             indexingDetail
               ? t('settingsAuto116', {
                   v0: String(indexingDetail),
@@ -3745,17 +3834,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.updateRagStatsSection();
         this.updateRagUpdateList();
       } catch (error) {
+        if (!isCurrentView()) return;
         const detail = error instanceof Error ? error.message : this.diagnoseRAGInitFailure();
         this.renderRagUnavailableState(detail);
         this.updateRagControlStates(null);
-        this.ragStatusTimestamp!.setText(t('settingsAuto104'));
+        timestampEl.setText(t('settingsAuto104'));
       }
     })();
   }
   private renderRagUnavailableState(detail: string): void {
     if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
     this.ragStatusGrid.empty();
-    const row = this.ragStatusGrid.createDiv({ cls: 'superpower-inside-rag-overview-row' });
+    const row = this.ragStatusGrid.createDiv({
+      cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row',
+    });
     const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
     copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
     const statusEl = copy.createDiv({
@@ -3808,7 +3900,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             ? t('ragOverviewReady')
             : t('ragOverviewEmpty');
     this.ragStatusGrid.empty();
-    const row = this.ragStatusGrid.createDiv({ cls: 'superpower-inside-rag-overview-row' });
+    const row = this.ragStatusGrid.createDiv({
+      cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row',
+    });
     const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
     copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
     const statusEl = copy.createDiv({
@@ -3906,11 +4000,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private buildUpdateRequiredDocumentsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({
-      cls: 'superpower-inside-rag-section-title',
-      text: t('settingsAuto149'),
-    });
+    const section = this.createRagGroup(containerEl, t('settingsAuto149'));
     const listEl = section.createDiv({ cls: 'superpower-inside-rag-update-list' });
     listEl.setText(t('settingsAuto146'));
     void this.getRagStatus()
@@ -4109,11 +4199,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return this.getRagRuntimeAccess();
   }
   private buildControlsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-section superpower-inside-rag-controls-panel',
-    });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto163') });
-    const controls = section.createDiv({ cls: 'superpower-inside-rag-controls' });
+    const controls = containerEl.createDiv({ cls: 'superpower-inside-rag-primary-actions' });
     const runtime = this.getRagRuntimeAccess();
     const hasIndexer = runtime.hasIndexer;
     const isIndexing = this.plugin.isRagIndexing();
@@ -4170,13 +4256,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     });
-    const recoveryDetails = controls.createEl('details', {
-      cls: 'superpower-inside-rag-recovery-details',
-    });
-    recoveryDetails.createEl('summary', { text: t('ragRecoverySummary') });
-    const recoveryControls = recoveryDetails.createDiv({
-      cls: 'superpower-inside-rag-recovery-controls',
-    });
+    const recoveryControls = this.createRagDisclosure(
+      controls,
+      'recovery',
+      t('ragRecoverySummary'),
+      t('ragRecoveryDescription'),
+    ).content;
     recoveryControls.createEl('button', { text: t('settingsAuto169') }, (btn) => {
       this.reindexAllButton = btn;
       btn.disabled = isIndexing || !hasIndexer;
@@ -4496,8 +4581,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private buildExcludeOptionsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto181') });
+    const section = this.createRagGroup(containerEl, t('settingsAuto181'));
     this.buildExcludeListSetting({
       containerEl: section,
       name: t('excludePaths'),
@@ -4545,8 +4629,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto182') });
+    const section = this.createRagGroup(containerEl, t('settingsAuto182'));
     // 자동 업데이트 토글
     new Setting(section)
       .setName(t('settingsAuto120'))
@@ -4707,8 +4790,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private buildSearchQualitySection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-rag-section' });
-    section.createDiv({ cls: 'superpower-inside-rag-section-title', text: t('settingsAuto198') });
+    const section = this.createRagGroup(containerEl, t('settingsAuto198'));
     section.createDiv({
       cls: 'superpower-inside-rag-guidance',
       text: t('bm25Guidance'),
