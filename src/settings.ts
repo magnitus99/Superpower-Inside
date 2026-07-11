@@ -78,10 +78,7 @@ import {
 } from './mcp/context7';
 import {
   buildSettingsOverviewSnapshot,
-  type SettingsOverviewAttentionItem,
-  type SettingsOverviewMetric,
   type SettingsOverviewRuntimeState,
-  type SettingsOverviewStatusRow,
 } from './settings-overview';
 import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
@@ -1235,6 +1232,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private pendingEmbeddingModel: string | null = null;
   private isRebuildingEmbeddingSection = false;
   private defaultModelDropdownEl: HTMLSelectElement | null = null;
+  private generalStatusBody: HTMLElement | null = null;
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
   private excludeCountRenderer: (() => void) | null = null;
@@ -1329,6 +1327,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     super.hide();
   }
   private resetRagDomReferences(): void {
+    this.generalStatusBody = null;
     this.ragStatusGrid = null;
     this.ragStatusTimestamp = null;
     this.ragStatusAction = null;
@@ -1367,21 +1366,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.updateGraphRagStats();
           this.refreshStatsGrid();
           this.refreshFileTypeSummary();
+          this.refreshGeneralStatusSection();
         }),
       );
       this.refreshBusUnsubscribers.push(
         bus.on('graph-progress', () => {
           this.updateGraphRagStats();
+          this.refreshGeneralStatusSection();
         }),
       );
       this.refreshBusUnsubscribers.push(
         bus.on('models', () => {
           this.refreshRagTab();
+          this.refreshGeneralStatusSection();
         }),
       );
       this.refreshBusUnsubscribers.push(
         bus.on('mcp', () => {
           this.refreshMcpStatusSection();
+          this.refreshGeneralStatusSection();
+        }),
+      );
+      this.refreshBusUnsubscribers.push(
+        bus.on('graph-data', () => {
+          this.updateGraphRagStats();
+          this.refreshGeneralStatusSection();
         }),
       );
       this.refreshBusUnsubscribers.push(
@@ -1519,7 +1528,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
   private refreshGeneralTab(): void {
+    this.refreshGeneralStatusSection();
     this.repopulateDefaultModelDropdown();
+  }
+  private refreshGeneralStatusSection(): void {
+    const statusBody = this.generalStatusBody;
+    if (!statusBody || !statusBody.isConnected) return;
+    this.renderGeneralStatus(statusBody);
   }
   /** General 탭의 기본 모델 dropdown만 다시 채웁니다 (full rebuild 대신). */
   private repopulateDefaultModelDropdown(): void {
@@ -1618,6 +1633,221 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     return panel;
   }
+  private createSettingsSection(
+    containerEl: HTMLElement,
+    titleText: string,
+    options: {
+      description?: string;
+      className?: string;
+      variantClass?: string;
+    } = {},
+  ): { section: HTMLElement; body: HTMLElement } {
+    const variantClass = options.variantClass;
+    const section = containerEl.createDiv({
+      cls: [
+        'superpower-inside-settings-section',
+        variantClass,
+        options.className,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(' '),
+    });
+    const header = section.createDiv({
+      cls: [
+        'superpower-inside-settings-section-header',
+        variantClass ? `${variantClass}-header` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    });
+    const copy = header.createDiv({
+      cls: [
+        'superpower-inside-settings-section-copy',
+        variantClass ? `${variantClass}-copy` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    });
+    copy.createDiv({
+      cls: [
+        'superpower-inside-settings-section-title',
+        variantClass ? `${variantClass}-title` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      text: titleText,
+    });
+    if (options.description) {
+      copy.createDiv({
+        cls: [
+          'superpower-inside-settings-section-description',
+          variantClass ? `${variantClass}-description` : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+        text: options.description,
+      });
+    }
+    const body = section.createDiv({
+      cls: [
+        'superpower-inside-settings-section-body',
+        variantClass ? `${variantClass}-body` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    });
+    return { section, body };
+  }
+  private createSettingsStatusRow(
+    containerEl: HTMLElement,
+    options: {
+      label: string;
+      value: string;
+      statusLabel: string;
+      detail: string;
+      tone: 'neutral' | 'success' | 'warning' | 'danger';
+      onActivate?: () => void;
+    },
+  ): HTMLElement {
+    const className = `superpower-inside-settings-row superpower-inside-settings-status-row is-${options.tone}`;
+    const row = options.onActivate
+      ? containerEl.createEl('button', { cls: className, attr: { type: 'button' } })
+      : containerEl.createDiv({ cls: className });
+    if (options.onActivate) row.addEventListener('click', options.onActivate);
+    const copy = row.createDiv({ cls: 'superpower-inside-settings-status-copy' });
+    copy.createDiv({ cls: 'superpower-inside-settings-status-label', text: options.label });
+    copy.createDiv({ cls: 'superpower-inside-settings-status-detail', text: options.detail });
+    const meta = row.createDiv({ cls: 'superpower-inside-settings-status-meta' });
+    meta.createDiv({ cls: 'superpower-inside-settings-status-state', text: options.statusLabel });
+    if (options.value !== options.statusLabel) {
+      meta.createDiv({ cls: 'superpower-inside-settings-status-value', text: options.value });
+    }
+    return row;
+  }
+  private createSettingsActionRow(
+    containerEl: HTMLElement,
+    options: {
+      label: string;
+      detail: string;
+      actionLabel: string;
+      tone: 'warning' | 'danger';
+      onActivate: () => void;
+    },
+  ): HTMLElement {
+    const row = containerEl.createDiv({
+      cls: `superpower-inside-settings-row superpower-inside-settings-action-row is-${options.tone}`,
+    });
+    const copy = row.createDiv({ cls: 'superpower-inside-settings-action-copy' });
+    copy.createDiv({ cls: 'superpower-inside-settings-action-label', text: options.label });
+    copy.createDiv({ cls: 'superpower-inside-settings-action-detail', text: options.detail });
+    const button = row.createEl('button', {
+      cls: 'mod-cta superpower-inside-settings-primary-action',
+      attr: { type: 'button' },
+      text: options.actionLabel,
+    });
+    button.addEventListener('click', options.onActivate);
+    return row;
+  }
+  private createSettingsNotice(
+    containerEl: HTMLElement,
+    options: {
+      text: string;
+      tone: 'info' | 'warning' | 'danger';
+      icon: string;
+    },
+  ): HTMLElement {
+    const notice = containerEl.createDiv({
+      cls: `superpower-inside-settings-notice is-${options.tone}`,
+    });
+    const icon = notice.createSpan({ cls: 'superpower-inside-settings-notice-icon' });
+    setIcon(icon, options.icon);
+    notice.createSpan({ cls: 'superpower-inside-settings-notice-text', text: options.text });
+    return notice;
+  }
+  private createSettingsDisclosure(
+    containerEl: HTMLElement,
+    id: string,
+    titleText: string,
+    description?: string,
+    options: {
+      className?: string;
+      idPrefix?: string;
+    } = {},
+  ): { button: HTMLButtonElement; content: HTMLElement } {
+    const idPrefix = options.idPrefix ?? 'superpower-inside-settings-disclosure';
+    const contentId = `${idPrefix}-${id}`;
+    const variantClass = options.className;
+    const disclosure = containerEl.createDiv({
+      cls: ['superpower-inside-settings-disclosure', variantClass].filter(Boolean).join(' '),
+    });
+    const button = disclosure.createEl('button', {
+      cls: [
+        'superpower-inside-settings-disclosure-button',
+        variantClass ? `${variantClass}-button` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      attr: {
+        type: 'button',
+        'aria-expanded': 'false',
+        'aria-controls': contentId,
+      },
+    });
+    const copy = button.createSpan({
+      cls: [
+        'superpower-inside-settings-disclosure-copy',
+        variantClass ? `${variantClass}-copy` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    });
+    copy.createSpan({
+      cls: [
+        'superpower-inside-settings-disclosure-title',
+        variantClass ? `${variantClass}-title` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      text: titleText,
+    });
+    if (description) {
+      copy.createSpan({
+        cls: [
+          'superpower-inside-settings-disclosure-description',
+          variantClass ? `${variantClass}-description` : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+        text: description,
+      });
+    }
+    const icon = button.createSpan({
+      cls: [
+        'superpower-inside-settings-disclosure-icon',
+        variantClass ? `${variantClass}-icon` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    });
+    setIcon(icon, 'chevron-right');
+    const content = disclosure.createDiv({
+      cls: [
+        'superpower-inside-settings-disclosure-content',
+        variantClass ? `${variantClass}-content` : '',
+        'is-collapsed',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      attr: { id: contentId },
+    });
+    button.addEventListener('click', () => {
+      const isOpen = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!isOpen));
+      disclosure.toggleClass('is-open', !isOpen);
+      content.toggleClass('is-collapsed', isOpen);
+    });
+    return { button, content };
+  }
   private createRagSection(
     containerEl: HTMLElement,
     titleText: string,
@@ -1626,20 +1856,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       className?: string;
     } = {},
   ): { section: HTMLElement; body: HTMLElement } {
-    const section = containerEl.createDiv({
-      cls: `superpower-inside-rag-section${options.className ? ` ${options.className}` : ''}`,
+    return this.createSettingsSection(containerEl, titleText, {
+      ...options,
+      variantClass: 'superpower-inside-rag-section',
     });
-    const header = section.createDiv({ cls: 'superpower-inside-rag-section-header' });
-    const copy = header.createDiv({ cls: 'superpower-inside-rag-section-copy' });
-    copy.createDiv({ cls: 'superpower-inside-rag-section-title', text: titleText });
-    if (options.description) {
-      copy.createDiv({
-        cls: 'superpower-inside-rag-section-description',
-        text: options.description,
-      });
-    }
-    const body = section.createDiv({ cls: 'superpower-inside-rag-section-body' });
-    return { section, body };
   }
   private createRagGroup(
     containerEl: HTMLElement,
@@ -1662,77 +1882,69 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     titleText: string,
     description?: string,
   ): { button: HTMLButtonElement; content: HTMLElement } {
-    const contentId = `superpower-inside-rag-disclosure-${id}`;
-    const disclosure = containerEl.createDiv({ cls: 'superpower-inside-rag-disclosure' });
-    const button = disclosure.createEl('button', {
-      cls: 'superpower-inside-rag-disclosure-button',
-      attr: {
-        type: 'button',
-        'aria-expanded': 'false',
-        'aria-controls': contentId,
-      },
+    return this.createSettingsDisclosure(containerEl, id, titleText, description, {
+      className: 'superpower-inside-rag-disclosure',
+      idPrefix: 'superpower-inside-rag-disclosure',
     });
-    const copy = button.createSpan({ cls: 'superpower-inside-rag-disclosure-copy' });
-    copy.createSpan({ cls: 'superpower-inside-rag-disclosure-title', text: titleText });
-    if (description) {
-      copy.createSpan({
-        cls: 'superpower-inside-rag-disclosure-description',
-        text: description,
-      });
-    }
-    const icon = button.createSpan({ cls: 'superpower-inside-rag-disclosure-icon' });
-    setIcon(icon, 'chevron-right');
-    const content = disclosure.createDiv({
-      cls: 'superpower-inside-rag-disclosure-content is-collapsed',
-      attr: { id: contentId },
-    });
-    button.addEventListener('click', () => {
-      const isOpen = button.getAttribute('aria-expanded') === 'true';
-      button.setAttribute('aria-expanded', String(!isOpen));
-      disclosure.toggleClass('is-open', !isOpen);
-      content.toggleClass('is-collapsed', isOpen);
-    });
-    return { button, content };
   }
   private buildGeneralTab(containerEl: HTMLElement): void {
+    containerEl.empty();
+    const workspace = containerEl.createDiv({ cls: 'superpower-inside-settings-workspace' });
+    this.buildGeneralStatusSection(workspace);
+    this.buildGeneralBasicsSection(workspace);
+    this.buildAgentDiagnosticsSection(workspace);
+    this.buildGeneralAdvancedSection(workspace);
+  }
+  private buildGeneralStatusSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsSection(containerEl, t('generalStatusTitle'), {
+      description: t('generalStatusDesc'),
+      className: 'superpower-inside-general-status-section',
+    });
+    section.body.setAttribute('role', 'status');
+    section.body.setAttribute('aria-live', 'polite');
+    this.generalStatusBody = section.body;
+    this.renderGeneralStatus(section.body);
+  }
+  private renderGeneralStatus(containerEl: HTMLElement): void {
     containerEl.empty();
     const snapshot = buildSettingsOverviewSnapshot({
       settings: this.plugin.settings,
       runtime: this.buildOverviewRuntimeState(),
     });
-    const dashboard = containerEl.createDiv({ cls: 'superpower-inside-overview' });
-    const header = dashboard.createDiv({ cls: 'superpower-inside-overview-header' });
-    const title = header.createDiv({ cls: 'superpower-inside-overview-title' });
-    title.createDiv({ cls: 'superpower-inside-overview-heading', text: 'Overview' });
-    title.createDiv({
-      cls: 'superpower-inside-overview-subtitle',
-      text: t('settingsAuto009'),
+    const primaryAttention = snapshot.attentionItems[0];
+    if (primaryAttention) {
+      this.createSettingsActionRow(containerEl, {
+        label: primaryAttention.label,
+        detail: primaryAttention.detail,
+        actionLabel: primaryAttention.actionLabel,
+        tone: primaryAttention.tone,
+        onActivate: () => this.switchTab(primaryAttention.target),
+      });
+    } else {
+      this.createSettingsNotice(containerEl, {
+        text: t('generalAllReady'),
+        tone: 'info',
+        icon: 'check-circle-2',
+      });
+    }
+    const statusList = containerEl.createDiv({ cls: 'superpower-inside-settings-status-list' });
+    for (const metric of snapshot.metrics) {
+      this.createSettingsStatusRow(statusList, {
+        label: metric.label,
+        value: metric.value,
+        statusLabel: metric.statusLabel,
+        detail: metric.detail,
+        tone: metric.tone,
+        onActivate: () => this.switchTab(metric.target),
+      });
+    }
+  }
+  private buildGeneralBasicsSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsSection(containerEl, t('generalBasicsTitle'), {
+      description: t('generalBasicsDesc'),
+      className: 'superpower-inside-general-basics-section',
     });
-    const refreshBtn = header.createEl('button', {
-      cls: 'superpower-inside-overview-refresh',
-      attr: { type: 'button' },
-      text: t('settingsAuto010'),
-    });
-    refreshBtn.addEventListener('click', () => {
-      this.updateRagStats();
-      this.updateGraphRagStats();
-      this.buildGeneralTab(containerEl);
-    });
-    this.renderOverviewMetrics(dashboard, snapshot.metrics);
-    this.renderOverviewAttention(dashboard, snapshot.attentionItems);
-    const matrix = dashboard.createDiv({ cls: 'superpower-inside-overview-matrix' });
-    this.renderOverviewSection(matrix, t('settingsAuto011'), snapshot.providerRows);
-    this.renderOverviewSection(matrix, t('settingsAuto012'), snapshot.mcpRows);
-    this.renderOverviewCompactMetrics(matrix, t('settingsAuto013'), [
-      snapshot.rag,
-      snapshot.graphRag,
-    ]);
-    this.renderOverviewCompactMetrics(matrix, t('settingsAuto014'), [snapshot.chat]);
-    const basics = this.createSettingsPanel(containerEl, t('settingsAuto015'), {
-      description: t('settingsAuto016'),
-      className: 'superpower-inside-overview-basics',
-    });
-    new Setting(basics)
+    new Setting(section.body)
       .setName(t('language'))
       .setDesc(t('languageDesc'))
       .addDropdown((dropdown) => {
@@ -1755,7 +1967,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           window.location.reload();
         });
       });
-    new Setting(basics)
+    new Setting(section.body)
       .setName(t('autoSaveSettings'))
       .setDesc(t('autoSaveSettingsDesc'))
       .addToggle((toggle) =>
@@ -1764,24 +1976,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           await this.plugin.saveSettingsLight();
         }),
       );
-    new Setting(basics)
-      .setName(t('autoSaveDelay'))
-      .setDesc(t('autoSaveDelayDesc'))
-      .addText((text) => {
-        text.inputEl.type = 'number';
-        text.setValue(String(this.plugin.settings.autoSaveDebounceMs));
-        text.inputEl.parentElement?.createSpan({
-          cls: 'superpower-inside-delay-unit',
-          text: ` ${t('delayMs')}`,
-        });
-        text.onChange((value) => {
-          const num = parseInt(value, 10);
-          if (!Number.isNaN(num) && num >= 0 && num <= 5000) {
-            this.plugin.settings.autoSaveDebounceMs = num;
-            this.debouncedSave();
-          }
-        });
-      });
     const allModels = buildChatModelOptions(this.plugin.settings, {
       currentModel: this.plugin.settings.chat.defaultModel,
     });
@@ -1805,7 +1999,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
       allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
     }
-    new Setting(basics)
+    new Setting(section.body)
       .setName(t('defaultModel'))
       .setDesc(t('defaultModelDesc'))
       .addDropdown((dropdown) => {
@@ -1825,16 +2019,39 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
-    this.buildAgentDiagnosticsSection(containerEl);
-    this.buildPluginDataResetSection(containerEl);
   }
 
   private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {
-    const section = this.createSettingsPanel(containerEl, t('agentDiagnosticsPanelTitle'), {
-      description: t('agentDiagnosticsPanelDesc'),
-      className: 'superpower-inside-agent-diagnostics-settings',
+    const section = this.createSettingsSection(containerEl, t('generalDiagnosticsTitle'), {
+      description: t('generalDiagnosticsDesc'),
+      className: 'superpower-inside-general-diagnostics-section',
     });
-    new Setting(section)
+    const statusContainer = section.body.createDiv({
+      cls: 'superpower-inside-general-diagnostics-status',
+    });
+    const renderStatus = (): void => {
+      statusContainer.empty();
+      const enabled = this.plugin.settings.agentDiagnostics.enabled;
+      this.createSettingsStatusRow(statusContainer, {
+        label: t('agentDiagnosticsToggle'),
+        value: enabled ? t('overviewReady') : t('overviewDisabled'),
+        statusLabel: enabled ? t('overviewReady') : t('overviewDisabled'),
+        detail: enabled
+          ? t('agentDiagnosticsEnabledStatus', {
+              path: this.plugin.getAgentDiagnosticsFilePath(),
+            })
+          : t('agentDiagnosticsDisabledStatus'),
+        tone: enabled ? 'success' : 'neutral',
+      });
+    };
+    renderStatus();
+    const disclosure = this.createSettingsDisclosure(
+      section.body,
+      'general-diagnostics',
+      t('generalDiagnosticsDisclosureTitle'),
+      t('generalDiagnosticsDisclosureDesc'),
+    );
+    new Setting(disclosure.content)
       .setName(t('agentDiagnosticsToggle'))
       .setDesc(t('agentDiagnosticsToggleDesc'))
       .addToggle((toggle) =>
@@ -1844,10 +2061,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           if (value) {
             await this.plugin.writeAgentDiagnosticsSnapshot('settings-toggle');
           }
-          this.buildGeneralTab(containerEl);
+          renderStatus();
         }),
       );
-    new Setting(section)
+    new Setting(disclosure.content)
       .setName(t('agentDiagnosticsOpenView'))
       .setDesc(t('agentDiagnosticsOpenViewDesc'))
       .addButton((button) =>
@@ -1855,11 +2072,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setButtonText(t('agentDiagnosticsOpenViewButton'))
           .onClick(() => this.plugin.openAgentDiagnosticsView()),
       );
-    section.createDiv({
+    disclosure.content.createDiv({
       cls: 'superpower-inside-agent-diagnostics-path',
       text: t('agentDiagnosticsFilePath', { path: this.plugin.getAgentDiagnosticsFilePath() }),
     });
-    new Setting(section)
+    new Setting(disclosure.content)
       .setName(t('agentDiagnosticsWriteSnapshot'))
       .setDesc(t('agentDiagnosticsWriteSnapshotDesc'))
       .addButton((button) =>
@@ -1867,7 +2084,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           void this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
         }),
       );
-    new Setting(section)
+    new Setting(disclosure.content)
       .setName(t('agentDiagnosticsClearDetailedLogging'))
       .setDesc(t('agentDiagnosticsClearDetailedLoggingDesc'))
       .addButton((button) =>
@@ -1876,24 +2093,57 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }),
       );
   }
-
+  private buildGeneralAdvancedSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsSection(containerEl, t('generalAdvancedTitle'), {
+      description: t('generalAdvancedDesc'),
+      className: 'superpower-inside-general-advanced-section',
+    });
+    const saveDisclosure = this.createSettingsDisclosure(
+      section.body,
+      'general-auto-save-details',
+      t('generalAutoSaveDisclosureTitle'),
+      t('generalAutoSaveDisclosureDesc'),
+    );
+    new Setting(saveDisclosure.content)
+      .setName(t('autoSaveDelay'))
+      .setDesc(t('autoSaveDelayDesc'))
+      .addText((text) => {
+        text.inputEl.type = 'number';
+        text.setValue(String(this.plugin.settings.autoSaveDebounceMs));
+        text.inputEl.parentElement?.createSpan({
+          cls: 'superpower-inside-delay-unit',
+          text: ` ${t('delayMs')}`,
+        });
+        text.onChange((value) => {
+          const num = parseInt(value, 10);
+          if (!Number.isNaN(num) && num >= 0 && num <= 5000) {
+            this.plugin.settings.autoSaveDebounceMs = num;
+            this.debouncedSave();
+          }
+        });
+      });
+    const dangerDisclosure = this.createSettingsDisclosure(
+      section.body,
+      'general-danger-zone',
+      t('pluginDataResetTitle'),
+      t('generalDangerDisclosureDesc'),
+    );
+    dangerDisclosure.button.addClass('is-danger');
+    this.buildPluginDataResetSection(dangerDisclosure.content);
+  }
   private buildPluginDataResetSection(containerEl: HTMLElement): void {
-    const section = this.createSettingsPanel(containerEl, t('pluginDataResetTitle'), {
-      description: t('pluginDataResetDesc'),
-      className: 'superpower-inside-overview-danger-zone',
+    this.createSettingsNotice(containerEl, {
+      text: t('pluginDataResetWarning'),
+      tone: 'danger',
+      icon: 'triangle-alert',
     });
-    const warning = section.createDiv({
-      cls: 'superpower-inside-overview-danger-warning',
-    });
-    setIcon(warning, 'triangle-alert');
-    warning.createSpan({ text: t('pluginDataResetWarning') });
-    section.createDiv({
-      cls: 'superpower-inside-overview-danger-scope',
+    containerEl.createDiv({
+      cls: 'superpower-inside-settings-danger-scope',
       text: t('pluginDataResetScope'),
     });
-    const actions = section.createDiv({ cls: 'superpower-inside-overview-danger-actions' });
+    const actions = containerEl.createDiv({ cls: 'superpower-inside-settings-danger-actions' });
     const button = actions.createEl('button', {
-      cls: 'superpower-inside-overview-danger-button',
+      cls: 'superpower-inside-settings-danger-button',
       attr: { type: 'button' },
     });
     setIcon(button, 'trash-2');
@@ -1951,113 +2201,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       hasGraphRagRunner: this.plugin.hasGraphRagRunner(),
     };
   }
-  private renderOverviewMetrics(
-    containerEl: HTMLElement,
-    metrics: readonly SettingsOverviewMetric[],
-  ): void {
-    const grid = containerEl.createDiv({ cls: 'superpower-inside-overview-metrics' });
-    for (const metric of metrics) {
-      const item = grid.createEl('button', {
-        cls: `superpower-inside-overview-metric is-${metric.tone}`,
-        attr: { type: 'button' },
-      });
-      item.addEventListener('click', () => this.switchTab(metric.target));
-      item.createDiv({ cls: 'superpower-inside-overview-metric-label', text: metric.label });
-      item.createDiv({ cls: 'superpower-inside-overview-metric-value', text: metric.value });
-      item.createDiv({ cls: 'superpower-inside-overview-metric-status', text: metric.statusLabel });
-      item.createDiv({ cls: 'superpower-inside-overview-metric-detail', text: metric.detail });
-    }
-  }
-  private renderOverviewAttention(
-    containerEl: HTMLElement,
-    items: readonly SettingsOverviewAttentionItem[],
-  ): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-overview-panel' });
-    const header = section.createDiv({ cls: 'superpower-inside-overview-panel-header' });
-    header.createDiv({
-      cls: 'superpower-inside-overview-section-title',
-      text: t('settingsAuto017'),
-    });
-    header.createDiv({
-      cls: 'superpower-inside-overview-section-meta',
-      text:
-        items.length === 0
-          ? t('settingsAuto018')
-          : t('settingsAuto019', { v0: String(items.length) }),
-    });
-    if (items.length === 0) {
-      section.createDiv({
-        cls: 'superpower-inside-overview-empty',
-        text: t('settingsAuto020'),
-      });
-      return;
-    }
-    const list = section.createDiv({ cls: 'superpower-inside-overview-action-list' });
-    for (const item of items) {
-      const row = list.createDiv({ cls: `superpower-inside-overview-action-row is-${item.tone}` });
-      row.createDiv({ cls: 'superpower-inside-overview-action-label', text: item.label });
-      row.createDiv({ cls: 'superpower-inside-overview-action-detail', text: item.detail });
-      const btn = row.createEl('button', {
-        cls: 'superpower-inside-overview-inline-btn',
-        attr: { type: 'button' },
-        text: item.actionLabel,
-      });
-      btn.addEventListener('click', () => this.switchTab(item.target));
-    }
-  }
-  private renderOverviewSection(
-    containerEl: HTMLElement,
-    titleText: string,
-    rows: readonly SettingsOverviewStatusRow[],
-  ): void {
-    const section = containerEl.createDiv({ cls: 'superpower-inside-overview-panel' });
-    const header = section.createDiv({ cls: 'superpower-inside-overview-panel-header' });
-    header.createDiv({ cls: 'superpower-inside-overview-section-title', text: titleText });
-    header.createDiv({
-      cls: 'superpower-inside-overview-section-meta',
-      text:
-        rows.length === 0
-          ? t('settingsAuto021')
-          : t('settingsAuto022', { v0: String(rows.length) }),
-    });
-    if (rows.length === 0) {
-      section.createDiv({ cls: 'superpower-inside-overview-empty', text: t('settingsAuto023') });
-      return;
-    }
-    const list = section.createDiv({ cls: 'superpower-inside-overview-status-list' });
-    for (const row of rows) {
-      const item = list.createEl('button', {
-        cls: `superpower-inside-overview-status-row is-${row.tone}`,
-        attr: { type: 'button' },
-      });
-      item.addEventListener('click', () => this.switchTab(row.target));
-      item.createDiv({ cls: 'superpower-inside-overview-status-name', text: row.label });
-      item.createDiv({ cls: 'superpower-inside-overview-status-value', text: row.value });
-      item.createDiv({ cls: 'superpower-inside-overview-status-badge', text: row.statusLabel });
-      item.createDiv({ cls: 'superpower-inside-overview-status-detail', text: row.detail });
-    }
-  }
-  private renderOverviewCompactMetrics(
-    containerEl: HTMLElement,
-    titleText: string,
-    metrics: readonly SettingsOverviewMetric[],
-  ): void {
-    const rows = metrics.map((metric) => ({
-      id: metric.id,
-      label: metric.label,
-      value: metric.value,
-      statusLabel: metric.statusLabel,
-      detail: metric.detail,
-      tone: metric.tone,
-      target: metric.target,
-    }));
-    this.renderOverviewSection(containerEl, titleText, rows);
-  }
   private buildProvidersTab(containerEl: HTMLElement): void {
     this.buildProviderProfilesTab(containerEl);
   }
   private buildRAGTab(containerEl: HTMLElement): void {
-    const workspace = containerEl.createDiv({ cls: 'superpower-inside-rag-workspace' });
+    const workspace = containerEl.createDiv({
+      cls: 'superpower-inside-settings-workspace superpower-inside-rag-workspace',
+    });
     this.buildRagStatusPanel(workspace);
     this.buildRagFoundationSection(workspace);
     this.buildGraphRagSection(workspace);

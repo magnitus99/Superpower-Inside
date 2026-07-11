@@ -50,7 +50,7 @@ flowchart LR
 
 ## 공통 작업 중심 UI 디자인 계약
 
-RAG 설정 화면을 첫 참조 구현으로 삼아 새 화면과 큰 UI 변경에 아래 계층을 적용합니다. 기존 화면은 한 번에 다시 만들지 않고 Providers, Chat, MCP, Advanced 관련 작업이 생길 때 같은 기준으로 전환합니다.
+RAG 설정 화면에서 시작한 계약을 General의 범용 설정 helper로 승격했습니다. 새 설정 화면과 큰 UI 변경은 아래 계층을 적용하고, 기존 Chat, MCP, Advanced는 관련 작업에서 같은 기준으로 전환합니다.
 
 | 계층 | 역할 | 구현 기준 |
 | --- | --- | --- |
@@ -69,7 +69,12 @@ RAG 설정 화면을 첫 참조 구현으로 삼아 새 화면과 큰 UI 변경�
 5. TS에서는 DOM과 host callback만 연결합니다. 검색·랭킹·상태 판정 정책을 UI 편의를 위해 복제하지 않습니다.
 6. 준비, 진행 중, 빈 상태, 부분 실패, 오류, disabled 상태를 테스트와 실제 화면으로 확인합니다.
 
-RAG 참조 구현과 상세 계약은 [RAG 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-rag-task-centered-ui-design.md)를 봅니다.
+`src/settings.ts`에서는 `createSettingsSection`, `createSettingsStatusRow`, `createSettingsActionRow`, `createSettingsNotice`, `createSettingsDisclosure`를 기본으로 사용합니다. RAG 전용 helper도 이 범용 section과 disclosure에 위임하므로 새 탭별 카드·접힘 체계를 만들지 않습니다.
+
+참조 문서:
+
+- [General 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-general-task-centered-ui-design.md)
+- [RAG 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-rag-task-centered-ui-design.md)
 
 ## 개발 원칙
 

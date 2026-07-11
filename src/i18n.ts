@@ -31,6 +31,20 @@ export interface I18nKeys {
   langKo: string;
   langEn: string;
   languageChangeConfirm: string;
+  generalStatusTitle: string;
+  generalStatusDesc: string;
+  generalAllReady: string;
+  generalBasicsTitle: string;
+  generalBasicsDesc: string;
+  generalDiagnosticsTitle: string;
+  generalDiagnosticsDesc: string;
+  generalDiagnosticsDisclosureTitle: string;
+  generalDiagnosticsDisclosureDesc: string;
+  generalAdvancedTitle: string;
+  generalAdvancedDesc: string;
+  generalAutoSaveDisclosureTitle: string;
+  generalAutoSaveDisclosureDesc: string;
+  generalDangerDisclosureDesc: string;
   loggingMinLevel: string;
   loggingMirrorConsole: string;
   loggingMaxEntries: string;
@@ -585,21 +599,7 @@ export interface I18nKeys {
   settingsAuto006: string;
   settingsAuto007: string;
   settingsAuto008: string;
-  settingsAuto009: string;
-  settingsAuto010: string;
-  settingsAuto011: string;
-  settingsAuto012: string;
-  settingsAuto013: string;
-  settingsAuto014: string;
-  settingsAuto015: string;
-  settingsAuto016: string;
-  settingsAuto017: string;
-  settingsAuto018: string;
-  settingsAuto019: string;
-  settingsAuto020: string;
-  settingsAuto021: string;
   settingsAuto022: string;
-  settingsAuto023: string;
   settingsAuto024: string;
   settingsAuto025: string;
   settingsAuto026: string;
@@ -1188,6 +1188,10 @@ export interface I18nKeys {
   overviewMcpErrorAttention: string;
   overviewGraphRagErrorAttention: string;
   overviewEmbeddingLabel: string;
+  overviewOpenProviders: string;
+  overviewOpenGeneral: string;
+  overviewOpenRag: string;
+  overviewOpenMcp: string;
   pluginDataResetTitle: string;
   pluginDataResetDesc: string;
   pluginDataResetWarning: string;
@@ -1437,29 +1441,29 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
-  agentDiagnosticsPanelTitle: 'Debugging',
+  agentDiagnosticsPanelTitle: '진단',
   agentDiagnosticsPanelDesc:
-    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
-  agentDiagnosticsToggle: 'Enable agent diagnostics',
+    'Codex와 opencode가 문제 원인을 확인할 수 있도록 런타임 상태를 기록합니다. 일반 사용에서는 기본적으로 꺼져 있습니다.',
+  agentDiagnosticsToggle: '에이전트 진단 사용',
   agentDiagnosticsToggleDesc:
-    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
-  agentDiagnosticsOpenView: 'Agent diagnostics status window',
-  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
-  agentDiagnosticsOpenViewButton: 'Open diagnostics',
-  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
-  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
-  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
-  agentDiagnosticsWriteButton: 'Write snapshot',
-  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
+    '이번 플러그인 세션의 heartbeat, 새로고침 이벤트, 최근 로그와 런타임 상태를 수집합니다.',
+  agentDiagnosticsOpenView: '진단 상태 창',
+  agentDiagnosticsOpenViewDesc: '기계 판독 가능한 진단 화면을 엽니다.',
+  agentDiagnosticsOpenViewButton: '진단 열기',
+  agentDiagnosticsFilePath: '진단 파일: {path}',
+  agentDiagnosticsWriteSnapshot: '현재 상태 기록',
+  agentDiagnosticsWriteSnapshotDesc: '현재 진단 상태를 JSON 파일에 즉시 기록합니다.',
+  agentDiagnosticsWriteButton: '상태 기록',
+  agentDiagnosticsClearDetailedLogging: '상세 진단 기록 정리',
   agentDiagnosticsClearDetailedLoggingDesc:
-    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
-  agentDiagnosticsClearButton: 'Clean detailed logging',
+    '에이전트 진단 버퍼와 최근 로그를 비우고 진단 JSON 파일을 제거합니다.',
+  agentDiagnosticsClearButton: '진단 기록 정리',
   agentDiagnosticsViewTitle: 'Agent Diagnostics',
   agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
   agentDiagnosticsRefreshButton: 'Refresh',
   agentDiagnosticsCopyButton: 'Copy JSON',
-  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
-  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
+  agentDiagnosticsEnabledStatus: '사용 중이며 {path}에 기록합니다.',
+  agentDiagnosticsDisabledStatus: '꺼져 있습니다. 문제가 있을 때만 펼쳐서 켜세요.',
   agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
   agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
   agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
@@ -1499,6 +1503,20 @@ const ko: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
+  generalStatusTitle: '현재 상태',
+  generalStatusDesc: '채팅과 검색을 바로 사용할 수 있는지 확인하고 필요한 다음 행동만 안내합니다.',
+  generalAllReady: '현재 바로 처리할 항목이 없습니다.',
+  generalBasicsTitle: '기본 설정',
+  generalBasicsDesc: '언어, 기본 모델, 설정 저장 방식을 정합니다.',
+  generalDiagnosticsTitle: '진단',
+  generalDiagnosticsDesc: '문제가 있을 때만 런타임 상태와 상세 기록을 확인합니다.',
+  generalDiagnosticsDisclosureTitle: '진단 도구 보기',
+  generalDiagnosticsDisclosureDesc: '상태 기록, 진단 화면, 로그 정리 작업을 펼칩니다.',
+  generalAdvancedTitle: '고급 및 복구',
+  generalAdvancedDesc: '평소에는 바꿀 필요 없는 저장 세부값과 복구 작업입니다.',
+  generalAutoSaveDisclosureTitle: '저장 세부 설정',
+  generalAutoSaveDisclosureDesc: '설정 변경 후 저장하기까지의 대기 시간을 조정합니다.',
+  generalDangerDisclosureDesc: '되돌릴 수 없는 전체 초기화 작업이 포함되어 있습니다.',
   loggingMinLevel: '최소 로그 레벨',
   loggingMirrorConsole: '콘솔에도 출력',
   loggingMaxEntries: '로그 보존 개수',
@@ -2065,21 +2083,7 @@ const ko: I18nKeys = {
   settingsAuto007:
     '임베딩 설정 변경이 취소되었습니다. (설정 탭을 닫으면서 저장되지 않은 변경사항은 버려집니다)',
   settingsAuto008: '모델 선택 안 함',
-  settingsAuto009: '핵심 상태, 주의 필요 항목, 자주 쓰는 설정을 한 화면에서 확인합니다.',
-  settingsAuto010: '상태 새로고침',
-  settingsAuto011: '프로바이더',
-  settingsAuto012: 'MCP 서버',
-  settingsAuto013: '지식 인덱스',
-  settingsAuto014: '채팅',
-  settingsAuto015: '기본 설정',
-  settingsAuto016: '언어, 설정 저장 방식, 기본 채팅 모델을 조정합니다.',
-  settingsAuto017: '주의 필요',
-  settingsAuto018: '현재 바로잡을 항목 없음',
-  settingsAuto019: '{v0}개 항목',
-  settingsAuto020: 'Provider, RAG, MCP 핵심 상태에 즉시 조치가 필요한 항목이 없습니다.',
-  settingsAuto021: '0개',
   settingsAuto022: '{v0}개',
-  settingsAuto023: '표시할 항목이 없습니다.',
   settingsAuto024:
     '채팅과 명령어 실행에 사용할 LLM provider를 관리합니다. 활성화, 모델 선택, 연결 검증을 provider별로 확인합니다.',
   settingsAuto025: '{v0}개 구성',
@@ -2421,7 +2425,7 @@ const ko: I18nKeys = {
     '경고: 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 저장소와 플러그인 data.json에 저장됩니다. 볼트 동기화, 로컬 백업, 같은 기기에 접근할 수 있는 사용자에게 노출될 수 있습니다.',
 
   // Tabs
-  tabGeneral: 'Overview',
+  tabGeneral: '일반',
   tabProviders: '프로바이더',
   // Providers tab common actions
   collapseAll: '모두 접기',
@@ -2725,6 +2729,10 @@ const ko: I18nKeys = {
   overviewMcpErrorAttention: 'MCP 연결 오류',
   overviewGraphRagErrorAttention: 'GraphRAG 상태 오류',
   overviewEmbeddingLabel: '{provider} / {model}',
+  overviewOpenProviders: '프로바이더 설정',
+  overviewOpenGeneral: '기본 모델 선택',
+  overviewOpenRag: '검색 설정',
+  overviewOpenMcp: 'MCP 설정',
   pluginDataResetTitle: '전체 플러그인 데이터 초기화',
   pluginDataResetDesc:
     '업데이트 이후 설정, 인덱스, 캐시 상태가 꼬였을 때 Superpower Inside 내부 데이터를 기본 상태로 되돌립니다.',
@@ -3050,6 +3058,21 @@ const en: I18nKeys = {
   langEn: 'English',
   languageChangeConfirm:
     'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
+  generalStatusTitle: 'Current status',
+  generalStatusDesc: 'See whether chat and search are ready, with only the next useful action surfaced.',
+  generalAllReady: 'Nothing needs immediate attention.',
+  generalBasicsTitle: 'Essentials',
+  generalBasicsDesc: 'Choose the language, default model, and settings save behavior.',
+  generalDiagnosticsTitle: 'Diagnostics',
+  generalDiagnosticsDesc: 'Inspect runtime state and detailed records only when something needs attention.',
+  generalDiagnosticsDisclosureTitle: 'Show diagnostic tools',
+  generalDiagnosticsDisclosureDesc:
+    'Reveal status capture, the diagnostics view, and log cleanup actions.',
+  generalAdvancedTitle: 'Advanced and recovery',
+  generalAdvancedDesc: 'Save timing details and recovery actions that rarely need adjustment.',
+  generalAutoSaveDisclosureTitle: 'Save timing details',
+  generalAutoSaveDisclosureDesc: 'Adjust how long the plugin waits before saving setting changes.',
+  generalDangerDisclosureDesc: 'Contains an irreversible reset of all plugin data.',
   loggingMinLevel: 'Minimum log level',
   loggingMirrorConsole: 'Mirror to console',
   loggingMaxEntries: 'Retained log entries',
@@ -3643,22 +3666,7 @@ const en: I18nKeys = {
   settingsAuto007:
     'Embedding setting changes were cancelled. Unsaved changes are discarded when closing the settings tab.',
   settingsAuto008: 'No model selected',
-  settingsAuto009:
-    'Review core status, items that need attention, and frequently used settings in one screen.',
-  settingsAuto010: 'Refresh status',
-  settingsAuto011: 'Providers',
-  settingsAuto012: 'MCP servers',
-  settingsAuto013: 'Knowledge index',
-  settingsAuto014: 'Chat',
-  settingsAuto015: 'Default settings',
-  settingsAuto016: 'Adjust language, settings save behavior, and the default chat model.',
-  settingsAuto017: 'Needs attention',
-  settingsAuto018: 'Nothing to fix right now',
-  settingsAuto019: '{v0} items',
-  settingsAuto020: 'Provider, RAG, and MCP core status have no items requiring immediate action.',
-  settingsAuto021: '0 items',
   settingsAuto022: '{v0} items',
-  settingsAuto023: 'No items to display.',
   settingsAuto024:
     'Manage LLM providers for chat and command execution. Check enablement, model selection, and connection validation per provider.',
   settingsAuto025: '{v0} configured',
@@ -4008,7 +4016,7 @@ const en: I18nKeys = {
     'Warning: settings and API keys are stored unencrypted in this device’s Obsidian local storage and plugin data.json. They may be exposed through vault sync, local backups, or users with access to this device.',
 
   // Tabs
-  tabGeneral: 'Overview',
+  tabGeneral: 'General',
   tabProviders: 'Providers',
   // Providers tab common actions
   collapseAll: 'Collapse All',
@@ -4320,6 +4328,10 @@ const en: I18nKeys = {
   overviewMcpErrorAttention: 'MCP connection error',
   overviewGraphRagErrorAttention: 'GraphRAG status error',
   overviewEmbeddingLabel: '{provider} / {model}',
+  overviewOpenProviders: 'Open providers',
+  overviewOpenGeneral: 'Choose default model',
+  overviewOpenRag: 'Open search settings',
+  overviewOpenMcp: 'Open MCP settings',
   pluginDataResetTitle: 'Reset all plugin data',
   pluginDataResetDesc:
     'Return Superpower Inside internal data to defaults when frequent updates leave settings, indexes, or caches in a tangled state.',

@@ -11,38 +11,104 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
-  it('Overview metric grid는 좁은 116px 카드로 압축되지 않는다', () => {
-    expect(styles).not.toContain('minmax(116px, 1fr)');
-    expect(styles).toMatch(
-      /\.superpower-inside-overview-metrics\s*\{[\s\S]*minmax\(220px,\s*1fr\)/,
-    );
-  });
-
   it('활성 탭 패널은 공통 flex 레이아웃을 사용한다', () => {
     expect(styles).toMatch(
       /\.superpower-inside-settings-tab-content\.is-active\s*\{[\s\S]*display:\s*flex/,
     );
     expect(styles).toContain('.superpower-inside-settings-panel');
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-tabs\s*\{[\s\S]*flex-wrap:\s*wrap/,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-tab\s*\{[\s\S]*flex:\s*0\s+0\s+auto/,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-status-detail,[\s\S]*white-space:\s*normal/,
+    );
   });
 
-  it('settings.ts는 공통 설정 패널 helper와 tab panels wrapper를 제공한다', () => {
-    expect(settingsSource).toContain('createSettingsPanel(');
+  it('settings.ts는 범용 설정 section과 disclosure helper를 제공한다', () => {
+    expect(settingsSource).toContain('private createSettingsSection(');
+    expect(settingsSource).toContain('private createSettingsStatusRow(');
+    expect(settingsSource).toContain('private createSettingsDisclosure(');
     expect(settingsSource).toContain('superpower-inside-settings-tab-panels');
+    expect(settingsSource).toContain("'aria-expanded': 'false'");
+    expect(settingsSource).toContain("'aria-controls': contentId");
+    expect(settingsSource).toContain("setIcon(icon, 'chevron-right')");
   });
 
-  it('Overview 탭 맨 아래에 전체 플러그인 데이터 초기화 위험 구역을 배치한다', () => {
+  it('General 탭은 상태, 기본 설정, 진단, 고급 및 복구 순서로 읽힌다', () => {
     const methodStart = settingsSource.indexOf('private buildGeneralTab(containerEl: HTMLElement)');
-    const methodEnd = settingsSource.indexOf('\n  private buildOverviewRuntimeState', methodStart);
+    const methodEnd = settingsSource.indexOf('\n  private buildGeneralStatusSection', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
-    const basicsIndex = methodSource.indexOf('superpower-inside-overview-basics');
-    const resetIndex = methodSource.indexOf('buildPluginDataResetSection');
+    const expectedOrder = [
+      'buildGeneralStatusSection',
+      'buildGeneralBasicsSection',
+      'buildAgentDiagnosticsSection',
+      'buildGeneralAdvancedSection',
+    ];
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(basicsIndex).toBeGreaterThanOrEqual(0);
-    expect(resetIndex).toBeGreaterThan(basicsIndex);
-    expect(settingsSource).toContain('resetPluginData(): Promise<void>');
-    expect(settingsSource).toContain('pluginDataResetWarning');
-    expect(styles).toContain('.superpower-inside-overview-danger-zone');
+    expect(methodSource).toContain('superpower-inside-settings-workspace');
+    const positions = expectedOrder.map((name) => methodSource.indexOf(name));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('General 탭은 metric dashboard와 수동 새로고침을 제거한다', () => {
+    const methodStart = settingsSource.indexOf('private buildGeneralTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildGeneralStatusSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).not.toContain('renderOverviewMetrics');
+    expect(methodSource).not.toContain('superpower-inside-overview-metrics');
+    expect(methodSource).not.toContain('superpower-inside-overview-refresh');
+    expect(styles).not.toContain('.superpower-inside-overview-metrics');
+  });
+
+  it('General 상태는 첫 attention만 primary action으로 표시한다', () => {
+    const methodStart = settingsSource.indexOf('private renderGeneralStatus(');
+    const methodEnd = settingsSource.indexOf('\n  private buildGeneralBasicsSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('const primaryAttention = snapshot.attentionItems[0]');
+    expect(methodSource).toContain('createSettingsActionRow');
+    expect(methodSource).not.toContain('for (const item of snapshot.attentionItems)');
+    expect(settingsSource).toContain('options.value !== options.statusLabel');
+  });
+
+  it('General의 세부 설정, 진단, 전체 초기화는 disclosure로 점진 공개한다', () => {
+    const methodStart = settingsSource.indexOf('private buildGeneralBasicsSection');
+    const methodEnd = settingsSource.indexOf('\n  private handlePluginDataReset', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain("createSettingsDisclosure(");
+    expect(methodSource).toContain("'general-auto-save-details'");
+    expect(methodSource).toContain("'general-diagnostics'");
+    expect(methodSource).toContain("'general-danger-zone'");
+    expect(methodSource).toContain('pluginDataResetWarning');
+    expect(methodSource).toContain('handlePluginDataReset(button)');
+  });
+
+  it('General 상태는 refresh bus 이벤트에서 전체 탭 대신 상태 section만 갱신한다', () => {
+    const renderStart = settingsSource.indexOf('private renderSettingsView(): void');
+    const renderEnd = settingsSource.indexOf('\n  private unregisterRefreshBusSubscriptions', renderStart);
+    const renderSource = settingsSource.slice(renderStart, renderEnd);
+    const refreshStart = settingsSource.indexOf('private refreshGeneralStatusSection(): void');
+    const refreshEnd = settingsSource.indexOf('\n  private repopulateDefaultModelDropdown', refreshStart);
+    const refreshSource = settingsSource.slice(refreshStart, refreshEnd);
+
+    expect(renderSource).toContain("bus.on('rag'");
+    expect(renderSource).toContain("bus.on('models'");
+    expect(renderSource).toContain("bus.on('mcp'");
+    expect(renderSource).toContain("bus.on('graph-data'");
+    expect(renderSource.match(/this\.refreshGeneralStatusSection\(\)/g)?.length).toBeGreaterThanOrEqual(
+      4,
+    );
+    expect(refreshSource).toContain('this.generalStatusBody');
+    expect(refreshSource).toContain('statusBody.isConnected');
+    expect(refreshSource).not.toContain('this.buildGeneralTab');
   });
 
   it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {
@@ -88,6 +154,8 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('private createRagSection(');
     expect(settingsSource).toContain('private createRagGroup(');
     expect(settingsSource).toContain('private createRagDisclosure(');
+    expect(settingsSource).toContain('return this.createSettingsSection(');
+    expect(settingsSource).toContain('return this.createSettingsDisclosure(');
     expect(settingsSource).toContain("'aria-expanded': 'false'");
     expect(settingsSource).toContain("'aria-controls': contentId");
     expect(settingsSource).toContain("setIcon(icon, 'chevron-right')");
@@ -95,6 +163,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toContain('.superpower-inside-rag-section');
     expect(styles).toContain('.superpower-inside-rag-row');
     expect(styles).toContain('.superpower-inside-rag-disclosure');
+    expect(styles).toContain('.superpower-inside-settings-section');
+    expect(styles).toContain('.superpower-inside-settings-row');
+    expect(styles).toContain('.superpower-inside-settings-disclosure');
     expect(styles).toContain('container-type: inline-size');
     expect(styles).toContain('@container superpower-inside-rag');
   });

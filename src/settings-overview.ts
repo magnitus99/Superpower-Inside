@@ -10,7 +10,13 @@ import type {
   ProviderKey,
   SuperpowerInsideSettings,
 } from './settings';
-import { PROVIDER_KEYS, PROVIDER_LABELS, PROVIDER_STRATEGY_LABELS } from './settings';
+import {
+  buildProviderModelRef,
+  parseProviderModelRef,
+  PROVIDER_KEYS,
+  PROVIDER_LABELS,
+  PROVIDER_STRATEGY_LABELS,
+} from './settings';
 
 export type SettingsOverviewTone = 'neutral' | 'success' | 'warning' | 'danger';
 export type SettingsOverviewTarget = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';
@@ -472,11 +478,29 @@ function buildChatMetric(settings: SuperpowerInsideSettings): SettingsOverviewMe
     value: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
     statusLabel: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
     detail: defaultModelAvailable
-      ? t('overviewChatDefaultModel', { model: settings.chat.defaultModel })
+      ? t('overviewChatDefaultModel', { model: getChatModelLabel(settings) })
       : t('overviewChatDefaultUnavailable'),
     tone: defaultModelAvailable ? 'success' : 'warning',
     target: 'chat',
   };
+}
+
+function getChatModelLabel(settings: SuperpowerInsideSettings): string {
+  const parsed = parseProviderModelRef(settings.chat.defaultModel);
+  if (parsed.kind === 'profile') {
+    const profile = settings.providerProfiles.find((candidate) => candidate.id === parsed.profileId);
+    return profile ? `${profile.name} / ${parsed.modelId}` : parsed.modelId;
+  }
+  if (parsed.kind === 'legacy') {
+    return `${PROVIDER_LABELS[parsed.providerKey]} / ${parsed.modelId}`;
+  }
+  if (parsed.kind === 'legacy-custom-openai') {
+    const provider = settings.customOpenAIProviders.find(
+      (candidate) => candidate.id === parsed.providerId,
+    );
+    return provider ? `${provider.name} / ${parsed.modelId}` : parsed.modelId;
+  }
+  return settings.chat.defaultModel;
 }
 
 function buildAttentionItems(input: {
@@ -497,7 +521,7 @@ function buildAttentionItems(input: {
         detail: row.detail,
         tone: 'danger',
         target: 'providers',
-        actionLabel: 'Providers',
+        actionLabel: t('overviewOpenProviders'),
       });
     }
   }
@@ -509,7 +533,7 @@ function buildAttentionItems(input: {
       detail: input.chat.detail,
       tone: 'warning',
       target: 'general',
-      actionLabel: 'General',
+      actionLabel: t('overviewOpenGeneral'),
     });
   }
 
@@ -520,7 +544,7 @@ function buildAttentionItems(input: {
       detail: input.rag.detail,
       tone: 'warning',
       target: 'rag',
-      actionLabel: 'RAG',
+      actionLabel: t('overviewOpenRag'),
     });
   }
 
@@ -531,7 +555,7 @@ function buildAttentionItems(input: {
       detail: input.mcp.detail,
       tone: 'danger',
       target: 'mcp',
-      actionLabel: 'MCP',
+      actionLabel: t('overviewOpenMcp'),
     });
   }
 
@@ -542,7 +566,7 @@ function buildAttentionItems(input: {
       detail: input.graphRag.detail,
       tone: 'danger',
       target: 'rag',
-      actionLabel: 'RAG',
+      actionLabel: t('overviewOpenRag'),
     });
   }
 
@@ -551,6 +575,16 @@ function buildAttentionItems(input: {
 
 function getAvailableChatModelValues(settings: SuperpowerInsideSettings): string[] {
   const values: string[] = [];
+  if (settings.providerProfiles.length > 0) {
+    for (const profile of settings.providerProfiles) {
+      if (!profile.enabled) continue;
+      for (const model of profile.models) {
+        if (model.kind !== 'general') continue;
+        values.push(buildProviderModelRef(profile.id, model.id));
+      }
+    }
+    return values;
+  }
   for (const key of PROVIDER_KEYS) {
     const config = settings[key];
     if (!config.enabled) continue;

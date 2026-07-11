@@ -142,6 +142,9 @@ obsidian vault=".test-vault" dev:screenshot path=/tmp/superpower-inside-ui.png
 | --- | --- |
 | 첫 화면 | 현재 상태와 가장 중요한 다음 행동이 3초 안에 읽히는지 |
 | 기본 설정 | section 안의 설정이 평평한 row로 정렬되고 카드가 중첩되지 않는지 |
+| General 상태 | Provider·검색·MCP·채팅 상태가 평평한 행으로 읽히고 primary action이 하나인지 |
+| General 진단 | 접힌 상태에서 사용 여부가 보이고, 펼쳤을 때 경로·기록·정리 작업이 잘리지 않는지 |
+| General 복구 | 저장 세부값과 전체 초기화가 기본 흐름에서 접혀 있고 위험 설명 뒤에만 버튼이 보이는지 |
 | 접힘/펼침 | 아이콘, 제목, 설명, `aria-expanded`가 상태와 일치하는지 |
 | 진행 중·disabled | 상태 변화가 텍스트로 전달되고 비활성 이유가 반복되지 않는지 |
 | 빈 상태·오류 | 빈 카드 대신 이유와 가능한 다음 행동이 보이는지 |

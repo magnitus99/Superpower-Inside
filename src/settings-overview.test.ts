@@ -263,5 +263,46 @@ describe('설정 Overview snapshot', () => {
       'rag-update-required',
       'mcp-errors',
     ]);
+    expect(snapshot.attentionItems.map((item) => item.actionLabel)).toEqual([
+      '프로바이더 설정',
+      '기본 모델 선택',
+      '검색 설정',
+      'MCP 설정',
+    ]);
+  });
+
+  it('provider profile의 활성 일반 모델을 기본 채팅 모델로 인식한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        providerProfiles: [
+          {
+            id: 'freellmapi',
+            name: 'FreeLLMAPI',
+            strategy: 'openAICompatible',
+            apiKey: '',
+            baseUrl: 'http://localhost:35010/v1',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+        chat: { ...DEFAULT_SETTINGS.chat, defaultModel: 'profile:freellmapi:auto' },
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.chat).toMatchObject({
+      statusLabel: '준비됨',
+      detail: '기본 모델 FreeLLMAPI / auto',
+      tone: 'success',
+    });
+    expect(snapshot.attentionItems.map((item) => item.id)).not.toContain(
+      'chat-default-model-unavailable',
+    );
   });
 });
