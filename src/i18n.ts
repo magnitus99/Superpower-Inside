@@ -45,6 +45,32 @@ export interface I18nKeys {
   generalAutoSaveDisclosureTitle: string;
   generalAutoSaveDisclosureDesc: string;
   generalDangerDisclosureDesc: string;
+  chatStatusTitle: string;
+  chatStatusDesc: string;
+  chatActiveStatus: string;
+  chatEnabledStatus: string;
+  chatDisabledStatus: string;
+  chatSelectedStatus: string;
+  chatStatusPromptDetail: string;
+  chatStatusAutosaveOnDetail: string;
+  chatStatusAutosaveOffDetail: string;
+  chatStatusToolsDetail: string;
+  chatPromptSectionTitle: string;
+  chatPromptSectionDesc: string;
+  chatPromptLibraryDesc: string;
+  chatPromptShortcutsTitle: string;
+  chatPromptShortcutsDesc: string;
+  chatApplyPreset: string;
+  chatPromptResetDesc: string;
+  chatStorageSectionTitle: string;
+  chatStorageSectionDesc: string;
+  chatStorageDetailsTitle: string;
+  chatStorageDetailsDesc: string;
+  chatToolsSectionTitle: string;
+  chatToolsSectionDesc: string;
+  chatToolDetailsTitle: string;
+  chatToolDetailsDesc: string;
+  chatAlwaysAutoWarning: string;
   loggingMinLevel: string;
   loggingMirrorConsole: string;
   loggingMaxEntries: string;
@@ -1517,6 +1543,33 @@ const ko: I18nKeys = {
   generalAutoSaveDisclosureTitle: '저장 세부 설정',
   generalAutoSaveDisclosureDesc: '설정 변경 후 저장하기까지의 대기 시간을 조정합니다.',
   generalDangerDisclosureDesc: '되돌릴 수 없는 전체 초기화 작업이 포함되어 있습니다.',
+  chatStatusTitle: '현재 동작',
+  chatStatusDesc: '새 대화에 적용되는 응답, 저장, 도구 사용 방식을 요약합니다.',
+  chatActiveStatus: '적용 중',
+  chatEnabledStatus: '사용 중',
+  chatDisabledStatus: '꺼짐',
+  chatSelectedStatus: '선택됨',
+  chatStatusPromptDetail: '새 대화의 기본 응답 방식입니다.',
+  chatStatusAutosaveOnDetail: '대화가 지정한 볼트 폴더에 자동으로 저장됩니다.',
+  chatStatusAutosaveOffDetail: '대화는 사용자가 직접 저장할 때만 보관됩니다.',
+  chatStatusToolsDetail: 'MCP 도구 실행 전 확인 범위를 결정합니다.',
+  chatPromptSectionTitle: '응답 기본값',
+  chatPromptSectionDesc: 'AI의 기본 역할과 응답 방식을 정합니다.',
+  chatPromptLibraryDesc: '저장된 프롬프트를 선택하고 이름·설명·내용을 관리합니다.',
+  chatPromptShortcutsTitle: '빠른 시작과 초기화',
+  chatPromptShortcutsDesc: '프리셋을 새 기본값으로 적용하거나 기본 프롬프트로 되돌립니다.',
+  chatApplyPreset: '적용',
+  chatPromptResetDesc: '사용자 지정 전역 프롬프트를 기본 지식 작업 프롬프트로 되돌립니다.',
+  chatStorageSectionTitle: '대화 저장',
+  chatStorageSectionDesc: '대화를 보관할 위치와 자동 저장 여부를 정합니다.',
+  chatStorageDetailsTitle: '저장 세부 조정',
+  chatStorageDetailsDesc: '자동 저장이 시작되기 전 대기 시간을 조정합니다.',
+  chatToolsSectionTitle: '도구 사용',
+  chatToolsSectionDesc: 'MCP 도구를 언제 자동 실행하고 언제 확인할지 정합니다.',
+  chatToolDetailsTitle: '도구 세부 조정',
+  chatToolDetailsDesc: '모델이 요청된 도구를 사용하지 않았을 때의 재시도를 조정합니다.',
+  chatAlwaysAutoWarning:
+    '항상 자동 실행을 선택하면 멘션하지 않은 일반 MCP 도구도 별도 승인 없이 실행될 수 있습니다.',
   loggingMinLevel: '최소 로그 레벨',
   loggingMirrorConsole: '콘솔에도 출력',
   loggingMaxEntries: '로그 보존 개수',
@@ -3073,6 +3126,33 @@ const en: I18nKeys = {
   generalAutoSaveDisclosureTitle: 'Save timing details',
   generalAutoSaveDisclosureDesc: 'Adjust how long the plugin waits before saving setting changes.',
   generalDangerDisclosureDesc: 'Contains an irreversible reset of all plugin data.',
+  chatStatusTitle: 'Current behavior',
+  chatStatusDesc: 'Summarizes the response, saving, and tool behavior applied to new chats.',
+  chatActiveStatus: 'Active',
+  chatEnabledStatus: 'On',
+  chatDisabledStatus: 'Off',
+  chatSelectedStatus: 'Selected',
+  chatStatusPromptDetail: 'This is the default response behavior for new chats.',
+  chatStatusAutosaveOnDetail: 'Chats are saved automatically in the selected vault folder.',
+  chatStatusAutosaveOffDetail: 'Chats are kept only when you save them manually.',
+  chatStatusToolsDetail: 'Controls when MCP tool execution requires confirmation.',
+  chatPromptSectionTitle: 'Response defaults',
+  chatPromptSectionDesc: 'Set the AI’s default role and response behavior.',
+  chatPromptLibraryDesc: 'Choose saved prompts and manage their names, descriptions, and content.',
+  chatPromptShortcutsTitle: 'Quick starts and reset',
+  chatPromptShortcutsDesc: 'Apply a preset as the new default or return to the built-in prompt.',
+  chatApplyPreset: 'Apply',
+  chatPromptResetDesc: 'Return the global prompt to the default knowledge-work prompt.',
+  chatStorageSectionTitle: 'Chat saving',
+  chatStorageSectionDesc: 'Choose where chats are stored and whether they save automatically.',
+  chatStorageDetailsTitle: 'Saving details',
+  chatStorageDetailsDesc: 'Adjust how long automatic saving waits after the last message.',
+  chatToolsSectionTitle: 'Tool use',
+  chatToolsSectionDesc: 'Choose when MCP tools run automatically and when they need confirmation.',
+  chatToolDetailsTitle: 'Tool details',
+  chatToolDetailsDesc: 'Adjust retries when the model does not use a requested tool.',
+  chatAlwaysAutoWarning:
+    'Always auto-run can execute normal MCP tools that were not mentioned without separate approval.',
   loggingMinLevel: 'Minimum log level',
   loggingMirrorConsole: 'Mirror to console',
   loggingMaxEntries: 'Retained log entries',

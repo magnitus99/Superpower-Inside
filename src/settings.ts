@@ -4994,45 +4994,65 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
   }
   private buildChatTab(containerEl: HTMLElement): void {
-    const storagePanel = this.createSettingsPanel(containerEl, t('settingsAuto088'), {
-      description: t('settingsAuto199'),
+    containerEl.empty();
+    const workspace = containerEl.createDiv({
+      cls: 'superpower-inside-settings-workspace superpower-inside-chat-settings-workspace',
     });
-    const promptPanel = this.createSettingsPanel(containerEl, t('settingsAuto200'), {
-      description: t('settingsAuto201'),
+    this.buildChatStatusSection(workspace);
+    this.buildChatPromptSection(workspace);
+    this.buildChatStorageSection(workspace);
+    this.buildChatToolsSection(workspace);
+  }
+  private buildChatStatusSection(containerEl: HTMLElement): void {
+    const { body } = this.createSettingsSection(containerEl, t('chatStatusTitle'), {
+      description: t('chatStatusDesc'),
     });
-    const toolPanel = this.createSettingsPanel(containerEl, t('settingsAuto202'), {
-      description: t('settingsAuto203'),
+    const activePrompt = getActivePromptEntry(this.plugin.settings);
+    this.createSettingsStatusRow(body, {
+      label: t('systemPrompt'),
+      value: activePrompt.title,
+      statusLabel: t('chatActiveStatus'),
+      detail: t('chatStatusPromptDetail'),
+      tone: 'success',
     });
-    new Setting(storagePanel)
-      .setName(t('chatSaveFolder'))
-      .setDesc(t('chatSaveFolderDesc'))
-      .addText((text) =>
-        text.setValue(this.plugin.settings.chat.saveFolder).onChange((value) => {
-          this.plugin.settings.chat.saveFolder = value.trim();
-          this.debouncedRagSave();
-        }),
-      );
-    new Setting(promptPanel)
-      .setName(t('systemPrompt'))
-      .setDesc(t('systemPromptDesc'))
+    const autoSaveEnabled = this.plugin.settings.chat.autoSaveEnabled;
+    this.createSettingsStatusRow(body, {
+      label: t('chatAutoSave'),
+      value: this.plugin.settings.chat.saveFolder,
+      statusLabel: autoSaveEnabled ? t('chatEnabledStatus') : t('chatDisabledStatus'),
+      detail: autoSaveEnabled ? t('chatStatusAutosaveOnDetail') : t('chatStatusAutosaveOffDetail'),
+      tone: autoSaveEnabled ? 'success' : 'neutral',
+    });
+    this.createSettingsStatusRow(body, {
+      label: t('mcpToolExecutionPolicy'),
+      value: this.getChatToolPolicyLabel(),
+      statusLabel: t('chatSelectedStatus'),
+      detail: t('chatStatusToolsDetail'),
+      tone: this.plugin.settings.chat.mcpToolExecutionPolicy === 'always-auto' ? 'warning' : 'neutral',
+    });
+  }
+  private buildChatPromptSection(containerEl: HTMLElement): void {
+    const { body } = this.createSettingsSection(containerEl, t('chatPromptSectionTitle'), {
+      description: t('chatPromptSectionDesc'),
+    });
+    new Setting(body)
+      .setName(t('promptLibraryOpen'))
+      .setDesc(t('chatPromptLibraryDesc'))
       .addButton((button) => {
-        button.setButtonText(t('promptLibraryOpen'));
+        button.setButtonText(t('promptLibraryOpen')).setCta();
         button.onClick(() => {
           openPromptLibraryModal({
-            containerEl,
+            containerEl: body,
             plugin: this.plugin,
             currentSessionPrompt: null,
             selectedModel: this.plugin.settings.chat.defaultModel,
-            onClose: () => {
-              const chatPanel = this.tabPanels.get('chat');
-              if (chatPanel) {
-                chatPanel.empty();
-                this.buildChatTab(chatPanel);
-              }
-            },
+            onClose: () => this.refreshChatTab(),
           });
         });
-      })
+      });
+    new Setting(body)
+      .setName(t('systemPrompt'))
+      .setDesc(t('systemPromptDesc'))
       .addTextArea((text) => {
         const activePrompt = getActivePromptEntry(this.plugin.settings);
         text.inputEl.rows = 6;
@@ -5051,27 +5071,43 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         });
       });
-    new Setting(toolPanel)
-      .setName(t('mcpToolExecutionPolicy'))
-      .setDesc(t('mcpToolExecutionPolicyDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('mentioned-auto', t('mcpToolExecutionMentionedAuto'))
-          .addOption('always-manual', t('mcpToolExecutionAlwaysManual'))
-          .addOption('always-auto', t('mcpToolExecutionAlwaysAuto'))
-          .setValue(this.plugin.settings.chat.mcpToolExecutionPolicy)
-          .onChange((value) => {
-            this.plugin.settings.chat.mcpToolExecutionPolicy =
-              value as ChatConfig['mcpToolExecutionPolicy'];
-            this.debouncedSave();
-          }),
+    const shortcuts = this.createSettingsDisclosure(
+      body,
+      'chat-prompt-shortcuts',
+      t('chatPromptShortcutsTitle'),
+      t('chatPromptShortcutsDesc'),
+    );
+    const presetList = shortcuts.content.createDiv({ cls: 'superpower-inside-chat-preset-list' });
+    for (const preset of this.getChatPromptPresets()) {
+      const row = presetList.createDiv({ cls: 'superpower-inside-chat-preset-row' });
+      const copy = row.createDiv({ cls: 'superpower-inside-chat-preset-copy' });
+      copy.createDiv({ cls: 'superpower-inside-chat-preset-label', text: preset.label });
+      copy.createDiv({ cls: 'superpower-inside-chat-preset-description', text: preset.description });
+      const button = row.createEl('button', {
+        text: t('chatApplyPreset'),
+        attr: { type: 'button', title: preset.description },
+      });
+      button.addEventListener('click', () => this.applyChatPromptPreset(preset));
+    }
+    new Setting(shortcuts.content)
+      .setName(t('resetToDefault'))
+      .setDesc(t('chatPromptResetDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('resetToDefault')).onClick(() => {
+          this.plugin.settings.chat.systemPrompt = '';
+          this.plugin.settings.chat.activePromptId = 'default-obsidian-knowledge-work';
+          this.debouncedSave();
+          this.refreshChatTab();
+          new Notice(t('settingsAuto220'));
+        }),
       );
-    const presetRow = promptPanel.createDiv({ cls: 'superpower-inside-chat-presets' });
-    const presets: {
-      label: string;
-      description: string;
-      prompt: string;
-    }[] = [
+  }
+  private getChatPromptPresets(): {
+    label: string;
+    description: string;
+    prompt: string;
+  }[] {
+    return [
       {
         label: t('settingsAuto204'),
         description: t('settingsAuto205'),
@@ -5098,51 +5134,39 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         prompt: t('settingsAuto218'),
       },
     ];
-    for (const preset of presets) {
-      const btn = presetRow.createEl('button', {
-        text: preset.label,
-        cls: 'superpower-inside-mcp-preset-btn',
-      });
-      btn.title = preset.description;
-      btn.addEventListener('click', () => {
-        const entry = createPromptEntry({
-          title: preset.label,
-          description: preset.description,
-          content: preset.prompt,
-          source: 'user',
-        });
-        this.plugin.settings.chat.promptLibrary = [
-          entry,
-          ...this.plugin.settings.chat.promptLibrary,
-        ];
-        this.plugin.settings.chat.activePromptId = entry.id;
-        this.plugin.settings.chat.systemPrompt = preset.prompt;
-        this.debouncedSave();
-        const chatPanel = this.tabPanels.get('chat');
-        if (chatPanel) {
-          chatPanel.empty();
-          this.buildChatTab(chatPanel);
-        }
-        new Notice(t('settingsAuto219', { v0: String(preset.label) }));
-      });
-    }
-    const resetRow = promptPanel.createDiv({ cls: 'superpower-inside-chat-presets' });
-    const resetBtn = resetRow.createEl('button', {
-      text: t('resetToDefault'),
-      cls: 'superpower-inside-mcp-preset-btn',
+  }
+  private applyChatPromptPreset(preset: {
+      label: string;
+      description: string;
+      prompt: string;
+  }): void {
+    const entry = createPromptEntry({
+      title: preset.label,
+      description: preset.description,
+      content: preset.prompt,
+      source: 'user',
     });
-    resetBtn.addEventListener('click', () => {
-      this.plugin.settings.chat.systemPrompt = '';
-      this.plugin.settings.chat.activePromptId = 'default-obsidian-knowledge-work';
-      this.debouncedSave();
-      const chatPanel = this.tabPanels.get('chat');
-      if (chatPanel) {
-        chatPanel.empty();
-        this.buildChatTab(chatPanel);
-      }
-      new Notice(t('settingsAuto220'));
+    this.plugin.settings.chat.promptLibrary = [entry, ...this.plugin.settings.chat.promptLibrary];
+    this.plugin.settings.chat.activePromptId = entry.id;
+    this.plugin.settings.chat.systemPrompt = preset.prompt;
+    this.debouncedSave();
+    this.refreshChatTab();
+    new Notice(t('settingsAuto219', { v0: String(preset.label) }));
+  }
+  private buildChatStorageSection(containerEl: HTMLElement): void {
+    const { body } = this.createSettingsSection(containerEl, t('chatStorageSectionTitle'), {
+      description: t('chatStorageSectionDesc'),
     });
-    new Setting(storagePanel)
+    new Setting(body)
+      .setName(t('chatSaveFolder'))
+      .setDesc(t('chatSaveFolderDesc'))
+      .addText((text) =>
+        text.setValue(this.plugin.settings.chat.saveFolder).onChange((value) => {
+          this.plugin.settings.chat.saveFolder = value.trim();
+          this.debouncedRagSave();
+        }),
+      );
+    new Setting(body)
       .setName(t('chatAutoSave'))
       .setDesc(t('chatAutoSaveDesc'))
       .addToggle((toggle) =>
@@ -5151,7 +5175,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         }),
       );
-    new Setting(storagePanel)
+    const details = this.createSettingsDisclosure(
+      body,
+      'chat-storage-details',
+      t('chatStorageDetailsTitle'),
+      t('chatStorageDetailsDesc'),
+    );
+    new Setting(details.content)
       .setName(t('chatAutoSaveDelay'))
       .setDesc(t('chatAutoSaveDelayDesc'))
       .addText((text) => {
@@ -5170,7 +5200,41 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '10000';
         text.inputEl.step = '500';
       });
-    new Setting(toolPanel)
+  }
+  private buildChatToolsSection(containerEl: HTMLElement): void {
+    const { body } = this.createSettingsSection(containerEl, t('chatToolsSectionTitle'), {
+      description: t('chatToolsSectionDesc'),
+    });
+    if (this.plugin.settings.chat.mcpToolExecutionPolicy === 'always-auto') {
+      this.createSettingsNotice(body, {
+        text: t('chatAlwaysAutoWarning'),
+        tone: 'warning',
+        icon: 'shield-alert',
+      });
+    }
+    new Setting(body)
+      .setName(t('mcpToolExecutionPolicy'))
+      .setDesc(t('mcpToolExecutionPolicyDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('mentioned-auto', t('mcpToolExecutionMentionedAuto'))
+          .addOption('always-manual', t('mcpToolExecutionAlwaysManual'))
+          .addOption('always-auto', t('mcpToolExecutionAlwaysAuto'))
+          .setValue(this.plugin.settings.chat.mcpToolExecutionPolicy)
+          .onChange((value) => {
+            this.plugin.settings.chat.mcpToolExecutionPolicy =
+              value as ChatConfig['mcpToolExecutionPolicy'];
+            this.debouncedSave();
+            this.refreshChatTab();
+          }),
+      );
+    const details = this.createSettingsDisclosure(
+      body,
+      'chat-tool-details',
+      t('chatToolDetailsTitle'),
+      t('chatToolDetailsDesc'),
+    );
+    new Setting(details.content)
       .setName(t('enforceMcpTools'))
       .setDesc(t('enforceMcpToolsDesc'))
       .addToggle((toggle) =>
@@ -5179,6 +5243,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.debouncedSave();
         }),
       );
+  }
+  private getChatToolPolicyLabel(): string {
+    const value = this.plugin.settings.chat.mcpToolExecutionPolicy;
+    if (value === 'always-manual') return t('mcpToolExecutionAlwaysManual');
+    if (value === 'always-auto') return t('mcpToolExecutionAlwaysAuto');
+    return t('mcpToolExecutionMentionedAuto');
+  }
+  private refreshChatTab(): void {
+    const chatPanel = this.tabPanels.get('chat');
+    if (chatPanel?.isConnected) this.buildChatTab(chatPanel);
   }
   private buildMCPTab(containerEl: HTMLElement): void {
     containerEl.empty();

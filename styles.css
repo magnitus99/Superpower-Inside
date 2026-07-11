@@ -795,6 +795,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   background-color: transparent;
   color: var(--text-normal);
   text-align: left;
+  white-space: normal;
   box-shadow: none;
 }
 
@@ -872,6 +873,45 @@ button.superpower-inside-settings-status-row:focus-visible {
   box-shadow: none;
 }
 
+.superpower-inside-chat-settings-workspace textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+
+.superpower-inside-chat-preset-list {
+  display: grid;
+}
+
+.superpower-inside-chat-preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: var(--superpower-inside-settings-row-padding) 0;
+  border-top: 1px solid var(--superpower-inside-settings-border);
+}
+
+.superpower-inside-chat-preset-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.superpower-inside-chat-preset-label {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.superpower-inside-chat-preset-description {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-agent-diagnostics-path,
 .superpower-inside-settings-danger-scope {
   color: var(--text-muted);
@@ -940,6 +980,20 @@ button.superpower-inside-settings-status-row:focus-visible {
   .superpower-inside-settings-section-body .setting-item-control input[type='number'] {
     min-width: 0;
     width: 100%;
+  }
+
+  .superpower-inside-chat-preset-row {
+    grid-template-columns: 1fr;
+  }
+
+  .superpower-inside-chat-preset-row > button {
+    justify-self: start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .superpower-inside-settings-disclosure-icon {
+    transition: none;
   }
 }
 
@@ -3509,13 +3563,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid var(--background-modifier-border);
-}
-
-.superpower-inside-chat-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
 }
 
 @media (max-width: 280px) {

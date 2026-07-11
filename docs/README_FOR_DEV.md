@@ -50,7 +50,7 @@ flowchart LR
 
 ## 공통 작업 중심 UI 디자인 계약
 
-RAG 설정 화면에서 시작한 계약을 General의 범용 설정 helper로 승격했습니다. 새 설정 화면과 큰 UI 변경은 아래 계층을 적용하고, 기존 Chat, MCP, Advanced는 관련 작업에서 같은 기준으로 전환합니다.
+RAG 설정 화면에서 시작한 계약을 General의 범용 설정 helper로 승격하고 Chat에도 적용했습니다. 새 설정 화면과 큰 UI 변경은 아래 계층을 적용하고, 기존 MCP와 Advanced는 관련 작업에서 같은 기준으로 전환합니다.
 
 | 계층 | 역할 | 구현 기준 |
 | --- | --- | --- |
@@ -74,6 +74,7 @@ RAG 설정 화면에서 시작한 계약을 General의 범용 설정 helper로 �
 참조 문서:
 
 - [General 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-general-task-centered-ui-design.md)
+- [Chat 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-chat-task-centered-ui-design.md)
 - [RAG 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-rag-task-centered-ui-design.md)
 
 ## 개발 원칙

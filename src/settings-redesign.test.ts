@@ -25,6 +25,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toMatch(
       /\.superpower-inside-settings-status-detail,[\s\S]*white-space:\s*normal/,
     );
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-disclosure-button\s*\{[\s\S]*white-space:\s*normal/,
+    );
   });
 
   it('settings.ts는 범용 설정 section과 disclosure helper를 제공한다', () => {
@@ -109,6 +112,42 @@ describe('설정 화면 리디자인 구조', () => {
     expect(refreshSource).toContain('this.generalStatusBody');
     expect(refreshSource).toContain('statusBody.isConnected');
     expect(refreshSource).not.toContain('this.buildGeneralTab');
+  });
+
+  it('Chat 탭은 현재 동작, 응답 기본값, 저장, 도구 사용 순서로 읽힌다', () => {
+    const methodStart = settingsSource.indexOf('private buildChatTab(containerEl: HTMLElement)');
+    const methodEnd = settingsSource.indexOf('\n  private buildChatStatusSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+    const expectedOrder = [
+      'buildChatStatusSection',
+      'buildChatPromptSection',
+      'buildChatStorageSection',
+      'buildChatToolsSection',
+    ];
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('superpower-inside-settings-workspace');
+    expect(methodSource).toContain('superpower-inside-chat-settings-workspace');
+    expect(methodSource).not.toContain('createSettingsPanel');
+    const positions = expectedOrder.map((name) => methodSource.indexOf(name));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it('Chat의 프리셋, 저장 지연, 도구 재시도는 공통 disclosure로 점진 공개한다', () => {
+    const methodStart = settingsSource.indexOf('private buildChatStatusSection');
+    const methodEnd = settingsSource.indexOf('\n  private buildMCPTab', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain('createSettingsStatusRow');
+    expect(methodSource).toContain("'chat-prompt-shortcuts'");
+    expect(methodSource).toContain("'chat-storage-details'");
+    expect(methodSource).toContain("'chat-tool-details'");
+    expect(methodSource).toContain('createSettingsNotice');
+    expect(methodSource).toContain("value === 'always-auto'");
+    expect(methodSource).toContain('openPromptLibraryModal');
+    expect(methodSource).toContain('autoSaveDebounceMs');
+    expect(methodSource).toContain('enforceMcpTools');
   });
 
   it('RAG 인덱스 통계는 비동기 상태 계산 이후 grid를 비워 중복 카드를 만들지 않는다', () => {
