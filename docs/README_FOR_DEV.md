@@ -48,6 +48,29 @@ flowchart LR
 - 새 상태/오류 문구는 원인, 영향, 다음 행동 중 최소 두 가지를 포함해야 합니다.
 - 설정이나 maintenance action을 추가했다면, 그것이 일상 workflow가 아니라 복구/고급 설정인 이유가 명확해야 합니다.
 
+## 공통 작업 중심 UI 디자인 계약
+
+RAG 설정 화면을 첫 참조 구현으로 삼아 새 화면과 큰 UI 변경에 아래 계층을 적용합니다. 기존 화면은 한 번에 다시 만들지 않고 Providers, Chat, MCP, Advanced 관련 작업이 생길 때 같은 기준으로 전환합니다.
+
+| 계층 | 역할 | 구현 기준 |
+| --- | --- | --- |
+| Section | 하나의 사용자 목적 | 탭 배경 위의 유일한 카드 표면입니다. 제목, 짧은 설명, body를 가집니다. |
+| Row | 상태, 설정 또는 작업 한 가지 | section 안에서는 배경 카드 대신 공통 padding과 구분선을 사용합니다. |
+| Status | 현재 상태와 근거 | `label + state + supporting detail`로 쓰고 색상과 텍스트를 함께 사용합니다. |
+| Action | 사용자가 지금 할 수 있는 일 | section당 primary action은 최대 하나며, 반복되는 disabled reason은 영역에서 한 번 설명합니다. |
+| Disclosure | 고급 설정과 복구 | button, `aria-expanded`, `aria-controls`, Obsidian icon을 사용합니다. |
+
+구현 순서는 다음과 같습니다.
+
+1. 현재 상태와 사용자의 가장 작은 다음 행동을 먼저 정합니다.
+2. 일상 설정과 진단·복구를 분리합니다.
+3. 최상위 section 외의 카드 컨테이너를 제거하고 row로 평탄화합니다.
+4. Obsidian theme variable에 매핑된 의미 토큰을 재사용합니다.
+5. TS에서는 DOM과 host callback만 연결합니다. 검색·랭킹·상태 판정 정책을 UI 편의를 위해 복제하지 않습니다.
+6. 준비, 진행 중, 빈 상태, 부분 실패, 오류, disabled 상태를 테스트와 실제 화면으로 확인합니다.
+
+RAG 참조 구현과 상세 계약은 [RAG 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-rag-task-centered-ui-design.md)를 봅니다.
+
 ## 개발 원칙
 
 | 원칙 | 기준 |

@@ -125,6 +125,31 @@ npm run review -- --tag <manifest-version> --built
 
 UI/DOM/CSS/설정 화면/채팅 화면을 바꾸면 가능하면 실제 화면도 확인합니다. 다만 릴리즈 절차에는 별도 비주얼 체크나 스크린샷 확인 단계를 넣지 않습니다.
 
+### 작업 중심 UI 화면 QA
+
+UI를 크게 바꿨다면 `.test-vault`의 실제 Obsidian 화면에서 아래 순서로 확인합니다. 네이티브 앱을 마우스 자동화하지 말고 Obsidian CLI의 plugin reload, DOM, screenshot, console 명령을 사용합니다.
+
+```fish
+obsidian vault=".test-vault" plugin:reload id=superpower-inside
+obsidian vault=".test-vault" dev:errors
+obsidian vault=".test-vault" dev:console level=error
+obsidian vault=".test-vault" dev:screenshot path=/tmp/superpower-inside-ui.png
+```
+
+최소 검수 상태:
+
+| 상태 | 확인 항목 |
+| --- | --- |
+| 첫 화면 | 현재 상태와 가장 중요한 다음 행동이 3초 안에 읽히는지 |
+| 기본 설정 | section 안의 설정이 평평한 row로 정렬되고 카드가 중첩되지 않는지 |
+| 접힘/펼침 | 아이콘, 제목, 설명, `aria-expanded`가 상태와 일치하는지 |
+| 진행 중·disabled | 상태 변화가 텍스트로 전달되고 비활성 이유가 반복되지 않는지 |
+| 빈 상태·오류 | 빈 카드 대신 이유와 가능한 다음 행동이 보이는지 |
+| 좁은 폭 | 설명 아래로 control이 이동하고 긴 경로·모델명·오류가 잘리지 않는지 |
+| 테마·접근성 | dark/light 대비, focus-visible, 키보드 순서, reduced-motion이 유지되는지 |
+
+스크린샷은 커밋 전에 직접 열어 정보 위계, 여백, 밀도, 정렬, 대비를 판단합니다. 이 확인은 UI 작업 완료 조건이지만 릴리즈 명령 자체의 별도 gate로 추가하지 않습니다.
+
 ## 문제 해결
 
 | 증상 | 확인할 것 | 해결 |

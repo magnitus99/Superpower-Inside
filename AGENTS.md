@@ -22,6 +22,19 @@
 - 복구 기능은 숨기지 않되 일상 workflow의 중심으로 만들지 않는다. reindex, reset, migrate, rebuild, retry는 기본 사용법이 아니라 문제 해결과 진단의 마지막 수단이어야 한다.
 - README와 개발 문서는 이 철학을 반복 설명하는 문서가 아니라, 각 작업자가 어떤 구현 결정을 해야 하는지 지시해야 한다. 표어만 있고 구체적인 판단 기준이 없으면 문서 품질 미달이다.
 
+## TASK-CENTERED UI DESIGN CONTRACT
+
+- RAG 설정 화면의 작업 중심 디자인을 향후 모든 사용자 화면의 기준으로 삼는다. 새 화면과 큰 UI 변경은 이 계약을 즉시 적용하고, 기존 Providers, Chat, MCP, Advanced 화면은 관련 작업이 생길 때 같은 계약으로 점진적으로 전환한다.
+- 화면의 최상위 정보 순서는 `현재 상태 → 사용자가 해야 할 가장 작은 행동 → 핵심 설정 → 고급 진단과 복구`다. 사용자가 3초 안에 현재 할 일을 읽을 수 없으면 정보 구조를 다시 설계한다.
+- 탭 배경 위에는 최상위 section만 카드 표면으로 표현한다. section 안의 설정, 상태, 작업은 평평한 row와 구분선을 사용하며 카드 속 카드, 배너 속 카드, 이유 없는 배경색 중첩을 만들지 않는다.
+- section, row, notice, status, action, disclosure는 화면마다 새 스타일을 만들지 않고 공통 의미 토큰과 컴포넌트 계약을 재사용한다. 색상과 테마는 Obsidian theme variable에 매핑하고 raw color를 디자인 기준으로 만들지 않는다.
+- 한 section에는 primary action을 최대 하나만 둔다. secondary action은 현재 상태를 이해하거나 되돌리는 데 필요할 때만 노출하고, recovery/destructive action은 마지막 disclosure와 확인 gate 안에 둔다.
+- 상태는 `label + state + supporting detail`로 표현하고 색상만으로 의미를 전달하지 않는다. 같은 disabled reason을 여러 버튼 아래 반복하지 말고 영역 단위로 한 번 설명한다.
+- disclosure는 button, `aria-expanded`, `aria-controls`, Obsidian icon을 사용한다. 텍스트 삼각형, 클릭 가능한 일반 div, 상태를 알 수 없는 접힘 UI를 만들지 않는다.
+- 좁은 폭에서는 설명과 control을 수직으로 재배치하고 긴 경로, 모델명, 오류가 overflow 없이 줄바꿈되어야 한다. `focus-visible`, dark/light theme 대비, reduced-motion도 같은 디자인 계약에 포함한다.
+- TS/JS는 DOM 구성, Obsidian host event, 기존 action callback 연결만 담당한다. 화면 재구성만으로 Rust/WASM 핵심 계산을 옮기거나 복제하지 않는다. 새 상태 판정·랭킹·선택 정책이 필요할 때만 Rust/WASM 경계를 별도로 설계한다.
+- UI 변경 완료는 구조 테스트, i18n, community review gate와 실제 Obsidian 스크린샷을 모두 요구한다. 스크린샷에서는 상단 상태, 펼침/접힘, 빈 상태, 오류, disabled, 진행 중, 좁은 폭을 확인한다.
+
 ## NON-NEGOTIABLE QUALITY BAR
 
 - 수익화 관련 기능은 보류한다. 플러그인은 완전 무료/오픈소스로 유지한다.
