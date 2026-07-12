@@ -970,6 +970,7 @@ export interface I18nKeys {
   modelCountBadge: string;
   noProviderEnabledBanner: string;
   providerConnectionSection: string;
+  providerDetailContextLabel: string;
   providerModelsSection: string;
   providerActionsSection: string;
   selectedOnly: string;
@@ -2566,6 +2567,7 @@ const ko: I18nKeys = {
   modelCountBadge: '개 모델',
   noProviderEnabledBanner: '채팅에 사용할 프로바이더를 하나 이상 활성화하고 모델을 선택하세요.',
   providerConnectionSection: '연결 설정',
+  providerDetailContextLabel: '연결 세부 설정',
   providerModelsSection: '모델 선택',
   providerActionsSection: '테스트 및 동작',
   selectedOnly: '선택됨만 보기',
@@ -4240,6 +4242,7 @@ const en: I18nKeys = {
   modelCountBadge: ' models',
   noProviderEnabledBanner: 'Enable at least one provider and select models to use in chat.',
   providerConnectionSection: 'Connection',
+  providerDetailContextLabel: 'Connection details',
   providerModelsSection: 'Model Selection',
   providerActionsSection: 'Test & Actions',
   selectedOnly: 'Selected only',

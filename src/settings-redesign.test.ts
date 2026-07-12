@@ -406,6 +406,27 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toContain('@container superpower-inside-settings (max-width: 520px)');
   });
 
+  it('펼친 Provider는 선택 헤더와 연결된 상세 문맥을 시각적으로 구분한다', () => {
+    const methodStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
+    const methodEnd = settingsSource.indexOf('\n  private getProviderProfileTone', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodSource).toContain('superpower-inside-provider-detail-context');
+    expect(methodSource).toContain('superpower-inside-provider-detail-context-icon');
+    expect(methodSource).toContain("t('providerDetailContextLabel')");
+    expect(styles).toMatch(
+      /\.superpower-inside-provider-disclosure\.is-open\s*>\s*\.superpower-inside-settings-disclosure-button/,
+    );
+    expect(styles).toContain('.superpower-inside-provider-profile-content::before');
+    expect(styles).toContain('.superpower-inside-provider-detail-context');
+    expect(styles).toMatch(
+      /@container superpower-inside-settings \(max-width: 520px\)[\s\S]*\.superpower-inside-provider-profile-content/,
+    );
+    expect(styles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.superpower-inside-provider-disclosure/,
+    );
+  });
+
   it('설정 탭은 키보드 이동과 tab/tabpanel 관계를 제공한다', () => {
     expect(settingsSource).toContain("tabBar.setAttribute('role', 'tablist')");
     expect(settingsSource).toContain("role: 'tab'");

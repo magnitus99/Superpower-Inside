@@ -5643,6 +5643,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     status.setAttribute('aria-live', 'polite');
     if (icon) disclosure.button.insertBefore(status, icon);
     disclosure.content.addClass('superpower-inside-provider-profile-content');
+    const detailContext = disclosure.content.createDiv({
+      cls: 'superpower-inside-provider-detail-context',
+    });
+    const detailContextIcon = detailContext.createSpan({
+      cls: 'superpower-inside-provider-detail-context-icon',
+    });
+    setIcon(detailContextIcon, 'settings-2');
+    detailContext.createSpan({ text: t('providerDetailContextLabel') });
     disclosure.button.addEventListener('click', () => {
       this.expandedProviderProfileId =
         this.expandedProviderProfileId === profile.id ? null : profile.id;

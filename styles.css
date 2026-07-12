@@ -924,8 +924,48 @@ button.superpower-inside-settings-status-row:focus-visible {
   color: var(--text-warning);
 }
 
+.superpower-inside-provider-disclosure.is-open
+  > .superpower-inside-settings-disclosure-button {
+  padding-right: 10px;
+  padding-left: 12px;
+  background: var(--background-secondary);
+  box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
 .superpower-inside-provider-profile-content {
+  position: relative;
   min-width: 0;
+  padding: 0 12px var(--superpower-inside-settings-row-padding) 16px;
+  background: var(--background-secondary);
+}
+
+.superpower-inside-provider-profile-content::before {
+  position: absolute;
+  top: 0;
+  bottom: var(--superpower-inside-settings-row-padding);
+  left: 0;
+  width: 3px;
+  background: var(--interactive-accent);
+  content: '';
+  opacity: 0.72;
+}
+
+.superpower-inside-provider-detail-context {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 0 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.superpower-inside-provider-detail-context-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--interactive-accent);
 }
 
 .superpower-inside-provider-profile-content > .superpower-inside-settings-notice {
@@ -1149,10 +1189,26 @@ button.superpower-inside-settings-status-row:focus-visible {
   .superpower-inside-provider-model-fetch-btn {
     width: 100%;
   }
+
+  .superpower-inside-provider-disclosure.is-open
+    > .superpower-inside-settings-disclosure-button {
+    padding-left: 9px;
+  }
+
+  .superpower-inside-provider-profile-content {
+    padding-right: 8px;
+    padding-left: 12px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .superpower-inside-settings-disclosure-icon {
+    transition: none;
+  }
+
+  .superpower-inside-provider-disclosure
+    > .superpower-inside-settings-disclosure-button
+    .superpower-inside-settings-disclosure-icon {
     transition: none;
   }
 }
