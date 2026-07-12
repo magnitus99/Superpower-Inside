@@ -1738,6 +1738,30 @@ export function plan_file_index_records_json(entries_json, updated) {
 }
 
 /**
+ * 확장 query keyword가 많이 나타나는 folder file sample index를 관련도 순으로 고른다.
+ * @param {string} query
+ * @param {string} samples_json
+ * @param {number} top_k
+ * @returns {string}
+ */
+export function plan_folder_lexical_evidence_indices_json(query, samples_json, top_k) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(samples_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_folder_lexical_evidence_indices_json(ptr0, len0, ptr1, len1, top_k);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * folder mention에 포함할 markdown file index와 partial 여부를 `JSON` 문자열로 반환한다.
  * @param {string} folder_path
  * @param {string} file_paths_json
@@ -2294,6 +2318,29 @@ export function plan_graph_schema_relation_indices_json(relation_schema_ids_json
         const ptr1 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.plan_graph_schema_relation_indices_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
+ * @param {string} question
+ * @param {string} folder_paths_json
+ * @returns {string}
+ */
+export function plan_implicit_folder_query_paths_json(question, folder_paths_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(folder_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_implicit_folder_query_paths_json(ptr0, len0, ptr1, len1);
         deferred3_0 = ret[0];
         deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -3233,6 +3280,18 @@ export function should_append_mcp_path_hint_rust(command, error_message) {
     const ptr1 = passStringToWasm0(error_message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.should_append_mcp_path_hint_rust(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
+ * Context7를 암묵적으로 제공할 만큼 programming intent가 분명한지 판정한다.
+ * @param {string} prompt
+ * @returns {boolean}
+ */
+export function should_offer_context7_for_prompt(prompt) {
+    const ptr0 = passStringToWasm0(prompt, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.should_offer_context7_for_prompt(ptr0, len0);
     return ret !== 0;
 }
 

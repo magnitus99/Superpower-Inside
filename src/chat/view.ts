@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, TFile, type Events } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
 import {
   buildChatModelOptions,
   CHAT_PROVIDER_KEYS,
@@ -40,7 +40,10 @@ import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { validateAnswerSources } from './source-validation';
-import { classifyAssistantResponse } from './assistant-response-classifier';
+import {
+  classifyAssistantResponse,
+  shouldRenderAssistantQuestion,
+} from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
 import { classifyChatError, redactDebugDetail } from './chat-error-actions';
 import {
@@ -78,6 +81,7 @@ import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
+import { appLogger } from '../utils/logger';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
@@ -144,6 +148,7 @@ export class ChatView extends ItemView {
   private sendBtn: HTMLButtonElement | null;
   private mcpBtn: HTMLButtonElement | null;
   private typingIndicator: HTMLElement | null;
+  private emptyStateEl: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
   private readinessEl: HTMLElement | null;
@@ -190,6 +195,7 @@ export class ChatView extends ItemView {
     this.sendBtn = null;
     this.mcpBtn = null;
     this.typingIndicator = null;
+    this.emptyStateEl = null;
     this.scrollBtn = null;
     this.mcpStatusBar = null;
     this.readinessEl = null;
@@ -244,6 +250,7 @@ export class ChatView extends ItemView {
       attr: { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions text' },
     });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
+    this.renderEmptyState();
 
     this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
     setHidden(this.scrollBtn, true);
@@ -266,6 +273,10 @@ export class ChatView extends ItemView {
     this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
     this.registerRefreshBusEvents();
+    void this.plugin
+      .prepareRagForChat()
+      .then(() => this.renderChatReadiness())
+      .catch(() => this.renderChatReadiness());
   }
 
   private registerRefreshBusEvents(): void {
@@ -310,6 +321,36 @@ export class ChatView extends ItemView {
     }
     this.refreshBusUnsubscribers = [];
     await this.saveCurrentSession();
+  }
+
+  private renderEmptyState(): void {
+    if (!this.messagesArea || this.messages.length > 0 || this.emptyStateEl) return;
+    const emptyState = this.messagesArea.createDiv({
+      cls: 'superpower-inside-chat-empty-state',
+      attr: { role: 'note' },
+    });
+    this.emptyStateEl = emptyState;
+    const icon = emptyState.createDiv({ cls: 'superpower-inside-chat-empty-state-icon' });
+    setIcon(icon, 'book-open-text');
+    emptyState.createDiv({
+      cls: 'superpower-inside-chat-empty-state-title',
+      text: t('chatEmptyStateTitle'),
+    });
+    emptyState.createDiv({
+      cls: 'superpower-inside-chat-empty-state-detail',
+      text: t('chatEmptyStateDetail'),
+    });
+    const prompts = emptyState.createDiv({ cls: 'superpower-inside-chat-empty-state-prompts' });
+    for (const prompt of [t('chatEmptyStatePromptSummary'), t('chatEmptyStatePromptConnections')]) {
+      const button = prompts.createEl('button', { text: prompt, attr: { type: 'button' } });
+      button.addEventListener('click', () => {
+        if (!this.inputArea) return;
+        this.inputArea.value = prompt;
+        this.autoResizeInput();
+        this.renderContextPreview(prompt);
+        this.inputArea.focus();
+      });
+    }
   }
 
   private registerSessionFileEvents(): void {
@@ -366,9 +407,9 @@ export class ChatView extends ItemView {
 
     const sysToggle = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: '⚙️',
       attr: { 'aria-label': t('systemPrompt') },
     });
+    setIcon(sysToggle, 'settings-2');
     sysToggle.addEventListener('click', () => {
       openPromptLibraryModal({
         containerEl: container,
@@ -394,6 +435,7 @@ export class ChatView extends ItemView {
   private renderMcpStatusBar(): void {
     if (!this.mcpStatusBar) return;
     this.mcpStatusBar.empty();
+    setHidden(this.mcpStatusBar, false);
 
     const registry = this.plugin.mcpRegistry;
     const state = this.plugin.mcpConnectionState ?? 'idle';
@@ -408,38 +450,12 @@ export class ChatView extends ItemView {
     }
 
     if (!registry || registry.getConnectedCount() === 0) {
-      const emptyLabel = this.mcpStatusBar.createSpan({
-        cls: 'superpower-inside-chat-mcp-status-label',
-      });
-      emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
-      this.attachMcpRefreshButton();
+      setHidden(this.mcpStatusBar, true);
       this.renderChatReadiness();
       return;
     }
 
-    const servers = registry.getEnabledServers();
-    const connectedCount = registry.getConnectedCount();
-    const totalCount = servers.length;
-
-    const summary = this.mcpStatusBar.createSpan({
-      cls: 'superpower-inside-chat-mcp-status-label',
-    });
-    summary.setText(
-      state === 'partial-error'
-        ? `${t('mcpPartialError')} · ${t('mcpActiveServers', { count: connectedCount, total: totalCount })}`
-        : t('mcpActiveServers', { count: connectedCount, total: totalCount }),
-    );
-
-    for (const server of servers) {
-      const status = registry.getConnectionStatus(server.name);
-      if (status !== 'connected') continue;
-      const chip = this.mcpStatusBar.createSpan({
-        cls: `superpower-inside-chat-mcp-server-chip ${status}`,
-      });
-      chip.setText(server.name);
-    }
-
-    this.attachMcpRefreshButton();
+    setHidden(this.mcpStatusBar, true);
     this.renderChatReadiness();
   }
 
@@ -495,8 +511,10 @@ export class ChatView extends ItemView {
 
     this.mcpBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',
-      text: t('toolbarTools'),
+      attr: { 'aria-label': t('toolbarTools') },
     });
+    setIcon(this.mcpBtn, 'wrench');
+    this.mcpBtn.createSpan({ text: t('toolbarTools') });
     this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
 
     const searchBtn = toolbar.createEl('button', {
@@ -645,29 +663,40 @@ export class ChatView extends ItemView {
     });
     this.readinessEl.empty();
     this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
+    setHidden(this.readinessEl, snapshot.status === 'ready');
     if (this.sendBtn && !this.isStreaming) {
       this.sendBtn.disabled = snapshot.blocksSend;
     }
-    this.readinessEl.createSpan({
-      cls: 'superpower-inside-chat-readiness-primary',
-      text: snapshot.primaryText,
-    });
+    if (snapshot.items.length !== 1) {
+      this.readinessEl.createSpan({
+        cls: 'superpower-inside-chat-readiness-primary',
+        text: snapshot.primaryText,
+      });
+    }
     if (snapshot.items.length === 0) return;
     const list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
     for (const item of snapshot.items.slice(0, 3)) {
       const row = list.createDiv({
-        cls: `superpower-inside-chat-readiness-item ${item.kind} ${item.severity}`,
+        cls: `superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity}`,
       });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
       if (item.action) {
         const action = row.createEl('button', {
           cls: 'superpower-inside-chat-readiness-action',
-          text: item.label,
+          text: this.getReadinessActionText(item),
         });
         action.addEventListener('click', () => this.handleReadinessAction(item));
       }
     }
+  }
+
+  private getReadinessActionText(item: ChatReadinessItem): string {
+    if (item.action === 'index-rag') return t('chatReadinessPrepareDocuments');
+    if (item.action === 'reconnect-mcp') return t('mcpReconnect');
+    if (item.action === 'select-model') return t('chatReadinessSelectModelAction');
+    if (item.action === 'configure-provider') return t('chatReadinessConfigureProviderAction');
+    return item.label;
   }
 
   private getEnabledProviderCount(): number {
@@ -710,11 +739,9 @@ export class ChatView extends ItemView {
     }
     if (item.action === 'index-rag') {
       void this.plugin
-        .ensureRagRuntimeInitialized()
+        .prepareRagForChat()
         .then((initialized) => {
-          if (initialized) {
-            this.plugin.resumeRagIndexing();
-          } else {
+          if (!initialized) {
             new Notice(t('ragIndexerNotInitializedBase'), 5000);
           }
         })
@@ -1087,6 +1114,8 @@ export class ChatView extends ItemView {
       actionHistory: metaInput?.actionHistory,
     };
     this.messages.push(msg);
+    this.emptyStateEl?.remove();
+    this.emptyStateEl = null;
     this.markDirtyAndAutoSave();
 
     const wrapper = this.messagesArea!.createDiv({
@@ -1251,14 +1280,18 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
     setHidden(thinking, !(reasoning || shouldShowStreamingPlaceholders));
-    if (shouldShowStreamingPlaceholders || (reasoning && reasoning.length > 0)) {
+    if (shouldShowStreamingPlaceholders) {
       thinking.open = true;
     }
     thinking.addEventListener('toggle', () => {
       if (this.autoScroll) this.scrollToBottom();
     });
     const thinkingSummary = thinking.createEl('summary');
-    thinkingSummary.setText(`💭 ${t('reasoningLabel')}`);
+    const thinkingIcon = thinkingSummary.createSpan({
+      cls: 'superpower-inside-chat-layer-icon',
+    });
+    setIcon(thinkingIcon, 'brain');
+    thinkingSummary.createSpan({ text: t('reasoningLabel') });
     const thinkingContent = thinking.createDiv({
       cls: 'superpower-inside-chat-thinking-content superpower-inside-chat-reasoning-content',
     });
@@ -1268,18 +1301,16 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-tool-calls',
     });
     const hasToolCalls = toolCalls && toolCalls.length > 0;
-    setHidden(toolCallsSection, !(hasToolCalls || shouldShowStreamingPlaceholders));
-    this.toolCallPanel.renderToolCallsSection(
-      toolCallsSection,
-      toolCalls ?? [],
-      shouldShowStreamingPlaceholders && !hasToolCalls,
-    );
+    setHidden(toolCallsSection, !hasToolCalls);
+    this.toolCallPanel.renderToolCallsSection(toolCallsSection, toolCalls ?? [], false);
 
     const answerLayer = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-answer' });
-    answerLayer.createDiv({
+    const answerLabel = answerLayer.createDiv({
       cls: 'superpower-inside-chat-answer-label',
-      text: `💬 ${t('answerLabel')}`,
     });
+    const answerIcon = answerLabel.createSpan({ cls: 'superpower-inside-chat-layer-icon' });
+    setIcon(answerIcon, 'message-square-text');
+    answerLabel.createSpan({ text: t('answerLabel') });
     const bubble = answerLayer.createDiv({
       cls: 'superpower-inside-chat-bubble assistant',
     });
@@ -1334,7 +1365,7 @@ export class ChatView extends ItemView {
           thinking.open = true;
         } else if (hasReasoning) {
           void this.renderMarkdownBubble(thinkingContent, reasoning ?? '');
-          thinking.open = true;
+          thinking.open = false;
         } else {
           thinkingContent.setText('');
           thinking.open = false;
@@ -1347,8 +1378,8 @@ export class ChatView extends ItemView {
     const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
     if (isDomInstance(toolCallsSection, HTMLElement)) {
       const calls = toolCalls ?? [];
-      setHidden(toolCallsSection, !(calls.length > 0 || !isDone));
-      this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, !isDone);
+      setHidden(toolCallsSection, calls.length === 0);
+      this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, false);
     }
 
     const bubble = bubbleContainer.querySelector('.superpower-inside-chat-bubble.assistant');
@@ -1872,6 +1903,7 @@ export class ChatView extends ItemView {
         }
       }
     }
+    this.renderEmptyState();
     this.updateHeaderTitle();
   }
 
@@ -1912,6 +1944,7 @@ export class ChatView extends ItemView {
         }
       }
     }
+    this.renderEmptyState();
     this.updateHeaderTitle();
   }
 
@@ -2293,7 +2326,7 @@ export class ChatView extends ItemView {
     this.autoResizeInput();
     this.renderContextPreview('');
     const mentionedServers = this.getEffectiveMcpServerNames(text);
-    const promptContext = await this.buildPromptContext(text, this.previousUserQueries);
+    const promptContext = await this.buildPromptContext(text, this.previousUserQueries, provider);
     const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
     const dataBoundarySnapshot = createDataBoundarySnapshot({
       providerLabel,
@@ -2456,7 +2489,7 @@ export class ChatView extends ItemView {
         content: fullText,
         reasoning: fullReasoning,
       });
-      if (firstClassification.type === 'question') {
+      if (shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)) {
         this.updateMessage(
           assistantId,
           firstClassification.content,
@@ -2573,7 +2606,7 @@ export class ChatView extends ItemView {
           content: fullText,
           reasoning: fullReasoning,
         });
-        if (retryClassification.type === 'question') {
+        if (shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)) {
           this.updateMessage(
             assistantId,
             retryClassification.content,
@@ -3213,6 +3246,7 @@ export class ChatView extends ItemView {
     return getPluginAwareServerNames({
       mentionedServerNames: this.getMentionedServerNames(text),
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
+      userText: text,
       registry: this.plugin.mcpRegistry,
     });
   }
@@ -3321,7 +3355,7 @@ export class ChatView extends ItemView {
               message.model,
             );
       const mentionedServers = this.getEffectiveMcpServerNames(this.lastUserPrompt ?? '');
-      const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
+      const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '', undefined, provider);
       const systemPrompt = promptContext.systemPrompt;
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
       const previousMessages = this.messages
@@ -3367,6 +3401,7 @@ export class ChatView extends ItemView {
   private async buildPromptContext(
     lastUserText: string,
     previousQueries?: string[],
+    provider?: LLMProvider,
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -3377,6 +3412,8 @@ export class ChatView extends ItemView {
       const pluginInfo = formatActivePluginsForPrompt(this.app);
       if (pluginInfo) parts.push(pluginInfo);
     }
+
+    await this.plugin.prepareRagForChat();
 
     let ragQuery = lastUserText;
     if (previousQueries && previousQueries.length >= 2) {
@@ -3400,6 +3437,9 @@ export class ChatView extends ItemView {
       mcpRegistry: this.plugin.mcpRegistry,
       knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
+      queryExpander: provider
+        ? (question) => this.expandVaultSearchQuery(provider, question)
+        : undefined,
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 
@@ -3407,6 +3447,35 @@ export class ChatView extends ItemView {
       ...context,
       systemPrompt: parts.length > 0 ? parts.join('\n') : null,
     };
+  }
+
+  private async expandVaultSearchQuery(provider: LLMProvider, question: string): Promise<string> {
+    try {
+      const expansion = await Promise.race([
+        provider.chat(
+          [
+            {
+              role: 'system',
+              content:
+                'Expand the user question into compact vault-search terms. Preserve names and topics, add likely English equivalents for Korean terms, and output keywords only. Maximum 20 words.',
+            },
+            { role: 'user', content: question },
+          ],
+          0,
+        ),
+        new Promise<string>((resolve) => {
+          window.setTimeout(() => resolve(''), 3_500);
+        }),
+      ]);
+      const compact = expansion.replace(/\s+/g, ' ').trim().slice(0, 500);
+      return compact ? `${question} ${compact}` : question;
+    } catch (error) {
+      appLogger.warn('Vault search query expansion failed.', {
+        source: 'chat.view',
+        error,
+      });
+      return question;
+    }
   }
 
   private parseMentions(text: string): ParsedMention[] {

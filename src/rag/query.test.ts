@@ -30,6 +30,21 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('folder scope가 있으면 해당 경로의 후보만 검색한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('bible/revelation.md', [1, 0], '성경 계시록'),
+      createEntry('neville/revelation.txt', [0.8, 0.2], 'Neville on Revelation'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
+
+    const results = await engine.query('네빌의 계시록 해석', 5, 0, ['neville']);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'neville/revelation.txt',
+    ]);
+  });
+
   it('재랭커가 직접 근거로 더 적합한 낮은 점수 후보를 topK 앞으로 올린다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

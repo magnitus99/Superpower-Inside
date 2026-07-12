@@ -924,6 +924,7 @@ export interface PluginLike {
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   ensureRagRuntimeInitialized(): Promise<boolean>;
+  prepareRagForChat(): Promise<boolean>;
   isRagIndexing(): boolean;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;

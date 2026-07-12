@@ -31,3 +31,10 @@ export function classifyAssistantResponse(
     }
   );
 }
+
+export function shouldRenderAssistantQuestion(
+  classification: AssistantResponseClassification,
+  activeToolCallCount: number,
+): classification is Extract<AssistantResponseClassification, { type: 'question' }> {
+  return classification.type === 'question' && activeToolCallCount === 0;
+}

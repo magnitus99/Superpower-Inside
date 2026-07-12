@@ -456,6 +456,11 @@ export function plan_evidence_candidate_order_json(scores_json: string, availabl
 export function plan_file_index_records_json(entries_json: string, updated: number): string;
 
 /**
+ * 확장 query keyword가 많이 나타나는 folder file sample index를 관련도 순으로 고른다.
+ */
+export function plan_folder_lexical_evidence_indices_json(query: string, samples_json: string, top_k: number): string;
+
+/**
  * folder mention에 포함할 markdown file index와 partial 여부를 `JSON` 문자열로 반환한다.
  */
 export function plan_folder_mention_file_indices_json(folder_path: string, file_paths_json: string, max_files: number): string;
@@ -574,6 +579,11 @@ export function plan_graph_schema_community_indices_json(community_schema_ids_js
  * `GraphRAG` relation schema id matching index plan을 계산한다.
  */
 export function plan_graph_schema_relation_indices_json(relation_schema_ids_json: string, ontology_schema_id: string): string;
+
+/**
+ * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
+ */
+export function plan_implicit_folder_query_paths_json(question: string, folder_paths_json: string): string;
 
 /**
  * indexPending이 처리할 file index와 skip count plan을 만든다.
@@ -781,6 +791,11 @@ export function select_relevant_result_indices(config: Float64Array, source_offs
 export function should_append_mcp_path_hint_rust(command: string, error_message: string): boolean;
 
 /**
+ * Context7를 암묵적으로 제공할 만큼 programming intent가 분명한지 판정한다.
+ */
+export function should_offer_context7_for_prompt(prompt: string): boolean;
+
+/**
  * `GraphRAG` runtime 재구성 여부를 판정한다.
  */
 export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled: boolean, graph_rag_model: string, previous_status_state: string, next_status_state: string, graph_provider_attached: boolean): boolean;
@@ -917,6 +932,7 @@ export interface InitOutput {
     readonly plan_entity_resolution_json: (a: number, b: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_claim_entity_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_community_replacement_delete_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -940,6 +956,7 @@ export interface InitOutput {
     readonly plan_graph_rag_unsupported_prune_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_relation_endpoint_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_schema_community_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_implicit_folder_query_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_index_pending_files_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_local_evidence_scores_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -981,6 +998,7 @@ export interface InitOutput {
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly select_relevant_result_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly should_append_mcp_path_hint_rust: (a: number, b: number, c: number, d: number) => number;
+    readonly should_offer_context7_for_prompt: (a: number, b: number) => number;
     readonly should_rebuild_graph_runtime_for_graph_status: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly split_reasoning_tags_json: (a: number, b: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];

@@ -3151,6 +3151,199 @@ pub fn parse_mention_candidates_json(content: &str) -> String {
     serialize_mention_candidates_json(&candidates)
 }
 
+/// 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_implicit_folder_query_paths_json(question: &str, folder_paths_json: &str) -> String {
+    let Some(folder_paths) = parse_raw_string_array_json(folder_paths_json) else {
+        return String::new();
+    };
+    let tokens = question
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    let romanized_tokens = tokens
+        .iter()
+        .map(|token| romanize_hangul(token))
+        .filter(|token| token.len() >= 4)
+        .collect::<Vec<_>>();
+    let normalized_question = question.to_lowercase();
+    let selected = folder_paths
+        .into_iter()
+        .filter(|folder_path| {
+            let folder_name = folder_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(folder_path)
+                .to_lowercase();
+            let normalized_folder = folder_name
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>();
+            if normalized_folder.len() < 4 {
+                return false;
+            }
+            if normalized_question.contains(&folder_name)
+                || tokens.iter().any(|token| token == &normalized_folder)
+            {
+                return true;
+            }
+            romanized_tokens.iter().any(|token| {
+                let max_len = token.len().max(normalized_folder.len());
+                levenshtein_distance(token, &normalized_folder)
+                    <= max_len.saturating_mul(3).div_euclid(7).max(2)
+            })
+        })
+        .collect::<Vec<_>>();
+    serialize_string_array_json(&selected)
+}
+
+/// 확장 query keyword가 많이 나타나는 folder file sample index를 관련도 순으로 고른다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_folder_lexical_evidence_indices_json(
+    query: &str,
+    samples_json: &str,
+    top_k: usize,
+) -> String {
+    let Some(samples) = parse_raw_string_array_json(samples_json) else {
+        return String::new();
+    };
+    let mut expanded_query = query.to_owned();
+    for (source, equivalents) in [
+        ("계시록", " revelation apocalypse"),
+        ("요한", " john"),
+        ("성경", " bible scripture"),
+        ("하나님", " god"),
+        ("예수", " jesus christ"),
+        ("부활", " resurrection"),
+        ("기도", " prayer"),
+    ] {
+        if query.contains(source) {
+            expanded_query.push_str(equivalents);
+        }
+    }
+    let tokens = tokenize(&expanded_query);
+    let joined_tokens = tokens.join("\u{1f}");
+    let mut scored = samples
+        .iter()
+        .enumerate()
+        .filter_map(|(index, sample)| {
+            let (file_path, content) = sample.split_once('\n').unwrap_or((sample, ""));
+            let path_score = count_keyword_matches(&joined_tokens, file_path);
+            let content_score = count_keyword_matches(&joined_tokens, content).min(9_999);
+            let score = path_score
+                .saturating_mul(10_000)
+                .saturating_add(content_score);
+            (score > 0).then_some((index, score))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    serialize_usize_array_json(
+        &scored
+            .into_iter()
+            .take(top_k)
+            .map(|(index, _score)| index)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Context7를 암묵적으로 제공할 만큼 programming intent가 분명한지 판정한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn should_offer_context7_for_prompt(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    [
+        "api",
+        "sdk",
+        "code",
+        "coding",
+        "programming",
+        "typescript",
+        "javascript",
+        "python",
+        "rust",
+        "react",
+        "angular",
+        "vue",
+        "svelte",
+        "library",
+        "framework",
+        "코드",
+        "코딩",
+        "프로그래밍",
+        "라이브러리",
+        "프레임워크",
+        "개발",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+/// 한글 음절을 folder name fuzzy matching용 ASCII 표기로 바꾼다.
+fn romanize_hangul(value: &str) -> String {
+    const INITIALS: [&str; 19] = [
+        "g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t",
+        "p", "h",
+    ];
+    const VOWELS: [&str; 21] = [
+        "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo",
+        "we", "wi", "yu", "eu", "ui", "i",
+    ];
+    const FINALS: [&str; 28] = [
+        "", "k", "k", "ks", "n", "nj", "nh", "t", "l", "lk", "lm", "lb", "ls", "lt", "lp", "lh",
+        "m", "p", "ps", "t", "t", "ng", "t", "t", "k", "t", "p", "h",
+    ];
+
+    let mut output = String::new();
+    for character in value.chars() {
+        let code = u32::from(character);
+        if (0xAC00..=0xD7A3).contains(&code) {
+            let offset = code - 0xAC00;
+            let initial = usize::try_from(offset.div_euclid(588)).unwrap_or_default();
+            let vowel = usize::try_from((offset % 588).div_euclid(28)).unwrap_or_default();
+            let final_index = usize::try_from(offset % 28).unwrap_or_default();
+            output.push_str(INITIALS.get(initial).copied().unwrap_or_default());
+            output.push_str(VOWELS.get(vowel).copied().unwrap_or_default());
+            output.push_str(FINALS.get(final_index).copied().unwrap_or_default());
+        } else if character.is_ascii_alphanumeric() {
+            output.push(character.to_ascii_lowercase());
+        }
+    }
+    output
+}
+
+/// 두 ASCII folder alias의 편집 거리를 panic 없는 row DP로 계산한다.
+fn levenshtein_distance(left: &str, right: &str) -> usize {
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    for (left_index, left_character) in left.chars().enumerate() {
+        let mut current = Vec::with_capacity(right_chars.len() + 1);
+        current.push(left_index + 1);
+        for (right_index, right_character) in right_chars.iter().enumerate() {
+            let substitution = previous
+                .get(right_index)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(usize::from(left_character != *right_character));
+            let insertion = current
+                .get(right_index)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            let deletion = previous
+                .get(right_index + 1)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .saturating_add(1);
+            current.push(substitution.min(insertion).min(deletion));
+        }
+        previous = current;
+    }
+    previous.last().copied().unwrap_or_default()
+}
+
 /// vault path가 제외 pattern 목록에 매칭되는지 확인한다.
 #[must_use]
 #[wasm_bindgen]
@@ -18965,18 +19158,19 @@ mod tests {
         plan_context_graph_verification_json, plan_context_sources_json,
         plan_diverse_result_indices_json, plan_entity_resolution_json,
         plan_evidence_candidate_order_json, plan_file_index_records_json,
-        plan_folder_mention_file_indices_json, plan_graph_claim_entity_ids_json,
-        plan_graph_community_replacement_delete_ids_json, plan_graph_community_summary_groups_json,
-        plan_graph_deletion_indices_json, plan_graph_edge_records_json,
-        plan_graph_entity_merge_json, plan_graph_evidence_candidate_lookup_json,
-        plan_graph_evidence_entry_candidates_json, plan_graph_extraction_type_validation_json,
-        plan_graph_mention_context_json, plan_graph_query_execution_json, plan_graph_query_json,
-        plan_graph_query_response_json, plan_graph_rag_markdown_file_paths_json,
-        plan_graph_rag_run_file_selection_json, plan_graph_rag_status_entry_lookups_json,
-        plan_graph_rag_status_entry_snapshot_json, plan_graph_rag_status_file_snapshot_json,
-        plan_graph_rag_status_json, plan_graph_rag_unsupported_prune_paths_json,
-        plan_graph_relation_endpoint_indices_json, plan_graph_schema_community_indices_json,
-        plan_graph_schema_relation_indices_json, plan_index_pending_files_json,
+        plan_folder_lexical_evidence_indices_json, plan_folder_mention_file_indices_json,
+        plan_graph_claim_entity_ids_json, plan_graph_community_replacement_delete_ids_json,
+        plan_graph_community_summary_groups_json, plan_graph_deletion_indices_json,
+        plan_graph_edge_records_json, plan_graph_entity_merge_json,
+        plan_graph_evidence_candidate_lookup_json, plan_graph_evidence_entry_candidates_json,
+        plan_graph_extraction_type_validation_json, plan_graph_mention_context_json,
+        plan_graph_query_execution_json, plan_graph_query_json, plan_graph_query_response_json,
+        plan_graph_rag_markdown_file_paths_json, plan_graph_rag_run_file_selection_json,
+        plan_graph_rag_status_entry_lookups_json, plan_graph_rag_status_entry_snapshot_json,
+        plan_graph_rag_status_file_snapshot_json, plan_graph_rag_status_json,
+        plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
+        plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
+        plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
         plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
         plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
         plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
@@ -18993,8 +19187,9 @@ mod tests {
         recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
         sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
         select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
-        should_rebuild_graph_runtime_for_graph_status, token_frequencies_json, tokenize,
-        validate_mcp_json, validate_ontology_relation, validate_ontology_schema_json,
+        should_offer_context7_for_prompt, should_rebuild_graph_runtime_for_graph_status,
+        token_frequencies_json, tokenize, validate_mcp_json, validate_ontology_relation,
+        validate_ontology_schema_json,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -21077,6 +21272,55 @@ mod tests {
             2.0,
             "strong graph result should survive source-aware threshold",
         );
+    }
+
+    #[test]
+    fn implicit_folder_query_paths_match_hangul_romanization_without_false_prefixes() {
+        assert_eq!(
+            plan_implicit_folder_query_paths_json(
+                "네빌 고다드는 요한 계시록을 어떻게 해석했어?",
+                r#"["bible","neville","neville-other","SuperpowerInsideChats"]"#,
+            ),
+            r#"["neville"]"#,
+        );
+        assert_eq!(
+            plan_implicit_folder_query_paths_json("이 볼트를 요약해줘", r#"["bible","neville"]"#),
+            "[]",
+        );
+    }
+
+    #[test]
+    fn folder_lexical_evidence_prefers_files_with_expanded_query_terms() {
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json(
+                "Neville Goddard Revelation Apocalypse",
+                r#"["neville/The Search.txt unrelated","neville/A Parabolic Revelation.txt Neville explains Revelation","neville/Other.txt apocalypse"]"#,
+                2,
+            ),
+            "[1,2]",
+        );
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json("missing", r#"["alpha","beta"]"#, 3),
+            "[]",
+        );
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json(
+                "요한 계시록을 어떻게 해석했어?",
+                r#"["The Search\nrevelation revelation revelation revelation","A Parabolic Revelation\nshort","Prayer\nprayer"]"#,
+                1,
+            ),
+            "[1]",
+        );
+    }
+
+    #[test]
+    fn context7_implicit_offer_requires_programming_intent() {
+        assert!(should_offer_context7_for_prompt(
+            "TypeScript API 사용법을 알려줘"
+        ));
+        assert!(!should_offer_context7_for_prompt(
+            "네빌 고다드는 요한 계시록에 대해 뭐라고 했어?"
+        ));
     }
 
     /// retrieval 후보 병합은 entry 첫 등장 순서, source 첫 등장 순서, score/rank merge 계약을 보존해야 한다.

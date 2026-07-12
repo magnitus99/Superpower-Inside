@@ -7,6 +7,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
     const servers = getPluginAwareServerNames({
       mentionedServerNames: ['serper'],
       pluginAwareEnabled: true,
+      userText: 'TypeScript API 사용법을 알려줘',
       registry: createRegistry('connected'),
     });
 
@@ -17,6 +18,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
     const servers = getPluginAwareServerNames({
       mentionedServerNames: ['context7'],
       pluginAwareEnabled: true,
+      userText: '아무 질문',
       registry: createRegistry('connected'),
     });
 
@@ -28,6 +30,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: false,
+        userText: 'TypeScript API',
         registry: createRegistry('connected'),
       }),
     ).toEqual([]);
@@ -35,7 +38,19 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: true,
+        userText: 'TypeScript API',
         registry: createRegistry('disconnected'),
+      }),
+    ).toEqual([]);
+  });
+
+  it('볼트 지식 질문에는 Context7를 자동으로 추가하지 않는다', () => {
+    expect(
+      getPluginAwareServerNames({
+        mentionedServerNames: [],
+        pluginAwareEnabled: true,
+        userText: '네빌 고다드는 요한 계시록에 대해 뭐라고 했어?',
+        registry: createRegistry('connected'),
       }),
     ).toEqual([]);
   });

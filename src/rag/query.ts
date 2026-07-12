@@ -134,7 +134,12 @@ export class RAGQueryEngine {
     this.retrievalPipeline = new RagRetrievalPipeline(providers);
   }
 
-  async query(question: string, topK = 5, minScore?: number): Promise<QueryResult[]> {
+  async query(
+    question: string,
+    topK = 5,
+    minScore?: number,
+    filePathPrefixes?: readonly string[],
+  ): Promise<QueryResult[]> {
     const threshold = minScore ?? this.minScore;
     const qVector = await this.embeddingProvider.embed(question);
     const retrieval = await this.retrievalPipeline.retrieve({
@@ -144,10 +149,11 @@ export class RAGQueryEngine {
       vectorFilter: {
         embeddingModel: this.embeddingModel,
         dimension: qVector.length,
+        filePathPrefixes,
       },
       isEntryCompatible: this.embeddingModel
-        ? (entry) => this.isEntryCompatible(entry, qVector)
-        : undefined,
+        ? (entry) => this.isEntryCompatible(entry, qVector, filePathPrefixes)
+        : (entry) => this.isEntryInPathScope(entry, filePathPrefixes),
     });
     this.lastRetrievalDiagnostics = retrieval.diagnostics;
     const queryTokens = tokenizeRust(question) ?? [];
@@ -156,6 +162,7 @@ export class RAGQueryEngine {
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
+      if (!this.isEntryInPathScope(entry, filePathPrefixes)) continue;
       const cosineScore = cosineSimilarityRust(qVector, entry.vector);
       if (cosineScore === null) {
         continue;
@@ -216,7 +223,11 @@ export class RAGQueryEngine {
     return [...this.lastRetrievalDiagnostics];
   }
 
-  private isEntryCompatible(entry: VectorEntry, queryVector: readonly number[]): boolean {
+  private isEntryCompatible(
+    entry: VectorEntry,
+    queryVector: readonly number[],
+    filePathPrefixes?: readonly string[],
+  ): boolean {
     if (entry.vector.length !== queryVector.length) return false;
     if (
       this.embeddingModel &&
@@ -225,7 +236,19 @@ export class RAGQueryEngine {
     ) {
       return false;
     }
-    return true;
+    return this.isEntryInPathScope(entry, filePathPrefixes);
+  }
+
+  private isEntryInPathScope(
+    entry: VectorEntry,
+    filePathPrefixes: readonly string[] | undefined,
+  ): boolean {
+    if (!filePathPrefixes || filePathPrefixes.length === 0) return true;
+    return filePathPrefixes.some((rawPrefix) => {
+      const prefix = rawPrefix.trim().replace(/\/+$/, '');
+      return prefix.length > 0 &&
+        (entry.metadata.filePath === prefix || entry.metadata.filePath.startsWith(`${prefix}/`));
+    });
   }
 
   async queryWithContext(question: string, topK = 5): Promise<string> {

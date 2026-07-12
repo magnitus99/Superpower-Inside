@@ -122,6 +122,45 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.initRAG).toHaveBeenCalledOnce();
   });
 
+  it('채팅 진입은 RAG를 준비하고 pending indexing을 조용히 시작한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      settings: { rag: { autoUpdateEnabled: boolean } };
+      ensureRagRuntimeInitialized: ReturnType<typeof vi.fn>;
+      isRagIndexing: ReturnType<typeof vi.fn>;
+      autoIndex: ReturnType<typeof vi.fn>;
+    };
+    plugin.settings = { rag: { autoUpdateEnabled: true } };
+    plugin.ensureRagRuntimeInitialized = vi.fn(() => Promise.resolve(true));
+    plugin.isRagIndexing = vi.fn(() => false);
+    plugin.autoIndex = vi.fn(() => Promise.resolve());
+
+    await plugin.prepareRagForChat();
+
+    expect(plugin.ensureRagRuntimeInitialized).toHaveBeenCalledOnce();
+    expect(plugin.autoIndex).toHaveBeenCalledOnce();
+  });
+
+  it('채팅은 vector 검색 엔진이 준비되면 선택적 BM25 초기화를 기다리지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      settings: { rag: { autoUpdateEnabled: boolean } };
+      ragEngine: unknown;
+      ensureRagRuntimeInitialized: ReturnType<typeof vi.fn>;
+      isRagIndexing: ReturnType<typeof vi.fn>;
+      autoIndex: ReturnType<typeof vi.fn>;
+    };
+    plugin.settings = { rag: { autoUpdateEnabled: false } };
+    plugin.ragEngine = {};
+    plugin.ensureRagRuntimeInitialized = vi.fn(() => new Promise<boolean>(() => undefined));
+    plugin.isRagIndexing = vi.fn(() => false);
+    plugin.autoIndex = vi.fn(() => Promise.resolve());
+
+    await expect(plugin.prepareRagForChat()).resolves.toBe(true);
+
+    expect(plugin.ensureRagRuntimeInitialized).not.toHaveBeenCalled();
+  });
+
   it('RAG runtime initialization records the stuck stage when a step times out', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     vi.useFakeTimers();

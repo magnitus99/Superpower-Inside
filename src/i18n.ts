@@ -444,6 +444,13 @@ export interface I18nKeys {
   chatReadinessRagIndexingDetail: string;
   chatReadinessRagNotReady: string;
   chatReadinessRagNotReadyDetail: string;
+  chatReadinessPrepareDocuments: string;
+  chatReadinessSelectModelAction: string;
+  chatReadinessConfigureProviderAction: string;
+  chatEmptyStateTitle: string;
+  chatEmptyStateDetail: string;
+  chatEmptyStatePromptSummary: string;
+  chatEmptyStatePromptConnections: string;
   chatReadinessMcpPartial: string;
   chatReadinessMcpPartialDetail: string;
   chatReadinessSaveFolderMissing: string;
@@ -1398,6 +1405,9 @@ export interface I18nKeys {
   contextRuleSeparateSuggestions: string;
   contextRuleNoEvidence: string;
   contextAutoRagDetail: string;
+  contextImplicitFolderDetail: string;
+  contextImplicitFolderNoMatch: string;
+  contextImplicitFolderReason: string;
   contextRejectedCandidatesExcluded: string;
   contextNoRelevantDocs: string;
   contextRagLoadFailed: string;
@@ -1910,7 +1920,7 @@ const ko: I18nKeys = {
 
   // Chat
   chatTabTitle: 'AI 채팅',
-  toolbarTools: '🔧 도구',
+  toolbarTools: '도구',
   sendButton: '전송',
   chatSaveFolder: '채팅 저장 폴더',
   chatSaveFolderDesc: '대화를 저장할 볼트 내 폴더 경로',
@@ -1992,6 +2002,14 @@ const ko: I18nKeys = {
     '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
   chatReadinessRagNotReady: 'RAG 준비 안 됨',
   chatReadinessRagNotReadyDetail: '인덱스를 만들거나 갱신하면 자동 컨텍스트 품질이 좋아집니다.',
+  chatReadinessPrepareDocuments: '문서 준비',
+  chatReadinessSelectModelAction: '모델 선택',
+  chatReadinessConfigureProviderAction: 'Provider 설정',
+  chatEmptyStateTitle: '볼트에 대해 물어보세요',
+  chatEmptyStateDetail:
+    '관련 문서는 내장 검색으로 자동 참조하고 답변 아래에 출처를 표시합니다. MCP는 필요하지 않습니다.',
+  chatEmptyStatePromptSummary: '이 볼트의 핵심 주제를 근거와 함께 요약해줘',
+  chatEmptyStatePromptConnections: '최근 노트와 연결되는 관련 문서를 찾아줘',
   chatReadinessMcpPartial: 'MCP 일부 연결 필요',
   chatReadinessMcpPartialDetail: '연결됨 {connected}/{total}. 필요한 서버를 재연결하세요.',
   chatReadinessSaveFolderMissing: '저장 폴더 없음',
@@ -3047,6 +3065,9 @@ const ko: I18nKeys = {
   contextRuleSeparateSuggestions: '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
   contextRuleNoEvidence: '근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
   contextAutoRagDetail: '자동 RAG {count}개',
+  contextImplicitFolderDetail: '{name}에서 자동 참조 {count}개',
+  contextImplicitFolderNoMatch: '{name}에서 질문과 직접 맞닿는 문서를 찾지 못했습니다.',
+  contextImplicitFolderReason: '질문에 언급된 {name} 폴더에서 관련 원문을 직접 확인했습니다.',
   contextRejectedCandidatesExcluded: '검증 실패 후보 {count}개는 컨텍스트에서 제외했습니다.',
   contextNoRelevantDocs: '유사도 임계치를 충족하는 관련 문서가 없습니다.',
   contextRagLoadFailed: 'RAG 컨텍스트를 불러오지 못했습니다: {error}',
@@ -3564,7 +3585,7 @@ const en: I18nKeys = {
 
   // Chat
   chatTabTitle: 'AI Chat',
-  toolbarTools: '🔧 Tools',
+  toolbarTools: 'Tools',
   sendButton: 'Send',
   chatSaveFolder: 'Chat Save Folder',
   chatSaveFolderDesc: 'Vault folder path to save conversations',
@@ -3647,6 +3668,14 @@ const en: I18nKeys = {
   chatReadinessRagNotReady: 'RAG not ready',
   chatReadinessRagNotReadyDetail:
     'Build or refresh the index to improve automatic context quality.',
+  chatReadinessPrepareDocuments: 'Prepare documents',
+  chatReadinessSelectModelAction: 'Select model',
+  chatReadinessConfigureProviderAction: 'Configure provider',
+  chatEmptyStateTitle: 'Ask about your vault',
+  chatEmptyStateDetail:
+    'Built-in search automatically references related documents and shows sources below the answer. MCP is not required.',
+  chatEmptyStatePromptSummary: 'Summarize the main themes in this vault with evidence',
+  chatEmptyStatePromptConnections: 'Find documents related to my recent notes',
   chatReadinessMcpPartial: 'Some MCP connections need attention',
   chatReadinessMcpPartialDetail: 'Connected {connected}/{total}. Reconnect the servers you need.',
   chatReadinessSaveFolderMissing: 'No save folder',
@@ -4727,6 +4756,9 @@ const en: I18nKeys = {
     'Separate new note suggestions from sources and mark them as "Suggestions".',
   contextRuleNoEvidence: 'If evidence is insufficient, say that relevant documents were not found.',
   contextAutoRagDetail: 'Auto RAG {count}',
+  contextImplicitFolderDetail: '{count} automatically referenced from {name}',
+  contextImplicitFolderNoMatch: 'No document in {name} directly matched this question.',
+  contextImplicitFolderReason: 'Checked relevant source files in the mentioned {name} folder.',
   contextRejectedCandidatesExcluded: 'Excluded {count} validation-failed candidates from context.',
   contextNoRelevantDocs: 'No relevant documents met the similarity threshold.',
   contextRagLoadFailed: 'Unable to load RAG context: {error}',

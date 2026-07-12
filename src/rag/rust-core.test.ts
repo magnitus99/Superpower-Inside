@@ -41,6 +41,8 @@ import {
   planQueryResultScoreRust,
   planFileIndexRecordsRust,
   planFolderMentionFilesRust,
+  planFolderLexicalEvidenceIndicesRust,
+  planImplicitFolderQueryPathsRust,
   planGraphEdgeRecordsRust,
   planGraphRagStatusEntryLookupsRust,
   planGraphRagStatusEntrySnapshotRust,
@@ -128,6 +130,7 @@ import {
   shouldAppendMcpPathHintRust,
   shouldRebuildGraphRuntimeForGraphStatusRust,
   getMcpConnectionStateRust,
+  shouldOfferContext7ForPromptRust,
 } from './rust-core';
 
 describe('Rust WASM RAG core bridge', () => {
@@ -146,6 +149,25 @@ describe('Rust WASM RAG core bridge', () => {
     expect(tokens).toContain('llm');
     expect(tokens).toContain('요고49');
     expect(tokens).toContain('포인트');
+  });
+
+  it('plans implicit folder evidence and programming-only Context7 through WASM', () => {
+    expect(
+      planImplicitFolderQueryPathsRust('네빌 고다드의 계시록 해석은?', [
+        'bible',
+        'neville',
+        'neville-other',
+      ]),
+    ).toEqual(['neville']);
+    expect(
+      planFolderLexicalEvidenceIndicesRust(
+        'Neville Revelation',
+        ['unrelated', 'Neville explains Revelation', 'Revelation only'],
+        2,
+      ),
+    ).toEqual([1, 2]);
+    expect(shouldOfferContext7ForPromptRust('Rust API 예제를 보여줘')).toBe(true);
+    expect(shouldOfferContext7ForPromptRust('네빌의 계시록 해석은?')).toBe(false);
   });
 
   it('returns BM25 term frequencies from Rust tokenizer output', () => {

@@ -1789,6 +1789,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return Boolean(this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler);
   }
 
+  async prepareRagForChat(): Promise<boolean> {
+    const initialized = this.ragEngine ? true : await this.ensureRagRuntimeInitialized();
+    if (initialized && this.settings.rag.autoUpdateEnabled && !this.isRagIndexing()) {
+      void this.autoIndex();
+    }
+    return initialized;
+  }
+
   private getRagIndexerNotInitializedReason(): string {
     const rag = this.settings.rag;
     const resolvedEmbeddingModel = resolveProviderModelRef(

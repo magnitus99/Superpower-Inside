@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { classifyAssistantResponse } from './assistant-response-classifier';
+import {
+  classifyAssistantResponse,
+  shouldRenderAssistantQuestion,
+} from './assistant-response-classifier';
 
 describe('classifyAssistantResponse', () => {
   it('선택지가 있는 단일 선택 질문을 감지한다', () => {
@@ -165,6 +168,17 @@ describe('classifyAssistantResponse', () => {
       allowFreeText: true,
       source: 'reasoning-leak',
     });
+  });
+
+  it('tool call이 있으면 reasoning leak 질문보다 도구 실행을 우선한다', () => {
+    const classification = classifyAssistantResponse({
+      content: '',
+      reasoning: '문서를 먼저 찾아볼까요?',
+    });
+
+    expect(classification.type).toBe('question');
+    expect(shouldRenderAssistantQuestion(classification, 1)).toBe(false);
+    expect(shouldRenderAssistantQuestion(classification, 0)).toBe(true);
   });
 
   it('reasoning leak 질문의 선택지를 보존한다', () => {

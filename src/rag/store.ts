@@ -78,6 +78,7 @@ export interface VectorSearchFilter {
   embeddingProvider?: string;
   embeddingModel?: string;
   dimension?: number;
+  filePathPrefixes?: readonly string[];
 }
 
 export interface VectorSearchRequest {
@@ -280,7 +281,8 @@ function hasVectorSearchFilter(filter?: VectorSearchFilter): boolean {
   return !!(
     filter?.embeddingProvider ||
     filter?.embeddingModel ||
-    typeof filter?.dimension === 'number'
+    typeof filter?.dimension === 'number' ||
+    (filter?.filePathPrefixes?.length ?? 0) > 0
   );
 }
 
@@ -292,6 +294,7 @@ function vectorSearchFilterKey(filter?: VectorSearchFilter): string {
     filter?.embeddingProvider ?? '',
     filter?.embeddingModel ?? '',
     typeof filter?.dimension === 'number' ? String(filter.dimension) : '',
+    normalizeFilePathPrefixes(filter?.filePathPrefixes).join('\u0001'),
   ].join('\u0000');
 }
 
@@ -314,6 +317,7 @@ function matchesVectorSearchFilter(entry: VectorEntry, filter?: VectorSearchFilt
   if (typeof filter.dimension === 'number' && entry.vector.length !== filter.dimension) {
     return false;
   }
+  if (!matchesFilePathPrefixes(entry.metadata.filePath, filter.filePathPrefixes)) return false;
   return true;
 }
 
@@ -340,7 +344,22 @@ function matchesVectorRecordSearchFilter(
   ) {
     return false;
   }
+  if (!matchesFilePathPrefixes(record.filePath, filter.filePathPrefixes)) return false;
   return true;
+}
+
+function normalizeFilePathPrefixes(prefixes: readonly string[] | undefined): string[] {
+  return [...new Set((prefixes ?? []).map((prefix) => prefix.trim().replace(/\/+$/, '')).filter(Boolean))]
+    .sort();
+}
+
+function matchesFilePathPrefixes(
+  filePath: string,
+  prefixes: readonly string[] | undefined,
+): boolean {
+  const normalized = normalizeFilePathPrefixes(prefixes);
+  if (normalized.length === 0) return true;
+  return normalized.some((prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`));
 }
 
 function vectorRecordFromEntry(entry: VectorEntry, updated: number): IndexedDbVectorRecord {
@@ -698,37 +717,48 @@ export class IndexedDbVectorStore implements VectorStore {
     if (topK <= 0) return [];
 
     const selected: VectorSearchResult[] = [];
-    let offset = 0;
-    while (true) {
-      throwIfAborted(request.signal);
-      const records = await this.db.vectors
-        .orderBy('id')
-        .offset(offset)
-        .limit(this.pageSize)
-        .toArray();
-      if (records.length === 0) break;
+    const scorePages = async (
+      loadPage: (offset: number) => Promise<IndexedDbVectorRecord[]>,
+    ): Promise<void> => {
+      let offset = 0;
+      while (true) {
+        throwIfAborted(request.signal);
+        const records = await loadPage(offset);
+        if (records.length === 0) break;
+        const entries = records
+          .filter((record) => matchesVectorRecordSearchFilter(record, request.filter))
+          .map(vectorEntryFromRecord);
+        this.enforceRuntimeBoundary(entries);
+        const pageResults = await scoredSearch(
+          entries,
+          { ...request, mode: 'exact', filter: undefined, topK },
+          null,
+          null,
+        );
+        selected.push(...pageResults);
+        selected.sort((left, right) => right.score - left.score);
+        selected.splice(topK);
+        offset += records.length;
+        if (records.length < this.pageSize) break;
+      }
+    };
 
-      const entries = records
-        .filter((record) => matchesVectorRecordSearchFilter(record, request.filter))
-        .map(vectorEntryFromRecord);
-      this.enforceRuntimeBoundary(entries);
-      const pageResults = await scoredSearch(
-        entries,
-        {
-          ...request,
-          mode: 'exact',
-          filter: undefined,
-          topK,
-        },
-        null,
-        null,
+    const prefixes = normalizeFilePathPrefixes(request.filter?.filePathPrefixes);
+    if (prefixes.length > 0) {
+      for (const prefix of prefixes) {
+        await scorePages((offset) =>
+          this.db.vectors
+            .where('filePath')
+            .startsWith(`${prefix}/`)
+            .offset(offset)
+            .limit(this.pageSize)
+            .toArray(),
+        );
+      }
+    } else {
+      await scorePages((offset) =>
+        this.db.vectors.orderBy('id').offset(offset).limit(this.pageSize).toArray(),
       );
-      selected.push(...pageResults);
-      selected.sort((left, right) => right.score - left.score);
-      selected.splice(topK);
-
-      offset += records.length;
-      if (records.length < this.pageSize) break;
     }
     return selected;
   }

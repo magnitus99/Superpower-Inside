@@ -37,6 +37,20 @@ function readFixture<T>(name: string): T {
 }
 
 describe('chat UX fixture gate', () => {
+  it('빈 대화와 자동 문서 참조 안내는 실제 sidebar 구조와 반응형 CSS에 고정된다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const styles = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
+
+    expect(viewSource).toContain("cls: 'superpower-inside-chat-empty-state'");
+    expect(viewSource).toContain("setIcon(icon, 'book-open-text')");
+    expect(viewSource).toContain('this.plugin.prepareRagForChat()');
+    expect(viewSource).toContain("setHidden(this.readinessEl, snapshot.status === 'ready')");
+    expect(viewSource).toContain('severity-${item.severity}');
+    expect(styles).toContain('.superpower-inside-chat-empty-state-prompts button');
+    expect(styles).toContain('.superpower-inside-chat-readiness.superpower-inside-hidden');
+    expect(styles).toContain('@container (max-width: 420px)');
+  });
+
   it('provider stream fixture는 주요 provider transport를 네트워크 없이 덮는다', () => {
     const fixtures = readFixture<ProviderStreamFixture[]>('provider-streams.json');
 

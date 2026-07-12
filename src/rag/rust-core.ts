@@ -47,6 +47,8 @@ import {
   normalize_graph_name,
   parse_extracted_graph_payload_json,
   parse_mention_candidates_json,
+  plan_folder_lexical_evidence_indices_json,
+  plan_implicit_folder_query_paths_json,
   plan_assistant_response_classification_json,
   split_reasoning_tags_json,
   plan_chat_context_mentions_json,
@@ -119,6 +121,7 @@ import {
   plan_source_validation_warnings_json,
   get_mcp_connection_state_rust,
   should_append_mcp_path_hint_rust,
+  should_offer_context7_for_prompt,
   plan_structural_heading_neighbors_json,
   plan_structural_linked_paths_json,
   plan_vector_store_add_json,
@@ -5276,6 +5279,44 @@ export function parseMentionCandidatesRust(content: string): RustMentionCandidat
   } catch {
     return null;
   }
+}
+
+export function planImplicitFolderQueryPathsRust(
+  question: string,
+  folderPaths: readonly string[],
+): string[] | null {
+  if (!folderPaths.every(isStringValue) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_implicit_folder_query_paths_json(question, JSON.stringify(folderPaths));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isStringValue) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planFolderLexicalEvidenceIndicesRust(
+  query: string,
+  samples: readonly string[],
+  topK: number,
+): number[] | null {
+  if (!samples.every(isStringValue) || !Number.isSafeInteger(topK) || topK < 0 || !ensureRustCore()) {
+    return null;
+  }
+  try {
+    const raw = plan_folder_lexical_evidence_indices_json(query, JSON.stringify(samples), topK);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isValidNonNegativeInteger) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function shouldOfferContext7ForPromptRust(prompt: string): boolean | null {
+  if (!ensureRustCore()) return null;
+  return should_offer_context7_for_prompt(prompt);
 }
 
 export function planGraphQueryRust(question: string): RustGraphQueryPlan | null {

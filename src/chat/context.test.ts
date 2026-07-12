@@ -140,6 +140,48 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
+  it('자연어의 한글 표기와 가까운 영문 폴더에서 번역된 키워드로 원문을 직접 찾는다', async () => {
+    const bible = createFile('bible/revelation.md', '성경 계시록', 1000);
+    const neville = createFile('neville/revelation.txt', 'Neville on Revelation', 1000, 'txt');
+    const app = createApp(
+      new Map([
+        [bible.path, bible],
+        [neville.path, neville],
+      ]),
+    );
+    const calls: Array<{ minScore?: number; pathPrefixes?: readonly string[] }> = [];
+    const ragEngine: RagQueryLike = {
+      query: (_question, _topK, minScore, pathPrefixes) => {
+        calls.push({ minScore, pathPrefixes });
+        return Promise.resolve(
+          pathPrefixes?.includes('neville')
+            ? [createResult(neville.path, neville.content, createContentHash(neville.content))]
+            : [createResult(bible.path, bible.content, createContentHash(bible.content))],
+        );
+      },
+    };
+
+    const context = await buildChatContext('네빌 고다드는 요한 계시록을 어떻게 해석했어?', {
+      app,
+      ragEngine,
+      queryExpander: () => Promise.resolve('Neville Goddard Revelation Apocalypse'),
+    });
+
+    expect(calls).toEqual([]);
+    expect(context.citations.map((citation) => citation.filePath)).toEqual([
+      'neville/revelation.txt',
+    ]);
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'folder:auto:neville',
+          status: 'attached',
+          sourceIds: ['folder-auto-1'],
+        }),
+      ]),
+    );
+  });
+
   it('검증된 local Graph 근거만 연결 근거 attachment로 표시한다', async () => {
     const file = createFile('note.md', '현재 내용', 1000);
     const app = createApp(new Map([['note.md', file]]));
@@ -407,6 +449,21 @@ describe('buildChatContext UX reason metadata', () => {
     expect(typeof folderAttachment?.detail).toBe('string');
   });
 
+  it('folder mention은 RAG가 인덱싱하는 txt 파일도 첨부한다', async () => {
+    const folder = createFolder('neville');
+    const textFile = createFile('neville/lecture.txt', 'Neville lecture', 1000, 'txt');
+    const app = createApp(new Map([[textFile.path, textFile]]), new Map([[folder.path, folder]]));
+
+    const context = await buildChatContext('@neville 요약', { app });
+
+    expect(context.citations).toEqual([
+      expect.objectContaining({ filePath: 'neville/lecture.txt', status: 'verified' }),
+    ]);
+    expect(context.attachments).toEqual([
+      expect.objectContaining({ id: 'folder:neville', status: 'attached', fileCount: 1 }),
+    ]);
+  });
+
   it('folder mention exposes budget as the partial attachment reason', async () => {
     const folder = createFolder('docs');
     const first = createFile(
@@ -499,12 +556,17 @@ function createResult(filePath: string, text: string, contentHash: string): Quer
   };
 }
 
-function createFile(path: string, content: string, mtime: number): TFile & { content: string } {
+function createFile(
+  path: string,
+  content: string,
+  mtime: number,
+  extension = 'md',
+): TFile & { content: string } {
   return Object.assign(Object.create(TFile.prototype), {
     path,
     name: path.split('/').pop() ?? path,
     basename: path.split('/').pop()?.replace(/\.md$/, '') ?? path,
-    extension: 'md',
+    extension,
     content,
     stat: {
       ctime: mtime,

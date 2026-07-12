@@ -11,7 +11,9 @@ import {
   planGraphMentionContextRust,
   planContextGraphVerificationRust,
   planContextSourcesRust,
+  planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
+  planImplicitFolderQueryPathsRust,
   type RustAutoRagReason,
   type RustContextSourceInput,
   type RustContextSourceVerification,
@@ -25,6 +27,7 @@ import { expandReferencedVaultFiles } from './context-expansion';
 import { type ParsedMention, parseMentions, type MentionResolver } from './mention-parser';
 import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import { isRagIndexableFile } from '../utils/vault';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -33,7 +36,12 @@ export {
 } from './mention-parser';
 
 export interface RagQueryLike {
-  query(question: string, topK: number, minScore?: number): Promise<QueryResult[]>;
+  query(
+    question: string,
+    topK: number,
+    minScore?: number,
+    filePathPrefixes?: readonly string[],
+  ): Promise<QueryResult[]>;
   getLastRetrievalDiagnostics?(): RetrievalProviderDiagnostic[];
 }
 
@@ -55,6 +63,7 @@ interface BuildContextOptions {
   maxReferenceFiles?: number;
   ragTopK?: number;
   ragMinScore?: number;
+  queryExpander?: (question: string) => Promise<string>;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
@@ -141,12 +150,47 @@ export async function buildChatContext(
     );
   }
 
-  if (options.ragEngine && shouldUseAutoRag) {
+  const explicitFolderPaths = new Set(
+    selectByRustIndices(mentions, mentionPlan.folderIndices, { dedupe: true }).map(
+      (mention) => mention.name,
+    ),
+  );
+  const implicitFolderPaths = shouldUseAutoRag
+    ? (planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []).filter(
+        (path) => !explicitFolderPaths.has(path),
+      )
+    : [];
+  if (implicitFolderPaths.length > 0) {
+    const expandedQuery = options.queryExpander
+      ? await options.queryExpander(question).catch(() => question)
+      : question;
+    for (const folderPath of implicitFolderPaths) {
+      await appendImplicitFolderEvidence(
+        folderPath,
+        expandedQuery,
+        options.app,
+        appendBlock,
+        attachments,
+        citations,
+        Math.min(3, maxFolderFiles),
+      );
+    }
+  }
+  const hasImplicitFolderEvidence = attachments.some(
+    (attachment) =>
+      attachment.id.startsWith('folder:auto:') && (attachment.sourceIds?.length ?? 0) > 0,
+  );
+
+  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence) {
     try {
       const results = await options.ragEngine.query(question, ragTopK, options.ragMinScore);
+      const attachedPaths = new Set(citations.map((citation) => citation.filePath));
+      const uniqueResults = dedupeQueryResults(results).filter(
+        (result) => !attachedPaths.has(result.entry.metadata.filePath),
+      );
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
-      for (const result of results) {
+      for (const result of uniqueResults) {
         const graphPlan = planContextGraphVerificationRust(
           result.entry.metadata.filePath,
           t('contextUnsupportedGraphRagSource'),
@@ -196,7 +240,7 @@ export async function buildChatContext(
         sourceIds: sourcePlan.sourceIds,
         autoRagReason: mentionPlan.autoRagReason,
       });
-      const graphContributionCount = countVerifiedGraphContributions(results, verifications);
+      const graphContributionCount = countVerifiedGraphContributions(uniqueResults, verifications);
       if (graphContributionCount > 0) {
         attachments.push({
           id: 'graph-rag:auto',
@@ -276,6 +320,103 @@ export async function buildChatContext(
       citations,
     }),
   };
+}
+
+async function appendImplicitFolderEvidence(
+  folderPath: string,
+  expandedQuery: string,
+  app: App,
+  appendBlock: (block: ContextBlock) => boolean,
+  attachments: ContextAttachment[],
+  citations: SourceCitation[],
+  topK: number,
+): Promise<void> {
+  const prefix = `${folderPath}/`;
+  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(prefix));
+  const indexableFlags = await Promise.all(
+    folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
+  );
+  const indexableFiles = folderFiles.filter((_file, index) => indexableFlags[index] === true);
+  const readable = (
+    await Promise.all(
+      indexableFiles.map(async (file) => {
+        try {
+          return { file, content: await app.vault.cachedRead(file) };
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((item): item is { file: TFile; content: string } => item !== null);
+  const selected = selectByRustIndices(
+    readable,
+    planFolderLexicalEvidenceIndicesRust(
+      expandedQuery,
+      readable.map(({ file, content }) => `${file.path}\n${content}`),
+      topK,
+    ) ?? undefined,
+    { dedupe: true },
+  );
+  const sourceIds: string[] = [];
+  let attachedChars = 0;
+  let partial = false;
+
+  for (const { file, content } of selected) {
+    const citation: SourceCitation = {
+      id: `folder-auto-${citations.length + 1}`,
+      filePath: file.path,
+      status: 'verified',
+      preview: createContextPreviewRust(content) ?? '',
+    };
+    sourceIds.push(citation.id);
+    attachedChars += content.length;
+    if (
+      !appendBlock({
+        citation,
+        text: `[Automatically selected vault file: ${file.path}]\n${content}`,
+      })
+    ) {
+      partial = true;
+      break;
+    }
+  }
+
+  attachments.push({
+    id: `folder:auto:${folderPath}`,
+    type: 'folder',
+    name: folderPath,
+    label: t('contextImplicitFolderDetail', { name: folderPath, count: sourceIds.length }),
+    status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
+    detail:
+      sourceIds.length === 0
+        ? t('contextImplicitFolderNoMatch', { name: folderPath })
+        : t('contextImplicitFolderReason', { name: folderPath }),
+    reason: t('contextAutoRagTitle'),
+    estimatedChars: selected.reduce((total, item) => total + item.content.length, 0),
+    actualChars: attachedChars,
+    fileCount: sourceIds.length,
+    filteredCount: Math.max(0, indexableFiles.length - selected.length),
+    sourceIds,
+    folderLimitReason: partial ? 'budget' : undefined,
+  });
+}
+
+function collectTopLevelFolderPaths(app: App): string[] {
+  const folders = new Set<string>();
+  for (const file of app.vault.getFiles()) {
+    const topLevel = file.path.split('/')[0]?.trim();
+    if (topLevel && file.path.includes('/')) folders.add(topLevel);
+  }
+  return [...folders].sort();
+}
+
+function dedupeQueryResults(results: readonly QueryResult[]): QueryResult[] {
+  const seen = new Set<string>();
+  return results.filter((result) => {
+    if (seen.has(result.entry.id)) return false;
+    seen.add(result.entry.id);
+    return true;
+  });
 }
 
 function countVerifiedGraphContributions(
@@ -550,13 +691,20 @@ async function appendFolderMention(
     return;
   }
 
-  const markdownFiles = app.vault.getMarkdownFiles();
+  const folderPrefix = `${path}/`;
+  const folderFiles = app.vault
+    .getFiles()
+    .filter((file) => file.path.startsWith(folderPrefix));
+  const indexableFlags = await Promise.all(
+    folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
+  );
+  const indexableFiles = folderFiles.filter((_file, index) => indexableFlags[index] === true);
   const filePlan = planFolderMentionFilesRust(
     path,
-    markdownFiles.map((file) => file.path),
+    indexableFiles.map((file) => file.path),
     maxFolderFiles,
   );
-  const files = selectByRustIndices(markdownFiles, filePlan?.indices, { dedupe: true });
+  const files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
   const sourceIds: string[] = [];
   let partial = filePlan?.partial ?? false;
   let folderLimitReason: FolderLimitReason | undefined =
