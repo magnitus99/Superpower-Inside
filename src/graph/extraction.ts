@@ -48,8 +48,22 @@ export interface GraphExtractionChunkInput {
   extractionModelKey: string;
   ontologySchema: OntologySchema;
   signal?: AbortSignal;
+  ignoreRetryWait?: boolean;
   onPhase?: (phase: GraphRagIndexingPhase) => void;
   onProgress?: (patch: GraphRagIndexingCounterPatch) => void;
+}
+
+export class GraphExtractionDeferredError extends Error {
+  constructor(readonly nextAttemptAt: number) {
+    super('Graph extraction retry is deferred.');
+    this.name = 'GraphExtractionDeferredError';
+  }
+}
+
+export function isGraphExtractionDeferredError(
+  error: unknown,
+): error is GraphExtractionDeferredError {
+  return error instanceof GraphExtractionDeferredError;
 }
 
 type GraphPayloadParseResult =
@@ -57,9 +71,11 @@ type GraphPayloadParseResult =
   | { ok: false; reason: 'extraction-error'; rawFact: unknown };
 
 export class GraphExtractionIndexer {
+  private static readonly LEASE_DURATION_MS = 120_000;
   private provider: LLMProvider;
   private store: KnowledgeGraphStore;
   private entityResolver: EntityResolver;
+  private readonly workerId = crypto.randomUUID();
 
   constructor(options: GraphExtractionIndexerOptions) {
     this.provider = options.provider;
@@ -86,6 +102,14 @@ export class GraphExtractionIndexer {
     throwIfGraphExtractionAborted(input.signal);
 
     let job = await this.prepareExtractionJob(input);
+    if (
+      job.state === 'retry-wait' &&
+      input.ignoreRetryWait !== true &&
+      job.nextAttemptAt !== undefined &&
+      job.nextAttemptAt > Date.now()
+    ) {
+      throw new GraphExtractionDeferredError(job.nextAttemptAt);
+    }
     const cachedRawResponse = job.rawResponseId
       ? await this.store.getRawResponse(job.rawResponseId)
       : undefined;
@@ -95,7 +119,25 @@ export class GraphExtractionIndexer {
     input.onProgress?.({ storedEvidence: 1 });
     throwIfGraphExtractionAborted(input.signal);
 
-    const rawResponse = cachedRawResponse?.body ?? (await this.requestExtraction(input));
+    let rawResponse = cachedRawResponse?.body;
+    if (rawResponse === undefined) {
+      const leasedAt = Date.now();
+      job = {
+        ...job,
+        state: 'leased',
+        attemptCount: job.attemptCount + 1,
+        leaseOwner: this.workerId,
+        leaseExpiresAt: leasedAt + GraphExtractionIndexer.LEASE_DURATION_MS,
+        updatedAt: leasedAt,
+      };
+      await this.store.putExtractionJob(job);
+      try {
+        rawResponse = await this.requestExtraction(input);
+      } catch (error) {
+        await this.store.putExtractionJob(createInterruptedJob(job, error));
+        throw error;
+      }
+    }
     throwIfGraphExtractionAborted(input.signal);
     if (!cachedRawResponse) {
       job = await this.storeRawResponse(job, rawResponse);
@@ -204,7 +246,8 @@ export class GraphExtractionIndexer {
     const nextJob: GraphExtractionJobRecord = {
       ...job,
       state: 'response-received',
-      attemptCount: job.attemptCount + 1,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
       rawResponseId,
       updatedAt: Date.now(),
     };
@@ -331,6 +374,47 @@ export class GraphExtractionIndexer {
     await this.store.addRejectedFact(record);
     input.onProgress?.({ storedRejectedFacts: 1 });
   }
+}
+
+function createInterruptedJob(
+  job: GraphExtractionJobRecord,
+  error: unknown,
+): GraphExtractionJobRecord {
+  const now = Date.now();
+  if (isAbortError(error)) {
+    return {
+      ...job,
+      state: 'prepared',
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+      updatedAt: now,
+    };
+  }
+  const retryDelayMs = Math.min(3_600_000, 2_000 * 2 ** Math.min(job.attemptCount - 1, 10));
+  return {
+    ...job,
+    state: 'retry-wait',
+    nextAttemptAt: now + retryDelayMs,
+    leaseOwner: undefined,
+    leaseExpiresAt: undefined,
+    lastErrorCode: classifyExtractionError(error),
+    updatedAt: now,
+  };
+}
+
+function classifyExtractionError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const statusMatch = /(?:failed:\s*|status\s*)(\d{3})/iu.exec(message);
+  if (statusMatch?.[1]) return `http-${statusMatch[1]}`;
+  if (/timeout|timed out/iu.test(message)) return 'timeout';
+  if (/context.{0,20}(?:length|window|token)|too many tokens/iu.test(message)) {
+    return 'context-overflow';
+  }
+  return 'provider-error';
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 function buildExtractionRepairSystemPrompt(schema: OntologySchema): string {

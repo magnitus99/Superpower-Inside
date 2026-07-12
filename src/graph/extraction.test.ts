@@ -73,6 +73,49 @@ describe('GraphExtractionIndexer', () => {
     expect(claims[0]?.relationIds).toEqual([relations[1]?.id]);
   });
 
+  it('provider 실패는 lease를 해제하고 bounded retry 대기 상태로 보존한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createRejectingProvider(new Error('LLM chat failed: 429 rate limited')),
+      store,
+    });
+
+    await expect(indexer.extractChunk(createInput('Alpha'))).rejects.toThrow('429');
+
+    const jobs = await store.getExtractionJobs();
+    expect(jobs).toEqual([
+      expect.objectContaining({
+        state: 'retry-wait',
+        attemptCount: 1,
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+        lastErrorCode: 'http-429',
+      }),
+    ]);
+    expect(typeof jobs[0]?.nextAttemptAt).toBe('number');
+  });
+
+  it('취소된 provider 요청은 실패로 고정하지 않고 prepared 상태로 되돌린다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createRejectingProvider(new DOMException('cancelled', 'AbortError')),
+      store,
+    });
+
+    await expect(indexer.extractChunk(createInput('Alpha'))).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+
+    expect(await store.getExtractionJobs()).toEqual([
+      expect.objectContaining({
+        state: 'prepared',
+        attemptCount: 1,
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+      }),
+    ]);
+  });
+
   it('ontology에 맞는 LLM 추출 결과를 entity, relation, claim, evidence로 저장한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
@@ -856,6 +899,14 @@ function createProviderSequence(responses: string[]): LLMProvider & { calls: num
       return Promise.resolve(response);
     },
     streamChat: () => Promise.resolve(),
+  };
+}
+
+function createRejectingProvider(error: Error): LLMProvider {
+  return {
+    capability: TEST_PROVIDER_CAPABILITY,
+    chat: () => Promise.reject(error),
+    streamChat: () => Promise.reject(error),
   };
 }
 

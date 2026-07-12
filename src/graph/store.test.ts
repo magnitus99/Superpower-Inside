@@ -54,6 +54,14 @@ describe('KnowledgeGraphStore contract', () => {
     await expectKeepSeparateContract(createIndexedDbStore());
   });
 
+  it('InMemoryKnowledgeGraphStore가 만료된 extraction lease만 회수한다', async () => {
+    await expectExpiredLeaseRecovery(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 만료된 extraction lease만 회수한다', async () => {
+    await expectExpiredLeaseRecovery(createIndexedDbStore());
+  });
+
   it('InMemoryKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await fillGraphStoreForClearTest(store);
@@ -334,6 +342,37 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
       ontologyVersion: 1,
     }),
   ).resolves.toBe(true);
+}
+
+async function expectExpiredLeaseRecovery(store: KnowledgeGraphStore): Promise<void> {
+  await store.putExtractionJob(
+    createExtractionJob({
+      id: 'expired',
+      state: 'leased',
+      leaseOwner: 'worker-old',
+      leaseExpiresAt: 999,
+    }),
+  );
+  await store.putExtractionJob(
+    createExtractionJob({
+      id: 'active',
+      state: 'leased',
+      leaseOwner: 'worker-current',
+      leaseExpiresAt: 2000,
+    }),
+  );
+
+  await expect(store.recoverExpiredExtractionJobs(1000)).resolves.toBe(1);
+  await expect(store.getExtractionJob('expired')).resolves.toEqual(
+    expect.objectContaining({
+      state: 'prepared',
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+    }),
+  );
+  await expect(store.getExtractionJob('active')).resolves.toEqual(
+    expect.objectContaining({ state: 'leased', leaseOwner: 'worker-current' }),
+  );
 }
 
 async function fillGraphStoreForClearTest(store: KnowledgeGraphStore): Promise<void> {

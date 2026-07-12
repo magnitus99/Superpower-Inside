@@ -13,7 +13,7 @@ import {
 import type { VectorEntry, VectorStore } from '../rag/store';
 import { buildEdges, detectCommunities } from './community-detector';
 import { CommunitySummarizer } from './community-summarizer';
-import { GraphExtractionIndexer } from './extraction';
+import { GraphExtractionIndexer, isGraphExtractionDeferredError } from './extraction';
 import type { EntityResolverOptions } from './entity-resolver';
 import {
   isProcessableGraphRagFilePath,
@@ -506,6 +506,7 @@ export class GraphRagIndexingRunner {
               extractionModelKey: this.extractionModelKey,
               ontologySchema: this.ontologySchema,
               signal,
+              ignoreRetryWait: forceReprocess,
               onPhase: (phase) => this.updateProgressPhase(phase),
               onProgress: (patch) => this.incrementProgressCounters(patch),
             });
@@ -513,6 +514,9 @@ export class GraphRagIndexingRunner {
           } catch (error) {
             if (signal?.aborted || isAbortError(error)) {
               return { processed: false, failed: false, cancelled: true };
+            }
+            if (isGraphExtractionDeferredError(error)) {
+              return { processed: false, failed: false, cancelled: false };
             }
             await this.graphStore.addRejectedFact(createChunkFailureRecord(filePath, entry, error));
             this.incrementProgressCounters({ storedRejectedFacts: 1 });

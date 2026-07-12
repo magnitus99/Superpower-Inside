@@ -184,6 +184,7 @@ export interface KnowledgeGraphStore {
   putExtractionJob(record: GraphExtractionJobRecord): Promise<void>;
   getExtractionJob(id: string): Promise<GraphExtractionJobRecord | undefined>;
   getExtractionJobs(): Promise<GraphExtractionJobRecord[]>;
+  recoverExpiredExtractionJobs(now: number): Promise<number>;
   putRawResponse(record: GraphRawResponseRecord): Promise<void>;
   getRawResponse(id: string): Promise<GraphRawResponseRecord | undefined>;
   getRawResponses(): Promise<GraphRawResponseRecord[]>;
@@ -314,6 +315,27 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async getExtractionJobs(): Promise<GraphExtractionJobRecord[]> {
     return (await this.db.graphExtractionJobs.toArray()).map(copyExtractionJob);
+  }
+
+  async recoverExpiredExtractionJobs(now: number): Promise<number> {
+    return this.db.transaction('rw', this.db.graphExtractionJobs, async () => {
+      const expired = await this.db.graphExtractionJobs
+        .where('state')
+        .equals('leased')
+        .filter((record) => (record.leaseExpiresAt ?? Number.POSITIVE_INFINITY) <= now)
+        .toArray();
+      if (expired.length === 0) return 0;
+      await this.db.graphExtractionJobs.bulkPut(
+        expired.map((record) => ({
+          ...record,
+          state: 'prepared' as const,
+          leaseOwner: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt: now,
+        })),
+      );
+      return expired.length;
+    });
   }
 
   async putRawResponse(record: GraphRawResponseRecord): Promise<void> {
@@ -707,6 +729,24 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getExtractionJobs(): Promise<GraphExtractionJobRecord[]> {
     return Promise.resolve([...this.extractionJobs.values()].map(copyExtractionJob));
+  }
+
+  recoverExpiredExtractionJobs(now: number): Promise<number> {
+    let recovered = 0;
+    for (const [id, record] of this.extractionJobs) {
+      if (record.state !== 'leased' || (record.leaseExpiresAt ?? Number.POSITIVE_INFINITY) > now) {
+        continue;
+      }
+      this.extractionJobs.set(id, {
+        ...record,
+        state: 'prepared',
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+        updatedAt: now,
+      });
+      recovered += 1;
+    }
+    return Promise.resolve(recovered);
   }
 
   putRawResponse(record: GraphRawResponseRecord): Promise<void> {
