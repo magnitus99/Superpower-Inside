@@ -53,14 +53,14 @@
 - UI/UX 검수는 반드시 비주얼로 한다. 사람은 화면을 그림으로 이해하지, 절대로 문자 설명만으로 이해하지 않는다.
 - UI/UX 검수는 반드시 비주얼로 한다. 코드 diff, DOM 구조, 테스트 이름, 텍스트 설명은 실제 화면을 대체하지 못한다.
 - UI/UX 검수는 반드시 비주얼로 한다. 스크린샷 없이 “괜찮다”, “정돈됐다”, “브랜드 톤에 맞다”, “여백이 좋다”고 말하지 않는다.
-- UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드렸다면, 반드시 실제 실행 화면의 스크린샷을 직접 찍어서 본다. 가능하면 `.test-vault`에서 Obsidian을 열고, 불가능하면 해당 UI를 재현하는 시뮬레이션/브라우저 화면을 열어 스크린샷으로 확인한다.
+- UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드렸다면, 반드시 실제 실행 화면의 스크린샷을 직접 찍어서 본다. Obsidian 실행 화면이나 해당 UI를 재현하는 시뮬레이션/브라우저 화면을 열어 스크린샷으로 확인한다.
 - UI/DOM/CSS/레이아웃/카피 배치/상태 표시/모션/접근성 표시를 건드린 작업은 가능한 한 커밋 전에 화면 검수를 끝낸다. 릴리즈 절차 자체는 스크린샷 검수를 필수 게이트로 두지 않는다.
 - 작업자는 스크린샷을 보고 판단해야 한다. 사람은 UI를 문자로 이해하지 않는다. 버튼, 카드, 간격, 컬러, 폰트 크기, 상태 배지, 빈 상태, 오류 상태, focus ring, hover/active 상태는 실제 픽셀로 봐야 한다.
 - UI/UX에도 기준이 있다. 검수 시 최소한 브랜드 톤, 정보 위계, 정보의 여백, 밀도, 정렬, 대비, 가독성, 좁은 sidebar에서의 줄바꿈, 긴 텍스트 overflow, 아이콘/버튼 의미, 상태 변화의 명확성, 모션과 reduced-motion 처리를 스크린샷 기준으로 확인한다.
 - 스크린샷 없는 UI/UX 완료 보고는 금지한다. 자동 테스트와 review gate가 통과해도, 실제 화면을 보지 않았다면 UI/UX 검수는 끝난 것이 아니다.
 - 스크린샷 없는 UI/UX 완료 보고는 금지한다. “테스트 통과”는 동작 검증이고, “화면을 봤다”는 경험 검증이다. 둘은 서로 대체되지 않는다.
 - 스크린샷을 찍을 수 없는 환경이면 그 사실을 명시하고, UI/UX 작업을 완료로 주장하지 않는다. 이 경우 남은 검수 항목과 필요한 실행 화면을 구체적으로 남긴다.
-- Obsidian 네이티브 앱에서는 `computer-use`로 마우스 클릭이나 타이핑을 시도하지 않는다. 이 환경의 Obsidian 앱 마우스 조작은 신뢰할 수 없으므로, 앱 조작 대신 코드/파일/빌드/로그/.test-vault 상태를 확인하고 사용자가 직접 눌러야 하는 단계는 명시한다.
+- Obsidian 네이티브 앱에서는 `computer-use`로 마우스 클릭이나 타이핑을 시도하지 않는다. 이 환경의 Obsidian 앱 마우스 조작은 신뢰할 수 없으므로, 앱 조작 대신 코드/파일/빌드/로그 상태를 확인하고 사용자가 직접 눌러야 하는 단계는 명시한다.
 
 ## README AND GITHUB RELEASE POLICY
 
@@ -104,7 +104,6 @@
 ├── deny.toml                     # cargo-deny 보안/라이선스/소스 정책
 ├── rust-toolchain.toml           # Rust 1.96.0 + wasm32-unknown-unknown 고정
 ├── simulations/                  # chat-sim.html UI 시뮬레이션(미추적/배포 제외 성격)
-├── .test-vault/                  # 실제 개발용 Obsidian 테스트 볼트(.gitignore 대상)
 ├── esbuild.config.mjs            # main.ts → main.js 번들, format:cjs, target:es2022
 ├── eslint.config.mjs             # flat config + typescript-eslint/recommended-type-checked
 ├── tsconfig.json                 # strict, noUnused*, noImplicit*, isolatedModules
@@ -139,7 +138,6 @@
 | Rust/WASM RAG 코어       | `crates/rag-wasm/`                                   | 성능 민감 순수 계산. JS는 UI/host I/O, Rust는 결정적 계산 담당            |
 | Rust/WASM JS bridge      | `src/rag/rust-core.ts` + `generated/rag-wasm/`       | embedded WASM init, hash/tokenize/vector/query scoring bridge             |
 | Rust 보안 게이트         | `scripts/check-rust-security.fish` + `deny.toml`     | fmt, clippy, test, wasm build, deny, audit, vet, geiger                   |
-| 개발 볼트/QA             | `.test-vault/`                                       | 실제 Obsidian 실행, RAG 벡터, 저장된 채팅 세션 확인                       |
 
 ## CODE MAP
 
@@ -381,26 +379,6 @@
 | `chunk_plain_text_json`                                                         | function  | `crates/rag-wasm/src/lib.rs`      | plain text/code RAG chunk를 JSON으로 생성                           |
 | `chunkPlainTextRust`                                                            | function  | `src/rag/rust-core.ts`            | 내장 WASM plain text/code chunk bridge                              |
 
-## TEST VAULT
-
-`.test-vault/`는 저장소 내부 개발용 Obsidian 볼트이며 `.gitignore` 대상이다. 새 에이전트는 이 폴더를 샘플 fixture로만 보지 말고, 실제 QA 상태와 런타임 산출물을 담는 작업 공간으로 취급한다.
-
-| Path                                              | Meaning                                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `.test-vault/.obsidian/plugins/superpower-inside` | 저장소 루트로 향하는 심링크. 복사본이 아니어야 `npm run dev` 결과가 즉시 반영됨 |
-| `.test-vault/.obsidian/plugins/hot-reload/`       | `pjeby/hot-reload` 클론. `main.js` 변경 시 플러그인 자동 리로드                 |
-| `.test-vault/.obsidian/community-plugins.json`    | `superpower-inside`, `hot-reload` 활성화 상태                                   |
-| `.test-vault/.obsidian/workspace.json`            | Obsidian UI 상태. 개인/일시 상태라 커밋 대상 아님                               |
-| `.test-vault/.superpower-inside/vectors.json`     | RAG JSON 벡터 저장소. 현재 약 1410개 entry, 23MB 수준                           |
-| `.test-vault/SuperpowerInsideChats/`              | 저장된 채팅 세션 Markdown. `saveChat`/`loadChat` 포맷 실물 확인용               |
-| `.test-vault/catholic bible/`                     | RAG 인덱싱 대용량 한국어 Markdown corpus. 약 110개 이상의 장/입문 파일          |
-| `.test-vault/Base.base`                           | Obsidian Bases 기능 확인용 파일                                                 |
-| `.test-vault/test.md`, `Welcome.md`               | 간단한 문서 요약/링크/멘션 QA용                                                 |
-
-`.test-vault/SuperpowerInsideChats/*.md`는 두 종류의 포맷이 섞여 있다. 2026-05-10 파일들은 이전 저장 포맷에 가깝고, 2026-05-14 파일들은 `tags`, `pinned`, `sourceCount`, `summary`, `contextAttachments`, `citations` 등 최신 메타가 포함된다. `persistence.ts` 수정 시 두 계열을 모두 열 수 있어야 한다.
-
-`.test-vault/.superpower-inside/vectors.json`은 실제 임베딩 배열을 포함하므로 크고 민감할 수 있다. RAG 저장소/청킹 변경 QA에는 유용하지만, 일반 코드 변경에서 diff에 올리지 않는다. 재인덱싱 테스트를 하면 이 파일과 채팅 세션 파일이 바뀔 수 있으니 작업 전후 `git status --short`로 범위를 확인한다.
-
 ## DEVELOPMENT WORKFLOW
 
 Windows:
@@ -427,7 +405,7 @@ npm run build
 npm run review -- --tag <manifest-version> --built
 ```
 
-현재 `npm run test`는 `vitest run` 이후 `npm run check:i18n`을 실행한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 `.test-vault`에서 수동 QA가 필요하다.
+현재 `npm run test`는 `vitest run` 이후 `npm run check:i18n`을 실행한다. 코드 변경이 순수 함수로 분리 가능하면 Vitest 테스트를 추가한다. Obsidian 런타임 의존 UI/RAG/MCP 흐름은 실제 실행 환경에서 수동 QA가 필요하다.
 
 Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint만으로 잡히지 않을 수 있다. UI/DOM/CSS를 수정하면 반드시 `src/obsidian-community-review.test.ts`와 `npm run review -- --tag <manifest-version> --built`를 통과시킨다.
 
@@ -511,7 +489,6 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 | 단순 `\n\n` 청킹                           | RAG 품질 저하. `chunkMarkdown()` 경계 규칙 유지                                                                |
 | 런타임 `.env`/`process.env` 의존           | Obsidian 브라우저 런타임에 보장되지 않음. MCP PATH 처리 예외만 신중히 다룸                                     |
 | 웹 세션/쿠키 기반 크롤링                   | Obsidian 보안/배포 정책상 부적합                                                                               |
-| `.test-vault` 산출물 무심코 커밋           | 채팅, 벡터, workspace, API 관련 상태가 섞일 수 있음                                                            |
 | `package-lock.json` 없이 의존성 변경       | CI는 `npm ci`를 사용하므로 `package.json`과 lockfile 불일치가 바로 릴리스 실패로 이어진다                      |
 | `src/llm/providers.ts.bak` 유지            | 백업 파일 성격. 정리 작업 시 삭제 후보                                                                         |
 
@@ -525,21 +502,10 @@ npm run build      # Rust/WASM 빌드 후 production 번들(minify, no sourcemap
 npm run format     # Prettier --write src/ main.ts
 ```
 
-```powershell
-.\scripts\setup-dev.ps1             # Windows .test-vault 생성, 플러그인 junction, hot-reload 설치
-.\scripts\launch-obsidian-debug.ps1 # Windows Obsidian 디버그 실행, isolated profile, remote debugging port
-npm run build                       # release asset용 main.js 생성
-```
-
-```fish
-./scripts/setup-dev.fish             # macOS .test-vault 생성, 플러그인 symlink, hot-reload 설치
-./scripts/launch-obsidian-debug.fish # macOS Obsidian 디버그 실행, remote debugging port 9222
-```
-
 ## NOTES
 
 - API 키는 Obsidian 플러그인 `data.json`에 평문 저장된다. 공유/동기화/로그 출력 시 항상 민감 정보로 취급한다.
-- `data.json`, `main.js`, `.test-vault/`, `.sisyphus/`는 현재 `.gitignore` 대상이다. `package-lock.json`은 추적 대상이다.
+- `data.json`, `main.js`, `.sisyphus/`는 현재 `.gitignore` 대상이다. `package-lock.json`은 추적 대상이다.
 - `main.ts loadSettings()`는 provider 모델 배열, Ollama URL, chat `defaultModel`, RAG auto-update, MCP stdio 설정 migration을 수행한다.
 - `saveSettings()`는 provider 재초기화, RAG 재초기화, MCP 재연결을 유발한다. 설정 UI 변경은 런타임 부작용까지 확인한다.
 - MCP 설정은 표준 `mcpServers` JSON으로 가져오고 내부 `MCPServerConfig[]`로 변환한다. HTTP/SSE 레거시 서버는 migration에서 제거된다.

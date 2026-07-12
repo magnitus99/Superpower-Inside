@@ -29,8 +29,8 @@ describe('GraphRAG rejected fact diagnostics', () => {
     const copyText = buildRejectedFactCopyText(fact);
 
     expect(copyText).toContain('errorCode: SPI-GRAPH-JSON-001');
-    expect(copyText).toContain('filePath: bible/test.md');
-    expect(copyText).toContain('entryId: bible/test.md::1::0');
+    expect(copyText).toContain('filePath: notes/test.md');
+    expect(copyText).toContain('entryId: notes/test.md::1::0');
     expect(copyText).toContain('"provider": "openrouter"');
   });
 
@@ -57,8 +57,8 @@ function createRejectedFact(
 ): GraphRejectedFactRecord {
   return {
     id: 'reject-1',
-    filePath: 'bible/test.md',
-    entryId: 'bible/test.md::1::0',
+    filePath: 'notes/test.md',
+    entryId: 'notes/test.md::1::0',
     reason: 'invalid-json',
     rawFact: 'not-json',
     updatedAt: 1_800_000_000_000,

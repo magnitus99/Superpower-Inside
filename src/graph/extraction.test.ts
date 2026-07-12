@@ -226,44 +226,44 @@ describe('GraphExtractionIndexer', () => {
     expect(sumProgress(progressEvents, 'cachedChunks')).toBe(0);
   });
 
-  it('문헌/개념이 작품을 해석하는 interprets relation은 저장하고 reject하지 않는다', async () => {
+  it('문헌과 개념이 작품을 해석하는 interprets relation은 저장하고 reject하지 않는다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
       provider: createProvider(
         JSON.stringify({
           entities: [
             {
-              name: '주석 성경',
+              name: '분석 보고서',
               typeId: 'work',
-              description: '본문을 해석하는 주석 문헌',
+              description: '원본 문서를 해석하는 분석 문헌',
               confidence: 0.9,
             },
             {
-              name: '성경',
+              name: '원본 문서',
               typeId: 'work',
               description: '해석 대상 문헌',
               confidence: 0.9,
             },
             {
-              name: '모세오경',
+              name: '데이터 모델',
               typeId: 'concept',
-              description: '성경 본문 해석 주제',
+              description: '원본 문서 해석에 사용하는 개념',
               confidence: 0.85,
             },
           ],
           relations: [
             {
-              source: '주석 성경',
-              target: '성경',
+              source: '분석 보고서',
+              target: '원본 문서',
               relationTypeId: 'interprets',
-              description: '주석 성경은 성경 본문을 해석한다.',
+              description: '분석 보고서는 원본 문서를 해석한다.',
               confidence: 0.9,
             },
             {
-              source: '모세오경',
-              target: '성경',
+              source: '데이터 모델',
+              target: '원본 문서',
               relationTypeId: 'interprets',
-              description: '모세오경 주제는 성경 본문 해석과 연결된다.',
+              description: '데이터 모델은 원본 문서 해석과 연결된다.',
               confidence: 0.85,
             },
           ],
@@ -273,7 +273,7 @@ describe('GraphExtractionIndexer', () => {
       store,
     });
 
-    await indexer.extractChunk(createInput('주석 성경은 성경 본문과 모세오경을 해석한다.'));
+    await indexer.extractChunk(createInput('분석 보고서는 데이터 모델을 사용해 원본 문서를 해석한다.'));
 
     expect(
       (await store.getRelations()).map((relation) => relation.relationTypeId),
@@ -287,13 +287,13 @@ describe('GraphExtractionIndexer', () => {
       provider: createProvider(
         JSON.stringify({
           entities: [
-            { name: '주석 성경', typeId: 'work', description: '주석 문헌', confidence: 0.9 },
-            { name: '성경', typeId: 'work', description: '해석 대상 문헌', confidence: 0.9 },
+            { name: '분석 보고서', typeId: 'work', description: '분석 문헌', confidence: 0.9 },
+            { name: '원본 문서', typeId: 'work', description: '해석 대상 문헌', confidence: 0.9 },
           ],
           relations: [
             {
               source: '본문',
-              target: '성경',
+              target: '원본 문서',
               relationTypeId: 'interprets',
               description: '일반 역할명을 endpoint로 사용했다.',
               confidence: 0.9,
@@ -305,7 +305,7 @@ describe('GraphExtractionIndexer', () => {
       store,
     });
 
-    await indexer.extractChunk(createInput('주석 성경은 성경 본문을 해석한다.'));
+    await indexer.extractChunk(createInput('분석 보고서는 원본 문서를 해석한다.'));
 
     expect(await store.getRelations()).toEqual([]);
     expect(await store.getRejectedFacts()).toEqual([

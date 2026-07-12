@@ -140,13 +140,13 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
-  it('자연어의 한글 표기와 가까운 영문 폴더에서 번역된 키워드로 원문을 직접 찾는다', async () => {
-    const bible = createFile('bible/revelation.md', '성경 계시록', 1000);
-    const neville = createFile('neville/revelation.txt', 'Neville on Revelation', 1000, 'txt');
+  it('자연어의 한글 표기와 가까운 영문 폴더에서 확장된 키워드로 원문을 직접 찾는다', async () => {
+    const archive = createFile('archive/overview.md', '지난 프로젝트 개요', 1000);
+    const aurora = createFile('aurora/migration.txt', 'Aurora migration plan', 1000, 'txt');
     const app = createApp(
       new Map([
-        [bible.path, bible],
-        [neville.path, neville],
+        [archive.path, archive],
+        [aurora.path, aurora],
       ]),
     );
     const calls: Array<{ minScore?: number; pathPrefixes?: readonly string[] }> = [];
@@ -154,27 +154,27 @@ describe('buildChatContext RAG 출처 검증', () => {
       query: (_question, _topK, minScore, pathPrefixes) => {
         calls.push({ minScore, pathPrefixes });
         return Promise.resolve(
-          pathPrefixes?.includes('neville')
-            ? [createResult(neville.path, neville.content, createContentHash(neville.content))]
-            : [createResult(bible.path, bible.content, createContentHash(bible.content))],
+          pathPrefixes?.includes('aurora')
+            ? [createResult(aurora.path, aurora.content, createContentHash(aurora.content))]
+            : [createResult(archive.path, archive.content, createContentHash(archive.content))],
         );
       },
     };
 
-    const context = await buildChatContext('네빌 고다드는 요한 계시록을 어떻게 해석했어?', {
+    const context = await buildChatContext('오로라 프로젝트의 마이그레이션 계획은?', {
       app,
       ragEngine,
-      queryExpander: () => Promise.resolve('Neville Goddard Revelation Apocalypse'),
+      queryExpander: () => Promise.resolve('Aurora migration plan'),
     });
 
     expect(calls).toEqual([]);
     expect(context.citations.map((citation) => citation.filePath)).toEqual([
-      'neville/revelation.txt',
+      'aurora/migration.txt',
     ]);
     expect(context.attachments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: 'folder:auto:neville',
+          id: 'folder:auto:aurora',
           status: 'attached',
           sourceIds: ['folder-auto-1'],
         }),
@@ -450,17 +450,17 @@ describe('buildChatContext UX reason metadata', () => {
   });
 
   it('folder mention은 RAG가 인덱싱하는 txt 파일도 첨부한다', async () => {
-    const folder = createFolder('neville');
-    const textFile = createFile('neville/lecture.txt', 'Neville lecture', 1000, 'txt');
+    const folder = createFolder('research');
+    const textFile = createFile('research/lecture.txt', 'Research lecture', 1000, 'txt');
     const app = createApp(new Map([[textFile.path, textFile]]), new Map([[folder.path, folder]]));
 
-    const context = await buildChatContext('@neville 요약', { app });
+    const context = await buildChatContext('@research 요약', { app });
 
     expect(context.citations).toEqual([
-      expect.objectContaining({ filePath: 'neville/lecture.txt', status: 'verified' }),
+      expect.objectContaining({ filePath: 'research/lecture.txt', status: 'verified' }),
     ]);
     expect(context.attachments).toEqual([
-      expect.objectContaining({ id: 'folder:neville', status: 'attached', fileCount: 1 }),
+      expect.objectContaining({ id: 'folder:research', status: 'attached', fileCount: 1 }),
     ]);
   });
 

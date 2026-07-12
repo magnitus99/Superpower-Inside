@@ -32,7 +32,7 @@ GraphRAG와 내장 온톨로지가 무료 또는 구조화 출력 품질이 일�
 5. `graphRagAutoSyncIntervalMin`은 설정 UI와 저장값만 있고 실제 주기 스케줄러에 연결되지 않는다.
 6. `ontologyEnabled`는 설정 타입·기본값·마이그레이션 외에는 런타임 의미가 없다.
 7. pending entity merge는 저장되고 개수는 표시되지만 적용·거부·재평가 경로가 없다.
-8. 테스트 볼트에서는 Graph evidence가 존재하지만 모든 후보 파일이 stale인 상태가 확인됐다. 현재 제한량과 트리거 방식으로는 자동 수렴이 보장되지 않는다.
+8. 재현 환경에서 Graph evidence가 존재하지만 모든 후보 파일이 stale인 상태가 확인됐다. 현재 제한량과 트리거 방식으로는 자동 수렴이 보장되지 않는다.
 9. BM25 로드 지연이 전체 RAG 초기화 경로를 오래 점유해 Graph runner와 query engine 준비 시점을 불필요하게 늦출 수 있다.
 10. local Graph retrieval은 관련 원문 근거를 고르는 데 기여할 수 있지만, 채팅 표면에서는 Graph가 실제로 기여했는지 명확히 구분되지 않아 사용자가 체감하기 어렵다.
 

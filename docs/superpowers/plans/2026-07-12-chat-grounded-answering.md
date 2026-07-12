@@ -18,7 +18,7 @@
 6. 빈 상태, compact readiness, 조용한 MCP 정상 상태, Obsidian icon을 구현하고 i18n·CSS 테스트를 추가한다.
 7. 관련 Vitest와 Rust unit test를 먼저 통과시킨다.
 8. lint → typecheck → test → security:full → build → manifest tag review gate를 순서대로 통과시킨다.
-9. `.test-vault`에서 플러그인을 reload하고 실제 질문으로 citation과 응답 흐름을 확인한다.
+9. 재현 가능한 Obsidian 개발 환경에서 플러그인을 reload하고 실제 질문으로 citation과 응답 흐름을 확인한다.
 10. 일반 폭·좁은 폭, 빈 상태·준비 중·관련 노트 있음·관련 노트 없음·오류 상태를 스크린샷으로 검수하고 발견된 문제를 수정한다.
 
 ## 변경 범위

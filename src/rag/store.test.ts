@@ -149,19 +149,19 @@ describe('IndexedDbVectorStore', () => {
   it('search는 file path prefix로 지정한 폴더의 벡터만 점수화한다', async () => {
     const store = createStore();
     await store.add([
-      createEntry('bible/revelation.md', 0, [1, 0], 'bible'),
-      createEntry('neville/revelation.txt', 0, [0.9, 0.1], 'neville'),
-      createEntry('neville-other/note.txt', 0, [1, 0], 'other'),
+      createEntry('archive/overview.md', 0, [1, 0], 'archive'),
+      createEntry('aurora/migration.txt', 0, [0.9, 0.1], 'aurora'),
+      createEntry('aurora-old/note.txt', 0, [1, 0], 'other'),
     ]);
 
     const results = await store.search({
       queryVector: [1, 0],
       topK: 5,
-      filter: { filePathPrefixes: ['neville'] },
+      filter: { filePathPrefixes: ['aurora'] },
     });
 
     expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'neville/revelation.txt',
+      'aurora/migration.txt',
     ]);
   });
 

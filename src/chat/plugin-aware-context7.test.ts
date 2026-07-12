@@ -49,7 +49,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: true,
-        userText: '네빌 고다드는 요한 계시록에 대해 뭐라고 했어?',
+        userText: '오로라 프로젝트의 진행 상황을 알려줘',
         registry: createRegistry('connected'),
       }),
     ).toEqual([]);

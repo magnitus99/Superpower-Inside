@@ -3210,21 +3210,7 @@ pub fn plan_folder_lexical_evidence_indices_json(
     let Some(samples) = parse_raw_string_array_json(samples_json) else {
         return String::new();
     };
-    let mut expanded_query = query.to_owned();
-    for (source, equivalents) in [
-        ("계시록", " revelation apocalypse"),
-        ("요한", " john"),
-        ("성경", " bible scripture"),
-        ("하나님", " god"),
-        ("예수", " jesus christ"),
-        ("부활", " resurrection"),
-        ("기도", " prayer"),
-    ] {
-        if query.contains(source) {
-            expanded_query.push_str(equivalents);
-        }
-    }
-    let tokens = tokenize(&expanded_query);
+    let tokens = tokenize(query);
     let joined_tokens = tokens.join("\u{1f}");
     let mut scored = samples
         .iter()
@@ -21278,26 +21264,26 @@ mod tests {
     fn implicit_folder_query_paths_match_hangul_romanization_without_false_prefixes() {
         assert_eq!(
             plan_implicit_folder_query_paths_json(
-                "네빌 고다드는 요한 계시록을 어떻게 해석했어?",
-                r#"["bible","neville","neville-other","SuperpowerInsideChats"]"#,
+                "오로라 프로젝트의 진행 상황은?",
+                r#"["archive","aurora","aurora-old","SuperpowerInsideChats"]"#,
             ),
-            r#"["neville"]"#,
+            r#"["aurora"]"#,
         );
         assert_eq!(
-            plan_implicit_folder_query_paths_json("이 볼트를 요약해줘", r#"["bible","neville"]"#),
+            plan_implicit_folder_query_paths_json("이 볼트를 요약해줘", r#"["archive","aurora"]"#),
             "[]",
         );
     }
 
     #[test]
-    fn folder_lexical_evidence_prefers_files_with_expanded_query_terms() {
+    fn folder_lexical_evidence_prefers_files_with_query_terms() {
         assert_eq!(
             plan_folder_lexical_evidence_indices_json(
-                "Neville Goddard Revelation Apocalypse",
-                r#"["neville/The Search.txt unrelated","neville/A Parabolic Revelation.txt Neville explains Revelation","neville/Other.txt apocalypse"]"#,
+                "Aurora migration",
+                r#"["aurora/Overview.txt unrelated","aurora/Migration Plan.txt Aurora migration steps","archive/Other.txt migration"]"#,
                 2,
             ),
-            "[1,2]",
+            "[1,0]",
         );
         assert_eq!(
             plan_folder_lexical_evidence_indices_json("missing", r#"["alpha","beta"]"#, 3),
@@ -21305,11 +21291,11 @@ mod tests {
         );
         assert_eq!(
             plan_folder_lexical_evidence_indices_json(
-                "요한 계시록을 어떻게 해석했어?",
-                r#"["The Search\nrevelation revelation revelation revelation","A Parabolic Revelation\nshort","Prayer\nprayer"]"#,
+                "배포 계획을 알려줘",
+                r#"["Migration\ndeployment deployment deployment deployment","Release Plan\nshort","Meeting\nnotes"]"#,
                 1,
             ),
-            "[1]",
+            "[]",
         );
     }
 
@@ -21319,7 +21305,7 @@ mod tests {
             "TypeScript API 사용법을 알려줘"
         ));
         assert!(!should_offer_context7_for_prompt(
-            "네빌 고다드는 요한 계시록에 대해 뭐라고 했어?"
+            "오로라 프로젝트의 진행 상황을 알려줘"
         ));
     }
 
