@@ -4,6 +4,7 @@ import { type OntologySchema, validateOntologyRelation } from '../ontology/schem
 import type { GraphRagIndexingCounterPatch, GraphRagIndexingPhase } from './indexing-progress';
 import {
   createGraphIdRust,
+  graphExtractionContractVersionRust,
   normalizeGraphConfidenceRust,
   normalizeGraphNameRust,
   planGraphClaimEntityIdsRust,
@@ -78,6 +79,7 @@ export class GraphExtractionIndexer {
       extractionModelKey: input.extractionModelKey,
       ontologySchemaId: input.ontologySchema.id,
       ontologyVersion: input.ontologySchema.version,
+      extractionContractVersion: graphExtractionContractVersionRust(),
     };
     input.onPhase?.('checking-cache');
     if (await this.store.isExtractionCached(cacheKey)) return;
@@ -101,7 +103,24 @@ export class GraphExtractionIndexer {
     throwIfGraphExtractionAborted(input.signal);
     input.onPhase?.('api-response-received');
     input.onPhase?.('api-response-normalizing');
-    const parsed = parseExtractedGraphPayload(rawResponse);
+    let parsed = parseExtractedGraphPayload(rawResponse);
+    if (!parsed.ok) {
+      throwIfGraphExtractionAborted(input.signal);
+      input.onPhase?.('api-waiting');
+      const repairedResponse = await this.provider.chat(
+        [
+          { role: 'system', content: buildExtractionRepairSystemPrompt(input.ontologySchema) },
+          { role: 'user', content: rawResponse },
+        ],
+        0,
+        undefined,
+        { signal: input.signal },
+      );
+      throwIfGraphExtractionAborted(input.signal);
+      input.onPhase?.('api-response-received');
+      input.onPhase?.('api-response-normalizing');
+      parsed = parseExtractedGraphPayload(repairedResponse);
+    }
     input.onPhase?.('storing-results');
     if (!parsed.ok) {
       await this.reject(input, parsed.reason, parsed.rawFact);
@@ -257,6 +276,14 @@ export class GraphExtractionIndexer {
     await this.store.addRejectedFact(record);
     input.onProgress?.({ storedRejectedFacts: 1 });
   }
+}
+
+function buildExtractionRepairSystemPrompt(schema: OntologySchema): string {
+  return [
+    'Repair the previous graph extraction response into one valid JSON object only.',
+    'Do not add facts, translations, entities, relations, or claims that are absent from the previous response.',
+    buildExtractionSystemPrompt(schema),
+  ].join('\n');
 }
 
 function parseExtractedGraphPayload(rawResponse: string): GraphPayloadParseResult {

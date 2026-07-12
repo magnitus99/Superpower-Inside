@@ -412,7 +412,6 @@ export interface RAGConfig {
   graphRagAutoSyncIntervalMin: number;
   ontologyAutoMergeThreshold: number;
   ontologyPendingMergeThreshold: number;
-  ontologyEnabled: boolean;
   annEnabled: boolean;
   annClusterCount: number;
   annProbeCount: number;
@@ -527,7 +526,6 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     graphRagQueryMode: 'auto',
     graphRagAutoSyncEnabled: false,
     graphRagAutoSyncIntervalMin: 30,
-    ontologyEnabled: true,
     ontologyAutoMergeThreshold: 0.85,
     ontologyPendingMergeThreshold: 0.7,
     annEnabled: true,

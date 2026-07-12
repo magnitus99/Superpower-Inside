@@ -108,13 +108,13 @@ describe('buildChatContext RAG 출처 검증', () => {
 
   it('GraphRAG community 후보는 vault 파일이 없어도 Vault Context에 포함한다', async () => {
     const app = createApp(new Map());
-    const ragEngine = createRagEngine([
-      createResult(
+    const graphResult = createResult(
         'graph://community/community::mission',
         'Paul and Barnabas missionary conflict',
         'graph-hash',
-      ),
-    ]);
+      );
+    graphResult.retrievalSources = ['graph-global'];
+    const ragEngine = createRagEngine([graphResult]);
 
     const context = await buildChatContext('반복되는 핵심 주제는?', { app, ragEngine });
 
@@ -130,6 +130,35 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
     expect(context.attachments[0]).toEqual(
       expect.objectContaining({ type: 'rag', status: 'attached', sourceIds: ['rag-1'] }),
+    );
+    expect(context.attachments[1]).toEqual(
+      expect.objectContaining({
+        type: 'graph-rag',
+        status: 'attached',
+        detail: '1개 출처가 문서 간 연결을 통해 보강되었습니다.',
+      }),
+    );
+  });
+
+  it('검증된 local Graph 근거만 연결 근거 attachment로 표시한다', async () => {
+    const file = createFile('note.md', '현재 내용', 1000);
+    const app = createApp(new Map([['note.md', file]]));
+    const graphResult = createResult('note.md', '현재 내용', createContentHash('현재 내용'));
+    graphResult.retrievalSources = ['vector', 'graph-local'];
+
+    const context = await buildChatContext('관계를 알려줘', {
+      app,
+      ragEngine: createRagEngine([graphResult]),
+    });
+
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'graph-rag',
+          status: 'attached',
+          sourceIds: ['rag-1'],
+        }),
+      ]),
     );
   });
 

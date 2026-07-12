@@ -1,5 +1,4 @@
 import type { OntologySchema } from '../ontology/schema';
-import type { LLMProvider } from '../llm/providers';
 import {
   mergeRetrievalCandidateGroupsByEntryId,
 } from '../rag/retrieval-pipeline';
@@ -20,7 +19,6 @@ import {
   planGraphQueryExecutionActionRust,
   planGraphQueryExecutionRust,
   planGraphQueryRust,
-  planGraphQueryResponseRust,
   planLocalEvidenceScoresRust,
   rankTopKPairsRust,
   type RustGraphQueryExecutionAction,
@@ -56,11 +54,6 @@ export type GraphRagQueryMode = 'auto' | 'local' | 'global' | 'hybrid';
 
 export interface GraphRagQueryEngineOptions {
   queryMode?: GraphRagQueryMode;
-  queryPlanner?: GraphQueryPlanner;
-}
-
-export interface GraphQueryPlanner {
-  plan(question: string, ontologySchema: OntologySchema): Promise<GraphQueryPlan>;
 }
 
 interface EntityMatch {
@@ -80,7 +73,6 @@ interface LocalGraphNeighborhood {
 
 export class GraphRagQueryEngine {
   private readonly queryMode: GraphRagQueryMode;
-  private readonly queryPlanner: GraphQueryPlanner | undefined;
 
   constructor(
     private readonly graphStore: KnowledgeGraphStore,
@@ -89,11 +81,14 @@ export class GraphRagQueryEngine {
     options: GraphRagQueryEngineOptions = {},
   ) {
     this.queryMode = options.queryMode ?? 'auto';
-    this.queryPlanner = options.queryPlanner;
   }
 
-  async query(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const autoPlan = this.queryMode === 'auto' ? await this.planQuery(request.question) : undefined;
+  async query(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    throwIfGraphQueryAborted(signal);
+    const autoPlan = this.queryMode === 'auto' ? planGraphQuery(request.question) : undefined;
     const plannedMode = this.queryMode === 'auto' ? (autoPlan?.queryMode ?? 'none') : 'none';
     const executionPlan = planGraphQueryExecutionRust(
       this.queryMode,
@@ -109,46 +104,42 @@ export class GraphRagQueryEngine {
 
     if (!resolvedAction) return [];
 
-    return this.executeQueryAction(resolvedAction, request, autoPlan);
+    throwIfGraphQueryAborted(signal);
+    return this.executeQueryAction(resolvedAction, request, autoPlan, signal);
   }
 
   private async executeQueryAction(
     action: RustGraphQueryExecutionAction,
     request: RagRetrievalRequest,
     plan: GraphQueryPlan | undefined,
+    signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     switch (action) {
       case 'none':
         return [];
       case 'local':
-        return this.queryLocal(request, plan);
+        return this.queryLocal(request, plan, signal);
       case 'global':
-        return this.queryGlobal(request);
+        return this.queryGlobal(request, signal);
       case 'hybrid':
         return mergeGraphCandidatesWithRust(
-          await this.queryLocal(request, plan),
-          await this.queryGlobal(request),
+          await this.queryLocal(request, plan, signal),
+          await this.queryGlobal(request, signal),
           request.candidateLimit,
         );
       case 'evidence-first':
-        return this.queryEvidenceFirst(request, plan);
-    }
-  }
-
-  private async planQuery(question: string): Promise<GraphQueryPlan> {
-    if (!this.queryPlanner) return planGraphQuery(question);
-    try {
-      return await this.queryPlanner.plan(question, this.ontologySchema);
-    } catch {
-      return planGraphQuery(question);
+        return this.queryEvidenceFirst(request, plan, signal);
     }
   }
 
   private async queryLocal(
     request: RagRetrievalRequest,
     plan?: GraphQueryPlan,
+    signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
+    throwIfGraphQueryAborted(signal);
     const entities = await this.graphStore.getEntities();
+    throwIfGraphQueryAborted(signal);
     const mentionedMatches = findMentionedEntityMatches(
       request.question,
       entities,
@@ -179,8 +170,11 @@ export class GraphRagQueryEngine {
   private async queryEvidenceFirst(
     request: RagRetrievalRequest,
     plan?: GraphQueryPlan,
+    signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
+    throwIfGraphQueryAborted(signal);
     const entities = await this.graphStore.getEntities();
+    throwIfGraphQueryAborted(signal);
     const mentionedMatches = findMentionedEntityMatches(
       request.question,
       entities,
@@ -205,8 +199,13 @@ export class GraphRagQueryEngine {
     );
   }
 
-  private async queryGlobal(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+  private async queryGlobal(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    throwIfGraphQueryAborted(signal);
     const schemaCommunities = await this.graphStore.getCommunitiesBySchema(this.ontologySchema.id);
+    throwIfGraphQueryAborted(signal);
     const communities = rankGlobalCommunitiesWithRust(
       schemaCommunities,
       request.queryVector,
@@ -488,47 +487,18 @@ export class GraphRagCandidateProvider implements CandidateProvider {
   constructor(
     private readonly engine: GraphRagQueryEngine,
     private readonly readiness: () => RetrievalProviderReadiness,
-    readonly deadlineMs = 180,
+    readonly deadlineMs = 450,
   ) {}
 
   getReadiness(): RetrievalProviderReadiness {
     return this.readiness();
   }
 
-  getCandidates(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    return this.engine.query(request);
-  }
-}
-
-export class LLMGraphQueryPlanner implements GraphQueryPlanner {
-  constructor(
-    private readonly provider: LLMProvider,
-    private readonly timeoutMs = 2000,
-  ) {}
-
-  async plan(question: string, ontologySchema: OntologySchema): Promise<GraphQueryPlan> {
-    const response = await withTimeout(
-      this.provider.chat(
-        [
-          {
-            role: 'system',
-            content:
-              'Plan a GraphRAG query. Return JSON only with type, queryMode, traversalDepth, evidenceFirst, entityHints. queryMode must be local, global, hybrid, or none.',
-          },
-          {
-            role: 'user',
-            content: JSON.stringify({
-              question,
-              ontologyEntityTypes: ontologySchema.entityTypes.map((type) => type.id),
-              ontologyRelationTypes: ontologySchema.relationTypes.map((type) => type.id),
-            }),
-          },
-        ],
-        0,
-      ),
-      this.timeoutMs,
-    );
-    return graphQueryPlanFromRust(planGraphQueryResponseRust(response, question)) ?? planGraphQuery(question);
+  getCandidates(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    return this.engine.query(request, signal);
   }
 }
 
@@ -620,15 +590,11 @@ function isGraphQueryExecutionMode(value: string): value is GraphRagQueryMode | 
   return ['local', 'global', 'hybrid', 'none'].includes(value);
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  if (timeoutMs <= 0) return promise;
-  let timeoutId: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error('GraphRAG query planning timed out')), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timeoutId) window.clearTimeout(timeoutId);
-  });
+
+function throwIfGraphQueryAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('GraphRAG query cancelled', 'AbortError');
+  }
 }
 
 function communityToVectorEntry(community: GraphCommunityRecord): VectorEntry {

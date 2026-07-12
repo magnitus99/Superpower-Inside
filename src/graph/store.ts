@@ -1,11 +1,14 @@
 import Dexie from 'dexie';
 import {
   RUST_GRAPH_PRUNE_UNKNOWN_INDEX,
+  graphExtractionContractVersionRust,
   isGraphExtractionCacheHitRust,
+  isSameGraphEntityPairRust,
   planGraphCommunityReplacementDeleteIdsRust,
   planGraphDeletionIndicesRust,
   planGraphEntityMergeRust,
   planGraphPruneRust,
+  rewriteGraphEntityReferencesRust,
   type RustGraphExtractionCacheKey,
   type RustGraphEntityMergeInput,
   type RustGraphPruneInput,
@@ -105,6 +108,7 @@ export interface GraphExtractionCacheRecord {
   extractionModelKey: string;
   ontologySchemaId: string;
   ontologyVersion: number;
+  extractionContractVersion?: number;
   updatedAt: number;
 }
 
@@ -117,6 +121,10 @@ export interface PendingEntityMergeRecord {
   reason: string;
   updatedAt: number;
 }
+
+export type PendingEntityMergeDecision = 'merge' | 'separate';
+
+const KEPT_SEPARATE_REASON = 'kept-separate';
 
 export interface GraphPruneResult {
   evidence: number;
@@ -154,6 +162,10 @@ export interface KnowledgeGraphStore {
   addRejectedFact(record: GraphRejectedFactRecord): Promise<void>;
   getRejectedFacts(): Promise<GraphRejectedFactRecord[]>;
   getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]>;
+  resolvePendingEntityMerge(
+    id: string,
+    decision: PendingEntityMergeDecision,
+  ): Promise<boolean>;
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number>;
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
@@ -216,11 +228,11 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = await this.db.graphExtractionCache.get(input.entryId);
-    return requireGraphExtractionCacheHit(cached, input);
+    return requireGraphExtractionCacheHit(cached, withCurrentExtractionContract(input));
   }
 
   async markExtractionCached(record: GraphExtractionCacheRecord): Promise<void> {
-    await this.db.graphExtractionCache.put({ ...record });
+    await this.db.graphExtractionCache.put(withCurrentExtractionContract(record));
   }
 
   async getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]> {
@@ -239,6 +251,8 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   async addPendingEntityMerge(record: PendingEntityMergeRecord): Promise<void> {
+    const existingDecisions = await this.db.graphPendingEntityMerges.toArray();
+    if (existingDecisions.some((decision) => isKeptSeparatePair(decision, record))) return;
     await this.db.graphPendingEntityMerges.put({ ...record });
   }
 
@@ -351,7 +365,75 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   async getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]> {
-    return (await this.db.graphPendingEntityMerges.toArray()).map((record) => ({ ...record }));
+    return (await this.db.graphPendingEntityMerges.toArray())
+      .filter((record) => record.reason !== KEPT_SEPARATE_REASON)
+      .map((record) => ({ ...record }));
+  }
+
+  async resolvePendingEntityMerge(
+    id: string,
+    decision: PendingEntityMergeDecision,
+  ): Promise<boolean> {
+    return this.db.transaction(
+      'rw',
+      [
+        this.db.graphEntities,
+        this.db.graphRelations,
+        this.db.graphClaims,
+        this.db.graphCommunities,
+        this.db.graphPendingEntityMerges,
+      ],
+      async () => {
+        const pending = await this.db.graphPendingEntityMerges.get(id);
+        if (!pending || pending.reason === KEPT_SEPARATE_REASON) return false;
+        if (decision === 'separate') {
+          await this.db.graphPendingEntityMerges.put({
+            ...pending,
+            reason: KEPT_SEPARATE_REASON,
+            updatedAt: Date.now(),
+          });
+          return true;
+        }
+
+        const [existing, candidate] = await Promise.all([
+          this.db.graphEntities.get(pending.existingEntityId),
+          this.db.graphEntities.get(pending.candidateEntityId),
+        ]);
+        if (!existing || !candidate || existing.id === candidate.id) {
+          await this.db.graphPendingEntityMerges.delete(id);
+          return false;
+        }
+
+        const [relations, claims, communities, pendingMerges] = await Promise.all([
+          this.db.graphRelations.toArray(),
+          this.db.graphClaims.toArray(),
+          this.db.graphCommunities.toArray(),
+          this.db.graphPendingEntityMerges.toArray(),
+        ]);
+        await this.db.graphEntities.put(mergeEntity(existing, candidate));
+        await this.db.graphEntities.delete(candidate.id);
+        await this.db.graphRelations.bulkPut(
+          relations.map((record) => rewriteRelationEntityReference(record, candidate.id, existing.id)),
+        );
+        await this.db.graphClaims.bulkPut(
+          claims.map((record) => rewriteClaimEntityReferences(record, candidate.id, existing.id)),
+        );
+        await this.db.graphCommunities.bulkPut(
+          communities.map((record) => rewriteCommunityEntityReferences(record, candidate.id, existing.id)),
+        );
+        await this.db.graphPendingEntityMerges.bulkDelete(
+          pendingMerges
+            .filter(
+              (record) =>
+                record.id === id ||
+                record.existingEntityId === candidate.id ||
+                record.candidateEntityId === candidate.id,
+            )
+            .map((record) => record.id),
+        );
+        return true;
+      },
+    );
   }
 
   async removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
@@ -501,11 +583,13 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
-    return Promise.resolve(requireGraphExtractionCacheHit(cached, input));
+    return Promise.resolve(
+      requireGraphExtractionCacheHit(cached, withCurrentExtractionContract(input)),
+    );
   }
 
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void> {
-    this.extractionCache.set(record.entryId, { ...record });
+    this.extractionCache.set(record.entryId, withCurrentExtractionContract(record));
     return Promise.resolve();
   }
 
@@ -525,6 +609,13 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   addPendingEntityMerge(record: PendingEntityMergeRecord): Promise<void> {
+    if (
+      [...this.pendingEntityMerges.values()].some((decision) =>
+        isKeptSeparatePair(decision, record),
+      )
+    ) {
+      return Promise.resolve();
+    }
     this.pendingEntityMerges.set(record.id, { ...record });
     return Promise.resolve();
   }
@@ -653,7 +744,62 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]> {
-    return Promise.resolve([...this.pendingEntityMerges.values()]);
+    return Promise.resolve(
+      [...this.pendingEntityMerges.values()].filter(
+        (record) => record.reason !== KEPT_SEPARATE_REASON,
+      ),
+    );
+  }
+
+  resolvePendingEntityMerge(
+    id: string,
+    decision: PendingEntityMergeDecision,
+  ): Promise<boolean> {
+    const pending = this.pendingEntityMerges.get(id);
+    if (!pending || pending.reason === KEPT_SEPARATE_REASON) return Promise.resolve(false);
+    if (decision === 'separate') {
+      this.pendingEntityMerges.set(id, {
+        ...pending,
+        reason: KEPT_SEPARATE_REASON,
+        updatedAt: Date.now(),
+      });
+      return Promise.resolve(true);
+    }
+
+    const existing = this.entities.get(pending.existingEntityId);
+    const candidate = this.entities.get(pending.candidateEntityId);
+    if (!existing || !candidate || existing.id === candidate.id) {
+      this.pendingEntityMerges.delete(id);
+      return Promise.resolve(false);
+    }
+
+    this.entities.set(existing.id, mergeEntity(existing, candidate));
+    this.entities.delete(candidate.id);
+    for (const [relationId, relation] of this.relations) {
+      this.relations.set(
+        relationId,
+        rewriteRelationEntityReference(relation, candidate.id, existing.id),
+      );
+    }
+    for (const [claimId, claim] of this.claims) {
+      this.claims.set(claimId, rewriteClaimEntityReferences(claim, candidate.id, existing.id));
+    }
+    for (const [communityId, community] of this.communities) {
+      this.communities.set(
+        communityId,
+        rewriteCommunityEntityReferences(community, candidate.id, existing.id),
+      );
+    }
+    for (const [pendingId, record] of this.pendingEntityMerges) {
+      if (
+        pendingId === id ||
+        record.existingEntityId === candidate.id ||
+        record.candidateEntityId === candidate.id
+      ) {
+        this.pendingEntityMerges.delete(pendingId);
+      }
+    }
+    return Promise.resolve(true);
   }
 
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number> {
@@ -984,6 +1130,92 @@ function uniqueById<T extends { id: string }>(records: readonly T[]): T[] {
   return selected;
 }
 
+function isKeptSeparatePair(
+  decision: PendingEntityMergeRecord,
+  candidate: PendingEntityMergeRecord,
+): boolean {
+  if (
+    decision.reason !== KEPT_SEPARATE_REASON ||
+    decision.ontologySchemaId !== candidate.ontologySchemaId
+  ) {
+    return false;
+  }
+  return (
+    isSameGraphEntityPairRust(
+      decision.existingEntityId,
+      decision.candidateEntityId,
+      candidate.existingEntityId,
+      candidate.candidateEntityId,
+    )
+  );
+}
+
+function rewriteEntityReferences(
+  references: readonly string[],
+  candidateEntityId: string,
+  existingEntityId: string,
+  deduplicate: boolean,
+): string[] {
+  return (
+    rewriteGraphEntityReferencesRust(
+      references,
+      candidateEntityId,
+      existingEntityId,
+      deduplicate,
+    ) ?? [...references]
+  );
+}
+
+function rewriteRelationEntityReference(
+  record: GraphRelationRecord,
+  candidateEntityId: string,
+  existingEntityId: string,
+): GraphRelationRecord {
+  const [sourceEntityId, targetEntityId] = rewriteEntityReferences(
+    [record.sourceEntityId, record.targetEntityId],
+    candidateEntityId,
+    existingEntityId,
+    false,
+  );
+  return {
+    ...copyRelation(record),
+    sourceEntityId: sourceEntityId ?? record.sourceEntityId,
+    targetEntityId: targetEntityId ?? record.targetEntityId,
+  };
+}
+
+function rewriteClaimEntityReferences(
+  record: GraphClaimRecord,
+  candidateEntityId: string,
+  existingEntityId: string,
+): GraphClaimRecord {
+  return {
+    ...copyClaim(record),
+    entityIds: rewriteEntityReferences(
+      record.entityIds,
+      candidateEntityId,
+      existingEntityId,
+      true,
+    ),
+  };
+}
+
+function rewriteCommunityEntityReferences(
+  record: GraphCommunityRecord,
+  candidateEntityId: string,
+  existingEntityId: string,
+): GraphCommunityRecord {
+  return {
+    ...copyCommunity(record),
+    entityIds: rewriteEntityReferences(
+      record.entityIds,
+      candidateEntityId,
+      existingEntityId,
+      true,
+    ),
+  };
+}
+
 function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): GraphEntityRecord {
   const labels = mergeGraphEntityLabels(existing.labels, incoming.labels);
   const plan = planGraphEntityMergeRust(
@@ -1068,7 +1300,8 @@ function isGraphExtractionCacheHitFallback(
     cachedRecord.contentHash === inputKey.contentHash &&
     cachedRecord.extractionModelKey === inputKey.extractionModelKey &&
     cachedRecord.ontologySchemaId === inputKey.ontologySchemaId &&
-    cachedRecord.ontologyVersion === inputKey.ontologyVersion
+    cachedRecord.ontologyVersion === inputKey.ontologyVersion &&
+    cachedRecord.extractionContractVersion === inputKey.extractionContractVersion
   );
 }
 
@@ -1081,6 +1314,17 @@ function toRustGraphExtractionCacheKey(
     extractionModelKey: record.extractionModelKey,
     ontologySchemaId: record.ontologySchemaId,
     ontologyVersion: record.ontologyVersion,
+    extractionContractVersion: record.extractionContractVersion ?? 0,
+  };
+}
+
+function withCurrentExtractionContract<T extends Omit<GraphExtractionCacheRecord, 'updatedAt'>>(
+  record: T,
+): T & { extractionContractVersion: number } {
+  return {
+    ...record,
+    extractionContractVersion:
+      record.extractionContractVersion ?? graphExtractionContractVersionRust(),
   };
 }
 

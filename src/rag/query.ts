@@ -299,7 +299,7 @@ export class RAGQueryEngine {
 }
 
 function defaultGraphRagReadiness(): RetrievalProviderReadiness {
-  return { readiness: 'partial', estimatedCost: 'medium' };
+  return { readiness: 'partial', estimatedCost: 'free' };
 }
 
 export class LLMRAGResultReranker implements RAGResultReranker {

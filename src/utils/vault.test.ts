@@ -26,7 +26,6 @@ const baseRagConfig: RAGConfig = {
   annClusterCount: 0,
   annProbeCount: 4,
   structuralGraphEnabled: true,
-  ontologyEnabled: true,
   ontologyAutoMergeThreshold: 0.88,
   ontologyPendingMergeThreshold: 0.72,
   graphRagEnabled: false,

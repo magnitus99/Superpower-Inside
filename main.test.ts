@@ -98,6 +98,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       vectorStore: unknown;
       vaultIndexer: unknown;
       ragIndexingScheduler: unknown;
+      graphRagIndexingRunner: unknown;
+      createProviderForModel: ReturnType<typeof vi.fn>;
       initRAG: ReturnType<typeof vi.fn>;
     };
     plugin.vectorStore = null;
@@ -299,11 +301,27 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       ...DEFAULT_SETTINGS,
       openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
       providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
-      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, { enableBM25: true }),
+      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, {
+        enableBM25: true,
+        graphRagEnabled: true,
+        graphRagModel: 'test-provider:model',
+      }),
     };
     plugin.getLogger = vi.fn(() => logger);
+    plugin.createProviderForModel = vi.fn(() => ({
+      capability: {
+        toolCalls: false,
+        embeddings: false,
+        vision: false,
+        reasoning: false,
+      },
+      chat: vi.fn(() => Promise.resolve('{"entities":[],"relations":[],"claims":[]}')),
+      streamChat: vi.fn(() => Promise.resolve()),
+    }));
     plugin.runRagRuntimeInitStep = vi.fn((stage, operation) => {
       if (stage === 'bm25-load') {
+        expect(plugin.ragEngine).not.toBeNull();
+        expect(plugin.graphRagIndexingRunner).not.toBeNull();
         return Promise.reject(new Error('BM25 stuck'));
       }
       return operation();
@@ -408,6 +426,61 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(options.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it('거부된 사실은 cache hit을 우회하는 실패 파일 경로로 자동 복구한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const result: GraphRagIndexingResult = {
+      totalCandidateFiles: 1,
+      selectedFiles: 1,
+      processedFiles: 1,
+      skippedFiles: 0,
+      failedFiles: 0,
+      processedChunks: 1,
+      skippedChunks: 0,
+      failedChunks: 0,
+      cancelled: false,
+      startedAt: 1,
+      finishedAt: 2,
+      runId: 8,
+    };
+    const run = vi.fn<(options: GraphRagRunOptions) => Promise<GraphRagIndexingResult>>(() =>
+      Promise.resolve(result),
+    );
+    const logger = { info: vi.fn(), notice: vi.fn(), error: vi.fn() };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as unknown as {
+      graphRagIndexingRunner: { run: typeof run };
+      graphRagAbortController: AbortController | null;
+      graphRagStatus: GraphRagStatusSummary | null;
+      knowledgeGraphStore: { getRejectedFacts: () => Promise<Array<{ filePath: string }>> };
+      computeAndEmitGraphRagStatus: ReturnType<typeof vi.fn<() => Promise<void>>>;
+      getLogger: () => typeof logger;
+      emitGraphDataRefresh: ReturnType<typeof vi.fn>;
+      syncStaleGraphRag(options?: { silent?: boolean }): Promise<GraphRagIndexingResult | null>;
+    };
+    plugin.graphRagIndexingRunner = { run };
+    plugin.graphRagAbortController = null;
+    plugin.graphRagStatus = createGraphRagStatus({
+      state: 'stale',
+      failedFileCount: 1,
+      staleFileCount: 0,
+      staleFilePaths: [],
+    });
+    plugin.knowledgeGraphStore = {
+      getRejectedFacts: () => Promise.resolve([{ filePath: 'failed.md' }]),
+    };
+    plugin.computeAndEmitGraphRagStatus = vi.fn(() => Promise.resolve());
+    plugin.getLogger = () => logger;
+    plugin.emitGraphDataRefresh = vi.fn();
+
+    await plugin.syncStaleGraphRag({ silent: true });
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onlyFailedFiles: true,
+        failedFilePaths: ['failed.md'],
+      }),
+    );
+  });
+
   it('RAG 런타임 재초기화가 중간에 실패하면 기존 인덱서를 복구한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -474,6 +547,77 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.ragIndexingScheduler).toBe(previousScheduler);
   });
 
+  it('GraphRAG 자동 동기화 설정 간격으로 실제 scheduler를 실행한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    vi.useFakeTimers();
+    try {
+      const maybeAutoSyncGraphRag = vi.fn(() => Promise.resolve());
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        settings: typeof DEFAULT_SETTINGS;
+        graphAutoSyncTimer: number | null;
+        graphAutoSyncFailureCount: number;
+        graphAutoSyncNextAllowedAt: number;
+        maybeAutoSyncGraphRag: typeof maybeAutoSyncGraphRag;
+        setupGraphRagAutoSync(): void;
+      };
+      plugin.settings = {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          graphRagEnabled: true,
+          graphRagAutoSyncEnabled: true,
+          graphRagAutoSyncIntervalMin: 2,
+        },
+      };
+      plugin.graphAutoSyncTimer = null;
+      plugin.graphAutoSyncFailureCount = 0;
+      plugin.graphAutoSyncNextAllowedAt = 0;
+      plugin.maybeAutoSyncGraphRag = maybeAutoSyncGraphRag;
+
+      plugin.setupGraphRagAutoSync();
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(maybeAutoSyncGraphRag).toHaveBeenCalledOnce();
+      if (plugin.graphAutoSyncTimer) window.clearInterval(plugin.graphAutoSyncTimer);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('GraphRAG 자동 동기화 실패 backoff는 반복 호출 간격을 늘리고 상한을 지킨다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-12T00:00:00Z'));
+    try {
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        settings: typeof DEFAULT_SETTINGS;
+        graphAutoSyncFailureCount: number;
+        graphAutoSyncNextAllowedAt: number;
+        scheduleGraphAutoSyncBackoff(): void;
+      };
+      plugin.settings = {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          graphRagAutoSyncIntervalMin: 10,
+        },
+      };
+      plugin.graphAutoSyncFailureCount = 0;
+      plugin.graphAutoSyncNextAllowedAt = 0;
+
+      plugin.scheduleGraphAutoSyncBackoff();
+      expect(plugin.graphAutoSyncFailureCount).toBe(1);
+      expect(plugin.graphAutoSyncNextAllowedAt - Date.now()).toBe(20 * 60_000);
+
+      for (let index = 0; index < 8; index++) plugin.scheduleGraphAutoSyncBackoff();
+      expect(plugin.graphAutoSyncNextAllowedAt - Date.now()).toBe(6 * 60 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('설정 로드 시 data.json의 RAG 안전 설정이 stale localStorage 값을 덮는다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -520,6 +664,27 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.rag.autoUpdateEnabled).toBe(false);
     expect(plugin.settings.rag.enableBM25).toBe(false);
     expect(plugin.settings.rag.excludePaths).toContain('**/__pycache__');
+  });
+
+  it('설정 로드 시 동작하지 않던 레거시 ontologyEnabled 값을 제거한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const legacySettings = {
+      ...DEFAULT_SETTINGS,
+      rag: { ...DEFAULT_SETTINGS.rag, ontologyEnabled: false },
+    };
+    const app = createApp({ localSettings: legacySettings });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect('ontologyEnabled' in plugin.settings.rag).toBe(false);
   });
 
   it('기존 설정 로드 시 WSL PATH 조회 옵션 기본값을 보강한다', async () => {

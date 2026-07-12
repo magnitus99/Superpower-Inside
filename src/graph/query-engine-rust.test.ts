@@ -67,25 +67,14 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     expect(planGraphQueryExecutionRustMock).toHaveBeenCalledWith('global', 'none', false);
   });
 
-  it('auto 모드에서 Rust 실행 플래너가 실패해도 local 플래너 계획을 존중한다', async () => {
+  it('auto 모드에서 Rust 실행 플래너가 실패해도 deterministic local 계획을 존중한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     planGraphQueryExecutionRustMock.mockReturnValueOnce(null);
 
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
-      queryPlanner: {
-        plan: () =>
-          Promise.resolve({
-            type: 'factual',
-            queryMode: 'local',
-            traversalDepth: 1,
-            evidenceFirst: false,
-            entityHints: ['Paul', 'Barnabas'],
-          }),
-      },
-    });
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
-      question: '임의의 질문',
+      question: 'Paul과 Barnabas 관계를 보여줘',
       queryVector: [1, 0],
       candidateLimit: 3,
     });

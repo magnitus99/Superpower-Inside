@@ -1434,6 +1434,8 @@ export interface I18nKeys {
   contextGraphRagEntityNotFound: string;
   contextGraphRagEntitiesDetail: string;
   contextGraphRagRelationsDetail: string;
+  contextGraphContributionTitle: string;
+  contextGraphContributionDetail: string;
   graphRagViewMinConfidence: string;
   graphRagViewTabCommunities: string;
   graphRagViewTabRejected: string;
@@ -1446,6 +1448,12 @@ export interface I18nKeys {
   graphRagViewEvidenceCount: string;
   graphRagViewNoCommunities: string;
   graphRagViewNoRejectedFacts: string;
+  graphRagViewPendingMerges: string;
+  graphRagViewPendingMergesDescription: string;
+  graphRagViewPendingMergeConfidence: string;
+  graphRagViewMergeEntities: string;
+  graphRagViewKeepEntitiesSeparate: string;
+  graphRagViewPendingMergeUnavailable: string;
   graphRagViewRawResponse: string;
   graphRagViewDetails: string;
   graphRagViewCopyDetails: string;
@@ -3079,6 +3087,8 @@ const ko: I18nKeys = {
   contextGraphRagEntityNotFound: '멘션된 엔티티를 지식 그래프에서 찾을 수 없습니다.',
   contextGraphRagEntitiesDetail: 'GraphRAG {count}개 엔티티',
   contextGraphRagRelationsDetail: '{count}개 관계 정보가 함께 첨부되었습니다.',
+  contextGraphContributionTitle: '연결 근거',
+  contextGraphContributionDetail: '{count}개 출처가 문서 간 연결을 통해 보강되었습니다.',
   graphRagViewMinConfidence: '최소 신뢰도:',
   graphRagViewTabCommunities: '커뮤니티',
   graphRagViewTabRejected: '거부됨',
@@ -3091,6 +3101,13 @@ const ko: I18nKeys = {
   graphRagViewEvidenceCount: '증거 ({count})',
   graphRagViewNoCommunities: '커뮤니티가 없습니다. GraphRAG 인덱싱 후 커뮤니티 빌드를 실행하세요.',
   graphRagViewNoRejectedFacts: '거부된 사실이 없습니다.',
+  graphRagViewPendingMerges: '확인이 필요한 중복 후보 {count}개',
+  graphRagViewPendingMergesDescription:
+    '서로 같은 대상을 가리키는지 확실하지 않은 항목입니다. 한 번 결정하면 같은 후보를 다시 묻지 않습니다.',
+  graphRagViewPendingMergeConfidence: '유사도 {percent}%',
+  graphRagViewMergeEntities: '같은 대상으로 합치기',
+  graphRagViewKeepEntitiesSeparate: '따로 유지',
+  graphRagViewPendingMergeUnavailable: '이 후보는 이미 처리되었거나 더 이상 존재하지 않습니다.',
   graphRagViewRawResponse: '원본 응답: {preview}',
   graphRagViewDetails: '상세 보기',
   graphRagViewCopyDetails: '상세 복사',
@@ -4751,6 +4768,8 @@ const en: I18nKeys = {
   contextGraphRagEntityNotFound: 'Mentioned entities were not found in the knowledge graph.',
   contextGraphRagEntitiesDetail: 'GraphRAG {count} entities',
   contextGraphRagRelationsDetail: '{count} relation records were attached.',
+  contextGraphContributionTitle: 'Connected evidence',
+  contextGraphContributionDetail: '{count} sources were strengthened by connections across notes.',
   graphRagViewMinConfidence: 'Minimum confidence:',
   graphRagViewTabCommunities: 'Communities',
   graphRagViewTabRejected: 'Rejected',
@@ -4763,6 +4782,13 @@ const en: I18nKeys = {
   graphRagViewEvidenceCount: 'Evidence ({count})',
   graphRagViewNoCommunities: 'No communities. Run GraphRAG indexing and then build communities.',
   graphRagViewNoRejectedFacts: 'No rejected facts.',
+  graphRagViewPendingMerges: '{count} possible duplicates need review',
+  graphRagViewPendingMergesDescription:
+    'These items may refer to the same subject. Once decided, the same pair will not be shown again.',
+  graphRagViewPendingMergeConfidence: '{percent}% similarity',
+  graphRagViewMergeEntities: 'Merge as one',
+  graphRagViewKeepEntitiesSeparate: 'Keep separate',
+  graphRagViewPendingMergeUnavailable: 'This candidate was already handled or no longer exists.',
   graphRagViewRawResponse: 'Raw response: {preview}',
   graphRagViewDetails: 'Details',
   graphRagViewCopyDetails: 'Copy details',

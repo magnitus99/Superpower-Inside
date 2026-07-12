@@ -5,6 +5,7 @@ import { createContentHash } from '../rag/hash';
 import {
   planGraphRagRunFileSelectionRust,
   planGraphRagUnsupportedPrunePathsRust,
+  graphExtractionContractVersionRust,
   type RustGraphRagRunFilePathInput,
   type RustGraphRagRunFileSelectionMode,
   type RustGraphRagRunFileSelectionPlan,
@@ -458,6 +459,7 @@ export class GraphRagIndexingRunner {
         extractionModelKey: this.extractionModelKey,
         ontologySchemaId: this.ontologySchema.id,
         ontologyVersion: this.ontologySchema.version,
+        extractionContractVersion: graphExtractionContractVersionRust(),
       };
       if (!forceReprocess && await this.graphStore.isExtractionCached(cacheKey)) {
         preparedEntries.push({ entry, contentHash, cached: true });

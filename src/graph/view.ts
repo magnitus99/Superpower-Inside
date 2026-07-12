@@ -1,4 +1,4 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, setIcon, TFile, WorkspaceLeaf } from 'obsidian';
 import type SuperpowerInsidePlugin from '../../main';
 import { t } from '../i18n';
 import type { GraphDataResult, GraphProgressResult } from '../utils/refresh-bus';
@@ -8,6 +8,7 @@ import type {
   GraphCommunityRecord,
   GraphEvidenceRecord,
   GraphRejectedFactRecord,
+  PendingEntityMergeRecord,
 } from './store';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { getEntityDisplayAliases, getEntityLabelValues } from './entity-labels';
@@ -68,6 +69,7 @@ export class GraphRagView extends ItemView {
   private allEvidence: GraphEvidenceRecord[] = [];
   private allCommunities: GraphCommunityRecord[] = [];
   private allRejectedFacts: GraphRejectedFactRecord[] = [];
+  private allPendingMerges: PendingEntityMergeRecord[] = [];
   private entityTypeInfoMap = new Map<string, { id: string; label: string }>();
   private relationTypeInfoMap = new Map<
     string,
@@ -84,6 +86,8 @@ export class GraphRagView extends ItemView {
   private graphDataDebounceTimer: number | null = null;
   private lastGraphProgressRunId = 0;
   private renderedItemLimit = LOAD_MORE_CHUNK;
+  private pendingMergesExpanded = false;
+  private readonly pendingMergesPanelId = `superpower-inside-pending-merges-${crypto.randomUUID()}`;
 
   constructor(leaf: WorkspaceLeaf, plugin: SuperpowerInsidePlugin) {
     super(leaf);
@@ -229,6 +233,7 @@ export class GraphRagView extends ItemView {
       this.allEvidence = [];
       this.allCommunities = [];
       this.allRejectedFacts = [];
+      this.allPendingMerges = [];
       return;
     }
 
@@ -247,18 +252,21 @@ export class GraphRagView extends ItemView {
       });
     }
 
-    const [entities, relations, evidence, communities, rejectedFacts] = await Promise.all([
+    const [entities, relations, evidence, communities, rejectedFacts, pendingMerges] =
+      await Promise.all([
       store.getEntities(),
       store.getRelations(),
       store.getEvidence(),
       store.getCommunities().catch(() => [] as GraphCommunityRecord[]),
       store.getRejectedFacts().catch(() => [] as GraphRejectedFactRecord[]),
+      store.getPendingEntityMerges().catch(() => [] as PendingEntityMergeRecord[]),
     ]);
     this.allEntities = entities;
     this.allRelations = relations;
     this.allEvidence = evidence;
     this.allCommunities = communities;
     this.allRejectedFacts = rejectedFacts;
+    this.allPendingMerges = pendingMerges;
   }
 
   private renderTabs(): void {
@@ -390,6 +398,86 @@ export class GraphRagView extends ItemView {
       if (hasMore) break;
     }
     this.addLoadMoreButton(filtered.length, shown);
+    this.renderPendingMergeRecovery();
+  }
+
+  private renderPendingMergeRecovery(): void {
+    if (!this.bodyEl || this.allPendingMerges.length === 0) return;
+    const section = this.bodyEl.createDiv({ cls: 'superpower-inside-graph-view-recovery' });
+    const disclosure = section.createEl('button', {
+      cls: 'superpower-inside-graph-view-recovery-toggle',
+      attr: {
+        'aria-expanded': String(this.pendingMergesExpanded),
+        'aria-controls': this.pendingMergesPanelId,
+      },
+    });
+    setIcon(
+      disclosure.createSpan({ cls: 'superpower-inside-graph-view-recovery-icon' }),
+      this.pendingMergesExpanded ? 'chevron-down' : 'chevron-right',
+    );
+    disclosure.createSpan({
+      text: t('graphRagViewPendingMerges', { count: this.allPendingMerges.length }),
+    });
+    disclosure.addEventListener('click', () => {
+      this.pendingMergesExpanded = !this.pendingMergesExpanded;
+      this.renderContent();
+    });
+
+    const panel = section.createDiv({
+      cls: 'superpower-inside-graph-view-recovery-panel',
+      attr: { id: this.pendingMergesPanelId },
+    });
+    setHidden(panel, !this.pendingMergesExpanded);
+    if (!this.pendingMergesExpanded) return;
+    panel.createDiv({
+      cls: 'superpower-inside-graph-view-recovery-description',
+      text: t('graphRagViewPendingMergesDescription'),
+    });
+    const entityMap = new Map(this.allEntities.map((entity) => [entity.id, entity]));
+    for (const pending of this.allPendingMerges) {
+      const existing = entityMap.get(pending.existingEntityId);
+      const candidate = entityMap.get(pending.candidateEntityId);
+      const row = panel.createDiv({ cls: 'superpower-inside-graph-view-recovery-row' });
+      row.createDiv({
+        cls: 'superpower-inside-graph-view-recovery-names',
+        text: `${existing?.canonicalName ?? pending.existingEntityId} ↔ ${candidate?.canonicalName ?? pending.candidateEntityId}`,
+      });
+      row.createDiv({
+        cls: 'superpower-inside-graph-view-recovery-detail',
+        text: t('graphRagViewPendingMergeConfidence', {
+          percent: Math.round(pending.mergeScore * 100),
+        }),
+      });
+      const actions = row.createDiv({ cls: 'superpower-inside-graph-view-item-actions' });
+      const mergeButton = actions.createEl('button', {
+        cls: 'mod-cta',
+        text: t('graphRagViewMergeEntities'),
+      });
+      const separateButton = actions.createEl('button', {
+        text: t('graphRagViewKeepEntitiesSeparate'),
+      });
+      const resolve = async (decision: 'merge' | 'separate'): Promise<void> => {
+        mergeButton.disabled = true;
+        separateButton.disabled = true;
+        try {
+          const resolved = await this.plugin.knowledgeGraphStore?.resolvePendingEntityMerge(
+            pending.id,
+            decision,
+          );
+          if (!resolved) {
+            new Notice(t('graphRagViewPendingMergeUnavailable'));
+          }
+          await this.loadData();
+          this.renderContent();
+        } catch {
+          new Notice(t('graphRagViewPendingMergeUnavailable'));
+          mergeButton.disabled = false;
+          separateButton.disabled = false;
+        }
+      };
+      mergeButton.addEventListener('click', () => void resolve('merge'));
+      separateButton.addEventListener('click', () => void resolve('separate'));
+    }
   }
 
   private renderEntityDetail(entity: GraphEntityRecord): void {

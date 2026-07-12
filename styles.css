@@ -5805,6 +5805,64 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin-top: 4px;
 }
 
+.superpower-inside-graph-view-recovery {
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-graph-view-recovery-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+}
+
+.superpower-inside-graph-view-recovery-toggle:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.superpower-inside-graph-view-recovery-toggle:focus-visible {
+  outline: 2px solid var(--background-modifier-border-focus);
+  outline-offset: 2px;
+}
+
+.superpower-inside-graph-view-recovery-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.superpower-inside-graph-view-recovery-panel {
+  padding: 4px 8px 0;
+}
+
+.superpower-inside-graph-view-recovery-description,
+.superpower-inside-graph-view-recovery-detail {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-graph-view-recovery-description {
+  margin-bottom: 6px;
+}
+
+.superpower-inside-graph-view-recovery-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-graph-view-recovery-names {
+  color: var(--text-normal);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-graph-view-rejected-details {
   margin-top: 6px;
   font-size: var(--font-ui-smaller);

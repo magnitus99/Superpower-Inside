@@ -3,6 +3,7 @@ import type { RAGConfig } from '../settings';
 import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
 import {
   planGraphRagStatusEntryLookupsRust,
+  graphExtractionContractVersionRust,
   planGraphRagStatusEntryLookupsFallback,
   planGraphRagStatusEntrySnapshotRust,
   planGraphRagStatusEntrySnapshotFallback,
@@ -163,6 +164,7 @@ function createGraphRagStatusInput(
     graphRagModel: input.ragConfig.graphRagModel,
     ontologySchemaId: ontologySchema.id,
     ontologyVersion: ontologySchema.version,
+    extractionContractVersion: graphExtractionContractVersionRust(),
     fileRecords: fileIndexRecords.map(toGraphRagStatusFileRecordInput),
     evidence: (snapshot.evidence ?? []).map((record) =>
       toGraphRagStatusEvidenceInput(record, input.isProcessableFilePath),
@@ -280,6 +282,7 @@ function toGraphRagStatusCacheInput(
     extractionModelKey: record.extractionModelKey,
     ontologySchemaId: record.ontologySchemaId,
     ontologyVersion: record.ontologyVersion,
+    extractionContractVersion: record.extractionContractVersion ?? 0,
   };
 }
 

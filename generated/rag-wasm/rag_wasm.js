@@ -898,6 +898,15 @@ export function get_mcp_connection_state_rust(total_count, connected_count, fail
 }
 
 /**
+ * 현재 Graph extraction parser/normalizer wire contract version을 반환한다.
+ * @returns {number}
+ */
+export function graph_extraction_contract_version() {
+    const ret = wasm.graph_extraction_contract_version();
+    return ret >>> 0;
+}
+
+/**
  * RAG hybrid score를 계산한다.
  * @param {number} combined_base
  * @param {number} rrf_score
@@ -1036,6 +1045,27 @@ export function is_relevant_result(config, source_codes) {
     const ptr1 = passArray8ToWasm0(source_codes, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.is_relevant_result(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
+ * 두 entity id 쌍이 순서와 무관하게 같은 대상을 가리키는지 판정한다.
+ * @param {string} first_left
+ * @param {string} first_right
+ * @param {string} second_left
+ * @param {string} second_right
+ * @returns {boolean}
+ */
+export function is_same_graph_entity_pair(first_left, first_right, second_left, second_right) {
+    const ptr0 = passStringToWasm0(first_left, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(first_right, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(second_left, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(second_right, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.is_same_graph_entity_pair(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
     return ret !== 0;
 }
 
@@ -3035,6 +3065,33 @@ export function recompute_centroids(vectors, assignments, previous_centroids, di
     var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v4;
+}
+
+/**
+ * `GraphRAG` entity 병합 이후 참조 id를 교체하고 필요하면 순서를 보존해 중복 제거한다.
+ * @param {string} references_json
+ * @param {string} candidate_entity_id
+ * @param {string} existing_entity_id
+ * @param {boolean} deduplicate
+ * @returns {string}
+ */
+export function rewrite_graph_entity_references_json(references_json, candidate_entity_id, existing_entity_id, deduplicate) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(references_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(candidate_entity_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(existing_entity_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.rewrite_graph_entity_references_json(ptr0, len0, ptr1, len1, ptr2, len2, deduplicate);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
 }
 
 /**

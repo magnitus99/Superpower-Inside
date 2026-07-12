@@ -2848,6 +2848,7 @@ describe('Rust WASM RAG core bridge', () => {
       graphRagModel: 'model-new',
       ontologySchemaId: 'default',
       ontologyVersion: 1,
+      extractionContractVersion: 1,
       fileRecords: [
         { filePath: 'fresh.md', vectorCount: 2 },
         { filePath: 'stale.md', vectorCount: 1 },
@@ -2884,6 +2885,7 @@ describe('Rust WASM RAG core bridge', () => {
           extractionModelKey: 'model-new',
           ontologySchemaId: 'default',
           ontologyVersion: 1,
+          extractionContractVersion: 1,
         },
         {
           entryId: 'fresh.md::1',
@@ -2891,6 +2893,7 @@ describe('Rust WASM RAG core bridge', () => {
           extractionModelKey: 'model-new',
           ontologySchemaId: 'default',
           ontologyVersion: 1,
+          extractionContractVersion: 1,
         },
         {
           entryId: 'stale.md::0',
@@ -2898,6 +2901,7 @@ describe('Rust WASM RAG core bridge', () => {
           extractionModelKey: 'model-old',
           ontologySchemaId: 'default',
           ontologyVersion: 1,
+          extractionContractVersion: 1,
         },
       ],
       entries: [
@@ -2943,6 +2947,7 @@ describe('Rust WASM RAG core bridge', () => {
         graphRagModel: 'model-new',
         ontologySchemaId: 'default',
         ontologyVersion: 1,
+        extractionContractVersion: 1,
         fileRecords: [],
         evidence: [],
         rejectedFactFilePaths: [],
@@ -3089,6 +3094,7 @@ describe('Rust WASM RAG core bridge', () => {
       extractionModelKey: 'model-a',
       ontologySchemaId: 'default',
       ontologyVersion: 1,
+      extractionContractVersion: 1,
     };
 
     expect(isGraphExtractionCacheHitRust(cached, cached)).toBe(true);

@@ -1,19 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { LLMProvider } from '../llm/providers';
-import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { buildDefaultOntologySchema } from '../ontology/schema';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import {
   GraphRagCandidateProvider,
   GraphRagQueryEngine,
-  LLMGraphQueryPlanner,
   planGraphQuery,
 } from './query-engine';
-
-const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
-  providerKey: 'openai',
-  model: 'test-model',
-});
 import {
   InMemoryKnowledgeGraphStore,
   type GraphClaimRecord,
@@ -235,20 +227,9 @@ describe('GraphRagQueryEngine', () => {
     );
   });
 
-  it('한국어 alias와 planner entity hint로 local evidence 후보를 찾는다', async () => {
+  it('한국어 alias를 질문 본문에서 찾아 local evidence 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
-      queryPlanner: {
-        plan: () =>
-          Promise.resolve({
-            type: 'relational',
-            queryMode: 'local',
-            traversalDepth: 1,
-            evidenceFirst: false,
-            entityHints: ['바울', '바나바'],
-          }),
-      },
-    });
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: '바울과 바나바는 어떤 관계야?',
@@ -369,18 +350,7 @@ describe('GraphRagQueryEngine', () => {
       updatedAt: 1,
     });
     await vectorStore.add([createVectorEntry('Mark.md::0', 'Mark.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
-      queryPlanner: {
-        plan: () =>
-          Promise.resolve({
-            type: 'relational',
-            queryMode: 'local',
-            traversalDepth: 2,
-            evidenceFirst: false,
-            entityHints: ['Paul'],
-          }),
-      },
-    });
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
 
     const candidates = await engine.query({
       question: 'Paul과 관련된 관계를 넓게 보여줘',
@@ -449,36 +419,28 @@ describe('GraphRagCandidateProvider', () => {
 
     expect(provider.id).toBe('graph-rag');
     expect(candidates[0]?.source).toBe('graph-local');
+    expect(provider.deadlineMs).toBe(450);
   });
-});
 
-describe('LLMGraphQueryPlanner', () => {
-  it('LLM planner 응답의 JSON 추출, 필드 정규화, fallback은 Rust bridge를 따른다', async () => {
-    const planner = new LLMGraphQueryPlanner(
-      createPlannerProvider(
-        '응답입니다.\n```json\n{"type":"relational","queryMode":"hybrid","traversalDepth":2.8,"evidenceFirst":true,"entityHints":["Paul",3," ","Barnabas"]}\n```',
-      ),
+  it('이미 취소된 요청은 store 조회 전에 중단한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixture();
+    const provider = new GraphRagCandidateProvider(
+      new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema()),
+      () => ({ readiness: 'ready', estimatedCost: 'free' }),
     );
-
-    await expect(planner.plan('평범한 질문', buildDefaultOntologySchema())).resolves.toEqual({
-      type: 'relational',
-      queryMode: 'hybrid',
-      traversalDepth: 2,
-      evidenceFirst: true,
-      entityHints: ['Paul', 'Barnabas'],
-    });
-
-    const fallbackPlanner = new LLMGraphQueryPlanner(createPlannerProvider('not-json'));
+    const controller = new AbortController();
+    controller.abort();
 
     await expect(
-      fallbackPlanner.plan('근거가 어디에 있어?', buildDefaultOntologySchema()),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        type: 'source-seeking',
-        queryMode: 'local',
-        evidenceFirst: true,
-      }),
-    );
+      provider.getCandidates(
+        {
+          question: 'Paul과 Barnabas 관계',
+          queryVector: [1, 0],
+          candidateLimit: 5,
+        },
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 
@@ -652,13 +614,6 @@ function createVectorEntry(id: string, filePath: string): VectorEntry {
   };
 }
 
-function createPlannerProvider(response: string): LLMProvider {
-  return {
-    capability: TEST_PROVIDER_CAPABILITY,
-    chat: () => Promise.resolve(response),
-    streamChat: () => Promise.resolve(),
-  };
-}
 
 class FullScanFailingKnowledgeGraphStore extends InMemoryKnowledgeGraphStore {
   getRelations(): Promise<GraphRelationRecord[]> {

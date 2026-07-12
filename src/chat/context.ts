@@ -196,6 +196,18 @@ export async function buildChatContext(
         sourceIds: sourcePlan.sourceIds,
         autoRagReason: mentionPlan.autoRagReason,
       });
+      const graphContributionCount = countVerifiedGraphContributions(results, verifications);
+      if (graphContributionCount > 0) {
+        attachments.push({
+          id: 'graph-rag:auto',
+          type: 'graph-rag',
+          name: 'auto',
+          label: t('contextGraphContributionTitle'),
+          status: 'attached',
+          detail: t('contextGraphContributionDetail', { count: graphContributionCount }),
+          sourceIds: sourcePlan.sourceIds,
+        });
+      }
     } catch (err) {
       appLogger.warn('Auto RAG context build failed.', {
         source: 'chat.context',
@@ -264,6 +276,24 @@ export async function buildChatContext(
       citations,
     }),
   };
+}
+
+function countVerifiedGraphContributions(
+  results: readonly QueryResult[],
+  verifications: readonly RustContextSourceVerification[],
+): number {
+  let count = 0;
+  for (const [index, result] of results.entries()) {
+    if (verifications[index]?.status !== 'verified') continue;
+    if (
+      result.retrievalSources?.some(
+        (source) => source === 'graph-local' || source === 'graph-global' || source === 'evidence',
+      )
+    ) {
+      count++;
+    }
+  }
+  return count;
 }
 
 export function createAppMentionResolver(

@@ -21,11 +21,13 @@ import {
   extract_json_object_text,
   extract_structured_reasoning,
   extract_vault_links_json,
+  graph_extraction_contract_version,
   find_mentioned_entity_matches,
   hybrid_score_or_nan,
   initSync,
   IvfRuntimeIndex,
   is_graph_extraction_cache_hit_json,
+  is_same_graph_entity_pair,
   is_protected_rag_document_extension_json,
   count_files_by_extensions_json,
   is_excluded_path,
@@ -76,6 +78,7 @@ import {
   plan_graph_deletion_indices_json,
   plan_graph_edge_records_json,
   plan_graph_entity_merge_json,
+  rewrite_graph_entity_references_json,
   plan_graph_evidence_candidate_lookup_json,
   plan_graph_evidence_entry_candidates_json,
   plan_graph_extraction_type_validation_json,
@@ -856,6 +859,7 @@ export interface RustGraphRagStatusCacheInput {
   extractionModelKey: string;
   ontologySchemaId: string;
   ontologyVersion: number;
+  extractionContractVersion: number;
 }
 
 export interface RustGraphRagStatusEntryInput {
@@ -884,6 +888,7 @@ export interface RustGraphRagStatusInput {
   graphRagModel: string;
   ontologySchemaId: string;
   ontologyVersion: number;
+  extractionContractVersion: number;
   fileRecords: readonly RustGraphRagStatusFileRecordInput[];
   evidence: readonly RustGraphRagStatusEvidenceInput[];
   rejectedFactFilePaths: readonly string[];
@@ -1372,6 +1377,7 @@ export interface RustGraphExtractionCacheKey {
   extractionModelKey: string;
   ontologySchemaId: string;
   ontologyVersion: number;
+  extractionContractVersion: number;
 }
 
 export interface RustMentionedEntityInput {
@@ -3704,6 +3710,18 @@ export function planGraphEntityMergeFallback(
   };
 }
 
+export function rewriteGraphEntityReferencesFallback(
+  references: readonly string[],
+  candidateEntityId: string,
+  existingEntityId: string,
+  deduplicate: boolean,
+): string[] {
+  const rewritten = references.map((reference) =>
+    reference === candidateEntityId ? existingEntityId : reference,
+  );
+  return deduplicate ? [...new Set(rewritten)] : rewritten;
+}
+
 export function isGraphExtractionCacheHitFallback(
   cachedRecord: RustGraphExtractionCacheKey | null,
   input: RustGraphExtractionCacheKey,
@@ -3716,7 +3734,8 @@ export function isGraphExtractionCacheHitFallback(
     cachedRecord.contentHash === input.contentHash &&
     cachedRecord.extractionModelKey === input.extractionModelKey &&
     cachedRecord.ontologySchemaId === input.ontologySchemaId &&
-    cachedRecord.ontologyVersion === input.ontologyVersion
+    cachedRecord.ontologyVersion === input.ontologyVersion &&
+    cachedRecord.extractionContractVersion === input.extractionContractVersion
   );
 }
 
@@ -4007,6 +4026,63 @@ export function planGraphEntityMergeRust(
   }
 }
 
+export function rewriteGraphEntityReferencesRust(
+  references: readonly string[],
+  candidateEntityId: string,
+  existingEntityId: string,
+  deduplicate: boolean,
+): string[] | null {
+  if (
+    !references.every(isStringValue) ||
+    candidateEntityId.length === 0 ||
+    existingEntityId.length === 0
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) {
+    return rewriteGraphEntityReferencesFallback(
+      references,
+      candidateEntityId,
+      existingEntityId,
+      deduplicate,
+    );
+  }
+
+  try {
+    const raw = rewrite_graph_entity_references_json(
+      JSON.stringify(references),
+      candidateEntityId,
+      existingEntityId,
+      deduplicate,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isStringValue) ? parsed : null;
+  } catch {
+    return rewriteGraphEntityReferencesFallback(
+      references,
+      candidateEntityId,
+      existingEntityId,
+      deduplicate,
+    );
+  }
+}
+
+export function isSameGraphEntityPairRust(
+  firstLeft: string,
+  firstRight: string,
+  secondLeft: string,
+  secondRight: string,
+): boolean {
+  if (!ensureRustCore()) {
+    return (
+      (firstLeft === secondLeft && firstRight === secondRight) ||
+      (firstLeft === secondRight && firstRight === secondLeft)
+    );
+  }
+  return is_same_graph_entity_pair(firstLeft, firstRight, secondLeft, secondRight);
+}
+
 export function isGraphExtractionCacheHitRust(
   cached: RustGraphExtractionCacheKey | null,
   input: RustGraphExtractionCacheKey,
@@ -4022,6 +4098,16 @@ export function isGraphExtractionCacheHitRust(
     return typeof parsed === 'boolean' ? parsed : null;
   } catch {
     return isGraphExtractionCacheHitFallback(cached, input);
+  }
+}
+
+export function graphExtractionContractVersionRust(): number {
+  if (!ensureRustCore()) return 1;
+  try {
+    const version = graph_extraction_contract_version();
+    return isValidNonNegativeInteger(version) ? version : 1;
+  } catch {
+    return 1;
   }
 }
 
@@ -7076,7 +7162,8 @@ function isValidGraphExtractionCacheKey(value: RustGraphExtractionCacheKey): boo
     isStringValue(value.contentHash) &&
     isStringValue(value.extractionModelKey) &&
     isStringValue(value.ontologySchemaId) &&
-    isValidNonNegativeInteger(value.ontologyVersion)
+    isValidNonNegativeInteger(value.ontologyVersion) &&
+    isValidNonNegativeInteger(value.extractionContractVersion)
   );
 }
 

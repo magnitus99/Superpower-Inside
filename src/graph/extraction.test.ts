@@ -340,6 +340,7 @@ describe('GraphExtractionIndexer', () => {
     const indexer = new GraphExtractionIndexer({
       provider: createProviderSequence([
         'not-json',
+        'still-not-json',
         JSON.stringify({
           entities: [{ name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.8 }],
           relations: [],
@@ -356,6 +357,27 @@ describe('GraphExtractionIndexer', () => {
       expect.objectContaining({ reason: 'invalid-json' }),
     ]);
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+  });
+
+  it('사용 불가능한 응답은 provider 종류와 무관하게 한 번만 형식 복구를 요청한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = createCapturingProviderSequence([
+      'not-json',
+      JSON.stringify({
+        entities: [{ id: 'E1', label: 'Paul', typeId: 'person' }],
+        relations: [],
+        claims: [],
+      }),
+    ]);
+    const indexer = new GraphExtractionIndexer({ provider, store });
+
+    await indexer.extractChunk(createInput('Paul appears.'));
+
+    expect(provider.messages).toHaveLength(2);
+    expect(provider.messages[1]?.[0]?.content).toContain('Repair the previous graph extraction response');
+    expect(provider.messages[1]?.[1]?.content).toBe('not-json');
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
+    expect(await store.getRejectedFacts()).toEqual([]);
   });
 
   it('raw 후보가 있지만 유효 fact가 없으면 schema mismatch로 rejected fact를 저장한다', async () => {
@@ -390,6 +412,7 @@ describe('GraphExtractionIndexer', () => {
     const store = new InMemoryKnowledgeGraphStore();
     const provider = createProviderSequence([
       'not-json',
+      'still-not-json',
       JSON.stringify({
         entities: [{ name: 'Paul', typeId: 'person', description: 'Apostle', confidence: 0.8 }],
         relations: [],
@@ -401,7 +424,7 @@ describe('GraphExtractionIndexer', () => {
     await indexer.extractChunk(createInput('Paul appears.'));
     await indexer.extractChunk(createInput('Paul appears.'));
 
-    expect(provider.calls).toBe(2);
+    expect(provider.calls).toBe(3);
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
   });
 
@@ -455,6 +478,45 @@ describe('GraphExtractionIndexer', () => {
         claimTypeId: 'factual_claim',
         text: "The work titled 'Base' contains a table view named '표'.",
       }),
+    ]);
+    expect(await store.getRejectedFacts()).toEqual([]);
+  });
+
+  it('무료 LLM의 ID relation endpoint와 claim reference를 entity label로 연결한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            { id: 'E1', typeId: 'person', label: '바오로' },
+            { id: 'E2', typeId: 'work', label: '로마서' },
+          ],
+          relations: [{ source: 'E1', target: 'E2', relationTypeId: 'authored' }],
+          claims: [
+            {
+              text: '바오로는 로마서를 저술했다.',
+              claimTypeId: 'factual_claim',
+              entityNames: ['E1', 'E2'],
+            },
+          ],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('바오로는 로마서를 저술했다.'));
+
+    const entities = await store.getEntities();
+    expect(entities.map((entity) => entity.canonicalName)).toEqual(['바오로', '로마서']);
+    expect(await store.getRelations()).toEqual([
+      expect.objectContaining({
+        sourceEntityId: entities[0]?.id,
+        targetEntityId: entities[1]?.id,
+        relationTypeId: 'authored',
+      }),
+    ]);
+    expect(await store.getClaims()).toEqual([
+      expect.objectContaining({ entityIds: entities.map((entity) => entity.id) }),
     ]);
     expect(await store.getRejectedFacts()).toEqual([]);
   });
@@ -736,6 +798,24 @@ function createCapturingProvider(response: string): LLMProvider & {
     messages,
     chat: (inputMessages) => {
       messages.push(inputMessages);
+      return Promise.resolve(response);
+    },
+    streamChat: () => Promise.resolve(),
+  };
+}
+
+function createCapturingProviderSequence(responses: string[]): LLMProvider & {
+  messages: Parameters<LLMProvider['chat']>[0][];
+} {
+  const messages: Parameters<LLMProvider['chat']>[0][] = [];
+  let calls = 0;
+  return {
+    capability: TEST_PROVIDER_CAPABILITY,
+    messages,
+    chat: (inputMessages) => {
+      messages.push(inputMessages);
+      const response = responses[Math.min(calls, responses.length - 1)] ?? '';
+      calls++;
       return Promise.resolve(response);
     },
     streamChat: () => Promise.resolve(),

@@ -37,6 +37,22 @@ describe('KnowledgeGraphStore contract', () => {
     await expectGraphPruningContract(createIndexedDbStore());
   });
 
+  it('InMemoryKnowledgeGraphStore가 entity 병합 시 graph 참조를 원자적으로 갱신한다', async () => {
+    await expectPendingMergeResolutionContract(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 entity 병합 시 graph 참조를 원자적으로 갱신한다', async () => {
+    await expectPendingMergeResolutionContract(createIndexedDbStore());
+  });
+
+  it('InMemoryKnowledgeGraphStore가 분리 유지 결정을 기억한다', async () => {
+    await expectKeepSeparateContract(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 분리 유지 결정을 기억한다', async () => {
+    await expectKeepSeparateContract(createIndexedDbStore());
+  });
+
   it('InMemoryKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await fillGraphStoreForClearTest(store);
@@ -424,6 +440,78 @@ async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<v
   ]);
   await store.replaceCommunities('default', []);
   expect((await store.getCommunities()).map((record) => record.id)).toEqual(['community-other-schema']);
+}
+
+async function expectPendingMergeResolutionContract(store: KnowledgeGraphStore): Promise<void> {
+  await store.upsertEntity(
+    createEntity({
+      id: 'entity-paul',
+      aliases: ['Paul'],
+      evidenceIds: ['ev-1'],
+      confidence: 0.7,
+    }),
+  );
+  await store.upsertEntity(
+    createEntity({
+      id: 'entity-paul-2',
+      canonicalName: '바오로',
+      aliases: ['바오로'],
+      evidenceIds: ['ev-2'],
+      confidence: 0.9,
+    }),
+  );
+  await store.addRelation(
+    createRelation({ sourceEntityId: 'entity-paul-2', targetEntityId: 'entity-paul' }),
+  );
+  await store.addClaim(
+    createClaim({ entityIds: ['entity-paul', 'entity-paul-2', 'entity-paul'] }),
+  );
+  await store.addCommunity(
+    createCommunity({ entityIds: ['entity-paul-2', 'entity-paul'] }),
+  );
+  await store.addPendingEntityMerge(createPendingMerge());
+
+  await expect(store.resolvePendingEntityMerge('merge-1', 'merge')).resolves.toBe(true);
+
+  await expect(store.getEntities()).resolves.toEqual([
+    expect.objectContaining({
+      id: 'entity-paul',
+      aliases: ['Paul', '바오로'],
+      evidenceIds: ['ev-1', 'ev-2'],
+      confidence: 0.9,
+    }),
+  ]);
+  await expect(store.getRelations()).resolves.toEqual([
+    expect.objectContaining({ sourceEntityId: 'entity-paul', targetEntityId: 'entity-paul' }),
+  ]);
+  await expect(store.getClaims()).resolves.toEqual([
+    expect.objectContaining({ entityIds: ['entity-paul'] }),
+  ]);
+  await expect(store.getCommunities()).resolves.toEqual([
+    expect.objectContaining({ entityIds: ['entity-paul'] }),
+  ]);
+  await expect(store.getPendingEntityMerges()).resolves.toEqual([]);
+}
+
+async function expectKeepSeparateContract(store: KnowledgeGraphStore): Promise<void> {
+  await store.upsertEntity(createEntity({ id: 'entity-paul' }));
+  await store.upsertEntity(createEntity({ id: 'entity-paul-2', canonicalName: '바오로' }));
+  const pending = createPendingMerge();
+  await store.addPendingEntityMerge(pending);
+
+  await expect(store.resolvePendingEntityMerge(pending.id, 'separate')).resolves.toBe(true);
+  await expect(store.getPendingEntityMerges()).resolves.toEqual([]);
+
+  await store.addPendingEntityMerge({ ...pending, updatedAt: 2000 });
+  await store.addPendingEntityMerge({
+    ...pending,
+    id: 'merge-reversed',
+    existingEntityId: pending.candidateEntityId,
+    candidateEntityId: pending.existingEntityId,
+    updatedAt: 3000,
+  });
+  await expect(store.getPendingEntityMerges()).resolves.toEqual([]);
+  await expect(store.getEntities()).resolves.toHaveLength(2);
 }
 
 function sortPairs<T>(pairs: Array<[string, T]>): Array<[string, T]> {

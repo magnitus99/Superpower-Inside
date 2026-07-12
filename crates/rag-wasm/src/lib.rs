@@ -8,6 +8,7 @@
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
+use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
@@ -89,6 +90,11 @@ const KOREAN_PARTICLES: &[&str] = &[
 ];
 /// Ontology relation domain/range wildcard type id.
 const ONTOLOGY_ANY_ENTITY_TYPE: &str = "any";
+/// Graph extraction parser/normalizer wire contract version.
+const GRAPH_EXTRACTION_CONTRACT_VERSION: u32 = 1;
+/// `wasm-bindgen` runtime getter가 읽는 extraction contract version.
+static GRAPH_EXTRACTION_CONTRACT_VERSION_EXPORT: AtomicU32 =
+    AtomicU32::new(GRAPH_EXTRACTION_CONTRACT_VERSION);
 /// Graph extraction entity name 후보 key 목록.
 const GRAPH_ENTITY_NAME_KEYS: &[&str] = &["name", "canonicalName", "label", "id"];
 /// Graph extraction entity type 후보 key 목록.
@@ -2214,6 +2220,40 @@ pub fn plan_graph_entity_merge_json(existing_json: &str, next_json: &str) -> Str
     serialize_graph_entity_merge_plan_json(&plan_graph_entity_merge(&existing, &next))
 }
 
+/// `GraphRAG` entity 병합 이후 참조 id를 교체하고 필요하면 순서를 보존해 중복 제거한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn rewrite_graph_entity_references_json(
+    references_json: &str,
+    candidate_entity_id: &str,
+    existing_entity_id: &str,
+    deduplicate: bool,
+) -> String {
+    let Ok(references) = serde_json::from_str::<Vec<String>>(references_json) else {
+        return String::new();
+    };
+    serde_json::to_string(&rewrite_graph_entity_references(
+        &references,
+        candidate_entity_id,
+        existing_entity_id,
+        deduplicate,
+    ))
+    .unwrap_or_default()
+}
+
+/// 두 entity id 쌍이 순서와 무관하게 같은 대상을 가리키는지 판정한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn is_same_graph_entity_pair(
+    first_left: &str,
+    first_right: &str,
+    second_left: &str,
+    second_right: &str,
+) -> bool {
+    (first_left == second_left && first_right == second_right)
+        || (first_left == second_right && first_right == second_left)
+}
+
 /// `GraphRAG` extraction cache snapshot이 요청 key와 일치하는지 판정한다.
 #[must_use]
 #[wasm_bindgen]
@@ -3801,6 +3841,13 @@ pub fn parse_extracted_graph_payload_json(raw_response: &str) -> String {
         return serialize_graph_payload_parse_rejection("schema-shape-mismatch", &value);
     }
     serialize_graph_payload_parse_success(&normalized)
+}
+
+/// 현재 Graph extraction parser/normalizer wire contract version을 반환한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn graph_extraction_contract_version() -> u32 {
+    GRAPH_EXTRACTION_CONTRACT_VERSION_EXPORT.load(Ordering::Relaxed)
 }
 
 /// Ontology relation type/source/target 조합을 검증한다.
@@ -7492,6 +7539,8 @@ struct GraphRagStatusCacheInput {
     ontology_schema_id: String,
     /// cached ontology schema version.
     ontology_version: u32,
+    /// cached extraction parser/normalizer contract version.
+    extraction_contract_version: u32,
 }
 
 /// `GraphRAG` status vector entry snapshot.
@@ -7533,6 +7582,8 @@ struct GraphRagStatusInput {
     ontology_schema_id: String,
     /// active ontology schema version.
     ontology_version: u32,
+    /// active extraction parser/normalizer contract version.
+    extraction_contract_version: u32,
     /// processable file index records.
     file_records: Vec<GraphRagStatusFileRecordInput>,
     /// graph evidence records.
@@ -7747,6 +7798,8 @@ struct GraphExtractionCacheKey {
     ontology_schema_id: String,
     /// cached ontology schema version.
     ontology_version: u32,
+    /// extraction parser/normalizer contract version.
+    extraction_contract_version: u32,
 }
 
 /// 기존 entry id와 incoming id에서 add mutation plan을 만든다.
@@ -9461,6 +9514,7 @@ fn collect_fresh_graph_rag_cache_counts(
             || cache.extraction_model_key != input.graph_rag_model
             || cache.ontology_schema_id != input.ontology_schema_id
             || cache.ontology_version != input.ontology_version
+            || cache.extraction_contract_version != input.extraction_contract_version
         {
             stale_files.insert(entry.file_path.clone());
             continue;
@@ -9589,6 +9643,28 @@ fn merge_ordered_strings(left: &[String], right: &[String]) -> Vec<String> {
     merged
 }
 
+/// entity id 참조를 교체하고 요청된 경우 순서를 보존해 중복을 제거한다.
+fn rewrite_graph_entity_references(
+    references: &[String],
+    candidate_entity_id: &str,
+    existing_entity_id: &str,
+    deduplicate: bool,
+) -> Vec<String> {
+    let mut rewritten = Vec::<String>::with_capacity(references.len());
+    let mut seen = BTreeSet::<String>::new();
+    for reference in references {
+        let value = if reference == candidate_entity_id {
+            existing_entity_id
+        } else {
+            reference
+        };
+        if !deduplicate || seen.insert(value.to_owned()) {
+            rewritten.push(value.to_owned());
+        }
+    }
+    rewritten
+}
+
 /// extraction cache snapshot이 현재 extraction key와 일치하는지 판정한다.
 fn graph_extraction_cache_hit(
     cached: &GraphExtractionCacheKey,
@@ -9599,6 +9675,7 @@ fn graph_extraction_cache_hit(
         && cached.extraction_model_key == input.extraction_model_key
         && cached.ontology_schema_id == input.ontology_schema_id
         && cached.ontology_version == input.ontology_version
+        && cached.extraction_contract_version == input.extraction_contract_version
 }
 
 /// 문자열 목록의 unique count를 반환한다.
@@ -11649,13 +11726,16 @@ fn normalize_extracted_graph_payload(value: &JsonValue) -> Option<NormalizedGrap
         .iter()
         .filter_map(normalize_extracted_graph_entity)
         .collect::<Vec<_>>();
+    let entity_reference_lookup = build_graph_entity_reference_lookup(&entity_items.items);
     let relations = relation_items
         .iter()
         .filter_map(normalize_extracted_graph_relation)
+        .map(|relation| normalize_graph_relation_references(relation, &entity_reference_lookup))
         .collect::<Vec<_>>();
     let claims = claim_items
         .iter()
         .filter_map(normalize_extracted_graph_claim)
+        .map(|claim| normalize_graph_claim_references(claim, &entity_reference_lookup))
         .collect::<Vec<_>>();
     let raw_fact_count = entity_items
         .items
@@ -11669,6 +11749,120 @@ fn normalize_extracted_graph_payload(value: &JsonValue) -> Option<NormalizedGrap
         claims,
         raw_fact_count,
     })
+}
+
+/// raw entity의 id/name/label/alias를 canonical entity name으로 연결한다.
+fn build_graph_entity_reference_lookup(
+    items: &[GraphPayloadItem<'_>],
+) -> BTreeMap<String, Option<String>> {
+    let mut lookup = BTreeMap::new();
+    for item in items {
+        let Some(entity) = normalize_extracted_graph_entity(item) else {
+            continue;
+        };
+        let Some(canonical_name) = entity
+            .as_object()
+            .and_then(|object| object.get("name"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        let canonical_name = canonical_name.to_owned();
+        insert_graph_entity_reference(&mut lookup, &canonical_name, &canonical_name);
+        if let Some(fallback_name) = item.fallback_name {
+            insert_graph_entity_reference(&mut lookup, fallback_name, &canonical_name);
+        }
+        let Some(object) = item.value.as_object() else {
+            continue;
+        };
+        for key in GRAPH_ENTITY_NAME_KEYS {
+            if let Some(reference) = object.get(*key).and_then(JsonValue::as_str) {
+                insert_graph_entity_reference(&mut lookup, reference, &canonical_name);
+            }
+        }
+        if let Some(aliases) = get_graph_string_array_field(object, GRAPH_ALIAS_KEYS) {
+            for alias in aliases {
+                insert_graph_entity_reference(&mut lookup, &alias, &canonical_name);
+            }
+        }
+    }
+    lookup
+}
+
+/// 하나의 normalized reference가 두 entity를 가리키면 ambiguous 상태로 보존한다.
+fn insert_graph_entity_reference(
+    lookup: &mut BTreeMap<String, Option<String>>,
+    reference: &str,
+    canonical_name: &str,
+) {
+    let normalized = normalize_graph_entity_name(reference);
+    if normalized.is_empty() {
+        return;
+    }
+    match lookup.get_mut(&normalized) {
+        Some(existing) if existing.as_deref() != Some(canonical_name) => *existing = None,
+        Some(_) => {}
+        None => {
+            lookup.insert(normalized, Some(canonical_name.to_owned()));
+        }
+    }
+}
+
+/// relation endpoint reference를 canonical entity name으로 바꾼다.
+fn normalize_graph_relation_references(
+    mut relation: JsonValue,
+    lookup: &BTreeMap<String, Option<String>>,
+) -> JsonValue {
+    let Some(object) = relation.as_object_mut() else {
+        return relation;
+    };
+    for key in ["source", "target"] {
+        let Some(reference) = object.get(key).and_then(JsonValue::as_str) else {
+            continue;
+        };
+        if let Some(canonical_name) = resolve_graph_entity_reference(reference, lookup) {
+            object.insert(key.to_owned(), JsonValue::String(canonical_name.to_owned()));
+        }
+    }
+    relation
+}
+
+/// claim entity reference 배열을 canonical entity name으로 바꾼다.
+fn normalize_graph_claim_references(
+    mut claim: JsonValue,
+    lookup: &BTreeMap<String, Option<String>>,
+) -> JsonValue {
+    let Some(object) = claim.as_object_mut() else {
+        return claim;
+    };
+    let Some(entity_names) = object
+        .get_mut("entityNames")
+        .and_then(JsonValue::as_array_mut)
+    else {
+        return claim;
+    };
+    for entity_name in entity_names {
+        let Some(reference) = entity_name.as_str() else {
+            continue;
+        };
+        if let Some(canonical_name) = resolve_graph_entity_reference(reference, lookup) {
+            *entity_name = JsonValue::String(canonical_name.to_owned());
+        }
+    }
+    claim
+}
+
+/// ambiguous하지 않은 entity reference만 canonical name으로 해석한다.
+fn resolve_graph_entity_reference<'a>(
+    reference: &str,
+    lookup: &'a BTreeMap<String, Option<String>>,
+) -> Option<&'a str> {
+    lookup
+        .get(&normalize_graph_entity_name(reference))
+        .and_then(Option::as_deref)
 }
 
 /// Graph extraction entity 후보 item을 수집한다.
@@ -17610,6 +17804,10 @@ fn parse_graph_rag_status_input_json(payload: &str) -> Option<GraphRagStatusInpu
         graph_rag_model: object.get("graphRagModel")?.as_str()?.to_owned(),
         ontology_schema_id: object.get("ontologySchemaId")?.as_str()?.to_owned(),
         ontology_version: u32::try_from(object.get("ontologyVersion")?.as_u64()?).ok()?,
+        extraction_contract_version: u32::try_from(
+            object.get("extractionContractVersion")?.as_u64()?,
+        )
+        .ok()?,
         file_records: parse_graph_rag_status_file_records(object.get("fileRecords")?.as_array()?)?,
         evidence: parse_graph_rag_status_evidence(object.get("evidence")?.as_array()?)?,
         rejected_fact_file_paths: parse_graph_rag_status_string_array(
@@ -17705,6 +17903,10 @@ fn parse_graph_rag_status_cache_records(
             extraction_model_key: object.get("extractionModelKey")?.as_str()?.to_owned(),
             ontology_schema_id: object.get("ontologySchemaId")?.as_str()?.to_owned(),
             ontology_version: u32::try_from(object.get("ontologyVersion")?.as_u64()?).ok()?,
+            extraction_contract_version: u32::try_from(
+                object.get("extractionContractVersion")?.as_u64()?,
+            )
+            .ok()?,
         });
     }
     Some(records)
@@ -17835,6 +18037,10 @@ fn parse_graph_extraction_cache_key_value(value: &JsonValue) -> Option<GraphExtr
         extraction_model_key: object.get("extractionModelKey")?.as_str()?.to_owned(),
         ontology_schema_id: object.get("ontologySchemaId")?.as_str()?.to_owned(),
         ontology_version: u32::try_from(object.get("ontologyVersion")?.as_u64()?).ok()?,
+        extraction_contract_version: u32::try_from(
+            object.get("extractionContractVersion")?.as_u64()?,
+        )
+        .ok()?,
     })
 }
 
@@ -18745,9 +18951,10 @@ mod tests {
         find_mentioned_entity_matches, format_mcp_json, get_mcp_connection_state_rust,
         hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
         is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
-        is_mcp_tool_result_empty_json, is_relevant_result, normalize_entity_name,
-        normalize_extracted_graph_payload_json, normalize_graph_confidence_or_default,
-        normalize_graph_name, normalize_mcp_tool_result_json, parse_extracted_graph_payload_json,
+        is_mcp_tool_result_empty_json, is_relevant_result, is_same_graph_entity_pair,
+        normalize_entity_name, normalize_extracted_graph_payload_json,
+        normalize_graph_confidence_or_default, normalize_graph_name,
+        normalize_mcp_tool_result_json, parse_extracted_graph_payload_json,
         parse_mcp_tool_arguments_json, parse_mention_candidates_json,
         plan_assistant_response_classification_json, plan_bm25_candidate_resolution_json,
         plan_bm25_hit_lookup_json, plan_bm25_index_add_document_json,
@@ -18783,11 +18990,11 @@ mod tests {
         plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
         plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
         plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
-        recompute_centroids, rrf_score_or_nan, sanitize_graph_id_part, score_entity_match_or_nan,
-        score_local_evidence_pairs, select_diverse_indices, select_relevant_result_indices,
-        should_append_mcp_path_hint_rust, should_rebuild_graph_runtime_for_graph_status,
-        token_frequencies_json, tokenize, validate_mcp_json, validate_ontology_relation,
-        validate_ontology_schema_json,
+        recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
+        sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
+        select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
+        should_rebuild_graph_runtime_for_graph_status, token_frequencies_json, tokenize,
+        validate_mcp_json, validate_ontology_relation, validate_ontology_schema_json,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -19773,6 +19980,26 @@ mod tests {
             normalize_extracted_graph_payload_json(r#"{"unexpected":true}"#),
             "",
             "unknown shape should return empty sentinel",
+        );
+    }
+
+    #[test]
+    fn normalize_extracted_graph_payload_resolves_entity_id_references() {
+        assert_eq!(
+            normalize_extracted_graph_payload_json(
+                r#"{"entities":[{"id":"E1","typeId":"person","label":"바오로"},{"id":"E2","typeId":"work","label":"로마서"}],"relations":[{"source":"E1","target":"E2","relationTypeId":"authored"}],"claims":[{"text":"바오로는 로마서를 저술했다.","claimTypeId":"factual_claim","entityNames":["E1","E2"]}]}"#,
+            ),
+            r#"{"payload":{"entities":[{"name":"바오로","typeId":"person"},{"name":"로마서","typeId":"work"}],"relations":[{"source":"바오로","target":"로마서","relationTypeId":"authored"}],"claims":[{"text":"바오로는 로마서를 저술했다.","claimTypeId":"factual_claim","entityNames":["바오로","로마서"]}]},"rawFactCount":4}"#,
+        );
+    }
+
+    #[test]
+    fn normalize_extracted_graph_payload_does_not_guess_ambiguous_references() {
+        assert_eq!(
+            normalize_extracted_graph_payload_json(
+                r#"{"entities":[{"id":"E1","typeId":"person","label":"바오로"},{"id":"E1","typeId":"work","label":"바오로 서간"}],"relations":[{"source":"E1","target":"바오로 서간","relationTypeId":"authored"}],"claims":[]}"#,
+            ),
+            r#"{"payload":{"entities":[{"name":"바오로","typeId":"person"},{"name":"바오로 서간","typeId":"work"}],"relations":[{"source":"E1","target":"바오로 서간","relationTypeId":"authored"}],"claims":[]},"rawFactCount":3}"#,
         );
     }
 
@@ -21696,13 +21923,13 @@ mod tests {
         );
         assert_eq!(
             plan_graph_rag_status_json(
-                r#"{"graphRagEnabled":true,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":2,"graphRagMaxFilesPerRun":50,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"fileRecords":[{"filePath":"fresh.md","vectorCount":2},{"filePath":"stale.md","vectorCount":1}],"evidence":[{"filePath":"fresh.md","entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","processable":true},{"filePath":"deleted.md","entryId":"deleted.md::0","contentHash":"old","extractionModelKey":"model-new","processable":true},{"filePath":"foreign.md","entryId":"foreign.md::0","contentHash":"foreign","extractionModelKey":"model-new","processable":false}],"rejectedFactFilePaths":["fresh.md","fresh.md","bad.md"],"pendingMergeCount":2,"cacheRecords":[{"entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1},{"entryId":"fresh.md::1","contentHash":"hash-b","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1},{"entryId":"stale.md::0","contentHash":"old-stale","extractionModelKey":"model-old","ontologySchemaId":"default","ontologyVersion":1}],"entries":[{"id":"fresh.md::0","filePath":"fresh.md","contentHash":"hash-a","text":"unused"},{"id":"fresh.md::1","filePath":"fresh.md","contentHash":"hash-b","text":"unused"},{"id":"stale.md::0","filePath":"stale.md","text":"changed body"}]}"#
+                r#"{"graphRagEnabled":true,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":2,"graphRagMaxFilesPerRun":50,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[{"filePath":"fresh.md","vectorCount":2},{"filePath":"stale.md","vectorCount":1}],"evidence":[{"filePath":"fresh.md","entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","processable":true},{"filePath":"deleted.md","entryId":"deleted.md::0","contentHash":"old","extractionModelKey":"model-new","processable":true},{"filePath":"foreign.md","entryId":"foreign.md::0","contentHash":"foreign","extractionModelKey":"model-new","processable":false}],"rejectedFactFilePaths":["fresh.md","fresh.md","bad.md"],"pendingMergeCount":2,"cacheRecords":[{"entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"fresh.md::1","contentHash":"hash-b","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"stale.md::0","contentHash":"old-stale","extractionModelKey":"model-old","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1}],"entries":[{"id":"fresh.md::0","filePath":"fresh.md","contentHash":"hash-a","text":"unused"},{"id":"fresh.md::1","filePath":"fresh.md","contentHash":"hash-b","text":"unused"},{"id":"stale.md::0","filePath":"stale.md","text":"changed body"}]}"#
             ),
             r#"{"state":"stale","totalCandidateFiles":2,"graphEvidenceCount":3,"rejectedFactCount":3,"failedFileCount":2,"pendingMergeCount":2,"staleFileCount":3,"staleFilePaths":["deleted.md","foreign.md","stale.md"],"maxFilesPerRun":50}"#,
         );
         assert_eq!(
             plan_graph_rag_status_json(
-                r#"{"graphRagEnabled":false,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":3,"graphRagMaxFilesPerRun":0,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"fileRecords":[],"evidence":[],"rejectedFactFilePaths":[],"pendingMergeCount":0,"cacheRecords":[],"entries":[]}"#,
+                r#"{"graphRagEnabled":false,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":3,"graphRagMaxFilesPerRun":0,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[],"evidence":[],"rejectedFactFilePaths":[],"pendingMergeCount":0,"cacheRecords":[],"entries":[]}"#,
             ),
             r#"{"state":"disabled","totalCandidateFiles":3,"graphEvidenceCount":0,"rejectedFactCount":0,"failedFileCount":0,"pendingMergeCount":0,"staleFileCount":0,"staleFilePaths":[],"maxFilesPerRun":1}"#,
         );
@@ -21810,16 +22037,49 @@ mod tests {
         );
     }
 
+    /// entity 병합의 참조 교체와 중복 제거는 `Rust`가 담당한다.
+    #[test]
+    fn graph_entity_references_are_rewritten_in_rust() {
+        assert_eq!(
+            rewrite_graph_entity_references_json(
+                r#"["entity-a","entity-b","entity-a"]"#,
+                "entity-b",
+                "entity-a",
+                true,
+            ),
+            r#"["entity-a"]"#,
+        );
+        assert_eq!(
+            rewrite_graph_entity_references_json(
+                r#"["entity-b","entity-c"]"#,
+                "entity-b",
+                "entity-a",
+                false,
+            ),
+            r#"["entity-a","entity-c"]"#,
+        );
+    }
+
+    #[test]
+    fn graph_entity_pair_comparison_is_order_independent() {
+        assert!(is_same_graph_entity_pair(
+            "entity-a", "entity-b", "entity-b", "entity-a"
+        ));
+        assert!(!is_same_graph_entity_pair(
+            "entity-a", "entity-b", "entity-a", "entity-c"
+        ));
+    }
+
     /// `GraphRAG` extraction cache hit 판정은 `Rust`가 담당한다.
     #[test]
     fn graph_extraction_cache_hit_is_checked_in_rust() {
-        let cached = r#"{"entryId":"note.md::0","contentHash":"hash-a","extractionModelKey":"model-a","ontologySchemaId":"default","ontologyVersion":1}"#;
+        let cached = r#"{"entryId":"note.md::0","contentHash":"hash-a","extractionModelKey":"model-a","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1}"#;
 
         assert_eq!(is_graph_extraction_cache_hit_json(cached, cached), "true");
         assert_eq!(
             is_graph_extraction_cache_hit_json(
                 cached,
-                r#"{"entryId":"note.md::0","contentHash":"hash-b","extractionModelKey":"model-a","ontologySchemaId":"default","ontologyVersion":1}"#,
+                r#"{"entryId":"note.md::0","contentHash":"hash-b","extractionModelKey":"model-a","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1}"#,
             ),
             "false",
         );

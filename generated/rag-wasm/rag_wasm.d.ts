@@ -251,6 +251,11 @@ export function format_mcp_json(mcp_json_text: string): string;
 export function get_mcp_connection_state_rust(total_count: number, connected_count: number, failed_count: number, is_connecting: boolean): string;
 
 /**
+ * 현재 Graph extraction parser/normalizer wire contract version을 반환한다.
+ */
+export function graph_extraction_contract_version(): number;
+
+/**
  * RAG hybrid score를 계산한다.
  */
 export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
@@ -294,6 +299,11 @@ export function is_recommendable_exclude_extension_json(extension: string): bool
  * RAG 후보가 최종 context 후보로 유지될 만큼 관련 있는지 판단한다.
  */
 export function is_relevant_result(config: Float64Array, source_codes: Uint8Array): boolean;
+
+/**
+ * 두 entity id 쌍이 순서와 무관하게 같은 대상을 가리키는지 판정한다.
+ */
+export function is_same_graph_entity_pair(first_left: string, first_right: string, second_left: string, second_right: string): boolean;
 
 /**
  * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
@@ -731,6 +741,11 @@ export function recall_at_k(exact_indices: Uint32Array, approximate_indices: Uin
 export function recompute_centroids(vectors: Float64Array, assignments: Uint32Array, previous_centroids: Float64Array, dimensions: number): Float64Array;
 
 /**
+ * `GraphRAG` entity 병합 이후 참조 id를 교체하고 필요하면 순서를 보존해 중복 제거한다.
+ */
+export function rewrite_graph_entity_references_json(references_json: string, candidate_entity_id: string, existing_entity_id: string, deduplicate: boolean): string;
+
+/**
  * retrieval source rank map에서 RRF score를 계산한다.
  */
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
@@ -867,6 +882,7 @@ export interface InitOutput {
     readonly is_protected_rag_document_extension_json: (a: number, b: number) => number;
     readonly is_recommendable_exclude_extension_json: (a: number, b: number) => number;
     readonly is_relevant_result: (a: number, b: number, c: number, d: number) => number;
+    readonly is_same_graph_entity_pair: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly ivfruntimeindex_cluster_count: (a: number) => number;
     readonly ivfruntimeindex_dimensions: (a: number) => number;
     readonly ivfruntimeindex_new: (a: number, b: number, c: number, d: number, e: number) => number;
@@ -957,6 +973,7 @@ export interface InitOutput {
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recall_at_k: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly rewrite_graph_entity_references_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly sanitize_graph_id_part: (a: number, b: number) => [number, number];
     readonly score_entity_match_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
@@ -979,6 +996,7 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
+    readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
