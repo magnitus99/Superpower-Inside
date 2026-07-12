@@ -48,6 +48,27 @@ function makeRunnerOptions(overrides: {
 }
 
 describe('GraphRagIndexingRunner', () => {
+  it('무료 provider 보호를 위해 한 번에 하나의 extraction 요청만 실행한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([
+      createEntry('note.md', 'hash-a', 0),
+      createEntry('note.md', 'hash-b', 1),
+    ]);
+    const provider = new ConcurrentTrackingProvider();
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+      }),
+    );
+
+    await runner.run();
+
+    expect(provider.maxActiveCalls).toBe(1);
+    expect(provider.calls).toBe(2);
+  });
+
   it('maxFilesPerRun까지만 처리하고 cached 파일은 skip한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
@@ -826,6 +847,27 @@ class FakeProvider implements LLMProvider {
   ): Promise<void> {
     onChunk({ content: '', done: true });
     return Promise.resolve();
+  }
+}
+
+class ConcurrentTrackingProvider extends FakeProvider {
+  activeCalls = 0;
+  maxActiveCalls = 0;
+
+  override async chat(
+    messages: ChatMessage[],
+    temperature?: number,
+    tools?: ToolDefinition[],
+    options?: StreamChatOptions,
+  ): Promise<string> {
+    this.activeCalls += 1;
+    this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      return await super.chat(messages, temperature, tools, options);
+    } finally {
+      this.activeCalls -= 1;
+    }
   }
 }
 

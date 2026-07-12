@@ -112,6 +112,46 @@ export interface GraphExtractionCacheRecord {
   updatedAt: number;
 }
 
+export type GraphExtractionJobState =
+  | 'prepared'
+  | 'leased'
+  | 'response-received'
+  | 'parsed'
+  | 'validated'
+  | 'committed'
+  | 'retry-wait'
+  | 'quarantined';
+
+export interface GraphExtractionJobRecord {
+  id: string;
+  requestFingerprint: string;
+  entryId: string;
+  filePath: string;
+  contentHash: string;
+  contractVersion: number;
+  providerKey: string;
+  requestedModel: string;
+  observedModel?: string;
+  providerEpochId: string;
+  state: GraphExtractionJobState;
+  attemptCount: number;
+  nextAttemptAt?: number;
+  leaseOwner?: string;
+  leaseExpiresAt?: number;
+  rawResponseId?: string;
+  lastErrorCode?: string;
+  updatedAt: number;
+}
+
+export interface GraphRawResponseRecord {
+  id: string;
+  requestFingerprint: string;
+  providerEpochId: string;
+  body: string;
+  bodyHash: string;
+  receivedAt: number;
+}
+
 export interface PendingEntityMergeRecord {
   id: string;
   ontologySchemaId: string;
@@ -141,6 +181,12 @@ export interface KnowledgeGraphStore {
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean>;
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void>;
   getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]>;
+  putExtractionJob(record: GraphExtractionJobRecord): Promise<void>;
+  getExtractionJob(id: string): Promise<GraphExtractionJobRecord | undefined>;
+  getExtractionJobs(): Promise<GraphExtractionJobRecord[]>;
+  putRawResponse(record: GraphRawResponseRecord): Promise<void>;
+  getRawResponse(id: string): Promise<GraphRawResponseRecord | undefined>;
+  getRawResponses(): Promise<GraphRawResponseRecord[]>;
   getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
   getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
   getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]>;
@@ -186,6 +232,8 @@ class KnowledgeGraphDB extends Dexie {
   graphRejectedFacts!: Dexie.Table<GraphRejectedFactRecord, string>;
   graphExtractionCache!: Dexie.Table<GraphExtractionCacheRecord, string>;
   graphPendingEntityMerges!: Dexie.Table<PendingEntityMergeRecord, string>;
+  graphExtractionJobs!: Dexie.Table<GraphExtractionJobRecord, string>;
+  graphRawResponses!: Dexie.Table<GraphRawResponseRecord, string>;
 
   constructor(name: string) {
     super(name);
@@ -215,6 +263,22 @@ class KnowledgeGraphDB extends Dexie {
       graphPendingEntityMerges:
         'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
     });
+    this.version(3).stores({
+      graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
+      graphRelations:
+        'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
+      graphClaims: 'id, claimTypeId, *entityIds, updatedAt',
+      graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
+      graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
+      graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
+      graphExtractionCache:
+        'entryId, contentHash, extractionModelKey, ontologySchemaId, ontologyVersion, updatedAt',
+      graphPendingEntityMerges:
+        'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
+      graphExtractionJobs:
+        'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
+      graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
+    });
   }
 }
 
@@ -237,6 +301,32 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]> {
     return (await this.db.graphExtractionCache.toArray()).map((record) => ({ ...record }));
+  }
+
+  async putExtractionJob(record: GraphExtractionJobRecord): Promise<void> {
+    await this.db.graphExtractionJobs.put(copyExtractionJob(record));
+  }
+
+  async getExtractionJob(id: string): Promise<GraphExtractionJobRecord | undefined> {
+    const record = await this.db.graphExtractionJobs.get(id);
+    return record ? copyExtractionJob(record) : undefined;
+  }
+
+  async getExtractionJobs(): Promise<GraphExtractionJobRecord[]> {
+    return (await this.db.graphExtractionJobs.toArray()).map(copyExtractionJob);
+  }
+
+  async putRawResponse(record: GraphRawResponseRecord): Promise<void> {
+    await this.db.graphRawResponses.put({ ...record });
+  }
+
+  async getRawResponse(id: string): Promise<GraphRawResponseRecord | undefined> {
+    const record = await this.db.graphRawResponses.get(id);
+    return record ? { ...record } : undefined;
+  }
+
+  async getRawResponses(): Promise<GraphRawResponseRecord[]> {
+    return (await this.db.graphRawResponses.toArray()).map((record) => ({ ...record }));
   }
 
   async addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -486,6 +576,8 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         this.db.graphRejectedFacts,
         this.db.graphExtractionCache,
         this.db.graphPendingEntityMerges,
+        this.db.graphExtractionJobs,
+        this.db.graphRawResponses,
       ],
       async () => {
         const snapshot = createPrunedGraphSnapshot(filePaths, {
@@ -549,6 +641,8 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         this.db.graphRejectedFacts,
         this.db.graphExtractionCache,
         this.db.graphPendingEntityMerges,
+        this.db.graphExtractionJobs,
+        this.db.graphRawResponses,
       ],
       async () => {
         await Promise.all([
@@ -560,6 +654,8 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
           this.db.graphRejectedFacts.clear(),
           this.db.graphExtractionCache.clear(),
           this.db.graphPendingEntityMerges.clear(),
+          this.db.graphExtractionJobs.clear(),
+          this.db.graphRawResponses.clear(),
         ]);
       },
     );
@@ -580,6 +676,8 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   private rejectedFacts = new Map<string, GraphRejectedFactRecord>();
   private extractionCache = new Map<string, GraphExtractionCacheRecord>();
   private pendingEntityMerges = new Map<string, PendingEntityMergeRecord>();
+  private extractionJobs = new Map<string, GraphExtractionJobRecord>();
+  private rawResponses = new Map<string, GraphRawResponseRecord>();
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
@@ -595,6 +693,34 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]> {
     return Promise.resolve([...this.extractionCache.values()].map((record) => ({ ...record })));
+  }
+
+  putExtractionJob(record: GraphExtractionJobRecord): Promise<void> {
+    this.extractionJobs.set(record.id, copyExtractionJob(record));
+    return Promise.resolve();
+  }
+
+  getExtractionJob(id: string): Promise<GraphExtractionJobRecord | undefined> {
+    const record = this.extractionJobs.get(id);
+    return Promise.resolve(record ? copyExtractionJob(record) : undefined);
+  }
+
+  getExtractionJobs(): Promise<GraphExtractionJobRecord[]> {
+    return Promise.resolve([...this.extractionJobs.values()].map(copyExtractionJob));
+  }
+
+  putRawResponse(record: GraphRawResponseRecord): Promise<void> {
+    this.rawResponses.set(record.id, { ...record });
+    return Promise.resolve();
+  }
+
+  getRawResponse(id: string): Promise<GraphRawResponseRecord | undefined> {
+    const record = this.rawResponses.get(id);
+    return Promise.resolve(record ? { ...record } : undefined);
+  }
+
+  getRawResponses(): Promise<GraphRawResponseRecord[]> {
+    return Promise.resolve([...this.rawResponses.values()].map((record) => ({ ...record })));
   }
 
   addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -872,8 +998,14 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     this.rejectedFacts.clear();
     this.extractionCache.clear();
     this.pendingEntityMerges.clear();
+    this.extractionJobs.clear();
+    this.rawResponses.clear();
     return Promise.resolve();
   }
+}
+
+function copyExtractionJob(record: GraphExtractionJobRecord): GraphExtractionJobRecord {
+  return { ...record };
 }
 
 interface GraphStoreSnapshot {

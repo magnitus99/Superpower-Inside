@@ -1487,6 +1487,7 @@ export interface RustExtractedGraphEntity {
 }
 
 export interface RustExtractedGraphRelation {
+  id?: string;
   source: string;
   target: string;
   relationTypeId: string;
@@ -1495,9 +1496,11 @@ export interface RustExtractedGraphRelation {
 }
 
 export interface RustExtractedGraphClaim {
+  id?: string;
   text: string;
   claimTypeId: string;
   entityNames?: string[];
+  relationRefs?: string[];
   stance?: 'supports' | 'opposes' | 'neutral' | 'interprets';
   confidence?: number;
 }
@@ -7850,6 +7853,7 @@ function isRustExtractedGraphRelation(value: unknown): value is RustExtractedGra
   if (!value || typeof value !== 'object') return false;
   const relation = value as Partial<RustExtractedGraphRelation>;
   return (
+    (relation.id === undefined || isStringValue(relation.id)) &&
     isStringValue(relation.source) &&
     isStringValue(relation.target) &&
     isStringValue(relation.relationTypeId) &&
@@ -7862,10 +7866,13 @@ function isRustExtractedGraphClaim(value: unknown): value is RustExtractedGraphC
   if (!value || typeof value !== 'object') return false;
   const claim = value as Partial<RustExtractedGraphClaim>;
   return (
+    (claim.id === undefined || isStringValue(claim.id)) &&
     isStringValue(claim.text) &&
     isStringValue(claim.claimTypeId) &&
     (claim.entityNames === undefined ||
       (Array.isArray(claim.entityNames) && claim.entityNames.every(isStringValue))) &&
+    (claim.relationRefs === undefined ||
+      (Array.isArray(claim.relationRefs) && claim.relationRefs.every(isStringValue))) &&
     (claim.stance === undefined ||
       claim.stance === 'supports' ||
       claim.stance === 'opposes' ||

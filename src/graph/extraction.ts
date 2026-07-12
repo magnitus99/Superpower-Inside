@@ -1,6 +1,6 @@
 import type { LLMProvider } from '../llm/providers';
 import { t } from '../i18n';
-import { type OntologySchema, validateOntologyRelation } from '../ontology/schema';
+import type { OntologySchema } from '../ontology/schema';
 import type { GraphRagIndexingCounterPatch, GraphRagIndexingPhase } from './indexing-progress';
 import {
   createGraphIdRust,
@@ -8,7 +8,6 @@ import {
   normalizeGraphConfidenceRust,
   normalizeGraphNameRust,
   planGraphClaimEntityIdsRust,
-  planGraphExtractionTypeValidationRust,
   planGraphRelationEndpointIndicesRust,
   parseExtractedGraphPayloadRust,
   type RustExtractedGraphClaim as ExtractedClaim,
@@ -27,6 +26,7 @@ import {
   type GraphClaimRecord,
   type GraphEntityRecord,
   type GraphEvidenceRecord,
+  type GraphExtractionJobRecord,
   type GraphRejectedFactRecord,
   type GraphRelationRecord,
   type KnowledgeGraphStore,
@@ -85,22 +85,21 @@ export class GraphExtractionIndexer {
     if (await this.store.isExtractionCached(cacheKey)) return;
     throwIfGraphExtractionAborted(input.signal);
 
+    let job = await this.prepareExtractionJob(input);
+    const cachedRawResponse = job.rawResponseId
+      ? await this.store.getRawResponse(job.rawResponseId)
+      : undefined;
+
     const evidence = createEvidence(input);
     await this.store.addEvidence(evidence);
     input.onProgress?.({ storedEvidence: 1 });
     throwIfGraphExtractionAborted(input.signal);
 
-    input.onPhase?.('api-waiting');
-    const rawResponse = await this.provider.chat(
-      [
-        { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
-        { role: 'user', content: buildExtractionUserPrompt(input) },
-      ],
-      0,
-      undefined,
-      { signal: input.signal },
-    );
+    const rawResponse = cachedRawResponse?.body ?? (await this.requestExtraction(input));
     throwIfGraphExtractionAborted(input.signal);
+    if (!cachedRawResponse) {
+      job = await this.storeRawResponse(job, rawResponse);
+    }
     input.onPhase?.('api-response-received');
     input.onPhase?.('api-response-normalizing');
     let parsed = parseExtractedGraphPayload(rawResponse);
@@ -117,6 +116,7 @@ export class GraphExtractionIndexer {
         { signal: input.signal },
       );
       throwIfGraphExtractionAborted(input.signal);
+      job = await this.storeRawResponse(job, repairedResponse);
       input.onPhase?.('api-response-received');
       input.onPhase?.('api-response-normalizing');
       parsed = parseExtractedGraphPayload(repairedResponse);
@@ -124,12 +124,92 @@ export class GraphExtractionIndexer {
     input.onPhase?.('storing-results');
     if (!parsed.ok) {
       await this.reject(input, parsed.reason, parsed.rawFact);
+      await this.store.putExtractionJob({ ...job, state: 'quarantined', updatedAt: Date.now() });
       return;
     }
 
+    await this.store.putExtractionJob({ ...job, state: 'validated', updatedAt: Date.now() });
     await this.storeAcceptedFacts(input, evidence, parsed.payload);
     await this.store.markExtractionCached({ ...cacheKey, updatedAt: Date.now() });
+    await this.store.putExtractionJob({ ...job, state: 'committed', updatedAt: Date.now() });
     input.onProgress?.({ cachedChunks: 1 });
+  }
+
+  private async prepareExtractionJob(
+    input: GraphExtractionChunkInput,
+  ): Promise<GraphExtractionJobRecord> {
+    const contractVersion = graphExtractionContractVersionRust();
+    const requestFingerprint = createId(
+      'graph-extraction-request',
+      input.entryId,
+      input.contentHash,
+      input.extractionModelKey,
+      String(contractVersion),
+    );
+    const id = createId('graph-extraction-job', requestFingerprint);
+    const existing = await this.store.getExtractionJob(id);
+    if (existing) return existing;
+
+    const [providerKey = 'unknown', requestedModel = input.extractionModelKey] =
+      input.extractionModelKey.split(':', 2);
+    const job: GraphExtractionJobRecord = {
+      id,
+      requestFingerprint,
+      entryId: input.entryId,
+      filePath: input.filePath,
+      contentHash: input.contentHash,
+      contractVersion,
+      providerKey,
+      requestedModel,
+      providerEpochId: createId(
+        'graph-provider-epoch',
+        input.extractionModelKey,
+        String(contractVersion),
+      ),
+      state: 'prepared',
+      attemptCount: 0,
+      updatedAt: Date.now(),
+    };
+    await this.store.putExtractionJob(job);
+    return job;
+  }
+
+  private requestExtraction(input: GraphExtractionChunkInput): Promise<string> {
+    input.onPhase?.('api-waiting');
+    return this.provider.chat(
+      [
+        { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
+        { role: 'user', content: buildExtractionUserPrompt(input) },
+      ],
+      0,
+      undefined,
+      { signal: input.signal },
+    );
+  }
+
+  private async storeRawResponse(
+    job: GraphExtractionJobRecord,
+    body: string,
+  ): Promise<GraphExtractionJobRecord> {
+    const bodyHash = createId('graph-raw-response-body', body);
+    const rawResponseId = createId('graph-raw-response', job.requestFingerprint, bodyHash);
+    await this.store.putRawResponse({
+      id: rawResponseId,
+      requestFingerprint: job.requestFingerprint,
+      providerEpochId: job.providerEpochId,
+      body,
+      bodyHash,
+      receivedAt: Date.now(),
+    });
+    const nextJob: GraphExtractionJobRecord = {
+      ...job,
+      state: 'response-received',
+      attemptCount: job.attemptCount + 1,
+      rawResponseId,
+      updatedAt: Date.now(),
+    };
+    await this.store.putExtractionJob(nextJob);
+    return nextJob;
   }
 
   private async storeAcceptedFacts(
@@ -141,18 +221,8 @@ export class GraphExtractionIndexer {
     const entityRecords: GraphEntityRecord[] = [];
     const claimEntityLookupRecords: RustGraphClaimEntityLookupRecord[] = [];
     const relationEndpointLookupRecords: RustGraphRelationEndpointLookupRecord[] = [];
-    const typeValidationPlan = planGraphExtractionTypeValidationRust(
-      payload.entities.map((entity) => entity.typeId),
-      payload.claims.map((claim) => claim.claimTypeId),
-      input.ontologySchema.entityTypes.map((entityType) => entityType.id),
-      input.ontologySchema.claimTypes.map((claimType) => claimType.id),
-    );
 
-    for (const [entityPayloadIndex, entity] of payload.entities.entries()) {
-      if (typeValidationPlan?.entityTypeKnown[entityPayloadIndex] !== true) {
-        await this.reject(input, 'unknown-entity-type', entity);
-        continue;
-      }
+    for (const entity of payload.entities) {
       const labels = createGraphEntityLabels({
         canonicalName: entity.name,
         aliases: entity.aliases ?? [],
@@ -195,7 +265,7 @@ export class GraphExtractionIndexer {
       ) ??
       planGraphRelationEndpointIndicesFallback(payload.relations, relationEndpointLookupRecords, entityRecords.length);
 
-    const relationIdsByKey = new Map<string, string>();
+    const relationIdsByLocalRef = new Map<string, string>();
     for (const [relationIndex, relation] of payload.relations.entries()) {
       const endpointPair = relationEndpointPlan?.pairs[relationIndex] ?? null;
       if (endpointPair === null) {
@@ -222,37 +292,22 @@ export class GraphExtractionIndexer {
         continue;
       }
 
-      const validation = validateOntologyRelation(input.ontologySchema, {
-        relationTypeId: relation.relationTypeId,
-        sourceTypeId: source.typeId,
-        targetTypeId: target.typeId,
-      });
-      if (!validation.valid) {
-        await this.reject(input, validation.reason, relation);
-        continue;
-      }
-
       const record = createRelationRecord(input, evidence.id, relation, source.id, target.id, now);
-      relationIdsByKey.set(
-        `${normalizeName(relation.source)}\u0000${normalizeName(relation.target)}`,
-        record.id,
-      );
+      if (relation.id) relationIdsByLocalRef.set(relation.id, record.id);
       await this.store.addRelation(record);
       input.onProgress?.({ storedRelations: 1 });
     }
 
-    for (const [claimIndex, claim] of payload.claims.entries()) {
-      if (typeValidationPlan?.claimTypeKnown[claimIndex] !== true) {
-        await this.reject(input, 'unknown-claim-type', claim);
-        continue;
-      }
+    for (const claim of payload.claims) {
       const entityIds =
         planGraphClaimEntityIdsRust(claim.entityNames ?? [], claimEntityLookupRecords) ?? [];
       const record = createClaimRecord(
         evidence.id,
         claim,
         entityIds,
-        [...relationIdsByKey.values()],
+        (claim.relationRefs ?? [])
+          .map((reference) => relationIdsByLocalRef.get(reference))
+          .filter((id): id is string => id !== undefined),
         now,
       );
       await this.store.addClaim(record);
@@ -341,26 +396,16 @@ function planGraphRelationEndpointIndicesFallback(
 
 function buildExtractionSystemPrompt(schema: OntologySchema): string {
   const entityTypes = schema.entityTypes.map((entityType) => entityType.id).join(', ');
-  const relationTypes = schema.relationTypes.map((relationType) => relationType.id).join(', ');
-  const claimTypes = schema.claimTypes.map((claimType) => claimType.id).join(', ');
-  const relationConstraints = schema.relationTypes
-    .map(
-      (relationType) =>
-        `${relationType.id}: sourceTypeIds=${relationType.sourceTypeIds.join('|')}; targetTypeIds=${relationType.targetTypeIds.join('|')}`,
-    )
-    .join('\n');
   return [
-    'Extract ontology-guided graph facts as JSON only.',
-    `Ontology schema: ${schema.id}@${schema.version}`,
-    `Entity types: ${entityTypes}`,
-    `Relation types: ${relationTypes}`,
-    `Claim types: ${claimTypes}`,
-    'Relation domain/range constraints:',
-    relationConstraints,
+    'Extract evidence-grounded knowledge graph facts as JSON only.',
+    `Suggested entity type hints: ${entityTypes}, other. Use other when none fit.`,
+    'Use concise snake_case relationTypeId values that preserve the source meaning. Unknown relations are allowed.',
     'Return exactly one JSON object with this shape:',
-    '{"entities":[{"name":"string","typeId":"person|organization|place|work|concept|event|argument|evidence","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"source":"entity name","target":"entity name","relationTypeId":"authored|mentions|supports|opposes|collaborated_with|causes|influences|part_of|located_in|interprets","description":"string","confidence":0.0}],"claims":[{"text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityNames":["entity name"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
+    '{"entities":[{"id":"e1","name":"string","typeId":"person|organization|place|document|event|concept|other","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0}],"claims":[{"id":"c1","text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
     'Use entities, relations, claims as arrays even when empty.',
-    'Use typeId, relationTypeId, claimTypeId exactly. Do not use type, relation, claim_type, subject, object, or keyed objects.',
+    'Every entity, relation, and claim must have a unique response-local id.',
+    'Relations must use sourceRef and targetRef. Claims must reference only directly relevant entity and relation ids.',
+    'Do not attach unrelated relations from the same text to a claim.',
     'Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.',
     'Do not invent translated aliases just to make the graph multilingual.',
     t('ontologyRelationEndpointExactMatchInstruction'),

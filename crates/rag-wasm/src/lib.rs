@@ -101,9 +101,9 @@ const GRAPH_ENTITY_NAME_KEYS: &[&str] = &["name", "canonicalName", "label", "id"
 const GRAPH_ENTITY_TYPE_KEYS: &[&str] =
     &["typeId", "type_id", "entityTypeId", "entity_type", "type"];
 /// Graph extraction relation source 후보 key 목록.
-const GRAPH_RELATION_SOURCE_KEYS: &[&str] = &["source", "from", "subject"];
+const GRAPH_RELATION_SOURCE_KEYS: &[&str] = &["sourceRef", "source", "from", "subject"];
 /// Graph extraction relation target 후보 key 목록.
-const GRAPH_RELATION_TARGET_KEYS: &[&str] = &["target", "to", "object"];
+const GRAPH_RELATION_TARGET_KEYS: &[&str] = &["targetRef", "target", "to", "object"];
 /// Graph extraction relation type 후보 key 목록.
 const GRAPH_RELATION_TYPE_KEYS: &[&str] = &[
     "relationTypeId",
@@ -132,10 +132,13 @@ const GRAPH_ALIAS_KEYS: &[&str] = &["aliases", "alias"];
 /// Graph extraction confidence 후보 key 목록.
 const GRAPH_CONFIDENCE_KEYS: &[&str] = &["confidence", "score"];
 /// Graph extraction claim direct entity list 후보 key 목록.
-const GRAPH_CLAIM_ENTITY_LIST_KEYS: &[&str] = &["entityNames", "entity_names", "entities"];
+const GRAPH_CLAIM_ENTITY_LIST_KEYS: &[&str] =
+    &["entityRefs", "entityNames", "entity_names", "entities"];
 /// Graph extraction claim single entity 후보 key 목록.
 const GRAPH_CLAIM_SINGLE_ENTITY_KEYS: &[&str] =
     &["entity", "subject", "source", "object", "target"];
+/// Graph extraction claim relation local reference 후보 key 목록.
+const GRAPH_CLAIM_RELATION_LIST_KEYS: &[&str] = &["relationRefs", "relation_refs", "relations"];
 
 /// 작은 token part에서는 `HashSet` 준비 비용보다 선형 스캔이 싸다.
 const DEDUPE_LINEAR_SCAN_LIMIT: usize = 32;
@@ -12131,6 +12134,11 @@ fn normalize_extracted_graph_relation(item: &GraphPayloadItem<'_>) -> Option<Jso
     let relation_type_id = get_graph_string_field(object, GRAPH_RELATION_TYPE_KEYS)?;
 
     let mut relation = JsonMap::new();
+    insert_optional_graph_string(
+        &mut relation,
+        "id",
+        get_graph_string_field(object, &["id"]),
+    );
     insert_graph_string(&mut relation, "source", source);
     insert_graph_string(&mut relation, "target", target);
     insert_graph_string(&mut relation, "relationTypeId", relation_type_id);
@@ -12154,12 +12162,18 @@ fn normalize_extracted_graph_claim(item: &GraphPayloadItem<'_>) -> Option<JsonVa
     let claim_type_id = get_graph_string_field(object, GRAPH_CLAIM_TYPE_KEYS)?;
 
     let mut claim = JsonMap::new();
+    insert_optional_graph_string(&mut claim, "id", get_graph_string_field(object, &["id"]));
     insert_graph_string(&mut claim, "text", text);
     insert_graph_string(&mut claim, "claimTypeId", claim_type_id);
     insert_optional_graph_string_array(
         &mut claim,
         "entityNames",
         get_graph_claim_entity_names(object),
+    );
+    insert_optional_graph_string_array(
+        &mut claim,
+        "relationRefs",
+        get_graph_string_array_field(object, GRAPH_CLAIM_RELATION_LIST_KEYS),
     );
     insert_optional_graph_string(
         &mut claim,
@@ -20181,6 +20195,16 @@ mod tests {
                 r#"{"entities":[{"id":"E1","typeId":"person","label":"바오로"},{"id":"E1","typeId":"work","label":"바오로 서간"}],"relations":[{"source":"E1","target":"바오로 서간","relationTypeId":"authored"}],"claims":[]}"#,
             ),
             r#"{"payload":{"entities":[{"name":"바오로","typeId":"person"},{"name":"바오로 서간","typeId":"work"}],"relations":[{"source":"E1","target":"바오로 서간","relationTypeId":"authored"}],"claims":[]},"rawFactCount":3}"#,
+        );
+    }
+
+    #[test]
+    fn normalize_extracted_graph_payload_preserves_local_relation_references() {
+        assert_eq!(
+            normalize_extracted_graph_payload_json(
+                r#"{"entities":[{"id":"e1","name":"Alpha","typeId":"concept"},{"id":"e2","name":"Beta","typeId":"concept"}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"depends_on"}],"claims":[{"id":"c1","text":"Alpha depends on Beta","claimTypeId":"factual_claim","entityRefs":["e1","e2"],"relationRefs":["r1"]}]}"#,
+            ),
+            r#"{"payload":{"entities":[{"name":"Alpha","typeId":"concept"},{"name":"Beta","typeId":"concept"}],"relations":[{"id":"r1","source":"Alpha","target":"Beta","relationTypeId":"depends_on"}],"claims":[{"id":"c1","text":"Alpha depends on Beta","claimTypeId":"factual_claim","entityNames":["Alpha","Beta"],"relationRefs":["r1"]}]},"rawFactCount":4}"#,
         );
     }
 

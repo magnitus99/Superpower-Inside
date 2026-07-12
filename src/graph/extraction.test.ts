@@ -12,6 +12,67 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
 });
 
 describe('GraphExtractionIndexer', () => {
+  it('저장 중단 뒤에도 영구 보관한 raw response로 재개하고 provider를 다시 호출하지 않는다', async () => {
+    const store = new FailOnceEntityStore();
+    const provider = createProvider(
+      JSON.stringify({
+        entities: [{ name: 'Alpha', typeId: 'concept', confidence: 0.9 }],
+        relations: [],
+        claims: [],
+      }),
+    );
+    const indexer = new GraphExtractionIndexer({ provider, store });
+    const input = createInput('Alpha is a concept.');
+
+    await expect(indexer.extractChunk(input)).rejects.toThrow('simulated entity write failure');
+    expect(await store.getRawResponses()).toHaveLength(1);
+
+    await expect(indexer.extractChunk(input)).resolves.toBeUndefined();
+    expect(provider.calls).toBe(1);
+    expect(await store.getEntities()).toEqual([
+      expect.objectContaining({ canonicalName: 'Alpha' }),
+    ]);
+    expect(await store.getExtractionJobs()).toEqual([
+      expect.objectContaining({ state: 'committed', attemptCount: 1 }),
+    ]);
+  });
+
+  it('claim은 response에서 명시한 relation reference만 연결한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            { id: 'e1', name: 'Alpha', typeId: 'concept' },
+            { id: 'e2', name: 'Beta', typeId: 'concept' },
+            { id: 'e3', name: 'Gamma', typeId: 'concept' },
+          ],
+          relations: [
+            { id: 'r1', sourceRef: 'e1', targetRef: 'e2', relationTypeId: 'depends_on' },
+            { id: 'r2', sourceRef: 'e2', targetRef: 'e3', relationTypeId: 'supports' },
+          ],
+          claims: [
+            {
+              id: 'c1',
+              text: 'Beta supports Gamma.',
+              claimTypeId: 'factual_claim',
+              entityRefs: ['e2', 'e3'],
+              relationRefs: ['r2'],
+            },
+          ],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput('Alpha depends on Beta. Beta supports Gamma.'));
+
+    const relations = await store.getRelations();
+    const claims = await store.getClaims();
+    expect(relations).toHaveLength(2);
+    expect(claims[0]?.relationIds).toEqual([relations[1]?.id]);
+  });
+
   it('ontology에 맞는 LLM 추출 결과를 entity, relation, claim, evidence로 저장한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
@@ -172,7 +233,7 @@ describe('GraphExtractionIndexer', () => {
     expect(sumProgress(progressEvents, 'cachedChunks')).toBe(1);
   });
 
-  it('ontology domain/range에 맞지 않는 relation은 rejected fact로 저장하고 relation으로 저장하지 않는다', async () => {
+  it('고정 ontology domain/range에 없는 relation도 원문 관계로 보존한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
       provider: createProvider(
@@ -198,13 +259,10 @@ describe('GraphExtractionIndexer', () => {
 
     await indexer.extractChunk(createInput('Jerusalem authored Paul.'));
 
-    expect(await store.getRelations()).toEqual([]);
-    expect(await store.getRejectedFacts()).toEqual([
-      expect.objectContaining({
-        reason: 'relation-domain-range-mismatch',
-        filePath: 'note.md',
-      }),
+    expect(await store.getRelations()).toEqual([
+      expect.objectContaining({ relationTypeId: 'authored' }),
     ]);
+    expect(await store.getRejectedFacts()).toEqual([]);
   });
 
   it('schema reject 저장 진행 이벤트는 거부 항목 수를 알린다', async () => {
@@ -313,7 +371,7 @@ describe('GraphExtractionIndexer', () => {
     ]);
   });
 
-  it('추출 프롬프트는 relation domain/range와 endpoint exact-match 규칙을 포함한다', async () => {
+  it('추출 프롬프트는 local reference와 열린 relation 계약을 포함한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const provider = createCapturingProvider(
       JSON.stringify({
@@ -327,8 +385,9 @@ describe('GraphExtractionIndexer', () => {
     await indexer.extractChunk(createInput('No graph facts.'));
 
     const systemPrompt = provider.messages[0]?.[0]?.content ?? '';
-    expect(systemPrompt).toContain('Relation domain/range constraints:');
-    expect(systemPrompt).toContain('interprets: sourceTypeIds=argument|work|concept|person|organization; targetTypeIds=work|concept');
+    expect(systemPrompt).toContain('Unknown relations are allowed.');
+    expect(systemPrompt).toContain('Relations must use sourceRef and targetRef.');
+    expect(systemPrompt).toContain('Claims must reference only directly relevant entity and relation ids.');
     expect(systemPrompt).toContain('Relation source and target must exactly match an entities[].name or one of that entity aliases.');
     expect(systemPrompt).toContain('Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.');
     expect(systemPrompt).toContain('Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.');
@@ -521,7 +580,7 @@ describe('GraphExtractionIndexer', () => {
     expect(await store.getRejectedFacts()).toEqual([]);
   });
 
-  it('fenced JSON과 앞뒤 설명이 섞여도 유효 fact는 저장하고 invalid fact만 reject한다', async () => {
+  it('고정 목록에 없는 entity type도 원문 분류로 보존한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
       provider: createProvider(
@@ -544,15 +603,14 @@ describe('GraphExtractionIndexer', () => {
 
     await indexer.extractChunk(createInput('Paul appears.'));
 
-    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
-    expect(await store.getRejectedFacts()).toEqual([
-      expect.objectContaining({
-        reason: 'unknown-entity-type',
-      }),
+    expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual([
+      'Paul',
+      'Mystery',
     ]);
+    expect(await store.getRejectedFacts()).toEqual([]);
   });
 
-  it('알 수 없는 claim type은 rejected fact로 저장하고 claim으로 저장하지 않는다', async () => {
+  it('고정 목록에 없는 claim type도 원문 분류로 보존한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({
       provider: createProvider(
@@ -576,12 +634,10 @@ describe('GraphExtractionIndexer', () => {
     await indexer.extractChunk(createInput('Paul made an unsupported classification.'));
 
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
-    expect(await store.getClaims()).toEqual([]);
-    expect(await store.getRejectedFacts()).toEqual([
-      expect.objectContaining({
-        reason: 'unknown-claim-type',
-      }),
+    expect(await store.getClaims()).toEqual([
+      expect.objectContaining({ claimTypeId: 'unknown_claim' }),
     ]);
+    expect(await store.getRejectedFacts()).toEqual([]);
   });
 
   it('content hash, model, ontology version이 같으면 같은 chunk를 재추출하지 않는다', async () => {
@@ -771,6 +827,20 @@ function createInput(
 
 function createProvider(response: string): LLMProvider & { calls: number } {
   return createProviderSequence([response]);
+}
+
+class FailOnceEntityStore extends InMemoryKnowledgeGraphStore {
+  private shouldFail = true;
+
+  override upsertEntity(
+    record: Parameters<InMemoryKnowledgeGraphStore['upsertEntity']>[0],
+  ): Promise<void> {
+    if (this.shouldFail) {
+      this.shouldFail = false;
+      return Promise.reject(new Error('simulated entity write failure'));
+    }
+    return super.upsertEntity(record);
+  }
 }
 
 function createProviderSequence(responses: string[]): LLMProvider & { calls: number } {

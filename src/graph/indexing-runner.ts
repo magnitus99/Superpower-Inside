@@ -436,7 +436,7 @@ export class GraphRagIndexingRunner {
     failedChunks: number;
     cancelled: boolean;
   }> {
-    const CONCURRENCY_LIMIT = 5;
+    const CONCURRENCY_LIMIT = 1;
     const result = { processedChunks: 0, skippedChunks: 0, failedChunks: 0, cancelled: false };
     const preparedEntries: Array<{ entry: VectorEntry; contentHash: string; cached: boolean }> = [];
 

@@ -8,6 +8,7 @@ import {
   type GraphCommunityRecord,
   type GraphEntityRecord,
   type GraphEvidenceRecord,
+  type GraphExtractionJobRecord,
   type GraphRelationRecord,
   type KnowledgeGraphStore,
   type PendingEntityMergeRecord,
@@ -268,6 +269,17 @@ function createIndexedDbStore(): IndexedDbKnowledgeGraphStore {
 }
 
 async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Promise<void> {
+  const job = createExtractionJob();
+  const rawResponse = {
+    id: 'raw-1',
+    requestFingerprint: job.requestFingerprint,
+    providerEpochId: job.providerEpochId,
+    body: '{"entities":[]}',
+    bodyHash: 'body-hash',
+    receivedAt: 1000,
+  };
+  await store.putExtractionJob(job);
+  await store.putRawResponse(rawResponse);
   await store.addEvidence(createEvidence());
   await store.upsertEntity(createEntity());
   await store.addRelation(createRelation());
@@ -299,6 +311,10 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
     expect.objectContaining({ id: 'reject-1', reason: 'schema' }),
   ]);
   expect(await store.getPendingEntityMerges()).toEqual([createPendingMerge()]);
+  expect(await store.getExtractionJob(job.id)).toEqual(job);
+  expect(await store.getExtractionJobs()).toEqual([job]);
+  expect(await store.getRawResponse(rawResponse.id)).toEqual(rawResponse);
+  expect(await store.getRawResponses()).toEqual([rawResponse]);
 
   await store.markExtractionCached({
     entryId: 'note.md::0',
@@ -321,6 +337,15 @@ async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Pr
 }
 
 async function fillGraphStoreForClearTest(store: KnowledgeGraphStore): Promise<void> {
+  await store.putExtractionJob(createExtractionJob({ id: 'job-clear' }));
+  await store.putRawResponse({
+    id: 'raw-clear',
+    requestFingerprint: 'fingerprint-clear',
+    providerEpochId: 'epoch-1',
+    body: '{}',
+    bodyHash: 'body-clear',
+    receivedAt: 1000,
+  });
   await store.addEvidence(createEvidence({ id: 'ev-clear' }));
   await store.upsertEntity(createEntity({ id: 'entity-clear', evidenceIds: ['ev-clear'] }));
   await store.addRelation(createRelation({ id: 'rel-clear', evidenceIds: ['ev-clear'] }));
@@ -362,6 +387,8 @@ async function expectClearTables(store: KnowledgeGraphStore): Promise<void> {
   await expect(store.getRejectedFacts()).resolves.toEqual([]);
   await expect(store.getPendingEntityMerges()).resolves.toEqual([]);
   await expect(store.getExtractionCacheRecords()).resolves.toEqual([]);
+  await expect(store.getExtractionJobs()).resolves.toEqual([]);
+  await expect(store.getRawResponses()).resolves.toEqual([]);
   await expect(
     store.isExtractionCached({
       entryId: 'note.md::0',
@@ -609,5 +636,25 @@ function createPendingMerge(): PendingEntityMergeRecord {
     mergeScore: 0.8,
     reason: 'similar alias',
     updatedAt: 1000,
+  };
+}
+
+function createExtractionJob(
+  overrides: Partial<GraphExtractionJobRecord> = {},
+): GraphExtractionJobRecord {
+  return {
+    id: 'job-1',
+    requestFingerprint: 'fingerprint-1',
+    entryId: 'note.md::0',
+    filePath: 'note.md',
+    contentHash: 'hash-a',
+    contractVersion: 1,
+    providerKey: 'openai',
+    requestedModel: 'gpt-4.1-mini',
+    providerEpochId: 'epoch-1',
+    state: 'prepared',
+    attemptCount: 0,
+    updatedAt: 1000,
+    ...overrides,
   };
 }
