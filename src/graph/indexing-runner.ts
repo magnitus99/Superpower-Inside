@@ -460,6 +460,10 @@ export class GraphRagIndexingRunner {
         ontologySchemaId: this.knowledgeContract.id,
         ontologyVersion: this.knowledgeContract.version,
         extractionContractVersion: graphExtractionContractVersionRust(),
+        providerEpochId: this.indexer.getProviderEpochId(
+          this.extractionModelKey,
+          graphExtractionContractVersionRust(),
+        ),
       };
       if (!forceReprocess && await this.graphStore.isExtractionCached(cacheKey)) {
         preparedEntries.push({ entry, contentHash, cached: true });

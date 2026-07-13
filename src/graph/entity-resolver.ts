@@ -27,6 +27,7 @@ export interface EntityResolverOptions {
   autoMergeThreshold: number;
   pendingMergeThreshold: number;
   embeddingProvider?: EmbeddingProvider;
+  persistPendingMerge?: boolean;
 }
 
 export interface EntityResolutionInput {
@@ -46,6 +47,7 @@ export interface EntityResolutionResult {
   entityId: string;
   mergeScore: number;
   matchedEntityId?: string;
+  pendingMerge?: PendingEntityMergeRecord;
 }
 
 export class EntityResolver {
@@ -78,15 +80,19 @@ export class EntityResolver {
       matchedEntityId: undefined,
     };
     if (safePlan.status === 'pending-merge' && safePlan.matchedEntityId) {
-      await this.store.addPendingEntityMerge(
-        createPendingMergeRecord(
-          input.knowledgeContract.id,
-          safePlan.matchedEntityId,
-          candidateId,
-          safePlan.mergeScore,
-        ),
+      const pendingMerge = createPendingMergeRecord(
+        input.knowledgeContract.id,
+        safePlan.matchedEntityId,
+        candidateId,
+        safePlan.mergeScore,
       );
-      return safePlan;
+      if (this.options.persistPendingMerge !== false) {
+        await this.store.addPendingEntityMerge(pendingMerge);
+      }
+      return {
+        ...safePlan,
+        pendingMerge,
+      };
     }
 
     return safePlan;

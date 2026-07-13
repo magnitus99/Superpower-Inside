@@ -509,7 +509,7 @@ describe('GraphRagIndexingRunner', () => {
       expect.objectContaining({
         processedChunks: 1,
         failedChunks: 1,
-        storedEvidence: 2,
+        storedEvidence: 1,
         storedEntities: 1,
         storedClaims: 1,
         storedRejectedFacts: 1,

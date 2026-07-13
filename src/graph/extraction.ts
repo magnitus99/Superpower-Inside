@@ -27,9 +27,11 @@ import {
   type GraphEntityRecord,
   type GraphEvidenceRecord,
   type GraphExtractionJobRecord,
+  type GraphFactProvenance,
   type GraphRejectedFactRecord,
   type GraphRelationRecord,
   type KnowledgeGraphStore,
+  type PendingEntityMergeRecord,
 } from './store';
 
 export interface GraphExtractionIndexerOptions {
@@ -70,6 +72,14 @@ type GraphPayloadParseResult =
   | RustExtractedGraphPayloadParseResult
   | { ok: false; reason: 'extraction-error'; rawFact: unknown };
 
+interface AcceptedGraphFacts {
+  entities: GraphEntityRecord[];
+  relations: GraphRelationRecord[];
+  claims: GraphClaimRecord[];
+  rejectedFacts: GraphRejectedFactRecord[];
+  pendingEntityMerges: PendingEntityMergeRecord[];
+}
+
 export class GraphExtractionIndexer {
   private static readonly LEASE_DURATION_MS = 120_000;
   private provider: LLMProvider;
@@ -84,11 +94,22 @@ export class GraphExtractionIndexer {
       autoMergeThreshold: options.entityResolverOptions?.autoMergeThreshold ?? 0.88,
       pendingMergeThreshold: options.entityResolverOptions?.pendingMergeThreshold ?? 0.72,
       embeddingProvider: options.entityResolverOptions?.embeddingProvider,
+      persistPendingMerge: false,
     });
+  }
+
+  getProviderEpochId(extractionModelKey: string, contractVersion: number): string {
+    return createId(
+      'graph-provider-epoch',
+      extractionModelKey,
+      JSON.stringify(this.provider.capability),
+      String(contractVersion),
+    );
   }
 
   async extractChunk(input: GraphExtractionChunkInput): Promise<void> {
     throwIfGraphExtractionAborted(input.signal);
+    let job = await this.prepareExtractionJob(input);
     const cacheKey = {
       entryId: input.entryId,
       contentHash: input.contentHash,
@@ -96,12 +117,12 @@ export class GraphExtractionIndexer {
       ontologySchemaId: input.knowledgeContract.id,
       ontologyVersion: input.knowledgeContract.version,
       extractionContractVersion: graphExtractionContractVersionRust(),
+      providerEpochId: job.providerEpochId,
     };
     input.onPhase?.('checking-cache');
     if (await this.store.isExtractionCached(cacheKey)) return;
     throwIfGraphExtractionAborted(input.signal);
 
-    let job = await this.prepareExtractionJob(input);
     if (
       job.state === 'retry-wait' &&
       input.ignoreRetryWait !== true &&
@@ -120,11 +141,6 @@ export class GraphExtractionIndexer {
     const cachedRawResponse = job.rawResponseId
       ? await this.store.getRawResponse(job.rawResponseId)
       : undefined;
-
-    const evidence = createEvidence(input);
-    await this.store.addEvidence(evidence);
-    input.onProgress?.({ storedEvidence: 1 });
-    throwIfGraphExtractionAborted(input.signal);
 
     let rawResponse = cachedRawResponse?.body;
     if (rawResponse === undefined) {
@@ -186,15 +202,32 @@ export class GraphExtractionIndexer {
     }
     input.onPhase?.('storing-results');
     if (!parsed.ok) {
+      const rejectedEvidence = createEvidence(input, job.providerEpochId);
+      await this.store.addEvidence(rejectedEvidence);
+      input.onProgress?.({ storedEvidence: 1 });
       await this.reject(input, parsed.reason, parsed.rawFact);
       await this.store.putExtractionJob({ ...job, state: 'quarantined', updatedAt: Date.now() });
       return;
     }
 
-    await this.store.putExtractionJob({ ...job, state: 'validated', updatedAt: Date.now() });
-    await this.storeAcceptedFacts(input, evidence, parsed.payload);
-    await this.store.markExtractionCached({ ...cacheKey, updatedAt: Date.now() });
-    await this.store.putExtractionJob({ ...job, state: 'committed', updatedAt: Date.now() });
+    const committedAt = Date.now();
+    const evidence = createEvidence(input, job.providerEpochId);
+    const provenance = createFactProvenance(input, job, rawResponse, committedAt);
+    const facts = await this.buildAcceptedFacts(input, evidence, parsed.payload, provenance);
+    throwIfGraphExtractionAborted(input.signal);
+    await this.store.commitExtraction({
+      evidence,
+      ...facts,
+      cache: { ...cacheKey, updatedAt: committedAt },
+      job: { ...job, state: 'committed', updatedAt: committedAt },
+    });
+    input.onProgress?.({
+      storedEvidence: 1,
+      storedEntities: facts.entities.length,
+      storedRelations: facts.relations.length,
+      storedClaims: facts.claims.length,
+      storedRejectedFacts: facts.rejectedFacts.length,
+    });
     input.onProgress?.({ cachedChunks: 1 });
   }
 
@@ -202,11 +235,13 @@ export class GraphExtractionIndexer {
     input: GraphExtractionChunkInput,
   ): Promise<GraphExtractionJobRecord> {
     const contractVersion = graphExtractionContractVersionRust();
+    const providerEpochId = this.getProviderEpochId(input.extractionModelKey, contractVersion);
     const requestFingerprint = createId(
       'graph-extraction-request',
       input.entryId,
       input.contentHash,
       input.extractionModelKey,
+      providerEpochId,
       String(contractVersion),
     );
     const id = createId('graph-extraction-job', requestFingerprint);
@@ -224,11 +259,7 @@ export class GraphExtractionIndexer {
       contractVersion,
       providerKey,
       requestedModel,
-      providerEpochId: createId(
-        'graph-provider-epoch',
-        input.extractionModelKey,
-        String(contractVersion),
-      ),
+      providerEpochId,
       state: 'prepared',
       attemptCount: 0,
       updatedAt: Date.now(),
@@ -316,13 +347,18 @@ export class GraphExtractionIndexer {
     return nextJob;
   }
 
-  private async storeAcceptedFacts(
+  private async buildAcceptedFacts(
     input: GraphExtractionChunkInput,
     evidence: GraphEvidenceRecord,
     payload: ExtractedGraphPayload,
-  ): Promise<void> {
+    provenance: GraphFactProvenance,
+  ): Promise<AcceptedGraphFacts> {
     const now = Date.now();
     const entityRecords: GraphEntityRecord[] = [];
+    const relationRecords: GraphRelationRecord[] = [];
+    const claimRecords: GraphClaimRecord[] = [];
+    const rejectedFacts: GraphRejectedFactRecord[] = [];
+    const pendingEntityMerges: PendingEntityMergeRecord[] = [];
     const claimEntityLookupRecords: RustGraphClaimEntityLookupRecord[] = [];
     const relationEndpointLookupRecords: RustGraphRelationEndpointLookupRecord[] = [];
 
@@ -344,6 +380,8 @@ export class GraphExtractionIndexer {
         evidenceIds: [evidence.id],
       });
       const record = createEntityRecord(input, evidence.id, entity, labels, resolution.entityId, now);
+      record.provenance = [{ ...provenance }];
+      if (resolution.pendingMerge) pendingEntityMerges.push(resolution.pendingMerge);
       const entityIndex = entityRecords.length;
       entityRecords.push(record);
       claimEntityLookupRecords.push({ name: entity.name, entityId: record.id });
@@ -352,8 +390,6 @@ export class GraphExtractionIndexer {
         claimEntityLookupRecords.push({ name: alias, entityId: record.id });
         relationEndpointLookupRecords.push({ name: alias, entityIndex });
       }
-      await this.store.upsertEntity(record);
-      input.onProgress?.({ storedEntities: 1 });
     }
 
     const relationEndpointPlan =
@@ -373,7 +409,7 @@ export class GraphExtractionIndexer {
     for (const [relationIndex, relation] of payload.relations.entries()) {
       const endpointPair = relationEndpointPlan?.pairs[relationIndex] ?? null;
       if (endpointPair === null) {
-        await this.reject(input, 'unknown-relation-entity', relation);
+        rejectedFacts.push(createRejectedFact(input, 'unknown-relation-entity', relation));
         continue;
       }
       const sourceEntityIndex = endpointPair.sourceEntityIndex;
@@ -386,20 +422,20 @@ export class GraphExtractionIndexer {
         sourceEntityIndex >= entityRecords.length ||
         targetEntityIndex >= entityRecords.length
       ) {
-        await this.reject(input, 'unknown-relation-entity', relation);
+        rejectedFacts.push(createRejectedFact(input, 'unknown-relation-entity', relation));
         continue;
       }
       const source = entityRecords[sourceEntityIndex];
       const target = entityRecords[targetEntityIndex];
       if (!source || !target) {
-        await this.reject(input, 'unknown-relation-entity', relation);
+        rejectedFacts.push(createRejectedFact(input, 'unknown-relation-entity', relation));
         continue;
       }
 
       const record = createRelationRecord(input, evidence.id, relation, source.id, target.id, now);
+      record.provenance = [{ ...provenance }];
       if (relation.id) relationIdsByLocalRef.set(relation.id, record.id);
-      await this.store.addRelation(record);
-      input.onProgress?.({ storedRelations: 1 });
+      relationRecords.push(record);
     }
 
     for (const claim of payload.claims) {
@@ -414,9 +450,16 @@ export class GraphExtractionIndexer {
           .filter((id): id is string => id !== undefined),
         now,
       );
-      await this.store.addClaim(record);
-      input.onProgress?.({ storedClaims: 1 });
+      record.provenance = [{ ...provenance }];
+      claimRecords.push(record);
     }
+    return {
+      entities: entityRecords,
+      relations: relationRecords,
+      claims: claimRecords,
+      rejectedFacts,
+      pendingEntityMerges,
+    };
   }
 
   private async reject(
@@ -424,14 +467,7 @@ export class GraphExtractionIndexer {
     reason: string,
     rawFact: unknown,
   ): Promise<void> {
-    const record: GraphRejectedFactRecord = {
-      id: createId('rejected', input.entryId, reason, JSON.stringify(rawFact)),
-      filePath: input.filePath,
-      entryId: input.entryId,
-      reason,
-      rawFact,
-      updatedAt: Date.now(),
-    };
+    const record = createRejectedFact(input, reason, rawFact);
     await this.store.addRejectedFact(record);
     input.onProgress?.({ storedRejectedFacts: 1 });
   }
@@ -549,9 +585,12 @@ function buildExtractionUserPrompt(input: GraphExtractionChunkInput): string {
   ].join('\n');
 }
 
-function createEvidence(input: GraphExtractionChunkInput): GraphEvidenceRecord {
+function createEvidence(
+  input: GraphExtractionChunkInput,
+  providerEpochId: string,
+): GraphEvidenceRecord {
   return {
-    id: createId('evidence', input.entryId, input.contentHash),
+    id: createId('evidence', input.entryId, input.contentHash, providerEpochId),
     filePath: input.filePath,
     entryId: input.entryId,
     startLine: input.startLine,
@@ -559,6 +598,38 @@ function createEvidence(input: GraphExtractionChunkInput): GraphEvidenceRecord {
     quote: input.chunkText,
     contentHash: input.contentHash,
     extractionModelKey: input.extractionModelKey,
+    updatedAt: Date.now(),
+  };
+}
+
+function createFactProvenance(
+  input: GraphExtractionChunkInput,
+  job: GraphExtractionJobRecord,
+  rawResponse: string,
+  generatedAt: number,
+): GraphFactProvenance {
+  return {
+    entryId: input.entryId,
+    contentHash: input.contentHash,
+    contractVersion: job.contractVersion,
+    providerEpochId: job.providerEpochId,
+    rawResponseHash: createId('graph-raw-response-body', rawResponse),
+    observedModel: job.observedModel,
+    generatedAt,
+  };
+}
+
+function createRejectedFact(
+  input: GraphExtractionChunkInput,
+  reason: string,
+  rawFact: unknown,
+): GraphRejectedFactRecord {
+  return {
+    id: createId('rejected', input.entryId, reason, JSON.stringify(rawFact)),
+    filePath: input.filePath,
+    entryId: input.entryId,
+    reason,
+    rawFact,
     updatedAt: Date.now(),
   };
 }

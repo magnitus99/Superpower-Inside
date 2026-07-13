@@ -26,6 +26,9 @@ describe('GraphExtractionIndexer', () => {
 
     await expect(indexer.extractChunk(input)).rejects.toThrow('simulated entity write failure');
     expect(await store.getRawResponses()).toHaveLength(1);
+    expect(await store.getEvidence()).toEqual([]);
+    expect(await store.getEntities()).toEqual([]);
+    expect(await store.getExtractionCacheRecords()).toEqual([]);
 
     await expect(indexer.extractChunk(input)).resolves.toBeUndefined();
     expect(provider.calls).toBe(1);
@@ -71,6 +74,33 @@ describe('GraphExtractionIndexer', () => {
     const claims = await store.getClaims();
     expect(relations).toHaveLength(2);
     expect(claims[0]?.relationIds).toEqual([relations[1]?.id]);
+  });
+
+  it('provider generation이 바뀌면 같은 모델과 원문도 별도 provenance로 보존한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const response = JSON.stringify({
+      entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept' }],
+      relations: [],
+      claims: [],
+    });
+    const firstProvider = createProvider(response);
+    const secondProvider = {
+      ...createProvider(response),
+      capability: {
+        ...TEST_PROVIDER_CAPABILITY,
+        knownLimitations: ['second provider epoch'],
+      },
+    } satisfies LLMProvider;
+    const input = createInput('Alpha is a concept.');
+
+    await new GraphExtractionIndexer({ provider: firstProvider, store }).extractChunk(input);
+    await new GraphExtractionIndexer({ provider: secondProvider, store }).extractChunk(input);
+
+    expect(await store.getEvidence()).toHaveLength(2);
+    expect(await store.getExtractionJobs()).toHaveLength(2);
+    const [entity] = await store.getEntities();
+    expect(entity?.provenance).toHaveLength(2);
+    expect(new Set(entity?.provenance?.map((record) => record.providerEpochId)).size).toBe(2);
   });
 
   it('provider 실패는 lease를 해제하고 bounded retry 대기 상태로 보존한다', async () => {
@@ -914,14 +944,14 @@ function createProvider(response: string): LLMProvider & { calls: number } {
 class FailOnceEntityStore extends InMemoryKnowledgeGraphStore {
   private shouldFail = true;
 
-  override upsertEntity(
-    record: Parameters<InMemoryKnowledgeGraphStore['upsertEntity']>[0],
+  override commitExtraction(
+    commit: Parameters<InMemoryKnowledgeGraphStore['commitExtraction']>[0],
   ): Promise<void> {
     if (this.shouldFail) {
       this.shouldFail = false;
       return Promise.reject(new Error('simulated entity write failure'));
     }
-    return super.upsertEntity(record);
+    return super.commitExtraction(commit);
   }
 }
 

@@ -24,6 +24,16 @@ import {
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
 
+export interface GraphFactProvenance {
+  entryId: string;
+  contentHash: string;
+  contractVersion: number;
+  providerEpochId: string;
+  rawResponseHash: string;
+  observedModel?: string;
+  generatedAt: number;
+}
+
 export interface GraphEntityRecord {
   id: string;
   ontologySchemaId: string;
@@ -36,6 +46,7 @@ export interface GraphEntityRecord {
   properties: Record<string, GraphPropertyValue>;
   confidence: number;
   evidenceIds: string[];
+  provenance?: GraphFactProvenance[];
   createdAt: number;
   updatedAt: number;
 }
@@ -51,6 +62,7 @@ export interface GraphRelationRecord {
   properties: Record<string, GraphPropertyValue>;
   confidence: number;
   evidenceIds: string[];
+  provenance?: GraphFactProvenance[];
   createdAt: number;
   updatedAt: number;
 }
@@ -64,6 +76,7 @@ export interface GraphClaimRecord {
   stance?: GraphClaimStance;
   confidence: number;
   evidenceIds: string[];
+  provenance?: GraphFactProvenance[];
   updatedAt: number;
 }
 
@@ -109,6 +122,7 @@ export interface GraphExtractionCacheRecord {
   ontologySchemaId: string;
   ontologyVersion: number;
   extractionContractVersion?: number;
+  providerEpochId?: string;
   updatedAt: number;
 }
 
@@ -161,6 +175,17 @@ export interface GraphProviderCircuitRecord {
   updatedAt: number;
 }
 
+export interface GraphExtractionCommit {
+  evidence: GraphEvidenceRecord;
+  entities: readonly GraphEntityRecord[];
+  relations: readonly GraphRelationRecord[];
+  claims: readonly GraphClaimRecord[];
+  rejectedFacts: readonly GraphRejectedFactRecord[];
+  pendingEntityMerges: readonly PendingEntityMergeRecord[];
+  cache: GraphExtractionCacheRecord;
+  job: GraphExtractionJobRecord;
+}
+
 export interface PendingEntityMergeRecord {
   id: string;
   ontologySchemaId: string;
@@ -199,6 +224,7 @@ export interface KnowledgeGraphStore {
   getRawResponses(): Promise<GraphRawResponseRecord[]>;
   putProviderCircuit(record: GraphProviderCircuitRecord): Promise<void>;
   getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined>;
+  commitExtraction(commit: GraphExtractionCommit): Promise<void>;
   getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
   getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
   getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]>;
@@ -322,6 +348,13 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = await this.db.graphExtractionCache.get(input.entryId);
+    if (
+      input.providerEpochId !== undefined &&
+      cached?.providerEpochId !== undefined &&
+      cached.providerEpochId !== input.providerEpochId
+    ) {
+      return false;
+    }
     return requireGraphExtractionCacheHit(cached, withCurrentExtractionContract(input));
   }
 
@@ -389,6 +422,50 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   ): Promise<GraphProviderCircuitRecord | undefined> {
     const record = await this.db.graphProviderCircuits.get(providerEpochId);
     return record ? { ...record } : undefined;
+  }
+
+  async commitExtraction(commit: GraphExtractionCommit): Promise<void> {
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.graphEvidence,
+        this.db.graphEntities,
+        this.db.graphRelations,
+        this.db.graphClaims,
+        this.db.graphRejectedFacts,
+        this.db.graphPendingEntityMerges,
+        this.db.graphExtractionCache,
+        this.db.graphExtractionJobs,
+      ],
+      async () => {
+        await this.db.graphEvidence.put({ ...commit.evidence });
+        for (const entity of commit.entities) {
+          const existing = await this.db.graphEntities.get(entity.id);
+          await this.db.graphEntities.put(
+            existing ? mergeEntity(existing, entity) : copyEntity(entity),
+          );
+        }
+        if (commit.relations.length > 0) {
+          await this.db.graphRelations.bulkPut(commit.relations.map(copyRelation));
+        }
+        if (commit.claims.length > 0) {
+          await this.db.graphClaims.bulkPut(commit.claims.map(copyClaim));
+        }
+        if (commit.rejectedFacts.length > 0) {
+          await this.db.graphRejectedFacts.bulkPut(
+            commit.rejectedFacts.map((record) => ({ ...record })),
+          );
+        }
+        for (const pendingMerge of commit.pendingEntityMerges) {
+          const decisions = await this.db.graphPendingEntityMerges.toArray();
+          if (!decisions.some((decision) => isKeptSeparatePair(decision, pendingMerge))) {
+            await this.db.graphPendingEntityMerges.put({ ...pendingMerge });
+          }
+        }
+        await this.db.graphExtractionCache.put(withCurrentExtractionContract(commit.cache));
+        await this.db.graphExtractionJobs.put(copyExtractionJob(commit.job));
+      },
+    );
   }
 
   async addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -744,6 +821,13 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
+    if (
+      input.providerEpochId !== undefined &&
+      cached?.providerEpochId !== undefined &&
+      cached.providerEpochId !== input.providerEpochId
+    ) {
+      return Promise.resolve(false);
+    }
     return Promise.resolve(
       requireGraphExtractionCacheHit(cached, withCurrentExtractionContract(input)),
     );
@@ -812,6 +896,31 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined> {
     const record = this.providerCircuits.get(providerEpochId);
     return Promise.resolve(record ? { ...record } : undefined);
+  }
+
+  commitExtraction(commit: GraphExtractionCommit): Promise<void> {
+    this.evidence.set(commit.evidence.id, { ...commit.evidence });
+    for (const entity of commit.entities) {
+      const existing = this.entities.get(entity.id);
+      this.entities.set(entity.id, existing ? mergeEntity(existing, entity) : copyEntity(entity));
+    }
+    for (const relation of commit.relations) this.relations.set(relation.id, copyRelation(relation));
+    for (const claim of commit.claims) this.claims.set(claim.id, copyClaim(claim));
+    for (const rejectedFact of commit.rejectedFacts) {
+      this.rejectedFacts.set(rejectedFact.id, { ...rejectedFact });
+    }
+    for (const pendingMerge of commit.pendingEntityMerges) {
+      if (
+        ![...this.pendingEntityMerges.values()].some((decision) =>
+          isKeptSeparatePair(decision, pendingMerge),
+        )
+      ) {
+        this.pendingEntityMerges.set(pendingMerge.id, { ...pendingMerge });
+      }
+    }
+    this.extractionCache.set(commit.cache.entryId, withCurrentExtractionContract(commit.cache));
+    this.extractionJobs.set(commit.job.id, copyExtractionJob(commit.job));
+    return Promise.resolve();
   }
 
   addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -1455,6 +1564,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
         incoming.description.length === 0 ? existing.description : incoming.description,
       confidence: Math.max(existing.confidence, incoming.confidence),
       evidenceIds: mergeOrderedStrings(existing.evidenceIds, incoming.evidenceIds),
+      provenance: mergeProvenance(existing.provenance, incoming.provenance),
       updatedAt: incoming.updatedAt,
     };
   }
@@ -1465,6 +1575,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
     description: plan.description,
     confidence: plan.confidence,
     evidenceIds: plan.evidenceIds,
+    provenance: mergeProvenance(existing.provenance, incoming.provenance),
     updatedAt: plan.updatedAt,
   };
 }
@@ -1509,6 +1620,18 @@ function mergeOrderedStrings(left: readonly string[], right: readonly string[]):
     }
   }
   return merged;
+}
+
+function mergeProvenance(
+  left: readonly GraphFactProvenance[] | undefined,
+  right: readonly GraphFactProvenance[] | undefined,
+): GraphFactProvenance[] | undefined {
+  if (!left && !right) return undefined;
+  const merged = new Map<string, GraphFactProvenance>();
+  for (const record of [...(left ?? []), ...(right ?? [])]) {
+    merged.set(`${record.providerEpochId}\0${record.rawResponseHash}`, { ...record });
+  }
+  return [...merged.values()];
 }
 
 function isGraphExtractionCacheHitFallback(
@@ -1559,6 +1682,7 @@ function copyEntity(record: GraphEntityRecord): GraphEntityRecord {
     labels: copyGraphEntityLabels(record.labels),
     properties: { ...record.properties },
     evidenceIds: [...record.evidenceIds],
+    provenance: record.provenance?.map((provenance) => ({ ...provenance })),
   };
 }
 
@@ -1567,6 +1691,7 @@ function copyRelation(record: GraphRelationRecord): GraphRelationRecord {
     ...record,
     properties: { ...record.properties },
     evidenceIds: [...record.evidenceIds],
+    provenance: record.provenance?.map((provenance) => ({ ...provenance })),
   };
 }
 
@@ -1576,6 +1701,7 @@ function copyClaim(record: GraphClaimRecord): GraphClaimRecord {
     entityIds: [...record.entityIds],
     relationIds: [...record.relationIds],
     evidenceIds: [...record.evidenceIds],
+    provenance: record.provenance?.map((provenance) => ({ ...provenance })),
   };
 }
 
