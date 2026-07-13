@@ -407,6 +407,7 @@ export interface RAGConfig {
   graphRagEnabled: boolean;
   graphRagModel: string;
   graphRagMaxFilesPerRun: number;
+  graphRagMaxConcurrentRequests: number;
   graphRagQueryMode: 'auto' | 'local' | 'global' | 'hybrid';
   graphRagAutoSyncEnabled: boolean;
   graphRagAutoSyncIntervalMin: number;
@@ -523,6 +524,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     graphRagEnabled: false,
     graphRagModel: '',
     graphRagMaxFilesPerRun: 50,
+    graphRagMaxConcurrentRequests: 1,
     graphRagQueryMode: 'auto',
     graphRagAutoSyncEnabled: false,
     graphRagAutoSyncIntervalMin: 30,
@@ -2612,6 +2614,24 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '1';
         text.inputEl.max = '10000';
       });
+    const concurrencySetting = new Setting(section)
+      .setName(t('graphRagConcurrentRequestsLabel'))
+      .setDesc(t('graphRagConcurrentRequestsDesc'));
+    const concurrencyValue = concurrencySetting.controlEl.createSpan({
+      cls: 'superpower-inside-graph-concurrency-value',
+      text: String(rag.graphRagMaxConcurrentRequests),
+    });
+    concurrencySetting.addSlider((slider) =>
+      slider
+        .setLimits(1, 10, 1)
+        .setValue(rag.graphRagMaxConcurrentRequests)
+        .setDynamicTooltip()
+        .onChange((value) => {
+          concurrencyValue.setText(String(value));
+          this.plugin.settings.rag.graphRagMaxConcurrentRequests = value;
+          this.debouncedRagSave();
+        }),
+    );
     new Setting(section)
       .setName(t('graphRagQueryModeLabel'))
       .setDesc(t('settingsAuto056'))

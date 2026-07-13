@@ -292,6 +292,13 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).not.toContain('.superpower-inside-rag-action-disabled-reason');
   });
 
+  it('GraphRAG 동시 요청 수는 1부터 10까지의 슬라이더와 숫자값으로 표시한다', () => {
+    expect(settingsSource).toContain("setName(t('graphRagConcurrentRequestsLabel'))");
+    expect(settingsSource).toContain('.setLimits(1, 10, 1)');
+    expect(settingsSource).toContain('.setDynamicTooltip()');
+    expect(settingsSource).toContain('superpower-inside-graph-concurrency-value');
+  });
+
   it('RAG 런타임을 만들 수 없을 때 빈 카드 대신 원인과 한 가지 복구 행동을 표시한다', () => {
     const methodStart = settingsSource.indexOf('private renderRagUnavailableState(');
     const methodEnd = settingsSource.indexOf('\n  private renderRagStatusSummary', methodStart);

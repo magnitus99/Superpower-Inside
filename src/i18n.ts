@@ -685,6 +685,8 @@ export interface I18nKeys {
   settingsAuto053: string;
   settingsAuto054: string;
   settingsAuto055: string;
+  graphRagConcurrentRequestsLabel: string;
+  graphRagConcurrentRequestsDesc: string;
   settingsAuto056: string;
   settingsAuto057: string;
   settingsAuto058: string;
@@ -2225,6 +2227,9 @@ const ko: I18nKeys = {
     'entity/relation/claim 추출에 사용할 모델입니다. 비워두면 실행 버튼이 비활성화됩니다.',
   settingsAuto054: '한 번에 처리할 최대 파일 수',
   settingsAuto055: 'GraphRAG 추출은 비용이 크므로 run limit을 둡니다.',
+  graphRagConcurrentRequestsLabel: '동시 요청 수',
+  graphRagConcurrentRequestsDesc:
+    'GraphRAG 추출 요청을 동시에 처리할 개수입니다. 제공자 제한에 맞게 1~10 사이에서 조절하세요.',
   settingsAuto056: '질문 유형별 graph 검색 방식을 선택합니다.',
   settingsAuto057: '자동 merge와 pending merge 기준입니다.',
   settingsAuto058: '자동 동기화',
@@ -3859,6 +3864,9 @@ const en: I18nKeys = {
     'Model used for entity/relation/claim extraction. If empty, the run button is disabled.',
   settingsAuto054: 'Maximum files to process at once',
   settingsAuto055: 'GraphRAG extraction can be expensive, so a run limit is applied.',
+  graphRagConcurrentRequestsLabel: 'Concurrent requests',
+  graphRagConcurrentRequestsDesc:
+    'Number of GraphRAG extraction requests processed at once. Adjust from 1 to 10 for your provider limits.',
   settingsAuto056: 'Choose the graph search method for each question type.',
   settingsAuto057: 'Criteria for automatic merge and pending merge.',
   settingsAuto058: 'Auto-sync',

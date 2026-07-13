@@ -106,6 +106,8 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 
 RAG and GraphRAG maintain local state for this vault. When notes, models, or graph evidence need attention, the settings view surfaces a clear status and the smallest next action. The goal is not to make you operate an index dashboard; it is to keep answers grounded while staying out of your way.
 
+GraphRAG extraction uses one concurrent model request by default. If your provider supports more throughput, the GraphRAG settings let you raise the concurrent request count from 1 to 10 while keeping the current value visible beside the slider.
+
 ### Recover From Startup Problems
 
 The Agent Diagnostics view writes a local JSON snapshot and append-only event log while the plugin runs. If Obsidian reopens after a stuck startup, white screen, indexing hang, or MCP connection stall, the view highlights the last visible operation, the likely cause, and a safe-mode action that reopens the plugin with heavy indexing disabled.
@@ -200,6 +202,8 @@ Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치�
 ### 인덱스는 뒤에 두기
 
 RAG와 GraphRAG는 이 볼트의 로컬 상태를 유지합니다. 노트, 모델, 그래프 evidence에 사용자의 주의가 필요할 때만 설정 화면이 이유와 다음 행동을 보여줍니다. 목표는 사용자가 인덱스 대시보드를 운영하게 만드는 것이 아니라, 답변이 조용히 출처를 갖추도록 돕는 것입니다.
+
+GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. provider가 더 높은 처리량을 지원한다면 GraphRAG 설정의 슬라이더에서 동시 요청 수를 1~10으로 조절하고 현재 숫자를 바로 확인할 수 있습니다.
 
 <details>
 <summary><strong>보안과 데이터 접근</strong></summary>

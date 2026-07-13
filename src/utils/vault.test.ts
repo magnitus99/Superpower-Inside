@@ -31,6 +31,7 @@ const baseRagConfig: RAGConfig = {
   graphRagEnabled: false,
   graphRagModel: '',
   graphRagMaxFilesPerRun: 50,
+  graphRagMaxConcurrentRequests: 1,
   graphRagQueryMode: 'auto',
   enableBM25: true,
   bm25Weight: 0.3,

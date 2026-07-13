@@ -1719,6 +1719,13 @@ button.superpower-inside-settings-status-row:focus-visible {
   color: var(--text-error);
 }
 
+.superpower-inside-graph-concurrency-value {
+  min-width: 2ch;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
 /* Icon button */
 .superpower-inside-icon-btn {
   padding: 4px;

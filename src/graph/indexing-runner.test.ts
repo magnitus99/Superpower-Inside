@@ -35,6 +35,7 @@ function makeRunnerOptions(overrides: {
   graphStore: InMemoryKnowledgeGraphStore;
   provider: FakeProvider;
   maxFilesPerRun?: number;
+  maxConcurrentRequests?: number;
 }): ConstructorParameters<typeof GraphRagIndexingRunner>[0] {
   return {
     vectorStore: overrides.vectorStore,
@@ -44,11 +45,12 @@ function makeRunnerOptions(overrides: {
     knowledgeContract: buildKnowledgeGraphContract(),
     extractionModelKey: 'openai:gpt-4.1-mini',
     maxFilesPerRun: overrides.maxFilesPerRun ?? 10,
+    maxConcurrentRequests: overrides.maxConcurrentRequests ?? 1,
   };
 }
 
 describe('GraphRagIndexingRunner', () => {
-  it('무료 provider 보호를 위해 한 번에 하나의 extraction 요청만 실행한다', async () => {
+  it('기본 설정에서는 한 번에 하나의 extraction 요청만 실행한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
       createEntry('note.md', 'hash-a', 0),
@@ -67,6 +69,48 @@ describe('GraphRagIndexingRunner', () => {
 
     expect(provider.maxActiveCalls).toBe(1);
     expect(provider.calls).toBe(2);
+  });
+
+  it('설정된 동시 요청 수까지만 extraction 요청을 실행한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add(
+      Array.from({ length: 6 }, (_, index) => createEntry('note.md', `hash-${index}`, index)),
+    );
+    const provider = new ConcurrentTrackingProvider();
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+        maxConcurrentRequests: 3,
+      }),
+    );
+
+    await runner.run();
+
+    expect(provider.maxActiveCalls).toBe(3);
+    expect(provider.calls).toBe(6);
+  });
+
+  it('동시 요청 수를 지원 범위인 1부터 10까지로 제한한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add(
+      Array.from({ length: 12 }, (_, index) => createEntry('note.md', `hash-${index}`, index)),
+    );
+    const provider = new ConcurrentTrackingProvider();
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider,
+        maxConcurrentRequests: 99,
+      }),
+    );
+
+    await runner.run();
+
+    expect(provider.maxActiveCalls).toBe(10);
+    expect(provider.calls).toBe(12);
   });
 
   it('maxFilesPerRun까지만 처리하고 cached 파일은 skip한다', async () => {

@@ -41,6 +41,7 @@ export interface GraphRagIndexingRunnerOptions {
   knowledgeContract: KnowledgeGraphContract;
   extractionModelKey: string;
   maxFilesPerRun: number;
+  maxConcurrentRequests: number;
   entityResolverOptions?: EntityResolverOptions;
   isProcessableFilePath?: GraphRagFilePathPredicate;
   onProgress?: (progress: GraphRagIndexingProgress) => void;
@@ -85,6 +86,7 @@ export class GraphRagIndexingRunner {
   private readonly knowledgeContract: KnowledgeGraphContract;
   private readonly extractionModelKey: string;
   private readonly maxFilesPerRun: number;
+  private readonly maxConcurrentRequests: number;
   private readonly communityCompute: GraphCommunityComputePort;
   private readonly isProcessableFilePath: GraphRagFilePathPredicate | undefined;
   private runSequence = 0;
@@ -113,6 +115,10 @@ export class GraphRagIndexingRunner {
     this.knowledgeContract = options.knowledgeContract;
     this.extractionModelKey = options.extractionModelKey;
     this.maxFilesPerRun = Math.max(1, Math.floor(options.maxFilesPerRun));
+    this.maxConcurrentRequests = Math.max(
+      1,
+      Math.min(10, Math.floor(options.maxConcurrentRequests)),
+    );
     this.isProcessableFilePath = options.isProcessableFilePath;
     this.onProgress = options.onProgress;
     this.communityCompute = options.communityCompute ?? createGraphCommunityCompute();
@@ -442,7 +448,6 @@ export class GraphRagIndexingRunner {
     failedChunks: number;
     cancelled: boolean;
   }> {
-    const CONCURRENCY_LIMIT = 1;
     const result = { processedChunks: 0, skippedChunks: 0, failedChunks: 0, cancelled: false };
     const preparedEntries: Array<{ entry: VectorEntry; contentHash: string; cached: boolean }> = [];
 
@@ -490,12 +495,12 @@ export class GraphRagIndexingRunner {
     this.updateProgressPhase('storing-results');
     await this.graphStore.pruneByFilePaths([filePath]);
 
-    for (let i = 0; i < preparedEntries.length; i += CONCURRENCY_LIMIT) {
+    for (let i = 0; i < preparedEntries.length; i += this.maxConcurrentRequests) {
       if (signal?.aborted) {
         result.cancelled = true;
         break;
       }
-      const batch = preparedEntries.slice(i, i + CONCURRENCY_LIMIT);
+      const batch = preparedEntries.slice(i, i + this.maxConcurrentRequests);
       const batchResults = await Promise.all(
         batch.map(async ({ entry, contentHash }): Promise<{
           processed: boolean;

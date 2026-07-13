@@ -472,6 +472,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.indexingYieldMs).toBe(25);
     expect(DEFAULT_SETTINGS.rag.slowEventLoopThresholdMs).toBe(150);
     expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
+    expect(DEFAULT_SETTINGS.rag.graphRagMaxConcurrentRequests).toBe(1);
   });
 
   it('자동 성능 설정은 Ollama와 그 외 프로바이더에 다른 기본값을 적용한다', () => {

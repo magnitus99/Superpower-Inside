@@ -1331,6 +1331,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (typeof migratedRag.graphRagMaxFilesPerRun !== 'number') {
         migratedRag.graphRagMaxFilesPerRun = 50;
       }
+      const graphRagMaxConcurrentRequests = Number(migratedRag.graphRagMaxConcurrentRequests);
+      migratedRag.graphRagMaxConcurrentRequests = Number.isFinite(graphRagMaxConcurrentRequests)
+        ? Math.max(1, Math.min(10, Math.floor(graphRagMaxConcurrentRequests)))
+        : 1;
       if (!['auto', 'local', 'global', 'hybrid'].includes(String(migratedRag.graphRagQueryMode))) {
         migratedRag.graphRagQueryMode = 'auto';
       }
@@ -2182,6 +2186,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
               knowledgeContract: knowledgeContract,
               extractionModelKey: rag.graphRagModel,
               maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+              maxConcurrentRequests: rag.graphRagMaxConcurrentRequests,
               entityResolverOptions: {
                 autoMergeThreshold: rag.entityAutoMergeThreshold,
                 pendingMergeThreshold: rag.entityPendingMergeThreshold,

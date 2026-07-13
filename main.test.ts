@@ -745,6 +745,30 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.mcpIncludeWslPath).toBe(false);
   });
 
+  it('GraphRAG 동시 요청 수를 안전 범위로 정규화한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const oldSettings = {
+      ...DEFAULT_SETTINGS,
+      rag: { ...DEFAULT_SETTINGS.rag },
+    };
+    delete (
+      oldSettings.rag as Partial<typeof DEFAULT_SETTINGS.rag>
+    ).graphRagMaxConcurrentRequests;
+    const app = createApp({ localSettings: oldSettings });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.rag.graphRagMaxConcurrentRequests).toBe(1);
+  });
+
   it('설정 로드 시 레거시 other 임베딩 프로바이더를 기본 OpenAI 임베딩으로 정규화한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
