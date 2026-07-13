@@ -1,4 +1,4 @@
-import type { OntologySchema } from '../ontology/schema';
+import type { KnowledgeGraphContract } from './knowledge-contract';
 import {
   mergeRetrievalCandidateGroupsByEntryId,
 } from '../rag/retrieval-pipeline';
@@ -77,7 +77,7 @@ export class GraphRagQueryEngine {
   constructor(
     private readonly graphStore: KnowledgeGraphStore,
     private readonly vectorStore: VectorStore,
-    private readonly ontologySchema: OntologySchema,
+    private readonly knowledgeContract: KnowledgeGraphContract,
     options: GraphRagQueryEngineOptions = {},
   ) {
     this.queryMode = options.queryMode ?? 'auto';
@@ -143,7 +143,7 @@ export class GraphRagQueryEngine {
     const mentionedMatches = findMentionedEntityMatches(
       request.question,
       entities,
-      this.ontologySchema.id,
+      this.knowledgeContract.id,
       plan?.entityHints ?? [],
     );
     if (mentionedMatches.length === 0) return [];
@@ -178,7 +178,7 @@ export class GraphRagQueryEngine {
     const mentionedMatches = findMentionedEntityMatches(
       request.question,
       entities,
-      this.ontologySchema.id,
+      this.knowledgeContract.id,
       plan?.entityHints ?? [],
     );
     const mentionedIds = new Set(mentionedMatches.map((match) => match.entity.id));
@@ -204,7 +204,7 @@ export class GraphRagQueryEngine {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfGraphQueryAborted(signal);
-    const schemaCommunities = await this.graphStore.getCommunitiesBySchema(this.ontologySchema.id);
+    const schemaCommunities = await this.graphStore.getCommunitiesBySchema(this.knowledgeContract.id);
     throwIfGraphQueryAborted(signal);
     const communities = rankGlobalCommunitiesWithRust(
       schemaCommunities,
@@ -336,7 +336,7 @@ export class GraphRagQueryEngine {
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const relations = await this.graphStore.getRelationsForEntityIds(
         frontier,
-        this.ontologySchema.id,
+        this.knowledgeContract.id,
       );
       const nextFrontier: string[] = [];
       for (const relation of relations) {

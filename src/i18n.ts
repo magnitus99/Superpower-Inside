@@ -1374,34 +1374,6 @@ export interface I18nKeys {
   promptSummaryTopHeadings: string;
   promptSummaryRepresentativeSamples: string;
   promptSummaryNone: string;
-  ontologyEntityPersonDesc: string;
-  ontologyEntityOrganizationDesc: string;
-  ontologyEntityPlaceDesc: string;
-  ontologyEntityWorkDesc: string;
-  ontologyEntityConceptDesc: string;
-  ontologyEntityEventDesc: string;
-  ontologyEntityArgumentDesc: string;
-  ontologyEntityEvidenceDesc: string;
-  ontologyDefaultDescription: string;
-  ontologyRelationAuthoredDesc: string;
-  ontologyRelationMentionsDesc: string;
-  ontologyRelationSupportsDesc: string;
-  ontologyRelationOpposesDesc: string;
-  ontologyRelationCollaboratedDesc: string;
-  ontologyRelationCausesDesc: string;
-  ontologyRelationInfluencesDesc: string;
-  ontologyRelationPartOfDesc: string;
-  ontologyRelationLocatedInDesc: string;
-  ontologyRelationInterpretsDesc: string;
-  ontologyClaimFactualDesc: string;
-  ontologyClaimInterpretiveDesc: string;
-  ontologyClaimEvaluativeDesc: string;
-  ontologyAliasRuleDesc: string;
-  ontologyMergeRuleDesc: string;
-  ontologyExtractionGuidelines: string;
-  ontologyRelationEndpointExactMatchInstruction: string;
-  ontologyRelationEndpointGenericRoleInstruction: string;
-  ontologyRelationDomainRangeFallbackInstruction: string;
   contextRuleNoSourceOutsideVault: string;
   contextRuleSeparateSuggestions: string;
   contextRuleNoEvidence: string;
@@ -2960,7 +2932,7 @@ const ko: I18nKeys = {
   rejectedFactInvalidJsonDesc:
     '모델이 GraphRAG 추출 스키마와 맞는 JSON 객체를 반환하지 않았습니다. OpenRouter/free 모델에서는 빈 응답, 설명문, 제한 문구, 잘린 응답이 섞이면 자주 발생합니다.',
   rejectedFactUnknownEntityTitle: '알 수 없는 엔티티 타입',
-  rejectedFactUnknownEntityDesc: '모델이 현재 ontology schema에 없는 entity typeId를 반환했습니다.',
+  rejectedFactUnknownEntityDesc: '이전 추출 계약에서 허용하지 않던 entity type이 기록됐습니다.',
   rejectedFactSchemaShapeTitle: 'JSON 구조가 GraphRAG 추출 스키마와 다름',
   rejectedFactSchemaShapeDesc:
     '응답은 JSON으로 파싱됐지만 entities.name/typeId, relations.relationTypeId, claims.text/claimTypeId 같은 필수 필드 구조를 따르지 않았습니다.',
@@ -2968,15 +2940,14 @@ const ko: I18nKeys = {
   rejectedFactUnknownRelationEntityDesc:
     '모델이 relation source/target에 쓴 이름이 같은 응답의 entities 목록과 매칭되지 않았습니다.',
   rejectedFactRelationMismatchTitle: '관계 타입의 source/target 타입 불일치',
-  rejectedFactRelationMismatchDesc:
-    '모델이 ontology schema에서 허용하지 않는 entity type 조합으로 relation을 반환했습니다.',
+  rejectedFactRelationMismatchDesc: '이전 추출 계약에서 거부했던 legacy relation입니다.',
   rejectedFactUnknownClaimTitle: '알 수 없는 claim 타입',
-  rejectedFactUnknownClaimDesc: '모델이 현재 ontology schema에 없는 claimTypeId를 반환했습니다.',
+  rejectedFactUnknownClaimDesc: '이전 추출 계약에서 허용하지 않던 claim type이 기록됐습니다.',
   rejectedFactExtractionErrorTitle: '추출 호출 중 오류',
   rejectedFactExtractionErrorDesc: 'LLM 호출, 네트워크, provider 응답 처리 중 예외가 발생했습니다.',
   rejectedFactDefaultTitle: 'GraphRAG 추출 결과가 schema 검증을 통과하지 못함',
   rejectedFactDefaultDesc:
-    '모델 응답의 일부 fact가 현재 ontology schema 또는 저장소 검증 규칙과 맞지 않습니다.',
+    '모델 응답의 일부 fact가 현재 지식 계약 또는 저장소 검증 규칙과 맞지 않습니다.',
   rejectedFactEmptyResponse: '(빈 응답)',
   defaultObsidianSystemPrompt: [
     '당신은 Obsidian 볼트와 함께 작동하는 지식 작업 보조자입니다.',
@@ -3031,38 +3002,6 @@ const ko: I18nKeys = {
   promptSummaryTopHeadings: '[주요 헤딩]',
   promptSummaryRepresentativeSamples: '[대표 청크 샘플]',
   promptSummaryNone: '- 없음',
-  ontologyEntityPersonDesc: '사람, 저자, 역사 인물',
-  ontologyEntityOrganizationDesc: '기관, 단체, 종파, 학교',
-  ontologyEntityPlaceDesc: '장소, 지역, 국가',
-  ontologyEntityWorkDesc: '책, 논문, 문서, 작품',
-  ontologyEntityConceptDesc: '개념, 주제, 이론',
-  ontologyEntityEventDesc: '사건, 회의, 전쟁, 변화',
-  ontologyEntityArgumentDesc: '주장, 논증, 해석',
-  ontologyEntityEvidenceDesc: '근거, 인용, 사례',
-  ontologyDefaultDescription: '기본 온톨로지 스키마입니다.',
-  ontologyRelationAuthoredDesc: '저작 관계',
-  ontologyRelationMentionsDesc: '언급 관계',
-  ontologyRelationSupportsDesc: '지지',
-  ontologyRelationOpposesDesc: '반대',
-  ontologyRelationCollaboratedDesc: '협력',
-  ontologyRelationCausesDesc: '원인',
-  ontologyRelationInfluencesDesc: '영향',
-  ontologyRelationPartOfDesc: '포함 관계',
-  ontologyRelationLocatedInDesc: '위치',
-  ontologyRelationInterpretsDesc: '해석',
-  ontologyClaimFactualDesc: '사실 관계 주장',
-  ontologyClaimInterpretiveDesc: '해석적 주장',
-  ontologyClaimEvaluativeDesc: '평가적 주장',
-  ontologyAliasRuleDesc: '공백 정리와 영문 대소문자 정규화',
-  ontologyMergeRuleDesc: 'canonical name과 alias exact match 기반 병합',
-  ontologyExtractionGuidelines:
-    '허용된 entity/relation/claim type만 사용하고, 근거가 있는 본문 표현을 중심으로 추출한다.',
-  ontologyRelationEndpointExactMatchInstruction:
-    'Relation source and target must exactly match an entities[].name or one of that entity aliases.',
-  ontologyRelationEndpointGenericRoleInstruction:
-    'Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.',
-  ontologyRelationDomainRangeFallbackInstruction:
-    'If a relation would violate the domain/range constraints, omit the relation and preserve the statement as a claim when useful.',
   contextRuleNoSourceOutsideVault: 'Vault Context에 없는 문서명은 출처로 쓰지 마세요.',
   contextRuleSeparateSuggestions: '새 노트 제안은 출처와 분리해 "제안"으로 표시하세요.',
   contextRuleNoEvidence: '근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
@@ -3907,7 +3846,7 @@ const en: I18nKeys = {
   settingsAuto039: 'No failed files.',
   settingsAuto040: 'Sync required',
   settingsAuto041:
-    'Files changed or the extraction model/ontology rules changed, so re-extraction is required.',
+    'Files changed or the extraction model/contract changed, so re-extraction is required.',
   settingsAuto042: 'All files are up to date.',
   settingsAuto043: 'Cost/transfer',
   settingsAuto044: 'Communities',
@@ -4440,11 +4379,11 @@ const en: I18nKeys = {
   graphRagStatusReadyDesc: 'GraphRAG is up to date and will use the knowledge graph for questions.',
   graphRagStatusStaleLabel: 'Sync required',
   graphRagStatusStaleDesc:
-    'Some files changed, or the extraction model or ontology rules changed, so re-extraction is required.',
+    'Some files changed, or the extraction model or contract changed, so re-extraction is required.',
   graphRagStatusPartialLabel: 'Partially complete',
   graphRagStatusPartialDesc: 'Some file extraction failed. You can retry only the failed files.',
   graphRagStatusSchemaErrorLabel: 'Configuration error',
-  graphRagStatusSchemaErrorDesc: 'The ontology schema has errors. Check the settings.',
+  graphRagStatusSchemaErrorDesc: 'The extraction contract could not be loaded.',
   graphRagDisabledReason: 'GraphRAG background build is paused.',
   graphRagProviderMissingReason:
     'Enable the selected GraphRAG model provider and add the model to its model list.',
@@ -4486,7 +4425,7 @@ const en: I18nKeys = {
   graphRagSyncStale: 'Sync changes',
   graphRagSyncStaleWithCount: 'Sync changes ({count})',
   graphRagSyncStaleDesc:
-    'Re-extract only files that are stale because files, models, or ontology rules changed.',
+    'Re-extract only files that are stale because files, models, or the extraction contract changed.',
   graphRagMaintain: 'Graph maintenance',
   graphRagBuildCommunities: 'Rebuild communities',
   graphRagBuildCommunitiesDesc:
@@ -4647,7 +4586,7 @@ const en: I18nKeys = {
     'The model did not return a JSON object matching the GraphRAG extraction schema. This often happens with OpenRouter/free models when empty responses, explanatory text, refusal text, or truncated responses are mixed in.',
   rejectedFactUnknownEntityTitle: 'Unknown entity type',
   rejectedFactUnknownEntityDesc:
-    'The model returned an entity typeId that is not in the current ontology schema.',
+    'A legacy extraction used an entity type that its old contract did not allow.',
   rejectedFactSchemaShapeTitle: 'JSON shape does not match the GraphRAG extraction schema',
   rejectedFactSchemaShapeDesc:
     'The response parsed as JSON, but required fields such as entities.name/typeId, relations.relationTypeId, or claims.text/claimTypeId did not match the expected structure.',
@@ -4655,17 +4594,16 @@ const en: I18nKeys = {
   rejectedFactUnknownRelationEntityDesc:
     'The relation source/target names returned by the model did not match the entities in the same response.',
   rejectedFactRelationMismatchTitle: 'Relation source/target type mismatch',
-  rejectedFactRelationMismatchDesc:
-    'The model returned a relation using an entity type combination that the ontology schema does not allow.',
+  rejectedFactRelationMismatchDesc: 'A legacy extraction used a relation rejected by its old contract.',
   rejectedFactUnknownClaimTitle: 'Unknown claim type',
   rejectedFactUnknownClaimDesc:
-    'The model returned a claimTypeId that is not in the current ontology schema.',
+    'A legacy extraction used a claim type that its old contract did not allow.',
   rejectedFactExtractionErrorTitle: 'Extraction call error',
   rejectedFactExtractionErrorDesc:
     'An exception occurred during the LLM call, network request, or provider response handling.',
   rejectedFactDefaultTitle: 'GraphRAG extraction result failed schema validation',
   rejectedFactDefaultDesc:
-    'Some facts in the model response do not match the current ontology schema or store validation rules.',
+    'Some facts in the model response do not match the current knowledge contract or store validation rules.',
   rejectedFactEmptyResponse: '(empty response)',
   defaultObsidianSystemPrompt: [
     'You are a knowledge-work assistant that operates with an Obsidian vault.',
@@ -4722,38 +4660,6 @@ const en: I18nKeys = {
   promptSummaryTopHeadings: '[Top headings]',
   promptSummaryRepresentativeSamples: '[Representative chunk samples]',
   promptSummaryNone: '- None',
-  ontologyEntityPersonDesc: 'People, authors, historical figures',
-  ontologyEntityOrganizationDesc: 'Institutions, organizations, denominations, schools',
-  ontologyEntityPlaceDesc: 'Places, regions, countries',
-  ontologyEntityWorkDesc: 'Books, papers, documents, works',
-  ontologyEntityConceptDesc: 'Concepts, topics, theories',
-  ontologyEntityEventDesc: 'Events, meetings, wars, changes',
-  ontologyEntityArgumentDesc: 'Claims, arguments, interpretations',
-  ontologyEntityEvidenceDesc: 'Evidence, quotations, examples',
-  ontologyDefaultDescription: 'Default ontology schema.',
-  ontologyRelationAuthoredDesc: 'Authorship relation',
-  ontologyRelationMentionsDesc: 'Mention relation',
-  ontologyRelationSupportsDesc: 'Supports',
-  ontologyRelationOpposesDesc: 'Opposes',
-  ontologyRelationCollaboratedDesc: 'Collaboration',
-  ontologyRelationCausesDesc: 'Cause',
-  ontologyRelationInfluencesDesc: 'Influence',
-  ontologyRelationPartOfDesc: 'Part-of relation',
-  ontologyRelationLocatedInDesc: 'Location',
-  ontologyRelationInterpretsDesc: 'Interpretation',
-  ontologyClaimFactualDesc: 'Factual claim',
-  ontologyClaimInterpretiveDesc: 'Interpretive claim',
-  ontologyClaimEvaluativeDesc: 'Evaluative claim',
-  ontologyAliasRuleDesc: 'Trim whitespace and normalize English letter case',
-  ontologyMergeRuleDesc: 'Merge based on canonical name and exact alias match',
-  ontologyExtractionGuidelines:
-    'Use only allowed entity, relation, and claim types, and extract around evidence-backed source expressions.',
-  ontologyRelationEndpointExactMatchInstruction:
-    'Relation source and target must exactly match an entities[].name or one of that entity aliases.',
-  ontologyRelationEndpointGenericRoleInstruction:
-    'Do not use generic role words such as author, text, body, source, target, subject, object, or translated role labels as relation endpoints unless they are explicit entity names in entities.',
-  ontologyRelationDomainRangeFallbackInstruction:
-    'If a relation would violate the domain/range constraints, omit the relation and preserve the statement as a claim when useful.',
   contextRuleNoSourceOutsideVault: 'Do not cite document names that are absent from Vault Context.',
   contextRuleSeparateSuggestions:
     'Separate new note suggestions from sources and mark them as "Suggestions".',

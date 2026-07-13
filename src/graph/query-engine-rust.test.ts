@@ -12,7 +12,7 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
   };
 });
 
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore } from '../rag/store';
 import { GraphRagQueryEngine } from './query-engine';
 import {
@@ -45,7 +45,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      buildDefaultOntologySchema(),
+      buildKnowledgeGraphContract(),
       { queryMode: 'global' },
     );
 
@@ -71,7 +71,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     planGraphQueryExecutionRustMock.mockReturnValueOnce(null);
 
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas 관계를 보여줘',
@@ -94,7 +94,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      buildDefaultOntologySchema(),
+      buildKnowledgeGraphContract(),
       { queryMode: 'global' },
     );
 
@@ -131,7 +131,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const engine = new GraphRagQueryEngine(
       graphStore,
       new MemoryVectorStore(),
-      buildDefaultOntologySchema(),
+      buildKnowledgeGraphContract(),
       { queryMode: 'global' },
     );
 
@@ -149,7 +149,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
 function createCommunity(id: string, summaryVector: number[]): GraphCommunityRecord {
   return {
     id,
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     title: id,
     entityIds: [],
     relationIds: [],
@@ -190,7 +190,7 @@ async function createGraphFixture(): Promise<{
 function createEntity(name: string, aliases: string[], evidenceIds: string[]): GraphEntityRecord {
   return {
     id: `entity::general::person::${name.toLowerCase()}`,
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     typeId: 'person',
     canonicalName: name,
@@ -207,7 +207,7 @@ function createEntity(name: string, aliases: string[], evidenceIds: string[]): G
 function createRelation(evidenceId: string): GraphRelationRecord {
   return {
     id: 'relation::paul-barnabas',
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     relationTypeId: 'collaborated_with',
     sourceEntityId: 'entity::general::person::paul',

@@ -88,8 +88,6 @@ const KOREAN_PARTICLES: &[&str] = &[
     "은", "는", "이", "가", "을", "를", "과", "와", "의", "에", "에서", "로", "으로", "에게", "께",
     "도", "만", "부터", "까지",
 ];
-/// Ontology relation domain/range wildcard type id.
-const ONTOLOGY_ANY_ENTITY_TYPE: &str = "any";
 /// Graph extraction parser/normalizer wire contract version.
 const GRAPH_EXTRACTION_CONTRACT_VERSION: u32 = 1;
 /// `wasm-bindgen` runtime getter가 읽는 extraction contract version.
@@ -1785,36 +1783,6 @@ pub fn plan_graph_relation_endpoint_indices_json(
         &lookup_records,
         entity_count,
     ))
-}
-
-/// Graph extraction entity/claim type membership을 schema 기준 boolean plan으로 계산한다.
-#[must_use]
-#[wasm_bindgen]
-pub fn plan_graph_extraction_type_validation_json(
-    entity_type_ids_json: &str,
-    claim_type_ids_json: &str,
-    schema_entity_type_ids_json: &str,
-    schema_claim_type_ids_json: &str,
-) -> String {
-    let Some(entity_type_ids) = parse_raw_string_array_json(entity_type_ids_json) else {
-        return String::new();
-    };
-    let Some(claim_type_ids) = parse_raw_string_array_json(claim_type_ids_json) else {
-        return String::new();
-    };
-    let Some(schema_entity_type_ids) = parse_raw_string_array_json(schema_entity_type_ids_json)
-    else {
-        return String::new();
-    };
-    let Some(schema_claim_type_ids) = parse_raw_string_array_json(schema_claim_type_ids_json)
-    else {
-        return String::new();
-    };
-
-    serialize_graph_extraction_type_validation_plan_json(
-        &plan_type_membership(&entity_type_ids, &schema_entity_type_ids),
-        &plan_type_membership(&claim_type_ids, &schema_claim_type_ids),
-    )
 }
 
 /// Graph community summarizer의 entity/relation/claim grouping index plan을 계산한다.
@@ -4032,74 +4000,6 @@ pub fn graph_extraction_contract_version() -> u32 {
     GRAPH_EXTRACTION_CONTRACT_VERSION_EXPORT.load(Ordering::Relaxed)
 }
 
-/// Ontology relation type/source/target 조합을 검증한다.
-#[must_use]
-#[wasm_bindgen]
-pub fn validate_ontology_relation(
-    entity_type_ids: &str,
-    relation_type_ids: &str,
-    relation_source_type_rows: &str,
-    relation_target_type_rows: &str,
-    relation_type_id: &str,
-    source_type_id: &str,
-    target_type_id: &str,
-) -> String {
-    let entity_type_ids = split_entity_wire_values(entity_type_ids).collect::<Vec<_>>();
-    let relation_type_ids = split_entity_wire_values(relation_type_ids).collect::<Vec<_>>();
-    let relation_source_type_rows = split_ontology_relation_type_rows(relation_source_type_rows);
-    let relation_target_type_rows = split_ontology_relation_type_rows(relation_target_type_rows);
-    let Some(relation_index) = relation_type_ids
-        .iter()
-        .position(|candidate| *candidate == relation_type_id)
-    else {
-        return "unknown-relation-type".to_owned();
-    };
-
-    if !is_known_ontology_entity_type(&entity_type_ids, source_type_id)
-        || !is_known_ontology_entity_type(&entity_type_ids, target_type_id)
-    {
-        return "unknown-entity-type".to_owned();
-    }
-
-    let source_type_row = relation_source_type_rows
-        .get(relation_index)
-        .copied()
-        .unwrap_or_default();
-    let target_type_row = relation_target_type_rows
-        .get(relation_index)
-        .copied()
-        .unwrap_or_default();
-    if !ontology_type_row_contains(source_type_row, source_type_id)
-        || !ontology_type_row_contains(target_type_row, target_type_id)
-    {
-        return "relation-domain-range-mismatch".to_owned();
-    }
-
-    "valid".to_owned()
-}
-
-/// Ontology schema 정합성 오류 목록을 계산한다.
-#[must_use]
-#[wasm_bindgen]
-pub fn validate_ontology_schema_json(schema_json: &str) -> String {
-    let schema = serde_json::from_str::<JsonValue>(schema_json).ok();
-    let Some(schema_obj) = schema.as_ref().and_then(JsonValue::as_object) else {
-        return "[]".to_owned();
-    };
-
-    let mut errors = Vec::new();
-    push_schema_field_errors(schema_obj, &mut errors);
-    let (_, entity_type_id_set) = collect_ontology_entity_type_ids(schema_obj);
-    push_ontology_entity_type_errors(schema_obj, &entity_type_id_set, &mut errors);
-    push_ontology_relation_type_errors(schema_obj, &entity_type_id_set, &mut errors);
-    serialize_json_array(
-        &errors
-            .into_iter()
-            .map(JsonValue::String)
-            .collect::<Vec<_>>(),
-    )
-}
-
 /// MCP JSON 검증/포맷 처리의 결과를 직렬화 가능한 계약으로 보관한다.
 struct McpJsonValidationPlan {
     /// 입력 JSON이 유효한 MCP 설정인지 나타낸다.
@@ -4265,163 +4165,6 @@ fn serialize_mcp_json_validation_plan(plan: &McpJsonValidationPlan) -> String {
     }
 
     JsonValue::Object(output).to_string()
-}
-
-/// `entityTypes`에서 id 목록과 빠른 조회용 id set을 만든다.
-fn collect_ontology_entity_type_ids(
-    schema_obj: &serde_json::Map<String, JsonValue>,
-) -> (Vec<&str>, std::collections::HashSet<&str>) {
-    let mut ids = Vec::new();
-    let mut id_set = std::collections::HashSet::new();
-    let entity_types: &[JsonValue] =
-        match schema_obj.get("entityTypes").and_then(JsonValue::as_array) {
-            Some(entity_types) => entity_types.as_slice(),
-            None => &[],
-        };
-
-    for entity_type in entity_types.iter().filter_map(JsonValue::as_object) {
-        let entity_type_id = entity_type
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("");
-        ids.push(entity_type_id);
-        id_set.insert(entity_type_id);
-    }
-
-    (ids, id_set)
-}
-
-/// `relationTypes`에서 relation id 목록을 추출한다.
-fn collect_ontology_relation_type_ids(relation_types: &[&JsonValue]) -> Vec<String> {
-    relation_types
-        .iter()
-        .filter_map(|relation_type| relation_type.get("id").and_then(JsonValue::as_str))
-        .map(ToString::to_string)
-        .collect()
-}
-
-/// schema-level 필수/형식 검증 오류를 추가한다.
-fn push_schema_field_errors(
-    schema_obj: &serde_json::Map<String, JsonValue>,
-    errors: &mut Vec<String>,
-) {
-    if schema_obj
-        .get("id")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .is_empty()
-    {
-        errors.push("schema.id is required".to_owned());
-    }
-    if schema_obj
-        .get("name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .is_empty()
-    {
-        errors.push("schema.name is required".to_owned());
-    }
-    if !matches!(schema_obj.get("version").and_then(JsonValue::as_u64), Some(version) if version >= 1)
-    {
-        errors.push("schema.version must be a positive integer".to_owned());
-    }
-}
-
-/// entity type row에서 id/parent type 참조 오류를 추가한다.
-fn push_ontology_entity_type_errors(
-    schema_obj: &serde_json::Map<String, JsonValue>,
-    entity_type_id_set: &std::collections::HashSet<&str>,
-    errors: &mut Vec<String>,
-) {
-    for entity_type in schema_obj
-        .get("entityTypes")
-        .and_then(JsonValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(JsonValue::as_object)
-    {
-        let entity_type_id = entity_type
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("");
-        if entity_type_id.is_empty() {
-            errors.push("entityType.id is required".to_owned());
-        }
-        if let Some(parent_type_id) = entity_type.get("parentTypeId").and_then(JsonValue::as_str)
-            && !parent_type_id.is_empty()
-            && !entity_type_id_set.contains(parent_type_id)
-        {
-            errors.push(format!("unknown parent entity type: {parent_type_id}"));
-        }
-    }
-}
-
-/// relation type row에서 inverse/source/target 타입 참조 오류를 추가한다.
-fn push_ontology_relation_type_errors(
-    schema_obj: &serde_json::Map<String, JsonValue>,
-    entity_type_id_set: &std::collections::HashSet<&str>,
-    errors: &mut Vec<String>,
-) {
-    let relation_types = schema_obj
-        .get("relationTypes")
-        .and_then(JsonValue::as_array)
-        .map(|relation_types| relation_types.iter().collect::<Vec<_>>())
-        .unwrap_or_default();
-    let relation_type_ids = collect_ontology_relation_type_ids(&relation_types);
-
-    for relation_type in &relation_types {
-        let Some(relation_type_obj) = relation_type.as_object() else {
-            continue;
-        };
-        let relation_type_id = relation_type_obj
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("");
-        if relation_type_id.is_empty() {
-            errors.push("relationType.id is required".to_owned());
-        }
-
-        if let Some(inverse_relation_type_id) = relation_type_obj
-            .get("inverseRelationTypeId")
-            .and_then(JsonValue::as_str)
-            && !inverse_relation_type_id.is_empty()
-            && !relation_type_ids
-                .iter()
-                .any(|id| id == inverse_relation_type_id)
-        {
-            errors.push(format!(
-                "unknown inverse relation type: {inverse_relation_type_id}"
-            ));
-        }
-
-        if let Some(source_type_ids) = relation_type_obj
-            .get("sourceTypeIds")
-            .and_then(JsonValue::as_array)
-        {
-            for source_type_id in source_type_ids {
-                let source_type_id = source_type_id.as_str().unwrap_or("");
-                if source_type_id != ONTOLOGY_ANY_ENTITY_TYPE
-                    && !entity_type_id_set.contains(source_type_id)
-                {
-                    errors.push(format!("unknown relation source type: {source_type_id}"));
-                }
-            }
-        }
-
-        if let Some(target_type_ids) = relation_type_obj
-            .get("targetTypeIds")
-            .and_then(JsonValue::as_array)
-        {
-            for target_type_id in target_type_ids {
-                let target_type_id = target_type_id.as_str().unwrap_or("");
-                if target_type_id != ONTOLOGY_ANY_ENTITY_TYPE
-                    && !entity_type_id_set.contains(target_type_id)
-                {
-                    errors.push(format!("unknown relation target type: {target_type_id}"));
-                }
-            }
-        }
-    }
 }
 
 /// `GraphRAG` entity merge score를 계산한다.
@@ -9214,20 +8957,6 @@ fn plan_graph_relation_endpoint_indices(
         .collect()
 }
 
-/// type id 목록이 schema type set에 포함되는지 입력 순서대로 계산한다.
-fn plan_type_membership(type_ids: &[String], schema_type_ids: &[String]) -> Vec<bool> {
-    let known_type_ids = schema_type_ids
-        .iter()
-        .map(|type_id| type_id.trim())
-        .filter(|type_id| !type_id.is_empty())
-        .collect::<BTreeSet<_>>();
-
-    type_ids
-        .iter()
-        .map(|type_id| known_type_ids.contains(type_id.trim()))
-        .collect()
-}
-
 /// community id별 entity/relation/claim snapshot index group을 계산한다.
 fn plan_graph_community_summary_groups(
     assignments: &[GraphCommunityAssignmentInput],
@@ -11824,26 +11553,6 @@ fn split_entity_wire_values(values: &str) -> impl Iterator<Item = &str> {
     values.split('\0')
 }
 
-/// ontology relation type row 문자열을 row separator 기준으로 나눈다.
-fn split_ontology_relation_type_rows(rows: &str) -> Vec<&str> {
-    if rows.is_empty() {
-        Vec::new()
-    } else {
-        rows.split('\u{1f}').collect()
-    }
-}
-
-/// ontology entity type id가 알려진 type인지 확인한다.
-fn is_known_ontology_entity_type(entity_type_ids: &[&str], type_id: &str) -> bool {
-    type_id == ONTOLOGY_ANY_ENTITY_TYPE || entity_type_ids.contains(&type_id)
-}
-
-/// relation domain/range row가 특정 entity type을 허용하는지 확인한다.
-fn ontology_type_row_contains(type_row: &str, type_id: &str) -> bool {
-    split_entity_wire_values(type_row)
-        .any(|candidate| candidate == ONTOLOGY_ANY_ENTITY_TYPE || candidate == type_id)
-}
-
 /// `GraphRAG` entity 이름을 기존 `TypeScript` 정규화 규칙과 같게 만든다.
 fn normalize_graph_entity_name(name: &str) -> String {
     let mut normalized = String::new();
@@ -12134,11 +11843,7 @@ fn normalize_extracted_graph_relation(item: &GraphPayloadItem<'_>) -> Option<Jso
     let relation_type_id = get_graph_string_field(object, GRAPH_RELATION_TYPE_KEYS)?;
 
     let mut relation = JsonMap::new();
-    insert_optional_graph_string(
-        &mut relation,
-        "id",
-        get_graph_string_field(object, &["id"]),
-    );
+    insert_optional_graph_string(&mut relation, "id", get_graph_string_field(object, &["id"]));
     insert_graph_string(&mut relation, "source", source);
     insert_graph_string(&mut relation, "target", target);
     insert_graph_string(&mut relation, "relationTypeId", relation_type_id);
@@ -16913,28 +16618,6 @@ fn serialize_string_array_json(values: &[String]) -> String {
     format!("[{body}]")
 }
 
-/// bool 배열을 JSON 문자열로 serialize한다.
-fn serialize_bool_array_json(values: &[bool]) -> String {
-    let body = values
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{body}]")
-}
-
-/// Graph extraction type validation plan을 JSON 문자열로 serialize한다.
-fn serialize_graph_extraction_type_validation_plan_json(
-    entity_type_known: &[bool],
-    claim_type_known: &[bool],
-) -> String {
-    format!(
-        "{{\"entityTypeKnown\":{},\"claimTypeKnown\":{}}}",
-        serialize_bool_array_json(entity_type_known),
-        serialize_bool_array_json(claim_type_known)
-    )
-}
-
 /// Graph community summarizer grouping plan을 JSON 문자열로 serialize한다.
 fn serialize_graph_community_summary_groups_json(
     groups: &[GraphCommunitySummaryGroupPlan],
@@ -19163,33 +18846,32 @@ mod tests {
         plan_graph_community_summary_groups_json, plan_graph_deletion_indices_json,
         plan_graph_edge_records_json, plan_graph_entity_merge_json,
         plan_graph_evidence_candidate_lookup_json, plan_graph_evidence_entry_candidates_json,
-        plan_graph_extraction_type_validation_json, plan_graph_mention_context_json,
-        plan_graph_query_execution_json, plan_graph_query_json, plan_graph_query_response_json,
-        plan_graph_rag_markdown_file_paths_json, plan_graph_rag_run_file_selection_json,
-        plan_graph_rag_status_entry_lookups_json, plan_graph_rag_status_entry_snapshot_json,
-        plan_graph_rag_status_file_snapshot_json, plan_graph_rag_status_json,
-        plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
-        plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
-        plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
-        plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
-        plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
-        plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
-        plan_rag_file_indexability_json, plan_rag_file_type_summary_json,
-        plan_rag_indexing_eta_json, plan_rag_status_json, plan_reference_file_indices_json,
-        plan_rerank_messages_json, plan_rerank_response_json, plan_rerank_result_order_json,
-        plan_source_references_json, plan_source_validation_inputs_json,
-        plan_source_validation_warnings_json, plan_structural_heading_neighbors_json,
-        plan_structural_linked_paths_json, plan_vault_link_candidates_json,
-        plan_vault_link_fallback_index_json, plan_vector_store_add_json,
-        plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
-        plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
-        plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
-        recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
-        sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
-        select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
+        plan_graph_mention_context_json, plan_graph_query_execution_json, plan_graph_query_json,
+        plan_graph_query_response_json, plan_graph_rag_markdown_file_paths_json,
+        plan_graph_rag_run_file_selection_json, plan_graph_rag_status_entry_lookups_json,
+        plan_graph_rag_status_entry_snapshot_json, plan_graph_rag_status_file_snapshot_json,
+        plan_graph_rag_status_json, plan_graph_rag_unsupported_prune_paths_json,
+        plan_graph_relation_endpoint_indices_json, plan_graph_schema_community_indices_json,
+        plan_graph_schema_relation_indices_json, plan_implicit_folder_query_paths_json,
+        plan_index_pending_files_json, plan_local_evidence_scores_json,
+        plan_mcp_server_candidates_json, plan_merged_retrieval_candidates,
+        plan_merged_retrieval_candidates_by_entry_id, plan_query_result_score_json,
+        plan_rag_file_content_probe_indices_json, plan_rag_file_indexability_json,
+        plan_rag_file_type_summary_json, plan_rag_indexing_eta_json, plan_rag_status_json,
+        plan_reference_file_indices_json, plan_rerank_messages_json, plan_rerank_response_json,
+        plan_rerank_result_order_json, plan_source_references_json,
+        plan_source_validation_inputs_json, plan_source_validation_warnings_json,
+        plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
+        plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
+        plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
+        plan_vector_store_lookup_by_ids_json, plan_vector_store_remove_file_json,
+        plan_vector_store_replace_file_json, plan_vector_store_stats_json,
+        prune_graph_indexes_json, rank_top_k_pairs, recall_at_k, recompute_centroids,
+        rewrite_graph_entity_references_json, rrf_score_or_nan, sanitize_graph_id_part,
+        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
+        select_relevant_result_indices, should_append_mcp_path_hint_rust,
         should_offer_context7_for_prompt, should_rebuild_graph_runtime_for_graph_status,
-        token_frequencies_json, tokenize, validate_mcp_json, validate_ontology_relation,
-        validate_ontology_schema_json,
+        token_frequencies_json, tokenize, validate_mcp_json,
     };
 
     /// 콘텐츠 해시는 현재 `TypeScript UTF-16 FNV-1a` 계약을 보존해야 한다.
@@ -19936,20 +19618,6 @@ mod tests {
         );
     }
 
-    /// Graph extraction entity/claim type membership 검증은 Rust schema plan을 따른다.
-    #[test]
-    fn graph_extraction_type_validation_is_planned_in_rust() {
-        assert_eq!(
-            plan_graph_extraction_type_validation_json(
-                r#"["person","unknown_entity"]"#,
-                r#"["factual_claim","unknown_claim"]"#,
-                r#"["person","work"]"#,
-                r#"["factual_claim"]"#,
-            ),
-            "{\"entityTypeKnown\":[true,false],\"claimTypeKnown\":[true,false]}",
-        );
-    }
-
     /// Graph community summarizer grouping은 Rust index plan을 따른다.
     #[test]
     fn graph_community_summary_groups_are_planned_in_rust() {
@@ -20287,126 +19955,6 @@ mod tests {
             .get("errorCode")
             .and_then(|value| value.as_str()),
             Some("invalid-mcp-servers"),
-        );
-    }
-
-    /// Ontology relation validation은 relation lookup, entity type 존재, domain/range를 Rust에서 판정한다.
-    #[test]
-    fn validate_ontology_relation_preserves_schema_contract() {
-        let entity_type_ids = "person\0work\0place";
-        let relation_type_ids = "authored\0mentions";
-        let source_rows = "person\u{1f}any";
-        let target_rows = "work\u{1f}any";
-
-        assert_eq!(
-            validate_ontology_relation(
-                entity_type_ids,
-                relation_type_ids,
-                source_rows,
-                target_rows,
-                "authored",
-                "person",
-                "work",
-            ),
-            "valid",
-            "valid domain/range relation should pass",
-        );
-        assert_eq!(
-            validate_ontology_relation(
-                entity_type_ids,
-                relation_type_ids,
-                source_rows,
-                target_rows,
-                "mentions",
-                "place",
-                "person",
-            ),
-            "valid",
-            "any wildcard relation should pass",
-        );
-        assert_eq!(
-            validate_ontology_relation(
-                entity_type_ids,
-                relation_type_ids,
-                source_rows,
-                target_rows,
-                "missing",
-                "person",
-                "work",
-            ),
-            "unknown-relation-type",
-            "unknown relation type mismatch",
-        );
-        assert_eq!(
-            validate_ontology_relation(
-                entity_type_ids,
-                relation_type_ids,
-                source_rows,
-                target_rows,
-                "authored",
-                "person",
-                "missing",
-            ),
-            "unknown-entity-type",
-            "unknown entity type mismatch",
-        );
-        assert_eq!(
-            validate_ontology_relation(
-                entity_type_ids,
-                relation_type_ids,
-                source_rows,
-                target_rows,
-                "authored",
-                "place",
-                "person",
-            ),
-            "relation-domain-range-mismatch",
-            "domain/range mismatch",
-        );
-    }
-
-    /// Ontology schema validation은 기본 계약(필수 필드, 타입 참조 유효성)을 Rust에서 판정한다.
-    #[test]
-    fn validate_ontology_schema_json_reports_schema_contract_violations() {
-        assert_eq!(
-            validate_ontology_schema_json(
-                r#"{"id":"default","name":"Default","version":1,"entityTypes":[{"id":"person"},{"id":"work"}],"relationTypes":[{"id":"authored","sourceTypeIds":["person"],"targetTypeIds":["work"]},{"id":"mentions","inverseRelationTypeId":"missing"}]}"#,
-            ),
-            r#"["unknown inverse relation type: missing"]"#,
-            "unknown inverse relation should be reported",
-        );
-        assert_eq!(
-            validate_ontology_schema_json(
-                r#"{"id":"default","name":"Default","version":1,"entityTypes":[{"id":"person","parentTypeId":"missing"},{"id":"work"}],"relationTypes":[{"id":"authored","sourceTypeIds":["person"],"targetTypeIds":["place"]}]}"#,
-            ),
-            r#"["unknown parent entity type: missing","unknown relation target type: place"]"#,
-            "parent/type references should be validated",
-        );
-        assert_eq!(
-            validate_ontology_schema_json(
-                "{\"id\":\"\",\"name\":\"\",\"version\":0,\"entityTypes\":[],\"relationTypes\":[]}"
-            ),
-            r#"["schema.id is required","schema.name is required","schema.version must be a positive integer"]"#,
-            "required schema fields should be validated",
-        );
-        assert_eq!(
-            validate_ontology_schema_json("{}"),
-            r#"["schema.id is required","schema.name is required","schema.version must be a positive integer"]"#,
-            "missing schema fields should be validated",
-        );
-        assert_eq!(
-            validate_ontology_schema_json(
-                r#"{"id":"default","name":"Default","version":1,"entityTypes":[{"id":"person"}],"relationTypes":[{"id":"authored","sourceTypeIds":["person"],"targetTypeIds":["work"]}]}"#,
-            ),
-            r#"["unknown relation target type: work"]"#,
-            "target type not in entityType should fail",
-        );
-        assert_eq!(
-            validate_ontology_schema_json(
-                "{\"id\":\"default\",\"name\":\"Default\",\"version\":1,\"entityTypes\":[{\"id\":\"person\"}],\"relationTypes\":[]}",
-            ),
-            r"[]",
-            "valid schema should pass",
         );
     }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { createEntityId, EntityResolver, normalizeEntityName } from './entity-resolver';
 import { InMemoryKnowledgeGraphStore, type GraphEntityRecord } from './store';
 
@@ -24,7 +24,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'person',
       canonicalName: 'Saul',
       aliases: [],
@@ -32,7 +32,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('auto-merge');
-    expect(result.entityId).toBe('entity::default::person::paul');
+    expect(result.entityId).toBe('entity::knowledge-graph::person::paul');
     expect(result.mergeScore).toBeGreaterThanOrEqual(0.88);
   });
 
@@ -68,7 +68,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'person',
       canonicalName: '바울',
       aliases: [],
@@ -76,7 +76,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('auto-merge');
-    expect(result.entityId).toBe('entity::default::person::paul');
+    expect(result.entityId).toBe('entity::knowledge-graph::person::paul');
   });
 
   it('type이 다르면 이름이 같아도 자동 merge하지 않는다', async () => {
@@ -88,7 +88,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'place',
       canonicalName: 'Jordan',
       aliases: [],
@@ -96,7 +96,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('new');
-    expect(result.entityId).toBe('entity::default::place::jordan');
+    expect(result.entityId).toBe('entity::knowledge-graph::place::jordan');
   });
 
   it('merge score가 pending threshold 이상이면 pending merge로 저장한다', async () => {
@@ -108,7 +108,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'person',
       canonicalName: 'Paul Apostle',
       aliases: [],
@@ -116,12 +116,12 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('pending-merge');
-    expect(result.entityId).toBe('entity::default::person::paul-apostle');
+    expect(result.entityId).toBe('entity::knowledge-graph::person::paul-apostle');
     expect(await store.getPendingEntityMerges()).toEqual([
       expect.objectContaining({
-        existingEntityId: 'entity::default::person::paul-the-apostle',
-        candidateEntityId: 'entity::default::person::paul-apostle',
-        id: 'pending-entity-merge::entity::default::person::paul-the-apostle::entity::default::person::paul-apostle',
+        existingEntityId: 'entity::knowledge-graph::person::paul-the-apostle',
+        candidateEntityId: 'entity::knowledge-graph::person::paul-apostle',
+        id: 'pending-entity-merge::entity::knowledge-graph::person::paul-the-apostle::entity::knowledge-graph::person::paul-apostle',
       }),
     ]);
   });
@@ -141,7 +141,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'person',
       canonicalName: 'Saul of Tarsus',
       aliases: [],
@@ -149,7 +149,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('pending-merge');
-    expect(result.matchedEntityId).toBe('entity::default::person::paul');
+    expect(result.matchedEntityId).toBe('entity::knowledge-graph::person::paul');
   });
 
   it('공통 evidence가 있으면 이름 순서가 다른 entity를 더 강한 병합 후보로 본다', async () => {
@@ -166,7 +166,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'person',
       canonicalName: 'Apostle Paul',
       aliases: [],
@@ -194,7 +194,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'concept',
       canonicalName: 'Divine Mercy',
       aliases: [],
@@ -202,7 +202,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('pending-merge');
-    expect(result.matchedEntityId).toBe('entity::default::concept::grace');
+    expect(result.matchedEntityId).toBe('entity::knowledge-graph::concept::grace');
   });
 
   it('다른 언어 label의 의미 유사도만으로는 auto threshold가 낮아도 pending merge까지만 허용한다', async () => {
@@ -232,7 +232,7 @@ describe('EntityResolver', () => {
     });
 
     const result = await resolver.resolve({
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
       typeId: 'concept',
       canonicalName: '은혜',
       aliases: [],
@@ -240,7 +240,7 @@ describe('EntityResolver', () => {
     });
 
     expect(result.status).toBe('pending-merge');
-    expect(result.matchedEntityId).toBe('entity::default::concept::grace');
+    expect(result.matchedEntityId).toBe('entity::knowledge-graph::concept::grace');
   });
 });
 
@@ -254,8 +254,8 @@ function createEntity(input: {
 }): GraphEntityRecord {
   const typeId = input.typeId ?? 'person';
   return {
-    id: `entity::default::${typeId}::${normalizeEntityName(input.canonicalName).replaceAll(' ', '-')}`,
-    ontologySchemaId: 'default',
+    id: `entity::knowledge-graph::${typeId}::${normalizeEntityName(input.canonicalName).replaceAll(' ', '-')}`,
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     typeId,
     canonicalName: input.canonicalName,

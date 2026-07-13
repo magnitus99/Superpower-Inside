@@ -1,4 +1,4 @@
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import type { RAGConfig } from '../settings';
 import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
 import {
@@ -154,7 +154,7 @@ function createGraphRagStatusInput(
   totalCandidateFiles: number,
   snapshot: GraphRagStatusSnapshot = {},
 ): RustGraphRagStatusInput {
-  const ontologySchema = buildDefaultOntologySchema();
+  const knowledgeContract = buildKnowledgeGraphContract();
   return {
     graphRagEnabled: true,
     isRunning: input.isRunning,
@@ -162,8 +162,8 @@ function createGraphRagStatusInput(
     totalCandidateFiles,
     graphRagMaxFilesPerRun: input.ragConfig.graphRagMaxFilesPerRun,
     graphRagModel: input.ragConfig.graphRagModel,
-    ontologySchemaId: ontologySchema.id,
-    ontologyVersion: ontologySchema.version,
+    ontologySchemaId: knowledgeContract.id,
+    ontologyVersion: knowledgeContract.version,
     extractionContractVersion: graphExtractionContractVersionRust(),
     fileRecords: fileIndexRecords.map(toGraphRagStatusFileRecordInput),
     evidence: (snapshot.evidence ?? []).map((record) =>

@@ -10,7 +10,7 @@ import type {
   GraphRejectedFactRecord,
   PendingEntityMergeRecord,
 } from './store';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { getEntityDisplayAliases, getEntityLabelValues } from './entity-labels';
 import { buildRejectedFactCopyText, getRejectedFactPresentation } from './rejected-facts';
 import { retryRejectedGraphFact } from './view-retry';
@@ -168,7 +168,7 @@ export class GraphRagView extends ItemView {
     });
     filterBar.createSpan({
       cls: 'superpower-inside-graph-view-schema-version',
-      text: `Ontology v${buildDefaultOntologySchema().version}`,
+      text: `Extraction contract v${buildKnowledgeGraphContract().version}`,
     });
 
     this.tabBarEl = container.createDiv({ cls: 'superpower-inside-graph-view-tabs' });
@@ -237,20 +237,12 @@ export class GraphRagView extends ItemView {
       return;
     }
 
-    const schema = buildDefaultOntologySchema();
+    const schema = buildKnowledgeGraphContract();
     this.entityTypeInfoMap.clear();
     for (const et of schema.entityTypes) {
       this.entityTypeInfoMap.set(et.id, { id: et.id, label: et.label });
     }
     this.relationTypeInfoMap.clear();
-    for (const rt of schema.relationTypes) {
-      this.relationTypeInfoMap.set(rt.id, {
-        id: rt.id,
-        label: rt.label,
-        sourceTypeIds: rt.sourceTypeIds,
-        targetTypeIds: rt.targetTypeIds,
-      });
-    }
 
     const [entities, relations, evidence, communities, rejectedFacts, pendingMerges] =
       await Promise.all([

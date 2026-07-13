@@ -77,7 +77,6 @@ import {
   planGraphEvidenceEntryCandidatesRust,
   planGraphClaimEntityIdsRust,
   planGraphCommunitySummaryGroupsRust,
-  planGraphExtractionTypeValidationRust,
   planGraphRelationEndpointIndicesRust,
   planGraphMentionContextRust,
   planGraphEntityMergeRust,
@@ -124,7 +123,6 @@ import {
   selectDiverseIndicesRust,
   scoreLocalEvidenceRust,
   tokenizeRust,
-  validateOntologyRelationRust,
   validateMcpJsonRust,
   formatMcpJsonRust,
   shouldAppendMcpPathHintRust,
@@ -2131,20 +2129,6 @@ describe('Rust WASM RAG core bridge', () => {
     });
   });
 
-  it('plans GraphRAG extraction entity and claim type validation through Rust', () => {
-    expect(
-      planGraphExtractionTypeValidationRust(
-        ['person', 'unknown_entity'],
-        ['factual_claim', 'unknown_claim'],
-        ['person', 'work'],
-        ['factual_claim'],
-      ),
-    ).toEqual({
-      entityTypeKnown: [true, false],
-      claimTypeKnown: [true, false],
-    });
-  });
-
   it('plans GraphRAG community summary groups through Rust', () => {
     expect(
       planGraphCommunitySummaryGroupsRust(
@@ -2444,46 +2428,6 @@ describe('Rust WASM RAG core bridge', () => {
       ok: false,
       reason: 'schema-shape-mismatch',
       rawFact: { entities: [{ name: 'Missing type' }] },
-    });
-  });
-
-  it('validates ontology relation domain and range through Rust', () => {
-    const input = {
-      entityTypeIds: ['person', 'work', 'place'],
-      relationTypeIds: ['authored', 'mentions'],
-      relationSourceTypeIds: [['person'], ['any']],
-      relationTargetTypeIds: [['work'], ['any']],
-      relationTypeId: 'authored',
-      sourceTypeId: 'person',
-      targetTypeId: 'work',
-    };
-
-    expect(validateOntologyRelationRust(input)).toEqual({ valid: true });
-    expect(
-      validateOntologyRelationRust({
-        ...input,
-        relationTypeId: 'mentions',
-        sourceTypeId: 'place',
-        targetTypeId: 'person',
-      }),
-    ).toEqual({ valid: true });
-    expect(validateOntologyRelationRust({ ...input, relationTypeId: 'missing' })).toEqual({
-      valid: false,
-      reason: 'unknown-relation-type',
-    });
-    expect(validateOntologyRelationRust({ ...input, targetTypeId: 'missing' })).toEqual({
-      valid: false,
-      reason: 'unknown-entity-type',
-    });
-    expect(
-      validateOntologyRelationRust({
-        ...input,
-        sourceTypeId: 'place',
-        targetTypeId: 'person',
-      }),
-    ).toEqual({
-      valid: false,
-      reason: 'relation-domain-range-mismatch',
     });
   });
 

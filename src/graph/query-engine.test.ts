@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import {
   GraphRagCandidateProvider,
@@ -17,7 +17,7 @@ import {
 describe('GraphRagQueryEngine', () => {
   it('factual 질문은 local graph traversal로 관련 evidence 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas는 어떤 관계야?',
@@ -32,7 +32,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('근거를 묻는 질문은 evidence-first 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas 관계 근거가 어디에 있어?',
@@ -75,7 +75,7 @@ describe('GraphRagQueryEngine', () => {
       createVectorEntry('low.md::0', 'low.md'),
       createVectorEntry('high.md::0', 'high.md'),
     ]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: '근거를 보여줘',
@@ -95,7 +95,7 @@ describe('GraphRagQueryEngine', () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     await graphStore.addCommunity({
       id: 'community::mission',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       title: 'Mission conflict',
       entityIds: ['entity::general::person::paul'],
       relationIds: [],
@@ -105,7 +105,7 @@ describe('GraphRagQueryEngine', () => {
       level: 0,
       updatedAt: 1,
     });
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: '반복되는 핵심 주제는?',
@@ -119,7 +119,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 local이면 thematic 질문도 evidence 후보만 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'local',
     });
 
@@ -135,7 +135,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 global이면 relational 질문도 community summary 후보만 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'global',
     });
 
@@ -151,7 +151,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('query mode가 hybrid이면 local evidence와 global summary를 함께 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'hybrid',
     });
 
@@ -170,7 +170,7 @@ describe('GraphRagQueryEngine', () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     await graphStore.addCommunity({
       id: 'Acts.md::1::0',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       title: 'Duplicate evidence summary',
       entityIds: ['entity::general::person::paul'],
       relationIds: [],
@@ -182,7 +182,7 @@ describe('GraphRagQueryEngine', () => {
     });
     await graphStore.addCommunity({
       id: 'community::theme',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       title: 'Mission theme',
       entityIds: ['entity::general::person::paul'],
       relationIds: [],
@@ -192,7 +192,7 @@ describe('GraphRagQueryEngine', () => {
       level: 0,
       updatedAt: 1,
     });
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'hybrid',
     });
 
@@ -214,7 +214,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('auto mode의 comparative 질문은 local evidence와 global summary를 함께 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Paul과 Barnabas의 차이를 비교해줘',
@@ -229,7 +229,7 @@ describe('GraphRagQueryEngine', () => {
 
   it('한국어 alias를 질문 본문에서 찾아 local evidence 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: '바울과 바나바는 어떤 관계야?',
@@ -280,7 +280,7 @@ describe('GraphRagQueryEngine', () => {
     await graphStore.addRelation(createRelation(evidence.id));
     await graphStore.addClaim(createClaim(evidence.id));
     await vectorStore.add([createVectorEntry('Acts.md::1::0', 'Acts.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'local',
     });
 
@@ -309,7 +309,7 @@ describe('GraphRagQueryEngine', () => {
     });
     await graphStore.upsertEntity(createEntity('A', [], ['evidence::short']));
     await vectorStore.add([createVectorEntry('short.md::0', 'short.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Apostle에 대해 알려줘',
@@ -337,7 +337,7 @@ describe('GraphRagQueryEngine', () => {
     await graphStore.upsertEntity(createEntity('Mark', [], [secondEvidence.id]));
     await graphStore.addRelation({
       id: 'relation::barnabas-mark',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: 1,
       relationTypeId: 'collaborated_with',
       sourceEntityId: 'entity::general::person::barnabas',
@@ -350,7 +350,7 @@ describe('GraphRagQueryEngine', () => {
       updatedAt: 1,
     });
     await vectorStore.add([createVectorEntry('Mark.md::0', 'Mark.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema());
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: 'Paul과 관련된 관계를 넓게 보여줘',
@@ -389,7 +389,7 @@ describe('GraphRagQueryEngine', () => {
     await graphStore.addRelation(createRelation(evidence.id));
     await graphStore.addClaim(createClaim(evidence.id));
     await vectorStore.add([createVectorEntry('Acts.md::1::0', 'Acts.md')]);
-    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema(), {
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'local',
     });
 
@@ -407,7 +407,7 @@ describe('GraphRagCandidateProvider', () => {
   it('retrieval pipeline candidate provider로 graph 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     const provider = new GraphRagCandidateProvider(
-      new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema()),
+      new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract()),
       () => ({ readiness: 'ready', estimatedCost: 'medium' }),
     );
 
@@ -425,7 +425,7 @@ describe('GraphRagCandidateProvider', () => {
   it('이미 취소된 요청은 store 조회 전에 중단한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     const provider = new GraphRagCandidateProvider(
-      new GraphRagQueryEngine(graphStore, vectorStore, buildDefaultOntologySchema()),
+      new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract()),
       () => ({ readiness: 'ready', estimatedCost: 'free' }),
     );
     const controller = new AbortController();
@@ -516,7 +516,7 @@ async function createGraphFixtureWithCommunity(): Promise<{
   const fixture = await createGraphFixture();
   await fixture.graphStore.addCommunity({
     id: 'community::mission',
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     title: 'Mission conflict',
     entityIds: ['entity::general::person::paul'],
     relationIds: [],
@@ -537,7 +537,7 @@ function createEntity(
 ): GraphEntityRecord {
   return {
     id: `entity::general::person::${name.toLowerCase()}`,
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     typeId: 'person',
     canonicalName: name,
@@ -555,7 +555,7 @@ function createEntity(
 function createRelation(evidenceId: string): GraphRelationRecord {
   return {
     id: 'relation::paul-barnabas',
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     relationTypeId: 'collaborated_with',
     sourceEntityId: 'entity::general::person::paul',

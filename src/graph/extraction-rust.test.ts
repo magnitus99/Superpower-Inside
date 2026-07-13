@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -127,7 +127,7 @@ function createInput(
     endLine: 1,
     contentHash: 'hash-1',
     extractionModelKey: 'openai:gpt-4o-mini',
-    ontologySchema: buildDefaultOntologySchema(),
+    knowledgeContract: buildKnowledgeGraphContract(),
   };
 }
 

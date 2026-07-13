@@ -83,7 +83,6 @@ import {
   rewrite_graph_entity_references_json,
   plan_graph_evidence_candidate_lookup_json,
   plan_graph_evidence_entry_candidates_json,
-  plan_graph_extraction_type_validation_json,
   plan_graph_mention_context_json,
   plan_graph_query_execution_json,
   plan_graph_query_json,
@@ -144,8 +143,6 @@ import {
   score_local_evidence_pairs,
   token_frequencies_json,
   tokenize_json,
-  validate_ontology_relation,
-  validate_ontology_schema_json,
   VectorRuntimeIndex,
 } from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
@@ -639,11 +636,6 @@ export interface RustGraphRelationEndpointPair {
 
 export interface RustGraphRelationEndpointPlan {
   pairs: Array<RustGraphRelationEndpointPair | null>;
-}
-
-export interface RustGraphExtractionTypeValidationPlan {
-  entityTypeKnown: boolean[];
-  claimTypeKnown: boolean[];
 }
 
 export interface RustGraphCommunityAssignmentInput {
@@ -1413,25 +1405,6 @@ export interface RustGraphQueryExecutionPlan {
   action: RustGraphQueryExecutionAction;
   requiresPlanner: boolean;
 }
-
-export interface RustOntologyRelationValidationInput {
-  entityTypeIds: readonly string[];
-  relationTypeIds: readonly string[];
-  relationSourceTypeIds: readonly (readonly string[])[];
-  relationTargetTypeIds: readonly (readonly string[])[];
-  relationTypeId: string;
-  sourceTypeId: string;
-  targetTypeId: string;
-}
-
-export type RustOntologyRelationValidationReason =
-  | 'unknown-relation-type'
-  | 'unknown-entity-type'
-  | 'relation-domain-range-mismatch';
-
-export type RustOntologyRelationValidationResult =
-  | { valid: true; reason?: undefined }
-  | { valid: false; reason: RustOntologyRelationValidationReason };
 
 export interface RustMcpJsonValidationResult {
   valid: boolean;
@@ -2612,40 +2585,6 @@ export function planGraphRelationEndpointIndicesRust(
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!isGraphRelationEndpointPlan(parsed, relations.length, entityCount)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphExtractionTypeValidationRust(
-  entityTypeIds: readonly string[],
-  claimTypeIds: readonly string[],
-  schemaEntityTypeIds: readonly string[],
-  schemaClaimTypeIds: readonly string[],
-): RustGraphExtractionTypeValidationPlan | null {
-  if (
-    !entityTypeIds.every(isStringValue) ||
-    !claimTypeIds.every(isStringValue) ||
-    !schemaEntityTypeIds.every(isStringValue) ||
-    !schemaClaimTypeIds.every(isStringValue)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_extraction_type_validation_json(
-      JSON.stringify(entityTypeIds),
-      JSON.stringify(claimTypeIds),
-      JSON.stringify(schemaEntityTypeIds),
-      JSON.stringify(schemaClaimTypeIds),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphExtractionTypeValidationPlan(parsed, entityTypeIds.length, claimTypeIds.length)) {
-      return null;
-    }
     return parsed;
   } catch {
     return null;
@@ -5488,35 +5427,6 @@ export function planGraphQueryResponseRust(
   }
 }
 
-export function validateOntologyRelationRust(
-  input: RustOntologyRelationValidationInput,
-): RustOntologyRelationValidationResult | null {
-  if (
-    !isDelimiterSafeStringArray(input.entityTypeIds) ||
-    !isDelimiterSafeStringArray(input.relationTypeIds) ||
-    !input.relationSourceTypeIds.every(isDelimiterSafeStringArray) ||
-    !input.relationTargetTypeIds.every(isDelimiterSafeStringArray) ||
-    !isDelimiterSafeString(input.relationTypeId) ||
-    !isDelimiterSafeString(input.sourceTypeId) ||
-    !isDelimiterSafeString(input.targetTypeId)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  return decodeOntologyRelationValidationResult(
-    validate_ontology_relation(
-      input.entityTypeIds.join('\0'),
-      input.relationTypeIds.join('\0'),
-      input.relationSourceTypeIds.map((row) => row.join('\0')).join('\u{1f}'),
-      input.relationTargetTypeIds.map((row) => row.join('\0')).join('\u{1f}'),
-      input.relationTypeId,
-      input.sourceTypeId,
-      input.targetTypeId,
-    ),
-  );
-}
-
 export function validateMcpJsonRust(jsonText: string): RustMcpJsonValidationResult | null {
   if (!isStringValue(jsonText)) return null;
   if (!ensureRustCore()) return null;
@@ -5538,18 +5448,6 @@ export function formatMcpJsonRust(jsonText: string): string | null {
   try {
     const formatted = format_mcp_json(jsonText);
     return formatted.length === 0 ? null : formatted;
-  } catch {
-    return null;
-  }
-}
-
-export function validateOntologySchemaRust(schema: unknown): string[] | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(validate_ontology_schema_json(JSON.stringify(schema)));
-    if (!Array.isArray(parsed)) return [];
-    const issues = parsed.filter((entry): entry is string => typeof entry === 'string');
-    return issues.length === parsed.length ? issues : [];
   } catch {
     return null;
   }
@@ -6243,21 +6141,6 @@ function isStringRecordValueMap(value: unknown): value is Record<string, unknown
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function decodeOntologyRelationValidationResult(
-  reason: string,
-): RustOntologyRelationValidationResult | null {
-  switch (reason) {
-    case 'valid':
-      return { valid: true };
-    case 'unknown-relation-type':
-    case 'unknown-entity-type':
-    case 'relation-domain-range-mismatch':
-      return { valid: false, reason };
-    default:
-      return null;
-  }
-}
-
 function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustMentionCandidate>;
@@ -6677,23 +6560,6 @@ function isGraphRelationEndpointPlan(
         isBoundedInteger(record.targetEntityIndex, entityCount)
       );
     })
-  );
-}
-
-function isGraphExtractionTypeValidationPlan(
-  value: unknown,
-  entityCount: number,
-  claimCount: number,
-): value is RustGraphExtractionTypeValidationPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphExtractionTypeValidationPlan>;
-  return (
-    Array.isArray(plan.entityTypeKnown) &&
-    Array.isArray(plan.claimTypeKnown) &&
-    plan.entityTypeKnown.length === entityCount &&
-    plan.claimTypeKnown.length === claimCount &&
-    plan.entityTypeKnown.every((known) => typeof known === 'boolean') &&
-    plan.claimTypeKnown.every((known) => typeof known === 'boolean')
   );
 }
 

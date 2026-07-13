@@ -506,11 +506,6 @@ export function plan_graph_evidence_candidate_lookup_json(scores_json: string, e
 export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_json: string, entries_json: string, candidate_limit: number): string;
 
 /**
- * Graph extraction entity/claim type membership을 schema 기준 boolean plan으로 계산한다.
- */
-export function plan_graph_extraction_type_validation_json(entity_type_ids_json: string, claim_type_ids_json: string, schema_entity_type_ids_json: string, schema_claim_type_ids_json: string): string;
-
-/**
  * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
  */
 export function plan_graph_mention_context_json(mention_names_json: string, entities_json: string, relations_json: string): string;
@@ -831,16 +826,6 @@ export function validate_exclude_path_input_json(input: string, existing_paths_j
  */
 export function validate_mcp_json(mcp_json_text: string): string;
 
-/**
- * Ontology relation type/source/target 조합을 검증한다.
- */
-export function validate_ontology_relation(entity_type_ids: string, relation_type_ids: string, relation_source_type_rows: string, relation_target_type_rows: string, relation_type_id: string, source_type_id: string, target_type_id: string): string;
-
-/**
- * Ontology schema 정합성 오류 목록을 계산한다.
- */
-export function validate_ontology_schema_json(schema_json: string): string;
-
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -942,7 +927,6 @@ export interface InitOutput {
     readonly plan_graph_entity_merge_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_candidate_lookup_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_entry_candidates_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_graph_extraction_type_validation_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_graph_mention_context_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_graph_query_execution_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_query_json: (a: number, b: number) => [number, number];
@@ -1006,8 +990,6 @@ export interface InitOutput {
     readonly validate_exclude_extension_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_exclude_path_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_mcp_json: (a: number, b: number) => [number, number];
-    readonly validate_ontology_relation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number];
-    readonly validate_ontology_schema_json: (a: number, b: number) => [number, number];
     readonly vectorruntimeindex_dimensions: (a: number) => number;
     readonly vectorruntimeindex_new: (a: number, b: number, c: number) => number;
     readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];

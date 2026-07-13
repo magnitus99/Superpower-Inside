@@ -1,6 +1,5 @@
 import type { LLMProvider } from '../llm/providers';
-import { t } from '../i18n';
-import type { OntologySchema } from '../ontology/schema';
+import type { KnowledgeGraphContract } from './knowledge-contract';
 import type { GraphRagIndexingCounterPatch, GraphRagIndexingPhase } from './indexing-progress';
 import {
   createGraphIdRust,
@@ -46,7 +45,7 @@ export interface GraphExtractionChunkInput {
   endLine?: number;
   contentHash: string;
   extractionModelKey: string;
-  ontologySchema: OntologySchema;
+  knowledgeContract: KnowledgeGraphContract;
   signal?: AbortSignal;
   ignoreRetryWait?: boolean;
   onPhase?: (phase: GraphRagIndexingPhase) => void;
@@ -93,8 +92,8 @@ export class GraphExtractionIndexer {
       entryId: input.entryId,
       contentHash: input.contentHash,
       extractionModelKey: input.extractionModelKey,
-      ontologySchemaId: input.ontologySchema.id,
-      ontologyVersion: input.ontologySchema.version,
+      ontologySchemaId: input.knowledgeContract.id,
+      ontologyVersion: input.knowledgeContract.version,
       extractionContractVersion: graphExtractionContractVersionRust(),
     };
     input.onPhase?.('checking-cache');
@@ -150,7 +149,7 @@ export class GraphExtractionIndexer {
       input.onPhase?.('api-waiting');
       const repairedResponse = await this.provider.chat(
         [
-          { role: 'system', content: buildExtractionRepairSystemPrompt(input.ontologySchema) },
+          { role: 'system', content: buildExtractionRepairSystemPrompt(input.knowledgeContract) },
           { role: 'user', content: rawResponse },
         ],
         0,
@@ -220,7 +219,7 @@ export class GraphExtractionIndexer {
     input.onPhase?.('api-waiting');
     return this.provider.chat(
       [
-        { role: 'system', content: buildExtractionSystemPrompt(input.ontologySchema) },
+        { role: 'system', content: buildExtractionSystemPrompt(input.knowledgeContract) },
         { role: 'user', content: buildExtractionUserPrompt(input) },
       ],
       0,
@@ -274,7 +273,7 @@ export class GraphExtractionIndexer {
         source: 'llm-extraction',
       });
       const resolution = await this.entityResolver.resolve({
-        ontologySchema: input.ontologySchema,
+        knowledgeContract: input.knowledgeContract,
         typeId: entity.typeId,
         canonicalName: entity.name,
         aliases: entity.aliases ?? [],
@@ -417,7 +416,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-function buildExtractionRepairSystemPrompt(schema: OntologySchema): string {
+function buildExtractionRepairSystemPrompt(schema: KnowledgeGraphContract): string {
   return [
     'Repair the previous graph extraction response into one valid JSON object only.',
     'Do not add facts, translations, entities, relations, or claims that are absent from the previous response.',
@@ -478,11 +477,11 @@ function planGraphRelationEndpointIndicesFallback(
   return { pairs };
 }
 
-function buildExtractionSystemPrompt(schema: OntologySchema): string {
+function buildExtractionSystemPrompt(schema: KnowledgeGraphContract): string {
   const entityTypes = schema.entityTypes.map((entityType) => entityType.id).join(', ');
   return [
     'Extract evidence-grounded knowledge graph facts as JSON only.',
-    `Suggested entity type hints: ${entityTypes}, other. Use other when none fit.`,
+    `Suggested entity type hints: ${entityTypes}. Use other when none fit.`,
     'Use concise snake_case relationTypeId values that preserve the source meaning. Unknown relations are allowed.',
     'Return exactly one JSON object with this shape:',
     '{"entities":[{"id":"e1","name":"string","typeId":"person|organization|place|document|event|concept|other","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0}],"claims":[{"id":"c1","text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
@@ -490,11 +489,10 @@ function buildExtractionSystemPrompt(schema: OntologySchema): string {
     'Every entity, relation, and claim must have a unique response-local id.',
     'Relations must use sourceRef and targetRef. Claims must reference only directly relevant entity and relation ids.',
     'Do not attach unrelated relations from the same text to a claim.',
-    'Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.',
+    'Put explicit same-entity names from other languages into aliases only when the source text supports them.',
     'Do not invent translated aliases just to make the graph multilingual.',
-    t('ontologyRelationEndpointExactMatchInstruction'),
-    t('ontologyRelationEndpointGenericRoleInstruction'),
-    t('ontologyRelationDomainRangeFallbackInstruction'),
+    'Every sourceRef, targetRef, entityRef, and relationRef must match a response-local id.',
+    'Do not use generic role words as entities unless the source explicitly names them.',
     schema.extractionGuidelines,
   ].join('\n');
 }
@@ -533,8 +531,8 @@ function createEntityRecord(
 ): GraphEntityRecord {
   return {
     id: entityId,
-    ontologySchemaId: input.ontologySchema.id,
-    ontologyVersion: input.ontologySchema.version,
+    ontologySchemaId: input.knowledgeContract.id,
+    ontologyVersion: input.knowledgeContract.version,
     typeId: entity.typeId,
     canonicalName: entity.name.trim(),
     aliases: (entity.aliases ?? []).map((alias) => alias.trim()).filter(Boolean),
@@ -559,14 +557,14 @@ function createRelationRecord(
   return {
     id: createId(
       'relation',
-      input.ontologySchema.id,
+      input.knowledgeContract.id,
       relation.relationTypeId,
       sourceEntityId,
       targetEntityId,
       evidenceId,
     ),
-    ontologySchemaId: input.ontologySchema.id,
-    ontologyVersion: input.ontologySchema.version,
+    ontologySchemaId: input.knowledgeContract.id,
+    ontologyVersion: input.knowledgeContract.version,
     relationTypeId: relation.relationTypeId,
     sourceEntityId,
     targetEntityId,

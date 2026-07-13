@@ -410,8 +410,8 @@ export interface RAGConfig {
   graphRagQueryMode: 'auto' | 'local' | 'global' | 'hybrid';
   graphRagAutoSyncEnabled: boolean;
   graphRagAutoSyncIntervalMin: number;
-  ontologyAutoMergeThreshold: number;
-  ontologyPendingMergeThreshold: number;
+  entityAutoMergeThreshold: number;
+  entityPendingMergeThreshold: number;
   annEnabled: boolean;
   annClusterCount: number;
   annProbeCount: number;
@@ -526,8 +526,8 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     graphRagQueryMode: 'auto',
     graphRagAutoSyncEnabled: false,
     graphRagAutoSyncIntervalMin: 30,
-    ontologyAutoMergeThreshold: 0.85,
-    ontologyPendingMergeThreshold: 0.7,
+    entityAutoMergeThreshold: 0.85,
+    entityPendingMergeThreshold: 0.7,
     annEnabled: true,
     annClusterCount: 0,
     annProbeCount: 4,
@@ -2632,10 +2632,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setName(t('graphRagMergeThresholdLabel'))
       .setDesc(t('settingsAuto057'))
       .addText((text) => {
-        text.setValue(String(rag.ontologyAutoMergeThreshold)).onChange((value) => {
+        text.setValue(String(rag.entityAutoMergeThreshold)).onChange((value) => {
           const num = Number(value);
           if (Number.isNaN(num) || num < 0 || num > 1) return;
-          this.plugin.settings.rag.ontologyAutoMergeThreshold = num;
+          this.plugin.settings.rag.entityAutoMergeThreshold = num;
           this.debouncedRagSave();
         });
         text.inputEl.type = 'number';
@@ -2644,10 +2644,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.step = '0.01';
       })
       .addText((text) => {
-        text.setValue(String(rag.ontologyPendingMergeThreshold)).onChange((value) => {
+        text.setValue(String(rag.entityPendingMergeThreshold)).onChange((value) => {
           const num = Number(value);
           if (Number.isNaN(num) || num < 0 || num > 1) return;
-          this.plugin.settings.rag.ontologyPendingMergeThreshold = num;
+          this.plugin.settings.rag.entityPendingMergeThreshold = num;
           this.debouncedRagSave();
         });
         text.inputEl.type = 'number';

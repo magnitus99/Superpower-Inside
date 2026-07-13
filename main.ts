@@ -56,7 +56,7 @@ import {
 import { GraphRagQueryEngine } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
-import { buildDefaultOntologySchema, validateOntologySchema } from './src/ontology/schema';
+import { buildKnowledgeGraphContract } from './src/graph/knowledge-contract';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
   RAGIndexingScheduler,
@@ -157,7 +157,7 @@ function graphRagReadinessFromStatus(
     return {
       readiness: 'degraded',
       estimatedCost: 'free',
-      reason: 'GraphRAG ontology schema has errors.',
+      reason: 'GraphRAG extraction contract could not be loaded.',
     };
   }
   return {
@@ -1314,12 +1314,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (typeof migratedRag.structuralGraphEnabled !== 'boolean') {
         migratedRag.structuralGraphEnabled = true;
       }
-      if (typeof migratedRag.ontologyAutoMergeThreshold !== 'number') {
-        migratedRag.ontologyAutoMergeThreshold = 0.88;
+      if (typeof migratedRag.entityAutoMergeThreshold !== 'number') {
+        migratedRag.entityAutoMergeThreshold =
+          typeof migratedRag.ontologyAutoMergeThreshold === 'number'
+            ? migratedRag.ontologyAutoMergeThreshold
+            : 0.88;
       }
-      if (typeof migratedRag.ontologyPendingMergeThreshold !== 'number') {
-        migratedRag.ontologyPendingMergeThreshold = 0.72;
+      if (typeof migratedRag.entityPendingMergeThreshold !== 'number') {
+        migratedRag.entityPendingMergeThreshold =
+          typeof migratedRag.ontologyPendingMergeThreshold === 'number'
+            ? migratedRag.ontologyPendingMergeThreshold
+            : 0.72;
       }
+      delete migratedRag.ontologyAutoMergeThreshold;
+      delete migratedRag.ontologyPendingMergeThreshold;
       if (typeof migratedRag.graphRagEnabled !== 'boolean') {
         migratedRag.graphRagEnabled = false;
       }
@@ -2133,14 +2141,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
           }
         : undefined;
 
-      const ontologySchema = buildDefaultOntologySchema();
+      const knowledgeContract = buildKnowledgeGraphContract();
       const graphProvider = rag.graphRagModel.trim()
         ? this.createProviderForModel(rag.graphRagModel)
         : null;
       const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
       const graphRagQueryEngine =
         graphRagEnabledForQuery && this.knowledgeGraphStore
-          ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, ontologySchema, {
+          ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, knowledgeContract, {
               queryMode: rag.graphRagQueryMode,
             })
           : undefined;
@@ -2176,12 +2184,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
               graphStore: this.knowledgeGraphStore,
               provider: graphProvider,
               embeddingProvider: this.embeddingProvider,
-              ontologySchema,
+              knowledgeContract: knowledgeContract,
               extractionModelKey: rag.graphRagModel,
               maxFilesPerRun: rag.graphRagMaxFilesPerRun,
               entityResolverOptions: {
-                autoMergeThreshold: rag.ontologyAutoMergeThreshold,
-                pendingMergeThreshold: rag.ontologyPendingMergeThreshold,
+                autoMergeThreshold: rag.entityAutoMergeThreshold,
+                pendingMergeThreshold: rag.entityPendingMergeThreshold,
               },
               isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
               onProgress: (progress) => {
@@ -2629,15 +2637,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.graphRagStatus = null;
       return;
     }
-    const ontologySchema = buildDefaultOntologySchema();
-    const schemaErrors = validateOntologySchema(ontologySchema);
     const previousStatus = this.graphRagStatus;
     const nextStatus = await calculateGraphRagStatus({
       ragConfig: this.settings.rag,
       graphStore: this.knowledgeGraphStore,
       vectorStore: this.vectorStore,
       isRunning: this.isGraphRagIndexing(),
-      schemaErrors,
+      schemaErrors: [],
       isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
     });
     this.graphRagStatus = nextStatus;

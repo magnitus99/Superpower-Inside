@@ -1,5 +1,5 @@
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { OntologySchema } from '../ontology/schema';
+import type { KnowledgeGraphContract } from './knowledge-contract';
 import {
   cosineSimilarityRust,
   createEntityIdRust,
@@ -30,7 +30,7 @@ export interface EntityResolverOptions {
 }
 
 export interface EntityResolutionInput {
-  ontologySchema: OntologySchema;
+  knowledgeContract: KnowledgeGraphContract;
   typeId: string;
   canonicalName: string;
   aliases: string[];
@@ -55,7 +55,7 @@ export class EntityResolver {
   ) {}
 
   async resolve(input: EntityResolutionInput): Promise<EntityResolutionResult> {
-    const candidateId = createEntityId(input.ontologySchema.id, input.typeId, input.canonicalName);
+    const candidateId = createEntityId(input.knowledgeContract.id, input.typeId, input.canonicalName);
     const entities = await this.store.getEntities();
     const candidates = await createScoredResolutionCandidates(
       entities,
@@ -64,7 +64,7 @@ export class EntityResolver {
       this.options.autoMergeThreshold,
     );
     const resolutionPlan = planEntityResolutionRust({
-      ontologySchemaId: input.ontologySchema.id,
+      ontologySchemaId: input.knowledgeContract.id,
       typeId: input.typeId,
       candidateEntityId: candidateId,
       autoMergeThreshold: this.options.autoMergeThreshold,
@@ -80,7 +80,7 @@ export class EntityResolver {
     if (safePlan.status === 'pending-merge' && safePlan.matchedEntityId) {
       await this.store.addPendingEntityMerge(
         createPendingMergeRecord(
-          input.ontologySchema.id,
+          input.knowledgeContract.id,
           safePlan.matchedEntityId,
           candidateId,
           safePlan.mergeScore,
@@ -122,7 +122,7 @@ async function createScoredResolutionCandidates(
   const candidates: RustEntityResolutionCandidate[] = [];
   for (const entity of entities) {
     const score =
-      entity.ontologySchemaId === input.ontologySchema.id && entity.typeId === input.typeId
+      entity.ontologySchemaId === input.knowledgeContract.id && entity.typeId === input.typeId
         ? await scoreEntityMatch(entity, input, embeddingProvider, autoMergeThreshold)
         : 0;
     candidates.push({

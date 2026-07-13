@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -168,7 +168,7 @@ describe('GraphExtractionIndexer', () => {
       endLine: 1,
       contentHash: 'hash-1',
       extractionModelKey: 'openai:gpt-4o-mini',
-      ontologySchema: buildDefaultOntologySchema(),
+      knowledgeContract: buildKnowledgeGraphContract(),
     });
 
     expect(await store.getEvidence()).toEqual([
@@ -431,9 +431,15 @@ describe('GraphExtractionIndexer', () => {
     expect(systemPrompt).toContain('Unknown relations are allowed.');
     expect(systemPrompt).toContain('Relations must use sourceRef and targetRef.');
     expect(systemPrompt).toContain('Claims must reference only directly relevant entity and relation ids.');
-    expect(systemPrompt).toContain('Relation source and target must exactly match an entities[].name or one of that entity aliases.');
-    expect(systemPrompt).toContain('Do not use generic role words such as author, text, body, source, target, subject, object, 저자, 본문, 대상 as relation endpoints unless they are explicit entity names in entities.');
-    expect(systemPrompt).toContain('Put explicit same-entity names from other languages into aliases only when the source text or existing ontology context supports them.');
+    expect(systemPrompt).toContain(
+      'Every sourceRef, targetRef, entityRef, and relationRef must match a response-local id.',
+    );
+    expect(systemPrompt).toContain(
+      'Do not use generic role words as entities unless the source explicitly names them.',
+    );
+    expect(systemPrompt).toContain(
+      'Put explicit same-entity names from other languages into aliases only when the source text supports them.',
+    );
     expect(systemPrompt).toContain('Do not invent translated aliases just to make the graph multilingual.');
   });
 
@@ -845,8 +851,8 @@ describe('GraphExtractionIndexer', () => {
 
     expect(await store.getPendingEntityMerges()).toEqual([
       expect.objectContaining({
-        existingEntityId: 'entity::default::concept::grace',
-        candidateEntityId: 'entity::default::concept::divine-mercy',
+        existingEntityId: 'entity::knowledge-graph::concept::grace',
+        candidateEntityId: 'entity::knowledge-graph::concept::divine-mercy',
       }),
     ]);
   });
@@ -864,7 +870,7 @@ function createInput(
     endLine: 1,
     contentHash: 'hash-1',
     extractionModelKey: 'openai:gpt-4o-mini',
-    ontologySchema: buildDefaultOntologySchema(),
+    knowledgeContract: buildKnowledgeGraphContract(),
   };
 }
 

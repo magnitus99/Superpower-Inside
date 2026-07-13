@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from '../graph/knowledge-contract';
 import { GraphRagQueryEngine } from '../graph/query-engine';
 import {
   InMemoryKnowledgeGraphStore,
@@ -308,7 +308,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,
@@ -337,7 +337,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3);
 
     const graphEnabledEngine = new RAGQueryEngine(
@@ -370,7 +370,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,
@@ -396,7 +396,7 @@ describe('RAGQueryEngine', () => {
     await graphStore.upsertEntity(createGraphEntity('Paul'));
     await graphStore.upsertEntity(createGraphEntity('Barnabas'));
     await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildDefaultOntologySchema());
+    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
       graphRagEnabled: true,
       graphRagQueryEngine: graphEngine,
@@ -579,7 +579,7 @@ function createEvidence(): GraphEvidenceRecord {
 function createGraphEntity(name: string): GraphEntityRecord {
   return {
     id: `entity::general::person::${name.toLowerCase()}`,
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     typeId: 'person',
     canonicalName: name,
@@ -596,7 +596,7 @@ function createGraphEntity(name: string): GraphEntityRecord {
 function createGraphRelation(): GraphRelationRecord {
   return {
     id: 'relation::graph',
-    ontologySchemaId: 'default',
+    ontologySchemaId: 'knowledge-graph',
     ontologyVersion: 1,
     relationTypeId: 'collaborated_with',
     sourceEntityId: 'entity::general::person::paul',

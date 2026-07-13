@@ -8,7 +8,7 @@ import type {
 } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { buildDefaultOntologySchema } from '../ontology/schema';
+import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import type { GraphRagIndexingProgress } from './indexing-runner';
 
@@ -16,7 +16,7 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
   providerKey: 'openai',
   model: 'test-model',
 });
-const CURRENT_ONTOLOGY_VERSION = buildDefaultOntologySchema().version;
+const CURRENT_ONTOLOGY_VERSION = buildKnowledgeGraphContract().version;
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
 
@@ -41,7 +41,7 @@ function makeRunnerOptions(overrides: {
     graphStore: overrides.graphStore,
     provider: overrides.provider,
     embeddingProvider: new FakeEmbeddingProvider(),
-    ontologySchema: buildDefaultOntologySchema(),
+    knowledgeContract: buildKnowledgeGraphContract(),
     extractionModelKey: 'openai:gpt-4.1-mini',
     maxFilesPerRun: overrides.maxFilesPerRun ?? 10,
   };
@@ -81,7 +81,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'a.md::0',
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -261,7 +261,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'cached-rejected.md::0',
       contentHash: 'hash-same',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -531,8 +531,8 @@ describe('GraphRagIndexingRunner', () => {
     await vectorStore.add([createEntry('a.md', 'hash-a'), createEntry('b.md', 'hash-b')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addCommunity({
-      id: 'community::default::old',
-      ontologySchemaId: 'default',
+      id: 'community::knowledge-graph::old',
+      ontologySchemaId: 'knowledge-graph',
       title: 'Old',
       entityIds: ['entity-old'],
       relationIds: [],
@@ -557,7 +557,7 @@ describe('GraphRagIndexingRunner', () => {
 
     expect(result.cancelled).toBe(true);
     expect(await graphStore.getCommunities()).toEqual([
-      expect.objectContaining({ id: 'community::default::old' }),
+      expect.objectContaining({ id: 'community::knowledge-graph::old' }),
     ]);
   });
 
@@ -577,8 +577,8 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     await graphStore.upsertEntity({
-      id: 'entity::default::person::old-paul',
-      ontologySchemaId: 'default',
+      id: 'entity::knowledge-graph::person::old-paul',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: 1,
       typeId: 'person',
       canonicalName: 'Old Paul',
@@ -594,7 +594,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'note.md::0',
       contentHash: 'hash-old',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -634,8 +634,8 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     await graphStore.upsertEntity({
-      id: 'entity::default::person::cached-paul',
-      ontologySchemaId: 'default',
+      id: 'entity::knowledge-graph::person::cached-paul',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: 1,
       typeId: 'person',
       canonicalName: 'Cached Paul',
@@ -651,7 +651,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'note.md::0',
       contentHash: 'hash-same',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -695,7 +695,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'note.md::0',
       contentHash: 'hash-a',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -736,8 +736,8 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     await graphStore.upsertEntity({
-      id: 'entity::default::person::deleted-paul',
-      ontologySchemaId: 'default',
+      id: 'entity::knowledge-graph::person::deleted-paul',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: 1,
       typeId: 'person',
       canonicalName: 'Deleted Paul',
@@ -753,7 +753,7 @@ describe('GraphRagIndexingRunner', () => {
       entryId: 'deleted.md::0',
       contentHash: 'hash-deleted',
       extractionModelKey: 'openai:gpt-4.1-mini',
-      ontologySchemaId: 'default',
+      ontologySchemaId: 'knowledge-graph',
       ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       updatedAt: 1000,
     });
@@ -777,7 +777,7 @@ describe('GraphRagIndexingRunner', () => {
         entryId: 'deleted.md::0',
         contentHash: 'hash-deleted',
         extractionModelKey: 'openai:gpt-4.1-mini',
-        ontologySchemaId: 'default',
+        ontologySchemaId: 'knowledge-graph',
         ontologyVersion: CURRENT_ONTOLOGY_VERSION,
       }),
     ).resolves.toBe(false);
@@ -786,8 +786,8 @@ describe('GraphRagIndexingRunner', () => {
   it('community rebuild 결과가 0개이면 기존 community를 비운다', async () => {
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addCommunity({
-      id: 'community::default::old',
-      ontologySchemaId: 'default',
+      id: 'community::knowledge-graph::old',
+      ontologySchemaId: 'knowledge-graph',
       title: 'Old',
       entityIds: ['entity-old'],
       relationIds: [],

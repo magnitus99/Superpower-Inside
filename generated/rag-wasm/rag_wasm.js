@@ -1986,35 +1986,6 @@ export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_js
 }
 
 /**
- * Graph extraction entity/claim type membership을 schema 기준 boolean plan으로 계산한다.
- * @param {string} entity_type_ids_json
- * @param {string} claim_type_ids_json
- * @param {string} schema_entity_type_ids_json
- * @param {string} schema_claim_type_ids_json
- * @returns {string}
- */
-export function plan_graph_extraction_type_validation_json(entity_type_ids_json, claim_type_ids_json, schema_entity_type_ids_json, schema_claim_type_ids_json) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const ptr0 = passStringToWasm0(entity_type_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(claim_type_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(schema_entity_type_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(schema_claim_type_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_extraction_type_validation_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
-        deferred5_0 = ret[0];
-        deferred5_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
  * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
  * @param {string} mention_names_json
  * @param {string} entities_json
@@ -3434,64 +3405,6 @@ export function validate_mcp_json(mcp_json_text) {
         const ptr0 = passStringToWasm0(mcp_json_text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.validate_mcp_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * Ontology relation type/source/target 조합을 검증한다.
- * @param {string} entity_type_ids
- * @param {string} relation_type_ids
- * @param {string} relation_source_type_rows
- * @param {string} relation_target_type_rows
- * @param {string} relation_type_id
- * @param {string} source_type_id
- * @param {string} target_type_id
- * @returns {string}
- */
-export function validate_ontology_relation(entity_type_ids, relation_type_ids, relation_source_type_rows, relation_target_type_rows, relation_type_id, source_type_id, target_type_id) {
-    let deferred8_0;
-    let deferred8_1;
-    try {
-        const ptr0 = passStringToWasm0(entity_type_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(relation_type_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(relation_source_type_rows, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(relation_target_type_rows, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(relation_type_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ptr5 = passStringToWasm0(source_type_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len5 = WASM_VECTOR_LEN;
-        const ptr6 = passStringToWasm0(target_type_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len6 = WASM_VECTOR_LEN;
-        const ret = wasm.validate_ontology_relation(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6);
-        deferred8_0 = ret[0];
-        deferred8_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred8_0, deferred8_1, 1);
-    }
-}
-
-/**
- * Ontology schema 정합성 오류 목록을 계산한다.
- * @param {string} schema_json
- * @returns {string}
- */
-export function validate_ontology_schema_json(schema_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(schema_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.validate_ontology_schema_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);

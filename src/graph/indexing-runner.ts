@@ -1,6 +1,6 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
-import type { OntologySchema } from '../ontology/schema';
+import type { KnowledgeGraphContract } from './knowledge-contract';
 import { createContentHash } from '../rag/hash';
 import {
   planGraphRagRunFileSelectionRust,
@@ -34,7 +34,7 @@ export interface GraphRagIndexingRunnerOptions {
   graphStore: KnowledgeGraphStore;
   provider: LLMProvider;
   embeddingProvider: EmbeddingProvider;
-  ontologySchema: OntologySchema;
+  knowledgeContract: KnowledgeGraphContract;
   extractionModelKey: string;
   maxFilesPerRun: number;
   entityResolverOptions?: EntityResolverOptions;
@@ -77,7 +77,7 @@ export class GraphRagIndexingRunner {
   private readonly graphStore: KnowledgeGraphStore;
   private readonly indexer: GraphExtractionIndexer;
   private readonly summarizer: CommunitySummarizer;
-  private readonly ontologySchema: OntologySchema;
+  private readonly knowledgeContract: KnowledgeGraphContract;
   private readonly extractionModelKey: string;
   private readonly maxFilesPerRun: number;
   private readonly isProcessableFilePath: GraphRagFilePathPredicate | undefined;
@@ -104,7 +104,7 @@ export class GraphRagIndexingRunner {
   constructor(options: GraphRagIndexingRunnerOptions) {
     this.vectorStore = options.vectorStore;
     this.graphStore = options.graphStore;
-    this.ontologySchema = options.ontologySchema;
+    this.knowledgeContract = options.knowledgeContract;
     this.extractionModelKey = options.extractionModelKey;
     this.maxFilesPerRun = Math.max(1, Math.floor(options.maxFilesPerRun));
     this.isProcessableFilePath = options.isProcessableFilePath;
@@ -122,7 +122,7 @@ export class GraphRagIndexingRunner {
       provider: options.provider,
       embeddingProvider: options.embeddingProvider,
       store: options.graphStore,
-      ontologySchemaId: options.ontologySchema.id,
+      ontologySchemaId: options.knowledgeContract.id,
     });
   }
 
@@ -197,7 +197,7 @@ export class GraphRagIndexingRunner {
         };
       }
       if (communityIds.length === 0) {
-        await this.graphStore.replaceCommunities(this.ontologySchema.id, []);
+        await this.graphStore.replaceCommunities(this.knowledgeContract.id, []);
         return {
           communityCount: 0,
           entityCount: entities.length,
@@ -220,7 +220,7 @@ export class GraphRagIndexingRunner {
         };
       }
 
-      await this.graphStore.replaceCommunities(this.ontologySchema.id, records);
+      await this.graphStore.replaceCommunities(this.knowledgeContract.id, records);
 
       const result: GraphRagCommunityBuildResult = {
         communityCount: records.length,
@@ -457,8 +457,8 @@ export class GraphRagIndexingRunner {
         entryId: entry.id,
         contentHash,
         extractionModelKey: this.extractionModelKey,
-        ontologySchemaId: this.ontologySchema.id,
-        ontologyVersion: this.ontologySchema.version,
+        ontologySchemaId: this.knowledgeContract.id,
+        ontologyVersion: this.knowledgeContract.version,
         extractionContractVersion: graphExtractionContractVersionRust(),
       };
       if (!forceReprocess && await this.graphStore.isExtractionCached(cacheKey)) {
@@ -504,7 +504,7 @@ export class GraphRagIndexingRunner {
               endLine: entry.metadata.endLine,
               contentHash,
               extractionModelKey: this.extractionModelKey,
-              ontologySchema: this.ontologySchema,
+              knowledgeContract: this.knowledgeContract,
               signal,
               ignoreRetryWait: forceReprocess,
               onPhase: (phase) => this.updateProgressPhase(phase),
