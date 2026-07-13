@@ -11,7 +11,11 @@ import {
   type RustGraphRagRunFileSelectionPlan,
 } from '../rag/rust-core';
 import type { VectorEntry, VectorStore } from '../rag/store';
-import { buildEdges, detectCommunities } from './community-detector';
+import { buildEdges } from './community-detector';
+import {
+  createGraphCommunityCompute,
+  type GraphCommunityComputePort,
+} from './community-compute';
 import { CommunitySummarizer } from './community-summarizer';
 import { GraphExtractionIndexer, isGraphExtractionDeferredError } from './extraction';
 import type { EntityResolverOptions } from './entity-resolver';
@@ -40,6 +44,7 @@ export interface GraphRagIndexingRunnerOptions {
   entityResolverOptions?: EntityResolverOptions;
   isProcessableFilePath?: GraphRagFilePathPredicate;
   onProgress?: (progress: GraphRagIndexingProgress) => void;
+  communityCompute?: GraphCommunityComputePort;
 }
 
 export interface GraphRagRunOptions {
@@ -80,6 +85,7 @@ export class GraphRagIndexingRunner {
   private readonly knowledgeContract: KnowledgeGraphContract;
   private readonly extractionModelKey: string;
   private readonly maxFilesPerRun: number;
+  private readonly communityCompute: GraphCommunityComputePort;
   private readonly isProcessableFilePath: GraphRagFilePathPredicate | undefined;
   private runSequence = 0;
   private lastRunId = 0;
@@ -109,6 +115,7 @@ export class GraphRagIndexingRunner {
     this.maxFilesPerRun = Math.max(1, Math.floor(options.maxFilesPerRun));
     this.isProcessableFilePath = options.isProcessableFilePath;
     this.onProgress = options.onProgress;
+    this.communityCompute = options.communityCompute ?? createGraphCommunityCompute();
     this.indexer = new GraphExtractionIndexer({
       provider: options.provider,
       store: options.graphStore,
@@ -186,7 +193,14 @@ export class GraphRagIndexingRunner {
       ]);
 
       const edges = buildEdges(entities, relations);
-      const { communities, communityIds, modularity } = detectCommunities(edges);
+      const detection = await this.communityCompute.detect(edges, 20, signal);
+      const communities = new Map(
+        detection.assignmentsById.map((assignment) => [
+          assignment.entityId,
+          assignment.communityId,
+        ]),
+      );
+      const { communityIds, modularity } = detection;
 
       if (signal?.aborted) {
         return {
