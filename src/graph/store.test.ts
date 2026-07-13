@@ -78,6 +78,14 @@ describe('KnowledgeGraphStore contract', () => {
     await expectCommunitySummaryJobContract(createIndexedDbStore());
   });
 
+  it('InMemoryKnowledgeGraphStore가 global search job을 보존한다', async () => {
+    await expectGlobalSearchJobContract(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 global search job을 보존한다', async () => {
+    await expectGlobalSearchJobContract(createIndexedDbStore());
+  });
+
   it('InMemoryKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await fillGraphStoreForClearTest(store);
@@ -157,6 +165,21 @@ async function expectCommunitySummaryJobContract(store: KnowledgeGraphStore): Pr
   };
   await store.putCommunitySummaryJob(job);
   await expect(store.getCommunitySummaryJob(job.id)).resolves.toEqual(job);
+}
+
+async function expectGlobalSearchJobContract(store: KnowledgeGraphStore): Promise<void> {
+  const job = {
+    id: 'global-job',
+    queryHash: 'query',
+    phase: 'map' as const,
+    communityId: 'community',
+    providerEpochId: 'provider',
+    state: 'response-received' as const,
+    rawResponseId: 'response',
+    updatedAt: 100,
+  };
+  await store.putGlobalSearchJob(job);
+  await expect(store.getGlobalSearchJob(job.id)).resolves.toEqual(job);
 }
 
 describe('IndexedDbKnowledgeGraphStore', () => {

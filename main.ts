@@ -2144,6 +2144,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         graphRagEnabledForQuery && this.knowledgeGraphStore
           ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, knowledgeContract, {
               queryMode: rag.graphRagQueryMode,
+              provider: graphProvider ?? undefined,
             })
           : undefined;
       this.graphRagProviderAttached = graphRagQueryEngine !== undefined;

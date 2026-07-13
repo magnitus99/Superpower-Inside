@@ -1182,6 +1182,24 @@ export function normalize_graph_name(name) {
 }
 
 /**
+ * fact evidence span을 source 길이 안의 안정적인 pair로 정규화한다.
+ * @param {Uint32Array} starts
+ * @param {Uint32Array} ends
+ * @param {number} content_length
+ * @returns {Uint32Array}
+ */
+export function normalize_graph_source_spans_flat(starts, ends, content_length) {
+    const ptr0 = passArray32ToWasm0(starts, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(ends, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.normalize_graph_source_spans_flat(ptr0, len0, ptr1, len1, content_length);
+    var v3 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v3;
+}
+
+/**
  * MCP tool 실행 결과에서 표시/모델 텍스트 추출 계약을 계산한다.
  * @param {string} result_json
  * @returns {string}
@@ -3515,6 +3533,11 @@ const VectorRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefin
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 let cachedFloat32ArrayMemory0 = null;

@@ -2516,6 +2516,7 @@ describe('Rust WASM RAG core bridge', () => {
       queryMode: 'hybrid',
       traversalDepth: 2,
       evidenceFirst: true,
+      globalSearchDepth: 'fast',
       entityHints: ['Paul', 'Barnabas'],
     });
 

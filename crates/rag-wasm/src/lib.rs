@@ -3075,6 +3075,30 @@ pub fn plan_graph_extraction_child_units_json(content: &str, split_depth: usize)
     serialize_chunks_json(&chunks)
 }
 
+/// fact evidence span을 source 길이 안의 안정적인 pair로 정규화한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn normalize_graph_source_spans_flat(
+    starts: &[u32],
+    ends: &[u32],
+    content_length: u32,
+) -> Box<[u32]> {
+    let mut output = Vec::new();
+    if starts.len() == ends.len() {
+        for (start, end) in starts.iter().copied().zip(ends.iter().copied()) {
+            if start < end && end <= content_length {
+                output.push(start);
+                output.push(end);
+            }
+        }
+    }
+    if output.is_empty() && content_length > 0 {
+        output.push(0);
+        output.push(content_length);
+    }
+    output.into_boxed_slice()
+}
+
 /// 일반 텍스트와 코드 파일을 줄/빈 줄 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -11939,6 +11963,7 @@ fn normalize_extracted_graph_entity(item: &GraphPayloadItem<'_>) -> Option<JsonV
         "confidence",
         get_graph_number_field(object, GRAPH_CONFIDENCE_KEYS),
     );
+    insert_optional_graph_evidence_spans(&mut entity, object);
     Some(JsonValue::Object(entity))
 }
 
@@ -11964,6 +11989,7 @@ fn normalize_extracted_graph_relation(item: &GraphPayloadItem<'_>) -> Option<Jso
         "confidence",
         get_graph_number_field(object, GRAPH_CONFIDENCE_KEYS),
     );
+    insert_optional_graph_evidence_spans(&mut relation, object);
     Some(JsonValue::Object(relation))
 }
 
@@ -11997,6 +12023,7 @@ fn normalize_extracted_graph_claim(item: &GraphPayloadItem<'_>) -> Option<JsonVa
         "confidence",
         get_graph_number_field(object, GRAPH_CONFIDENCE_KEYS),
     );
+    insert_optional_graph_evidence_spans(&mut claim, object);
     Some(JsonValue::Object(claim))
 }
 
@@ -12115,6 +12142,36 @@ fn insert_optional_graph_number(
         return;
     };
     object.insert(key.to_owned(), JsonValue::Number(number));
+}
+
+/// raw evidence span 배열에서 정수 start/end pair만 normalized fact에 보존한다.
+fn insert_optional_graph_evidence_spans(
+    target: &mut JsonMap<String, JsonValue>,
+    source: &JsonMap<String, JsonValue>,
+) {
+    let Some(values) = source.get("evidenceSpans").and_then(JsonValue::as_array) else {
+        return;
+    };
+    let spans = values
+        .iter()
+        .filter_map(|value| {
+            let object = value.as_object()?;
+            let start = object.get("start")?.as_u64()?;
+            let end = object.get("end")?.as_u64()?;
+            (start < end).then(|| {
+                let mut span = JsonMap::new();
+                span.insert(
+                    "start".to_owned(),
+                    JsonValue::Number(JsonNumber::from(start)),
+                );
+                span.insert("end".to_owned(), JsonValue::Number(JsonNumber::from(end)));
+                JsonValue::Object(span)
+            })
+        })
+        .collect::<Vec<_>>();
+    if !spans.is_empty() {
+        target.insert("evidenceSpans".to_owned(), JsonValue::Array(spans));
+    }
 }
 
 /// string 목록에 중복 없이 값을 추가한다.
@@ -18554,12 +18611,18 @@ fn serialize_graph_query_plan_json(
     evidence_first: bool,
     entity_hints: &[String],
 ) -> String {
+    let global_search_depth = if matches!(query_type, "thematic" | "comparative") {
+        "deep"
+    } else {
+        "fast"
+    };
     format!(
-        "{{\"type\":\"{}\",\"queryMode\":\"{}\",\"traversalDepth\":{},\"evidenceFirst\":{},\"entityHints\":{}}}",
+        "{{\"type\":\"{}\",\"queryMode\":\"{}\",\"traversalDepth\":{},\"evidenceFirst\":{},\"globalSearchDepth\":\"{}\",\"entityHints\":{}}}",
         escape_json_string(query_type),
         escape_json_string(query_mode),
         traversal_depth,
         evidence_first,
+        global_search_depth,
         serialize_string_array_json(entity_hints),
     )
 }
@@ -20301,15 +20364,15 @@ mod tests {
     fn plan_graph_query_json_preserves_query_mode_contract() {
         assert_eq!(
             plan_graph_query_json("근거가 어디에 있어?"),
-            "{\"type\":\"source-seeking\",\"queryMode\":\"local\",\"traversalDepth\":1,\"evidenceFirst\":true,\"entityHints\":[]}",
+            "{\"type\":\"source-seeking\",\"queryMode\":\"local\",\"traversalDepth\":1,\"evidenceFirst\":true,\"globalSearchDepth\":\"fast\",\"entityHints\":[]}",
         );
         assert_eq!(
             plan_graph_query_json("Paul과 Barnabas의 차이를 비교해줘"),
-            "{\"type\":\"comparative\",\"queryMode\":\"hybrid\",\"traversalDepth\":2,\"evidenceFirst\":false,\"entityHints\":[\"Paul\",\"Barnabas\"]}",
+            "{\"type\":\"comparative\",\"queryMode\":\"hybrid\",\"traversalDepth\":2,\"evidenceFirst\":false,\"globalSearchDepth\":\"deep\",\"entityHints\":[\"Paul\",\"Barnabas\"]}",
         );
         assert_eq!(
             plan_graph_query_json("평범한 질문"),
-            "{\"type\":\"ordinary-rag\",\"queryMode\":\"none\",\"traversalDepth\":0,\"evidenceFirst\":false,\"entityHints\":[]}",
+            "{\"type\":\"ordinary-rag\",\"queryMode\":\"none\",\"traversalDepth\":0,\"evidenceFirst\":false,\"globalSearchDepth\":\"fast\",\"entityHints\":[]}",
         );
     }
 
@@ -20411,7 +20474,7 @@ mod tests {
                 "응답입니다.\n```json\n{\"type\":\"relational\",\"queryMode\":\"hybrid\",\"traversalDepth\":2.8,\"evidenceFirst\":true,\"entityHints\":[\"Paul\",3,\" \",\"Barnabas\"]}\n```",
                 "평범한 질문",
             ),
-            "{\"type\":\"relational\",\"queryMode\":\"hybrid\",\"traversalDepth\":2,\"evidenceFirst\":true,\"entityHints\":[\"Paul\",\"Barnabas\"]}",
+            "{\"type\":\"relational\",\"queryMode\":\"hybrid\",\"traversalDepth\":2,\"evidenceFirst\":true,\"globalSearchDepth\":\"fast\",\"entityHints\":[\"Paul\",\"Barnabas\"]}",
             "valid planner response should be normalized in Rust",
         );
         assert_eq!(
@@ -20419,12 +20482,12 @@ mod tests {
                 "{\"type\":\"unknown\",\"queryMode\":\"bad\",\"traversalDepth\":-2,\"evidenceFirst\":true,\"entityHints\":[\"Paul\"]}",
                 "평범한 질문",
             ),
-            "{\"type\":\"ordinary-rag\",\"queryMode\":\"local\",\"traversalDepth\":0,\"evidenceFirst\":true,\"entityHints\":[\"Paul\"]}",
+            "{\"type\":\"ordinary-rag\",\"queryMode\":\"local\",\"traversalDepth\":0,\"evidenceFirst\":true,\"globalSearchDepth\":\"fast\",\"entityHints\":[\"Paul\"]}",
             "invalid fields should use planner parse defaults",
         );
         assert_eq!(
             plan_graph_query_response_json("not-json", "근거가 어디에 있어?"),
-            "{\"type\":\"source-seeking\",\"queryMode\":\"local\",\"traversalDepth\":1,\"evidenceFirst\":true,\"entityHints\":[]}",
+            "{\"type\":\"source-seeking\",\"queryMode\":\"local\",\"traversalDepth\":1,\"evidenceFirst\":true,\"globalSearchDepth\":\"fast\",\"entityHints\":[]}",
             "invalid raw response should use deterministic fallback plan",
         );
     }

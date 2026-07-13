@@ -135,6 +135,42 @@ describe('GraphExtractionIndexer', () => {
     );
   });
 
+  it('fact evidence span은 source 범위로 정규화하고 누락 시 전체 source를 사용한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const source = 'Alpha supports Beta.';
+    const indexer = new GraphExtractionIndexer({
+      provider: createProvider(
+        JSON.stringify({
+          entities: [
+            { id: 'e1', name: 'Alpha', typeId: 'concept', evidenceSpans: [{ start: 0, end: 5 }] },
+            { id: 'e2', name: 'Beta', typeId: 'concept' },
+          ],
+          relations: [
+            {
+              id: 'r1',
+              sourceRef: 'e1',
+              targetRef: 'e2',
+              relationTypeId: 'supports',
+              evidenceSpans: [{ start: 999, end: 1000 }],
+            },
+          ],
+          claims: [],
+        }),
+      ),
+      store,
+    });
+
+    await indexer.extractChunk(createInput(source));
+
+    expect((await store.getEntities())[0]?.sourceSpans).toEqual([{ start: 0, end: 5 }]);
+    expect((await store.getEntities())[1]?.sourceSpans).toEqual([
+      { start: 0, end: source.length },
+    ]);
+    expect((await store.getRelations())[0]?.sourceSpans).toEqual([
+      { start: 0, end: source.length },
+    ]);
+  });
+
   it('provider 실패는 lease를 해제하고 bounded retry 대기 상태로 보존한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     const indexer = new GraphExtractionIndexer({

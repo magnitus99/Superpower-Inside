@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
+import type { LLMProvider } from '../llm/providers';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 import {
   GraphRagCandidateProvider,
   GraphRagQueryEngine,
@@ -115,6 +117,32 @@ describe('GraphRagQueryEngine', () => {
 
     expect(candidates[0]?.source).toBe('graph-global');
     expect(candidates[0]?.entry.metadata.filePath).toBe('graph://community/community::mission');
+  });
+
+  it('자동 thematic global search는 중단된 map 결과를 재사용해 reduce를 재개한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
+    const provider = createGlobalSearchProvider([
+      'Paul과 Barnabas의 선교 갈등이 핵심이다.',
+      new Error('temporary reduce interruption'),
+      '두 인물의 선교 협력과 갈등이 반복되는 핵심 주제다.',
+    ]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+    const request = {
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    };
+
+    const fallback = await engine.query(request);
+    const resumed = await engine.query(request);
+
+    expect(fallback[0]?.reason).toBe('community-summary');
+    expect(resumed[0]?.reason).toBe('community-map-reduce');
+    expect(resumed[0]?.entry.metadata.text).toContain('협력과 갈등');
+    expect(provider.calls).toBe(3);
+    expect(await graphStore.getRawResponses()).toHaveLength(2);
   });
 
   it('query mode가 local이면 thematic 질문도 evidence 후보만 반환한다', async () => {
@@ -457,6 +485,7 @@ describe('planGraphQuery', () => {
       expect.objectContaining({
         type: 'thematic',
         queryMode: 'global',
+        globalSearchDepth: 'deep',
       }),
     );
     expect(planGraphQuery('A와 관련된 관계는?')).toEqual(
@@ -627,4 +656,22 @@ class FullScanFailingKnowledgeGraphStore extends InMemoryKnowledgeGraphStore {
   getEvidence(): Promise<GraphEvidenceRecord[]> {
     return Promise.reject(new Error('전체 evidence scan은 local graph query에서 허용되지 않습니다.'));
   }
+}
+
+function createGlobalSearchProvider(
+  responses: readonly (string | Error)[],
+): LLMProvider & { calls: number } {
+  let calls = 0;
+  return {
+    capability: resolveProviderCapability({ providerKey: 'openai', model: 'global-test' }),
+    get calls() {
+      return calls;
+    },
+    chat: () => {
+      const response = responses[Math.min(calls, responses.length - 1)] ?? '';
+      calls++;
+      return response instanceof Error ? Promise.reject(response) : Promise.resolve(response);
+    },
+    streamChat: () => Promise.resolve(),
+  };
 }

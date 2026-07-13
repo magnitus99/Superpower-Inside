@@ -1,4 +1,5 @@
 import type { KnowledgeGraphContract } from './knowledge-contract';
+import type { LLMProvider, ChatMessage } from '../llm/providers';
 import {
   mergeRetrievalCandidateGroupsByEntryId,
 } from '../rag/retrieval-pipeline';
@@ -21,6 +22,7 @@ import {
   planGraphQueryRust,
   planLocalEvidenceScoresRust,
   rankTopKPairsRust,
+  createGraphIdRust,
   type RustGraphQueryExecutionAction,
   type RustGraphQueryPlan,
 } from '../rag/rust-core';
@@ -33,6 +35,7 @@ import type {
   KnowledgeGraphStore,
 } from './store';
 import { getEntitySearchAliases } from './entity-labels';
+import { createGraphProviderEpochId } from './extraction';
 
 export type GraphQueryType =
   | 'factual'
@@ -47,6 +50,7 @@ export interface GraphQueryPlan {
   queryMode: GraphRagQueryMode | 'none';
   traversalDepth: number;
   evidenceFirst: boolean;
+  globalSearchDepth: 'fast' | 'deep';
   entityHints: string[];
 }
 
@@ -54,6 +58,7 @@ export type GraphRagQueryMode = 'auto' | 'local' | 'global' | 'hybrid';
 
 export interface GraphRagQueryEngineOptions {
   queryMode?: GraphRagQueryMode;
+  provider?: LLMProvider;
 }
 
 interface EntityMatch {
@@ -73,6 +78,7 @@ interface LocalGraphNeighborhood {
 
 export class GraphRagQueryEngine {
   private readonly queryMode: GraphRagQueryMode;
+  private readonly provider: LLMProvider | undefined;
 
   constructor(
     private readonly graphStore: KnowledgeGraphStore,
@@ -81,6 +87,7 @@ export class GraphRagQueryEngine {
     options: GraphRagQueryEngineOptions = {},
   ) {
     this.queryMode = options.queryMode ?? 'auto';
+    this.provider = options.provider;
   }
 
   async query(
@@ -120,11 +127,11 @@ export class GraphRagQueryEngine {
       case 'local':
         return this.queryLocal(request, plan, signal);
       case 'global':
-        return this.queryGlobal(request, signal);
+        return this.queryGlobal(request, plan, signal);
       case 'hybrid':
         return mergeGraphCandidatesWithRust(
           await this.queryLocal(request, plan, signal),
-          await this.queryGlobal(request, signal),
+          await this.queryGlobal(request, plan, signal),
           request.candidateLimit,
         );
       case 'evidence-first':
@@ -201,6 +208,7 @@ export class GraphRagQueryEngine {
 
   private async queryGlobal(
     request: RagRetrievalRequest,
+    plan?: GraphQueryPlan,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfGraphQueryAborted(signal);
@@ -212,12 +220,167 @@ export class GraphRagQueryEngine {
       request.candidateLimit,
     );
 
-    return communities.map(({ community, score }) => ({
+    const fastCandidates = communities.map(({ community, score }) => ({
       entry: communityToVectorEntry(community),
-      source: 'graph-global',
+      source: 'graph-global' as const,
       sourceScore: score,
       reason: 'community-summary',
     }));
+    if (
+      !this.provider ||
+      this.queryMode !== 'auto' ||
+      plan?.globalSearchDepth !== 'deep'
+    ) {
+      return fastCandidates;
+    }
+    try {
+      const deepCandidate = await this.queryGlobalDeep(
+        request,
+        schemaCommunities,
+        this.provider,
+        signal,
+      );
+      return deepCandidate ? [deepCandidate] : fastCandidates;
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      return fastCandidates;
+    }
+  }
+
+  private async queryGlobalDeep(
+    request: RagRetrievalRequest,
+    communities: readonly GraphCommunityRecord[],
+    provider: LLMProvider,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate | null> {
+    const leafCommunities = communities.some((community) => community.level === 0)
+      ? communities.filter((community) => community.level === 0)
+      : [...communities];
+    if (leafCommunities.length === 0) return null;
+    const queryHash = requireGraphQueryId(['global-query', request.question]);
+    const providerEpochId = createGraphProviderEpochId(
+      provider,
+      provider.capability.model,
+      1,
+    );
+    const mapReports: string[] = [];
+    for (const community of [...leafCommunities].sort((left, right) => left.id.localeCompare(right.id))) {
+      throwIfGraphQueryAborted(signal);
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: 'Extract only findings from this community report that directly help answer the question. Return concise Korean prose. If irrelevant, return IRRELEVANT.',
+        },
+        {
+          role: 'user',
+          content: `Question: ${request.question}\n\nCommunity report:\n${community.summary}`,
+        },
+      ];
+      const report = await this.runDurableGlobalPhase({
+        queryHash,
+        phase: 'map',
+        communityId: community.id,
+        providerEpochId,
+        messages,
+        provider,
+        signal,
+      });
+      if (report.trim() !== '' && report.trim() !== 'IRRELEVANT') mapReports.push(report.trim());
+    }
+    if (mapReports.length === 0) return null;
+    const reduced = await this.runDurableGlobalPhase({
+      queryHash,
+      phase: 'reduce',
+      providerEpochId,
+      messages: [
+        {
+          role: 'system',
+          content: 'Synthesize the mapped community findings into one evidence-grounded Korean answer. Preserve uncertainty and do not invent facts.',
+        },
+        {
+          role: 'user',
+          content: `Question: ${request.question}\n\nMapped findings:\n${mapReports.map((report, index) => `[${index + 1}] ${report}`).join('\n')}`,
+        },
+      ],
+      provider,
+      signal,
+    });
+    const id = requireGraphQueryId(['global-reduce-result', queryHash, providerEpochId]);
+    return {
+      entry: {
+        id,
+        vector: [...request.queryVector],
+        metadata: {
+          filePath: `graph://global/${id}`,
+          heading: 'GraphRAG global synthesis',
+          startLine: 1,
+          endLine: 1,
+          text: reduced,
+        },
+      },
+      source: 'graph-global',
+      sourceScore: 1,
+      reason: 'community-map-reduce',
+    };
+  }
+
+  private async runDurableGlobalPhase(input: {
+    queryHash: string;
+    phase: 'map' | 'reduce';
+    communityId?: string;
+    providerEpochId: string;
+    messages: ChatMessage[];
+    provider: LLMProvider;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const promptHash = requireGraphQueryId([
+      'global-prompt',
+      JSON.stringify(input.messages),
+    ]);
+    const id = requireGraphQueryId([
+      'global-job',
+      input.queryHash,
+      input.phase,
+      input.communityId ?? 'reduce',
+      input.providerEpochId,
+      promptHash,
+    ]);
+    const existing = await this.graphStore.getGlobalSearchJob(id);
+    const cached = existing?.rawResponseId
+      ? await this.graphStore.getRawResponse(existing.rawResponseId)
+      : undefined;
+    if (cached) return cached.body;
+    await this.graphStore.putGlobalSearchJob({
+      id,
+      queryHash: input.queryHash,
+      phase: input.phase,
+      communityId: input.communityId,
+      providerEpochId: input.providerEpochId,
+      state: 'prepared',
+      updatedAt: Date.now(),
+    });
+    const body = await input.provider.chat(input.messages, 0, undefined, { signal: input.signal });
+    const bodyHash = requireGraphQueryId(['global-body', body]);
+    const rawResponseId = requireGraphQueryId(['global-response', id, bodyHash]);
+    await this.graphStore.putRawResponse({
+      id: rawResponseId,
+      requestFingerprint: id,
+      providerEpochId: input.providerEpochId,
+      body,
+      bodyHash,
+      receivedAt: Date.now(),
+    });
+    await this.graphStore.putGlobalSearchJob({
+      id,
+      queryHash: input.queryHash,
+      phase: input.phase,
+      communityId: input.communityId,
+      providerEpochId: input.providerEpochId,
+      state: 'committed',
+      rawResponseId,
+      updatedAt: Date.now(),
+    });
+    return body;
   }
 
   private async evidenceScoresToCandidates(
@@ -557,6 +720,7 @@ function createGraphQueryPlan(
     queryMode: input.queryMode ?? 'local',
     traversalDepth: Math.max(0, Math.floor(input.traversalDepth ?? 1)),
     evidenceFirst: input.evidenceFirst ?? false,
+    globalSearchDepth: input.globalSearchDepth ?? 'fast',
     entityHints: input.entityHints ?? [],
   };
 }
@@ -571,6 +735,7 @@ function graphQueryPlanFromRust(rustPlan: RustGraphQueryPlan | null): GraphQuery
     queryMode: rustPlan.queryMode,
     traversalDepth: rustPlan.traversalDepth,
     evidenceFirst: rustPlan.evidenceFirst,
+    globalSearchDepth: rustPlan.globalSearchDepth,
     entityHints: [...rustPlan.entityHints],
   };
 }
@@ -595,6 +760,14 @@ function throwIfGraphQueryAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('GraphRAG query cancelled', 'AbortError');
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function requireGraphQueryId(parts: readonly string[]): string {
+  return createGraphIdRust(parts) ?? parts.join('::');
 }
 
 function communityToVectorEntry(community: GraphCommunityRecord): VectorEntry {

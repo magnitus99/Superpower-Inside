@@ -24,6 +24,11 @@ import {
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
 
+export interface GraphSourceSpan {
+  start: number;
+  end: number;
+}
+
 export interface GraphFactProvenance {
   entryId: string;
   contentHash: string;
@@ -57,6 +62,7 @@ export interface GraphEntityRecord {
   evidenceIds: string[];
   provenance?: GraphFactProvenance[];
   generations?: GraphEntityGenerationRecord[];
+  sourceSpans?: GraphSourceSpan[];
   createdAt: number;
   updatedAt: number;
 }
@@ -73,6 +79,7 @@ export interface GraphRelationRecord {
   confidence: number;
   evidenceIds: string[];
   provenance?: GraphFactProvenance[];
+  sourceSpans?: GraphSourceSpan[];
   createdAt: number;
   updatedAt: number;
 }
@@ -87,6 +94,7 @@ export interface GraphClaimRecord {
   confidence: number;
   evidenceIds: string[];
   provenance?: GraphFactProvenance[];
+  sourceSpans?: GraphSourceSpan[];
   updatedAt: number;
 }
 
@@ -198,6 +206,17 @@ export interface GraphCommunitySummaryJobRecord {
   updatedAt: number;
 }
 
+export interface GraphGlobalSearchJobRecord {
+  id: string;
+  queryHash: string;
+  phase: 'map' | 'reduce';
+  communityId?: string;
+  providerEpochId: string;
+  state: 'prepared' | 'response-received' | 'committed';
+  rawResponseId?: string;
+  updatedAt: number;
+}
+
 export interface GraphExtractionCommit {
   evidence: GraphEvidenceRecord;
   entities: readonly GraphEntityRecord[];
@@ -249,6 +268,8 @@ export interface KnowledgeGraphStore {
   getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined>;
   putCommunitySummaryJob(record: GraphCommunitySummaryJobRecord): Promise<void>;
   getCommunitySummaryJob(id: string): Promise<GraphCommunitySummaryJobRecord | undefined>;
+  putGlobalSearchJob(record: GraphGlobalSearchJobRecord): Promise<void>;
+  getGlobalSearchJob(id: string): Promise<GraphGlobalSearchJobRecord | undefined>;
   commitExtraction(commit: GraphExtractionCommit): Promise<void>;
   getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
   getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
@@ -299,6 +320,7 @@ class KnowledgeGraphDB extends Dexie {
   graphRawResponses!: Dexie.Table<GraphRawResponseRecord, string>;
   graphProviderCircuits!: Dexie.Table<GraphProviderCircuitRecord, string>;
   graphCommunitySummaryJobs!: Dexie.Table<GraphCommunitySummaryJobRecord, string>;
+  graphGlobalSearchJobs!: Dexie.Table<GraphGlobalSearchJobRecord, string>;
 
   constructor(name: string) {
     super(name);
@@ -379,6 +401,26 @@ class KnowledgeGraphDB extends Dexie {
       graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
       graphCommunitySummaryJobs:
         'id, communityKey, level, providerEpochId, state, updatedAt',
+    });
+    this.version(6).stores({
+      graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
+      graphRelations:
+        'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
+      graphClaims: 'id, claimTypeId, *entityIds, updatedAt',
+      graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
+      graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
+      graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
+      graphExtractionCache:
+        'entryId, contentHash, extractionModelKey, ontologySchemaId, ontologyVersion, updatedAt',
+      graphPendingEntityMerges:
+        'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
+      graphExtractionJobs:
+        'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
+      graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
+      graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
+      graphCommunitySummaryJobs:
+        'id, communityKey, level, providerEpochId, state, updatedAt',
+      graphGlobalSearchJobs: 'id, queryHash, phase, communityId, providerEpochId, state, updatedAt',
     });
   }
 }
@@ -477,6 +519,15 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     id: string,
   ): Promise<GraphCommunitySummaryJobRecord | undefined> {
     const record = await this.db.graphCommunitySummaryJobs.get(id);
+    return record ? { ...record } : undefined;
+  }
+
+  async putGlobalSearchJob(record: GraphGlobalSearchJobRecord): Promise<void> {
+    await this.db.graphGlobalSearchJobs.put({ ...record });
+  }
+
+  async getGlobalSearchJob(id: string): Promise<GraphGlobalSearchJobRecord | undefined> {
+    const record = await this.db.graphGlobalSearchJobs.get(id);
     return record ? { ...record } : undefined;
   }
 
@@ -857,6 +908,7 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     await Promise.all([
       this.db.graphProviderCircuits.clear(),
       this.db.graphCommunitySummaryJobs.clear(),
+      this.db.graphGlobalSearchJobs.clear(),
     ]);
   }
 
@@ -879,6 +931,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   private rawResponses = new Map<string, GraphRawResponseRecord>();
   private providerCircuits = new Map<string, GraphProviderCircuitRecord>();
   private communitySummaryJobs = new Map<string, GraphCommunitySummaryJobRecord>();
+  private globalSearchJobs = new Map<string, GraphGlobalSearchJobRecord>();
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
@@ -966,6 +1019,16 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getCommunitySummaryJob(id: string): Promise<GraphCommunitySummaryJobRecord | undefined> {
     const record = this.communitySummaryJobs.get(id);
+    return Promise.resolve(record ? { ...record } : undefined);
+  }
+
+  putGlobalSearchJob(record: GraphGlobalSearchJobRecord): Promise<void> {
+    this.globalSearchJobs.set(record.id, { ...record });
+    return Promise.resolve();
+  }
+
+  getGlobalSearchJob(id: string): Promise<GraphGlobalSearchJobRecord | undefined> {
+    const record = this.globalSearchJobs.get(id);
     return Promise.resolve(record ? { ...record } : undefined);
   }
 
@@ -1273,6 +1336,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     this.rawResponses.clear();
     this.providerCircuits.clear();
     this.communitySummaryJobs.clear();
+    this.globalSearchJobs.clear();
     return Promise.resolve();
   }
 }
@@ -1638,6 +1702,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
       evidenceIds: mergeOrderedStrings(existing.evidenceIds, incoming.evidenceIds),
       provenance: mergeProvenance(existing.provenance, incoming.provenance),
       generations: mergeEntityGenerations(existing.generations, incoming.generations),
+      sourceSpans: mergeSourceSpans(existing.sourceSpans, incoming.sourceSpans),
       updatedAt: incoming.updatedAt,
     };
   }
@@ -1650,6 +1715,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
     evidenceIds: plan.evidenceIds,
     provenance: mergeProvenance(existing.provenance, incoming.provenance),
     generations: mergeEntityGenerations(existing.generations, incoming.generations),
+    sourceSpans: mergeSourceSpans(existing.sourceSpans, incoming.sourceSpans),
     updatedAt: plan.updatedAt,
   };
 }
@@ -1723,6 +1789,18 @@ function mergeEntityGenerations(
   return [...merged.values()];
 }
 
+function mergeSourceSpans(
+  left: readonly GraphSourceSpan[] | undefined,
+  right: readonly GraphSourceSpan[] | undefined,
+): GraphSourceSpan[] | undefined {
+  if (!left && !right) return undefined;
+  const spans = new Map<string, GraphSourceSpan>();
+  for (const span of [...(left ?? []), ...(right ?? [])]) {
+    spans.set(`${span.start}:${span.end}`, { ...span });
+  }
+  return [...spans.values()];
+}
+
 function isGraphExtractionCacheHitFallback(
   cachedRecord: RustGraphExtractionCacheKey | null,
   input: Omit<GraphExtractionCacheRecord, 'updatedAt'>,
@@ -1776,6 +1854,7 @@ function copyEntity(record: GraphEntityRecord): GraphEntityRecord {
       ...generation,
       properties: { ...generation.properties },
     })),
+    sourceSpans: record.sourceSpans?.map((span) => ({ ...span })),
   };
 }
 
@@ -1785,6 +1864,7 @@ function copyRelation(record: GraphRelationRecord): GraphRelationRecord {
     properties: { ...record.properties },
     evidenceIds: [...record.evidenceIds],
     provenance: record.provenance?.map((provenance) => ({ ...provenance })),
+    sourceSpans: record.sourceSpans?.map((span) => ({ ...span })),
   };
 }
 
@@ -1795,6 +1875,7 @@ function copyClaim(record: GraphClaimRecord): GraphClaimRecord {
     relationIds: [...record.relationIds],
     evidenceIds: [...record.evidenceIds],
     provenance: record.provenance?.map((provenance) => ({ ...provenance })),
+    sourceSpans: record.sourceSpans?.map((span) => ({ ...span })),
   };
 }
 

@@ -47,6 +47,7 @@ import {
   normalize_extracted_graph_payload_json,
   normalize_reasoning_chunk_json,
   normalize_graph_confidence_or_default,
+  normalize_graph_source_spans_flat,
   normalize_graph_name,
   parse_extracted_graph_payload_json,
   parse_mention_candidates_json,
@@ -1400,6 +1401,7 @@ export interface RustGraphQueryPlan {
   queryMode: string;
   traversalDepth: number;
   evidenceFirst: boolean;
+  globalSearchDepth: 'fast' | 'deep';
   entityHints: string[];
 }
 
@@ -1466,6 +1468,12 @@ export interface RustExtractedGraphEntity {
   description?: string;
   aliases?: string[];
   confidence?: number;
+  evidenceSpans?: RustGraphSourceSpan[];
+}
+
+export interface RustGraphSourceSpan {
+  start: number;
+  end: number;
 }
 
 export interface RustExtractedGraphRelation {
@@ -1475,6 +1483,7 @@ export interface RustExtractedGraphRelation {
   relationTypeId: string;
   description?: string;
   confidence?: number;
+  evidenceSpans?: RustGraphSourceSpan[];
 }
 
 export interface RustExtractedGraphClaim {
@@ -1485,6 +1494,31 @@ export interface RustExtractedGraphClaim {
   relationRefs?: string[];
   stance?: 'supports' | 'opposes' | 'neutral' | 'interprets';
   confidence?: number;
+  evidenceSpans?: RustGraphSourceSpan[];
+}
+
+export function normalizeGraphSourceSpansRust(
+  spans: readonly RustGraphSourceSpan[] | undefined,
+  contentLength: number,
+): RustGraphSourceSpan[] | null {
+  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || !ensureRustCore()) return null;
+  const starts = new Uint32Array(spans?.length ?? 0);
+  const ends = new Uint32Array(spans?.length ?? 0);
+  for (const [index, span] of (spans ?? []).entries()) {
+    if (!isValidUint32(span.start) || !isValidUint32(span.end)) return null;
+    starts[index] = span.start;
+    ends[index] = span.end;
+  }
+  const output = normalize_graph_source_spans_flat(starts, ends, contentLength);
+  if (output.length % 2 !== 0) return null;
+  const normalized: RustGraphSourceSpan[] = [];
+  for (let index = 0; index < output.length; index += 2) {
+    const start = output[index];
+    const end = output[index + 1];
+    if (start === undefined || end === undefined || start >= end || end > contentLength) return null;
+    normalized.push({ start, end });
+  }
+  return normalized;
 }
 
 export interface RustGraphPruneInput {
@@ -6388,6 +6422,7 @@ function isGraphQueryPlan(value: unknown): value is RustGraphQueryPlan {
     isStringValue(plan.queryMode) &&
     Number.isFinite(plan.traversalDepth) &&
     typeof plan.evidenceFirst === 'boolean' &&
+    (plan.globalSearchDepth === 'fast' || plan.globalSearchDepth === 'deep') &&
     Array.isArray(plan.entityHints) &&
     plan.entityHints.every(isStringValue)
   );
@@ -7818,7 +7853,8 @@ function isRustExtractedGraphEntity(value: unknown): value is RustExtractedGraph
     (entity.description === undefined || isStringValue(entity.description)) &&
     (entity.aliases === undefined ||
       (Array.isArray(entity.aliases) && entity.aliases.every(isStringValue))) &&
-    (entity.confidence === undefined || Number.isFinite(entity.confidence))
+    (entity.confidence === undefined || Number.isFinite(entity.confidence)) &&
+    isOptionalGraphSourceSpans(entity.evidenceSpans)
   );
 }
 
@@ -7831,7 +7867,8 @@ function isRustExtractedGraphRelation(value: unknown): value is RustExtractedGra
     isStringValue(relation.target) &&
     isStringValue(relation.relationTypeId) &&
     (relation.description === undefined || isStringValue(relation.description)) &&
-    (relation.confidence === undefined || Number.isFinite(relation.confidence))
+    (relation.confidence === undefined || Number.isFinite(relation.confidence)) &&
+    isOptionalGraphSourceSpans(relation.evidenceSpans)
   );
 }
 
@@ -7851,7 +7888,22 @@ function isRustExtractedGraphClaim(value: unknown): value is RustExtractedGraphC
       claim.stance === 'opposes' ||
       claim.stance === 'neutral' ||
       claim.stance === 'interprets') &&
-    (claim.confidence === undefined || Number.isFinite(claim.confidence))
+    (claim.confidence === undefined || Number.isFinite(claim.confidence)) &&
+    isOptionalGraphSourceSpans(claim.evidenceSpans)
+  );
+}
+
+function isOptionalGraphSourceSpans(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every(
+        (span) =>
+          typeof span === 'object' &&
+          span !== null &&
+          isValidNonNegativeInteger((span as Partial<RustGraphSourceSpan>).start) &&
+          isValidNonNegativeInteger((span as Partial<RustGraphSourceSpan>).end),
+      ))
   );
 }
 

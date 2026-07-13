@@ -6,6 +6,7 @@ import {
   graphExtractionContractVersionRust,
   normalizeGraphConfidenceRust,
   normalizeGraphNameRust,
+  normalizeGraphSourceSpansRust,
   planGraphClaimEntityIdsRust,
   planGraphRelationEndpointIndicesRust,
   parseExtractedGraphPayloadRust,
@@ -437,6 +438,7 @@ export class GraphExtractionIndexer {
       });
       const record = createEntityRecord(input, evidence.id, entity, labels, resolution.entityId, now);
       record.provenance = [{ ...provenance }];
+      record.sourceSpans = requireSourceSpans(entity.evidenceSpans, input.chunkText.length);
       record.generations = [{
         providerEpochId: provenance.providerEpochId,
         rawResponseHash: provenance.rawResponseHash,
@@ -498,6 +500,7 @@ export class GraphExtractionIndexer {
 
       const record = createRelationRecord(input, evidence.id, relation, source.id, target.id, now);
       record.provenance = [{ ...provenance }];
+      record.sourceSpans = requireSourceSpans(relation.evidenceSpans, input.chunkText.length);
       if (relation.id) relationIdsByLocalRef.set(relation.id, record.id);
       relationRecords.push(record);
     }
@@ -515,6 +518,7 @@ export class GraphExtractionIndexer {
         now,
       );
       record.provenance = [{ ...provenance }];
+      record.sourceSpans = requireSourceSpans(claim.evidenceSpans, input.chunkText.length);
       claimRecords.push(record);
     }
     return {
@@ -626,9 +630,10 @@ function buildExtractionSystemPrompt(schema: KnowledgeGraphContract): string {
     `Suggested entity type hints: ${entityTypes}. Use other when none fit.`,
     'Use concise snake_case relationTypeId values that preserve the source meaning. Unknown relations are allowed.',
     'Return exactly one JSON object with this shape:',
-    '{"entities":[{"id":"e1","name":"string","typeId":"person|organization|place|document|event|concept|other","description":"string","aliases":["string"],"confidence":0.0}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0}],"claims":[{"id":"c1","text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0}]}',
+    '{"entities":[{"id":"e1","name":"string","typeId":"person|organization|place|document|event|concept|other","description":"string","aliases":["string"],"confidence":0.0,"evidenceSpans":[{"start":0,"end":5}]}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}],"claims":[{"id":"c1","text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}]}',
     'Use entities, relations, claims as arrays even when empty.',
     'Every entity, relation, and claim must have a unique response-local id.',
+    'evidenceSpans use zero-based UTF-16 offsets into the provided source text. Include the narrowest directly supporting span for every fact.',
     'Relations must use sourceRef and targetRef. Claims must reference only directly relevant entity and relation ids.',
     'Do not attach unrelated relations from the same text to a claim.',
     'Put explicit same-entity names from other languages into aliases only when the source text supports them.',
@@ -786,6 +791,13 @@ function normalizeName(name: string): string {
 
 function normalizeConfidence(confidence: unknown): number {
   return normalizeGraphConfidenceRust(confidence) ?? 0.5;
+}
+
+function requireSourceSpans(
+  spans: ExtractedEntity['evidenceSpans'],
+  contentLength: number,
+): NonNullable<GraphEntityRecord['sourceSpans']> {
+  return normalizeGraphSourceSpansRust(spans, contentLength) ?? [];
 }
 
 function createId(...parts: string[]): string {

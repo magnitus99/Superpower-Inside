@@ -336,6 +336,11 @@ export function normalize_graph_confidence_or_default(confidence: number): numbe
 export function normalize_graph_name(name: string): string;
 
 /**
+ * fact evidence span을 source 길이 안의 안정적인 pair로 정규화한다.
+ */
+export function normalize_graph_source_spans_flat(starts: Uint32Array, ends: Uint32Array, content_length: number): Uint32Array;
+
+/**
  * MCP tool 실행 결과에서 표시/모델 텍스트 추출 계약을 계산한다.
  */
 export function normalize_mcp_tool_result_json(result_json: string): string;
@@ -908,6 +913,7 @@ export interface InitOutput {
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_extracted_graph_payload_json: (a: number, b: number) => [number, number];
     readonly normalize_graph_confidence_or_default: (a: number) => number;
+    readonly normalize_graph_source_spans_flat: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly parse_extracted_graph_payload_json: (a: number, b: number) => [number, number];
