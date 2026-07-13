@@ -326,6 +326,29 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
+  it('GraphRAG provider가 실패해도 기본 vector RAG 결과를 반환한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('semantic.md', [1, 0], '기본 벡터 근거')]);
+    const graphEngine = new FailingGraphRagQueryEngine(
+      new InMemoryKnowledgeGraphStore(),
+      store,
+      buildKnowledgeGraphContract(),
+    );
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      graphRagEnabled: true,
+      graphRagQueryEngine: graphEngine,
+    });
+
+    const results = await engine.query('질문', 1);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['semantic.md']);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'graph-rag', status: 'error' }),
+      ]),
+    );
+  });
+
   it('GraphRAG 근거 점수가 높으면 기본 threshold에서도 낮은 vector 후보를 유지한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
@@ -491,6 +514,12 @@ function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
     embed: () => Promise.resolve(vector),
     embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => vector)),
   };
+}
+
+class FailingGraphRagQueryEngine extends GraphRagQueryEngine {
+  override query(): Promise<never> {
+    return Promise.reject(new Error('simulated graph retrieval failure'));
+  }
 }
 
 function createEntry(path: string, vector: number[], text: string, startLine = 0): VectorEntry {
