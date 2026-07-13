@@ -9,6 +9,7 @@ import {
   planGraphClaimEntityIdsRust,
   planGraphRelationEndpointIndicesRust,
   parseExtractedGraphPayloadRust,
+  planGraphExtractionFailureRust,
   type RustExtractedGraphClaim as ExtractedClaim,
   type RustExtractedGraphEntity as ExtractedEntity,
   type RustExtractedGraphPayload as ExtractedGraphPayload,
@@ -109,6 +110,13 @@ export class GraphExtractionIndexer {
     ) {
       throw new GraphExtractionDeferredError(job.nextAttemptAt);
     }
+    if (
+      job.state === 'quarantined' &&
+      job.rawResponseId === undefined &&
+      input.ignoreRetryWait !== true
+    ) {
+      throw new GraphExtractionDeferredError(Number.POSITIVE_INFINITY);
+    }
     const cachedRawResponse = job.rawResponseId
       ? await this.store.getRawResponse(job.rawResponseId)
       : undefined;
@@ -120,6 +128,14 @@ export class GraphExtractionIndexer {
 
     let rawResponse = cachedRawResponse?.body;
     if (rawResponse === undefined) {
+      const circuit = await this.store.getProviderCircuit(job.providerEpochId);
+      if (
+        circuit?.state === 'open' &&
+        input.ignoreRetryWait !== true &&
+        (circuit.openUntil ?? 0) > Date.now()
+      ) {
+        throw new GraphExtractionDeferredError(circuit.openUntil ?? Date.now());
+      }
       const leasedAt = Date.now();
       job = {
         ...job,
@@ -132,8 +148,14 @@ export class GraphExtractionIndexer {
       await this.store.putExtractionJob(job);
       try {
         rawResponse = await this.requestExtraction(input);
+        await this.store.putProviderCircuit({
+          providerEpochId: job.providerEpochId,
+          consecutiveFailures: 0,
+          state: 'closed',
+          updatedAt: Date.now(),
+        });
       } catch (error) {
-        await this.store.putExtractionJob(createInterruptedJob(job, error));
+        await this.persistInterruptedRequest(job, error);
         throw error;
       }
     }
@@ -226,6 +248,46 @@ export class GraphExtractionIndexer {
       undefined,
       { signal: input.signal },
     );
+  }
+
+  private async persistInterruptedRequest(
+    job: GraphExtractionJobRecord,
+    error: unknown,
+  ): Promise<void> {
+    if (isAbortError(error)) {
+      await this.store.putExtractionJob(createAbortedJob(job));
+      return;
+    }
+    const now = Date.now();
+    const existingCircuit = await this.store.getProviderCircuit(job.providerEpochId);
+    const consecutiveFailures = (existingCircuit?.consecutiveFailures ?? 0) + 1;
+    const message = error instanceof Error ? error.message : String(error);
+    const plan = planGraphExtractionFailureRust({
+      message,
+      status: getProviderHttpErrorField(error, 'status'),
+      attemptCount: job.attemptCount,
+      consecutiveFailures,
+      now,
+      retryAfterMs: getProviderHttpErrorField(error, 'retryAfterMs'),
+    });
+    if (!plan) throw new Error('Graph extraction failure policy is unavailable.');
+    await this.store.putProviderCircuit({
+      providerEpochId: job.providerEpochId,
+      consecutiveFailures,
+      state: plan.opensCircuit ? 'open' : 'closed',
+      openUntil: plan.opensCircuit ? plan.nextAttemptAt : undefined,
+      lastErrorCode: plan.code,
+      updatedAt: now,
+    });
+    await this.store.putExtractionJob({
+      ...job,
+      state: plan.retryable ? 'retry-wait' : 'quarantined',
+      nextAttemptAt: plan.retryable ? plan.nextAttemptAt : undefined,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+      lastErrorCode: plan.code,
+      updatedAt: now,
+    });
   }
 
   private async storeRawResponse(
@@ -375,45 +437,25 @@ export class GraphExtractionIndexer {
   }
 }
 
-function createInterruptedJob(
-  job: GraphExtractionJobRecord,
-  error: unknown,
-): GraphExtractionJobRecord {
+function createAbortedJob(job: GraphExtractionJobRecord): GraphExtractionJobRecord {
   const now = Date.now();
-  if (isAbortError(error)) {
-    return {
-      ...job,
-      state: 'prepared',
-      leaseOwner: undefined,
-      leaseExpiresAt: undefined,
-      updatedAt: now,
-    };
-  }
-  const retryDelayMs = Math.min(3_600_000, 2_000 * 2 ** Math.min(job.attemptCount - 1, 10));
   return {
     ...job,
-    state: 'retry-wait',
-    nextAttemptAt: now + retryDelayMs,
+    state: 'prepared',
     leaseOwner: undefined,
     leaseExpiresAt: undefined,
-    lastErrorCode: classifyExtractionError(error),
     updatedAt: now,
   };
 }
 
-function classifyExtractionError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const statusMatch = /(?:failed:\s*|status\s*)(\d{3})/iu.exec(message);
-  if (statusMatch?.[1]) return `http-${statusMatch[1]}`;
-  if (/timeout|timed out/iu.test(message)) return 'timeout';
-  if (/context.{0,20}(?:length|window|token)|too many tokens/iu.test(message)) {
-    return 'context-overflow';
-  }
-  return 'provider-error';
-}
-
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function getProviderHttpErrorField(error: unknown, field: 'status' | 'retryAfterMs'): number | undefined {
+  if (!(error instanceof Error) || !(field in error)) return undefined;
+  const value = (error as Error & Partial<Record<typeof field, unknown>>)[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function buildExtractionRepairSystemPrompt(schema: KnowledgeGraphContract): string {

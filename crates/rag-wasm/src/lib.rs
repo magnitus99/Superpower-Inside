@@ -4000,6 +4000,64 @@ pub fn graph_extraction_contract_version() -> u32 {
     GRAPH_EXTRACTION_CONTRACT_VERSION_EXPORT.load(Ordering::Relaxed)
 }
 
+/// Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_graph_extraction_failure_json(
+    message: &str,
+    status: u32,
+    attempt_count: u32,
+    consecutive_failures: u32,
+    now_ms: f64,
+    retry_after_ms: f64,
+) -> String {
+    let parsed_status = if status > 0 {
+        status
+    } else {
+        Regex::new(r"(?i)(?:failed:\s*|status\s*)(\d{3})")
+            .ok()
+            .and_then(|pattern| pattern.captures(message))
+            .and_then(|captures| captures.get(1))
+            .and_then(|value| value.as_str().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let code = if parsed_status > 0 {
+        format!("http-{parsed_status}")
+    } else if message.to_lowercase().contains("timeout") {
+        "timeout".to_owned()
+    } else if message.to_lowercase().contains("context")
+        && (message.to_lowercase().contains("length")
+            || message.to_lowercase().contains("window")
+            || message.to_lowercase().contains("token"))
+    {
+        "context-overflow".to_owned()
+    } else {
+        "provider-error".to_owned()
+    };
+    let retryable = !matches!(parsed_status, 400 | 401 | 403 | 404);
+    let exponent = attempt_count.saturating_sub(1).min(10);
+    let exponential_delay = 2_000_f64 * 2_f64.powi(i32::try_from(exponent).unwrap_or(10));
+    let delay_ms = if retry_after_ms.is_finite() && retry_after_ms >= 0.0 {
+        retry_after_ms.max(exponential_delay)
+    } else {
+        exponential_delay
+    }
+    .min(3_600_000.0);
+    let opens_circuit = retryable && consecutive_failures >= 3;
+    let next_attempt_at = now_ms
+        + if opens_circuit {
+            delay_ms.max(60_000.0)
+        } else {
+            delay_ms
+        };
+    format!(
+        "{{\"code\":\"{}\",\"retryable\":{},\"opensCircuit\":{},\"nextAttemptAt\":{next_attempt_at}}}",
+        escape_json_string(&code),
+        retryable,
+        opens_circuit
+    )
+}
+
 /// MCP JSON 검증/포맷 처리의 결과를 직렬화 가능한 계약으로 보관한다.
 struct McpJsonValidationPlan {
     /// 입력 JSON이 유효한 MCP 설정인지 나타낸다.

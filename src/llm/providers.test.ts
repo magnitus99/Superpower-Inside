@@ -8,6 +8,7 @@ import {
   createCustomOpenAIProvider,
   createProvider,
   createProviderForStrategy,
+  LLMProviderHttpError,
   normalizeForClaude,
   normalizeForOllama,
   normalizeForOpenAI,
@@ -15,6 +16,34 @@ import {
 } from './providers';
 
 const requestUrlMock = vi.mocked(requestUrl);
+
+it('buffered provider 오류는 HTTP 상태와 Retry-After를 구조화해 전달한다', async () => {
+  requestUrlMock.mockResolvedValueOnce({
+    status: 429,
+    text: 'rate limited',
+    json: {},
+    headers: { 'retry-after': '2' },
+    arrayBuffer: new ArrayBuffer(0),
+  });
+  const provider = createCustomOpenAIProvider(
+    {
+      id: 'custom',
+      name: 'Custom',
+      apiKey: 'test-key',
+      baseUrl: 'http://localhost:1234/v1',
+      enabled: true,
+      models: ['custom-test'],
+      useRequestUrl: true,
+    },
+    'custom-test',
+  );
+
+  await expect(provider.chat([{ role: 'user', content: 'Hello' }])).rejects.toMatchObject({
+    name: LLMProviderHttpError.name,
+    status: 429,
+    retryAfterMs: 2_000,
+  });
+});
 
 function tc(id: string, name: string, args: string): ToolCallInfo {
   return { id, type: 'function', function: { name, arguments: args } };

@@ -3,7 +3,7 @@ import type { LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
-import { GraphExtractionIndexer } from './extraction';
+import { GraphExtractionDeferredError, GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
 
 const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
@@ -93,6 +93,39 @@ describe('GraphExtractionIndexer', () => {
       }),
     ]);
     expect(typeof jobs[0]?.nextAttemptAt).toBe('number');
+  });
+
+  it('인증 실패는 자동 재시도하지 않도록 격리한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const error = Object.assign(new Error('LLM chat failed: 401 unauthorized'), { status: 401 });
+    const indexer = new GraphExtractionIndexer({ provider: createRejectingProvider(error), store });
+
+    await expect(indexer.extractChunk(createInput('Alpha'))).rejects.toThrow('401');
+    await expect(indexer.extractChunk(createInput('Alpha'))).rejects.toBeInstanceOf(
+      GraphExtractionDeferredError,
+    );
+
+    expect(await store.getExtractionJobs()).toEqual([
+      expect.objectContaining({ state: 'quarantined', lastErrorCode: 'http-401' }),
+    ]);
+  });
+
+  it('연속 provider 실패 세 번 뒤에는 다른 chunk 호출도 회로 차단한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = createCountingRejectingProvider(new Error('temporary provider failure'));
+    const indexer = new GraphExtractionIndexer({ provider, store });
+    const input = createInput('Alpha');
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(indexer.extractChunk({ ...input, ignoreRetryWait: true })).rejects.toThrow(
+        'temporary',
+      );
+    }
+    await expect(
+      indexer.extractChunk({ ...createInput('Beta', 'note.md::2'), contentHash: 'hash-2' }),
+    ).rejects.toBeInstanceOf(GraphExtractionDeferredError);
+
+    expect(provider.calls).toBe(3);
   });
 
   it('취소된 provider 요청은 실패로 고정하지 않고 prepared 상태로 되돌린다', async () => {
@@ -912,6 +945,21 @@ function createRejectingProvider(error: Error): LLMProvider {
   return {
     capability: TEST_PROVIDER_CAPABILITY,
     chat: () => Promise.reject(error),
+    streamChat: () => Promise.reject(error),
+  };
+}
+
+function createCountingRejectingProvider(error: Error): LLMProvider & { calls: number } {
+  let calls = 0;
+  return {
+    capability: TEST_PROVIDER_CAPABILITY,
+    get calls() {
+      return calls;
+    },
+    chat: () => {
+      calls++;
+      return Promise.reject(error);
+    },
     streamChat: () => Promise.reject(error),
   };
 }

@@ -22,6 +22,7 @@ import {
   extract_structured_reasoning,
   extract_vault_links_json,
   graph_extraction_contract_version,
+  plan_graph_extraction_failure_json,
   find_mentioned_entity_matches,
   hybrid_score_or_nan,
   initSync,
@@ -4053,6 +4054,53 @@ export function graphExtractionContractVersionRust(): number {
     return isValidNonNegativeInteger(version) ? version : 1;
   } catch {
     return 1;
+  }
+}
+
+export interface RustGraphExtractionFailurePlan {
+  code: string;
+  retryable: boolean;
+  opensCircuit: boolean;
+  nextAttemptAt: number;
+}
+
+export function planGraphExtractionFailureRust(input: {
+  message: string;
+  status?: number;
+  attemptCount: number;
+  consecutiveFailures: number;
+  now: number;
+  retryAfterMs?: number;
+}): RustGraphExtractionFailurePlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_graph_extraction_failure_json(
+      input.message,
+      input.status ?? 0,
+      input.attemptCount,
+      input.consecutiveFailures,
+      input.now,
+      input.retryAfterMs ?? Number.NaN,
+    );
+    const value: unknown = JSON.parse(raw);
+    if (!isStringRecordValueMap(value)) return null;
+    if (
+      !isStringValue(value.code) ||
+      typeof value.retryable !== 'boolean' ||
+      typeof value.opensCircuit !== 'boolean' ||
+      typeof value.nextAttemptAt !== 'number' ||
+      !Number.isFinite(value.nextAttemptAt)
+    ) {
+      return null;
+    }
+    return {
+      code: value.code,
+      retryable: value.retryable,
+      opensCircuit: value.opensCircuit,
+      nextAttemptAt: value.nextAttemptAt,
+    };
+  } catch {
+    return null;
   }
 }
 

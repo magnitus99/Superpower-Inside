@@ -1986,6 +1986,31 @@ export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_js
 }
 
 /**
+ * Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
+ * @param {string} message
+ * @param {number} status
+ * @param {number} attempt_count
+ * @param {number} consecutive_failures
+ * @param {number} now_ms
+ * @param {number} retry_after_ms
+ * @returns {string}
+ */
+export function plan_graph_extraction_failure_json(message, status, attempt_count, consecutive_failures, now_ms, retry_after_ms) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_graph_extraction_failure_json(ptr0, len0, status, attempt_count, consecutive_failures, now_ms, retry_after_ms);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
  * @param {string} mention_names_json
  * @param {string} entities_json

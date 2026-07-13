@@ -62,6 +62,14 @@ describe('KnowledgeGraphStore contract', () => {
     await expectExpiredLeaseRecovery(createIndexedDbStore());
   });
 
+  it('InMemoryKnowledgeGraphStore가 provider 회로 상태를 보존한다', async () => {
+    await expectProviderCircuitContract(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 provider 회로 상태를 보존한다', async () => {
+    await expectProviderCircuitContract(createIndexedDbStore());
+  });
+
   it('InMemoryKnowledgeGraphStore clear()는 모든 GraphRAG 테이블을 비웁니다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await fillGraphStoreForClearTest(store);
@@ -106,6 +114,25 @@ describe('KnowledgeGraphStore contract', () => {
     await expectClearTables(reopened);
   });
 });
+
+async function expectProviderCircuitContract(store: KnowledgeGraphStore): Promise<void> {
+  await store.putProviderCircuit({
+    providerEpochId: 'provider-epoch',
+    consecutiveFailures: 3,
+    state: 'open',
+    openUntil: 10_000,
+    lastErrorCode: 'http-429',
+    updatedAt: 1_000,
+  });
+  await expect(store.getProviderCircuit('provider-epoch')).resolves.toEqual({
+    providerEpochId: 'provider-epoch',
+    consecutiveFailures: 3,
+    state: 'open',
+    openUntil: 10_000,
+    lastErrorCode: 'http-429',
+    updatedAt: 1_000,
+  });
+}
 
 describe('IndexedDbKnowledgeGraphStore', () => {
   afterEach(async () => {

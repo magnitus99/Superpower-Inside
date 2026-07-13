@@ -152,6 +152,15 @@ export interface GraphRawResponseRecord {
   receivedAt: number;
 }
 
+export interface GraphProviderCircuitRecord {
+  providerEpochId: string;
+  consecutiveFailures: number;
+  state: 'closed' | 'open';
+  openUntil?: number;
+  lastErrorCode?: string;
+  updatedAt: number;
+}
+
 export interface PendingEntityMergeRecord {
   id: string;
   ontologySchemaId: string;
@@ -188,6 +197,8 @@ export interface KnowledgeGraphStore {
   putRawResponse(record: GraphRawResponseRecord): Promise<void>;
   getRawResponse(id: string): Promise<GraphRawResponseRecord | undefined>;
   getRawResponses(): Promise<GraphRawResponseRecord[]>;
+  putProviderCircuit(record: GraphProviderCircuitRecord): Promise<void>;
+  getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined>;
   getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
   getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
   getClaims(limit?: number, offset?: number): Promise<GraphClaimRecord[]>;
@@ -235,6 +246,7 @@ class KnowledgeGraphDB extends Dexie {
   graphPendingEntityMerges!: Dexie.Table<PendingEntityMergeRecord, string>;
   graphExtractionJobs!: Dexie.Table<GraphExtractionJobRecord, string>;
   graphRawResponses!: Dexie.Table<GraphRawResponseRecord, string>;
+  graphProviderCircuits!: Dexie.Table<GraphProviderCircuitRecord, string>;
 
   constructor(name: string) {
     super(name);
@@ -279,6 +291,23 @@ class KnowledgeGraphDB extends Dexie {
       graphExtractionJobs:
         'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
       graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
+    });
+    this.version(4).stores({
+      graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
+      graphRelations:
+        'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
+      graphClaims: 'id, claimTypeId, *entityIds, updatedAt',
+      graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
+      graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
+      graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
+      graphExtractionCache:
+        'entryId, contentHash, extractionModelKey, ontologySchemaId, ontologyVersion, updatedAt',
+      graphPendingEntityMerges:
+        'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
+      graphExtractionJobs:
+        'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
+      graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
+      graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
     });
   }
 }
@@ -349,6 +378,17 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 
   async getRawResponses(): Promise<GraphRawResponseRecord[]> {
     return (await this.db.graphRawResponses.toArray()).map((record) => ({ ...record }));
+  }
+
+  async putProviderCircuit(record: GraphProviderCircuitRecord): Promise<void> {
+    await this.db.graphProviderCircuits.put({ ...record });
+  }
+
+  async getProviderCircuit(
+    providerEpochId: string,
+  ): Promise<GraphProviderCircuitRecord | undefined> {
+    const record = await this.db.graphProviderCircuits.get(providerEpochId);
+    return record ? { ...record } : undefined;
   }
 
   async addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -700,6 +740,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   private pendingEntityMerges = new Map<string, PendingEntityMergeRecord>();
   private extractionJobs = new Map<string, GraphExtractionJobRecord>();
   private rawResponses = new Map<string, GraphRawResponseRecord>();
+  private providerCircuits = new Map<string, GraphProviderCircuitRecord>();
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
@@ -761,6 +802,16 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getRawResponses(): Promise<GraphRawResponseRecord[]> {
     return Promise.resolve([...this.rawResponses.values()].map((record) => ({ ...record })));
+  }
+
+  putProviderCircuit(record: GraphProviderCircuitRecord): Promise<void> {
+    this.providerCircuits.set(record.providerEpochId, { ...record });
+    return Promise.resolve();
+  }
+
+  getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined> {
+    const record = this.providerCircuits.get(providerEpochId);
+    return Promise.resolve(record ? { ...record } : undefined);
   }
 
   addEvidence(record: GraphEvidenceRecord): Promise<void> {
@@ -1040,6 +1091,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     this.pendingEntityMerges.clear();
     this.extractionJobs.clear();
     this.rawResponses.clear();
+    this.providerCircuits.clear();
     return Promise.resolve();
   }
 }

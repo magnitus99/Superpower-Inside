@@ -506,6 +506,11 @@ export function plan_graph_evidence_candidate_lookup_json(scores_json: string, e
 export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_json: string, entries_json: string, candidate_limit: number): string;
 
 /**
+ * Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
+ */
+export function plan_graph_extraction_failure_json(message: string, status: number, attempt_count: number, consecutive_failures: number, now_ms: number, retry_after_ms: number): string;
+
+/**
  * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
  */
 export function plan_graph_mention_context_json(mention_names_json: string, entities_json: string, relations_json: string): string;
@@ -927,6 +932,7 @@ export interface InitOutput {
     readonly plan_graph_entity_merge_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_candidate_lookup_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_entry_candidates_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_graph_extraction_failure_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_graph_mention_context_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_graph_query_execution_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_query_json: (a: number, b: number) => [number, number];

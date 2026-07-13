@@ -68,6 +68,33 @@ export interface ChatOptions {
 
 export type StreamChatOptions = ChatOptions;
 
+export class LLMProviderHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'LLMProviderHttpError';
+  }
+}
+
+function createProviderHttpError(
+  prefix: string,
+  response: { status: number; text: string; headers?: Record<string, string> },
+): LLMProviderHttpError {
+  const rawRetryAfter = response.headers?.['retry-after'] ?? response.headers?.['Retry-After'];
+  const retryAfterSeconds = rawRetryAfter === undefined ? Number.NaN : Number(rawRetryAfter);
+  const retryAfterMs = Number.isFinite(retryAfterSeconds)
+    ? Math.max(0, retryAfterSeconds * 1_000)
+    : undefined;
+  return new LLMProviderHttpError(
+    `${prefix}: ${response.status} ${response.text}`,
+    response.status,
+    retryAfterMs,
+  );
+}
+
 /* ---------- Message Normalizers ---------- */
 
 function toolCallToFn(tc: ToolCallInfo): { name: string; arguments: string } {
@@ -225,7 +252,7 @@ class OpenAICompatibleProvider implements LLMProvider {
       throw: false,
     });
     if (res.status >= 400) {
-      throw new Error(`LLM chat failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('LLM chat failed', res);
     }
     const data = res.json as {
       choices?: Array<{ message?: { content?: string } }>;
@@ -402,7 +429,7 @@ class ClaudeProvider implements LLMProvider {
       throw: false,
     });
     if (res.status >= 400) {
-      throw new Error(`Claude chat failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('Claude chat failed', res);
     }
     const data = res.json as {
       content?: Array<{ type: string; text?: string }>;
@@ -570,7 +597,7 @@ class OllamaProvider implements LLMProvider {
       body: JSON.stringify(body),
     });
     if (res.status >= 400) {
-      throw new Error(`Ollama chat failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('Ollama chat failed', res);
     }
     const data = res.json as { message?: { content?: string } };
     throwIfChatAborted(options?.signal);
