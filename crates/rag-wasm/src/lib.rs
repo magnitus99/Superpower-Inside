@@ -7614,8 +7614,6 @@ struct GraphRagStatusInput {
     graph_rag_enabled: bool,
     /// indexing runner currently active.
     is_running: bool,
-    /// schema error count.
-    schema_error_count: usize,
     /// candidate file count from vector store/vault boundary.
     total_candidate_files: usize,
     /// raw max files per run setting.
@@ -7657,8 +7655,6 @@ enum GraphRagIndexState {
     Partial,
     /// stale or orphan graph data exists.
     Stale,
-    /// ontology schema has errors.
-    SchemaError,
 }
 
 impl GraphRagIndexState {
@@ -7671,7 +7667,6 @@ impl GraphRagIndexState {
             Self::Ready => "ready",
             Self::Partial => "partial",
             Self::Stale => "stale",
-            Self::SchemaError => "schema-error",
         }
     }
 }
@@ -9385,7 +9380,7 @@ fn plan_graph_rag_status(input: &GraphRagStatusInput) -> GraphRagStatusPlan {
     }
 }
 
-/// `GraphRAG` status에서 비활성/스키마 오류 상태를 먼저 처리한다.
+/// `GraphRAG` status에서 비활성 상태를 먼저 처리한다.
 const fn graph_rag_status_early_plan(
     input: &GraphRagStatusInput,
     max_files_per_run: usize,
@@ -9393,13 +9388,6 @@ const fn graph_rag_status_early_plan(
     if !input.graph_rag_enabled {
         return Some(empty_graph_rag_status(
             GraphRagIndexState::Disabled,
-            input.total_candidate_files,
-            max_files_per_run,
-        ));
-    }
-    if input.schema_error_count > 0 {
-        return Some(empty_graph_rag_status(
-            GraphRagIndexState::SchemaError,
             input.total_candidate_files,
             max_files_per_run,
         ));
@@ -17959,7 +17947,6 @@ fn parse_graph_rag_status_input_json(payload: &str) -> Option<GraphRagStatusInpu
     Some(GraphRagStatusInput {
         graph_rag_enabled: object.get("graphRagEnabled")?.as_bool()?,
         is_running: object.get("isRunning")?.as_bool()?,
-        schema_error_count: usize::try_from(object.get("schemaErrorCount")?.as_u64()?).ok()?,
         total_candidate_files: usize::try_from(object.get("totalCandidateFiles")?.as_u64()?)
             .ok()?,
         graph_rag_max_files_per_run,
@@ -22073,13 +22060,13 @@ mod tests {
         );
         assert_eq!(
             plan_graph_rag_status_json(
-                r#"{"graphRagEnabled":true,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":2,"graphRagMaxFilesPerRun":50,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[{"filePath":"fresh.md","vectorCount":2},{"filePath":"stale.md","vectorCount":1}],"evidence":[{"filePath":"fresh.md","entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","processable":true},{"filePath":"deleted.md","entryId":"deleted.md::0","contentHash":"old","extractionModelKey":"model-new","processable":true},{"filePath":"foreign.md","entryId":"foreign.md::0","contentHash":"foreign","extractionModelKey":"model-new","processable":false}],"rejectedFactFilePaths":["fresh.md","fresh.md","bad.md"],"pendingMergeCount":2,"cacheRecords":[{"entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"fresh.md::1","contentHash":"hash-b","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"stale.md::0","contentHash":"old-stale","extractionModelKey":"model-old","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1}],"entries":[{"id":"fresh.md::0","filePath":"fresh.md","contentHash":"hash-a","text":"unused"},{"id":"fresh.md::1","filePath":"fresh.md","contentHash":"hash-b","text":"unused"},{"id":"stale.md::0","filePath":"stale.md","text":"changed body"}]}"#
+                r#"{"graphRagEnabled":true,"isRunning":false,"totalCandidateFiles":2,"graphRagMaxFilesPerRun":50,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[{"filePath":"fresh.md","vectorCount":2},{"filePath":"stale.md","vectorCount":1}],"evidence":[{"filePath":"fresh.md","entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","processable":true},{"filePath":"deleted.md","entryId":"deleted.md::0","contentHash":"old","extractionModelKey":"model-new","processable":true},{"filePath":"foreign.md","entryId":"foreign.md::0","contentHash":"foreign","extractionModelKey":"model-new","processable":false}],"rejectedFactFilePaths":["fresh.md","fresh.md","bad.md"],"pendingMergeCount":2,"cacheRecords":[{"entryId":"fresh.md::0","contentHash":"hash-a","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"fresh.md::1","contentHash":"hash-b","extractionModelKey":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1},{"entryId":"stale.md::0","contentHash":"old-stale","extractionModelKey":"model-old","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1}],"entries":[{"id":"fresh.md::0","filePath":"fresh.md","contentHash":"hash-a","text":"unused"},{"id":"fresh.md::1","filePath":"fresh.md","contentHash":"hash-b","text":"unused"},{"id":"stale.md::0","filePath":"stale.md","text":"changed body"}]}"#
             ),
             r#"{"state":"stale","totalCandidateFiles":2,"graphEvidenceCount":3,"rejectedFactCount":3,"failedFileCount":2,"pendingMergeCount":2,"staleFileCount":3,"staleFilePaths":["deleted.md","foreign.md","stale.md"],"maxFilesPerRun":50}"#,
         );
         assert_eq!(
             plan_graph_rag_status_json(
-                r#"{"graphRagEnabled":false,"isRunning":false,"schemaErrorCount":0,"totalCandidateFiles":3,"graphRagMaxFilesPerRun":0,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[],"evidence":[],"rejectedFactFilePaths":[],"pendingMergeCount":0,"cacheRecords":[],"entries":[]}"#,
+                r#"{"graphRagEnabled":false,"isRunning":false,"totalCandidateFiles":3,"graphRagMaxFilesPerRun":0,"graphRagModel":"model-new","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":1,"fileRecords":[],"evidence":[],"rejectedFactFilePaths":[],"pendingMergeCount":0,"cacheRecords":[],"entries":[]}"#,
             ),
             r#"{"state":"disabled","totalCandidateFiles":3,"graphEvidenceCount":0,"rejectedFactCount":0,"failedFileCount":0,"pendingMergeCount":0,"staleFileCount":0,"staleFilePaths":[],"maxFilesPerRun":1}"#,
         );

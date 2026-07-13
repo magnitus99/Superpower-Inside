@@ -110,7 +110,6 @@ export interface GraphRagStatusLabelInput {
   isRunning: boolean;
   isStale: boolean;
   partialFailureCount: number;
-  schemaError?: boolean;
 }
 
 export interface GraphRagControlStateInput {
@@ -346,7 +345,6 @@ export function getRagIndexingControlState(
 
 export function getGraphRagStatusLabel(input: GraphRagStatusLabelInput): string {
   if (!input.enabled) return t('graphRagStatusDisabledLabel');
-  if (input.schemaError === true) return 'schema-error';
   if (input.isRunning) return 'building';
   if (!input.hasGraphIndex) return 'not-built';
   if (input.isStale) return 'stale';
@@ -397,12 +395,6 @@ export function getGraphRagStatusPresentation(state: string): GraphRagStatusPres
         label: t('graphRagStatusPartialLabel'),
         description: t('graphRagStatusPartialDesc'),
         tone: 'warning',
-      };
-    case 'schema-error':
-      return {
-        label: t('graphRagStatusSchemaErrorLabel'),
-        description: t('graphRagStatusSchemaErrorDesc'),
-        tone: 'danger',
       };
     default:
       return { label: state, description: '', tone: 'neutral' };

@@ -57,6 +57,7 @@ import { GraphRagQueryEngine } from './src/graph/query-engine';
 import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
 import { buildKnowledgeGraphContract } from './src/graph/knowledge-contract';
+import { createGraphProviderEpochId } from './src/graph/extraction';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
   RAGIndexingScheduler,
@@ -151,13 +152,6 @@ function graphRagReadinessFromStatus(
       readiness: 'partial',
       estimatedCost: 'free',
       reason: 'GraphRAG index is building; existing evidence is available.',
-    };
-  }
-  if (status.state === 'schema-error') {
-    return {
-      readiness: 'degraded',
-      estimatedCost: 'free',
-      reason: 'GraphRAG extraction contract could not be loaded.',
     };
   }
   return {
@@ -2638,12 +2632,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return;
     }
     const previousStatus = this.graphRagStatus;
+    const graphProvider = this.settings.rag.graphRagModel.trim()
+      ? this.createProviderForModel(this.settings.rag.graphRagModel)
+      : null;
+    const knowledgeContract = buildKnowledgeGraphContract();
     const nextStatus = await calculateGraphRagStatus({
       ragConfig: this.settings.rag,
       graphStore: this.knowledgeGraphStore,
       vectorStore: this.vectorStore,
       isRunning: this.isGraphRagIndexing(),
-      schemaErrors: [],
+      activeProviderEpochId: graphProvider
+        ? createGraphProviderEpochId(
+            graphProvider,
+            this.settings.rag.graphRagModel,
+            knowledgeContract.version,
+          )
+        : undefined,
       isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
     });
     this.graphRagStatus = nextStatus;

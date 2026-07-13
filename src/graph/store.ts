@@ -34,6 +34,15 @@ export interface GraphFactProvenance {
   generatedAt: number;
 }
 
+export interface GraphEntityGenerationRecord {
+  providerEpochId: string;
+  rawResponseHash: string;
+  description: string;
+  properties: Record<string, GraphPropertyValue>;
+  confidence: number;
+  generatedAt: number;
+}
+
 export interface GraphEntityRecord {
   id: string;
   ontologySchemaId: string;
@@ -47,6 +56,7 @@ export interface GraphEntityRecord {
   confidence: number;
   evidenceIds: string[];
   provenance?: GraphFactProvenance[];
+  generations?: GraphEntityGenerationRecord[];
   createdAt: number;
   updatedAt: number;
 }
@@ -1627,6 +1637,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
       confidence: Math.max(existing.confidence, incoming.confidence),
       evidenceIds: mergeOrderedStrings(existing.evidenceIds, incoming.evidenceIds),
       provenance: mergeProvenance(existing.provenance, incoming.provenance),
+      generations: mergeEntityGenerations(existing.generations, incoming.generations),
       updatedAt: incoming.updatedAt,
     };
   }
@@ -1638,6 +1649,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
     confidence: plan.confidence,
     evidenceIds: plan.evidenceIds,
     provenance: mergeProvenance(existing.provenance, incoming.provenance),
+    generations: mergeEntityGenerations(existing.generations, incoming.generations),
     updatedAt: plan.updatedAt,
   };
 }
@@ -1696,6 +1708,21 @@ function mergeProvenance(
   return [...merged.values()];
 }
 
+function mergeEntityGenerations(
+  left: readonly GraphEntityGenerationRecord[] | undefined,
+  right: readonly GraphEntityGenerationRecord[] | undefined,
+): GraphEntityGenerationRecord[] | undefined {
+  if (!left && !right) return undefined;
+  const merged = new Map<string, GraphEntityGenerationRecord>();
+  for (const record of [...(left ?? []), ...(right ?? [])]) {
+    merged.set(`${record.providerEpochId}\0${record.rawResponseHash}`, {
+      ...record,
+      properties: { ...record.properties },
+    });
+  }
+  return [...merged.values()];
+}
+
 function isGraphExtractionCacheHitFallback(
   cachedRecord: RustGraphExtractionCacheKey | null,
   input: Omit<GraphExtractionCacheRecord, 'updatedAt'>,
@@ -1745,6 +1772,10 @@ function copyEntity(record: GraphEntityRecord): GraphEntityRecord {
     properties: { ...record.properties },
     evidenceIds: [...record.evidenceIds],
     provenance: record.provenance?.map((provenance) => ({ ...provenance })),
+    generations: record.generations?.map((generation) => ({
+      ...generation,
+      properties: { ...generation.properties },
+    })),
   };
 }
 

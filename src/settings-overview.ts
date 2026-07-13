@@ -336,17 +336,6 @@ function buildGraphRagMetric(
       target: 'rag',
     };
   }
-  if (status?.state === 'schema-error') {
-    return {
-      id: 'graph-rag',
-      label: 'GraphRAG',
-      value: t('overviewNotReady'),
-      statusLabel: t('graphRagStatusSchemaErrorLabel'),
-      detail: t('overviewGraphRagNeedIndexing'),
-      tone: 'danger',
-      target: 'rag',
-    };
-  }
   if (!settings.rag.graphRagEnabled) {
     return {
       id: 'graph-rag',

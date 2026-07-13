@@ -102,12 +102,7 @@ export class GraphExtractionIndexer {
   }
 
   getProviderEpochId(extractionModelKey: string, contractVersion: number): string {
-    return createId(
-      'graph-provider-epoch',
-      extractionModelKey,
-      JSON.stringify(this.provider.capability),
-      String(contractVersion),
-    );
+    return createGraphProviderEpochId(this.provider, extractionModelKey, contractVersion);
   }
 
   async extractChunk(input: GraphExtractionChunkInput): Promise<void> {
@@ -177,6 +172,10 @@ export class GraphExtractionIndexer {
       await this.store.putExtractionJob(job);
       try {
         rawResponse = await this.requestExtraction(input);
+        const observedModel = this.provider.getObservedModel?.()?.trim();
+        if (observedModel) {
+          job = { ...job, observedModel };
+        }
         await this.store.putProviderCircuit({
           providerEpochId: job.providerEpochId,
           consecutiveFailures: 0,
@@ -438,6 +437,14 @@ export class GraphExtractionIndexer {
       });
       const record = createEntityRecord(input, evidence.id, entity, labels, resolution.entityId, now);
       record.provenance = [{ ...provenance }];
+      record.generations = [{
+        providerEpochId: provenance.providerEpochId,
+        rawResponseHash: provenance.rawResponseHash,
+        description: record.description,
+        properties: { ...record.properties },
+        confidence: record.confidence,
+        generatedAt: provenance.generatedAt,
+      }];
       if (resolution.pendingMerge) pendingEntityMerges.push(resolution.pendingMerge);
       const entityIndex = entityRecords.length;
       entityRecords.push(record);
@@ -783,4 +790,17 @@ function normalizeConfidence(confidence: unknown): number {
 
 function createId(...parts: string[]): string {
   return createGraphIdRust(parts) ?? '';
+}
+
+export function createGraphProviderEpochId(
+  provider: LLMProvider,
+  extractionModelKey: string,
+  contractVersion: number,
+): string {
+  return createId(
+    'graph-provider-epoch',
+    extractionModelKey,
+    JSON.stringify(provider.capability),
+    String(contractVersion),
+  );
 }

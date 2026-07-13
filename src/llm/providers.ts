@@ -187,6 +187,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 
 export interface LLMProvider {
   readonly capability: ProviderCapabilitySnapshot;
+  getObservedModel?(): string | undefined;
   chat(
     messages: ChatMessage[],
     temperature?: number,
@@ -206,6 +207,11 @@ export interface LLMProvider {
 
 class OpenAICompatibleProvider implements LLMProvider {
   readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   protected config: ProviderConfig;
   protected endpoint: string;
   protected modelOverride?: string;
@@ -255,8 +261,10 @@ class OpenAICompatibleProvider implements LLMProvider {
       throw createProviderHttpError('LLM chat failed', res);
     }
     const data = res.json as {
+      model?: string;
       choices?: Array<{ message?: { content?: string } }>;
     };
+    this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
     return data.choices?.[0]?.message?.content ?? '';
   }
@@ -374,6 +382,11 @@ class OpenAICompatibleProvider implements LLMProvider {
 
 class ClaudeProvider implements LLMProvider {
   readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   private config: ProviderConfig;
   private modelOverride?: string;
 
@@ -432,8 +445,10 @@ class ClaudeProvider implements LLMProvider {
       throw createProviderHttpError('Claude chat failed', res);
     }
     const data = res.json as {
+      model?: string;
       content?: Array<{ type: string; text?: string }>;
     };
+    this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
     return data.content?.find((c) => c.type === 'text')?.text ?? '';
   }
@@ -535,6 +550,11 @@ class ClaudeProvider implements LLMProvider {
 
 class OllamaProvider implements LLMProvider {
   readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   private config: ProviderConfig;
   private modelOverride?: string;
   private useRequestUrlForStreaming: boolean;
@@ -599,7 +619,8 @@ class OllamaProvider implements LLMProvider {
     if (res.status >= 400) {
       throw createProviderHttpError('Ollama chat failed', res);
     }
-    const data = res.json as { message?: { content?: string } };
+    const data = res.json as { model?: string; message?: { content?: string } };
+    this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
     return data.message?.content ?? '';
   }

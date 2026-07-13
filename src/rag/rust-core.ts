@@ -826,8 +826,7 @@ export type RustGraphRagIndexState =
   | 'building'
   | 'ready'
   | 'partial'
-  | 'stale'
-  | 'schema-error';
+  | 'stale';
 
 export interface RustGraphRagStatusFileRecordInput {
   filePath: string;
@@ -880,7 +879,6 @@ export interface RustGraphRagStatusEntrySnapshotPlan {
 export interface RustGraphRagStatusInput {
   graphRagEnabled: boolean;
   isRunning: boolean;
-  schemaErrorCount: number;
   totalCandidateFiles: number;
   graphRagMaxFilesPerRun: number;
   graphRagModel: string;
@@ -3596,9 +3594,6 @@ export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): Rust
   const maxFilesPerRun = normalizeGraphRagMaxFilesPerRunFallback(input.graphRagMaxFilesPerRun);
   if (!input.graphRagEnabled) {
     return emptyGraphRagStatusFallback('disabled', input.totalCandidateFiles, maxFilesPerRun);
-  }
-  if (input.schemaErrorCount > 0) {
-    return emptyGraphRagStatusFallback('schema-error', input.totalCandidateFiles, maxFilesPerRun);
   }
   const failedFileCount = countUniqueValuesFallback(input.rejectedFactFilePaths);
   if (input.isRunning) {
@@ -7022,7 +7017,6 @@ function isValidGraphRagStatusInput(input: RustGraphRagStatusInput): boolean {
   return (
     typeof input.graphRagEnabled === 'boolean' &&
     typeof input.isRunning === 'boolean' &&
-    isValidNonNegativeInteger(input.schemaErrorCount) &&
     isValidNonNegativeInteger(input.totalCandidateFiles) &&
     Number.isFinite(input.graphRagMaxFilesPerRun) &&
     isStringValue(input.graphRagModel) &&
@@ -7198,8 +7192,7 @@ function isGraphRagIndexState(value: unknown): value is RustGraphRagIndexState {
     value === 'building' ||
     value === 'ready' ||
     value === 'partial' ||
-    value === 'stale' ||
-    value === 'schema-error'
+    value === 'stale'
   );
 }
 

@@ -78,14 +78,19 @@ describe('GraphExtractionIndexer', () => {
 
   it('provider generation이 바뀌면 같은 모델과 원문도 별도 provenance로 보존한다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
-    const response = JSON.stringify({
-      entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept' }],
+    const firstResponse = JSON.stringify({
+      entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept', description: 'first view' }],
       relations: [],
       claims: [],
     });
-    const firstProvider = createProvider(response);
+    const secondResponse = JSON.stringify({
+      entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept', description: 'conflicting view' }],
+      relations: [],
+      claims: [],
+    });
+    const firstProvider = createProvider(firstResponse);
     const secondProvider = {
-      ...createProvider(response),
+      ...createProvider(secondResponse),
       capability: {
         ...TEST_PROVIDER_CAPABILITY,
         knownLimitations: ['second provider epoch'],
@@ -101,6 +106,33 @@ describe('GraphExtractionIndexer', () => {
     const [entity] = await store.getEntities();
     expect(entity?.provenance).toHaveLength(2);
     expect(new Set(entity?.provenance?.map((record) => record.providerEpochId)).size).toBe(2);
+    expect(entity?.generations?.map((generation) => generation.description)).toEqual([
+      'first view',
+      'conflicting view',
+    ]);
+  });
+
+  it('provider가 보고한 실제 model id를 job과 fact provenance에 남긴다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = {
+      ...createProvider(
+        JSON.stringify({
+          entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept' }],
+          relations: [],
+          claims: [],
+        }),
+      ),
+      getObservedModel: () => 'actual-free-model',
+    } satisfies LLMProvider;
+
+    await new GraphExtractionIndexer({ provider, store }).extractChunk(createInput('Alpha'));
+
+    expect(await store.getExtractionJobs()).toEqual([
+      expect.objectContaining({ observedModel: 'actual-free-model' }),
+    ]);
+    expect((await store.getEntities())[0]?.provenance?.[0]?.observedModel).toBe(
+      'actual-free-model',
+    );
   });
 
   it('provider 실패는 lease를 해제하고 bounded retry 대기 상태로 보존한다', async () => {

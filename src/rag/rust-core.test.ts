@@ -2808,7 +2808,6 @@ describe('Rust WASM RAG core bridge', () => {
     const status = planGraphRagStatusRust({
       graphRagEnabled: true,
       isRunning: false,
-      schemaErrorCount: 0,
       totalCandidateFiles: 2,
       graphRagMaxFilesPerRun: 50,
       graphRagModel: 'model-new',
@@ -2907,7 +2906,6 @@ describe('Rust WASM RAG core bridge', () => {
       planGraphRagStatusRust({
         graphRagEnabled: false,
         isRunning: false,
-        schemaErrorCount: 0,
         totalCandidateFiles: 3,
         graphRagMaxFilesPerRun: 0,
         graphRagModel: 'model-new',

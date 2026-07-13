@@ -26,7 +26,7 @@ flowchart LR
 | 사용자가 계속 관리해야 하는 상태가 늘어나는가 | 자동 처리하고, 수동 조작은 복구용으로 둡니다. |
 | 설정/상태 화면이 전문가용 조작판처럼 커지는가 | 사용자가 해야 할 행동이 있을 때만 한 문장 이유와 하나의 primary action을 보여줍니다. |
 | 실패가 조용히 숨겨지는가 | 사용자가 행동해야 할 때만 짧고 구체적인 이유와 next action을 보여줍니다. |
-| 내부 복잡도가 사용자 언어로 새는가 | Rust/WASM, index, cache, ontology 같은 내부어는 사용자가 판단해야 할 때만 노출합니다. |
+| 내부 복잡도가 사용자 언어로 새는가 | Rust/WASM, index, cache, extraction contract 같은 내부어는 사용자가 판단해야 할 때만 노출합니다. |
 | 복구 기능이 기본 workflow가 되는가 | reindex, reset, migrate, rebuild, retry는 문제 해결용으로 두고 첫 사용법이나 주요 CTA로 만들지 않습니다. |
 | UI를 바꿨는가 | 가능하면 실제 화면으로 밀도, 정렬, 대비, overflow, 상태 변화를 확인합니다. 릴리즈 절차의 필수 스크린샷 게이트로 만들지는 않습니다. |
 
@@ -185,10 +185,10 @@ npm run review -- --tag <manifest-version> --built
 주의할 점:
 
 - 단순 `\n\n` 기준 청킹으로 되돌리지 않습니다. 헤딩과 코드블록 경계를 유지해야 합니다.
-- 모델, provider, ontology가 바뀌면 stale 판정과 자동/수동 복구 흐름을 함께 확인합니다.
+- 모델, provider, extraction contract가 바뀌면 stale 판정과 자동/수동 복구 흐름을 함께 확인합니다.
 - `.test-vault/.superpower-inside/`는 실제 런타임 산출물입니다. 일반 코드 변경 diff에 포함하지 않습니다.
 - 사용자가 직접 reindex/reset을 관리하게 만드는 UI보다 자동 동기화와 명확한 next action을 우선합니다.
-- 인덱스 수, cache, ontology schema, vector store 같은 내부 상태를 보여줄 때는 사용자가 취할 행동과 연결합니다. 행동이 없으면 진단 로그나 explorer 안에 둡니다.
+- 인덱스 수, cache, extraction contract, vector store 같은 내부 상태를 보여줄 때는 사용자가 취할 행동과 연결합니다. 행동이 없으면 진단 로그나 explorer 안에 둡니다.
 
 ### Chat UI 수정
 

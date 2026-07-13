@@ -37,7 +37,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore: createThrowingGraphStore(),
       vectorStore: createThrowingVectorStore(),
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status).toEqual({
@@ -62,7 +61,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore: new InMemoryKnowledgeGraphStore(),
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('not-built');
@@ -89,7 +87,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: true,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('building');
@@ -125,7 +122,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('ready');
@@ -162,7 +158,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
       isProcessableFilePath: (filePath: string) => filePath === 'current.md',
     };
 
@@ -199,7 +194,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore: new MemoryVectorStore(),
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('stale');
@@ -234,7 +228,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('stale');
@@ -286,7 +279,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('partial');
@@ -294,17 +286,6 @@ describe('calculateGraphRagStatus', () => {
     expect(status.pendingMergeCount).toBe(1);
   });
 
-  it('schema 오류가 있으면 schema-error를 우선 반환한다', async () => {
-    const status = await calculateGraphRagStatus({
-      ragConfig: baseRagConfig,
-      graphStore: new InMemoryKnowledgeGraphStore(),
-      vectorStore: new MemoryVectorStore(),
-      isRunning: false,
-      schemaErrors: ['unknown relation'],
-    });
-
-    expect(status.state).toBe('schema-error');
-  });
   it('stale 파일 목록을 staleFilePaths로 반환한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-a')]);
@@ -326,7 +307,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('stale');
@@ -348,7 +328,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('stale');
@@ -368,7 +347,42 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
+    });
+
+    expect(status.state).toBe('stale');
+    expect(status.staleFilePaths).toContain('a.md');
+  });
+
+  it('stale 조건: provider generation 불일치', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('a.md', 'hash-a')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.addEvidence({
+      id: 'ev-provider',
+      filePath: 'a.md',
+      entryId: 'a.md::0',
+      startLine: 1,
+      quote: 'text',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: 1000,
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'a.md::0',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: KNOWLEDGE_CONTRACT.id,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      providerEpochId: 'old-provider',
+      updatedAt: 1000,
+    });
+
+    const status = await calculateGraphRagStatus({
+      ragConfig: baseRagConfig,
+      graphStore,
+      vectorStore,
+      isRunning: false,
+      activeProviderEpochId: 'new-provider',
     });
 
     expect(status.state).toBe('stale');
@@ -403,7 +417,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('ready');
@@ -449,7 +462,6 @@ describe('calculateGraphRagStatus', () => {
       graphStore,
       vectorStore,
       isRunning: false,
-      schemaErrors: [],
     });
 
     expect(status.state).toBe('stale');

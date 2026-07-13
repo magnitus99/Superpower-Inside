@@ -32,15 +32,14 @@ export type GraphRagIndexState =
   | 'building'
   | 'ready'
   | 'partial'
-  | 'stale'
-  | 'schema-error';
+  | 'stale';
 
 export interface GraphRagStatusInput {
   ragConfig: Pick<RAGConfig, 'graphRagEnabled' | 'graphRagModel' | 'graphRagMaxFilesPerRun'>;
   graphStore: KnowledgeGraphStore;
   vectorStore: VectorStore;
   isRunning: boolean;
-  schemaErrors: readonly string[];
+  activeProviderEpochId?: string;
   isProcessableFilePath?: GraphRagFilePathPredicate;
 }
 
@@ -61,10 +60,6 @@ export async function calculateGraphRagStatus(
 ): Promise<GraphRagStatusSummary> {
   if (!input.ragConfig.graphRagEnabled) {
     return createDisabledGraphRagStatus(input.ragConfig.graphRagMaxFilesPerRun);
-  }
-
-  if (input.schemaErrors.length > 0) {
-    return requireGraphRagStatusPlan(createGraphRagStatusInput(input, [], 0));
   }
 
   const fileSnapshot = await getGraphRagStatusFileSnapshot(
@@ -158,7 +153,6 @@ function createGraphRagStatusInput(
   return {
     graphRagEnabled: true,
     isRunning: input.isRunning,
-    schemaErrorCount: input.schemaErrors.length,
     totalCandidateFiles,
     graphRagMaxFilesPerRun: input.ragConfig.graphRagMaxFilesPerRun,
     graphRagModel: input.ragConfig.graphRagModel,
@@ -171,7 +165,9 @@ function createGraphRagStatusInput(
     ),
     rejectedFactFilePaths: snapshot.rejectedFactFilePaths ?? [],
     pendingMergeCount: snapshot.pendingMergeCount ?? 0,
-    cacheRecords: (snapshot.cacheRecords ?? []).map(toGraphRagStatusCacheInput),
+    cacheRecords: (snapshot.cacheRecords ?? []).map((record) =>
+      toGraphRagStatusCacheInput(record, input.activeProviderEpochId),
+    ),
     entries: (snapshot.entries ?? []).map(toGraphRagStatusEntryInput),
   };
 }
@@ -275,11 +271,17 @@ function toGraphRagStatusEvidenceInput(
 
 function toGraphRagStatusCacheInput(
   record: GraphExtractionCacheRecord,
+  activeProviderEpochId?: string,
 ): RustGraphRagStatusCacheInput {
   return {
     entryId: record.entryId,
     contentHash: record.contentHash,
-    extractionModelKey: record.extractionModelKey,
+    extractionModelKey:
+      activeProviderEpochId !== undefined &&
+      record.providerEpochId !== undefined &&
+      record.providerEpochId !== activeProviderEpochId
+        ? `${record.extractionModelKey}::stale-provider-epoch`
+        : record.extractionModelKey,
     ontologySchemaId: record.ontologySchemaId,
     ontologyVersion: record.ontologyVersion,
     extractionContractVersion: record.extractionContractVersion ?? 0,

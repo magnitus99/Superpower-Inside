@@ -1147,8 +1147,6 @@ export interface I18nKeys {
   graphRagStatusStaleDesc: string;
   graphRagStatusPartialLabel: string;
   graphRagStatusPartialDesc: string;
-  graphRagStatusSchemaErrorLabel: string;
-  graphRagStatusSchemaErrorDesc: string;
   graphRagDisabledReason: string;
   graphRagProviderMissingReason: string;
   graphRagModelMissingReason: string;
@@ -2736,8 +2734,6 @@ const ko: I18nKeys = {
   graphRagStatusPartialLabel: '부분 완료',
   graphRagStatusPartialDesc:
     '일부 파일 추출에 실패했습니다. 실패한 파일만 다시 시도할 수 있습니다.',
-  graphRagStatusSchemaErrorLabel: '설정 오류',
-  graphRagStatusSchemaErrorDesc: '온톨로지 스키마에 오류가 있습니다. 설정을 확인하세요.',
   graphRagDisabledReason: 'GraphRAG 백그라운드 빌드가 보류되어 있습니다.',
   graphRagProviderMissingReason:
     '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
@@ -4382,8 +4378,6 @@ const en: I18nKeys = {
     'Some files changed, or the extraction model or contract changed, so re-extraction is required.',
   graphRagStatusPartialLabel: 'Partially complete',
   graphRagStatusPartialDesc: 'Some file extraction failed. You can retry only the failed files.',
-  graphRagStatusSchemaErrorLabel: 'Configuration error',
-  graphRagStatusSchemaErrorDesc: 'The extraction contract could not be loaded.',
   graphRagDisabledReason: 'GraphRAG background build is paused.',
   graphRagProviderMissingReason:
     'Enable the selected GraphRAG model provider and add the model to its model list.',
