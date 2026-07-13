@@ -21521,15 +21521,29 @@ mod tests {
 
         let first = detect_leiden_hierarchy_from_edges_json(edges, 20, 4);
         let second = detect_leiden_hierarchy_from_edges_json(edges, 20, 4);
-        let parsed: JsonValue = serde_json::from_str(&first).expect("hierarchy JSON should parse");
-        let levels = parsed["levels"]
-            .as_array()
-            .expect("hierarchy should contain levels");
+        let parsed = serde_json::from_str::<JsonValue>(&first).unwrap_or(JsonValue::Null);
+        let levels = parsed.get("levels").and_then(JsonValue::as_array);
 
         assert_eq!(first, second, "동일 graph는 동일 hierarchy를 만들어야 한다");
-        assert_eq!(levels.len(), 2, "leaf와 root level이 필요하다");
-        assert_eq!(levels[0]["communityIds"], serde_json::json!([0, 1]));
-        assert_eq!(levels[1]["communityIds"], serde_json::json!([0]));
+        assert_eq!(
+            levels.map(Vec::len),
+            Some(2),
+            "leaf와 root level이 필요하다"
+        );
+        assert_eq!(
+            levels
+                .and_then(|items| items.first())
+                .and_then(|level| level.get("communityIds"))
+                .cloned(),
+            Some(serde_json::json!([0, 1])),
+        );
+        assert_eq!(
+            levels
+                .and_then(|items| items.get(1))
+                .and_then(|level| level.get("communityIds"))
+                .cloned(),
+            Some(serde_json::json!([0])),
+        );
     }
 
     #[test]
@@ -21540,7 +21554,7 @@ mod tests {
             "beta ".repeat(220)
         );
         let plan = plan_graph_extraction_child_units_json(&content, 0);
-        let chunks: JsonValue = serde_json::from_str(&plan).expect("child unit JSON should parse");
+        let chunks = serde_json::from_str::<JsonValue>(&plan).unwrap_or(JsonValue::Null);
 
         assert!(chunks.as_array().is_some_and(|items| items.len() >= 2));
         assert_eq!(plan_graph_extraction_child_units_json(&content, 4), "[]");

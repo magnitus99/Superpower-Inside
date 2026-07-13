@@ -5848,7 +5848,7 @@ function ensureRustCore(): boolean {
   if (unavailable) return false;
 
   try {
-    initSync(decodeBase64ToBytes(RAG_WASM_BASE64));
+    initSync({ module: decodeBase64ToBytes(RAG_WASM_BASE64) });
     initialized = true;
     return true;
   } catch {
