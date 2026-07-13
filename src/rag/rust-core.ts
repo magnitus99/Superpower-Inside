@@ -17,12 +17,14 @@ import {
   create_content_hash,
   create_entries_fingerprint as create_entries_fingerprint_json,
   detect_communities_from_edges_json,
+  detect_leiden_hierarchy_from_edges_json,
   detect_communities_flat,
   extract_json_object_text,
   extract_structured_reasoning,
   extract_vault_links_json,
   graph_extraction_contract_version,
   plan_graph_extraction_failure_json,
+  plan_graph_extraction_child_units_json,
   find_mentioned_entity_matches,
   hybrid_score_or_nan,
   initSync,
@@ -1293,6 +1295,14 @@ export interface RustCommunityDetectionByIdResult {
   assignmentsById: RustCommunityAssignmentById[];
   communityIds: number[];
   modularity: number;
+}
+
+export interface RustCommunityHierarchyLevel extends RustCommunityDetectionByIdResult {
+  level: number;
+}
+
+export interface RustCommunityHierarchyResult {
+  levels: RustCommunityHierarchyLevel[];
 }
 
 export interface RustLocalEvidenceInput {
@@ -4874,6 +4884,33 @@ export function detectCommunitiesFromEdgesRust(
   }
 }
 
+export function detectLeidenHierarchyFromEdgesRust(
+  edges: readonly RustCommunityEdgeRecord[],
+  maxIterations: number,
+  maxLevels: number,
+): RustCommunityHierarchyResult | null {
+  if (
+    !edges.every(isCommunityEdgeRecord) ||
+    !Number.isFinite(maxIterations) ||
+    !Number.isFinite(maxLevels) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = detect_leiden_hierarchy_from_edges_json(
+      JSON.stringify(edges),
+      normalizeNonNegativeInteger(maxIterations),
+      normalizePositiveInteger(maxLevels),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isCommunityHierarchyResult(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function planGraphEdgeRecordsRust(
   entityIds: readonly string[],
   relationSourceIds: readonly string[],
@@ -5104,6 +5141,24 @@ export function chunkMarkdownRust(
     );
     if (!isChunkArray(parsed)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphExtractionChildUnitsRust(
+  content: string,
+  splitDepth: number,
+): Chunk[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_graph_extraction_child_units_json(
+        content,
+        normalizeNonNegativeInteger(splitDepth),
+      ),
+    );
+    return isChunkArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -6502,6 +6557,17 @@ function isCommunityDetectionByIdResult(value: unknown): value is RustCommunityD
     result.communityIds.every(isValidNonNegativeInteger) &&
     Number.isFinite(result.modularity)
   );
+}
+
+function isCommunityHierarchyResult(value: unknown): value is RustCommunityHierarchyResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Partial<RustCommunityHierarchyResult>;
+  return Array.isArray(result.levels) && result.levels.every(isCommunityHierarchyLevel);
+}
+
+function isCommunityHierarchyLevel(value: unknown): value is RustCommunityHierarchyLevel {
+  if (!isCommunityDetectionByIdResult(value)) return false;
+  return isValidNonNegativeInteger((value as Partial<RustCommunityHierarchyLevel>).level);
 }
 
 function isCommunityAssignmentById(value: unknown): value is RustCommunityAssignmentById {

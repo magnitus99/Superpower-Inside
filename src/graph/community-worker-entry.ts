@@ -1,5 +1,6 @@
 import {
   detect_communities_from_edges_json,
+  detect_leiden_hierarchy_from_edges_json,
   initSync,
 } from '../../generated/rag-wasm/rag_wasm';
 
@@ -8,6 +9,8 @@ interface WorkerRequest {
   wasmBase64?: string;
   edges: unknown[];
   maxIterations: number;
+  maxLevels?: number;
+  operation: 'flat' | 'hierarchy';
 }
 
 interface WorkerResponse {
@@ -19,14 +22,21 @@ interface WorkerResponse {
 let initialized = false;
 
 self.onmessage = (event: MessageEvent<WorkerRequest>): void => {
-  const { id, wasmBase64, edges, maxIterations } = event.data;
+  const { id, wasmBase64, edges, maxIterations, maxLevels, operation } = event.data;
   try {
     if (!initialized) {
       if (!wasmBase64) throw new Error('Graph worker WASM payload is missing.');
       initSync({ module: decodeBase64(wasmBase64) });
       initialized = true;
     }
-    const result = detect_communities_from_edges_json(JSON.stringify(edges), maxIterations);
+    const result =
+      operation === 'hierarchy'
+        ? detect_leiden_hierarchy_from_edges_json(
+            JSON.stringify(edges),
+            maxIterations,
+            maxLevels ?? 4,
+          )
+        : detect_communities_from_edges_json(JSON.stringify(edges), maxIterations);
     self.postMessage({ id, result } satisfies WorkerResponse);
   } catch (error) {
     self.postMessage({

@@ -169,9 +169,22 @@ export interface GraphRawResponseRecord {
 export interface GraphProviderCircuitRecord {
   providerEpochId: string;
   consecutiveFailures: number;
-  state: 'closed' | 'open';
+  state: 'closed' | 'open' | 'half-open';
   openUntil?: number;
   lastErrorCode?: string;
+  updatedAt: number;
+}
+
+export interface GraphCommunitySummaryJobRecord {
+  id: string;
+  communityKey: string;
+  memberHash: string;
+  childReportHash: string;
+  level: number;
+  promptHash: string;
+  providerEpochId: string;
+  state: 'prepared' | 'response-received' | 'committed';
+  rawResponseId?: string;
   updatedAt: number;
 }
 
@@ -224,6 +237,8 @@ export interface KnowledgeGraphStore {
   getRawResponses(): Promise<GraphRawResponseRecord[]>;
   putProviderCircuit(record: GraphProviderCircuitRecord): Promise<void>;
   getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined>;
+  putCommunitySummaryJob(record: GraphCommunitySummaryJobRecord): Promise<void>;
+  getCommunitySummaryJob(id: string): Promise<GraphCommunitySummaryJobRecord | undefined>;
   commitExtraction(commit: GraphExtractionCommit): Promise<void>;
   getEntities(limit?: number, offset?: number): Promise<GraphEntityRecord[]>;
   getRelations(limit?: number, offset?: number): Promise<GraphRelationRecord[]>;
@@ -273,6 +288,7 @@ class KnowledgeGraphDB extends Dexie {
   graphExtractionJobs!: Dexie.Table<GraphExtractionJobRecord, string>;
   graphRawResponses!: Dexie.Table<GraphRawResponseRecord, string>;
   graphProviderCircuits!: Dexie.Table<GraphProviderCircuitRecord, string>;
+  graphCommunitySummaryJobs!: Dexie.Table<GraphCommunitySummaryJobRecord, string>;
 
   constructor(name: string) {
     super(name);
@@ -334,6 +350,25 @@ class KnowledgeGraphDB extends Dexie {
         'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
       graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
       graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
+    });
+    this.version(5).stores({
+      graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
+      graphRelations:
+        'id, ontologySchemaId, relationTypeId, sourceEntityId, targetEntityId, updatedAt',
+      graphClaims: 'id, claimTypeId, *entityIds, updatedAt',
+      graphEvidence: 'id, filePath, entryId, contentHash, updatedAt',
+      graphCommunities: 'id, ontologySchemaId, level, parentCommunityId, updatedAt',
+      graphRejectedFacts: 'id, filePath, entryId, reason, updatedAt',
+      graphExtractionCache:
+        'entryId, contentHash, extractionModelKey, ontologySchemaId, ontologyVersion, updatedAt',
+      graphPendingEntityMerges:
+        'id, ontologySchemaId, existingEntityId, candidateEntityId, updatedAt',
+      graphExtractionJobs:
+        'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
+      graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
+      graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
+      graphCommunitySummaryJobs:
+        'id, communityKey, level, providerEpochId, state, updatedAt',
     });
   }
 }
@@ -421,6 +456,17 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     providerEpochId: string,
   ): Promise<GraphProviderCircuitRecord | undefined> {
     const record = await this.db.graphProviderCircuits.get(providerEpochId);
+    return record ? { ...record } : undefined;
+  }
+
+  async putCommunitySummaryJob(record: GraphCommunitySummaryJobRecord): Promise<void> {
+    await this.db.graphCommunitySummaryJobs.put({ ...record });
+  }
+
+  async getCommunitySummaryJob(
+    id: string,
+  ): Promise<GraphCommunitySummaryJobRecord | undefined> {
+    const record = await this.db.graphCommunitySummaryJobs.get(id);
     return record ? { ...record } : undefined;
   }
 
@@ -798,6 +844,10 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         ]);
       },
     );
+    await Promise.all([
+      this.db.graphProviderCircuits.clear(),
+      this.db.graphCommunitySummaryJobs.clear(),
+    ]);
   }
 
   async deleteDatabase(): Promise<void> {
@@ -818,6 +868,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
   private extractionJobs = new Map<string, GraphExtractionJobRecord>();
   private rawResponses = new Map<string, GraphRawResponseRecord>();
   private providerCircuits = new Map<string, GraphProviderCircuitRecord>();
+  private communitySummaryJobs = new Map<string, GraphCommunitySummaryJobRecord>();
 
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean> {
     const cached = this.extractionCache.get(input.entryId);
@@ -895,6 +946,16 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
   getProviderCircuit(providerEpochId: string): Promise<GraphProviderCircuitRecord | undefined> {
     const record = this.providerCircuits.get(providerEpochId);
+    return Promise.resolve(record ? { ...record } : undefined);
+  }
+
+  putCommunitySummaryJob(record: GraphCommunitySummaryJobRecord): Promise<void> {
+    this.communitySummaryJobs.set(record.id, { ...record });
+    return Promise.resolve();
+  }
+
+  getCommunitySummaryJob(id: string): Promise<GraphCommunitySummaryJobRecord | undefined> {
+    const record = this.communitySummaryJobs.get(id);
     return Promise.resolve(record ? { ...record } : undefined);
   }
 
@@ -1201,6 +1262,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     this.extractionJobs.clear();
     this.rawResponses.clear();
     this.providerCircuits.clear();
+    this.communitySummaryJobs.clear();
     return Promise.resolve();
   }
 }

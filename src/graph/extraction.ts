@@ -10,6 +10,7 @@ import {
   planGraphRelationEndpointIndicesRust,
   parseExtractedGraphPayloadRust,
   planGraphExtractionFailureRust,
+  planGraphExtractionChildUnitsRust,
   type RustExtractedGraphClaim as ExtractedClaim,
   type RustExtractedGraphEntity as ExtractedEntity,
   type RustExtractedGraphPayload as ExtractedGraphPayload,
@@ -19,6 +20,7 @@ import {
   type RustGraphRelationEndpointInput,
   type RustGraphRelationEndpointLookupRecord,
   type RustGraphRelationEndpointPlan,
+  type RustGraphExtractionFailurePlan,
 } from '../rag/rust-core';
 import { EntityResolver, type EntityResolverOptions } from './entity-resolver';
 import { createGraphEntityLabels } from './entity-labels';
@@ -51,6 +53,7 @@ export interface GraphExtractionChunkInput {
   knowledgeContract: KnowledgeGraphContract;
   signal?: AbortSignal;
   ignoreRetryWait?: boolean;
+  splitDepth?: number;
   onPhase?: (phase: GraphRagIndexingPhase) => void;
   onProgress?: (patch: GraphRagIndexingCounterPatch) => void;
 }
@@ -152,6 +155,16 @@ export class GraphExtractionIndexer {
       ) {
         throw new GraphExtractionDeferredError(circuit.openUntil ?? Date.now());
       }
+      if (
+        circuit?.state === 'open' &&
+        (circuit.openUntil ?? 0) <= Date.now()
+      ) {
+        await this.store.putProviderCircuit({
+          ...circuit,
+          state: 'half-open',
+          updatedAt: Date.now(),
+        });
+      }
       const leasedAt = Date.now();
       job = {
         ...job,
@@ -171,7 +184,23 @@ export class GraphExtractionIndexer {
           updatedAt: Date.now(),
         });
       } catch (error) {
-        await this.persistInterruptedRequest(job, error);
+        const failurePlan = await this.persistInterruptedRequest(job, error);
+        if (
+          failurePlan?.code === 'context-overflow' &&
+          (await this.extractOverflowChildren(input))
+        ) {
+          const committedAt = Date.now();
+          await this.store.markExtractionCached({ ...cacheKey, updatedAt: committedAt });
+          await this.store.putExtractionJob({
+            ...job,
+            state: 'committed',
+            leaseOwner: undefined,
+            leaseExpiresAt: undefined,
+            updatedAt: committedAt,
+          });
+          input.onProgress?.({ cachedChunks: 1 });
+          return;
+        }
         throw error;
       }
     }
@@ -284,10 +313,10 @@ export class GraphExtractionIndexer {
   private async persistInterruptedRequest(
     job: GraphExtractionJobRecord,
     error: unknown,
-  ): Promise<void> {
+  ): Promise<RustGraphExtractionFailurePlan | null> {
     if (isAbortError(error)) {
       await this.store.putExtractionJob(createAbortedJob(job));
-      return;
+      return null;
     }
     const now = Date.now();
     const existingCircuit = await this.store.getProviderCircuit(job.providerEpochId);
@@ -319,6 +348,34 @@ export class GraphExtractionIndexer {
       lastErrorCode: plan.code,
       updatedAt: now,
     });
+    return plan;
+  }
+
+  private async extractOverflowChildren(input: GraphExtractionChunkInput): Promise<boolean> {
+    const splitDepth = input.splitDepth ?? 0;
+    const children = planGraphExtractionChildUnitsRust(input.chunkText, splitDepth);
+    if (!children || children.length < 2) return false;
+    for (const [index, child] of children.entries()) {
+      const childStartLine = input.startLine + child.metadata.startLine;
+      const childEndLine = input.startLine + child.metadata.endLine;
+      await this.extractChunk({
+        ...input,
+        chunkText: child.text,
+        entryId: `${input.entryId}::overflow::${splitDepth + 1}::${index}`,
+        startLine: childStartLine,
+        endLine: childEndLine,
+        contentHash: createId(
+          'graph-overflow-child',
+          input.contentHash,
+          String(splitDepth + 1),
+          String(index),
+          child.text,
+        ),
+        splitDepth: splitDepth + 1,
+        ignoreRetryWait: false,
+      });
+    }
+    return true;
   }
 
   private async storeRawResponse(

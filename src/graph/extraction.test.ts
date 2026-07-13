@@ -138,6 +138,54 @@ describe('GraphExtractionIndexer', () => {
     expect(await store.getExtractionJobs()).toEqual([
       expect.objectContaining({ state: 'quarantined', lastErrorCode: 'http-401' }),
     ]);
+    const [job] = await store.getExtractionJobs();
+    await expect(store.getProviderCircuit(job?.providerEpochId ?? '')).resolves.toEqual(
+      expect.objectContaining({ state: 'open', lastErrorCode: 'http-401' }),
+    );
+  });
+
+  it('만료된 open circuit은 단일 probe를 거쳐 성공 시 닫힌다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const provider = createProvider(JSON.stringify({ entities: [], relations: [], claims: [] }));
+    const indexer = new GraphExtractionIndexer({ provider, store });
+    const providerEpochId = indexer.getProviderEpochId('openai:gpt-4o-mini', 1);
+    await store.putProviderCircuit({
+      providerEpochId,
+      consecutiveFailures: 3,
+      state: 'open',
+      openUntil: Date.now() - 1,
+      updatedAt: Date.now() - 1,
+    });
+
+    await indexer.extractChunk(createInput('Alpha'));
+
+    await expect(store.getProviderCircuit(providerEpochId)).resolves.toEqual(
+      expect.objectContaining({ state: 'closed', consecutiveFailures: 0 }),
+    );
+    expect(provider.calls).toBe(1);
+  });
+
+  it('context overflow는 네트워크 재시도 대신 Rust Markdown child job으로 분할한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    const childResponse = JSON.stringify({
+      entities: [{ id: 'e1', name: 'Alpha', typeId: 'concept' }],
+      relations: [],
+      claims: [],
+    });
+    const provider = createMixedProvider([
+      new Error('context length exceeded'),
+      childResponse,
+      childResponse,
+    ]);
+    const indexer = new GraphExtractionIndexer({ provider, store });
+    const content = `# First\n\n${'alpha '.repeat(220)}\n\n# Second\n\n${'beta '.repeat(220)}`;
+
+    await indexer.extractChunk(createInput(content));
+
+    expect(provider.calls).toBeGreaterThan(1);
+    expect(await store.getEvidence()).toHaveLength(provider.calls - 1);
+    expect(await store.getExtractionJobs()).toHaveLength(provider.calls);
+    expect((await store.getExtractionJobs()).every((job) => job.state === 'committed')).toBe(true);
   });
 
   it('연속 provider 실패 세 번 뒤에는 다른 chunk 호출도 회로 차단한다', async () => {
@@ -991,6 +1039,24 @@ function createCountingRejectingProvider(error: Error): LLMProvider & { calls: n
       return Promise.reject(error);
     },
     streamChat: () => Promise.reject(error),
+  };
+}
+
+function createMixedProvider(
+  responses: readonly (string | Error)[],
+): LLMProvider & { calls: number } {
+  let calls = 0;
+  return {
+    capability: TEST_PROVIDER_CAPABILITY,
+    get calls() {
+      return calls;
+    },
+    chat: () => {
+      const response = responses[Math.min(calls, responses.length - 1)] ?? '';
+      calls++;
+      return response instanceof Error ? Promise.reject(response) : Promise.resolve(response);
+    },
+    streamChat: () => Promise.resolve(),
   };
 }
 

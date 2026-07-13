@@ -221,6 +221,11 @@ export function detect_communities_flat(source_indices: Uint32Array, target_indi
 export function detect_communities_from_edges_json(edges_json: string, max_iterations: number): string;
 
 /**
+ * `GraphRAG` string edge snapshot에서 연결성 refinement를 포함한 계층 community plan을 만든다.
+ */
+export function detect_leiden_hierarchy_from_edges_json(edges_json: string, max_iterations: number, max_levels: number): string;
+
+/**
  * `GraphRAG` LLM 응답에서 JSON object 텍스트를 추출한다. 실패하면 빈 문자열을 반환한다.
  */
 export function extract_json_object_text(raw_response: string): string;
@@ -504,6 +509,11 @@ export function plan_graph_evidence_candidate_lookup_json(scores_json: string, e
  * Graph evidence candidate를 최종 vector entry candidate로 해석한다.
  */
 export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_json: string, entries_json: string, candidate_limit: number): string;
+
+/**
+ * context overflow가 난 extraction unit을 더 작은 Markdown 경계 child unit으로 나눈다.
+ */
+export function plan_graph_extraction_child_units_json(content: string, split_depth: number): string;
 
 /**
  * Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
@@ -872,6 +882,7 @@ export interface InitOutput {
     readonly create_graph_id: (a: number, b: number) => [number, number];
     readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly detect_communities_from_edges_json: (a: number, b: number, c: number) => [number, number];
+    readonly detect_leiden_hierarchy_from_edges_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly extract_json_object_text: (a: number, b: number) => [number, number];
     readonly extract_structured_reasoning: (a: number, b: number) => [number, number];
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];
@@ -932,6 +943,7 @@ export interface InitOutput {
     readonly plan_graph_entity_merge_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_candidate_lookup_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_evidence_entry_candidates_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_graph_extraction_child_units_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_graph_extraction_failure_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_graph_mention_context_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_graph_query_execution_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];

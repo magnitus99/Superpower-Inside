@@ -8,6 +8,7 @@ import {
   type RustGraphCommunitySummaryClaimInput,
   type RustGraphCommunitySummaryGroupsPlan,
   type RustGraphCommunitySummaryRelationInput,
+  type RustCommunityHierarchyLevel,
 } from '../rag/rust-core';
 import type {
   GraphCommunityRecord,
@@ -128,6 +129,8 @@ export class CommunitySummarizer {
     communityAssignment: Map<string, number>,
     communityIds: readonly number[],
     signal?: AbortSignal,
+    level = 0,
+    childReports: readonly GraphCommunityRecord[] = [],
   ): Promise<GraphCommunityRecord[]> {
     const [allEntities, allRelations, allClaims] = await Promise.all([
       this.store.getEntities(),
@@ -157,13 +160,16 @@ export class CommunitySummarizer {
 
       if (entities.length === 0) continue;
 
-      const title = `Community ${communityId}`;
+      const title = level === 0 ? `Community ${communityId}` : `Community ${level}.${communityId}`;
       const entityNames = entities.map((e) => e.canonicalName).join(', ');
       const summary = await this.generateSummary(
         communityId,
         entities.slice(0, 15),
         relations.slice(0, 15),
         claims.slice(0, 10),
+        childReports.filter((report) =>
+          report.entityIds.some((entityId) => entities.some((entity) => entity.id === entityId)),
+        ),
         signal,
       );
       if (signal?.aborted) break;
@@ -177,13 +183,14 @@ export class CommunitySummarizer {
         'community',
         this.ontologySchemaId,
         String(communityId),
+        ...(level === 0 ? [] : [String(level)]),
         entityNames.replaceAll(' ', '-').slice(0, 80),
       ]);
 
       communities.push({
         id:
           communityRecordId ??
-          `community::${this.ontologySchemaId}::${communityId}::${entityNames.replaceAll(' ', '-').slice(0, 80)}`,
+          `community::${this.ontologySchemaId}::${communityId}${level === 0 ? '' : `::${level}`}::${entityNames.replaceAll(' ', '-').slice(0, 80)}`,
         ontologySchemaId: this.ontologySchemaId,
         title,
         entityIds,
@@ -191,7 +198,7 @@ export class CommunitySummarizer {
         claimIds,
         summary,
         summaryVector,
-        level: 0,
+        level,
         updatedAt: Date.now(),
       });
     }
@@ -199,11 +206,45 @@ export class CommunitySummarizer {
     return communities;
   }
 
+  async summarizeHierarchy(
+    levels: readonly RustCommunityHierarchyLevel[],
+    signal?: AbortSignal,
+  ): Promise<GraphCommunityRecord[]> {
+    const allRecords: GraphCommunityRecord[] = [];
+    let childRecords: GraphCommunityRecord[] = [];
+    for (const level of levels) {
+      if (signal?.aborted) break;
+      const assignments = new Map(
+        level.assignmentsById.map((assignment) => [
+          assignment.entityId,
+          assignment.communityId,
+        ]),
+      );
+      const records = await this.summarizeCommunities(
+        assignments,
+        level.communityIds,
+        signal,
+        level.level,
+        childRecords,
+      );
+      for (const child of childRecords) {
+        const parent = records.find((record) =>
+          child.entityIds.some((entityId) => record.entityIds.includes(entityId)),
+        );
+        if (parent) child.parentCommunityId = parent.id;
+      }
+      allRecords.push(...records);
+      childRecords = records;
+    }
+    return allRecords;
+  }
+
   private async generateSummary(
     communityId: number,
     entities: GraphEntityRecord[],
     relations: GraphRelationRecord[],
     claims: GraphClaimRecord[],
+    childReports: readonly GraphCommunityRecord[],
     signal?: AbortSignal,
   ): Promise<string> {
     const entityMap = new Map(entities.map((e) => [e.id, e]));
@@ -219,6 +260,9 @@ export class CommunitySummarizer {
     const claimLines = claims
       .map((c) => `  - ${formatClaimSummary(c, entityMap)}`)
       .join('\n');
+    const childReportLines = childReports
+      .map((report) => `  - ${report.title}: ${report.summary}`)
+      .join('\n');
 
     const prompt = [
       'You are analyzing a knowledge graph community detected from a document vault.',
@@ -233,6 +277,9 @@ export class CommunitySummarizer {
       '## Claims',
       claimLines || '  (none)',
       '',
+      '## Child community reports',
+      childReportLines || '  (none)',
+      '',
       'Write a concise thematic summary (2-4 sentences in Korean) describing the main topic, key entities, and relationships found in this community. Focus on what connects these entities together thematically.',
     ].join('\n');
 
@@ -241,8 +288,88 @@ export class CommunitySummarizer {
       { role: 'user', content: prompt },
     ];
 
+    const memberHash = requireGraphId([
+      'community-members',
+      ...entities.map((entity) => entity.id),
+      ...relations.map((relation) => relation.id),
+      ...claims.map((claim) => claim.id),
+    ]);
+    const childReportHash = requireGraphId([
+      'community-child-reports',
+      ...childReports.flatMap((report) => [report.id, report.summary]),
+    ]);
+    const promptHash = requireGraphId(['community-summary-prompt', prompt]);
+    const providerEpochId = requireGraphId([
+      'community-summary-provider',
+      JSON.stringify(this.provider.capability),
+    ]);
+    const communityKey = `${communityId}:${memberHash}`;
+    const jobId = requireGraphId([
+      'community-summary-job',
+      communityKey,
+      childReportHash,
+      promptHash,
+      providerEpochId,
+    ]);
+    const existingJob = await this.store.getCommunitySummaryJob(jobId);
+    const cachedResponse = existingJob?.rawResponseId
+      ? await this.store.getRawResponse(existingJob.rawResponseId)
+      : undefined;
+
     try {
-      const summary = await this.provider.chat(messages, 0.3, undefined, { signal });
+      let summary = cachedResponse?.body;
+      if (summary === undefined) {
+        await this.store.putCommunitySummaryJob({
+          id: jobId,
+          communityKey,
+          memberHash,
+          childReportHash,
+          level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+          promptHash,
+          providerEpochId,
+          state: 'prepared',
+          updatedAt: Date.now(),
+        });
+        summary = await this.provider.chat(messages, 0.3, undefined, { signal });
+        const bodyHash = requireGraphId(['community-summary-body', summary]);
+        const rawResponseId = requireGraphId(['community-summary-response', jobId, bodyHash]);
+        await this.store.putRawResponse({
+          id: rawResponseId,
+          requestFingerprint: jobId,
+          providerEpochId,
+          body: summary,
+          bodyHash,
+          receivedAt: Date.now(),
+        });
+        await this.store.putCommunitySummaryJob({
+          id: jobId,
+          communityKey,
+          memberHash,
+          childReportHash,
+          level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+          promptHash,
+          providerEpochId,
+          state: 'response-received',
+          rawResponseId,
+          updatedAt: Date.now(),
+        });
+      }
+      await this.store.putCommunitySummaryJob({
+        id: jobId,
+        communityKey,
+        memberHash,
+        childReportHash,
+        level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+        promptHash,
+        providerEpochId,
+        state: 'committed',
+        rawResponseId: existingJob?.rawResponseId ?? requireGraphId([
+          'community-summary-response',
+          jobId,
+          requireGraphId(['community-summary-body', summary]),
+        ]),
+        updatedAt: Date.now(),
+      });
       return summary.trim() || `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
     } catch {
       if (signal?.aborted) {
@@ -251,4 +378,8 @@ export class CommunitySummarizer {
       return `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
     }
   }
+}
+
+function requireGraphId(parts: readonly string[]): string {
+  return createGraphIdRust(parts) ?? parts.join('::');
 }

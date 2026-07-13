@@ -92,6 +92,90 @@ describe('CommunitySummarizer', () => {
     expect(id).not.toContain(' ');
     expect(id).not.toContain('&');
   });
+
+  it('계층 summary는 child report를 상위 prompt에 넣고 parent id를 연결한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    for (const id of ['a', 'b', 'c', 'd']) {
+      await store.upsertEntity(createEntity(`entity::${id}`, id.toUpperCase()));
+    }
+    const prompts: string[] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      capability: TEST_PROVIDER_CAPABILITY,
+      chat: (messages) => {
+        prompts.push(messages.map((message) => message.content).join('\n'));
+        calls++;
+        return Promise.resolve(`summary-${calls}`);
+      },
+      streamChat: () => Promise.resolve(),
+    };
+    const summarizer = new CommunitySummarizer({
+      provider,
+      embeddingProvider: createEmbeddingProvider(),
+      store,
+      ontologySchemaId: 'default',
+    });
+
+    const records = await summarizer.summarizeHierarchy([
+      {
+        level: 0,
+        assignmentsById: [
+          { entityId: 'entity::a', communityId: 0 },
+          { entityId: 'entity::b', communityId: 0 },
+          { entityId: 'entity::c', communityId: 1 },
+          { entityId: 'entity::d', communityId: 1 },
+        ],
+        communityIds: [0, 1],
+        modularity: 0.7,
+      },
+      {
+        level: 1,
+        assignmentsById: ['a', 'b', 'c', 'd'].map((id) => ({
+          entityId: `entity::${id}`,
+          communityId: 0,
+        })),
+        communityIds: [0],
+        modularity: 0,
+      },
+    ]);
+
+    expect(records).toHaveLength(3);
+    expect(records[0]?.parentCommunityId).toBe(records[2]?.id);
+    expect(records[1]?.parentCommunityId).toBe(records[2]?.id);
+    expect(prompts[2]).toContain('summary-1');
+    expect(prompts[2]).toContain('summary-2');
+  });
+
+  it('embedding 단계가 중단돼도 저장한 summary 응답으로 provider 재호출 없이 재개한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity('entity::a', 'A'));
+    const provider = createProvider();
+    const failingEmbedding: EmbeddingProvider = {
+      embed: () => Promise.reject(new Error('simulated embedding interruption')),
+      embedBatch: () => Promise.reject(new Error('simulated embedding interruption')),
+    };
+    const assignments = new Map([['entity::a', 0]]);
+
+    await expect(
+      new CommunitySummarizer({
+        provider,
+        embeddingProvider: failingEmbedding,
+        store,
+        ontologySchemaId: 'default',
+      }).summarizeCommunities(assignments, [0]),
+    ).rejects.toThrow('simulated embedding interruption');
+    await expect(
+      new CommunitySummarizer({
+        provider,
+        embeddingProvider: createEmbeddingProvider(),
+        store,
+        ontologySchemaId: 'default',
+      }).summarizeCommunities(assignments, [0]),
+    ).resolves.toHaveLength(1);
+
+    expect(provider.calls).toBe(1);
+    expect(await store.getRawResponses()).toHaveLength(1);
+  });
 });
 
 function createEntity(id: string, canonicalName: string): GraphEntityRecord {

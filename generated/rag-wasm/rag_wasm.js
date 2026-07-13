@@ -768,6 +768,28 @@ export function detect_communities_from_edges_json(edges_json, max_iterations) {
 }
 
 /**
+ * `GraphRAG` string edge snapshot에서 연결성 refinement를 포함한 계층 community plan을 만든다.
+ * @param {string} edges_json
+ * @param {number} max_iterations
+ * @param {number} max_levels
+ * @returns {string}
+ */
+export function detect_leiden_hierarchy_from_edges_json(edges_json, max_iterations, max_levels) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(edges_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.detect_leiden_hierarchy_from_edges_json(ptr0, len0, max_iterations, max_levels);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * `GraphRAG` LLM 응답에서 JSON object 텍스트를 추출한다. 실패하면 빈 문자열을 반환한다.
  * @param {string} raw_response
  * @returns {string}
@@ -1982,6 +2004,27 @@ export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_js
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * context overflow가 난 extraction unit을 더 작은 Markdown 경계 child unit으로 나눈다.
+ * @param {string} content
+ * @param {number} split_depth
+ * @returns {string}
+ */
+export function plan_graph_extraction_child_units_json(content, split_depth) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_graph_extraction_child_units_json(ptr0, len0, split_depth);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

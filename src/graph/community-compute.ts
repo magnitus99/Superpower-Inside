@@ -2,7 +2,9 @@ import { GRAPH_COMMUNITY_WORKER_SOURCE } from '../../generated/graph-community-w
 import { RAG_WASM_BASE64 } from '../rag/rag-wasm-bytes';
 import {
   detectCommunitiesFromEdgesRust,
+  detectLeidenHierarchyFromEdgesRust,
   type RustCommunityDetectionByIdResult,
+  type RustCommunityHierarchyResult,
 } from '../rag/rust-core';
 import type { CommunityEdge } from './community-detector';
 
@@ -12,6 +14,12 @@ export interface GraphCommunityComputePort {
     maxIterations: number,
     signal?: AbortSignal,
   ): Promise<RustCommunityDetectionByIdResult>;
+  detectHierarchy(
+    edges: readonly CommunityEdge[],
+    maxIterations: number,
+    maxLevels: number,
+    signal?: AbortSignal,
+  ): Promise<RustCommunityHierarchyResult>;
 }
 
 export class InlineGraphCommunityCompute implements GraphCommunityComputePort {
@@ -25,6 +33,18 @@ export class InlineGraphCommunityCompute implements GraphCommunityComputePort {
     if (result === null) return Promise.reject(new Error('Graph community calculation failed.'));
     return Promise.resolve(result);
   }
+
+  detectHierarchy(
+    edges: readonly CommunityEdge[],
+    maxIterations: number,
+    maxLevels: number,
+    signal?: AbortSignal,
+  ): Promise<RustCommunityHierarchyResult> {
+    throwIfAborted(signal);
+    const result = detectLeidenHierarchyFromEdgesRust(edges, maxIterations, maxLevels);
+    if (result === null) return Promise.reject(new Error('Graph community hierarchy failed.'));
+    return Promise.resolve(result);
+  }
 }
 
 export class WorkerGraphCommunityCompute implements GraphCommunityComputePort {
@@ -35,6 +55,33 @@ export class WorkerGraphCommunityCompute implements GraphCommunityComputePort {
     maxIterations: number,
     signal?: AbortSignal,
   ): Promise<RustCommunityDetectionByIdResult> {
+    return this.request(edges, maxIterations, undefined, 'flat', parseWorkerResult, signal);
+  }
+
+  detectHierarchy(
+    edges: readonly CommunityEdge[],
+    maxIterations: number,
+    maxLevels: number,
+    signal?: AbortSignal,
+  ): Promise<RustCommunityHierarchyResult> {
+    return this.request(
+      edges,
+      maxIterations,
+      maxLevels,
+      'hierarchy',
+      parseWorkerHierarchyResult,
+      signal,
+    );
+  }
+
+  private request<T>(
+    edges: readonly CommunityEdge[],
+    maxIterations: number,
+    maxLevels: number | undefined,
+    operation: 'flat' | 'hierarchy',
+    parse: (value: string | undefined) => T | null,
+    signal?: AbortSignal,
+  ): Promise<T> {
     throwIfAborted(signal);
     const { worker, dispose } = this.createWorker();
     return new Promise((resolve, reject) => {
@@ -58,7 +105,7 @@ export class WorkerGraphCommunityCompute implements GraphCommunityComputePort {
           reject(new Error(event.data.error));
           return;
         }
-        const result = parseWorkerResult(event.data.result);
+        const result = parse(event.data.result);
         if (result === null) {
           reject(new Error('Graph community worker returned an invalid result.'));
           return;
@@ -70,6 +117,8 @@ export class WorkerGraphCommunityCompute implements GraphCommunityComputePort {
         wasmBase64: RAG_WASM_BASE64,
         edges,
         maxIterations,
+        maxLevels,
+        operation,
       });
     });
   }
@@ -132,6 +181,23 @@ function parseWorkerResult(value: string | undefined): RustCommunityDetectionByI
       communityIds: parsed.communityIds.map(Number),
       modularity: parsed.modularity,
     };
+  } catch {
+    return null;
+  }
+}
+
+function parseWorkerHierarchyResult(value: string | undefined): RustCommunityHierarchyResult | null {
+  if (value === undefined) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed) || !isUnknownArray(parsed.levels)) return null;
+    const levels = parsed.levels.map((level) => {
+      if (!isRecord(level) || !isNonNegativeInteger(level.level)) return null;
+      const detection = parseWorkerResult(JSON.stringify(level));
+      return detection === null ? null : { ...detection, level: level.level };
+    });
+    if (levels.some((level) => level === null)) return null;
+    return { levels: levels.filter((level): level is NonNullable<typeof level> => level !== null) };
   } catch {
     return null;
   }

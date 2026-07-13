@@ -1503,6 +1503,25 @@ pub fn detect_communities_from_edges_json(edges_json: &str, max_iterations: usiz
     serialize_community_detection_plan_json(&plan)
 }
 
+/// `GraphRAG` string edge snapshot에서 연결성 refinement를 포함한 계층 community plan을 만든다.
+#[must_use]
+#[wasm_bindgen]
+pub fn detect_leiden_hierarchy_from_edges_json(
+    edges_json: &str,
+    max_iterations: usize,
+    max_levels: usize,
+) -> String {
+    let Some(edges) = parse_community_edge_records_json(edges_json) else {
+        return String::new();
+    };
+    let Some(plan) =
+        detect_leiden_hierarchy_from_edge_records(&edges, max_iterations, max_levels.clamp(1, 16))
+    else {
+        return String::new();
+    };
+    serialize_community_hierarchy_plan_json(&plan)
+}
+
 /// `GraphRAG` entity/relation string snapshot에서 relation edge record JSON plan을 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -3040,6 +3059,22 @@ pub fn chunk_markdown_json(content: &str, max_chunk_size: usize, overlap_chars: 
     serialize_chunks_json(&chunks)
 }
 
+/// context overflow가 난 extraction unit을 더 작은 Markdown 경계 child unit으로 나눈다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_graph_extraction_child_units_json(content: &str, split_depth: usize) -> String {
+    let character_count = content.chars().count();
+    if split_depth >= 4 || character_count <= 1_024 {
+        return "[]".to_owned();
+    }
+    let max_chunk_size = character_count.div_ceil(2).max(512);
+    let chunks = chunk_markdown(content, max_chunk_size, 0);
+    if chunks.len() < 2 {
+        return "[]".to_owned();
+    }
+    serialize_chunks_json(&chunks)
+}
+
 /// 일반 텍스트와 코드 파일을 줄/빈 줄 경계 기준으로 chunk JSON으로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -4034,18 +4069,26 @@ pub fn plan_graph_extraction_failure_json(
     } else {
         "provider-error".to_owned()
     };
-    let retryable = !matches!(parsed_status, 400 | 401 | 403 | 404);
+    let retryable = !matches!(parsed_status, 400 | 401 | 403 | 404) && code != "context-overflow";
     let exponent = attempt_count.saturating_sub(1).min(10);
     let exponential_delay = 2_000_f64 * 2_f64.powi(i32::try_from(exponent).unwrap_or(10));
-    let delay_ms = if retry_after_ms.is_finite() && retry_after_ms >= 0.0 {
+    let base_delay_ms = if retry_after_ms.is_finite() && retry_after_ms >= 0.0 {
         retry_after_ms.max(exponential_delay)
     } else {
         exponential_delay
     }
     .min(3_600_000.0);
-    let opens_circuit = retryable && consecutive_failures >= 3;
+    let jitter_seed = message.bytes().fold(attempt_count, |seed, byte| {
+        seed.wrapping_mul(16_777_619).wrapping_add(u32::from(byte))
+    });
+    let jitter_ratio = f64::from(jitter_seed % 251) / 1_000.0;
+    let delay_ms = (base_delay_ms * (1.0 + jitter_ratio)).min(3_600_000.0);
+    let authentication_failure = matches!(parsed_status, 401 | 403);
+    let opens_circuit = authentication_failure || (retryable && consecutive_failures >= 3);
     let next_attempt_at = now_ms
-        + if opens_circuit {
+        + if authentication_failure {
+            300_000.0
+        } else if opens_circuit {
             delay_ms.max(60_000.0)
         } else {
             delay_ms
@@ -6622,6 +6665,24 @@ struct CommunityDetectionPlan {
     community_ids: Vec<usize>,
     /// modularity.
     modularity: f64,
+}
+
+/// Leiden hierarchy의 한 level에 속하는 원본 entity assignment.
+struct CommunityHierarchyLevel {
+    /// zero-based hierarchy level.
+    level: usize,
+    /// original entity assignment rows.
+    assignments: Vec<CommunityAssignmentById>,
+    /// stable community ids in this level.
+    community_ids: Vec<usize>,
+    /// modularity measured on this level input graph.
+    modularity: f64,
+}
+
+/// 연결성 refinement와 graph aggregation을 반복한 계층 plan.
+struct CommunityHierarchyPlan {
+    /// bottom-up hierarchy levels.
+    levels: Vec<CommunityHierarchyLevel>,
 }
 
 /// local evidence scoring 중간 상태.
@@ -12618,6 +12679,173 @@ fn detect_communities_from_edge_records(
     })
 }
 
+/// local move, 연결성 refinement, graph aggregation을 반복해 bottom-up hierarchy를 만든다.
+fn detect_leiden_hierarchy_from_edge_records(
+    edges: &[CommunityEdgeRecord],
+    max_iterations: usize,
+    max_levels: usize,
+) -> Option<CommunityHierarchyPlan> {
+    let entity_ids = sorted_community_entity_ids(edges);
+    if entity_ids.is_empty() {
+        return Some(CommunityHierarchyPlan { levels: Vec::new() });
+    }
+    let entity_index_by_id = entity_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| Some((id.as_str(), u32::try_from(index).ok()?)))
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    let mut source_indices = Vec::with_capacity(edges.len());
+    let mut target_indices = Vec::with_capacity(edges.len());
+    let mut weights = Vec::with_capacity(edges.len());
+    for edge in edges {
+        source_indices.push(*entity_index_by_id.get(edge.source.as_str())?);
+        target_indices.push(*entity_index_by_id.get(edge.target.as_str())?);
+        weights.push(edge.weight);
+    }
+    let mut graph =
+        build_community_graph(&source_indices, &target_indices, &weights, entity_ids.len())?;
+    let mut members = (0..entity_ids.len())
+        .map(|index| vec![index])
+        .collect::<Vec<_>>();
+    let mut levels = Vec::new();
+
+    for level in 0..max_levels {
+        if graph.total_weight == 0.0 || graph.degrees.is_empty() {
+            break;
+        }
+        let moved = detect_community_assignments(&graph, max_iterations);
+        let assignments = refine_connected_community_assignments(&graph, &moved);
+        let assignments = remap_community_assignments(&assignments);
+        let community_count = assignments
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |value| value + 1);
+        if community_count == 0 {
+            break;
+        }
+        let modularity = calculate_community_modularity(&graph, &assignments);
+        let mut original_assignments = vec![0_usize; entity_ids.len()];
+        for (node_index, community_id) in assignments.iter().copied().enumerate() {
+            for original_index in members.get(node_index).into_iter().flatten().copied() {
+                if let Some(slot) = original_assignments.get_mut(original_index) {
+                    *slot = community_id;
+                }
+            }
+        }
+        levels.push(CommunityHierarchyLevel {
+            level,
+            assignments: entity_ids
+                .iter()
+                .cloned()
+                .zip(original_assignments)
+                .map(|(entity_id, community_id)| CommunityAssignmentById {
+                    entity_id,
+                    community_id,
+                })
+                .collect(),
+            community_ids: (0..community_count).collect(),
+            modularity,
+        });
+
+        if community_count <= 1 || community_count >= graph.degrees.len() {
+            break;
+        }
+        let Some((next_graph, next_members)) =
+            aggregate_community_graph(&graph, &assignments, &members, community_count)
+        else {
+            break;
+        };
+        graph = next_graph;
+        members = next_members;
+    }
+
+    Some(CommunityHierarchyPlan { levels })
+}
+
+/// local move 결과를 community 내부 connected component로 분리한다.
+fn refine_connected_community_assignments(
+    graph: &CommunityGraph,
+    assignments: &[usize],
+) -> Vec<usize> {
+    let node_count = graph.degrees.len();
+    let mut refined = vec![usize::MAX; node_count];
+    let mut next_community = 0_usize;
+    for start in 0..node_count {
+        if refined.get(start).copied() != Some(usize::MAX) {
+            continue;
+        }
+        let target_community = assignments.get(start).copied().unwrap_or(start);
+        let mut stack = vec![start];
+        if let Some(slot) = refined.get_mut(start) {
+            *slot = next_community;
+        }
+        while let Some(node) = stack.pop() {
+            for (neighbor, _) in graph.adjacency.get(node).into_iter().flatten() {
+                if assignments.get(*neighbor).copied() != Some(target_community)
+                    || refined.get(*neighbor).copied() != Some(usize::MAX)
+                {
+                    continue;
+                }
+                if let Some(slot) = refined.get_mut(*neighbor) {
+                    *slot = next_community;
+                }
+                stack.push(*neighbor);
+            }
+        }
+        next_community += 1;
+    }
+    refined
+}
+
+/// refined community를 super-node로 바꾸고 cross-community edge를 합산한다.
+fn aggregate_community_graph(
+    graph: &CommunityGraph,
+    assignments: &[usize],
+    members: &[Vec<usize>],
+    community_count: usize,
+) -> Option<(CommunityGraph, Vec<Vec<usize>>)> {
+    let mut edge_weights = BTreeMap::<(usize, usize), f64>::new();
+    for (source, neighbors) in graph.adjacency.iter().enumerate() {
+        for (target, weight) in neighbors {
+            if source >= *target {
+                continue;
+            }
+            let source_community = assignments.get(source).copied()?;
+            let target_community = assignments.get(*target).copied()?;
+            if source_community == target_community {
+                continue;
+            }
+            let endpoints = if source_community < target_community {
+                (source_community, target_community)
+            } else {
+                (target_community, source_community)
+            };
+            *edge_weights.entry(endpoints).or_default() += *weight;
+        }
+    }
+    if edge_weights.is_empty() {
+        return None;
+    }
+    let mut source_indices = Vec::with_capacity(edge_weights.len());
+    let mut target_indices = Vec::with_capacity(edge_weights.len());
+    let mut weights = Vec::with_capacity(edge_weights.len());
+    for ((source, target), weight) in edge_weights {
+        source_indices.push(u32::try_from(source).ok()?);
+        target_indices.push(u32::try_from(target).ok()?);
+        weights.push(weight);
+    }
+    let next_graph =
+        build_community_graph(&source_indices, &target_indices, &weights, community_count)?;
+    let mut next_members = vec![Vec::new(); community_count];
+    for (node_index, community_id) in assignments.iter().copied().enumerate() {
+        next_members
+            .get_mut(community_id)?
+            .extend(members.get(node_index)?.iter().copied());
+    }
+    Some((next_graph, next_members))
+}
+
 /// community edge record의 endpoint id를 정렬된 unique 목록으로 만든다.
 fn sorted_community_entity_ids(edges: &[CommunityEdgeRecord]) -> Vec<String> {
     let mut ids = BTreeSet::<String>::new();
@@ -18519,6 +18747,36 @@ fn serialize_community_detection_plan_json(plan: &CommunityDetectionPlan) -> Str
     )
 }
 
+/// Leiden hierarchy plan을 JSON 문자열로 serialize한다.
+fn serialize_community_hierarchy_plan_json(plan: &CommunityHierarchyPlan) -> String {
+    let levels = plan
+        .levels
+        .iter()
+        .map(|level| {
+            let assignments = level
+                .assignments
+                .iter()
+                .map(|assignment| {
+                    format!(
+                        "{{\"entityId\":\"{}\",\"communityId\":{}}}",
+                        escape_json_string(&assignment.entity_id),
+                        assignment.community_id,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"level\":{},\"assignmentsById\":[{assignments}],\"communityIds\":{},\"modularity\":{}}}",
+                level.level,
+                serialize_usize_array_json(&level.community_ids),
+                level.modularity,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"levels\":[{levels}]}}")
+}
+
 /// community edge record를 JSON 문자열로 serialize한다.
 fn serialize_community_edge_records_json(edges: &[CommunityEdgeRecord]) -> String {
     let body = edges
@@ -18881,10 +19139,10 @@ mod tests {
         chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
         count_files_by_extensions_json, count_keyword_matches, create_content_hash,
         create_entity_id, create_graph_id, dedupe_in_order, detect_communities_flat,
-        detect_communities_from_edges_json, extract_json_object_text, extract_vault_links_json,
-        find_mentioned_entity_matches, format_mcp_json, get_mcp_connection_state_rust,
-        hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
-        is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
+        detect_communities_from_edges_json, detect_leiden_hierarchy_from_edges_json,
+        extract_json_object_text, extract_vault_links_json, find_mentioned_entity_matches,
+        format_mcp_json, get_mcp_connection_state_rust, hybrid_score_or_nan, is_excluded_ext_json,
+        is_excluded_path, is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
         is_mcp_tool_result_empty_json, is_relevant_result, is_same_graph_entity_pair,
         normalize_entity_name, normalize_extracted_graph_payload_json,
         normalize_graph_confidence_or_default, normalize_graph_name,
@@ -18904,30 +19162,30 @@ mod tests {
         plan_graph_community_summary_groups_json, plan_graph_deletion_indices_json,
         plan_graph_edge_records_json, plan_graph_entity_merge_json,
         plan_graph_evidence_candidate_lookup_json, plan_graph_evidence_entry_candidates_json,
-        plan_graph_mention_context_json, plan_graph_query_execution_json, plan_graph_query_json,
-        plan_graph_query_response_json, plan_graph_rag_markdown_file_paths_json,
-        plan_graph_rag_run_file_selection_json, plan_graph_rag_status_entry_lookups_json,
-        plan_graph_rag_status_entry_snapshot_json, plan_graph_rag_status_file_snapshot_json,
-        plan_graph_rag_status_json, plan_graph_rag_unsupported_prune_paths_json,
-        plan_graph_relation_endpoint_indices_json, plan_graph_schema_community_indices_json,
-        plan_graph_schema_relation_indices_json, plan_implicit_folder_query_paths_json,
-        plan_index_pending_files_json, plan_local_evidence_scores_json,
-        plan_mcp_server_candidates_json, plan_merged_retrieval_candidates,
-        plan_merged_retrieval_candidates_by_entry_id, plan_query_result_score_json,
-        plan_rag_file_content_probe_indices_json, plan_rag_file_indexability_json,
-        plan_rag_file_type_summary_json, plan_rag_indexing_eta_json, plan_rag_status_json,
-        plan_reference_file_indices_json, plan_rerank_messages_json, plan_rerank_response_json,
-        plan_rerank_result_order_json, plan_source_references_json,
-        plan_source_validation_inputs_json, plan_source_validation_warnings_json,
-        plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
-        plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
-        plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
-        plan_vector_store_lookup_by_ids_json, plan_vector_store_remove_file_json,
-        plan_vector_store_replace_file_json, plan_vector_store_stats_json,
-        prune_graph_indexes_json, rank_top_k_pairs, recall_at_k, recompute_centroids,
-        rewrite_graph_entity_references_json, rrf_score_or_nan, sanitize_graph_id_part,
-        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
-        select_relevant_result_indices, should_append_mcp_path_hint_rust,
+        plan_graph_extraction_child_units_json, plan_graph_mention_context_json,
+        plan_graph_query_execution_json, plan_graph_query_json, plan_graph_query_response_json,
+        plan_graph_rag_markdown_file_paths_json, plan_graph_rag_run_file_selection_json,
+        plan_graph_rag_status_entry_lookups_json, plan_graph_rag_status_entry_snapshot_json,
+        plan_graph_rag_status_file_snapshot_json, plan_graph_rag_status_json,
+        plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
+        plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
+        plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
+        plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
+        plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
+        plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
+        plan_rag_file_indexability_json, plan_rag_file_type_summary_json,
+        plan_rag_indexing_eta_json, plan_rag_status_json, plan_reference_file_indices_json,
+        plan_rerank_messages_json, plan_rerank_response_json, plan_rerank_result_order_json,
+        plan_source_references_json, plan_source_validation_inputs_json,
+        plan_source_validation_warnings_json, plan_structural_heading_neighbors_json,
+        plan_structural_linked_paths_json, plan_vault_link_candidates_json,
+        plan_vault_link_fallback_index_json, plan_vector_store_add_json,
+        plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
+        plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
+        plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
+        recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
+        sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
+        select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
         should_offer_context7_for_prompt, should_rebuild_graph_runtime_for_graph_status,
         token_frequencies_json, tokenize, validate_mcp_json,
     };
@@ -21204,6 +21462,38 @@ mod tests {
             plan,
             r#"{"assignmentsById":[{"entityId":"barnabas","communityId":1},{"entityId":"luke","communityId":0},{"entityId":"mark","communityId":0},{"entityId":"paul","communityId":1}],"communityIds":[0,1],"modularity":0.7029478458049887}"#,
         );
+    }
+
+    /// Leiden hierarchy는 connected refined group을 bottom-up level로 안정적으로 합쳐야 한다.
+    #[test]
+    fn detect_leiden_hierarchy_builds_deterministic_bottom_up_levels() {
+        let edges = r#"[{"source":"a","target":"b","weight":1},{"source":"c","target":"d","weight":1},{"source":"b","target":"c","weight":0.1}]"#;
+
+        let first = detect_leiden_hierarchy_from_edges_json(edges, 20, 4);
+        let second = detect_leiden_hierarchy_from_edges_json(edges, 20, 4);
+        let parsed: JsonValue = serde_json::from_str(&first).expect("hierarchy JSON should parse");
+        let levels = parsed["levels"]
+            .as_array()
+            .expect("hierarchy should contain levels");
+
+        assert_eq!(first, second, "동일 graph는 동일 hierarchy를 만들어야 한다");
+        assert_eq!(levels.len(), 2, "leaf와 root level이 필요하다");
+        assert_eq!(levels[0]["communityIds"], serde_json::json!([0, 1]));
+        assert_eq!(levels[1]["communityIds"], serde_json::json!([0]));
+    }
+
+    #[test]
+    fn graph_extraction_child_units_preserve_markdown_boundaries_and_bound_depth() {
+        let content = format!(
+            "# First\n\n{}\n\n# Second\n\n{}",
+            "alpha ".repeat(220),
+            "beta ".repeat(220)
+        );
+        let plan = plan_graph_extraction_child_units_json(&content, 0);
+        let chunks: JsonValue = serde_json::from_str(&plan).expect("child unit JSON should parse");
+
+        assert!(chunks.as_array().is_some_and(|items| items.len() >= 2));
+        assert_eq!(plan_graph_extraction_child_units_json(&content, 4), "[]");
     }
 
     /// `GraphRAG` relation edge 집계는 무방향 endpoint pair와 첫 출현 순서를 보존해야 한다.

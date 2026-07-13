@@ -193,14 +193,10 @@ export class GraphRagIndexingRunner {
       ]);
 
       const edges = buildEdges(entities, relations);
-      const detection = await this.communityCompute.detect(edges, 20, signal);
-      const communities = new Map(
-        detection.assignmentsById.map((assignment) => [
-          assignment.entityId,
-          assignment.communityId,
-        ]),
-      );
-      const { communityIds, modularity } = detection;
+      const hierarchy = await this.communityCompute.detectHierarchy(edges, 20, 4, signal);
+      const leafLevel = hierarchy.levels[0];
+      const communityIds = leafLevel?.communityIds ?? [];
+      const modularity = leafLevel?.modularity ?? 0;
 
       if (signal?.aborted) {
         return {
@@ -220,11 +216,7 @@ export class GraphRagIndexingRunner {
         };
       }
 
-      const records = await this.summarizer.summarizeCommunities(
-        communities,
-        communityIds,
-        signal,
-      );
+      const records = await this.summarizer.summarizeHierarchy(hierarchy.levels, signal);
       if (signal?.aborted) {
         return {
           communityCount: 0,
