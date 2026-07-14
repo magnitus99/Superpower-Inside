@@ -68,5 +68,5 @@ jobs:
             styles.css
             tern_engine_bg.wasm
             THIRD_PARTY_NOTICES.md
-          generate_release_notes: true
+          generate_release_notes: false
           fail_on_unmatched_files: true
