@@ -1,6 +1,6 @@
 # Superpower Inside
 
-![version](https://img.shields.io/badge/version-1.5.0-blue)
+![version](https://img.shields.io/badge/version-1.5.1-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
@@ -106,6 +106,8 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 
 RAG and GraphRAG maintain local state for this vault. When notes, models, or graph evidence need attention, the settings view surfaces a clear status and the smallest next action. The goal is not to make you operate an index dashboard; it is to keep answers grounded while staying out of your way.
 
+When the selected embedding model changes or old local index data is no longer useful, Superpower Inside prepares a clean local state and retires obsolete cache data in the background instead of holding up startup.
+
 GraphRAG extraction uses one concurrent model request by default. If your provider supports more throughput, the GraphRAG settings let you raise the concurrent request count from 1 to 10 while keeping the current value visible beside the slider.
 
 ### Recover From Startup Problems
@@ -202,6 +204,8 @@ Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치�
 ### 인덱스는 뒤에 두기
 
 RAG와 GraphRAG는 이 볼트의 로컬 상태를 유지합니다. 노트, 모델, 그래프 evidence에 사용자의 주의가 필요할 때만 설정 화면이 이유와 다음 행동을 보여줍니다. 목표는 사용자가 인덱스 대시보드를 운영하게 만드는 것이 아니라, 답변이 조용히 출처를 갖추도록 돕는 것입니다.
+
+선택한 임베딩 모델이 바뀌거나 오래된 로컬 인덱스 데이터가 더 이상 유효하지 않으면, Superpower Inside가 깨끗한 로컬 상태를 준비하고 불필요한 캐시를 백그라운드에서 정리해 시작 흐름을 막지 않습니다.
 
 GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. provider가 더 높은 처리량을 지원한다면 GraphRAG 설정의 슬라이더에서 동시 요청 수를 1~10으로 조절하고 현재 숫자를 바로 확인할 수 있습니다.
 
