@@ -1,46 +1,43 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PerformanceGuard } from './performance-guard';
 
+const OPTIONS = {
+  enabled: true,
+  initialBatchSize: 32,
+  initialYieldMs: 25,
+  slowEventLoopThresholdMs: 150,
+  slowBatchThresholdMs: 3000,
+} as const;
+
 describe('PerformanceGuard', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('이벤트 루프 지연이 연속 임계치를 넘으면 배치 크기를 낮춰 throttled 상태가 된다', () => {
-    const guard = new PerformanceGuard({
-      enabled: true,
-      initialBatchSize: 32,
-      initialYieldMs: 25,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
-    });
+  it('progressively throttles slow provider batches without pausing the renderer', () => {
+    const guard = new PerformanceGuard(OPTIONS);
 
-    guard.recordEventLoopLag(180);
-    guard.recordEventLoopLag(190);
-    guard.recordEventLoopLag(200);
+    for (let index = 0; index < 12; index++) {
+      guard.recordBatchDuration(3500);
+    }
 
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'throttled',
-        currentBatchSize: 16,
-        currentYieldMs: 50,
+        currentBatchSize: 2,
+        currentYieldMs: 400,
+        pauseUntilMs: null,
       }),
     );
   });
 
-  it('느린 샘플이 반복되면 cooldown 종료 시각이 있는 paused 상태가 된다', () => {
+  it('pauses only after sustained event-loop pressure', () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-05-26T00:00:00.000Z'));
-    const guard = new PerformanceGuard({
-      enabled: true,
-      initialBatchSize: 8,
-      initialYieldMs: 25,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
-    });
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    const guard = new PerformanceGuard(OPTIONS);
 
-    for (let i = 0; i < 6; i++) {
-      guard.recordBatchDuration(3500);
+    for (let index = 0; index < 6; index++) {
+      guard.recordEventLoopLag(200);
     }
 
     expect(guard.getState()).toEqual(
@@ -50,24 +47,41 @@ describe('PerformanceGuard', () => {
         currentYieldMs: 500,
         pauseUntilMs: Date.now() + 30_000,
         remainingPauseMs: 30_000,
-        lastSlowReason: '인덱싱 배치 3500ms',
+        lastSlowReason: '이벤트 루프 지연 200ms',
       }),
     );
   });
 
-  it('cooldown이 끝나면 최소 배치로 재개할 수 있다', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-05-26T00:00:00.000Z'));
-    const guard = new PerformanceGuard({
-      enabled: true,
-      initialBatchSize: 8,
-      initialYieldMs: 25,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
-    });
+  it('requires healthy samples from both channels before restoring defaults', () => {
+    const guard = new PerformanceGuard(OPTIONS);
+    guard.recordBatchDuration(3500);
+    guard.recordBatchDuration(3500);
+    guard.recordBatchDuration(3500);
+    expect(guard.getState().mode).toBe('throttled');
 
-    for (let i = 0; i < 6; i++) {
-      guard.recordBatchDuration(3500);
+    guard.recordEventLoopLag(10);
+    guard.recordEventLoopLag(10);
+    guard.recordEventLoopLag(10);
+    expect(guard.getState().mode).toBe('throttled');
+
+    guard.recordBatchDuration(100);
+    guard.recordBatchDuration(100);
+    guard.recordBatchDuration(100);
+    expect(guard.getState()).toEqual(
+      expect.objectContaining({
+        mode: 'normal',
+        currentBatchSize: 32,
+        currentYieldMs: 25,
+      }),
+    );
+  });
+
+  it('resumes after cooldown in the safest throttled state', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    const guard = new PerformanceGuard(OPTIONS);
+    for (let index = 0; index < 6; index++) {
+      guard.recordEventLoopLag(200);
     }
     vi.advanceTimersByTime(30_000);
 
@@ -82,30 +96,53 @@ describe('PerformanceGuard', () => {
     );
   });
 
-  it('정상 샘플이 이어지면 완화 상태를 회복한다', () => {
-    const guard = new PerformanceGuard({
-      enabled: true,
-      initialBatchSize: 16,
-      initialYieldMs: 25,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
-    });
+  it('force-resumes before cooldown without resetting to full speed', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    const guard = new PerformanceGuard(OPTIONS);
+    for (let index = 0; index < 6; index++) {
+      guard.recordEventLoopLag(200);
+    }
 
-    guard.recordBatchDuration(3500);
-    guard.recordBatchDuration(3600);
-    guard.recordBatchDuration(3700);
-    expect(guard.getState().mode).toBe('throttled');
+    expect(guard.forceResume()).toEqual(
+      expect.objectContaining({
+        mode: 'throttled',
+        currentBatchSize: 1,
+        currentYieldMs: 500,
+        pauseUntilMs: null,
+      }),
+    );
+  });
 
-    guard.recordBatchDuration(100);
-    guard.recordBatchDuration(100);
-    guard.recordBatchDuration(100);
+  it('keeps a disabled guard inert', () => {
+    const guard = new PerformanceGuard({ ...OPTIONS, enabled: false });
+    for (let index = 0; index < 12; index++) {
+      guard.recordBatchDuration(10000);
+      guard.recordEventLoopLag(10000);
+    }
 
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'normal',
-        currentBatchSize: 16,
+        currentBatchSize: 32,
         currentYieldMs: 25,
+        pauseUntilMs: null,
       }),
+    );
+  });
+
+  it('preserves a user-configured yield above the default protection floor', () => {
+    const guard = new PerformanceGuard({ ...OPTIONS, initialYieldMs: 1_000 });
+
+    for (let index = 0; index < 3; index++) guard.recordBatchDuration(5_000);
+    expect(guard.getState()).toEqual(
+      expect.objectContaining({ mode: 'throttled', currentYieldMs: 1_000 }),
+    );
+
+    for (let index = 0; index < 6; index++) guard.recordEventLoopLag(500);
+    guard.forceResume();
+    expect(guard.getState()).toEqual(
+      expect.objectContaining({ mode: 'throttled', currentYieldMs: 1_000 }),
     );
   });
 });

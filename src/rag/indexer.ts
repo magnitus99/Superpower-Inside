@@ -1,4 +1,4 @@
-import type { TFile, Vault } from 'obsidian';
+import type { TAbstractFile, TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
 import type { VectorStore, VectorEntry, FileIndexRecord } from './store';
@@ -29,11 +29,20 @@ export class IndexingCancelledError extends Error {
   }
 }
 
+export class IndexingPerformancePausedError extends Error {
+  constructor() {
+    super('RAG indexing paused by performance guard');
+    this.name = 'IndexingPerformancePausedError';
+  }
+}
+
 export interface IndexingOptions {
   signal?: AbortSignal;
   maxEmbeddingBatchSize?: number;
   indexingYieldMs?: number;
-  onBatchComplete?: (durationMs: number) => void;
+  getMaxEmbeddingBatchSize?: () => number;
+  getIndexingYieldMs?: () => number;
+  onBatchComplete?: (durationMs: number, batchSize: number) => void | Promise<void>;
   onProgress?: (progress: RagIndexingProgressSnapshot) => void;
   getPerformanceGuardState?: () => PerformanceGuardState | null;
   automaticRecovery?: boolean;
@@ -145,6 +154,16 @@ function throwIfIndexingCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new IndexingCancelledError();
   }
+}
+
+function throwIfPerformanceGuardPaused(options: IndexingOptions): void {
+  if (options.getPerformanceGuardState?.()?.mode === 'paused') {
+    throw new IndexingPerformancePausedError();
+  }
+}
+
+function isCurrentVaultFile(file: TAbstractFile | null): file is TFile {
+  return file !== null && 'extension' in file && 'stat' in file && 'basename' in file;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -635,6 +654,18 @@ export class VaultIndexer {
     fileIndex = 0,
   ): Promise<IndexingResult> {
     const startedAt = performance.now();
+    const currentFile = this.vault.getAbstractFileByPath(file.path);
+    if (!isCurrentVaultFile(currentFile)) {
+      this.logger.debug('File indexing skipped because the queued file no longer exists.', {
+        data: { path: file.path },
+      });
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
+    file = currentFile;
     const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
     if (!progressTracker) {
       emitIndexingProgress(options, tracker, 'plan');
@@ -728,7 +759,6 @@ export class VaultIndexer {
     }));
 
     await this.vectorStore.replaceFileEntries(file.path, entries);
-    throwIfIndexingCancelled(options.signal);
 
     if (this.bm25Index) {
       this.bm25Index.removeDocumentsBySource(file.path);
@@ -774,13 +804,20 @@ export class VaultIndexer {
     emitIndexingProgress(options, progressTracker, 'plan');
     await this.planProgressChunks(files, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
-    const result = await this.withIndexBatch(async () => {
-      await this.vectorStore.clear();
-      if (this.bm25Index) {
-        await this.bm25Index.clear();
+    const existingSourcePaths = new Set(await this.vectorStore.getIndexedFilePaths());
+    for (const sourcePath of (await this.bm25Index?.getSourcePaths()) ?? []) {
+      existingSourcePaths.add(sourcePath);
+    }
+    const result = await this.indexFiles(files, startedAt, options, progressTracker);
+    throwIfIndexingCancelled(options.signal);
+    const currentSourcePaths = new Set(files.map((file) => file.path));
+    await this.withIndexBatch(async () => {
+      for (const sourcePath of existingSourcePaths) {
+        if (currentSourcePaths.has(sourcePath)) continue;
+        await this.vectorStore.removeByFilePath(sourcePath);
+        this.bm25Index?.removeDocumentsBySource(sourcePath);
       }
-      throwIfIndexingCancelled(options.signal);
-      return this.indexFiles(files, startedAt, options, progressTracker);
+      await this.bm25Index?.persist();
     });
     const finished = finishIndexingResult(
       {
@@ -897,12 +934,16 @@ export class VaultIndexer {
     options: IndexingOptions,
     progressTracker?: IndexingProgressTracker,
   ): Promise<number[][]> {
-    const batchSize = Math.max(1, Math.floor(options.maxEmbeddingBatchSize ?? texts.length));
     const vectors: number[][] = [];
     let expectedDimension: number | undefined;
+    let offset = 0;
 
-    for (let offset = 0; offset < texts.length; offset += batchSize) {
+    while (offset < texts.length) {
       throwIfIndexingCancelled(options.signal);
+      throwIfPerformanceGuardPaused(options);
+      const requestedBatchSize =
+        options.getMaxEmbeddingBatchSize?.() ?? options.maxEmbeddingBatchSize ?? texts.length;
+      const batchSize = Math.max(1, Math.floor(requestedBatchSize));
       const batch = texts.slice(offset, offset + batchSize);
       const startedAt = performance.now();
       this.logger.trace('Embedding batch started.', {
@@ -922,7 +963,7 @@ export class VaultIndexer {
         expectedDimension,
       );
       const durationMs = performance.now() - startedAt;
-      options.onBatchComplete?.(durationMs);
+      await options.onBatchComplete?.(durationMs, batch.length);
       if (progressTracker) {
         progressTracker.completedBatchDurationsMs.push(durationMs);
         progressTracker.completedBatchChunkCounts.push(batch.length);
@@ -941,13 +982,13 @@ export class VaultIndexer {
           dimension: expectedDimension,
         },
       });
-      if (options.getPerformanceGuardState?.()?.mode === 'paused') {
-        throw new IndexingCancelledError();
-      }
-      vectors.push(...batchVectors);
       throwIfIndexingCancelled(options.signal);
-      if (offset + batchSize < texts.length) {
-        await pauseAfterBatch(options.indexingYieldMs ?? 0, options.signal);
+      throwIfPerformanceGuardPaused(options);
+      vectors.push(...batchVectors);
+      offset += batch.length;
+      if (offset < texts.length) {
+        const yieldMs = options.getIndexingYieldMs?.() ?? options.indexingYieldMs ?? 0;
+        await pauseAfterBatch(yieldMs, options.signal);
       }
     }
 

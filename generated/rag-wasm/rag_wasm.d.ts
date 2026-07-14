@@ -689,6 +689,11 @@ export function plan_rag_file_type_summary_json(files_json: string, no_extension
 export function plan_rag_indexing_eta_json(input_json: string): string;
 
 /**
+ * Plans one performance-guard state transition from deterministic JSON input.
+ */
+export function plan_rag_performance_guard_json(input_json: string): string;
+
+/**
  * RAG index status summary와 update 대상 document plan을 만든다.
  */
 export function plan_rag_status_json(input_json: string): string;
@@ -1079,6 +1084,7 @@ export interface InitOutput {
     readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
+    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
     readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];

@@ -26,6 +26,10 @@ pub use rag_recovery::{
     plan_rag_storage_health_json, rag_automatic_recovery_delay_ms,
 };
 
+/// Adaptive RAG indexing performance policy.
+mod performance_guard;
+pub use performance_guard::plan_rag_performance_guard_json;
+
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.

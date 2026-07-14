@@ -1,5 +1,6 @@
 import { t } from '../i18n';
 import type { GraphRagIndexingPhase } from '../graph/indexing-progress';
+import type { PerformanceGuardMode } from './performance-guard';
 
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
@@ -71,6 +72,7 @@ export interface RagIndexingControlStateInput {
   isIndexing: boolean;
   totalDocuments: number | null;
   updateRequiredCount: number | null;
+  guardMode: PerformanceGuardMode | null;
   guardRemainingPauseMs: number | null;
 }
 
@@ -325,9 +327,13 @@ export function getRagIndexingControlState(
   const setupReason = input.hasIndexer ? null : t('ragIndexerNotInitializedBase');
   const runningReason = input.isIndexing ? t('ragAutoUpdateAlreadyRunning') : null;
   const pauseReason =
-    input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
-      ? t('ragAutoUpdatePausedRetry', { seconds: Math.ceil(input.guardRemainingPauseMs / 1000) })
-      : null;
+    input.guardMode !== 'paused'
+      ? null
+      : input.guardRemainingPauseMs === null
+        ? t('ragPerformancePaused')
+        : t('ragAutoUpdatePausedRetry', {
+            seconds: Math.ceil(input.guardRemainingPauseMs / 1000),
+          });
   const noUpdatesReason = input.updateRequiredCount === 0 ? t('ragNoUpdates') : null;
   const noDocumentsReason = input.totalDocuments === 0 ? t('ragNoDocuments') : null;
 
@@ -336,7 +342,7 @@ export function getRagIndexingControlState(
     reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
     cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
     resume: toButtonState(
-      input.guardRemainingPauseMs !== null && input.guardRemainingPauseMs > 0
+      input.guardMode === 'paused'
         ? null
         : t('ragNotPerformancePaused'),
     ),

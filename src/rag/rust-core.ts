@@ -113,6 +113,7 @@ import {
   plan_rag_file_indexability_json,
   plan_rag_file_type_summary_json,
   plan_rag_indexing_eta_json,
+  plan_rag_performance_guard_json,
   plan_rag_automatic_recovery_batch_json,
   plan_rag_automatic_recovery_json,
   plan_rag_storage_health_json,
@@ -802,6 +803,49 @@ export interface RustRagAutomaticRecoveryBatchPlan {
   eligibleIndices: number[];
   batchIndices: number[];
   selectedSourceBytes: number;
+}
+
+export type RustRagPerformanceGuardMode = 'normal' | 'throttled' | 'paused';
+export type RustRagPerformanceGuardReasonKind = 'batch' | 'event-loop' | 'resumed';
+export type RustRagPerformanceGuardEventKind =
+  | 'initialize'
+  | 'batch_sample'
+  | 'event_loop_sample'
+  | 'timer_tick'
+  | 'force_resume'
+  | 'reset';
+
+export interface RustRagPerformanceGuardConfig {
+  enabled: boolean;
+  initialBatchSize: number;
+  initialYieldMs: number;
+  slowEventLoopThresholdMs: number;
+  slowBatchThresholdMs: number;
+}
+
+export interface RustRagPerformanceGuardPolicyState {
+  mode: RustRagPerformanceGuardMode;
+  currentBatchSize: number;
+  currentYieldMs: number;
+  slowBatchSamples: number;
+  slowEventLoopSamples: number;
+  healthyBatchSamples: number;
+  healthyEventLoopSamples: number;
+  reasonKind: RustRagPerformanceGuardReasonKind | null;
+  reasonMs: number | null;
+  pauseUntilMs: number | null;
+  lastSlowKind: RustRagPerformanceGuardReasonKind | null;
+  lastSlowMs: number | null;
+}
+
+export interface RustRagPerformanceGuardInput {
+  config: RustRagPerformanceGuardConfig;
+  state: RustRagPerformanceGuardPolicyState | null;
+  event: {
+    kind: RustRagPerformanceGuardEventKind;
+    durationMs?: number;
+  };
+  nowMs: number;
 }
 
 export interface RustIndexedDbRetentionRecord {
@@ -2984,6 +3028,20 @@ export function ragAutomaticRecoveryDelayMsRust(attempt: number): number | null 
   try {
     const delayMs = rag_automatic_recovery_delay_ms(attempt);
     return isValidNonNegativeInteger(delayMs) ? delayMs : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRagPerformanceGuardRust(
+  input: RustRagPerformanceGuardInput,
+): RustRagPerformanceGuardPolicyState | null {
+  if (!isRagPerformanceGuardInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_rag_performance_guard_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isRagPerformanceGuardPolicyState(parsed, input.config) ? parsed : null;
   } catch {
     return null;
   }
@@ -7303,6 +7361,81 @@ function isRagAutomaticRecoveryBatchPlan(
     Array.isArray(plan.batchIndices) &&
     plan.batchIndices.every(isValidNonNegativeInteger) &&
     isValidNonNegativeInteger(plan.selectedSourceBytes)
+  );
+}
+
+function isRagPerformanceGuardInput(input: RustRagPerformanceGuardInput): boolean {
+  const { config, event } = input;
+  const validEventKinds: readonly RustRagPerformanceGuardEventKind[] = [
+    'initialize',
+    'batch_sample',
+    'event_loop_sample',
+    'timer_tick',
+    'force_resume',
+    'reset',
+  ];
+  const requiresDuration = event.kind === 'batch_sample' || event.kind === 'event_loop_sample';
+  return (
+    typeof config.enabled === 'boolean' &&
+    isValidNonNegativeInteger(config.initialBatchSize) &&
+    config.initialBatchSize > 0 &&
+    isValidNonNegativeInteger(config.initialYieldMs) &&
+    Number.isFinite(config.slowEventLoopThresholdMs) &&
+    config.slowEventLoopThresholdMs > 0 &&
+    Number.isFinite(config.slowBatchThresholdMs) &&
+    config.slowBatchThresholdMs > 0 &&
+    validEventKinds.includes(event.kind) &&
+    (!requiresDuration ||
+      (event.durationMs !== undefined &&
+        Number.isFinite(event.durationMs) &&
+        event.durationMs >= 0)) &&
+    Number.isFinite(input.nowMs) &&
+    input.nowMs >= 0 &&
+    (input.state === null || isRagPerformanceGuardPolicyState(input.state, config))
+  );
+}
+
+function isRagPerformanceGuardPolicyState(
+  value: unknown,
+  config: RustRagPerformanceGuardConfig,
+): value is RustRagPerformanceGuardPolicyState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Partial<RustRagPerformanceGuardPolicyState>;
+  const validModes: readonly RustRagPerformanceGuardMode[] = ['normal', 'throttled', 'paused'];
+  const validReasons: readonly RustRagPerformanceGuardReasonKind[] = [
+    'batch',
+    'event-loop',
+    'resumed',
+  ];
+  const validOptionalReason = (reason: unknown): boolean =>
+    reason === null || validReasons.includes(reason as RustRagPerformanceGuardReasonKind);
+  const validOptionalTime = (value: unknown): boolean =>
+    value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  return (
+    validModes.includes(state.mode as RustRagPerformanceGuardMode) &&
+    isValidNonNegativeInteger(state.currentBatchSize) &&
+    state.currentBatchSize > 0 &&
+    state.currentBatchSize <= config.initialBatchSize &&
+    isValidNonNegativeInteger(state.currentYieldMs) &&
+    state.currentYieldMs <= Math.max(500, config.initialYieldMs) &&
+    isValidNonNegativeInteger(state.slowBatchSamples) &&
+    state.slowBatchSamples < 3 &&
+    isValidNonNegativeInteger(state.slowEventLoopSamples) &&
+    state.slowEventLoopSamples <= 6 &&
+    isValidNonNegativeInteger(state.healthyBatchSamples) &&
+    state.healthyBatchSamples <= 3 &&
+    isValidNonNegativeInteger(state.healthyEventLoopSamples) &&
+    state.healthyEventLoopSamples <= 3 &&
+    validOptionalReason(state.reasonKind) &&
+    validOptionalTime(state.reasonMs) &&
+    validOptionalTime(state.pauseUntilMs) &&
+    validOptionalReason(state.lastSlowKind) &&
+    validOptionalTime(state.lastSlowMs) &&
+    (state.mode === 'paused'
+      ? state.pauseUntilMs !== null &&
+        state.currentBatchSize === 1 &&
+        state.currentYieldMs === Math.max(500, config.initialYieldMs)
+      : state.pauseUntilMs === null)
   );
 }
 

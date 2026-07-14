@@ -259,6 +259,14 @@ export class IndexedDbBM25Index {
     return this.runtime?.sourcePathForDoc(docId);
   }
 
+  async getSourcePaths(): Promise<string[]> {
+    await this.persist();
+    const records = await this.db.documents.toArray();
+    return [...new Set(records.map((record) => record.sourcePath))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }
+
   private ensureRuntime(): RustBm25RuntimeIndex {
     if (this.runtime === null) {
       this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);

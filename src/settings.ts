@@ -930,7 +930,7 @@ export interface PluginLike {
   isRagIndexing(): boolean;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
-  resumeRagIndexing(): void;
+  resumeRagIndexing(): boolean;
   getRagPerformanceGuardState(): PerformanceGuardState | null;
   createIndexedDbName(kind: string): string;
   mcpRegistry: MCPRegistry | null;
@@ -3186,6 +3186,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private getIndexingStatusLabel(): string {
     const status = this.plugin.getRagRuntimeState().ragIndexingStatus;
     if (!status) return this.plugin.isRagIndexing() ? t('settingsAuto077') : t('settingsAuto078');
+    if (status.phase === 'paused') return t('ragPerformancePaused');
     if (status.running) {
       return this.formatRunningRagIndexingStatus(status);
     }
@@ -3239,6 +3240,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
   }
   private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+    if (phase === 'paused') return t('ragPerformancePaused');
     if (phase === 'file') return t('ragPhaseFile');
     if (phase === 'pending') return t('ragPhasePending');
     if (phase === 'all') return t('ragPhaseAll');
@@ -4039,12 +4041,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const updateCount = status.updateRequiredDocuments.length;
     const healthyCount = Math.max(0, status.totalDocuments - updateCount);
     const isRunning = this.plugin.isRagIndexing();
-    const isPaused = guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0;
+    const isPaused = guardState?.mode === 'paused';
     const tone = isPaused ? 'danger' : isRunning || updateCount > 0 ? 'warning' : 'success';
-    const statusLabel = isRunning
-      ? (indexingDetail ?? this.getIndexingStatusLabel())
-      : isPaused
-        ? t('ragPerformancePaused')
+    const statusLabel = isPaused
+      ? t('ragPerformancePaused')
+      : isRunning
+        ? (indexingDetail ?? this.getIndexingStatusLabel())
         : updateCount > 0
           ? t('ragOverviewNeedsUpdate', { count: String(updateCount) })
           : status.totalDocuments > 0
@@ -4077,13 +4079,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     status: RagStatusSummary,
     guardState: PerformanceGuardState | null,
   ): string {
-    if (this.plugin.isRagIndexing()) {
-      return t('settingsAuto130');
-    }
-    if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
+    if (guardState?.mode === 'paused') {
       return t('settingsAuto131', {
         v0: String(guardState.lastSlowReason ?? guardState.reason ?? t('settingsAuto132')),
       });
+    }
+    if (this.plugin.isRagIndexing()) {
+      return t('settingsAuto130');
     }
     const updateCount = status.updateRequiredDocuments.length;
     if (updateCount > 0) return t('settingsAuto133', { v0: String(updateCount) });
@@ -4487,10 +4489,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: () => {
-            if (!this.plugin.getRagPerformanceGuardState()?.remainingPauseMs) {
+            if (this.plugin.getRagPerformanceGuardState()?.mode !== 'paused') {
               return { status: 'noop', detail: t('ragNotPerformancePaused') };
             }
-            this.plugin.resumeRagIndexing();
+            if (!this.plugin.resumeRagIndexing()) {
+              return { status: 'error', detail: t('ragNotPerformancePaused') };
+            }
             this.updateRagStats();
             return { status: 'success', detail: t('ragIndexResumeRequestedNotice') };
           },
@@ -4546,6 +4550,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       isIndexing: this.plugin.isRagIndexing(),
       totalDocuments: status?.totalDocuments ?? null,
       updateRequiredCount: status?.updateRequiredDocuments.length ?? null,
+      guardMode: this.plugin.getRagPerformanceGuardState()?.mode ?? null,
       guardRemainingPauseMs: this.plugin.getRagPerformanceGuardState()?.remainingPauseMs ?? null,
     });
     this.applyButtonState(this.updatePendingButton, state.updatePending);

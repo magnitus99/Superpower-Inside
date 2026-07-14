@@ -1,9 +1,16 @@
 import type { TFile } from 'obsidian';
-import type { IndexingOptions, IndexingResult, RagIndexingProgressSnapshot } from './indexer';
+import {
+  IndexingCancelledError,
+  IndexingPerformancePausedError,
+  type IndexingOptions,
+  type IndexingResult,
+  type RagIndexingProgressSnapshot,
+} from './indexer';
+import type { PerformanceGuardState } from './performance-guard';
 import { planRagIndexingEtaRust, type RustRagIndexingEtaPlan } from './rust-core';
 
 export type RagIndexingRequestReason = 'modify' | 'rename' | 'manual' | 'auto';
-export type RagIndexingPhase = 'idle' | 'file' | 'pending' | 'all';
+export type RagIndexingPhase = 'idle' | 'file' | 'pending' | 'all' | 'paused';
 
 export interface RagIndexingSchedulerStatus {
   running: boolean;
@@ -29,6 +36,8 @@ interface SchedulerOperations {
   indexPending: (options: IndexingOptions) => Promise<IndexingResult>;
   reindexAll: (options: IndexingOptions) => Promise<IndexingResult>;
   createIndexingOptions?: (signal: AbortSignal) => IndexingOptions;
+  getPerformanceGuardState?: () => PerformanceGuardState | null;
+  resumePerformanceGuard?: (force: boolean) => PerformanceGuardState | null;
   onStatusChange?: (status: RagIndexingSchedulerStatus) => void;
 }
 
@@ -109,7 +118,10 @@ export class RAGIndexingScheduler {
   private debounceTimers = new Map<string, number>();
   private readonly dirtySet: RagDirtySetJournal;
   private queue: QueueJob[] = [];
-  private running = false;
+  private draining = false;
+  private parkedJob: QueueJob | null = null;
+  private pauseTimer: number | null = null;
+  private pauseTimerGeneration = 0;
   private phase: RagIndexingPhase = 'idle';
   private idleResolvers: Array<() => void> = [];
   private abortController: AbortController | null = null;
@@ -124,16 +136,19 @@ export class RAGIndexingScheduler {
 
   getStatus(): RagIndexingSchedulerStatus {
     return {
-      running: this.running,
+      running: this.isRunning(),
       phase: this.phase,
-      queuedFiles: this.dirtySet.size + this.queue.filter((job) => job.kind === 'file').length,
+      queuedFiles:
+        this.dirtySet.size +
+        this.queue.filter((job) => job.kind === 'file').length +
+        (this.parkedJob?.kind === 'file' ? 1 : 0),
       lastResult: this.lastResult,
       progress: this.progress,
     };
   }
 
   isRunning(): boolean {
-    return this.running;
+    return this.draining || this.parkedJob !== null;
   }
 
   scheduleFile(file: TFile, _reason: RagIndexingRequestReason): void {
@@ -158,6 +173,7 @@ export class RAGIndexingScheduler {
   deleteFile(filePath: string): Promise<number> {
     this.cancelled = false;
     this.dirtySet.delete(filePath);
+    this.resolveMatchingFileJobs(filePath);
     return new Promise((resolve, reject) => {
       this.queue.push({ kind: 'delete', filePath, resolve, reject });
       this.kick();
@@ -190,14 +206,45 @@ export class RAGIndexingScheduler {
     }
     this.debounceTimers.clear();
     this.dirtySet.clear();
-    this.queue = this.queue.filter((job) => job.kind !== 'file');
+    this.clearPauseTimer();
+    const cancellation = new IndexingCancelledError();
+    if (this.parkedJob) {
+      this.parkedJob.reject(cancellation);
+      this.parkedJob = null;
+    }
+    for (const job of this.queue) {
+      job.reject(cancellation);
+    }
+    this.queue = [];
     this.progress = null;
+    if (!this.draining) {
+      this.phase = 'idle';
+      this.resolveIdleIfReady();
+    }
     this.emitStatus();
+  }
+
+  resumeNow(): boolean {
+    if (!this.parkedJob) return false;
+    let state: PerformanceGuardState | null = null;
+    try {
+      state = this.operations.resumePerformanceGuard?.(true) ?? null;
+    } catch {
+      return false;
+    }
+    if (!state || state.mode === 'paused') {
+      this.armPauseTimer(state);
+      this.emitStatus();
+      return false;
+    }
+    this.wakeParkedJob();
+    return true;
   }
 
   async waitForIdle(): Promise<void> {
     if (
-      !this.running &&
+      !this.draining &&
+      !this.parkedJob &&
       this.queue.length === 0 &&
       this.dirtySet.size === 0 &&
       !this.dirtySet.hasOverflowed
@@ -216,31 +263,31 @@ export class RAGIndexingScheduler {
 
   private kick(): void {
     this.emitStatus();
-    if (!this.running) {
+    if (!this.draining && !this.parkedJob) {
       void this.drain();
     }
   }
 
   private async drain(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+    if (this.draining || this.parkedJob) return;
+    this.draining = true;
     this.emitStatus();
     try {
       while (!this.cancelled) {
         this.flushPendingFiles();
         const job = this.queue.shift();
         if (!job) break;
-        await this.runJob(job);
+        if ((await this.runJob(job)) === 'paused') break;
       }
     } finally {
-      this.running = false;
-      this.phase = 'idle';
+      this.draining = false;
+      if (!this.parkedJob) this.phase = 'idle';
       this.abortController = null;
       this.progress = null;
       this.emitStatus();
-      const resolvers = this.idleResolvers.splice(0);
-      for (const resolve of resolvers) {
-        resolve();
+      this.resolveIdleIfReady();
+      if (!this.cancelled && !this.parkedJob && (this.queue.length > 0 || this.dirtySet.size > 0)) {
+        this.kick();
       }
     }
   }
@@ -293,7 +340,7 @@ export class RAGIndexingScheduler {
     this.queue = remaining;
   }
 
-  private async runJob(job: QueueJob): Promise<void> {
+  private async runJob(job: QueueJob): Promise<'completed' | 'paused'> {
     this.abortController = new AbortController();
     const baseOptions = this.operations.createIndexingOptions?.(this.abortController.signal) ?? {
       signal: this.abortController.signal,
@@ -313,14 +360,14 @@ export class RAGIndexingScheduler {
         const result = await this.operations.indexFile(job.file, options);
         this.lastResult = result;
         job.resolve(result);
-        return;
+        return 'completed';
       }
       if (job.kind === 'delete') {
         this.phase = 'file';
         this.emitStatus();
         const removed = await this.operations.removeFile(job.filePath);
         job.resolve(removed);
-        return;
+        return 'completed';
       }
       if (job.kind === 'pending') {
         this.phase = 'pending';
@@ -331,16 +378,110 @@ export class RAGIndexingScheduler {
         });
         this.lastResult = result;
         job.resolve(result);
-        return;
+        return 'completed';
       }
       this.phase = 'all';
       this.emitStatus();
       const result = await this.operations.reindexAll(options);
       this.lastResult = result;
       job.resolve(result);
+      return 'completed';
     } catch (error) {
+      if (error instanceof IndexingPerformancePausedError && !this.abortController.signal.aborted) {
+        this.parkedJob = job;
+        this.phase = 'paused';
+        this.progress = null;
+        let state: PerformanceGuardState | null = null;
+        try {
+          state = this.operations.getPerformanceGuardState?.() ?? null;
+        } catch {
+          state = null;
+        }
+        if (state && state.mode !== 'paused') {
+          this.wakeParkedJob();
+        } else {
+          this.armPauseTimer(state);
+        }
+        this.emitStatus();
+        return 'paused';
+      }
       job.reject(error);
+      return 'completed';
     }
+  }
+
+  private armPauseTimer(state: PerformanceGuardState | null): void {
+    this.clearPauseTimer();
+    if (!this.parkedJob || state?.mode !== 'paused' || state.pauseUntilMs === null) return;
+    const delayMs = state.pauseUntilMs - Date.now();
+    if (delayMs <= 0) return;
+    const generation = this.pauseTimerGeneration;
+    this.pauseTimer = window.setTimeout(() => {
+      if (generation !== this.pauseTimerGeneration || !this.parkedJob) return;
+      this.pauseTimer = null;
+      let resumed: PerformanceGuardState | null = null;
+      try {
+        resumed = this.operations.resumePerformanceGuard?.(false) ?? null;
+      } catch {
+        return;
+      }
+      if (!resumed || resumed.mode === 'paused') {
+        this.armPauseTimer(resumed);
+        return;
+      }
+      this.wakeParkedJob();
+    }, delayMs);
+  }
+
+  private clearPauseTimer(): void {
+    this.pauseTimerGeneration += 1;
+    if (this.pauseTimer !== null) {
+      window.clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
+    }
+  }
+
+  private wakeParkedJob(): void {
+    const job = this.parkedJob;
+    if (!job) return;
+    this.clearPauseTimer();
+    this.parkedJob = null;
+    this.phase = 'idle';
+    this.queue.unshift(job);
+    this.cancelled = false;
+    this.kick();
+  }
+
+  private resolveMatchingFileJobs(filePath: string): void {
+    if (this.parkedJob?.kind === 'file' && this.parkedJob.file.path === filePath) {
+      this.parkedJob.resolve(createEmptyIndexingResult());
+      this.parkedJob = null;
+      this.clearPauseTimer();
+      this.phase = 'idle';
+    }
+    const remaining: QueueJob[] = [];
+    for (const job of this.queue) {
+      if (job.kind === 'file' && job.file.path === filePath) {
+        job.resolve(createEmptyIndexingResult());
+      } else {
+        remaining.push(job);
+      }
+    }
+    this.queue = remaining;
+  }
+
+  private resolveIdleIfReady(): void {
+    if (
+      this.draining ||
+      this.parkedJob ||
+      this.queue.length > 0 ||
+      this.dirtySet.size > 0 ||
+      this.dirtySet.hasOverflowed
+    ) {
+      return;
+    }
+    const resolvers = this.idleResolvers.splice(0);
+    for (const resolve of resolvers) resolve();
   }
 
   private emitStatus(): void {

@@ -1,4 +1,10 @@
 import { t } from '../i18n';
+import {
+  planRagPerformanceGuardRust,
+  type RustRagPerformanceGuardEventKind,
+  type RustRagPerformanceGuardPolicyState,
+  type RustRagPerformanceGuardReasonKind,
+} from './rust-core';
 
 export type PerformanceGuardMode = 'normal' | 'throttled' | 'paused';
 
@@ -8,6 +14,7 @@ export interface PerformanceGuardOptions {
   initialYieldMs: number;
   slowEventLoopThresholdMs: number;
   slowBatchThresholdMs: number;
+  onPolicyError?: (message: string) => void;
 }
 
 export interface PerformanceGuardState {
@@ -20,98 +27,64 @@ export interface PerformanceGuardState {
   lastSlowReason: string | null;
 }
 
-const SLOW_SAMPLE_LIMIT = 3;
-const PAUSE_SAMPLE_LIMIT = 6;
-const RECOVERY_SAMPLE_LIMIT = 3;
-const MAX_YIELD_MS = 500;
-const DEFAULT_PAUSE_MS = 30_000;
-
 export class PerformanceGuard {
   private readonly options: PerformanceGuardOptions;
-  private readonly initialBatchSize: number;
-  private readonly initialYieldMs: number;
-  private mode: PerformanceGuardMode = 'normal';
-  private currentBatchSize: number;
-  private currentYieldMs: number;
-  private slowSamples = 0;
-  private recoverySamples = 0;
-  private reason: string | null = null;
-  private pauseUntilMs: number | null = null;
-  private lastSlowReason: string | null = null;
+  private policyState: RustRagPerformanceGuardPolicyState;
 
   constructor(options: PerformanceGuardOptions) {
-    this.options = options;
-    this.initialBatchSize = Math.max(1, Math.floor(options.initialBatchSize));
-    this.initialYieldMs = Math.max(0, Math.floor(options.initialYieldMs));
-    this.currentBatchSize = this.initialBatchSize;
-    this.currentYieldMs = this.initialYieldMs;
+    this.options = {
+      ...options,
+      initialBatchSize: Math.max(1, Math.floor(options.initialBatchSize)),
+      initialYieldMs: Math.max(0, Math.floor(options.initialYieldMs)),
+    };
+    const initialState = this.plan('initialize', undefined, null);
+    if (!initialState) {
+      throw new Error('Rust RAG performance guard initialization failed');
+    }
+    this.policyState = initialState;
   }
 
   getState(): PerformanceGuardState {
-    this.resumeIfReady();
-    return {
-      mode: this.mode,
-      currentBatchSize: this.currentBatchSize,
-      currentYieldMs: this.currentYieldMs,
-      reason: this.reason,
-      pauseUntilMs: this.pauseUntilMs,
-      remainingPauseMs: this.getRemainingPauseMs(),
-      lastSlowReason: this.lastSlowReason,
-    };
+    if (
+      this.policyState.mode === 'paused' &&
+      (this.policyState.pauseUntilMs ?? Number.POSITIVE_INFINITY) <= Date.now()
+    ) {
+      this.apply('timer_tick');
+    }
+    return this.toPublicState();
   }
 
   getBatchSize(): number {
-    this.resumeIfReady();
-    return this.currentBatchSize;
+    return this.getState().currentBatchSize;
   }
 
   getYieldMs(): number {
-    this.resumeIfReady();
-    return this.currentYieldMs;
+    return this.getState().currentYieldMs;
   }
 
   resume(): PerformanceGuardState {
-    if (this.mode !== 'paused') {
-      return this.getState();
-    }
-    if ((this.pauseUntilMs ?? 0) > Date.now()) {
-      return this.getState();
-    }
+    this.apply('timer_tick');
+    return this.toPublicState();
+  }
 
-    this.mode = 'throttled';
-    this.currentBatchSize = 1;
-    this.currentYieldMs = MAX_YIELD_MS;
-    this.slowSamples = 0;
-    this.recoverySamples = 0;
-    this.pauseUntilMs = null;
-    this.reason = t('perfGuardResumed');
-    return this.getState();
+  forceResume(): PerformanceGuardState {
+    this.apply('force_resume');
+    return this.toPublicState();
   }
 
   reset(): PerformanceGuardState {
-    this.mode = 'normal';
-    this.currentBatchSize = this.initialBatchSize;
-    this.currentYieldMs = this.initialYieldMs;
-    this.slowSamples = 0;
-    this.recoverySamples = 0;
-    this.reason = null;
-    this.pauseUntilMs = null;
-    this.lastSlowReason = null;
-    return this.getState();
+    this.apply('reset');
+    return this.toPublicState();
   }
 
   recordEventLoopLag(lagMs: number): PerformanceGuardState {
-    return this.recordSample(
-      lagMs > this.options.slowEventLoopThresholdMs,
-      t('perfEventLoopLag', { ms: Math.round(lagMs) }),
-    );
+    this.apply('event_loop_sample', lagMs);
+    return this.toPublicState();
   }
 
   recordBatchDuration(durationMs: number): PerformanceGuardState {
-    return this.recordSample(
-      durationMs > this.options.slowBatchThresholdMs,
-      t('perfIndexingBatch', { ms: Math.round(durationMs) }),
-    );
+    this.apply('batch_sample', durationMs);
+    return this.toPublicState();
   }
 
   async measureEventLoopLag(): Promise<number> {
@@ -125,57 +98,79 @@ export class PerformanceGuard {
     return lagMs;
   }
 
-  private recordSample(isSlow: boolean, reason: string): PerformanceGuardState {
-    if (!this.options.enabled) {
-      return this.getState();
+  private apply(kind: RustRagPerformanceGuardEventKind, durationMs?: number): boolean {
+    const nextState = this.plan(kind, durationMs);
+    if (!nextState) {
+      const message = `Rust RAG performance guard rejected the ${kind} transition`;
+      this.options.onPolicyError?.(message);
+      return false;
     }
-
-    if (isSlow) {
-      this.slowSamples++;
-      this.recoverySamples = 0;
-      if (this.slowSamples >= PAUSE_SAMPLE_LIMIT) {
-        this.pause(reason);
-      } else if (this.slowSamples >= SLOW_SAMPLE_LIMIT) {
-        this.throttle(reason);
-      }
-      return this.getState();
-    }
-
-    this.recoverySamples++;
-    if (this.recoverySamples >= RECOVERY_SAMPLE_LIMIT) {
-      this.reset();
-    }
-    return this.getState();
+    this.policyState = nextState;
+    return true;
   }
 
-  private throttle(reason: string): void {
-    if (this.mode === 'paused') return;
-    this.mode = 'throttled';
-    this.currentBatchSize = Math.max(1, Math.floor(this.currentBatchSize / 2));
-    this.currentYieldMs = Math.min(
-      MAX_YIELD_MS,
-      Math.max(this.initialYieldMs * 2, this.currentYieldMs * 2),
+  private plan(
+    kind: RustRagPerformanceGuardEventKind,
+    durationMs?: number,
+    state: RustRagPerformanceGuardPolicyState | null = this.policyState,
+  ): RustRagPerformanceGuardPolicyState | null {
+    return planRagPerformanceGuardRust({
+      config: {
+        enabled: this.options.enabled,
+        initialBatchSize: this.options.initialBatchSize,
+        initialYieldMs: this.options.initialYieldMs,
+        slowEventLoopThresholdMs: this.options.slowEventLoopThresholdMs,
+        slowBatchThresholdMs: this.options.slowBatchThresholdMs,
+      },
+      state,
+      event: durationMs === undefined ? { kind } : { kind, durationMs },
+      nowMs: Date.now(),
+    });
+  }
+
+  private toPublicState(): PerformanceGuardState {
+    const reason = formatReason(
+      this.policyState.mode,
+      this.policyState.reasonKind,
+      this.policyState.reasonMs,
     );
-    this.reason = t('perfSlowDetected', { reason });
+    return {
+      mode: this.policyState.mode,
+      currentBatchSize: this.policyState.currentBatchSize,
+      currentYieldMs: this.policyState.currentYieldMs,
+      reason,
+      pauseUntilMs: this.policyState.pauseUntilMs,
+      remainingPauseMs:
+        this.policyState.mode === 'paused' && this.policyState.pauseUntilMs !== null
+          ? Math.max(0, this.policyState.pauseUntilMs - Date.now())
+          : null,
+      lastSlowReason: formatSlowReason(
+        this.policyState.lastSlowKind,
+        this.policyState.lastSlowMs,
+      ),
+    };
   }
+}
 
-  private pause(reason: string): void {
-    this.mode = 'paused';
-    this.currentBatchSize = 1;
-    this.currentYieldMs = MAX_YIELD_MS;
-    this.pauseUntilMs = Date.now() + DEFAULT_PAUSE_MS;
-    this.lastSlowReason = reason;
-    this.reason = t('perfPausedWithReason', { reason });
-  }
+function formatReason(
+  mode: PerformanceGuardMode,
+  kind: RustRagPerformanceGuardReasonKind | null,
+  durationMs: number | null,
+): string | null {
+  if (kind === 'resumed') return t('perfGuardResumed');
+  const slowReason = formatSlowReason(kind, durationMs);
+  if (!slowReason) return null;
+  return mode === 'paused'
+    ? t('perfPausedWithReason', { reason: slowReason })
+    : t('perfSlowDetected', { reason: slowReason });
+}
 
-  private resumeIfReady(): void {
-    if (this.mode === 'paused' && (this.pauseUntilMs ?? 0) <= Date.now()) {
-      this.resume();
-    }
-  }
-
-  private getRemainingPauseMs(): number | null {
-    if (this.mode !== 'paused' || this.pauseUntilMs === null) return null;
-    return Math.max(0, this.pauseUntilMs - Date.now());
-  }
+function formatSlowReason(
+  kind: RustRagPerformanceGuardReasonKind | null,
+  durationMs: number | null,
+): string | null {
+  if (durationMs === null) return null;
+  if (kind === 'batch') return t('perfIndexingBatch', { ms: Math.round(durationMs) });
+  if (kind === 'event-loop') return t('perfEventLoopLag', { ms: Math.round(durationMs) });
+  return null;
 }

@@ -532,6 +532,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         isIndexing: false,
         totalDocuments: 1,
         updateRequiredCount: 1,
+        guardMode: null,
         guardRemainingPauseMs: null,
       }).updatePending.reason,
     ).toContain('초기화되지');
@@ -542,6 +543,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         isIndexing: true,
         totalDocuments: 1,
         updateRequiredCount: 1,
+        guardMode: null,
         guardRemainingPauseMs: null,
       }).updatePending.reason,
     ).toBe('인덱싱이 이미 실행 중입니다.');
@@ -552,6 +554,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         isIndexing: false,
         totalDocuments: 1,
         updateRequiredCount: 1,
+        guardMode: 'paused',
         guardRemainingPauseMs: 12_400,
       }).updatePending.reason,
     ).toBe('성능 보호 대기 중입니다. 약 13초 후 다시 시도할 수 있습니다.');
@@ -562,6 +565,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         isIndexing: false,
         totalDocuments: 1,
         updateRequiredCount: 0,
+        guardMode: null,
         guardRemainingPauseMs: null,
       }).updatePending.reason,
     ).toBe('업데이트가 필요한 문서가 없습니다.');
@@ -573,12 +577,27 @@ describe('RAG 설정 표시 헬퍼', () => {
       isIndexing: false,
       totalDocuments: 10,
       updateRequiredCount: 0,
+      guardMode: null,
       guardRemainingPauseMs: null,
     });
 
     expect(state.updatePending.disabled).toBe(true);
     expect(state.reindexAll.disabled).toBe(false);
     expect(state.reindexAll.reason).toBeNull();
+  });
+
+  it('keeps recovery available when a paused guard has no usable deadline', () => {
+    const state = getRagIndexingControlState({
+      hasIndexer: true,
+      isIndexing: true,
+      totalDocuments: 10,
+      updateRequiredCount: 1,
+      guardMode: 'paused',
+      guardRemainingPauseMs: null,
+    });
+
+    expect(state.resume.disabled).toBe(false);
+    expect(state.cancel.disabled).toBe(false);
   });
 
   it('RAG 상태 계산은 런타임이 없으면 명시 초기화를 먼저 시도한다', async () => {

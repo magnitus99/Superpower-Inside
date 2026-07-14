@@ -5,6 +5,7 @@ import {
   chunkMarkdown,
   chunkPlainText,
   buildSearchText,
+  IndexingPerformancePausedError,
   registerModifyEvent,
   VaultIndexer,
 } from './indexer';
@@ -149,6 +150,98 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(batches.every((size) => size <= 2)).toBe(true);
     expect(result.indexed).toBe(1);
     expect(result.vectors).toBeGreaterThan(1);
+  });
+
+  it('skips a queued file that was deleted before indexing starts', async () => {
+    const file = createFile('deleted-before-start.md', 1000, 20);
+    const vault = createVault(new Map([[file.path, 'content']]));
+    vi.spyOn(vault, 'getAbstractFileByPath').mockReturnValue(null);
+    const cachedRead = vi.spyOn(vault, 'cachedRead');
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      new MemoryVectorStore(),
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await expect(indexer.indexFile(file)).resolves.toEqual(
+      expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }),
+    );
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('applies adaptive batch sizes inside one job without skipping or duplicating texts', async () => {
+    const file = createFile('adaptive.md', 1000, 4000);
+    const content = Array.from({ length: 24 }, (_, index) => `line-${index}-${'x'.repeat(24)}`).join(
+      '\n',
+    );
+    const vault = createVault(new Map([[file.path, content]]));
+    const store = new MemoryVectorStore();
+    const batchSizes: number[] = [];
+    const submittedTexts: string[] = [];
+    let nextBatchSize = 4;
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        batchSizes.push(texts.length);
+        submittedTexts.push(...texts);
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), chunkSize: 40 },
+      createChatConfig(),
+    );
+
+    await indexer.indexFile(file, {
+      maxEmbeddingBatchSize: 4,
+      getMaxEmbeddingBatchSize: () => nextBatchSize,
+      onBatchComplete: () => {
+        nextBatchSize = nextBatchSize === 4 ? 2 : 1;
+      },
+    });
+
+    const entries = await store.getEntries();
+    expect(batchSizes.slice(0, 3)).toEqual([4, 2, 1]);
+    expect(entries.map((entry) => entry.metadata.text)).toEqual(submittedTexts);
+    expect(new Set(submittedTexts).size).toBe(submittedTexts.length);
+  });
+
+  it('does not start a provider request while the performance guard is paused', async () => {
+    const file = createFile('paused.md', 1000, 100);
+    const vault = createVault(new Map([[file.path, 'paused content']]));
+    const store = new MemoryVectorStore();
+    const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      { embed: () => Promise.resolve([1, 0]), embedBatch },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await expect(
+      indexer.indexFile(file, {
+        getPerformanceGuardState: () => ({
+          mode: 'paused',
+          currentBatchSize: 1,
+          currentYieldMs: 500,
+          reason: 'paused',
+          pauseUntilMs: Date.now() + 30_000,
+          remainingPauseMs: 30_000,
+          lastSlowReason: 'event loop',
+        }),
+      }),
+    ).rejects.toBeInstanceOf(IndexingPerformancePausedError);
+    expect(embedBatch).not.toHaveBeenCalled();
   });
 
   it('배치 사이에 AbortSignal 취소를 반영한다', async () => {
@@ -607,17 +700,26 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(result.documents).not.toContain('notes/large.md');
   });
 
-  it('emits full reindex plan progress before clearing existing vectors', async () => {
-    const file = createFile('a.md', 1000, 120);
-    const vault = createVault(new Map([[file.path, 'alpha\n\nbravo']]));
-    const progress: string[] = [];
+  it('keeps prior vector coverage when a full reindex is paused', async () => {
+    const fileA = createFile('a.md', 1000, 120);
+    const fileB = createFile('b.md', 1000, 120);
+    const vault = createVault(
+      new Map([
+        [fileA.path, 'new alpha'],
+        [fileB.path, 'new beta'],
+      ]),
+    );
     class ClearObservingStore extends MemoryVectorStore {
+      clearCount = 0;
+
       override async clear(): Promise<void> {
-        progress.push('clear');
+        this.clearCount += 1;
         await super.clear();
       }
     }
     const store = new ClearObservingStore();
+    await store.add([createEntry(fileA.path), createEntry(fileB.path)]);
+    let completedBatches = 0;
     const embeddingProvider: EmbeddingProvider = {
       embed: () => Promise.resolve([1, 0]),
       embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
@@ -626,19 +728,34 @@ describe('VaultIndexer 배치 인덱싱', () => {
       vault,
       store,
       embeddingProvider,
-      { ...createRagConfig(), chunkSize: 20 },
+      createRagConfig(),
       createChatConfig(),
     );
 
-    await indexer.reindexAll({
-      onProgress: (snapshot) => {
-        progress.push(snapshot.event);
-      },
-    });
+    await expect(
+      indexer.reindexAll({
+        onBatchComplete: () => {
+          completedBatches += 1;
+        },
+        getPerformanceGuardState: () =>
+          completedBatches >= 2
+            ? {
+                mode: 'paused',
+                currentBatchSize: 1,
+                currentYieldMs: 500,
+                reason: 'paused',
+                pauseUntilMs: Date.now() + 30_000,
+                remainingPauseMs: 30_000,
+                lastSlowReason: 'event loop',
+              }
+            : null,
+      }),
+    ).rejects.toBeInstanceOf(IndexingPerformancePausedError);
 
-    expect(progress[0]).toBe('plan');
-    expect(progress).toContain('clear');
-    expect(progress.indexOf('plan')).toBeLessThan(progress.indexOf('clear'));
+    const entries = await store.getEntries();
+    expect(store.clearCount).toBe(0);
+    expect(entries.some((entry) => entry.metadata.filePath === 'a.md')).toBe(true);
+    expect(entries.find((entry) => entry.metadata.filePath === 'b.md')?.metadata.text).toBe('old');
   });
 });
 
@@ -697,6 +814,7 @@ function createVault(contents: Map<string, string>): Vault {
   return {
     getFiles: () => files,
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
+    getAbstractFileByPath: (path: string) => files.find((file) => file.path === path) ?? null,
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
   } as unknown as Vault;
 }

@@ -1,5 +1,6 @@
 import type { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
+import { IndexingCancelledError, IndexingPerformancePausedError } from './indexer';
 import { RAGIndexingScheduler } from './indexing-scheduler';
 
 describe('RAGIndexingScheduler', () => {
@@ -215,6 +216,211 @@ describe('RAGIndexingScheduler', () => {
     await scheduler.indexPending({ automaticRecovery: true });
 
     expect(pending).toHaveBeenCalledWith(expect.objectContaining({ automaticRecovery: true }));
+  });
+
+  it('parks a performance-paused job and resumes the same promise after cooldown', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    let guardMode: 'paused' | 'throttled' = 'paused';
+    let callCount = 0;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => {
+        callCount += 1;
+        return callCount === 1
+          ? Promise.reject(new IndexingPerformancePausedError())
+          : Promise.resolve(createResult({ indexed: 1 }));
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+      getPerformanceGuardState: () => ({
+        mode: guardMode,
+        currentBatchSize: 1,
+        currentYieldMs: 500,
+        reason: 'paused',
+        pauseUntilMs: guardMode === 'paused' ? Date.now() + 1_000 : null,
+        remainingPauseMs: guardMode === 'paused' ? 1_000 : null,
+        lastSlowReason: 'event loop',
+      }),
+      resumePerformanceGuard: () => {
+        guardMode = 'throttled';
+        return {
+          mode: guardMode,
+          currentBatchSize: 1,
+          currentYieldMs: 500,
+          reason: 'resumed',
+          pauseUntilMs: null,
+          remainingPauseMs: null,
+          lastSlowReason: 'event loop',
+        };
+      },
+    });
+
+    const resultPromise = scheduler.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: true, phase: 'paused' }),
+    );
+    let idleResolved = false;
+    void scheduler.waitForIdle().then(() => {
+      idleResolved = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(idleResolved).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(resultPromise).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
+    await scheduler.waitForIdle();
+    expect(callCount).toBe(2);
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: false, phase: 'idle' }),
+    );
+    vi.useRealTimers();
+  });
+
+  it('manual resume wakes parked work without cancelling or resetting the queue', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    let callCount = 0;
+    const resumePerformanceGuard = vi.fn(() => ({
+      mode: 'throttled' as const,
+      currentBatchSize: 1,
+      currentYieldMs: 500,
+      reason: 'resumed',
+      pauseUntilMs: null,
+      remainingPauseMs: null,
+      lastSlowReason: 'event loop',
+    }));
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => {
+        callCount += 1;
+        return callCount === 1
+          ? Promise.reject(new IndexingPerformancePausedError())
+          : Promise.resolve(createResult({ indexed: 1 }));
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+      getPerformanceGuardState: () => ({
+        mode: 'paused',
+        currentBatchSize: 1,
+        currentYieldMs: 500,
+        reason: 'paused',
+        pauseUntilMs: Date.now() + 30_000,
+        remainingPauseMs: 30_000,
+        lastSlowReason: 'event loop',
+      }),
+      resumePerformanceGuard,
+    });
+
+    const resultPromise = scheduler.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.resumeNow()).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(resultPromise).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
+    expect(resumePerformanceGuard).toHaveBeenCalledWith(true);
+    expect(callCount).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it('cancellation rejects parked work and invalidates its wake timer', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    const resumePerformanceGuard = vi.fn();
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.reject(new IndexingPerformancePausedError()),
+      reindexAll: () => Promise.resolve(createResult()),
+      getPerformanceGuardState: () => ({
+        mode: 'paused',
+        currentBatchSize: 1,
+        currentYieldMs: 500,
+        reason: 'paused',
+        pauseUntilMs: Date.now() + 30_000,
+        remainingPauseMs: 30_000,
+        lastSlowReason: 'event loop',
+      }),
+      resumePerformanceGuard,
+    });
+
+    const resultPromise = scheduler.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    scheduler.cancel();
+
+    await expect(resultPromise).rejects.toBeInstanceOf(IndexingCancelledError);
+    await scheduler.waitForIdle();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(resumePerformanceGuard).not.toHaveBeenCalled();
+    expect(scheduler.isRunning()).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it('keeps work parked when the performance policy cannot confirm a resume', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+    const resumePerformanceGuard = vi.fn(() => null);
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.reject(new IndexingPerformancePausedError()),
+      reindexAll: () => Promise.resolve(createResult()),
+      getPerformanceGuardState: () => ({
+        mode: 'paused',
+        currentBatchSize: 1,
+        currentYieldMs: 500,
+        reason: 'paused',
+        pauseUntilMs: Date.now(),
+        remainingPauseMs: 0,
+        lastSlowReason: 'event loop',
+      }),
+      resumePerformanceGuard,
+    });
+
+    const resultPromise = scheduler.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.resumeNow()).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resumePerformanceGuard).toHaveBeenCalledTimes(1);
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: true, phase: 'paused' }),
+    );
+
+    scheduler.cancel();
+    await expect(resultPromise).rejects.toBeInstanceOf(IndexingCancelledError);
+    vi.useRealTimers();
+  });
+
+  it('settles queued public jobs on cancel and accepts a fresh generation', async () => {
+    let releaseActive = (): void => undefined;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () =>
+        new Promise((resolve) => {
+          releaseActive = () => resolve(createResult({ indexed: 1 }));
+        }),
+      removeFile: () => Promise.resolve(1),
+      indexPending: () => Promise.resolve(createResult({ indexed: 1 })),
+      reindexAll: () => Promise.resolve(createResult({ indexed: 1 })),
+    });
+
+    scheduler.scheduleFile(createFile('active.md'), 'modify');
+    await Promise.resolve();
+    const deletePromise = scheduler.deleteFile('deleted.md');
+    const pendingPromise = scheduler.indexPending();
+    scheduler.cancel();
+
+    await expect(deletePromise).rejects.toBeInstanceOf(IndexingCancelledError);
+    await expect(pendingPromise).rejects.toBeInstanceOf(IndexingCancelledError);
+    releaseActive();
+    await scheduler.waitForIdle();
+
+    await expect(scheduler.indexPending()).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
   });
 });
 

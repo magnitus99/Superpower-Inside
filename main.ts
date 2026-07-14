@@ -488,15 +488,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.graphRagIndexingRunner !== null;
   }
 
-  resumeRagIndexing(): void {
-    this.ragPerformanceGuard?.reset();
-    this.ragIndexingScheduler?.cancel();
-    this.refreshBus?.emit('rag', {
-      status: 'success',
-      detail: this.ragIndexingStatus
-        ? this.formatRagIndexingStatus(this.ragIndexingStatus)
-        : t('ragIdle'),
-    });
+  resumeRagIndexing(): boolean {
+    const resumed = this.ragIndexingScheduler?.resumeNow() ?? false;
+    if (resumed) {
+      this.refreshBus?.emit('rag', {
+        status: 'success',
+        detail: this.ragIndexingStatus
+          ? this.formatRagIndexingStatus(this.ragIndexingStatus)
+          : t('ragIdle'),
+      });
+    }
+    return resumed;
   }
 
   getRagPerformanceGuardState(): PerformanceGuardState | null {
@@ -2325,6 +2327,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
         initialYieldMs: performanceSettings.indexingYieldMs,
         slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
         slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
+        onPolicyError: (message) => {
+          this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
+            source: 'rag.performance-guard',
+            data: { message },
+          });
+          void this.recordAgentDiagnosticsBreadcrumb({
+            phase: 'rag.performance-guard',
+            action: 'error',
+            detail: message,
+          });
+        },
       });
       this.ragIndexingScheduler = new RAGIndexingScheduler({
         debounceMs: 500,
@@ -2338,16 +2351,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
             this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
           indexingYieldMs:
             this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
-          onBatchComplete: (durationMs) => {
+          getMaxEmbeddingBatchSize: () =>
+            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
+          getIndexingYieldMs: () =>
+            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+          onBatchComplete: async (durationMs, batchSize) => {
             this.getLogger().debug('RAG embedding batch completed.', {
               source: 'rag.indexing',
               data: {
                 durationMs: Math.round(durationMs),
+                batchSize,
                 guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
               },
             });
             this.ragPerformanceGuard?.recordBatchDuration(durationMs);
-            void this.ragPerformanceGuard?.measureEventLoopLag();
+            await this.ragPerformanceGuard?.measureEventLoopLag();
           },
           onProgress: (progress) => {
             void this.recordAgentDiagnosticsBreadcrumb({
@@ -2366,6 +2384,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
           },
           getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
         }),
+        getPerformanceGuardState: () => this.ragPerformanceGuard?.getState() ?? null,
+        resumePerformanceGuard: (force) =>
+          force
+            ? (this.ragPerformanceGuard?.forceResume() ?? null)
+            : (this.ragPerformanceGuard?.resume() ?? null),
         onStatusChange: (status) => {
           this.ragIndexingStatus = status;
           if (status.running) {
@@ -2571,6 +2594,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+    if (phase === 'paused') return t('ragPerformancePaused');
     if (phase === 'file') return t('ragPhaseFile');
     if (phase === 'pending') return t('ragPhasePending');
     if (phase === 'all') return t('ragPhaseAll');
