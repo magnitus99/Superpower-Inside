@@ -1,6 +1,6 @@
 # Superpower Inside
 
-![version](https://img.shields.io/badge/version-1.5.1-blue)
+![version](https://img.shields.io/badge/version-1.5.4-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
@@ -107,6 +107,8 @@ Chats can be saved as Markdown files in your configured chat folder. This keeps 
 RAG and GraphRAG maintain local state for this vault. When notes, models, or graph evidence need attention, the settings view surfaces a clear status and the smallest next action. The goal is not to make you operate an index dashboard; it is to keep answers grounded while staying out of your way.
 
 Superpower Inside reuses compatible local index data and works through missing or stale coverage in small background batches after startup. Interrupted work keeps its partial progress and resumes automatically, while oversized or binary sources never monopolize the app, so reindexing stays a recovery tool rather than routine maintenance.
+
+While RAG indexing runs, Superpower Inside watches both embedding throughput and Obsidian's responsiveness. It quietly reduces batch pressure when needed, pauses only when the app itself remains unresponsive, and resumes the same queued work safely after recovery. Existing index coverage stays available throughout, including during a full refresh.
 
 GraphRAG extraction uses one concurrent model request by default. If your provider supports more throughput, the GraphRAG settings let you raise the concurrent request count from 1 to 10 while keeping the current value visible beside the slider.
 
