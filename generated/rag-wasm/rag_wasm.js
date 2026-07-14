@@ -725,6 +725,29 @@ export function create_graph_id(parts) {
 }
 
 /**
+ * Creates a collision-resistant deterministic key for one namespaced `IndexedDB` record.
+ * @param {string} namespace
+ * @param {string} value
+ * @returns {string}
+ */
+export function create_indexed_db_record_key(namespace, value) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(namespace, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(value, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.create_indexed_db_record_key(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
  * @param {Uint32Array} source_indices
  * @param {Uint32Array} target_indices
@@ -2430,6 +2453,87 @@ export function plan_index_pending_files_json(file_paths_json, update_paths_json
 }
 
 /**
+ * Selects stale current-vault generations and explicit legacy databases for deletion.
+ * @param {string} database_names_json
+ * @param {string} active_names_json
+ * @param {string} current_vault_prefix
+ * @param {string} legacy_names_json
+ * @returns {string}
+ */
+export function plan_indexed_db_cleanup_json(database_names_json, active_names_json, current_vault_prefix, legacy_names_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(database_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(active_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(current_vault_prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(legacy_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_db_cleanup_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        deferred5_0 = ret[0];
+        deferred5_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * Selects expired records and oldest capacity overflow for bounded `IndexedDB` caches.
+ * @param {string} records_json
+ * @param {number} max_records
+ * @param {number} now
+ * @param {number} max_age_ms
+ * @returns {string}
+ */
+export function plan_indexed_db_record_retention_json(records_json, max_records, now, max_age_ms) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_db_record_retention_json(ptr0, len0, max_records, now, max_age_ms);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Builds database names isolated by vault, storage contract, and embedding generation.
+ * @param {string} plugin_id
+ * @param {string} vault_identity
+ * @param {string} legacy_vault_name
+ * @param {string} embedding_namespace
+ * @returns {string}
+ */
+export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, legacy_vault_name, embedding_namespace) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(plugin_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(vault_identity, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(legacy_vault_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(embedding_namespace, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_db_storage_layout_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        deferred5_0 = ret[0];
+        deferred5_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * `GraphRAG` record snapshot에서 local evidence score `JSON` plan을 만든다.
  * @param {string} matches_json
  * @param {string} relations_json
@@ -3018,6 +3122,36 @@ export function plan_vector_store_lookup_by_ids_json(entry_ids_json, requested_i
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Selects stale vector file records for a bounded reconciliation pass.
+ * @param {string} records_json
+ * @param {string} valid_file_paths_json
+ * @param {string} embedding_provider
+ * @param {string} embedding_model
+ * @param {number} max_deletions
+ * @returns {string}
+ */
+export function plan_vector_store_reconciliation_json(records_json, valid_file_paths_json, embedding_provider, embedding_model, max_deletions) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(valid_file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(embedding_provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(embedding_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_vector_store_reconciliation_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, max_deletions);
+        deferred5_0 = ret[0];
+        deferred5_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
     }
 }
 

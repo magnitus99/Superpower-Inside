@@ -8,6 +8,7 @@ import {
   planVectorStoreLookupByIdsRust,
   planVectorStoreRemoveFileRust,
   planVectorStoreReplaceFileRust,
+  planVectorStoreReconciliationRust,
   planVectorStoreStatsRust,
   rankTopKPairsRust,
   RustIvfRuntimeIndex,
@@ -116,6 +117,12 @@ export interface VectorStore {
   getEntries(): Promise<VectorEntry[]>;
   getMetaValue?<T>(key: string): Promise<T | undefined>;
   setMetaValue?(key: string, value: unknown): Promise<void>;
+  close(): void;
+}
+
+export interface VectorStoreReconciliationResult {
+  deletedFilePaths: string[];
+  remainingStaleCount: number;
 }
 
 export interface LegacyJsonVectorImportResult {
@@ -349,8 +356,9 @@ function matchesVectorRecordSearchFilter(
 }
 
 function normalizeFilePathPrefixes(prefixes: readonly string[] | undefined): string[] {
-  return [...new Set((prefixes ?? []).map((prefix) => prefix.trim().replace(/\/+$/, '')).filter(Boolean))]
-    .sort();
+  return [
+    ...new Set((prefixes ?? []).map((prefix) => prefix.trim().replace(/\/+$/, '')).filter(Boolean)),
+  ].sort();
 }
 
 function matchesFilePathPrefixes(
@@ -614,8 +622,48 @@ export class IndexedDbVectorStore implements VectorStore {
   async deleteDatabase(): Promise<void> {
     this.entriesCache = null;
     this.invalidateRuntimeIndex();
-    this.db.close();
+    this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
+  }
+
+  close(): void {
+    this.entriesCache = null;
+    this.invalidateRuntimeIndex();
+    this.db.close({ disableAutoOpen: true });
+  }
+
+  async reconcileFileIndex(input: {
+    validFilePaths: readonly string[];
+    embeddingProvider: string;
+    embeddingModel: string;
+    maxDeletions?: number;
+  }): Promise<VectorStoreReconciliationResult> {
+    const records = await this.getFileIndexRecords();
+    const plan = planVectorStoreReconciliationRust(
+      records.map((record) => ({
+        filePath: record.filePath,
+        embeddingProvider: record.embeddingProvider,
+        embeddingModel: record.embeddingModel,
+      })),
+      input.validFilePaths,
+      input.embeddingProvider,
+      input.embeddingModel,
+      Math.max(0, Math.floor(input.maxDeletions ?? 128)),
+    );
+    if (!plan) {
+      throw new Error('Rust vector-store reconciliation planning failed');
+    }
+    if (plan.deleteFilePaths.length > 0) {
+      await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+        await this.db.vectors.where('filePath').anyOf(plan.deleteFilePaths).delete();
+        await this.db.fileIndex.bulkDelete(plan.deleteFilePaths);
+      });
+      this.invalidateRuntimeCache();
+    }
+    return {
+      deletedFilePaths: plan.deleteFilePaths,
+      remainingStaleCount: plan.remainingStaleCount,
+    };
   }
 
   async getMetaValue<T>(key: string): Promise<T | undefined> {
@@ -963,6 +1011,10 @@ export class MemoryVectorStore implements VectorStore {
 
   async persist(): Promise<void> {
     // 아무것도 하지 않음
+  }
+
+  close(): void {
+    this.invalidateRuntimeIndex();
   }
 
   async withBatch<T>(operation: () => Promise<T>): Promise<T> {

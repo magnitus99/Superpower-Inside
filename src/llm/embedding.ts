@@ -1,7 +1,7 @@
 import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from 'obsidian';
 import Dexie from 'dexie';
 import { t } from '../i18n';
-import { createContentHash } from '../rag/hash';
+import { createIndexedDbRecordKeyRust, planIndexedDbRecordRetentionRust } from '../rag/rust-core';
 import { assertValidEmbeddingBatch } from './embedding-validation';
 import { getTernlightEmbedder, type TernlightRuntimeOptions } from './ternlight-runtime';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
@@ -10,26 +10,37 @@ export { assertValidEmbeddingBatch } from './embedding-validation';
 export interface EmbeddingRecord {
   id: string;
   textHash: string;
-  vector: number[];
+  vectorBuffer?: ArrayBuffer;
+  vector?: number[];
+  dimension: number;
+  updated: number;
+}
+
+interface EmbeddingAccessRecord {
+  id: string;
   updated: number;
 }
 
 class EmbeddingCacheDB extends Dexie {
   embeddings!: Dexie.Table<EmbeddingRecord, string>;
+  access!: Dexie.Table<EmbeddingAccessRecord, string>;
 
-  constructor() {
-    super('SuperpowerInsideEmbeddingCache');
+  constructor(name: string) {
+    super(name);
     this.version(1).stores({
       embeddings: 'id, textHash, updated',
+    });
+    this.version(2).stores({
+      embeddings: 'id, updated',
+      access: 'id, updated',
     });
   }
 }
 
-let db = new EmbeddingCacheDB();
-
 export interface EmbeddingProvider {
   embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
   embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]>;
+  close?(): void;
 }
 
 export interface EmbeddingOptions {
@@ -557,9 +568,20 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 }
 
 const MAX_MEMORY_CACHE_SIZE = 5000;
+const DEFAULT_PERSISTENT_CACHE_SIZE = 10_000;
+const DEFAULT_PERSISTENT_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_PERSISTENT_PRUNE_INTERVAL = 128;
 
 export function createEmbeddingCacheNamespace(providerKey: string, modelName: string): string {
   return `${providerKey.trim()}::${modelName.trim()}`;
+}
+
+export interface CachedEmbeddingProviderOptions {
+  dbName?: string;
+  maxPersistentEntries?: number;
+  maxPersistentAgeMs?: number;
+  pruneEveryWrites?: number;
+  now?: () => number;
 }
 
 export class CachedEmbeddingProvider implements EmbeddingProvider {
@@ -567,12 +589,39 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private memoryCache: Map<string, number[]>;
   private cacheNamespace: string;
   private cacheKeys: string[];
+  private db: EmbeddingCacheDB;
+  private readonly maxPersistentEntries: number;
+  private readonly maxPersistentAgeMs: number;
+  private readonly pruneEveryWrites: number;
+  private readonly now: () => number;
+  private writesSincePrune = 0;
 
-  constructor(inner: EmbeddingProvider, cacheNamespace: string) {
+  constructor(
+    inner: EmbeddingProvider,
+    cacheNamespace: string,
+    options: CachedEmbeddingProviderOptions = {},
+  ) {
     this.inner = inner;
     this.memoryCache = new Map();
     this.cacheKeys = [];
     this.cacheNamespace = cacheNamespace;
+    this.db = new EmbeddingCacheDB(
+      options.dbName ??
+        `SuperpowerInsideEmbeddingCache-v2:${requireIndexedDbRecordKey('embedding-cache', cacheNamespace)}`,
+    );
+    this.maxPersistentEntries = normalizeCacheLimit(
+      options.maxPersistentEntries,
+      DEFAULT_PERSISTENT_CACHE_SIZE,
+    );
+    this.maxPersistentAgeMs = normalizeCacheLimit(
+      options.maxPersistentAgeMs,
+      DEFAULT_PERSISTENT_CACHE_MAX_AGE_MS,
+    );
+    this.pruneEveryWrites = normalizeCacheLimit(
+      options.pruneEveryWrites,
+      DEFAULT_PERSISTENT_PRUNE_INTERVAL,
+    );
+    this.now = options.now ?? Date.now;
   }
 
   private setCache(hash: string, vector: number[]): void {
@@ -591,7 +640,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   }
 
   private computeHash(text: string): string {
-    return createContentHash(`${this.cacheNamespace}::${text}`);
+    return requireIndexedDbRecordKey(this.cacheNamespace, text);
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
@@ -601,17 +650,25 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     const mem = this.memoryCache.get(hash);
     if (mem) return mem;
 
-    const cached = await db.embeddings.where('textHash').equals(hash).first();
+    const cached = await this.db.embeddings.get(hash);
     throwIfAborted(options?.signal);
     if (cached) {
-      this.setCache(hash, cached.vector);
-      return cached.vector;
+      const cachedVector = embeddingVectorFromRecord(cached);
+      if (cachedVector.length > 0) {
+        this.setCache(hash, cachedVector);
+        return cachedVector;
+      }
     }
 
     const vector = await this.inner.embed(text, options);
     throwIfAborted(options?.signal);
     this.setCache(hash, vector);
-    await db.embeddings.put({ id: hash, textHash: hash, vector, updated: Date.now() });
+    const updated = this.now();
+    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
+      await this.db.embeddings.put(embeddingRecord(hash, vector, updated));
+      await this.db.access.put({ id: hash, updated });
+    });
+    await this.prunePersistentCacheIfNeeded(1);
     return vector;
   }
 
@@ -636,7 +693,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       dbLookupHashes.push(hash);
     }
 
-    const cachedRecords = await db.embeddings.bulkGet(dbLookupHashes);
+    const cachedRecords = await this.db.embeddings.bulkGet(dbLookupHashes);
     throwIfAborted(options?.signal);
     const missingIndexGroups = new Map<string, number[]>();
     const missingHashes: string[] = [];
@@ -646,9 +703,12 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       const hash = dbLookupHashes[lookupIndex];
       const cached = cachedRecords[lookupIndex];
       if (cached) {
-        this.setCache(hash, cached.vector);
-        results[originalIndex] = cached.vector;
-        continue;
+        const cachedVector = embeddingVectorFromRecord(cached);
+        if (cachedVector.length > 0) {
+          this.setCache(hash, cachedVector);
+          results[originalIndex] = cachedVector;
+          continue;
+        }
       }
       const existingGroup = missingIndexGroups.get(hash);
       if (existingGroup) {
@@ -663,13 +723,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     if (missingTexts.length > 0) {
       const newVectors = await this.inner.embedBatch(missingTexts, options);
       throwIfAborted(options?.signal);
-      const now = Date.now();
-      const bulkRecords: Array<{
-        id: string;
-        textHash: string;
-        vector: number[];
-        updated: number;
-      }> = [];
+      const now = this.now();
+      const bulkRecords: EmbeddingRecord[] = [];
+      const accessRecords: EmbeddingAccessRecord[] = [];
       for (let j = 0; j < missingTexts.length; j++) {
         const vector = newVectors[j];
         const hash = missingHashes[j];
@@ -677,9 +733,14 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
           results[originalIdx] = vector;
         }
         this.setCache(hash, vector);
-        bulkRecords.push({ id: hash, textHash: hash, vector, updated: now });
+        bulkRecords.push(embeddingRecord(hash, vector, now));
+        accessRecords.push({ id: hash, updated: now });
       }
-      await db.embeddings.bulkPut(bulkRecords);
+      await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
+        await this.db.embeddings.bulkPut(bulkRecords);
+        await this.db.access.bulkPut(accessRecords);
+      });
+      await this.prunePersistentCacheIfNeeded(bulkRecords.length);
       throwIfAborted(options?.signal);
     }
 
@@ -688,14 +749,80 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
 
   async clearCache(): Promise<void> {
     this.memoryCache.clear();
-    await db.embeddings.clear();
+    this.cacheKeys = [];
+    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
+      await this.db.embeddings.clear();
+      await this.db.access.clear();
+    });
   }
 
   async deleteDatabase(): Promise<void> {
     this.memoryCache.clear();
-    const currentDb = db;
-    currentDb.close();
-    await Dexie.delete(currentDb.name);
-    db = new EmbeddingCacheDB();
+    this.cacheKeys = [];
+    const dbName = this.db.name;
+    this.db.close({ disableAutoOpen: true });
+    await Dexie.delete(dbName);
   }
+
+  close(): void {
+    this.memoryCache.clear();
+    this.cacheKeys = [];
+    this.db.close({ disableAutoOpen: true });
+  }
+
+  private async prunePersistentCacheIfNeeded(writes: number): Promise<void> {
+    this.writesSincePrune += writes;
+    if (this.writesSincePrune < this.pruneEveryWrites) return;
+    this.writesSincePrune = 0;
+    const records = await this.db.access.toArray();
+    const plan = planIndexedDbRecordRetentionRust(
+      records,
+      this.maxPersistentEntries,
+      this.now(),
+      this.maxPersistentAgeMs,
+    );
+    if (!plan) {
+      throw new Error('Rust embedding-cache retention planning failed');
+    }
+    if (plan.deleteIds.length === 0) return;
+    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
+      await this.db.embeddings.bulkDelete(plan.deleteIds);
+      await this.db.access.bulkDelete(plan.deleteIds);
+    });
+    for (const id of plan.deleteIds) {
+      this.memoryCache.delete(id);
+    }
+  }
+}
+
+function embeddingRecord(id: string, vector: readonly number[], updated: number): EmbeddingRecord {
+  const values = new Float32Array(vector.length);
+  values.set(vector);
+  return {
+    id,
+    textHash: id,
+    vectorBuffer: values.buffer.slice(0),
+    dimension: vector.length,
+    updated,
+  };
+}
+
+function embeddingVectorFromRecord(record: EmbeddingRecord): number[] {
+  if (record.vectorBuffer instanceof ArrayBuffer) {
+    return Array.from(new Float32Array(record.vectorBuffer));
+  }
+  return Array.isArray(record.vector) ? [...record.vector] : [];
+}
+
+function normalizeCacheLimit(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+function requireIndexedDbRecordKey(namespace: string, value: string): string {
+  const key = createIndexedDbRecordKeyRust(namespace, value);
+  if (!key) {
+    throw new Error('Rust IndexedDB record-key generation failed');
+  }
+  return key;
 }

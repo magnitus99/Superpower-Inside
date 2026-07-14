@@ -183,9 +183,14 @@ describe('IndexedDbBM25Index', () => {
   it('큰 IndexedDB BM25 snapshot은 시작 경로에서 WASM runtime으로 파싱하지 않는다', async () => {
     const dbName = createDbName();
     await seedBm25Snapshot(dbName, '{"schemaVersion":3,"tokenizerVersion":2,"docs":["large"]}');
-    const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), '.superpower-inside/bm25-index.json', {
-      maxSnapshotBytes: 4,
-    });
+    const bm25 = new IndexedDbBM25Index(
+      dbName,
+      createAdapter(),
+      '.superpower-inside/bm25-index.json',
+      {
+        maxSnapshotBytes: 4,
+      },
+    );
 
     await bm25.load();
 
@@ -251,6 +256,20 @@ describe('IndexedDbBM25Index', () => {
     expect(reopened.totalDocs).toBe(0);
     expect([...reopened.search('freshbeta').keys()]).toEqual([]);
   });
+  it('materializes removals without retaining an unbounded tombstone log', async () => {
+    const dbName = createDbName();
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
+    await bm25.load();
+    bm25.addDocument('obsolete.md::0', 'obsolete text', 'obsolete.md');
+    await bm25.persist();
+
+    for (let index = 0; index < 5; index++) {
+      bm25.removeDocumentsBySource('obsolete.md');
+      await bm25.persist();
+    }
+
+    expect(await countBm25Mutations(dbName)).toBe(0);
+  });
 });
 
 async function createBm25(
@@ -262,6 +281,18 @@ async function createBm25(
     bm25.addDocument(id, text);
   }
   return bm25;
+}
+
+async function countBm25Mutations(dbName: string): Promise<number> {
+  const db = new Dexie(dbName);
+  db.version(2).stores({
+    meta: 'key',
+    documents: 'id, sourcePath, updated, order',
+    mutations: 'id, kind, target, updated, order',
+  });
+  const count = await db.table('mutations').count();
+  db.close();
+  return count;
 }
 
 function createDbName(): string {

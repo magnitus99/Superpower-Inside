@@ -536,9 +536,9 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       ragIndexingScheduler: { cancel: ReturnType<typeof vi.fn> };
       createProviderForModel: ReturnType<typeof vi.fn>;
     };
-    const previousVectorStore = { kind: 'previous-vector-store' };
-    const previousKnowledgeGraphStore = { kind: 'previous-graph-store' };
-    const previousEmbeddingProvider = { kind: 'previous-embedding-provider' };
+    const previousVectorStore = { kind: 'previous-vector-store', close: vi.fn() };
+    const previousKnowledgeGraphStore = { kind: 'previous-graph-store', close: vi.fn() };
+    const previousEmbeddingProvider = { kind: 'previous-embedding-provider', close: vi.fn() };
     const previousRagEngine = { kind: 'previous-rag-engine' };
     const previousGraphRagRunner = { kind: 'previous-graph-runner' };
     const previousVaultIndexer = { kind: 'previous-vault-indexer' };
@@ -553,7 +553,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       rag: {
         ...createRagWithEmbedding(DEFAULT_SETTINGS.rag),
         autoUpdateEnabled: false,
-        graphRagEnabled: false,
+        graphRagEnabled: true,
         graphRagModel: 'openai:gpt-test',
         graphRagAutoSyncEnabled: false,
       },
@@ -565,9 +565,12 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.graphRagIndexingRunner = previousGraphRagRunner;
     plugin.vaultIndexer = previousVaultIndexer;
     plugin.ragIndexingScheduler = previousScheduler;
-    plugin.createProviderForModel = vi.fn(() => {
-      throw new Error('graph provider failed');
-    });
+    plugin.createProviderForModel = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('graph provider failed');
+      })
+      .mockReturnValue(null);
 
     await expect(
       (
@@ -584,6 +587,9 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.graphRagIndexingRunner).toBe(previousGraphRagRunner);
     expect(plugin.vaultIndexer).toBe(previousVaultIndexer);
     expect(plugin.ragIndexingScheduler).toBe(previousScheduler);
+    expect(previousVectorStore.close).not.toHaveBeenCalled();
+    expect(previousKnowledgeGraphStore.close).not.toHaveBeenCalled();
+    expect(previousEmbeddingProvider.close).not.toHaveBeenCalled();
   });
 
   it('GraphRAG 자동 동기화 설정 간격으로 실제 scheduler를 실행한다', async () => {
@@ -752,9 +758,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       ...DEFAULT_SETTINGS,
       rag: { ...DEFAULT_SETTINGS.rag },
     };
-    delete (
-      oldSettings.rag as Partial<typeof DEFAULT_SETTINGS.rag>
-    ).graphRagMaxConcurrentRequests;
+    delete (oldSettings.rag as Partial<typeof DEFAULT_SETTINGS.rag>).graphRagMaxConcurrentRequests;
     const app = createApp({ localSettings: oldSettings });
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
       app: ReturnType<typeof createApp>;
@@ -890,7 +894,10 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         deleteDatabase: ReturnType<typeof vi.fn>;
       };
       bm25Index: { clear: ReturnType<typeof vi.fn>; deleteDatabase: ReturnType<typeof vi.fn> };
-      embeddingProvider: { clearCache: ReturnType<typeof vi.fn>; deleteDatabase: ReturnType<typeof vi.fn> };
+      embeddingProvider: {
+        clearCache: ReturnType<typeof vi.fn>;
+        deleteDatabase: ReturnType<typeof vi.fn>;
+      };
       createIndexedDbName: (kind: string) => string;
     };
     const logger = {
@@ -945,7 +952,10 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(embeddingProvider.clearCache).not.toHaveBeenCalled();
     expect(app.vault.adapter.rmdir).toHaveBeenCalledWith('.superpower-inside', true);
     expect(app.vault.adapter.remove).not.toHaveBeenCalledWith('Notes/user-note.md');
-    expect(app.saveLocalStorage).toHaveBeenCalledWith('superpower-inside:settings', DEFAULT_SETTINGS);
+    expect(app.saveLocalStorage).toHaveBeenCalledWith(
+      'superpower-inside:settings',
+      DEFAULT_SETTINGS,
+    );
     expect(plugin.saveData).toHaveBeenCalledWith(DEFAULT_SETTINGS);
     expect(plugin.settings.openai.apiKey).toBe('');
     expect(plugin.initMCP).toHaveBeenCalledOnce();

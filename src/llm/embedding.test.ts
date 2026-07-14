@@ -357,6 +357,50 @@ describe('CachedEmbeddingProvider', () => {
 
     await second.deleteDatabase();
   });
+  it('bounds persistent cache generations with Rust retention planning', async () => {
+    const dbName = `EmbeddingCacheTest-${crypto.randomUUID()}`;
+    let now = 1_000;
+    const first = new CachedEmbeddingProvider(
+      {
+        embed: (text) => Promise.resolve([text.length, 1]),
+        embedBatch: (texts) => Promise.resolve(texts.map((text) => [text.length, 1])),
+      },
+      'profile:local::bounded-model',
+      {
+        dbName,
+        maxPersistentEntries: 2,
+        maxPersistentAgeMs: 60_000,
+        pruneEveryWrites: 1,
+        now: () => now,
+      },
+    );
+    try {
+      await first.embed('oldest');
+      now = 2_000;
+      await first.embed('middle');
+      now = 3_000;
+      await first.embed('newest');
+      first.close();
+
+      let misses = 0;
+      const reopened = new CachedEmbeddingProvider(
+        {
+          embed: () => {
+            misses += 1;
+            return Promise.resolve([9, 9]);
+          },
+          embedBatch: (texts) => Promise.resolve(texts.map(() => [9, 9])),
+        },
+        'profile:local::bounded-model',
+        { dbName, maxPersistentEntries: 2, pruneEveryWrites: 1, now: () => now },
+      );
+      await expect(reopened.embed('oldest')).resolves.toEqual([9, 9]);
+      expect(misses).toBe(1);
+      await reopened.deleteDatabase();
+    } finally {
+      first.close();
+    }
+  });
 });
 
 function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {

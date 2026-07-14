@@ -11,6 +11,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// IndexedDB naming, generation cleanup, and stale-record reconciliation policy.
+mod storage_lifecycle;
+pub use storage_lifecycle::{
+    create_indexed_db_record_key, plan_indexed_db_cleanup_json,
+    plan_indexed_db_record_retention_json, plan_indexed_db_storage_layout_json,
+    plan_vector_store_reconciliation_json,
+};
+
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.
@@ -19188,11 +19196,12 @@ mod tests {
         assign_vector_clusters, bm25_score_pairs, build_initial_centroids, chunk_markdown,
         chunk_plain_text, classify_mcp_tool_error_json, cosine_similarity,
         count_files_by_extensions_json, count_keyword_matches, create_content_hash,
-        create_entity_id, create_graph_id, dedupe_in_order, detect_communities_flat,
-        detect_communities_from_edges_json, detect_leiden_hierarchy_from_edges_json,
-        extract_json_object_text, extract_vault_links_json, find_mentioned_entity_matches,
-        format_mcp_json, get_mcp_connection_state_rust, hybrid_score_or_nan, is_excluded_ext_json,
-        is_excluded_path, is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
+        create_entity_id, create_graph_id, create_indexed_db_record_key, dedupe_in_order,
+        detect_communities_flat, detect_communities_from_edges_json,
+        detect_leiden_hierarchy_from_edges_json, extract_json_object_text,
+        extract_vault_links_json, find_mentioned_entity_matches, format_mcp_json,
+        get_mcp_connection_state_rust, hybrid_score_or_nan, is_excluded_ext_json, is_excluded_path,
+        is_graph_extraction_cache_hit_json, is_mcp_tool_name_available,
         is_mcp_tool_result_empty_json, is_relevant_result, is_same_graph_entity_pair,
         normalize_entity_name, normalize_extracted_graph_payload_json,
         normalize_graph_confidence_or_default, normalize_graph_name,
@@ -19220,17 +19229,19 @@ mod tests {
         plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
         plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
         plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
-        plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
-        plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
-        plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
-        plan_rag_file_indexability_json, plan_rag_file_type_summary_json,
-        plan_rag_indexing_eta_json, plan_rag_status_json, plan_reference_file_indices_json,
-        plan_rerank_messages_json, plan_rerank_response_json, plan_rerank_result_order_json,
-        plan_source_references_json, plan_source_validation_inputs_json,
-        plan_source_validation_warnings_json, plan_structural_heading_neighbors_json,
-        plan_structural_linked_paths_json, plan_vault_link_candidates_json,
-        plan_vault_link_fallback_index_json, plan_vector_store_add_json,
-        plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
+        plan_indexed_db_cleanup_json, plan_indexed_db_record_retention_json,
+        plan_indexed_db_storage_layout_json, plan_local_evidence_scores_json,
+        plan_mcp_server_candidates_json, plan_merged_retrieval_candidates,
+        plan_merged_retrieval_candidates_by_entry_id, plan_query_result_score_json,
+        plan_rag_file_content_probe_indices_json, plan_rag_file_indexability_json,
+        plan_rag_file_type_summary_json, plan_rag_indexing_eta_json, plan_rag_status_json,
+        plan_reference_file_indices_json, plan_rerank_messages_json, plan_rerank_response_json,
+        plan_rerank_result_order_json, plan_source_references_json,
+        plan_source_validation_inputs_json, plan_source_validation_warnings_json,
+        plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
+        plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
+        plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
+        plan_vector_store_lookup_by_ids_json, plan_vector_store_reconciliation_json,
         plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
         plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
         recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
@@ -21905,6 +21916,109 @@ mod tests {
         assert_eq!(
             plan_vector_store_stats_json("[]", 1234.0),
             r#"{"totalEntries":0,"totalFiles":0,"totalVectors":0,"averageVectorsPerFile":0,"lastUpdated":null,"indexedFilePaths":[]}"#,
+        );
+    }
+
+    /// `IndexedDB` names must isolate vaults, embedding generations, and storage contracts.
+    #[test]
+    fn indexed_db_storage_layout_is_planned_in_rust() {
+        let raw = plan_indexed_db_storage_layout_json(
+            "superpower-inside",
+            r"D:\\Vaults\\Research",
+            "Research",
+            "profile:local::embedding-v2",
+        );
+        assert!(
+            raw.contains(r#""contractVersion":2"#),
+            "storage contract version should be explicit: {raw}"
+        );
+        assert!(
+            raw.contains("superpower-inside:rag-v2:"),
+            "active names should be isolated behind the current contract: {raw}"
+        );
+        assert!(
+            raw.contains(":vectors")
+                && raw.contains(":embedding-cache")
+                && raw.contains(":bm25")
+                && raw.contains(":graph"),
+            "each storage role should have an isolated database name: {raw}"
+        );
+        assert!(
+            raw.contains("superpower-inside:Research:VectorStore")
+                && raw.contains("superpower-inside:Research:KnowledgeGraph")
+                && raw.contains("superpower-inside:Research:BM25Index")
+                && raw.contains("SuperpowerInsideEmbeddingCache"),
+            "the layout should identify known legacy databases: {raw}"
+        );
+    }
+
+    /// Cache keys must be deterministic, namespaced, and wider than legacy 32-bit content hashes.
+    #[test]
+    fn indexed_db_record_keys_are_wide_and_namespaced() {
+        let first = create_indexed_db_record_key("profile:local::embedding-v2", "same text");
+        let repeated = create_indexed_db_record_key("profile:local::embedding-v2", "same text");
+        let other_namespace =
+            create_indexed_db_record_key("profile:remote::embedding-v2", "same text");
+
+        assert_eq!(first, repeated, "storage keys should be deterministic");
+        assert_eq!(
+            first.len(),
+            32,
+            "storage keys should carry 128 bits of identity"
+        );
+        assert_ne!(
+            first, other_namespace,
+            "namespaces must isolate equal input text"
+        );
+        assert!(
+            first.chars().all(|character| character.is_ascii_hexdigit()),
+            "storage keys should be safe hexadecimal IndexedDB keys"
+        );
+    }
+
+    /// Cleanup must never cross a vault boundary or delete an active generation.
+    #[test]
+    fn indexed_db_cleanup_is_scoped_and_deterministic() {
+        assert_eq!(
+            plan_indexed_db_cleanup_json(
+                r#"["superpower-inside:rag-v2:vault-a:old:vectors","superpower-inside:rag-v2:vault-a:active:vectors","superpower-inside:rag-v2:vault-b:old:vectors","superpower-inside:Research:VectorStore","unrelated-db"]"#,
+                r#"["superpower-inside:rag-v2:vault-a:active:vectors"]"#,
+                "superpower-inside:rag-v2:vault-a:",
+                r#"["superpower-inside:Research:VectorStore"]"#,
+            ),
+            r#"{"deleteNames":["superpower-inside:Research:VectorStore","superpower-inside:rag-v2:vault-a:old:vectors"],"keptNames":["superpower-inside:rag-v2:vault-a:active:vectors"]}"#,
+            "cleanup should delete stale current-vault generations and explicit legacy names only"
+        );
+    }
+
+    /// Vector reconciliation removes deleted, legacy, and foreign-model records in bounded batches.
+    #[test]
+    fn vector_store_reconciliation_is_bounded_and_model_scoped() {
+        assert_eq!(
+            plan_vector_store_reconciliation_json(
+                r#"[{"filePath":"current.md","embeddingProvider":"profile:local","embeddingModel":"embedding-v2"},{"filePath":"deleted.md","embeddingProvider":"profile:local","embeddingModel":"embedding-v2"},{"filePath":"legacy.md"},{"filePath":"foreign.md","embeddingProvider":"profile:remote","embeddingModel":"embedding-v3"}]"#,
+                r#"["current.md","legacy.md","foreign.md"]"#,
+                "profile:local",
+                "embedding-v2",
+                2,
+            ),
+            r#"{"deleteFilePaths":["deleted.md","foreign.md"],"remainingStaleCount":1}"#,
+            "reconciliation should stop at the requested mutation budget"
+        );
+    }
+
+    /// Bounded caches evict expired records before the oldest capacity overflow.
+    #[test]
+    fn indexed_db_record_retention_is_planned_in_rust() {
+        assert_eq!(
+            plan_indexed_db_record_retention_json(
+                r#"[{"id":"a","updated":100},{"id":"b","updated":200},{"id":"c","updated":300},{"id":"d","updated":400}]"#,
+                2,
+                1_000.0,
+                750.0,
+            ),
+            r#"{"deleteIds":["a","b"],"retainedCount":2}"#,
+            "expired records should be removed before enforcing the capacity bound"
         );
     }
 

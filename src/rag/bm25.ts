@@ -1,9 +1,6 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import {
-  RustBm25RuntimeIndex,
-  tokenizeRust,
-} from './rust-core';
+import { RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
 
 export interface BM25DocumentInput {
   id: string;
@@ -173,8 +170,16 @@ export class IndexedDbBM25Index {
     this.runtime = null;
     this.pendingOperations = [];
     this.batchDirty = false;
-    this.db.close();
+    this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
+  }
+
+  close(): void {
+    this.runtime?.dispose();
+    this.runtime = null;
+    this.pendingOperations = [];
+    this.batchDirty = false;
+    this.db.close({ disableAutoOpen: true });
   }
 
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
@@ -196,10 +201,7 @@ export class IndexedDbBM25Index {
           this.queueDocument(document.id, document.text, document.sourcePath ?? document.id);
           seenDocIds.add(document.id);
         }
-        if (
-          index + 1 < documents.length &&
-          (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0
-        ) {
+        if (index + 1 < documents.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) {
           await yieldToHost();
         }
       }
@@ -301,22 +303,21 @@ export class IndexedDbBM25Index {
       } else {
         this.applyMutation(operation.record);
       }
-      if (
-        index + 1 < operations.length &&
-        (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0
-      ) {
+      if (index + 1 < operations.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) {
         await yieldToHost();
       }
     }
     this.pendingOperations = [];
     this.batchDirty = false;
+    if (mutations.length > 0) {
+      await this.db.mutations.clear();
+    }
   }
 
   private async persistMutationOperation(record: BM25MutationRecord): Promise<void> {
     if (record.kind === 'clear') {
       await this.db.documents.clear();
       await this.db.mutations.clear();
-      await this.db.mutations.put(record);
       return;
     }
     if (record.kind === 'remove-doc') {
@@ -324,7 +325,6 @@ export class IndexedDbBM25Index {
     } else {
       await this.db.documents.where('sourcePath').equals(record.target).delete();
     }
-    await this.db.mutations.put(record);
   }
 
   private applyMutation(record: BM25MutationRecord): void {

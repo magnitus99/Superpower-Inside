@@ -15,6 +15,7 @@ import {
   cosine_similarity_or_nan,
   create_graph_id,
   create_content_hash,
+  create_indexed_db_record_key,
   create_entries_fingerprint as create_entries_fingerprint_json,
   detect_communities_from_edges_json,
   detect_leiden_hierarchy_from_edges_json,
@@ -77,6 +78,9 @@ import {
   plan_evidence_candidate_order_json,
   plan_local_evidence_scores_json,
   plan_file_index_records_json,
+  plan_indexed_db_cleanup_json,
+  plan_indexed_db_record_retention_json,
+  plan_indexed_db_storage_layout_json,
   plan_folder_mention_file_indices_json,
   plan_graph_community_replacement_delete_ids_json,
   plan_graph_community_summary_groups_json,
@@ -128,6 +132,7 @@ import {
   plan_structural_heading_neighbors_json,
   plan_structural_linked_paths_json,
   plan_vector_store_add_json,
+  plan_vector_store_reconciliation_json,
   plan_vector_store_lookup_by_file_paths_json,
   plan_vector_store_lookup_by_ids_json,
   plan_vector_store_remove_file_json,
@@ -711,6 +716,44 @@ export interface RustVectorStoreStatsPlan {
   averageVectorsPerFile: number;
   lastUpdated: number | null;
   indexedFilePaths: string[];
+}
+
+export interface RustIndexedDbStorageLayout {
+  contractVersion: number;
+  currentVaultPrefix: string;
+  active: {
+    vector: string;
+    embeddingCache: string;
+    bm25: string;
+    graph: string;
+  };
+  legacyNames: string[];
+}
+
+export interface RustIndexedDbCleanupPlan {
+  deleteNames: string[];
+  keptNames: string[];
+}
+
+export interface RustIndexedDbRetentionRecord {
+  id: string;
+  updated: number;
+}
+
+export interface RustIndexedDbRetentionPlan {
+  deleteIds: string[];
+  retainedCount: number;
+}
+
+export interface RustVectorStoreReconciliationRecord {
+  filePath: string;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+}
+
+export interface RustVectorStoreReconciliationPlan {
+  deleteFilePaths: string[];
+  remainingStaleCount: number;
 }
 
 export type RustRagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
@@ -1515,7 +1558,8 @@ export function normalizeGraphSourceSpansRust(
   for (let index = 0; index < output.length; index += 2) {
     const start = output[index];
     const end = output[index + 1];
-    if (start === undefined || end === undefined || start >= end || end > contentLength) return null;
+    if (start === undefined || end === undefined || start >= end || end > contentLength)
+      return null;
     normalized.push({ start, end });
   }
   return normalized;
@@ -2790,6 +2834,149 @@ export function planFileIndexRecordsRust(
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || !parsed.every(isFileIndexRecordPlan)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planIndexedDbStorageLayoutRust(
+  pluginId: string,
+  vaultIdentity: string,
+  legacyVaultName: string,
+  embeddingNamespace: string,
+): RustIndexedDbStorageLayout | null {
+  if (
+    ![pluginId, vaultIdentity, legacyVaultName, embeddingNamespace].every(
+      (value) => isStringValue(value) && value.trim().length > 0,
+    ) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_indexed_db_storage_layout_json(
+      pluginId,
+      vaultIdentity,
+      legacyVaultName,
+      embeddingNamespace,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isIndexedDbStorageLayout(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createIndexedDbRecordKeyRust(namespace: string, value: string): string | null {
+  if (!isStringValue(namespace) || namespace.trim().length === 0 || !ensureRustCore()) {
+    return null;
+  }
+  try {
+    const key = create_indexed_db_record_key(namespace, value);
+    return /^[a-f0-9]{32}$/.test(key) ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planIndexedDbCleanupRust(
+  databaseNames: readonly string[],
+  activeNames: readonly string[],
+  currentVaultPrefix: string,
+  legacyNames: readonly string[],
+): RustIndexedDbCleanupPlan | null {
+  if (
+    !databaseNames.every(isStringValue) ||
+    !activeNames.every(isStringValue) ||
+    !isStringValue(currentVaultPrefix) ||
+    currentVaultPrefix.length === 0 ||
+    !legacyNames.every(isStringValue) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_indexed_db_cleanup_json(
+      JSON.stringify(databaseNames),
+      JSON.stringify(activeNames),
+      currentVaultPrefix,
+      JSON.stringify(legacyNames),
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isIndexedDbCleanupPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planIndexedDbRecordRetentionRust(
+  records: readonly RustIndexedDbRetentionRecord[],
+  maxRecords: number,
+  now: number,
+  maxAgeMs: number,
+): RustIndexedDbRetentionPlan | null {
+  if (
+    !records.every(
+      (record) =>
+        isStringValue(record.id) && record.id.length > 0 && Number.isFinite(record.updated),
+    ) ||
+    !Number.isSafeInteger(maxRecords) ||
+    maxRecords < 0 ||
+    !Number.isFinite(now) ||
+    !Number.isFinite(maxAgeMs) ||
+    maxAgeMs < 0 ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_indexed_db_record_retention_json(
+      JSON.stringify(records),
+      maxRecords,
+      now,
+      maxAgeMs,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isIndexedDbRetentionPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planVectorStoreReconciliationRust(
+  records: readonly RustVectorStoreReconciliationRecord[],
+  validFilePaths: readonly string[],
+  embeddingProvider: string,
+  embeddingModel: string,
+  maxDeletions: number,
+): RustVectorStoreReconciliationPlan | null {
+  if (
+    !records.every(isVectorStoreReconciliationRecord) ||
+    !validFilePaths.every(isStringValue) ||
+    !isStringValue(embeddingProvider) ||
+    embeddingProvider.length === 0 ||
+    !isStringValue(embeddingModel) ||
+    embeddingModel.length === 0 ||
+    !Number.isSafeInteger(maxDeletions) ||
+    maxDeletions < 0 ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_vector_store_reconciliation_json(
+      JSON.stringify(records),
+      JSON.stringify(validFilePaths),
+      embeddingProvider,
+      embeddingModel,
+      maxDeletions,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isVectorStoreReconciliationPlan(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -5182,10 +5369,7 @@ export function planGraphExtractionChildUnitsRust(
   if (!ensureRustCore()) return null;
   try {
     const parsed: unknown = JSON.parse(
-      plan_graph_extraction_child_units_json(
-        content,
-        normalizeNonNegativeInteger(splitDepth),
-      ),
+      plan_graph_extraction_child_units_json(content, normalizeNonNegativeInteger(splitDepth)),
     );
     return isChunkArray(parsed) ? parsed : null;
   } catch {
@@ -5375,7 +5559,12 @@ export function planFolderLexicalEvidenceIndicesRust(
   samples: readonly string[],
   topK: number,
 ): number[] | null {
-  if (!samples.every(isStringValue) || !Number.isSafeInteger(topK) || topK < 0 || !ensureRustCore()) {
+  if (
+    !samples.every(isStringValue) ||
+    !Number.isSafeInteger(topK) ||
+    topK < 0 ||
+    !ensureRustCore()
+  ) {
     return null;
   }
   try {
@@ -6832,6 +7021,65 @@ function isFileIndexRecordPlan(value: unknown): value is RustFileIndexRecordPlan
     Number.isSafeInteger(vectorCount) &&
     vectorCount >= 0 &&
     Number.isFinite(record.updated)
+  );
+}
+
+function isIndexedDbStorageLayout(value: unknown): value is RustIndexedDbStorageLayout {
+  if (!value || typeof value !== 'object') return false;
+  const layout = value as Partial<RustIndexedDbStorageLayout>;
+  const active = layout.active;
+  return (
+    isValidNonNegativeInteger(layout.contractVersion) &&
+    isStringValue(layout.currentVaultPrefix) &&
+    !!active &&
+    isStringValue(active.vector) &&
+    isStringValue(active.embeddingCache) &&
+    isStringValue(active.bm25) &&
+    isStringValue(active.graph) &&
+    Array.isArray(layout.legacyNames) &&
+    layout.legacyNames.every(isStringValue)
+  );
+}
+
+function isIndexedDbCleanupPlan(value: unknown): value is RustIndexedDbCleanupPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustIndexedDbCleanupPlan>;
+  return (
+    Array.isArray(plan.deleteNames) &&
+    plan.deleteNames.every(isStringValue) &&
+    Array.isArray(plan.keptNames) &&
+    plan.keptNames.every(isStringValue)
+  );
+}
+
+function isIndexedDbRetentionPlan(value: unknown): value is RustIndexedDbRetentionPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustIndexedDbRetentionPlan>;
+  return (
+    Array.isArray(plan.deleteIds) &&
+    plan.deleteIds.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.retainedCount)
+  );
+}
+
+function isVectorStoreReconciliationRecord(value: RustVectorStoreReconciliationRecord): boolean {
+  return (
+    isStringValue(value.filePath) &&
+    value.filePath.length > 0 &&
+    (value.embeddingProvider === undefined || isStringValue(value.embeddingProvider)) &&
+    (value.embeddingModel === undefined || isStringValue(value.embeddingModel))
+  );
+}
+
+function isVectorStoreReconciliationPlan(
+  value: unknown,
+): value is RustVectorStoreReconciliationPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustVectorStoreReconciliationPlan>;
+  return (
+    Array.isArray(plan.deleteFilePaths) &&
+    plan.deleteFilePaths.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.remainingStaleCount)
   );
 }
 

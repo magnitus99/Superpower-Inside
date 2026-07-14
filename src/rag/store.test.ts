@@ -246,7 +246,9 @@ describe('IndexedDbVectorStore', () => {
       fileIndex: 'filePath, updated',
       meta: 'key',
     });
-    const raw = await db.table('vectors').get('typed.md::0') as Record<string, unknown> | undefined;
+    const raw = (await db.table('vectors').get('typed.md::0')) as
+      | Record<string, unknown>
+      | undefined;
 
     expect(raw?.vector).toBeUndefined();
     expect(raw?.vectorBuffer).toBeInstanceOf(ArrayBuffer);
@@ -314,6 +316,52 @@ describe('IndexedDbVectorStore', () => {
     expect(await reopened.getEntries()).toEqual([]);
     expect(await reopened.getMetaValue('legacy-json-vector-import:v1')).toBeUndefined();
   });
+  it('reconciles deleted, legacy, and foreign-model records in bounded Rust-planned batches', async () => {
+    const store = createStore();
+    const legacy = createEntry('legacy.md', 0, [1, 0], 'legacy');
+    delete legacy.metadata.embeddingProvider;
+    delete legacy.metadata.embeddingModel;
+    const foreign = createEntry('foreign.md', 0, [1, 0], 'foreign');
+    foreign.metadata.embeddingProvider = 'profile:remote';
+    foreign.metadata.embeddingModel = 'embedding-v3';
+    await store.add([
+      createEntry('current.md', 0, [1, 0], 'current'),
+      createEntry('deleted.md', 0, [1, 0], 'deleted'),
+      legacy,
+      foreign,
+    ]);
+
+    await expect(
+      store.reconcileFileIndex({
+        validFilePaths: ['current.md', 'legacy.md', 'foreign.md'],
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        maxDeletions: 2,
+      }),
+    ).resolves.toEqual({
+      deletedFilePaths: ['deleted.md', 'foreign.md'],
+      remainingStaleCount: 1,
+    });
+    expect((await store.getIndexedFilePaths()).sort()).toEqual(['current.md', 'legacy.md']);
+
+    await expect(
+      store.reconcileFileIndex({
+        validFilePaths: ['current.md', 'legacy.md'],
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      }),
+    ).resolves.toEqual({ deletedFilePaths: ['legacy.md'], remainingStaleCount: 0 });
+    expect(await store.getIndexedFilePaths()).toEqual(['current.md']);
+  });
+
+  it('close releases the database and disables accidental auto-open', async () => {
+    const store = createStore();
+    await store.add([createEntry('current.md', 0, [1, 0], 'current')]);
+
+    store.close();
+
+    await expect(store.getEntries()).rejects.toThrow();
+  });
 });
 
 describe('VectorStore contract', () => {
@@ -364,14 +412,18 @@ describe('legacy JSON vector import', () => {
     adapter.setRaw('vectors.json', JSON.stringify([createEntry('legacy.md', 0, [1, 0], 'legacy')]));
     const store = createStore();
 
-    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+    await expect(
+      importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json'),
+    ).resolves.toEqual({
       imported: 1,
       skipped: false,
     });
     expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['legacy.md::0']);
 
     adapter.setRaw('vectors.json', JSON.stringify([createEntry('new.md', 0, [0, 1], 'new')]));
-    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+    await expect(
+      importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json'),
+    ).resolves.toEqual({
       imported: 0,
       skipped: true,
     });
@@ -383,11 +435,15 @@ describe('legacy JSON vector import', () => {
     adapter.setRaw('vectors.json', '{ invalid');
     const store = createStore();
 
-    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+    await expect(
+      importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json'),
+    ).resolves.toEqual({
       imported: 0,
       skipped: false,
     });
-    await expect(importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json')).resolves.toEqual({
+    await expect(
+      importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json'),
+    ).resolves.toEqual({
       imported: 0,
       skipped: true,
     });
@@ -501,10 +557,11 @@ async function expectVectorStoreContract(store: VectorStore): Promise<void> {
     'note.md::0',
     'note.md::10',
   ]);
-  expect((await store.getEntriesByIds(['note.md::10', 'missing::0', 'note.md::0'])).map((entry) => entry.id)).toEqual([
-    'note.md::10',
-    'note.md::0',
-  ]);
+  expect(
+    (await store.getEntriesByIds(['note.md::10', 'missing::0', 'note.md::0'])).map(
+      (entry) => entry.id,
+    ),
+  ).toEqual(['note.md::10', 'note.md::0']);
   expect(await store.removeByFilePath('note.md')).toBe(2);
   expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['other.md::0']);
 
@@ -582,5 +639,4 @@ describe('VectorStore 파일 단위 교체', () => {
       'note.md::20',
     ]);
   });
-
 });

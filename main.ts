@@ -100,15 +100,19 @@ import {
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 import {
-  EMBEDDING_CACHE_DB_NAME,
-  buildPluginIndexedDbNames,
-  resetPluginOwnedData,
-} from './src/utils/plugin-data-reset';
+  cleanupStaleIndexedDbGenerations,
+  createRagStorageLayout,
+  deleteRagIndexedDbGenerations,
+  type RagStorageLayout,
+} from './src/rag/storage-lifecycle';
+import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 const GRAPH_AUTO_SYNC_MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
+const RAG_STORAGE_MAINTENANCE_DELAY_MS = 1_000;
+const RAG_STORAGE_RECONCILIATION_BATCH_SIZE = 128;
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -250,6 +254,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
   private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
+  private ragStorageMaintenanceTimer: number | null = null;
   private unloaded = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
@@ -398,6 +403,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
+    if (this.ragStorageMaintenanceTimer !== null) {
+      window.clearTimeout(this.ragStorageMaintenanceTimer);
+      this.ragStorageMaintenanceTimer = null;
+    }
+    this.clearRAG();
     this.refreshBus.destroy();
     this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
   }
@@ -705,6 +715,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return typeof adapter.basePath === 'string' ? adapter.basePath : null;
   }
 
+  private getVaultStorageIdentity(): string {
+    return this.getVaultAdapterBasePath() ?? this.getVaultName();
+  }
+
   async runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
     if (this.ragIndexAbortController) {
       this.getLogger().debug('RAG operation ignored because another operation is running.', {
@@ -757,8 +771,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private notifyRagStatsRefresh(): void {
-    void this.computeAndEmitRagStats();
-    void this.computeAndEmitGraphRagStatus();
+    this.refreshRagStatusInBackground();
   }
 
   private async runGraphRagOperation(options: {
@@ -1011,37 +1024,35 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
 
     const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
-    const activeIndexedDbNames = new Set<string>();
+    const resetStorageLayout = createRagStorageLayout({
+      pluginId: this.manifest?.id ?? 'superpower-inside',
+      vaultIdentity: this.getVaultStorageIdentity(),
+      legacyVaultName: this.getVaultName(),
+      embeddingNamespace: 'plugin-reset',
+    });
     const vectorStoreClear = this.vectorStore
-      ? (activeIndexedDbNames.add(this.createIndexedDbName('VectorStore')),
-        hasDeletableIndexedDbStore(this.vectorStore)
-          ? this.vectorStore.deleteDatabase()
-          : this.vectorStore.clear())
+      ? hasDeletableIndexedDbStore(this.vectorStore)
+        ? this.vectorStore.deleteDatabase()
+        : this.vectorStore.clear()
       : Promise.resolve();
     const knowledgeGraphClear = this.knowledgeGraphStore
-      ? (activeIndexedDbNames.add(this.createIndexedDbName('KnowledgeGraph')),
-        hasDeletableIndexedDbStore(this.knowledgeGraphStore)
-          ? this.knowledgeGraphStore.deleteDatabase()
-          : this.knowledgeGraphStore.clear())
+      ? hasDeletableIndexedDbStore(this.knowledgeGraphStore)
+        ? this.knowledgeGraphStore.deleteDatabase()
+        : this.knowledgeGraphStore.clear()
       : Promise.resolve();
-    const bm25Clear = this.bm25Index
-      ? (activeIndexedDbNames.add(this.createIndexedDbName('BM25Index')),
-        this.bm25Index.deleteDatabase())
-      : Promise.resolve();
+    const bm25Clear = this.bm25Index ? this.bm25Index.deleteDatabase() : Promise.resolve();
     const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
       ? this.embeddingProvider.deleteDatabase
         ? this.embeddingProvider.deleteDatabase()
         : this.embeddingProvider.clearCache()
       : Promise.resolve();
-    if (hasClearableEmbeddingCache(this.embeddingProvider)) {
-      activeIndexedDbNames.add(EMBEDDING_CACHE_DB_NAME);
-    }
     await Promise.all([vectorStoreClear, knowledgeGraphClear, bm25Clear, embeddingCacheClear]);
-    this.clearRAG();
+    this.clearRAG({ dispose: false });
+    await deleteRagIndexedDbGenerations(resetStorageLayout);
 
     const resetResult = await resetPluginOwnedData({
       adapter: this.app.vault.adapter,
-      indexedDbNames: indexedDbNames.filter((name) => !activeIndexedDbNames.has(name)),
+      indexedDbNames,
     });
 
     this.settings = structuredClone(DEFAULT_SETTINGS);
@@ -1977,6 +1988,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return true;
   }
 
+  private disposeRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): void {
+    snapshot.vectorStore?.close?.();
+    snapshot.knowledgeGraphStore?.close?.();
+    snapshot.bm25Index?.close?.();
+    snapshot.embeddingProvider?.close?.();
+  }
+
   private async initRAGRuntime(): Promise<void> {
     // NOTE: We intentionally do NOT call vectorStore.clear() or embeddingProvider.clearCache()
     // here. Clearing embeddings must only happen via explicit user action (the "Clear Embedding Data"
@@ -1984,8 +2002,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // preserve existing vector store data so users can incrementally reindex.
 
     const previousRuntime = this.captureRagRuntimeSnapshot();
-    // Clear any existing timer
-    this.clearRAG();
+    // Detach the current runtime while the replacement is assembled. Keep its
+    // stores open so a failed rebuild can restore a genuinely usable snapshot.
+    this.clearRAG({ dispose: false });
     this.lastRagRuntimeInitError = null;
     this.lastRagRuntimeInitSkippedReason = null;
     this.lastRagRuntimeInitStage = 'starting';
@@ -2021,6 +2040,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingModelRef: rag.embeddingModelRef },
         });
+        this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
 
@@ -2035,6 +2055,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingProvider: providerKey },
         });
+        this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
       if (
@@ -2052,6 +2073,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingProvider: providerKey, strategy: profile.strategy },
         });
+        this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
 
@@ -2074,6 +2096,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
           baseUrl = 'http://localhost:11434';
         }
       }
+
+      const embeddingNamespace = createEmbeddingCacheNamespace(providerKey, embeddingModel);
+      const storageLayout = createRagStorageLayout({
+        pluginId: this.manifest?.id ?? 'superpower-inside',
+        vaultIdentity: this.getVaultStorageIdentity(),
+        legacyVaultName: this.getVaultName(),
+        embeddingNamespace,
+      });
 
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
@@ -2102,13 +2132,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
       }
 
-      this.embeddingProvider = new CachedEmbeddingProvider(
-        rawProvider,
-        createEmbeddingCacheNamespace(providerKey, embeddingModel),
-      );
+      this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
+        dbName: storageLayout.active.embeddingCache,
+      });
 
       // Vector store
-      const vectorStore = new IndexedDbVectorStore(this.createIndexedDbName('VectorStore'));
+      const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
       await this.runRagRuntimeInitStep('legacy-vector-import', () =>
         importLegacyJsonVectorStore(
           this.app.vault.adapter,
@@ -2117,9 +2146,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         ),
       );
       this.vectorStore = vectorStore;
-      this.knowledgeGraphStore = new IndexedDbKnowledgeGraphStore(
-        this.createIndexedDbName('KnowledgeGraph'),
-      );
+      this.knowledgeGraphStore = rag.graphRagEnabled
+        ? new IndexedDbKnowledgeGraphStore(storageLayout.active.graph)
+        : null;
       await this.runRagRuntimeInitStep('graph-status-initial', () =>
         this.computeAndEmitGraphRagStatus(),
       );
@@ -2140,9 +2169,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
         : undefined;
 
       const knowledgeContract = buildKnowledgeGraphContract();
-      const graphProvider = rag.graphRagModel.trim()
-        ? this.createProviderForModel(rag.graphRagModel)
-        : null;
+      const graphProvider =
+        rag.graphRagEnabled && rag.graphRagModel.trim()
+          ? this.createProviderForModel(rag.graphRagModel)
+          : null;
       const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
       const graphRagQueryEngine =
         graphRagEnabledForQuery && this.knowledgeGraphStore
@@ -2233,7 +2263,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       if (rag.enableBM25) {
         const nextBm25Index = new IndexedDbBM25Index(
-          this.createIndexedDbName('BM25Index'),
+          storageLayout.active.bm25,
           this.app.vault.adapter,
         );
         try {
@@ -2368,7 +2398,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.lastRagRuntimeInitSkippedReason = null;
       this.lastRagRuntimeInitStage = null;
       this.lastRagRuntimeInitFinishedAt = Date.now();
+      this.disposeRagRuntimeSnapshot(previousRuntime);
+      this.scheduleRagStorageMaintenance(storageLayout, vectorStore, providerKey, embeddingModel);
     } catch (err) {
+      const failedRuntime = this.captureRagRuntimeSnapshot();
+      this.clearRAG({ dispose: false });
+      this.disposeRagRuntimeSnapshot(failedRuntime);
       const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
       this.lastRagRuntimeInitError =
         this.lastRagRuntimeInitError ?? (err instanceof Error ? err.message : String(err));
@@ -2477,7 +2512,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private clearRAG(): void {
+  private clearRAG(options: { dispose?: boolean } = {}): void {
+    const runtime = options.dispose === false ? null : this.captureRagRuntimeSnapshot();
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
@@ -2512,6 +2548,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.nextAutoUpdateAt = null;
     this.lastAutoUpdateSkippedReason = null;
     this.lastAutoUpdateResult = null;
+    if (runtime) {
+      this.disposeRagRuntimeSnapshot(runtime);
+    }
   }
 
   private unregisterRAGEvents(): void {
@@ -2623,13 +2662,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return;
     }
     // 초기 1회 즉시 실행
-    void this.computeAndEmitRagStats();
-    void this.computeAndEmitGraphRagStatus();
+    this.refreshRagStatusInBackground();
     // 30초 간격 갱신
     this.ragStatusTimer = window.setInterval(() => {
-      void this.computeAndEmitRagStats();
-      void this.computeAndEmitGraphRagStatus();
+      this.refreshRagStatusInBackground();
     }, 30_000);
+  }
+
+  private refreshRagStatusInBackground(): void {
+    void Promise.allSettled([
+      this.computeAndEmitRagStats(),
+      this.computeAndEmitGraphRagStatus(),
+    ]).then((results) => {
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          this.getLogger().warn('Background RAG status refresh failed.', {
+            source: 'rag.status',
+            error: result.reason,
+          });
+        }
+      }
+    });
   }
 
   private async computeAndEmitGraphRagStatus(): Promise<void> {
@@ -2697,6 +2750,62 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const vaultName = vault.getName ? vault.getName() : 'default-vault';
     const pluginId = this.manifest?.id ?? 'superpower-inside';
     return `${pluginId}:${vaultName}:${kind}`.replace(/[^a-zA-Z0-9:_-]/g, '_');
+  }
+
+  private scheduleRagStorageMaintenance(
+    layout: RagStorageLayout,
+    vectorStore: IndexedDbVectorStore,
+    embeddingProvider: string,
+    embeddingModel: string,
+  ): void {
+    if (this.ragStorageMaintenanceTimer !== null) {
+      window.clearTimeout(this.ragStorageMaintenanceTimer);
+    }
+    this.ragStorageMaintenanceTimer = window.setTimeout(() => {
+      this.ragStorageMaintenanceTimer = null;
+      void this.runRagStorageMaintenance(layout, vectorStore, embeddingProvider, embeddingModel);
+    }, RAG_STORAGE_MAINTENANCE_DELAY_MS);
+  }
+
+  private async runRagStorageMaintenance(
+    layout: RagStorageLayout,
+    vectorStore: IndexedDbVectorStore,
+    embeddingProvider: string,
+    embeddingModel: string,
+  ): Promise<void> {
+    try {
+      const validFilePaths = this.app.vault.getFiles().map((file) => file.path);
+      let remainingStaleCount = 0;
+      do {
+        if (this.unloaded || this.vectorStore !== vectorStore) return;
+        const result = await vectorStore.reconcileFileIndex({
+          validFilePaths,
+          embeddingProvider,
+          embeddingModel,
+          maxDeletions: RAG_STORAGE_RECONCILIATION_BATCH_SIZE,
+        });
+        remainingStaleCount = result.remainingStaleCount;
+        if (remainingStaleCount > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        }
+      } while (remainingStaleCount > 0);
+
+      const cleanup = await cleanupStaleIndexedDbGenerations(layout);
+      this.getLogger().info('RAG storage maintenance completed.', {
+        source: 'rag.storage',
+        data: {
+          deletedDatabaseCount: cleanup.deletedNames.length,
+          blockedDatabaseCount: cleanup.blockedNames.length,
+          failedDatabaseCount: cleanup.failedNames.length,
+        },
+      });
+    } catch (error) {
+      if (this.unloaded || this.vectorStore !== vectorStore) return;
+      this.getLogger().warn('RAG storage maintenance failed.', {
+        source: 'rag.storage',
+        error,
+      });
+    }
   }
 
   private isCurrentVaultFilePath(filePath: string): boolean {

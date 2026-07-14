@@ -292,15 +292,13 @@ export interface KnowledgeGraphStore {
   addRejectedFact(record: GraphRejectedFactRecord): Promise<void>;
   getRejectedFacts(): Promise<GraphRejectedFactRecord[]>;
   getPendingEntityMerges(): Promise<PendingEntityMergeRecord[]>;
-  resolvePendingEntityMerge(
-    id: string,
-    decision: PendingEntityMergeDecision,
-  ): Promise<boolean>;
+  resolvePendingEntityMerge(id: string, decision: PendingEntityMergeDecision): Promise<boolean>;
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number>;
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
   pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult>;
   clear(): Promise<void>;
+  close(): void;
   replaceCommunities(
     ontologySchemaId: string,
     records: readonly GraphCommunityRecord[],
@@ -399,8 +397,7 @@ class KnowledgeGraphDB extends Dexie {
         'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
       graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
       graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
-      graphCommunitySummaryJobs:
-        'id, communityKey, level, providerEpochId, state, updatedAt',
+      graphCommunitySummaryJobs: 'id, communityKey, level, providerEpochId, state, updatedAt',
     });
     this.version(6).stores({
       graphEntities: 'id, ontologySchemaId, typeId, canonicalName, updatedAt',
@@ -418,8 +415,7 @@ class KnowledgeGraphDB extends Dexie {
         'id, requestFingerprint, entryId, filePath, state, nextAttemptAt, leaseExpiresAt, updatedAt',
       graphRawResponses: 'id, requestFingerprint, providerEpochId, bodyHash, receivedAt',
       graphProviderCircuits: 'providerEpochId, state, openUntil, updatedAt',
-      graphCommunitySummaryJobs:
-        'id, communityKey, level, providerEpochId, state, updatedAt',
+      graphCommunitySummaryJobs: 'id, communityKey, level, providerEpochId, state, updatedAt',
       graphGlobalSearchJobs: 'id, queryHash, phase, communityId, providerEpochId, state, updatedAt',
     });
   }
@@ -515,9 +511,7 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     await this.db.graphCommunitySummaryJobs.put({ ...record });
   }
 
-  async getCommunitySummaryJob(
-    id: string,
-  ): Promise<GraphCommunitySummaryJobRecord | undefined> {
+  async getCommunitySummaryJob(id: string): Promise<GraphCommunitySummaryJobRecord | undefined> {
     const record = await this.db.graphCommunitySummaryJobs.get(id);
     return record ? { ...record } : undefined;
   }
@@ -546,10 +540,15 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
       ],
       async () => {
         await this.db.graphEvidence.put({ ...commit.evidence });
-        for (const entity of commit.entities) {
-          const existing = await this.db.graphEntities.get(entity.id);
-          await this.db.graphEntities.put(
-            existing ? mergeEntity(existing, entity) : copyEntity(entity),
+        if (commit.entities.length > 0) {
+          const existingEntities = await this.db.graphEntities.bulkGet(
+            commit.entities.map((entity) => entity.id),
+          );
+          await this.db.graphEntities.bulkPut(
+            commit.entities.map((entity, index) => {
+              const existing = existingEntities[index];
+              return existing ? mergeEntity(existing, entity) : copyEntity(entity);
+            }),
           );
         }
         if (commit.relations.length > 0) {
@@ -563,10 +562,27 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
             commit.rejectedFacts.map((record) => ({ ...record })),
           );
         }
-        for (const pendingMerge of commit.pendingEntityMerges) {
-          const decisions = await this.db.graphPendingEntityMerges.toArray();
-          if (!decisions.some((decision) => isKeptSeparatePair(decision, pendingMerge))) {
-            await this.db.graphPendingEntityMerges.put({ ...pendingMerge });
+        if (commit.pendingEntityMerges.length > 0) {
+          const decisionEntityIds = [
+            ...new Set(
+              commit.pendingEntityMerges.flatMap((record) => [
+                record.existingEntityId,
+                record.candidateEntityId,
+              ]),
+            ),
+          ];
+          const existingDecisions = await this.db.graphPendingEntityMerges
+            .where('existingEntityId')
+            .anyOf(decisionEntityIds)
+            .toArray();
+          const acceptedMerges = commit.pendingEntityMerges.filter(
+            (pendingMerge) =>
+              !existingDecisions.some((decision) => isKeptSeparatePair(decision, pendingMerge)),
+          );
+          if (acceptedMerges.length > 0) {
+            await this.db.graphPendingEntityMerges.bulkPut(
+              acceptedMerges.map((record) => ({ ...record })),
+            );
           }
         }
         await this.db.graphExtractionCache.put(withCurrentExtractionContract(commit.cache));
@@ -582,12 +598,17 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   async upsertEntity(record: GraphEntityRecord): Promise<void> {
     await this.db.transaction('rw', this.db.graphEntities, async () => {
       const existing = await this.db.graphEntities.get(record.id);
-      await this.db.graphEntities.put(existing ? mergeEntity(existing, record) : copyEntity(record));
+      await this.db.graphEntities.put(
+        existing ? mergeEntity(existing, record) : copyEntity(record),
+      );
     });
   }
 
   async addPendingEntityMerge(record: PendingEntityMergeRecord): Promise<void> {
-    const existingDecisions = await this.db.graphPendingEntityMerges.toArray();
+    const existingDecisions = await this.db.graphPendingEntityMerges
+      .where('existingEntityId')
+      .anyOf(record.existingEntityId, record.candidateEntityId)
+      .toArray();
     if (existingDecisions.some((decision) => isKeptSeparatePair(decision, record))) return;
     await this.db.graphPendingEntityMerges.put({ ...record });
   }
@@ -691,9 +712,9 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   async getCommunitiesBySchema(ontologySchemaId: string): Promise<GraphCommunityRecord[]> {
-    return (await this.db.graphCommunities.where('ontologySchemaId').equals(ontologySchemaId).toArray()).map(
-      copyCommunity,
-    );
+    return (
+      await this.db.graphCommunities.where('ontologySchemaId').equals(ontologySchemaId).toArray()
+    ).map(copyCommunity);
   }
 
   async getRejectedFacts(): Promise<GraphRejectedFactRecord[]> {
@@ -749,13 +770,17 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         await this.db.graphEntities.put(mergeEntity(existing, candidate));
         await this.db.graphEntities.delete(candidate.id);
         await this.db.graphRelations.bulkPut(
-          relations.map((record) => rewriteRelationEntityReference(record, candidate.id, existing.id)),
+          relations.map((record) =>
+            rewriteRelationEntityReference(record, candidate.id, existing.id),
+          ),
         );
         await this.db.graphClaims.bulkPut(
           claims.map((record) => rewriteClaimEntityReferences(record, candidate.id, existing.id)),
         );
         await this.db.graphCommunities.bulkPut(
-          communities.map((record) => rewriteCommunityEntityReferences(record, candidate.id, existing.id)),
+          communities.map((record) =>
+            rewriteCommunityEntityReferences(record, candidate.id, existing.id),
+          ),
         );
         await this.db.graphPendingEntityMerges.bulkDelete(
           pendingMerges
@@ -913,8 +938,12 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
   }
 
   async deleteDatabase(): Promise<void> {
-    this.db.close();
+    this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
+  }
+
+  close(): void {
+    this.db.close({ disableAutoOpen: true });
   }
 }
 
@@ -1038,7 +1067,8 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
       const existing = this.entities.get(entity.id);
       this.entities.set(entity.id, existing ? mergeEntity(existing, entity) : copyEntity(entity));
     }
-    for (const relation of commit.relations) this.relations.set(relation.id, copyRelation(relation));
+    for (const relation of commit.relations)
+      this.relations.set(relation.id, copyRelation(relation));
     for (const claim of commit.claims) this.claims.set(claim.id, copyClaim(claim));
     for (const rejectedFact of commit.rejectedFacts) {
       this.rejectedFacts.set(rejectedFact.id, { ...rejectedFact });
@@ -1211,10 +1241,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     );
   }
 
-  resolvePendingEntityMerge(
-    id: string,
-    decision: PendingEntityMergeDecision,
-  ): Promise<boolean> {
+  resolvePendingEntityMerge(id: string, decision: PendingEntityMergeDecision): Promise<boolean> {
     const pending = this.pendingEntityMerges.get(id);
     if (!pending || pending.reason === KEPT_SEPARATE_REASON) return Promise.resolve(false);
     if (decision === 'separate') {
@@ -1312,7 +1339,8 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     for (const id of snapshot.deletedEntityIds) this.entities.delete(id);
     for (const record of snapshot.updatedEntities) this.entities.set(record.id, copyEntity(record));
     for (const id of snapshot.deletedRelationIds) this.relations.delete(id);
-    for (const record of snapshot.updatedRelations) this.relations.set(record.id, copyRelation(record));
+    for (const record of snapshot.updatedRelations)
+      this.relations.set(record.id, copyRelation(record));
     for (const id of snapshot.deletedClaimIds) this.claims.delete(id);
     for (const record of snapshot.updatedClaims) this.claims.set(record.id, copyClaim(record));
     for (const id of snapshot.deletedCommunityIds) this.communities.delete(id);
@@ -1338,6 +1366,10 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     this.communitySummaryJobs.clear();
     this.globalSearchJobs.clear();
     return Promise.resolve();
+  }
+
+  close(): void {
+    void this.clear();
   }
 }
 
@@ -1377,9 +1409,7 @@ function createRustGraphPruneInput(
 ): RustGraphPruneInput {
   const evidenceIndexById = new Map(snapshot.evidence.map((record, index) => [record.id, index]));
   const entityIndexById = new Map(snapshot.entities.map((record, index) => [record.id, index]));
-  const relationIndexById = new Map(
-    snapshot.relations.map((record, index) => [record.id, index]),
-  );
+  const relationIndexById = new Map(snapshot.relations.map((record, index) => [record.id, index]));
   const claimIndexById = new Map(snapshot.claims.map((record, index) => [record.id, index]));
   const toEvidenceIndex = (id: string): number => toRustGraphIndex(evidenceIndexById, id);
   const toEntityIndex = (id: string): number => toRustGraphIndex(entityIndexById, id);
@@ -1405,9 +1435,7 @@ function createRustGraphPruneInput(
       record.evidenceIds.map(toEvidenceIndex),
     ),
     claimEntityIndices: snapshot.claims.map((record) => record.entityIds.map(toEntityIndex)),
-    claimRelationIndices: snapshot.claims.map((record) =>
-      record.relationIds.map(toRelationIndex),
-    ),
+    claimRelationIndices: snapshot.claims.map((record) => record.relationIds.map(toRelationIndex)),
     claimEvidenceIndices: snapshot.claims.map((record) => record.evidenceIds.map(toEvidenceIndex)),
     communitySchemaIds: snapshot.communities.map((record) => record.ontologySchemaId),
     communityEntityIndices: snapshot.communities.map((record) =>
@@ -1416,9 +1444,7 @@ function createRustGraphPruneInput(
     communityRelationIndices: snapshot.communities.map((record) =>
       record.relationIds.map(toRelationIndex),
     ),
-    communityClaimIndices: snapshot.communities.map((record) =>
-      record.claimIds.map(toClaimIndex),
-    ),
+    communityClaimIndices: snapshot.communities.map((record) => record.claimIds.map(toClaimIndex)),
     rejectedFactFilePaths: snapshot.rejectedFacts.map((record) => record.filePath),
     rejectedFactEntryIds: snapshot.rejectedFacts.map((record) => record.entryId),
     extractionCacheEntryIds: snapshot.extractionCache.map((record) => record.entryId),
@@ -1609,13 +1635,11 @@ function isKeptSeparatePair(
   ) {
     return false;
   }
-  return (
-    isSameGraphEntityPairRust(
-      decision.existingEntityId,
-      decision.candidateEntityId,
-      candidate.existingEntityId,
-      candidate.candidateEntityId,
-    )
+  return isSameGraphEntityPairRust(
+    decision.existingEntityId,
+    decision.candidateEntityId,
+    candidate.existingEntityId,
+    candidate.candidateEntityId,
   );
 }
 
@@ -1660,12 +1684,7 @@ function rewriteClaimEntityReferences(
 ): GraphClaimRecord {
   return {
     ...copyClaim(record),
-    entityIds: rewriteEntityReferences(
-      record.entityIds,
-      candidateEntityId,
-      existingEntityId,
-      true,
-    ),
+    entityIds: rewriteEntityReferences(record.entityIds, candidateEntityId, existingEntityId, true),
   };
 }
 
@@ -1676,12 +1695,7 @@ function rewriteCommunityEntityReferences(
 ): GraphCommunityRecord {
   return {
     ...copyCommunity(record),
-    entityIds: rewriteEntityReferences(
-      record.entityIds,
-      candidateEntityId,
-      existingEntityId,
-      true,
-    ),
+    entityIds: rewriteEntityReferences(record.entityIds, candidateEntityId, existingEntityId, true),
   };
 }
 
@@ -1696,8 +1710,7 @@ function mergeEntity(existing: GraphEntityRecord, incoming: GraphEntityRecord): 
       ...existing,
       aliases: mergeOrderedStrings(existing.aliases, incoming.aliases),
       labels,
-      description:
-        incoming.description.length === 0 ? existing.description : incoming.description,
+      description: incoming.description.length === 0 ? existing.description : incoming.description,
       confidence: Math.max(existing.confidence, incoming.confidence),
       evidenceIds: mergeOrderedStrings(existing.evidenceIds, incoming.evidenceIds),
       provenance: mergeProvenance(existing.provenance, incoming.provenance),
@@ -1739,7 +1752,10 @@ function requireGraphExtractionCacheHit(
     toRustGraphExtractionCacheKey(input),
   );
   if (hit === null) {
-    return isGraphExtractionCacheHitFallback(cached ? toRustGraphExtractionCacheKey(cached) : null, input);
+    return isGraphExtractionCacheHitFallback(
+      cached ? toRustGraphExtractionCacheKey(cached) : null,
+      input,
+    );
   }
   return hit;
 }

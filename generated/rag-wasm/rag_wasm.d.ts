@@ -211,6 +211,11 @@ export function create_entries_fingerprint(entry_ids_json: string, content_hashe
 export function create_graph_id(parts: string): string;
 
 /**
+ * Creates a collision-resistant deterministic key for one namespaced `IndexedDB` record.
+ */
+export function create_indexed_db_record_key(namespace: string, value: string): string;
+
+/**
  * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
  */
 export function detect_communities_flat(source_indices: Uint32Array, target_indices: Uint32Array, weights: Float64Array, node_count: number, max_iterations: number): Float64Array;
@@ -606,6 +611,21 @@ export function plan_implicit_folder_query_paths_json(question: string, folder_p
 export function plan_index_pending_files_json(file_paths_json: string, update_paths_json: string): string;
 
 /**
+ * Selects stale current-vault generations and explicit legacy databases for deletion.
+ */
+export function plan_indexed_db_cleanup_json(database_names_json: string, active_names_json: string, current_vault_prefix: string, legacy_names_json: string): string;
+
+/**
+ * Selects expired records and oldest capacity overflow for bounded `IndexedDB` caches.
+ */
+export function plan_indexed_db_record_retention_json(records_json: string, max_records: number, now: number, max_age_ms: number): string;
+
+/**
+ * Builds database names isolated by vault, storage contract, and embedding generation.
+ */
+export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_identity: string, legacy_vault_name: string, embedding_namespace: string): string;
+
+/**
  * `GraphRAG` record snapshot에서 local evidence score `JSON` plan을 만든다.
  */
 export function plan_local_evidence_scores_json(matches_json: string, relations_json: string, claims_json: string, traversal_depth: number): string;
@@ -729,6 +749,11 @@ export function plan_vector_store_lookup_by_file_paths_json(entry_file_paths_jso
  * vector store id lookup index plan을 `JSON` 문자열로 만든다.
  */
 export function plan_vector_store_lookup_by_ids_json(entry_ids_json: string, requested_ids_json: string): string;
+
+/**
+ * Selects stale vector file records for a bounded reconciliation pass.
+ */
+export function plan_vector_store_reconciliation_json(records_json: string, valid_file_paths_json: string, embedding_provider: string, embedding_model: string, max_deletions: number): string;
 
 /**
  * vector store file removal mutation plan을 `JSON` 문자열로 만든다.
@@ -1022,6 +1047,11 @@ export interface InitOutput {
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_indexed_db_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly plan_indexed_db_record_retention_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly plan_vector_store_reconciliation_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

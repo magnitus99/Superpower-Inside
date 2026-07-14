@@ -50,12 +50,16 @@ import {
   planGraphRagStatusRust,
   planGraphRagMarkdownFilePathsRust,
   planIndexPendingFilesRust,
+  createIndexedDbRecordKeyRust,
+  planIndexedDbCleanupRust,
+  planIndexedDbStorageLayoutRust,
   planVectorStoreAddRust,
   planVectorStoreLookupByFilePathsRust,
   planVectorStoreLookupByIdsRust,
   planVectorStoreRemoveFileRust,
   planVectorStoreReplaceFileRust,
   planVectorStoreStatsRust,
+  planVectorStoreReconciliationRust,
   planGraphPruneRust,
   parseMentionCandidatesRust,
   planEntityResolutionRust,
@@ -779,6 +783,56 @@ describe('Rust WASM RAG core bridge', () => {
       lastUpdated: null,
       indexedFilePaths: [],
     });
+  });
+
+  it('plans generation-isolated IndexedDB storage through Rust', () => {
+    const layout = planIndexedDbStorageLayoutRust(
+      'superpower-inside',
+      'C:/Vaults/Example',
+      'Example',
+      'profile:local::embedding-v2',
+    );
+
+    expect(layout).not.toBeNull();
+    expect(layout?.contractVersion).toBe(2);
+    expect(layout?.active.vector).toMatch(/^superpower-inside:rag-v2:[a-f0-9]{32}:/);
+    expect(layout?.active.embeddingCache).not.toBe(layout?.active.vector);
+    expect(layout?.legacyNames).toContain('superpower-inside:Example:VectorStore');
+  });
+
+  it('creates deterministic 128-bit namespaced IndexedDB record keys through Rust', () => {
+    const key = createIndexedDbRecordKeyRust('profile:local::embedding-v2', 'same text');
+
+    expect(key).toMatch(/^[a-f0-9]{32}$/);
+    expect(createIndexedDbRecordKeyRust('profile:local::embedding-v2', 'same text')).toBe(key);
+    expect(createIndexedDbRecordKeyRust('profile:remote::embedding-v2', 'same text')).not.toBe(key);
+  });
+
+  it('plans scoped database cleanup and bounded vector reconciliation through Rust', () => {
+    expect(
+      planIndexedDbCleanupRust(
+        ['scope:old', 'scope:active', 'other:old', 'legacy'],
+        ['scope:active'],
+        'scope:',
+        ['legacy'],
+      ),
+    ).toEqual({
+      deleteNames: ['legacy', 'scope:old'],
+      keptNames: ['scope:active'],
+    });
+    expect(
+      planVectorStoreReconciliationRust(
+        [
+          { filePath: 'current.md', embeddingProvider: 'local', embeddingModel: 'v2' },
+          { filePath: 'deleted.md', embeddingProvider: 'local', embeddingModel: 'v2' },
+          { filePath: 'legacy.md' },
+        ],
+        ['current.md', 'legacy.md'],
+        'local',
+        'v2',
+        1,
+      ),
+    ).toEqual({ deleteFilePaths: ['deleted.md'], remainingStaleCount: 1 });
   });
 
   it('assigns ANN vectors to nearest centroids through Rust', () => {
