@@ -401,6 +401,36 @@ describe('CachedEmbeddingProvider', () => {
       first.close();
     }
   });
+
+  it('can keep a bounded memory cache without opening IndexedDB and closes its provider', async () => {
+    const databaseName = `NoPersistentEmbeddingCache-${crypto.randomUUID()}`;
+    const close = vi.fn();
+    const embedBatch = vi.fn((texts: string[]) =>
+      Promise.resolve(texts.map((text) => [text.length, 1])),
+    );
+    const provider = new CachedEmbeddingProvider(
+      {
+        embed: (text) => Promise.resolve([text.length, 1]),
+        embedBatch,
+        close,
+      },
+      'ternlight::memory-only',
+      { dbName: databaseName, persistent: false },
+    );
+
+    await expect(provider.embedBatch(['local', 'local'])).resolves.toEqual([
+      [5, 1],
+      [5, 1],
+    ]);
+    await expect(provider.embedBatch(['local'])).resolves.toEqual([[5, 1]]);
+    expect(embedBatch).toHaveBeenCalledTimes(1);
+    expect((await indexedDB.databases()).some((database) => database.name === databaseName)).toBe(
+      false,
+    );
+
+    provider.close();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
 });
 
 function createStaticEmbeddingProvider(vector: number[]): EmbeddingProvider {

@@ -99,20 +99,13 @@ import {
 } from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
-import {
-  cleanupStaleIndexedDbGenerations,
-  createRagStorageLayout,
-  deleteRagIndexedDbGenerations,
-  type RagStorageLayout,
-} from './src/rag/storage-lifecycle';
+import { createRagStorageLayout, deleteRagIndexedDbGenerations } from './src/rag/storage-lifecycle';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 const GRAPH_AUTO_SYNC_MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
-const RAG_STORAGE_MAINTENANCE_DELAY_MS = 1_000;
-const RAG_STORAGE_RECONCILIATION_BATCH_SIZE = 128;
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -254,7 +247,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
   private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
-  private ragStorageMaintenanceTimer: number | null = null;
   private unloaded = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
@@ -403,10 +395,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     this.mcpConnectionRunId++;
     this.clearMcpRetryTimers();
-    if (this.ragStorageMaintenanceTimer !== null) {
-      window.clearTimeout(this.ragStorageMaintenanceTimer);
-      this.ragStorageMaintenanceTimer = null;
-    }
     this.clearRAG();
     this.refreshBus.destroy();
     this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
@@ -2134,6 +2122,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
         dbName: storageLayout.active.embeddingCache,
+        persistent: profile.strategy !== 'ternlight',
       });
 
       // Vector store
@@ -2399,7 +2388,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.lastRagRuntimeInitStage = null;
       this.lastRagRuntimeInitFinishedAt = Date.now();
       this.disposeRagRuntimeSnapshot(previousRuntime);
-      this.scheduleRagStorageMaintenance(storageLayout, vectorStore, providerKey, embeddingModel);
     } catch (err) {
       const failedRuntime = this.captureRagRuntimeSnapshot();
       this.clearRAG({ dispose: false });
@@ -2750,62 +2738,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const vaultName = vault.getName ? vault.getName() : 'default-vault';
     const pluginId = this.manifest?.id ?? 'superpower-inside';
     return `${pluginId}:${vaultName}:${kind}`.replace(/[^a-zA-Z0-9:_-]/g, '_');
-  }
-
-  private scheduleRagStorageMaintenance(
-    layout: RagStorageLayout,
-    vectorStore: IndexedDbVectorStore,
-    embeddingProvider: string,
-    embeddingModel: string,
-  ): void {
-    if (this.ragStorageMaintenanceTimer !== null) {
-      window.clearTimeout(this.ragStorageMaintenanceTimer);
-    }
-    this.ragStorageMaintenanceTimer = window.setTimeout(() => {
-      this.ragStorageMaintenanceTimer = null;
-      void this.runRagStorageMaintenance(layout, vectorStore, embeddingProvider, embeddingModel);
-    }, RAG_STORAGE_MAINTENANCE_DELAY_MS);
-  }
-
-  private async runRagStorageMaintenance(
-    layout: RagStorageLayout,
-    vectorStore: IndexedDbVectorStore,
-    embeddingProvider: string,
-    embeddingModel: string,
-  ): Promise<void> {
-    try {
-      const validFilePaths = this.app.vault.getFiles().map((file) => file.path);
-      let remainingStaleCount = 0;
-      do {
-        if (this.unloaded || this.vectorStore !== vectorStore) return;
-        const result = await vectorStore.reconcileFileIndex({
-          validFilePaths,
-          embeddingProvider,
-          embeddingModel,
-          maxDeletions: RAG_STORAGE_RECONCILIATION_BATCH_SIZE,
-        });
-        remainingStaleCount = result.remainingStaleCount;
-        if (remainingStaleCount > 0) {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        }
-      } while (remainingStaleCount > 0);
-
-      const cleanup = await cleanupStaleIndexedDbGenerations(layout);
-      this.getLogger().info('RAG storage maintenance completed.', {
-        source: 'rag.storage',
-        data: {
-          deletedDatabaseCount: cleanup.deletedNames.length,
-          blockedDatabaseCount: cleanup.blockedNames.length,
-          failedDatabaseCount: cleanup.failedNames.length,
-        },
-      });
-    } catch (error) {
-      if (this.unloaded || this.vectorStore !== vectorStore) return;
-      this.getLogger().warn('RAG storage maintenance failed.', {
-        source: 'rag.storage',
-        error,
-      });
-    }
   }
 
   private isCurrentVaultFilePath(filePath: string): boolean {

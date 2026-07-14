@@ -58,7 +58,7 @@ describe('Rust wrapper boundary', () => {
     const scripts = readPackageScripts();
 
     expect(scripts['wasm:build']).toBe(
-      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-graph-worker.mjs',
+      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-graph-worker.mjs && node scripts/build-ternlight-worker.mjs',
     );
     expect(scripts.build?.startsWith('npm run wasm:build && ')).toBe(true);
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);
@@ -201,18 +201,21 @@ describe('Rust wrapper boundary', () => {
       ]),
     ).toEqual([]);
 
-    expect(
-      findOffenders(['src/graph/query-engine.ts'], [/function\s+mergeCandidates\b/u]),
-    ).toEqual([]);
+    expect(findOffenders(['src/graph/query-engine.ts'], [/function\s+mergeCandidates\b/u])).toEqual(
+      [],
+    );
 
     expect(
-      findOffenders(['src/graph/status.ts'], [
-        /function\s+getTotalCandidateFiles\b/u,
-        /function\s+getFileIndexRecords\b/u,
-        /function\s+filterProcessableGraphRagEntries\b/u,
-        /filterProcessableGraphRagFilePaths\(/u,
-        /entries\.filter\(\(entry\)\s*=>/u,
-      ]),
+      findOffenders(
+        ['src/graph/status.ts'],
+        [
+          /function\s+getTotalCandidateFiles\b/u,
+          /function\s+getFileIndexRecords\b/u,
+          /function\s+filterProcessableGraphRagEntries\b/u,
+          /filterProcessableGraphRagFilePaths\(/u,
+          /entries\.filter\(\(entry\)\s*=>/u,
+        ],
+      ),
     ).toEqual([]);
   });
 

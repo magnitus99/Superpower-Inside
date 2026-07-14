@@ -9,7 +9,7 @@ use serde_json::{Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Current `IndexedDB` storage contract. A version change starts a fresh database generation.
-const STORAGE_CONTRACT_VERSION: u32 = 2;
+const STORAGE_CONTRACT_VERSION: u32 = 3;
 /// Legacy global embedding cache database created before per-vault generations.
 const LEGACY_EMBEDDING_CACHE_NAME: &str = "SuperpowerInsideEmbeddingCache";
 /// First stable 64-bit FNV-1a offset used for storage identities.

@@ -794,8 +794,8 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(layout).not.toBeNull();
-    expect(layout?.contractVersion).toBe(2);
-    expect(layout?.active.vector).toMatch(/^superpower-inside:rag-v2:[a-f0-9]{32}:/);
+    expect(layout?.contractVersion).toBe(3);
+    expect(layout?.active.vector).toMatch(/^superpower-inside:rag-v3:[a-f0-9]{32}:/);
     expect(layout?.active.embeddingCache).not.toBe(layout?.active.vector);
     expect(layout?.legacyNames).toContain('superpower-inside:Example:VectorStore');
   });

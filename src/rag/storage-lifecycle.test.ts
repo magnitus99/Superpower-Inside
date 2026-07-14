@@ -15,7 +15,7 @@ describe('RAG IndexedDB storage lifecycle', () => {
       embeddingNamespace: 'profile:local::embedding-v2',
     });
 
-    expect(layout.active.vector).toMatch(/^superpower-inside:rag-v2:[a-f0-9]{32}:/);
+    expect(layout.active.vector).toMatch(/^superpower-inside:rag-v3:[a-f0-9]{32}:/);
     expect(layout.active.embeddingCache).toContain('embedding-cache');
     expect(layout.active.bm25).toContain(':bm25');
     expect(layout.legacyNames).toContain('superpower-inside:Example:VectorStore');

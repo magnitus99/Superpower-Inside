@@ -21929,11 +21929,11 @@ mod tests {
             "profile:local::embedding-v2",
         );
         assert!(
-            raw.contains(r#""contractVersion":2"#),
+            raw.contains(r#""contractVersion":3"#),
             "storage contract version should be explicit: {raw}"
         );
         assert!(
-            raw.contains("superpower-inside:rag-v2:"),
+            raw.contains("superpower-inside:rag-v3:"),
             "active names should be isolated behind the current contract: {raw}"
         );
         assert!(

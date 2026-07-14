@@ -3,7 +3,11 @@ import Dexie from 'dexie';
 import { t } from '../i18n';
 import { createIndexedDbRecordKeyRust, planIndexedDbRecordRetentionRust } from '../rag/rust-core';
 import { assertValidEmbeddingBatch } from './embedding-validation';
-import { getTernlightEmbedder, type TernlightRuntimeOptions } from './ternlight-runtime';
+import {
+  closeTernlightRuntime,
+  embedTernlightBatch,
+  type TernlightRuntimeOptions,
+} from './ternlight-runtime';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 export { assertValidEmbeddingBatch } from './embedding-validation';
 
@@ -76,8 +80,7 @@ export class TernlightEmbeddingProvider implements EmbeddingProvider {
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
     throwIfAborted(options?.signal);
-    const embed = await getTernlightEmbedder(this.runtime);
-    const vector = Array.from(embed(text));
+    const [vector] = await embedTernlightBatch(this.runtime, [text], options?.signal);
     throwIfAborted(options?.signal);
     return vector;
   }
@@ -87,17 +90,17 @@ export class TernlightEmbeddingProvider implements EmbeddingProvider {
     this.logger.debug('Ternlight embedding batch started.', {
       data: { model: this.model, batchSize: texts.length },
     });
-    const embed = await getTernlightEmbedder(this.runtime);
-    const vectors = texts.map((text) => {
-      throwIfAborted(options?.signal);
-      return Array.from(embed(text));
-    });
+    const vectors = await embedTernlightBatch(this.runtime, texts, options?.signal);
     throwIfAborted(options?.signal);
     assertValidEmbeddingBatch(vectors, texts.length, 'Ternlight embedding batch');
     this.logger.debug('Ternlight embedding batch completed.', {
       data: { model: this.model, batchSize: texts.length },
     });
     return vectors;
+  }
+
+  close(): void {
+    closeTernlightRuntime();
   }
 }
 
@@ -578,6 +581,7 @@ export function createEmbeddingCacheNamespace(providerKey: string, modelName: st
 
 export interface CachedEmbeddingProviderOptions {
   dbName?: string;
+  persistent?: boolean;
   maxPersistentEntries?: number;
   maxPersistentAgeMs?: number;
   pruneEveryWrites?: number;
@@ -589,7 +593,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private memoryCache: Map<string, number[]>;
   private cacheNamespace: string;
   private cacheKeys: string[];
-  private db: EmbeddingCacheDB;
+  private db: EmbeddingCacheDB | null;
   private readonly maxPersistentEntries: number;
   private readonly maxPersistentAgeMs: number;
   private readonly pruneEveryWrites: number;
@@ -605,10 +609,13 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     this.memoryCache = new Map();
     this.cacheKeys = [];
     this.cacheNamespace = cacheNamespace;
-    this.db = new EmbeddingCacheDB(
-      options.dbName ??
-        `SuperpowerInsideEmbeddingCache-v2:${requireIndexedDbRecordKey('embedding-cache', cacheNamespace)}`,
-    );
+    this.db =
+      options.persistent === false
+        ? null
+        : new EmbeddingCacheDB(
+            options.dbName ??
+              `SuperpowerInsideEmbeddingCache-v2:${requireIndexedDbRecordKey('embedding-cache', cacheNamespace)}`,
+          );
     this.maxPersistentEntries = normalizeCacheLimit(
       options.maxPersistentEntries,
       DEFAULT_PERSISTENT_CACHE_SIZE,
@@ -650,7 +657,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     const mem = this.memoryCache.get(hash);
     if (mem) return mem;
 
-    const cached = await this.db.embeddings.get(hash);
+    const cached = await this.db?.embeddings.get(hash);
     throwIfAborted(options?.signal);
     if (cached) {
       const cachedVector = embeddingVectorFromRecord(cached);
@@ -664,11 +671,14 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     throwIfAborted(options?.signal);
     this.setCache(hash, vector);
     const updated = this.now();
-    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
-      await this.db.embeddings.put(embeddingRecord(hash, vector, updated));
-      await this.db.access.put({ id: hash, updated });
-    });
-    await this.prunePersistentCacheIfNeeded(1);
+    if (this.db) {
+      const db = this.db;
+      await db.transaction('rw', db.embeddings, db.access, async () => {
+        await db.embeddings.put(embeddingRecord(hash, vector, updated));
+        await db.access.put({ id: hash, updated });
+      });
+      await this.prunePersistentCacheIfNeeded(1);
+    }
     return vector;
   }
 
@@ -693,7 +703,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       dbLookupHashes.push(hash);
     }
 
-    const cachedRecords = await this.db.embeddings.bulkGet(dbLookupHashes);
+    const cachedRecords = this.db
+      ? await this.db.embeddings.bulkGet(dbLookupHashes)
+      : new Array<EmbeddingRecord | undefined>(dbLookupHashes.length).fill(undefined);
     throwIfAborted(options?.signal);
     const missingIndexGroups = new Map<string, number[]>();
     const missingHashes: string[] = [];
@@ -736,11 +748,14 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         bulkRecords.push(embeddingRecord(hash, vector, now));
         accessRecords.push({ id: hash, updated: now });
       }
-      await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
-        await this.db.embeddings.bulkPut(bulkRecords);
-        await this.db.access.bulkPut(accessRecords);
-      });
-      await this.prunePersistentCacheIfNeeded(bulkRecords.length);
+      if (this.db) {
+        const db = this.db;
+        await db.transaction('rw', db.embeddings, db.access, async () => {
+          await db.embeddings.bulkPut(bulkRecords);
+          await db.access.bulkPut(accessRecords);
+        });
+        await this.prunePersistentCacheIfNeeded(bulkRecords.length);
+      }
       throwIfAborted(options?.signal);
     }
 
@@ -750,31 +765,39 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   async clearCache(): Promise<void> {
     this.memoryCache.clear();
     this.cacheKeys = [];
-    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
-      await this.db.embeddings.clear();
-      await this.db.access.clear();
-    });
+    if (this.db) {
+      const db = this.db;
+      await db.transaction('rw', db.embeddings, db.access, async () => {
+        await db.embeddings.clear();
+        await db.access.clear();
+      });
+    }
   }
 
   async deleteDatabase(): Promise<void> {
     this.memoryCache.clear();
     this.cacheKeys = [];
-    const dbName = this.db.name;
-    this.db.close({ disableAutoOpen: true });
-    await Dexie.delete(dbName);
+    if (this.db) {
+      const dbName = this.db.name;
+      this.db.close({ disableAutoOpen: true });
+      await Dexie.delete(dbName);
+    }
   }
 
   close(): void {
     this.memoryCache.clear();
     this.cacheKeys = [];
-    this.db.close({ disableAutoOpen: true });
+    this.db?.close({ disableAutoOpen: true });
+    this.inner.close?.();
   }
 
   private async prunePersistentCacheIfNeeded(writes: number): Promise<void> {
+    const db = this.db;
+    if (!db) return;
     this.writesSincePrune += writes;
     if (this.writesSincePrune < this.pruneEveryWrites) return;
     this.writesSincePrune = 0;
-    const records = await this.db.access.toArray();
+    const records = await db.access.toArray();
     const plan = planIndexedDbRecordRetentionRust(
       records,
       this.maxPersistentEntries,
@@ -785,9 +808,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       throw new Error('Rust embedding-cache retention planning failed');
     }
     if (plan.deleteIds.length === 0) return;
-    await this.db.transaction('rw', this.db.embeddings, this.db.access, async () => {
-      await this.db.embeddings.bulkDelete(plan.deleteIds);
-      await this.db.access.bulkDelete(plan.deleteIds);
+    await db.transaction('rw', db.embeddings, db.access, async () => {
+      await db.embeddings.bulkDelete(plan.deleteIds);
+      await db.access.bulkDelete(plan.deleteIds);
     });
     for (const id of plan.deleteIds) {
       this.memoryCache.delete(id);
