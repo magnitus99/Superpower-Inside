@@ -8,7 +8,8 @@ import {
   planVectorStoreLookupByIdsRust,
   planVectorStoreRemoveFileRust,
   planVectorStoreReplaceFileRust,
-  planVectorStoreReconciliationRust,
+  planVectorFileIndexBatchRust,
+  planVectorRecordBatchRust,
   planVectorStoreStatsRust,
   rankTopKPairsRust,
   RustIvfRuntimeIndex,
@@ -125,6 +126,18 @@ export interface VectorStoreReconciliationResult {
   remainingStaleCount: number;
 }
 
+export interface VectorStoreReconciliationBatchResult {
+  deletedFilePaths: string[];
+  deletedVectorIds: string[];
+  complete: boolean;
+}
+
+export interface VectorStoreHealthProbe {
+  queryable: boolean;
+  embeddingContractMatches: boolean;
+  dimension: number | null;
+}
+
 export interface LegacyJsonVectorImportResult {
   imported: number;
   skipped: boolean;
@@ -142,6 +155,7 @@ const DEFAULT_RUNTIME_PAYLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_CACHE_LIMIT = 4;
 const DEFAULT_RUNTIME_INDEX_CACHE_LIMIT = 2;
 const DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT = 2;
+const DEFAULT_RECONCILIATION_PAGE_SIZE = 64;
 
 interface IndexedDbVectorRecord {
   id: string;
@@ -505,6 +519,12 @@ export class IndexedDbVectorStore implements VectorStore {
   private readonly hydrateAllEntryLimit: number;
   private readonly pageSize: number;
   private readonly maxRuntimePayloadBytes: number;
+  private reconciliationState: {
+    key: string;
+    phase: 'fileIndex' | 'vectors';
+    cursor: string | null;
+    validFilePaths: Set<string>;
+  } | null = null;
 
   constructor(dbName = 'SuperpowerInsideVectorStore', options: IndexedDbVectorStoreOptions = {}) {
     this.db = new VectorStoreDB(dbName);
@@ -616,11 +636,13 @@ export class IndexedDbVectorStore implements VectorStore {
       await this.db.fileIndex.clear();
     });
     this.entriesCache = [];
+    this.reconciliationState = null;
     this.invalidateRuntimeIndex();
   }
 
   async deleteDatabase(): Promise<void> {
     this.entriesCache = null;
+    this.reconciliationState = null;
     this.invalidateRuntimeIndex();
     this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
@@ -628,6 +650,7 @@ export class IndexedDbVectorStore implements VectorStore {
 
   close(): void {
     this.entriesCache = null;
+    this.reconciliationState = null;
     this.invalidateRuntimeIndex();
     this.db.close({ disableAutoOpen: true });
   }
@@ -638,32 +661,172 @@ export class IndexedDbVectorStore implements VectorStore {
     embeddingModel: string;
     maxDeletions?: number;
   }): Promise<VectorStoreReconciliationResult> {
-    const records = await this.getFileIndexRecords();
-    const plan = planVectorStoreReconciliationRust(
-      records.map((record) => ({
-        filePath: record.filePath,
-        embeddingProvider: record.embeddingProvider,
-        embeddingModel: record.embeddingModel,
-      })),
-      input.validFilePaths,
+    const validPaths = new Set(input.validFilePaths);
+    const maxDeletions = Math.max(0, Math.floor(input.maxDeletions ?? 128));
+    const stalePaths: string[] = [];
+    let cursor: string | null = null;
+    while (true) {
+      const records = await this.readFileIndexPage(cursor, DEFAULT_RECONCILIATION_PAGE_SIZE);
+      if (records.length === 0) break;
+      const plan = planVectorFileIndexBatchRust(
+        records.map((record) => ({
+          filePath: record.filePath,
+          isEligible: validPaths.has(record.filePath),
+          hasCompleteMetadata: record.hasCompleteMetadata === true,
+          embeddingProvider: record.embeddingProvider,
+          embeddingModel: record.embeddingModel,
+        })),
+        input.embeddingProvider,
+        input.embeddingModel,
+        records.length,
+      );
+      if (!plan) throw new Error('Rust vector file-index batch planning failed');
+      stalePaths.push(...plan);
+      cursor = records.at(-1)?.filePath ?? null;
+      if (records.length < DEFAULT_RECONCILIATION_PAGE_SIZE) break;
+      await yieldToEventLoop();
+    }
+    const deleteFilePaths = stalePaths.slice(0, maxDeletions);
+    if (deleteFilePaths.length > 0) await this.deleteFilePaths(deleteFilePaths);
+    return {
+      deletedFilePaths: deleteFilePaths,
+      remainingStaleCount: Math.max(0, stalePaths.length - deleteFilePaths.length),
+    };
+  }
+
+  async probeActiveHealth(input: {
+    candidateFilePaths: readonly string[];
+    embeddingProvider: string;
+    embeddingModel: string;
+  }): Promise<VectorStoreHealthProbe> {
+    if (input.candidateFilePaths.length === 0) {
+      return { queryable: true, embeddingContractMatches: true, dimension: null };
+    }
+    for (
+      let offset = 0;
+      offset < input.candidateFilePaths.length;
+      offset += DEFAULT_RECONCILIATION_PAGE_SIZE
+    ) {
+      const paths = input.candidateFilePaths.slice(
+        offset,
+        offset + DEFAULT_RECONCILIATION_PAGE_SIZE,
+      );
+      const fileRecords = await this.db.fileIndex.bulkGet(paths);
+      const eligiblePaths = paths.filter((_, index) => {
+        const fileRecord = fileRecords[index];
+        return (
+          fileRecord?.hasCompleteMetadata === true &&
+          fileRecord.embeddingProvider === input.embeddingProvider &&
+          fileRecord.embeddingModel === input.embeddingModel
+        );
+      });
+      const vectors = await Promise.all(
+        eligiblePaths.map((path) => this.db.vectors.where('filePath').equals(path).first()),
+      );
+      for (const vectorRecord of vectors) {
+        if (!vectorRecord || !isCompleteVectorMetadata(vectorRecord)) continue;
+        const dimension = getVectorRecordDimension(vectorRecord);
+        const embeddingProvider =
+          vectorRecord.embeddingProvider ?? vectorRecord.metadata.embeddingProvider;
+        const embeddingModel = vectorRecord.embeddingModel ?? vectorRecord.metadata.embeddingModel;
+        if (
+          dimension > 0 &&
+          vectorFromRecord(vectorRecord).length > 0 &&
+          embeddingProvider === input.embeddingProvider &&
+          embeddingModel === input.embeddingModel
+        ) {
+          return { queryable: true, embeddingContractMatches: true, dimension };
+        }
+      }
+      await yieldToEventLoop();
+    }
+    return { queryable: false, embeddingContractMatches: false, dimension: null };
+  }
+
+  async reconcileBatch(input: {
+    lifecycleKey: string;
+    validFilePaths: readonly string[];
+    embeddingProvider: string;
+    embeddingModel: string;
+    expectedDimension: number;
+    pageSize?: number;
+  }): Promise<VectorStoreReconciliationBatchResult> {
+    const pageSize = Math.max(1, Math.floor(input.pageSize ?? DEFAULT_RECONCILIATION_PAGE_SIZE));
+    if (!this.reconciliationState || this.reconciliationState.key !== input.lifecycleKey) {
+      this.reconciliationState = {
+        key: input.lifecycleKey,
+        phase: 'fileIndex',
+        cursor: null,
+        validFilePaths: new Set(input.validFilePaths),
+      };
+    }
+    const state = this.reconciliationState;
+    if (state.phase === 'fileIndex') {
+      const records = await this.readFileIndexPage(state.cursor, pageSize);
+      const validPaths = state.validFilePaths;
+      const deleteFilePaths = planVectorFileIndexBatchRust(
+        records.map((record) => ({
+          filePath: record.filePath,
+          isEligible: validPaths.has(record.filePath),
+          hasCompleteMetadata: record.hasCompleteMetadata === true,
+          embeddingProvider: record.embeddingProvider,
+          embeddingModel: record.embeddingModel,
+        })),
+        input.embeddingProvider,
+        input.embeddingModel,
+        pageSize,
+      );
+      if (!deleteFilePaths) throw new Error('Rust vector file-index batch planning failed');
+      state.cursor = records.at(-1)?.filePath ?? state.cursor;
+      if (deleteFilePaths.length > 0) await this.deleteFilePaths(deleteFilePaths);
+      if (records.length < pageSize) {
+        state.phase = 'vectors';
+        state.cursor = null;
+      }
+      await yieldToEventLoop();
+      return { deletedFilePaths: deleteFilePaths, deletedVectorIds: [], complete: false };
+    }
+
+    const records = await this.readVectorPage(state.cursor, pageSize);
+    const filePaths = [...new Set(records.map((record) => record.filePath))];
+    const fileRecords = await this.db.fileIndex.bulkGet(filePaths);
+    const fileRecordByPath = new Map<string, FileIndexRecord>();
+    for (let index = 0; index < filePaths.length; index++) {
+      const fileRecord = fileRecords[index];
+      const filePath = filePaths[index];
+      if (fileRecord && filePath) fileRecordByPath.set(filePath, fileRecord);
+    }
+    const deleteVectorIds = planVectorRecordBatchRust(
+      records.map((record) => {
+        const fileRecord = fileRecordByPath.get(record.filePath);
+        return {
+          id: record.id,
+          embeddingProvider: record.embeddingProvider ?? record.metadata.embeddingProvider,
+          embeddingModel: record.embeddingModel ?? record.metadata.embeddingModel,
+          dimension: getVectorRecordDimension(record),
+          fileIndexExists: fileRecord !== undefined,
+          metadataComplete: isCompleteVectorMetadata(record),
+          contentHash: record.metadata.contentHash,
+          fileContentHash: fileRecord?.contentHash,
+          updated: record.updated,
+          fileUpdated: fileRecord?.updated,
+        };
+      }),
       input.embeddingProvider,
       input.embeddingModel,
-      Math.max(0, Math.floor(input.maxDeletions ?? 128)),
+      input.expectedDimension,
+      pageSize,
     );
-    if (!plan) {
-      throw new Error('Rust vector-store reconciliation planning failed');
-    }
-    if (plan.deleteFilePaths.length > 0) {
-      await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
-        await this.db.vectors.where('filePath').anyOf(plan.deleteFilePaths).delete();
-        await this.db.fileIndex.bulkDelete(plan.deleteFilePaths);
-      });
+    if (!deleteVectorIds) throw new Error('Rust vector record batch planning failed');
+    state.cursor = records.at(-1)?.id ?? state.cursor;
+    if (deleteVectorIds.length > 0) {
+      await this.db.vectors.bulkDelete(deleteVectorIds);
       this.invalidateRuntimeCache();
     }
-    return {
-      deletedFilePaths: plan.deleteFilePaths,
-      remainingStaleCount: plan.remainingStaleCount,
-    };
+    const complete = records.length < pageSize;
+    if (complete) this.reconciliationState = null;
+    await yieldToEventLoop();
+    return { deletedFilePaths: [], deletedVectorIds: deleteVectorIds, complete };
   }
 
   async getMetaValue<T>(key: string): Promise<T | undefined> {
@@ -713,13 +876,13 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async getFileIndexRecords(): Promise<FileIndexRecord[]> {
-    const records = await this.db.fileIndex.toArray();
+    const records = await this.readAllFileIndexRecordsPaged();
     const vectorCount = await this.db.vectors.count();
     if (records.length > 0 || vectorCount === 0) {
       return records;
     }
     await this.rebuildFileIndexFromVectors();
-    return this.db.fileIndex.toArray();
+    return this.readAllFileIndexRecordsPaged();
   }
 
   async getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {
@@ -879,12 +1042,87 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   private async rebuildFileIndexFromVectors(): Promise<void> {
-    const records = await this.db.vectors.toArray();
-    const fileRecords = fileIndexRecordsFromRust(records.map(vectorEntryFromRecordWithUpdated), 0);
-    if (fileRecords.length > 0) {
-      await this.db.fileIndex.bulkPut(fileRecords);
+    let filePathCursor: string | null = null;
+    while (true) {
+      const firstRecord: IndexedDbVectorRecord | undefined = filePathCursor
+        ? await this.db.vectors.where('filePath').above(filePathCursor).first()
+        : await this.db.vectors.orderBy('filePath').first();
+      if (!firstRecord) break;
+      const vectorCount = await this.db.vectors
+        .where('filePath')
+        .equals(firstRecord.filePath)
+        .count();
+      const [fileRecord] = fileIndexRecordsFromRust(
+        [vectorEntryFromRecordWithUpdated(firstRecord)],
+        firstRecord.updated,
+      );
+      if (fileRecord) {
+        await this.db.fileIndex.put({ ...fileRecord, vectorCount });
+      }
+      filePathCursor = firstRecord.filePath;
+      await yieldToEventLoop();
     }
   }
+
+  private readFileIndexPage(cursor: string | null, pageSize: number): Promise<FileIndexRecord[]> {
+    const collection = cursor
+      ? this.db.fileIndex.where(':id').above(cursor)
+      : this.db.fileIndex.orderBy(':id');
+    return collection.limit(pageSize).toArray();
+  }
+
+  private readVectorPage(
+    cursor: string | null,
+    pageSize: number,
+  ): Promise<IndexedDbVectorRecord[]> {
+    const collection = cursor
+      ? this.db.vectors.where(':id').above(cursor)
+      : this.db.vectors.orderBy(':id');
+    return collection.limit(pageSize).toArray();
+  }
+
+  private async readAllFileIndexRecordsPaged(): Promise<FileIndexRecord[]> {
+    const records: FileIndexRecord[] = [];
+    let cursor: string | null = null;
+    while (true) {
+      const page = await this.readFileIndexPage(cursor, this.pageSize);
+      records.push(...page);
+      cursor = page.at(-1)?.filePath ?? null;
+      if (page.length < this.pageSize) break;
+      await yieldToEventLoop();
+    }
+    return records;
+  }
+
+  private async deleteFilePaths(filePaths: readonly string[]): Promise<void> {
+    if (filePaths.length === 0) return;
+    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+      await this.db.vectors
+        .where('filePath')
+        .anyOf([...filePaths])
+        .delete();
+      await this.db.fileIndex.bulkDelete([...filePaths]);
+    });
+    this.invalidateRuntimeCache();
+  }
+}
+
+function isCompleteVectorMetadata(record: IndexedDbVectorRecord): boolean {
+  const metadata = record.metadata;
+  return (
+    metadata.filePath === record.filePath &&
+    Number.isFinite(metadata.startLine) &&
+    typeof metadata.text === 'string' &&
+    metadata.text.length > 0 &&
+    typeof metadata.contentHash === 'string' &&
+    metadata.contentHash.length > 0 &&
+    typeof (record.embeddingProvider ?? metadata.embeddingProvider) === 'string' &&
+    typeof (record.embeddingModel ?? metadata.embeddingModel) === 'string'
+  );
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 export async function importLegacyJsonVectorStore(

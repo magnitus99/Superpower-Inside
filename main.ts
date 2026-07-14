@@ -1,5 +1,10 @@
 import { Plugin, Notice, Platform, TFile, type WorkspaceLeaf } from 'obsidian';
-import { getEffectiveExcludePaths, readJsonFromVault, writeJsonToVault } from './src/utils/vault';
+import {
+  getEffectiveExcludePaths,
+  getRagCandidateFiles,
+  readJsonFromVault,
+  writeJsonToVault,
+} from './src/utils/vault';
 import {
   type SuperpowerInsideSettings,
   DEFAULT_SETTINGS,
@@ -99,7 +104,22 @@ import {
 } from './src/settings-storage';
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
-import { createRagStorageLayout, deleteRagIndexedDbGenerations } from './src/rag/storage-lifecycle';
+import {
+  cleanupStaleIndexedDbGenerations,
+  createRagStorageLayout,
+  deleteRagIndexedDbGenerations,
+} from './src/rag/storage-lifecycle';
+import {
+  AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY,
+  AutomaticRagRecoveryCoordinator,
+  createWindowAutomaticRagRecoveryTimer,
+  selectAutomaticRecoveryEligibleFiles,
+  type AutomaticRagRecoveryEvent,
+} from './src/rag/automatic-recovery';
+import {
+  RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
+  runRagStorageMaintenance,
+} from './src/rag/storage-maintenance';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
@@ -199,6 +219,7 @@ interface RagRuntimeSnapshot {
   graphRagProviderAttached: boolean;
   vaultIndexer: VaultIndexer | null;
   ragIndexingScheduler: RAGIndexingScheduler | null;
+  automaticRagRecovery: AutomaticRagRecoveryCoordinator | null;
   ragPerformanceGuard: PerformanceGuard | null;
   ragIndexingStatus: RagIndexingSchedulerStatus | null;
   nextAutoUpdateAt: number | null;
@@ -220,6 +241,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private graphRagAbortController: AbortController | null = null;
   private vaultIndexer: VaultIndexer | null = null;
   private ragIndexingScheduler: RAGIndexingScheduler | null = null;
+  private automaticRagRecovery: AutomaticRagRecoveryCoordinator | null = null;
   private ragPerformanceGuard: PerformanceGuard | null = null;
   ragIndexingStatus: RagIndexingSchedulerStatus | null = null;
   nextAutoUpdateAt: number | null = null;
@@ -997,6 +1019,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async resetPluginData(): Promise<void> {
     this.getLogger().info('Plugin data reset started.', { source: 'settings.reset' });
+    this.automaticRagRecovery?.dispose();
+    this.automaticRagRecovery = null;
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     if (this.graphRagAbortController) {
@@ -1936,6 +1960,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       graphRagProviderAttached: this.graphRagProviderAttached,
       vaultIndexer: this.vaultIndexer,
       ragIndexingScheduler: this.ragIndexingScheduler,
+      automaticRagRecovery: this.automaticRagRecovery,
       ragPerformanceGuard: this.ragPerformanceGuard,
       ragIndexingStatus: this.ragIndexingStatus,
       nextAutoUpdateAt: this.nextAutoUpdateAt,
@@ -1958,6 +1983,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.graphRagProviderAttached = snapshot.graphRagProviderAttached;
     this.vaultIndexer = snapshot.vaultIndexer;
     this.ragIndexingScheduler = snapshot.ragIndexingScheduler;
+    this.automaticRagRecovery = snapshot.automaticRagRecovery;
     this.ragPerformanceGuard = snapshot.ragPerformanceGuard;
     this.ragIndexingStatus = snapshot.ragIndexingStatus;
     this.nextAutoUpdateAt = snapshot.nextAutoUpdateAt;
@@ -1967,6 +1993,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.setupGraphRagAutoSync();
     this.setupRagStatusTimer();
     this.registerRAGEvents();
+    this.automaticRagRecovery?.resume();
     this.refreshBus?.emit('rag', {
       status: 'success',
       detail: this.ragIndexingStatus
@@ -1977,6 +2004,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private disposeRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): void {
+    snapshot.automaticRagRecovery?.dispose();
     snapshot.vectorStore?.close?.();
     snapshot.knowledgeGraphStore?.close?.();
     snapshot.bm25Index?.close?.();
@@ -1990,6 +2018,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // preserve existing vector store data so users can incrementally reindex.
 
     const previousRuntime = this.captureRagRuntimeSnapshot();
+    previousRuntime.automaticRagRecovery?.suspend();
     // Detach the current runtime while the replacement is assembled. Keep its
     // stores open so a failed rebuild can restore a genuinely usable snapshot.
     this.clearRAG({ dispose: false });
@@ -2120,10 +2149,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
       }
 
-      this.embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
+      const embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
         dbName: storageLayout.active.embeddingCache,
         persistent: profile.strategy !== 'ternlight',
       });
+      this.embeddingProvider = embeddingProvider;
 
       // Vector store
       const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
@@ -2369,12 +2399,97 @@ export default class SuperpowerInsidePlugin extends Plugin {
         },
       });
 
+      const scheduler = this.ragIndexingScheduler;
+      const ragConfig = this.settings.rag;
+      const chatConfig = this.settings.chat;
+      const listAutomaticRecoveryFiles = async () => {
+        const files = await getRagCandidateFiles(this.app.vault, ragConfig, chatConfig);
+        const snapshots = files.map((file) => ({
+          path: file.path,
+          mtime: file.stat.mtime,
+          size: file.stat.size,
+        }));
+        const eligible = selectAutomaticRecoveryEligibleFiles(snapshots);
+        if (!eligible) throw new Error('Rust automatic RAG recovery eligibility planning failed');
+        return eligible;
+      };
+      const listRagCandidateFilePaths = async () => {
+        const files = await getRagCandidateFiles(this.app.vault, ragConfig, chatConfig);
+        return files.map((file) => file.path);
+      };
+      const countAutomaticRecoveryPendingDocuments = async () => {
+        const [eligibleFiles, status] = await Promise.all([
+          listAutomaticRecoveryFiles(),
+          calculateRagStatus(this.app.vault, vectorStore, ragConfig, chatConfig),
+        ]);
+        const eligiblePaths = new Set(eligibleFiles.map((file) => file.path));
+        return status.updateRequiredDocuments.filter((document) => eligiblePaths.has(document.path))
+          .length;
+      };
+      this.automaticRagRecovery = new AutomaticRagRecoveryCoordinator({
+        listCandidateFiles: listAutomaticRecoveryFiles,
+        readCompletedFingerprint: () =>
+          vectorStore.getMetaValue<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY),
+        writeCompletedFingerprint: (fingerprint) =>
+          vectorStore.setMetaValue(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY, fingerprint),
+        runPending: async () => {
+          await scheduler.indexPending({ automaticRecovery: true });
+        },
+        waitForIdle: () => scheduler.waitForIdle(),
+        countPendingDocuments: countAutomaticRecoveryPendingDocuments,
+        runHealthyMaintenance: async (fingerprint, force, isCancelled) => {
+          await scheduler.waitForIdle();
+          await runRagStorageMaintenance(
+            {
+              listCandidateFiles: listAutomaticRecoveryFiles,
+              listValidFilePaths: listRagCandidateFilePaths,
+              readRecoveryFingerprint: () =>
+                vectorStore.getMetaValue<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY),
+              countPendingDocuments: countAutomaticRecoveryPendingDocuments,
+              probeActiveStore: (candidateFilePaths) =>
+                vectorStore.probeActiveHealth({
+                  candidateFilePaths,
+                  embeddingProvider: ragConfig.embeddingProvider,
+                  embeddingModel: ragConfig.embeddingModel,
+                }),
+              readMaintenanceFingerprint: () =>
+                vectorStore.getMetaValue<string>(RAG_STORAGE_MAINTENANCE_COMPLETION_KEY),
+              writeMaintenanceFingerprint: (completedFingerprint) =>
+                vectorStore.setMetaValue(
+                  RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
+                  completedFingerprint,
+                ),
+              reconcileActiveStoreBatch: async (input) =>
+                vectorStore.reconcileBatch({
+                  lifecycleKey: input.fingerprint,
+                  validFilePaths: input.candidateFilePaths,
+                  embeddingProvider: ragConfig.embeddingProvider,
+                  embeddingModel: ragConfig.embeddingModel,
+                  expectedDimension: input.expectedDimension,
+                }),
+              pruneEmbeddingCacheBatch: () => embeddingProvider.prunePersistentCacheBatch(),
+              cleanupStaleGenerationBatch: () =>
+                cleanupStaleIndexedDbGenerations(storageLayout, {
+                  preserveEmbeddingCache: embeddingProvider.persistentCacheEnabled,
+                }),
+              yieldToHost: () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+            },
+            fingerprint,
+            force,
+            isCancelled,
+          );
+        },
+        timer: createWindowAutomaticRagRecoveryTimer(),
+        onEvent: (event, detail) => this.logAutomaticRagRecoveryEvent(event, detail),
+      });
+
       // Auto-update timer
       this.setupAutoUpdate();
       this.setupGraphRagAutoSync();
       // RAG 상태 자동 갱신 타이머 (30초 간격)
       this.setupRagStatusTimer();
       this.registerRAGEvents();
+      await this.automaticRagRecovery.start();
       this.getLogger().info('RAG runtime initialization completed.', {
         source: 'rag',
         data: {
@@ -2500,6 +2615,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
+  private logAutomaticRagRecoveryEvent(event: AutomaticRagRecoveryEvent, detail?: unknown): void {
+    const context = {
+      source: 'rag.recovery',
+      data: { event },
+      ...(detail instanceof Error ? { error: detail } : {}),
+    };
+    if (event === 'completed') {
+      this.getLogger().info('Automatic RAG coverage recovery completed.', context);
+    } else if (event === 'retrying' || event === 'exhausted') {
+      this.getLogger().warn('Automatic RAG coverage recovery needs another opportunity.', context);
+    } else {
+      this.getLogger().debug('Automatic RAG coverage recovery state changed.', context);
+    }
+  }
+
   private clearRAG(options: { dispose?: boolean } = {}): void {
     const runtime = options.dispose === false ? null : this.captureRagRuntimeSnapshot();
     this.cancelRagIndexing();
@@ -2531,6 +2661,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.graphRagProviderAttached = false;
     this.vaultIndexer = null;
     this.ragIndexingScheduler = null;
+    this.automaticRagRecovery = null;
     this.ragPerformanceGuard = null;
     this.ragIndexingStatus = null;
     this.nextAutoUpdateAt = null;

@@ -12,7 +12,12 @@ import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import type { IndexedDbBM25Index } from './bm25';
 import { createContentHash } from './hash';
-import { chunkMarkdownRust, chunkPlainTextRust, planIndexPendingFilesRust } from './rust-core';
+import {
+  chunkMarkdownRust,
+  chunkPlainTextRust,
+  planIndexPendingFilesRust,
+  planRagAutomaticRecoveryBatchRust,
+} from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 import { normalizeRustIndices } from '../utils/rust-index-plan';
@@ -31,6 +36,7 @@ export interface IndexingOptions {
   onBatchComplete?: (durationMs: number) => void;
   onProgress?: (progress: RagIndexingProgressSnapshot) => void;
   getPerformanceGuardState?: () => PerformanceGuardState | null;
+  automaticRecovery?: boolean;
 }
 
 export type RagIndexingProgressEvent =
@@ -372,7 +378,10 @@ function completeProgressFile(
 ): void {
   const estimatedChunks = Math.max(1, tracker.currentFileEstimatedChunks);
   const actualChunks = Math.max(0, Math.floor(actualChunkCount));
-  const plannedChunks = Math.max(1, tracker.currentFilePlannedChunks || actualChunks || estimatedChunks);
+  const plannedChunks = Math.max(
+    1,
+    tracker.currentFilePlannedChunks || actualChunks || estimatedChunks,
+  );
   tracker.completedFiles += 1;
   tracker.completedEstimatedChunks = Math.min(
     tracker.totalEstimatedChunks,
@@ -830,22 +839,28 @@ export class VaultIndexer {
     const pendingFiles = normalizedPendingPlan.fileIndices
       .map((index) => files[index])
       .filter((file): file is TFile => file !== undefined);
+    const selectedFileIndices = options.automaticRecovery
+      ? selectAutomaticRecoveryFileIndices(files, normalizedPendingPlan.fileIndices, pendingFiles)
+      : normalizedPendingPlan.fileIndices;
+    const selectedFiles = selectedFileIndices
+      .map((index) => files[index])
+      .filter((file): file is TFile => file !== undefined);
     resetProgressTrackerPlan(
       progressTracker,
-      pendingFiles,
+      selectedFiles,
       this.ragConfig,
-      normalizedPendingPlan.skipped,
+      Math.max(candidatePaths.length - selectedFiles.length, 0),
     );
     emitIndexingProgress(options, progressTracker, 'plan');
-    await this.planProgressChunks(pendingFiles, options, progressTracker);
+    await this.planProgressChunks(selectedFiles, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
 
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      batchResult.skipped = normalizedPendingPlan.skipped;
-      for (let i = 0; i < normalizedPendingPlan.fileIndices.length; i++) {
+      batchResult.skipped = Math.max(candidatePaths.length - selectedFiles.length, 0);
+      for (let i = 0; i < selectedFileIndices.length; i++) {
         throwIfIndexingCancelled(options.signal);
-        const file = files[normalizedPendingPlan.fileIndices[i]];
+        const file = files[selectedFileIndices[i]];
         if (!file) {
           batchResult.skipped += 1;
           continue;
@@ -950,6 +965,20 @@ export class VaultIndexer {
     const record = await this.vectorStore.getFileIndexRecord(file.path);
     return record ? isCurrentFileIndexRecord(record, file, contentHash, this.ragConfig) : false;
   }
+}
+
+function selectAutomaticRecoveryFileIndices(
+  files: readonly TFile[],
+  pendingFileIndices: readonly number[],
+  pendingFiles: readonly TFile[],
+): number[] {
+  const plan = planRagAutomaticRecoveryBatchRust(
+    pendingFiles.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
+  );
+  if (!plan) throw new Error('Rust automatic RAG recovery batch planning failed');
+  return plan.batchIndices
+    .map((index) => pendingFileIndices[index])
+    .filter((index): index is number => index !== undefined && index >= 0 && index < files.length);
 }
 
 function isCurrentFileIndexRecord(

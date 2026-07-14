@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   IndexedDbVectorStore,
   importLegacyJsonVectorStore,
@@ -352,6 +352,64 @@ describe('IndexedDbVectorStore', () => {
       }),
     ).resolves.toEqual({ deletedFilePaths: ['legacy.md'], remainingStaleCount: 0 });
     expect(await store.getIndexedFilePaths()).toEqual(['current.md']);
+  });
+
+  it('health-checks and reconciles the active store without whole-table hydration', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+    const foreign = createEntry('notes/c.md', 0, [0, 1], 'foreign');
+    foreign.metadata.embeddingProvider = 'profile:foreign';
+    foreign.metadata.embeddingModel = 'foreign-model';
+    await store.add([
+      createEntry('notes/a.md', 0, [1, 0], 'current'),
+      createEntry('notes/b.md', 0, [0, 1], 'excluded'),
+      foreign,
+    ]);
+    const inspectionDb = new Dexie(dbName);
+    inspectionDb.version(3).stores({
+      vectors:
+        'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+      fileIndex: 'filePath, updated',
+      meta: 'key',
+    });
+    const tablePrototype = Object.getPrototypeOf(inspectionDb.table('fileIndex')) as {
+      toArray: () => Promise<unknown[]>;
+    };
+    const wholeTableRead = vi
+      .spyOn(tablePrototype, 'toArray')
+      .mockRejectedValue(new Error('whole-table hydration is forbidden'));
+    try {
+      await expect(
+        store.probeActiveHealth({
+          candidateFilePaths: ['notes/not-indexed.md', 'notes/a.md'],
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+        }),
+      ).resolves.toEqual({
+        queryable: true,
+        embeddingContractMatches: true,
+        dimension: 2,
+      });
+
+      let complete = false;
+      for (let pass = 0; pass < 10 && !complete; pass++) {
+        const result = await store.reconcileBatch({
+          lifecycleKey: 'generic-lifecycle',
+          validFilePaths: ['notes/a.md'],
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+          expectedDimension: 2,
+          pageSize: 1,
+        });
+        complete = result.complete;
+      }
+      expect(complete).toBe(true);
+      expect(await store.getIndexedFilePaths()).toEqual(['notes/a.md']);
+      expect(wholeTableRead).not.toHaveBeenCalled();
+    } finally {
+      wholeTableRead.mockRestore();
+      inspectionDb.close();
+    }
   });
 
   it('close releases the database and disables accidental auto-open', async () => {

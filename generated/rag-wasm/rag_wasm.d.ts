@@ -611,14 +611,14 @@ export function plan_implicit_folder_query_paths_json(question: string, folder_p
 export function plan_index_pending_files_json(file_paths_json: string, update_paths_json: string): string;
 
 /**
- * Selects stale current-vault generations and explicit legacy databases for deletion.
+ * Selects a bounded page of inactive databases owned by the current vault.
  */
-export function plan_indexed_db_cleanup_json(database_names_json: string, active_names_json: string, current_vault_prefix: string, legacy_names_json: string): string;
+export function plan_indexed_db_bounded_cleanup_json(database_names_json: string, active_names_json: string, owned_vault_prefixes_json: string, legacy_names_json: string, max_deletions: number): string;
 
 /**
- * Selects expired records and oldest capacity overflow for bounded `IndexedDB` caches.
+ * Plans one oldest-first bounded cache retention batch from a paged access snapshot.
  */
-export function plan_indexed_db_record_retention_json(records_json: string, max_records: number, now: number, max_age_ms: number): string;
+export function plan_indexed_db_bounded_retention_json(oldest_records_json: string, total_record_count: number, max_records: number, now: number, max_age_ms: number, max_deletions: number): string;
 
 /**
  * Builds database names isolated by vault, storage contract, and embedding generation.
@@ -656,6 +656,19 @@ export function plan_prompt_library_summary_json(entries_json: string): string;
 export function plan_query_result_score_json(input_json: string): string;
 
 /**
+ * Selects the files eligible for quiet recovery and one bounded smallest/oldest-first batch.
+ */
+export function plan_rag_automatic_recovery_batch_json(files_json: string): string;
+
+/**
+ * Plans automatic recovery from a canonical snapshot of eligible vault files.
+ *
+ * Invalid payloads return an empty string so the host wrapper can fail closed without
+ * reimplementing policy in TypeScript.
+ */
+export function plan_rag_automatic_recovery_json(files_json: string, completed_fingerprint: string, attempt: number, pending_document_count: number): string;
+
+/**
  * RAG 후보 파일 판정 전에 host content read가 필요한 file index를 계산한다.
  */
 export function plan_rag_file_content_probe_indices_json(files_json: string, exclude_paths_json: string, exclude_exts_json: string): string;
@@ -679,6 +692,11 @@ export function plan_rag_indexing_eta_json(input_json: string): string;
  * RAG index status summary와 update 대상 document plan을 만든다.
  */
 export function plan_rag_status_json(input_json: string): string;
+
+/**
+ * Applies the storage health gate before reconciliation or generation deletion.
+ */
+export function plan_rag_storage_health_json(health_json: string): string;
 
 /**
  * 참조 확장 대상으로 사용할 resolved file path index를 계산한다.
@@ -736,6 +754,16 @@ export function plan_vault_link_candidates_json(source_path: string, raw_target:
 export function plan_vault_link_fallback_index_json(fallback_basename: string, basenames_json: string): string;
 
 /**
+ * Plans stale file-index paths from a bounded host page.
+ */
+export function plan_vector_file_index_batch_json(records_json: string, embedding_provider: string, embedding_model: string, max_deletions: number): string;
+
+/**
+ * Plans stale vector ids from a bounded metadata-only host page.
+ */
+export function plan_vector_record_batch_json(records_json: string, embedding_provider: string, embedding_model: string, expected_dimension: number, max_deletions: number): string;
+
+/**
  * vector store add mutation plan을 `JSON` 문자열로 만든다.
  */
 export function plan_vector_store_add_json(existing_ids_json: string, incoming_ids_json: string): string;
@@ -749,11 +777,6 @@ export function plan_vector_store_lookup_by_file_paths_json(entry_file_paths_jso
  * vector store id lookup index plan을 `JSON` 문자열로 만든다.
  */
 export function plan_vector_store_lookup_by_ids_json(entry_ids_json: string, requested_ids_json: string): string;
-
-/**
- * Selects stale vector file records for a bounded reconciliation pass.
- */
-export function plan_vector_store_reconciliation_json(records_json: string, valid_file_paths_json: string, embedding_provider: string, embedding_model: string, max_deletions: number): string;
 
 /**
  * vector store file removal mutation plan을 `JSON` 문자열로 만든다.
@@ -774,6 +797,11 @@ export function plan_vector_store_stats_json(file_paths_json: string, now: numbe
  * `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
  */
 export function prune_graph_indexes_json(config: Uint32Array, indices: Uint32Array, wire_values: string): string;
+
+/**
+ * Returns the Rust-owned delay for a recovery attempt, or zero when the session is exhausted.
+ */
+export function rag_automatic_recovery_delay_ms(attempt: number): number;
 
 /**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
@@ -1047,11 +1075,16 @@ export interface InitOutput {
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
+    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_indexed_db_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_indexed_db_record_retention_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_vector_store_reconciliation_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

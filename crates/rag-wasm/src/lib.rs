@@ -14,15 +14,24 @@ use wasm_bindgen::prelude::wasm_bindgen;
 /// IndexedDB naming, generation cleanup, and stale-record reconciliation policy.
 mod storage_lifecycle;
 pub use storage_lifecycle::{
-    create_indexed_db_record_key, plan_indexed_db_cleanup_json,
-    plan_indexed_db_record_retention_json, plan_indexed_db_storage_layout_json,
-    plan_vector_store_reconciliation_json,
+    create_indexed_db_record_key, plan_indexed_db_bounded_cleanup_json,
+    plan_indexed_db_bounded_retention_json, plan_indexed_db_storage_layout_json,
+    plan_vector_file_index_batch_json, plan_vector_record_batch_json,
+};
+
+/// Automatic RAG coverage recovery policy.
+mod rag_recovery;
+pub use rag_recovery::{
+    plan_rag_automatic_recovery_batch_json, plan_rag_automatic_recovery_json,
+    plan_rag_storage_health_json, rag_automatic_recovery_delay_ms,
 };
 
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.
 const FNV_PRIME: u32 = 0x0100_0193;
+/// Unknown formats above this size are not read in full merely to guess whether they are text.
+const MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES: u64 = 512 * 1024;
 /// 기존 `TypeScript BM25` 검색 경로의 `k1` 상수.
 const BM25_K1: f64 = 1.2;
 /// 기존 `TypeScript BM25` 검색 경로의 `b` 상수.
@@ -16043,12 +16052,58 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
     if file.size == 0 {
         return RagFileProbeDecision::NotIndexable("unreadable");
     }
+    if is_known_binary_extension(&rag_file_extension(file)) {
+        return RagFileProbeDecision::NotIndexable("unreadable");
+    }
     if is_known_text_extension(&rag_file_extension(file))
         || is_known_text_file_name(&file.file_name)
     {
         return RagFileProbeDecision::Indexable;
     }
+    if file.size > MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES {
+        return RagFileProbeDecision::NotIndexable("unreadable");
+    }
     RagFileProbeDecision::NeedsProbe
+}
+
+/// Formats that cannot become useful text through `Vault.cachedRead` stay out of RAG.
+fn is_known_binary_extension(extension: &str) -> bool {
+    matches!(
+        extension,
+        "pdf"
+            | "doc"
+            | "docx"
+            | "xls"
+            | "xlsx"
+            | "ppt"
+            | "pptx"
+            | "zip"
+            | "7z"
+            | "rar"
+            | "gz"
+            | "tar"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "tiff"
+            | "mp3"
+            | "mp4"
+            | "mov"
+            | "avi"
+            | "mkv"
+            | "wav"
+            | "flac"
+            | "woff"
+            | "woff2"
+            | "ttf"
+            | "otf"
+            | "wasm"
+            | "exe"
+            | "dll"
+    )
 }
 
 /// summary plan에 넘길 file type input row를 만든다.
@@ -19229,7 +19284,6 @@ mod tests {
         plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
         plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
         plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
-        plan_indexed_db_cleanup_json, plan_indexed_db_record_retention_json,
         plan_indexed_db_storage_layout_json, plan_local_evidence_scores_json,
         plan_mcp_server_candidates_json, plan_merged_retrieval_candidates,
         plan_merged_retrieval_candidates_by_entry_id, plan_query_result_score_json,
@@ -19241,12 +19295,12 @@ mod tests {
         plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
         plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
         plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
-        plan_vector_store_lookup_by_ids_json, plan_vector_store_reconciliation_json,
-        plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
-        plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
-        recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
-        sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
-        select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
+        plan_vector_store_lookup_by_ids_json, plan_vector_store_remove_file_json,
+        plan_vector_store_replace_file_json, plan_vector_store_stats_json,
+        prune_graph_indexes_json, rank_top_k_pairs, recall_at_k, recompute_centroids,
+        rewrite_graph_entity_references_json, rrf_score_or_nan, sanitize_graph_id_part,
+        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
+        select_relevant_result_indices, should_append_mcp_path_hint_rust,
         should_offer_context7_for_prompt, should_rebuild_graph_runtime_for_graph_status,
         token_frequencies_json, tokenize, validate_mcp_json,
     };
@@ -19588,6 +19642,18 @@ mod tests {
             ),
             "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}]}",
         );
+    }
+
+    #[test]
+    fn rag_file_indexability_rejects_known_binary_formats_without_content_probes() {
+        let files = r#"[{"filePath":"manual.pdf","fileName":"manual.pdf","extension":"pdf","size":8000000},{"filePath":"archive.docx","fileName":"archive.docx","extension":"docx","size":1000}]"#;
+        assert_eq!(
+            plan_rag_file_content_probe_indices_json(files, "[]", "[]"),
+            "[]"
+        );
+        let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
+        assert!(plan.contains("\"candidateIndices\":[]"));
+        assert_eq!(plan.matches("recommendationReason").count(), 2);
     }
 
     /// 민감한 설정/키 파일은 사용자가 따로 제외하지 않아도 기본 RAG 후보에서 빠져야 한다.
@@ -21929,11 +21995,11 @@ mod tests {
             "profile:local::embedding-v2",
         );
         assert!(
-            raw.contains(r#""contractVersion":3"#),
+            raw.contains(r#""contractVersion":2"#),
             "storage contract version should be explicit: {raw}"
         );
         assert!(
-            raw.contains("superpower-inside:rag-v3:"),
+            raw.contains("superpower-inside:rag-v2:"),
             "active names should be isolated behind the current contract: {raw}"
         );
         assert!(
@@ -21973,52 +22039,6 @@ mod tests {
         assert!(
             first.chars().all(|character| character.is_ascii_hexdigit()),
             "storage keys should be safe hexadecimal IndexedDB keys"
-        );
-    }
-
-    /// Cleanup must never cross a vault boundary or delete an active generation.
-    #[test]
-    fn indexed_db_cleanup_is_scoped_and_deterministic() {
-        assert_eq!(
-            plan_indexed_db_cleanup_json(
-                r#"["superpower-inside:rag-v2:vault-a:old:vectors","superpower-inside:rag-v2:vault-a:active:vectors","superpower-inside:rag-v2:vault-b:old:vectors","superpower-inside:Research:VectorStore","unrelated-db"]"#,
-                r#"["superpower-inside:rag-v2:vault-a:active:vectors"]"#,
-                "superpower-inside:rag-v2:vault-a:",
-                r#"["superpower-inside:Research:VectorStore"]"#,
-            ),
-            r#"{"deleteNames":["superpower-inside:Research:VectorStore","superpower-inside:rag-v2:vault-a:old:vectors"],"keptNames":["superpower-inside:rag-v2:vault-a:active:vectors"]}"#,
-            "cleanup should delete stale current-vault generations and explicit legacy names only"
-        );
-    }
-
-    /// Vector reconciliation removes deleted, legacy, and foreign-model records in bounded batches.
-    #[test]
-    fn vector_store_reconciliation_is_bounded_and_model_scoped() {
-        assert_eq!(
-            plan_vector_store_reconciliation_json(
-                r#"[{"filePath":"current.md","embeddingProvider":"profile:local","embeddingModel":"embedding-v2"},{"filePath":"deleted.md","embeddingProvider":"profile:local","embeddingModel":"embedding-v2"},{"filePath":"legacy.md"},{"filePath":"foreign.md","embeddingProvider":"profile:remote","embeddingModel":"embedding-v3"}]"#,
-                r#"["current.md","legacy.md","foreign.md"]"#,
-                "profile:local",
-                "embedding-v2",
-                2,
-            ),
-            r#"{"deleteFilePaths":["deleted.md","foreign.md"],"remainingStaleCount":1}"#,
-            "reconciliation should stop at the requested mutation budget"
-        );
-    }
-
-    /// Bounded caches evict expired records before the oldest capacity overflow.
-    #[test]
-    fn indexed_db_record_retention_is_planned_in_rust() {
-        assert_eq!(
-            plan_indexed_db_record_retention_json(
-                r#"[{"id":"a","updated":100},{"id":"b","updated":200},{"id":"c","updated":300},{"id":"d","updated":400}]"#,
-                2,
-                1_000.0,
-                750.0,
-            ),
-            r#"{"deleteIds":["a","b"],"retainedCount":2}"#,
-            "expired records should be removed before enforcing the capacity bound"
         );
     }
 

@@ -201,6 +201,21 @@ describe('RAGIndexingScheduler', () => {
       }),
     );
   });
+
+  it('forwards the automatic recovery mode only to the queued pending job', async () => {
+    const pending = vi.fn(() => Promise.resolve(createResult()));
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: pending,
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+
+    await scheduler.indexPending({ automaticRecovery: true });
+
+    expect(pending).toHaveBeenCalledWith(expect.objectContaining({ automaticRecovery: true }));
+  });
 });
 
 function createFile(path: string, mtime = 1): TFile {

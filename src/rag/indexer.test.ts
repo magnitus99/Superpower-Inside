@@ -582,6 +582,31 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(finalProgress?.completedFileOverheadDurationsMs.length).toBeGreaterThan(0);
   });
 
+  it('limits automatic recovery to one Rust-planned background batch', async () => {
+    const contents = new Map<string, string>();
+    for (let index = 0; index < 35; index++) {
+      contents.set(`notes/${String(index).padStart(2, '0')}.md`, `note ${index}`);
+    }
+    contents.set('notes/large.md', 'x'.repeat(600_000));
+    const store = new MemoryVectorStore();
+    const indexer = new VaultIndexer(
+      createVault(contents),
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    const result = await indexer.indexPending({ automaticRecovery: true });
+
+    expect(result.indexed).toBe(32);
+    expect(result.documents).toHaveLength(32);
+    expect(result.documents).not.toContain('notes/large.md');
+  });
+
   it('emits full reindex plan progress before clearing existing vectors', async () => {
     const file = createFile('a.md', 1000, 120);
     const vault = createVault(new Map([[file.path, 'alpha\n\nbravo']]));

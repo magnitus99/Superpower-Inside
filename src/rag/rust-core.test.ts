@@ -51,7 +51,6 @@ import {
   planGraphRagMarkdownFilePathsRust,
   planIndexPendingFilesRust,
   createIndexedDbRecordKeyRust,
-  planIndexedDbCleanupRust,
   planIndexedDbStorageLayoutRust,
   planVectorStoreAddRust,
   planVectorStoreLookupByFilePathsRust,
@@ -59,7 +58,6 @@ import {
   planVectorStoreRemoveFileRust,
   planVectorStoreReplaceFileRust,
   planVectorStoreStatsRust,
-  planVectorStoreReconciliationRust,
   planGraphPruneRust,
   parseMentionCandidatesRust,
   planEntityResolutionRust,
@@ -102,6 +100,8 @@ import {
   planRagFileTypeSummaryRust,
   planRagStatusRust,
   planRagIndexingEtaRust,
+  planRagAutomaticRecoveryBatchRust,
+  planRagAutomaticRecoveryRust,
   planReferenceFileIndicesRust,
   planMergedRetrievalCandidatesByEntryIdRust,
   planMergedRetrievalCandidatesRust,
@@ -794,10 +794,51 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(layout).not.toBeNull();
-    expect(layout?.contractVersion).toBe(3);
-    expect(layout?.active.vector).toMatch(/^superpower-inside:rag-v3:[a-f0-9]{32}:/);
+    expect(layout?.contractVersion).toBe(2);
+    expect(layout?.active.vector).toMatch(/^superpower-inside:rag-v2:[a-f0-9]{32}:/);
     expect(layout?.active.embeddingCache).not.toBe(layout?.active.vector);
     expect(layout?.legacyNames).toContain('superpower-inside:Example:VectorStore');
+  });
+
+  it('plans order-independent automatic RAG recovery fingerprints and retry delays through Rust', () => {
+    const files = [
+      { path: 'notes/beta.md', mtime: 200, size: 20 },
+      { path: 'notes/alpha.md', mtime: 100, size: 10 },
+    ];
+    const first = planRagAutomaticRecoveryRust(files, '', 0);
+    const reordered = planRagAutomaticRecoveryRust([...files].reverse(), '', 0);
+
+    expect(first).not.toBeNull();
+    expect(reordered?.fingerprint).toBe(first?.fingerprint);
+    expect(first).toEqual(
+      expect.objectContaining({
+        requiresRecovery: true,
+        retryAllowed: true,
+        retryDelayMs: 2_000,
+        fileCount: 2,
+      }),
+    );
+    expect(planRagAutomaticRecoveryRust(files, first?.fingerprint ?? '', 0)).toEqual(
+      expect.objectContaining({ requiresRecovery: false }),
+    );
+    expect(planRagAutomaticRecoveryRust(files, '', 1)?.retryDelayMs).toBe(30_000);
+    expect(planRagAutomaticRecoveryRust(files, '', 2)?.retryDelayMs).toBe(120_000);
+    expect(planRagAutomaticRecoveryRust(files, '', 3)).toEqual(
+      expect.objectContaining({ requiresRecovery: false, retryAllowed: false }),
+    );
+    expect(planRagAutomaticRecoveryRust(files, first?.fingerprint ?? '', 0, 1)).toEqual(
+      expect.objectContaining({ requiresRecovery: true }),
+    );
+  });
+
+  it('keeps automatic recovery batches bounded and leaves large sources for explicit indexing', () => {
+    expect(
+      planRagAutomaticRecoveryBatchRust([
+        { path: 'large.md', mtime: 1, size: 600_000 },
+        { path: 'new.md', mtime: 3, size: 100 },
+        { path: 'old.md', mtime: 2, size: 200 },
+      ]),
+    ).toEqual({ eligibleIndices: [1, 2], batchIndices: [1, 2], selectedSourceBytes: 300 });
   });
 
   it('creates deterministic 128-bit namespaced IndexedDB record keys through Rust', () => {
@@ -806,33 +847,6 @@ describe('Rust WASM RAG core bridge', () => {
     expect(key).toMatch(/^[a-f0-9]{32}$/);
     expect(createIndexedDbRecordKeyRust('profile:local::embedding-v2', 'same text')).toBe(key);
     expect(createIndexedDbRecordKeyRust('profile:remote::embedding-v2', 'same text')).not.toBe(key);
-  });
-
-  it('plans scoped database cleanup and bounded vector reconciliation through Rust', () => {
-    expect(
-      planIndexedDbCleanupRust(
-        ['scope:old', 'scope:active', 'other:old', 'legacy'],
-        ['scope:active'],
-        'scope:',
-        ['legacy'],
-      ),
-    ).toEqual({
-      deleteNames: ['legacy', 'scope:old'],
-      keptNames: ['scope:active'],
-    });
-    expect(
-      planVectorStoreReconciliationRust(
-        [
-          { filePath: 'current.md', embeddingProvider: 'local', embeddingModel: 'v2' },
-          { filePath: 'deleted.md', embeddingProvider: 'local', embeddingModel: 'v2' },
-          { filePath: 'legacy.md' },
-        ],
-        ['current.md', 'legacy.md'],
-        'local',
-        'v2',
-        1,
-      ),
-    ).toEqual({ deleteFilePaths: ['deleted.md'], remainingStaleCount: 1 });
   });
 
   it('assigns ANN vectors to nearest centroids through Rust', () => {

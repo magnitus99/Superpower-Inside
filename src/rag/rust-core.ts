@@ -78,8 +78,8 @@ import {
   plan_evidence_candidate_order_json,
   plan_local_evidence_scores_json,
   plan_file_index_records_json,
-  plan_indexed_db_cleanup_json,
-  plan_indexed_db_record_retention_json,
+  plan_indexed_db_bounded_cleanup_json,
+  plan_indexed_db_bounded_retention_json,
   plan_indexed_db_storage_layout_json,
   plan_folder_mention_file_indices_json,
   plan_graph_community_replacement_delete_ids_json,
@@ -113,6 +113,10 @@ import {
   plan_rag_file_indexability_json,
   plan_rag_file_type_summary_json,
   plan_rag_indexing_eta_json,
+  plan_rag_automatic_recovery_batch_json,
+  plan_rag_automatic_recovery_json,
+  plan_rag_storage_health_json,
+  rag_automatic_recovery_delay_ms,
   plan_prompt_library_summary_json,
   plan_rag_status_json,
   plan_reference_file_indices_json,
@@ -132,7 +136,8 @@ import {
   plan_structural_heading_neighbors_json,
   plan_structural_linked_paths_json,
   plan_vector_store_add_json,
-  plan_vector_store_reconciliation_json,
+  plan_vector_file_index_batch_json,
+  plan_vector_record_batch_json,
   plan_vector_store_lookup_by_file_paths_json,
   plan_vector_store_lookup_by_ids_json,
   plan_vector_store_remove_file_json,
@@ -721,39 +726,87 @@ export interface RustVectorStoreStatsPlan {
 export interface RustIndexedDbStorageLayout {
   contractVersion: number;
   currentVaultPrefix: string;
+  ownedVaultPrefixes: string[];
   active: {
     vector: string;
     embeddingCache: string;
     bm25: string;
     graph: string;
   };
+  cleanupLegacyNames: string[];
   legacyNames: string[];
 }
 
-export interface RustIndexedDbCleanupPlan {
+export interface RustIndexedDbBoundedCleanupPlan {
   deleteNames: string[];
-  keptNames: string[];
+  remainingDeleteCount: number;
+}
+
+export interface RustIndexedDbBoundedRetentionPlan {
+  deleteIds: string[];
+  remainingWork: boolean;
+  remainingRecordCount: number;
+}
+
+export interface RustVectorFileIndexBatchInput {
+  filePath: string;
+  isEligible: boolean;
+  hasCompleteMetadata: boolean;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+}
+
+export interface RustVectorRecordBatchInput {
+  id: string;
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  dimension: number;
+  fileIndexExists: boolean;
+  metadataComplete: boolean;
+  contentHash?: string;
+  fileContentHash?: string;
+  updated: number;
+  fileUpdated?: number;
+}
+
+export interface RustRagStorageHealthInput {
+  coverageChecked: boolean;
+  pendingDocumentCount: number;
+  embeddingContractMatches: boolean;
+  completionFingerprintMatches: boolean;
+  activeStoreQueryable: boolean;
+  reconciliationComplete: boolean;
+}
+
+export interface RustRagStorageHealthPlan {
+  canReconcile: boolean;
+  canDeleteStaleGenerations: boolean;
+}
+
+export interface RustRagAutomaticRecoveryFileInput {
+  path: string;
+  mtime: number;
+  size: number;
+}
+
+export interface RustRagAutomaticRecoveryPlan {
+  fingerprint: string;
+  requiresRecovery: boolean;
+  shouldRecordCompletion: boolean;
+  retryAllowed: boolean;
+  retryDelayMs: number;
+  fileCount: number;
+}
+
+export interface RustRagAutomaticRecoveryBatchPlan {
+  eligibleIndices: number[];
+  batchIndices: number[];
+  selectedSourceBytes: number;
 }
 
 export interface RustIndexedDbRetentionRecord {
   id: string;
   updated: number;
-}
-
-export interface RustIndexedDbRetentionPlan {
-  deleteIds: string[];
-  retainedCount: number;
-}
-
-export interface RustVectorStoreReconciliationRecord {
-  filePath: string;
-  embeddingProvider?: string;
-  embeddingModel?: string;
-}
-
-export interface RustVectorStoreReconciliationPlan {
-  deleteFilePaths: string[];
-  remainingStaleCount: number;
 }
 
 export type RustRagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
@@ -2868,6 +2921,74 @@ export function planIndexedDbStorageLayoutRust(
   }
 }
 
+export function planRagAutomaticRecoveryRust(
+  files: readonly RustRagAutomaticRecoveryFileInput[],
+  completedFingerprint: string,
+  attempt: number,
+  pendingDocumentCount = 0,
+): RustRagAutomaticRecoveryPlan | null {
+  if (
+    !files.every(isRagAutomaticRecoveryFileInput) ||
+    !isStringValue(completedFingerprint) ||
+    !isValidNonNegativeInteger(attempt) ||
+    !isValidNonNegativeInteger(pendingDocumentCount) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_rag_automatic_recovery_json(
+      JSON.stringify(files),
+      completedFingerprint,
+      attempt,
+      pendingDocumentCount,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isRagAutomaticRecoveryPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRagAutomaticRecoveryBatchRust(
+  files: readonly RustRagAutomaticRecoveryFileInput[],
+): RustRagAutomaticRecoveryBatchPlan | null {
+  if (!files.every(isRagAutomaticRecoveryFileInput) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_rag_automatic_recovery_batch_json(JSON.stringify(files));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isRagAutomaticRecoveryBatchPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRagStorageHealthRust(
+  input: RustRagStorageHealthInput,
+): RustRagStorageHealthPlan | null {
+  if (!isRagStorageHealthInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_rag_storage_health_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isRagStorageHealthPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function ragAutomaticRecoveryDelayMsRust(attempt: number): number | null {
+  if (!isValidNonNegativeInteger(attempt) || !ensureRustCore()) return null;
+  try {
+    const delayMs = rag_automatic_recovery_delay_ms(attempt);
+    return isValidNonNegativeInteger(delayMs) ? delayMs : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createIndexedDbRecordKeyRust(namespace: string, value: string): string | null {
   if (!isStringValue(namespace) || namespace.trim().length === 0 || !ensureRustCore()) {
     return null;
@@ -2880,50 +3001,49 @@ export function createIndexedDbRecordKeyRust(namespace: string, value: string): 
   }
 }
 
-export function planIndexedDbCleanupRust(
+export function planIndexedDbBoundedCleanupRust(
   databaseNames: readonly string[],
   activeNames: readonly string[],
-  currentVaultPrefix: string,
+  ownedVaultPrefixes: readonly string[],
   legacyNames: readonly string[],
-): RustIndexedDbCleanupPlan | null {
+  maxDeletions: number,
+): RustIndexedDbBoundedCleanupPlan | null {
   if (
     !databaseNames.every(isStringValue) ||
     !activeNames.every(isStringValue) ||
-    !isStringValue(currentVaultPrefix) ||
-    currentVaultPrefix.length === 0 ||
+    !ownedVaultPrefixes.every((value) => isStringValue(value) && value.length > 0) ||
     !legacyNames.every(isStringValue) ||
+    !isValidNonNegativeInteger(maxDeletions) ||
     !ensureRustCore()
   ) {
     return null;
   }
   try {
-    const raw = plan_indexed_db_cleanup_json(
+    const raw = plan_indexed_db_bounded_cleanup_json(
       JSON.stringify(databaseNames),
       JSON.stringify(activeNames),
-      currentVaultPrefix,
+      JSON.stringify(ownedVaultPrefixes),
       JSON.stringify(legacyNames),
+      maxDeletions,
     );
-    if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isIndexedDbCleanupPlan(parsed) ? parsed : null;
+    return isIndexedDbBoundedCleanupPlan(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-export function planIndexedDbRecordRetentionRust(
+export function planIndexedDbBoundedRetentionRust(
   records: readonly RustIndexedDbRetentionRecord[],
+  totalRecordCount: number,
   maxRecords: number,
   now: number,
   maxAgeMs: number,
-): RustIndexedDbRetentionPlan | null {
+  maxDeletions: number,
+): RustIndexedDbBoundedRetentionPlan | null {
   if (
-    !records.every(
-      (record) =>
-        isStringValue(record.id) && record.id.length > 0 && Number.isFinite(record.updated),
-    ) ||
-    !Number.isSafeInteger(maxRecords) ||
-    maxRecords < 0 ||
+    !records.every(isIndexedDbRetentionRecord) ||
+    ![totalRecordCount, maxRecords, maxDeletions].every(isValidNonNegativeInteger) ||
     !Number.isFinite(now) ||
     !Number.isFinite(maxAgeMs) ||
     maxAgeMs < 0 ||
@@ -2932,51 +3052,82 @@ export function planIndexedDbRecordRetentionRust(
     return null;
   }
   try {
-    const raw = plan_indexed_db_record_retention_json(
+    const raw = plan_indexed_db_bounded_retention_json(
       JSON.stringify(records),
+      totalRecordCount,
       maxRecords,
       now,
       maxAgeMs,
+      maxDeletions,
     );
-    if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isIndexedDbRetentionPlan(parsed) ? parsed : null;
+    return isIndexedDbBoundedRetentionPlan(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-export function planVectorStoreReconciliationRust(
-  records: readonly RustVectorStoreReconciliationRecord[],
-  validFilePaths: readonly string[],
+export function planVectorFileIndexBatchRust(
+  records: readonly RustVectorFileIndexBatchInput[],
   embeddingProvider: string,
   embeddingModel: string,
   maxDeletions: number,
-): RustVectorStoreReconciliationPlan | null {
+): string[] | null {
   if (
-    !records.every(isVectorStoreReconciliationRecord) ||
-    !validFilePaths.every(isStringValue) ||
-    !isStringValue(embeddingProvider) ||
-    embeddingProvider.length === 0 ||
-    !isStringValue(embeddingModel) ||
-    embeddingModel.length === 0 ||
-    !Number.isSafeInteger(maxDeletions) ||
-    maxDeletions < 0 ||
+    !records.every(isVectorFileIndexBatchInput) ||
+    ![embeddingProvider, embeddingModel].every((value) => value.trim().length > 0) ||
+    !isValidNonNegativeInteger(maxDeletions) ||
     !ensureRustCore()
   ) {
     return null;
   }
   try {
-    const raw = plan_vector_store_reconciliation_json(
-      JSON.stringify(records),
-      JSON.stringify(validFilePaths),
-      embeddingProvider,
-      embeddingModel,
-      maxDeletions,
+    const parsed: unknown = JSON.parse(
+      plan_vector_file_index_batch_json(
+        JSON.stringify(records),
+        embeddingProvider,
+        embeddingModel,
+        maxDeletions,
+      ),
     );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return isVectorStoreReconciliationPlan(parsed) ? parsed : null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const paths = (parsed as { deleteFilePaths?: unknown }).deleteFilePaths;
+    return Array.isArray(paths) && paths.every(isStringValue) ? paths : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planVectorRecordBatchRust(
+  records: readonly RustVectorRecordBatchInput[],
+  embeddingProvider: string,
+  embeddingModel: string,
+  expectedDimension: number,
+  maxDeletions: number,
+): string[] | null {
+  if (
+    !records.every(isVectorRecordBatchInput) ||
+    ![embeddingProvider, embeddingModel].every((value) => value.trim().length > 0) ||
+    !isValidNonNegativeInteger(expectedDimension) ||
+    expectedDimension === 0 ||
+    !isValidNonNegativeInteger(maxDeletions) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_vector_record_batch_json(
+        JSON.stringify(records),
+        embeddingProvider,
+        embeddingModel,
+        expectedDimension,
+        maxDeletions,
+      ),
+    );
+    if (!parsed || typeof parsed !== 'object') return null;
+    const ids = (parsed as { deleteIds?: unknown }).deleteIds;
+    return Array.isArray(ids) && ids.every(isStringValue) ? ids : null;
   } catch {
     return null;
   }
@@ -7031,55 +7182,127 @@ function isIndexedDbStorageLayout(value: unknown): value is RustIndexedDbStorage
   return (
     isValidNonNegativeInteger(layout.contractVersion) &&
     isStringValue(layout.currentVaultPrefix) &&
+    Array.isArray(layout.ownedVaultPrefixes) &&
+    layout.ownedVaultPrefixes.every(isStringValue) &&
     !!active &&
     isStringValue(active.vector) &&
     isStringValue(active.embeddingCache) &&
     isStringValue(active.bm25) &&
     isStringValue(active.graph) &&
+    Array.isArray(layout.cleanupLegacyNames) &&
+    layout.cleanupLegacyNames.every(isStringValue) &&
     Array.isArray(layout.legacyNames) &&
     layout.legacyNames.every(isStringValue)
   );
 }
 
-function isIndexedDbCleanupPlan(value: unknown): value is RustIndexedDbCleanupPlan {
+function isRagStorageHealthInput(value: RustRagStorageHealthInput): boolean {
+  return (
+    typeof value.coverageChecked === 'boolean' &&
+    isValidNonNegativeInteger(value.pendingDocumentCount) &&
+    typeof value.embeddingContractMatches === 'boolean' &&
+    typeof value.completionFingerprintMatches === 'boolean' &&
+    typeof value.activeStoreQueryable === 'boolean' &&
+    typeof value.reconciliationComplete === 'boolean'
+  );
+}
+
+function isRagStorageHealthPlan(value: unknown): value is RustRagStorageHealthPlan {
   if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustIndexedDbCleanupPlan>;
+  const plan = value as Partial<RustRagStorageHealthPlan>;
+  return (
+    typeof plan.canReconcile === 'boolean' && typeof plan.canDeleteStaleGenerations === 'boolean'
+  );
+}
+
+function isIndexedDbBoundedCleanupPlan(value: unknown): value is RustIndexedDbBoundedCleanupPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustIndexedDbBoundedCleanupPlan>;
   return (
     Array.isArray(plan.deleteNames) &&
     plan.deleteNames.every(isStringValue) &&
-    Array.isArray(plan.keptNames) &&
-    plan.keptNames.every(isStringValue)
+    isValidNonNegativeInteger(plan.remainingDeleteCount)
   );
 }
 
-function isIndexedDbRetentionPlan(value: unknown): value is RustIndexedDbRetentionPlan {
+function isIndexedDbRetentionRecord(value: RustIndexedDbRetentionRecord): boolean {
+  return isStringValue(value.id) && value.id.length > 0 && Number.isFinite(value.updated);
+}
+
+function isIndexedDbBoundedRetentionPlan(
+  value: unknown,
+): value is RustIndexedDbBoundedRetentionPlan {
   if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustIndexedDbRetentionPlan>;
+  const plan = value as Partial<RustIndexedDbBoundedRetentionPlan>;
   return (
     Array.isArray(plan.deleteIds) &&
     plan.deleteIds.every(isStringValue) &&
-    isValidNonNegativeInteger(plan.retainedCount)
+    typeof plan.remainingWork === 'boolean' &&
+    isValidNonNegativeInteger(plan.remainingRecordCount)
   );
 }
 
-function isVectorStoreReconciliationRecord(value: RustVectorStoreReconciliationRecord): boolean {
+function isVectorFileIndexBatchInput(value: RustVectorFileIndexBatchInput): boolean {
   return (
     isStringValue(value.filePath) &&
     value.filePath.length > 0 &&
+    typeof value.isEligible === 'boolean' &&
+    typeof value.hasCompleteMetadata === 'boolean' &&
     (value.embeddingProvider === undefined || isStringValue(value.embeddingProvider)) &&
     (value.embeddingModel === undefined || isStringValue(value.embeddingModel))
   );
 }
 
-function isVectorStoreReconciliationPlan(
-  value: unknown,
-): value is RustVectorStoreReconciliationPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustVectorStoreReconciliationPlan>;
+function isVectorRecordBatchInput(value: RustVectorRecordBatchInput): boolean {
   return (
-    Array.isArray(plan.deleteFilePaths) &&
-    plan.deleteFilePaths.every(isStringValue) &&
-    isValidNonNegativeInteger(plan.remainingStaleCount)
+    isStringValue(value.id) &&
+    value.id.length > 0 &&
+    (value.embeddingProvider === undefined || isStringValue(value.embeddingProvider)) &&
+    (value.embeddingModel === undefined || isStringValue(value.embeddingModel)) &&
+    isValidNonNegativeInteger(value.dimension) &&
+    typeof value.fileIndexExists === 'boolean' &&
+    typeof value.metadataComplete === 'boolean' &&
+    (value.contentHash === undefined || isStringValue(value.contentHash)) &&
+    (value.fileContentHash === undefined || isStringValue(value.fileContentHash)) &&
+    Number.isFinite(value.updated) &&
+    (value.fileUpdated === undefined || Number.isFinite(value.fileUpdated))
+  );
+}
+
+function isRagAutomaticRecoveryFileInput(value: RustRagAutomaticRecoveryFileInput): boolean {
+  return (
+    isStringValue(value.path) &&
+    value.path.trim().length > 0 &&
+    isValidNonNegativeInteger(value.mtime) &&
+    isValidNonNegativeInteger(value.size)
+  );
+}
+
+function isRagAutomaticRecoveryPlan(value: unknown): value is RustRagAutomaticRecoveryPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRagAutomaticRecoveryPlan>;
+  return (
+    isStringValue(plan.fingerprint) &&
+    /^[a-f0-9]{32}$/.test(plan.fingerprint) &&
+    typeof plan.requiresRecovery === 'boolean' &&
+    typeof plan.shouldRecordCompletion === 'boolean' &&
+    typeof plan.retryAllowed === 'boolean' &&
+    isValidNonNegativeInteger(plan.retryDelayMs) &&
+    isValidNonNegativeInteger(plan.fileCount)
+  );
+}
+
+function isRagAutomaticRecoveryBatchPlan(
+  value: unknown,
+): value is RustRagAutomaticRecoveryBatchPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustRagAutomaticRecoveryBatchPlan>;
+  return (
+    Array.isArray(plan.eligibleIndices) &&
+    plan.eligibleIndices.every(isValidNonNegativeInteger) &&
+    Array.isArray(plan.batchIndices) &&
+    plan.batchIndices.every(isValidNonNegativeInteger) &&
+    isValidNonNegativeInteger(plan.selectedSourceBytes)
   );
 }
 

@@ -1,6 +1,6 @@
 import Dexie from 'dexie';
 import {
-  planIndexedDbCleanupRust,
+  planIndexedDbBoundedCleanupRust,
   planIndexedDbStorageLayoutRust,
   type RustIndexedDbStorageLayout,
 } from './rust-core';
@@ -17,6 +17,12 @@ export interface IndexedDbCleanupResult {
   deletedNames: string[];
   blockedNames: string[];
   failedNames: string[];
+  remainingDeleteCount: number;
+}
+
+export interface IndexedDbCleanupOptions {
+  maxDeletions?: number;
+  preserveEmbeddingCache?: boolean;
 }
 
 export function createRagStorageLayout(input: {
@@ -39,40 +45,24 @@ export function createRagStorageLayout(input: {
 
 export async function cleanupStaleIndexedDbGenerations(
   layout: RagStorageLayout,
+  options: IndexedDbCleanupOptions = {},
   host: IndexedDbLifecycleHost = browserIndexedDbLifecycleHost,
-): Promise<IndexedDbCleanupResult> {
-  return executeIndexedDbCleanup(layout, host, true);
-}
-
-export async function deleteRagIndexedDbGenerations(
-  layout: RagStorageLayout,
-  host: IndexedDbLifecycleHost = browserIndexedDbLifecycleHost,
-): Promise<IndexedDbCleanupResult> {
-  return executeIndexedDbCleanup(layout, host, false);
-}
-
-async function executeIndexedDbCleanup(
-  layout: RagStorageLayout,
-  host: IndexedDbLifecycleHost,
-  preserveActive: boolean,
 ): Promise<IndexedDbCleanupResult> {
   const databaseNames = await host.listDatabaseNames();
-  const activeNames = preserveActive ? Object.values(layout.active) : [];
-  const plan = planIndexedDbCleanupRust(
+  const preserveEmbeddingCache = options.preserveEmbeddingCache ?? true;
+  const activeNames = [layout.active.vector, layout.active.bm25, layout.active.graph];
+  if (preserveEmbeddingCache) activeNames.push(layout.active.embeddingCache);
+  const plan = planIndexedDbBoundedCleanupRust(
     databaseNames,
     activeNames,
-    layout.currentVaultPrefix,
-    layout.legacyNames,
+    layout.ownedVaultPrefixes,
+    layout.cleanupLegacyNames,
+    Math.max(0, Math.floor(options.maxDeletions ?? 1)),
   );
   if (!plan) {
-    throw new Error('Rust IndexedDB cleanup planning failed');
+    throw new Error('Rust bounded IndexedDB cleanup planning failed');
   }
-
-  const result: IndexedDbCleanupResult = {
-    deletedNames: [],
-    blockedNames: [],
-    failedNames: [],
-  };
+  const result = createEmptyCleanupResult(plan.remainingDeleteCount);
   for (const name of plan.deleteNames) {
     const status = await host.deleteDatabase(name);
     if (status === 'deleted') result.deletedNames.push(name);
@@ -81,6 +71,42 @@ async function executeIndexedDbCleanup(
     await yieldToHost();
   }
   return result;
+}
+
+export async function deleteRagIndexedDbGenerations(
+  layout: RagStorageLayout,
+  host: IndexedDbLifecycleHost = browserIndexedDbLifecycleHost,
+): Promise<IndexedDbCleanupResult> {
+  const databaseNames = await host.listDatabaseNames();
+  const plan = planIndexedDbBoundedCleanupRust(
+    databaseNames,
+    [],
+    layout.ownedVaultPrefixes,
+    layout.legacyNames,
+    databaseNames.length,
+  );
+  if (!plan) {
+    throw new Error('Rust full IndexedDB cleanup planning failed');
+  }
+
+  const result = createEmptyCleanupResult(plan.remainingDeleteCount);
+  for (const name of plan.deleteNames) {
+    const status = await host.deleteDatabase(name);
+    if (status === 'deleted') result.deletedNames.push(name);
+    else if (status === 'blocked') result.blockedNames.push(name);
+    else result.failedNames.push(name);
+    await yieldToHost();
+  }
+  return result;
+}
+
+function createEmptyCleanupResult(remainingDeleteCount: number): IndexedDbCleanupResult {
+  return {
+    deletedNames: [],
+    blockedNames: [],
+    failedNames: [],
+    remainingDeleteCount,
+  };
 }
 
 const browserIndexedDbLifecycleHost: IndexedDbLifecycleHost = {

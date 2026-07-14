@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CachedEmbeddingProvider,
@@ -400,6 +401,82 @@ describe('CachedEmbeddingProvider', () => {
     } finally {
       first.close();
     }
+  });
+
+  it('refreshes cache access on reads and prunes expired entries in bounded pages', async () => {
+    const dbName = `EmbeddingCacheAccess-${crypto.randomUUID()}`;
+    let now = 0;
+    const first = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([1, 0]),
+      'profile:remote::access-model',
+      {
+        dbName,
+        maxPersistentEntries: 10,
+        maxPersistentAgeMs: 1_500,
+        pruneEveryWrites: 100,
+        pruneBatchSize: 1,
+        now: () => now,
+      },
+    );
+    await first.embed('active');
+    await first.embed('stale');
+    first.close();
+
+    now = 1_000;
+    const second = new CachedEmbeddingProvider(
+      createStaticEmbeddingProvider([9, 9]),
+      'profile:remote::access-model',
+      {
+        dbName,
+        maxPersistentEntries: 10,
+        maxPersistentAgeMs: 1_500,
+        pruneEveryWrites: 100,
+        pruneBatchSize: 1,
+        now: () => now,
+      },
+    );
+    await expect(second.embed('active')).resolves.toEqual([1, 0]);
+    now = 2_000;
+    const inspectionDb = new Dexie(dbName);
+    inspectionDb.version(2).stores({ embeddings: 'id, updated', access: 'id, updated' });
+    const tablePrototype = Object.getPrototypeOf(inspectionDb.table('access')) as {
+      toArray: () => Promise<unknown[]>;
+    };
+    const wholeTableRead = vi
+      .spyOn(tablePrototype, 'toArray')
+      .mockRejectedValue(new Error('whole-table access hydration is forbidden'));
+    try {
+      await expect(second.prunePersistentCacheBatch()).resolves.toEqual({
+        deleted: 1,
+        remainingWork: true,
+      });
+      await expect(second.prunePersistentCacheBatch()).resolves.toEqual({
+        deleted: 0,
+        remainingWork: false,
+      });
+      expect(wholeTableRead).not.toHaveBeenCalled();
+    } finally {
+      wholeTableRead.mockRestore();
+      inspectionDb.close();
+    }
+    second.close();
+
+    let misses = 0;
+    const third = new CachedEmbeddingProvider(
+      {
+        embed: () => {
+          misses += 1;
+          return Promise.resolve([0, 1]);
+        },
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [0, 1])),
+      },
+      'profile:remote::access-model',
+      { dbName, now: () => now },
+    );
+    await expect(third.embed('active')).resolves.toEqual([1, 0]);
+    await expect(third.embed('stale')).resolves.toEqual([0, 1]);
+    expect(misses).toBe(1);
+    await third.deleteDatabase();
   });
 
   it('can keep a bounded memory cache without opening IndexedDB and closes its provider', async () => {

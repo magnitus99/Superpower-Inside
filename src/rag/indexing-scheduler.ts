@@ -17,6 +17,10 @@ export interface RagIndexingSchedulerProgress extends RagIndexingProgressSnapsho
   eta: RustRagIndexingEtaPlan | null;
 }
 
+export interface RagPendingIndexingOptions {
+  automaticRecovery?: boolean;
+}
+
 interface SchedulerOperations {
   debounceMs: number;
   maxDirtyFiles?: number;
@@ -41,7 +45,12 @@ type QueueJob =
       resolve: (removed: number) => void;
       reject: (error: unknown) => void;
     }
-  | { kind: 'pending'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void }
+  | {
+      kind: 'pending';
+      options: RagPendingIndexingOptions;
+      resolve: (result: IndexingResult) => void;
+      reject: (error: unknown) => void;
+    }
   | { kind: 'all'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void };
 
 export interface RagDirtySetJournalDrain {
@@ -155,10 +164,10 @@ export class RAGIndexingScheduler {
     });
   }
 
-  indexPending(): Promise<IndexingResult> {
+  indexPending(options: RagPendingIndexingOptions = {}): Promise<IndexingResult> {
     this.cancelled = false;
     return new Promise((resolve, reject) => {
-      this.enqueuePending(resolve, reject);
+      this.enqueuePending(resolve, reject, options);
       this.kick();
     });
   }
@@ -259,12 +268,13 @@ export class RAGIndexingScheduler {
   private enqueuePending(
     resolve: (result: IndexingResult) => void,
     reject: (error: unknown) => void,
+    options: RagPendingIndexingOptions = {},
   ): void {
     if (this.queue.some((job) => job.kind === 'pending' || job.kind === 'all')) {
       resolve(this.lastResult ?? createEmptyIndexingResult());
       return;
     }
-    this.queue.push({ kind: 'pending', resolve, reject });
+    this.queue.push({ kind: 'pending', options, resolve, reject });
   }
 
   private resolveSupersededIndexJobs(): void {
@@ -315,7 +325,10 @@ export class RAGIndexingScheduler {
       if (job.kind === 'pending') {
         this.phase = 'pending';
         this.emitStatus();
-        const result = await this.operations.indexPending(options);
+        const result = await this.operations.indexPending({
+          ...options,
+          automaticRecovery: job.options.automaticRecovery,
+        });
         this.lastResult = result;
         job.resolve(result);
         return;

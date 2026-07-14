@@ -2453,14 +2453,15 @@ export function plan_index_pending_files_json(file_paths_json, update_paths_json
 }
 
 /**
- * Selects stale current-vault generations and explicit legacy databases for deletion.
+ * Selects a bounded page of inactive databases owned by the current vault.
  * @param {string} database_names_json
  * @param {string} active_names_json
- * @param {string} current_vault_prefix
+ * @param {string} owned_vault_prefixes_json
  * @param {string} legacy_names_json
+ * @param {number} max_deletions
  * @returns {string}
  */
-export function plan_indexed_db_cleanup_json(database_names_json, active_names_json, current_vault_prefix, legacy_names_json) {
+export function plan_indexed_db_bounded_cleanup_json(database_names_json, active_names_json, owned_vault_prefixes_json, legacy_names_json, max_deletions) {
     let deferred5_0;
     let deferred5_1;
     try {
@@ -2468,11 +2469,11 @@ export function plan_indexed_db_cleanup_json(database_names_json, active_names_j
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(active_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(current_vault_prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr2 = passStringToWasm0(owned_vault_prefixes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
         const ptr3 = passStringToWasm0(legacy_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_indexed_db_cleanup_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+        const ret = wasm.plan_indexed_db_bounded_cleanup_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, max_deletions);
         deferred5_0 = ret[0];
         deferred5_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -2482,20 +2483,22 @@ export function plan_indexed_db_cleanup_json(database_names_json, active_names_j
 }
 
 /**
- * Selects expired records and oldest capacity overflow for bounded `IndexedDB` caches.
- * @param {string} records_json
+ * Plans one oldest-first bounded cache retention batch from a paged access snapshot.
+ * @param {string} oldest_records_json
+ * @param {number} total_record_count
  * @param {number} max_records
  * @param {number} now
  * @param {number} max_age_ms
+ * @param {number} max_deletions
  * @returns {string}
  */
-export function plan_indexed_db_record_retention_json(records_json, max_records, now, max_age_ms) {
+export function plan_indexed_db_bounded_retention_json(oldest_records_json, total_record_count, max_records, now, max_age_ms, max_deletions) {
     let deferred2_0;
     let deferred2_1;
     try {
-        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(oldest_records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_indexed_db_record_retention_json(ptr0, len0, max_records, now, max_age_ms);
+        const ret = wasm.plan_indexed_db_bounded_retention_json(ptr0, len0, total_record_count, max_records, now, max_age_ms, max_deletions);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -2673,6 +2676,54 @@ export function plan_query_result_score_json(input_json) {
 }
 
 /**
+ * Selects the files eligible for quiet recovery and one bounded smallest/oldest-first batch.
+ * @param {string} files_json
+ * @returns {string}
+ */
+export function plan_rag_automatic_recovery_batch_json(files_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(files_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_rag_automatic_recovery_batch_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Plans automatic recovery from a canonical snapshot of eligible vault files.
+ *
+ * Invalid payloads return an empty string so the host wrapper can fail closed without
+ * reimplementing policy in TypeScript.
+ * @param {string} files_json
+ * @param {string} completed_fingerprint
+ * @param {number} attempt
+ * @param {number} pending_document_count
+ * @returns {string}
+ */
+export function plan_rag_automatic_recovery_json(files_json, completed_fingerprint, attempt, pending_document_count) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(files_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(completed_fingerprint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_rag_automatic_recovery_json(ptr0, len0, ptr1, len1, attempt, pending_document_count);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * RAG 후보 파일 판정 전에 host content read가 필요한 file index를 계산한다.
  * @param {string} files_json
  * @param {string} exclude_paths_json
@@ -2782,6 +2833,26 @@ export function plan_rag_status_json(input_json) {
         const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_rag_status_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Applies the storage health gate before reconciliation or generation deletion.
+ * @param {string} health_json
+ * @returns {string}
+ */
+export function plan_rag_storage_health_json(health_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(health_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_rag_storage_health_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -3057,6 +3128,61 @@ export function plan_vault_link_fallback_index_json(fallback_basename, basenames
 }
 
 /**
+ * Plans stale file-index paths from a bounded host page.
+ * @param {string} records_json
+ * @param {string} embedding_provider
+ * @param {string} embedding_model
+ * @param {number} max_deletions
+ * @returns {string}
+ */
+export function plan_vector_file_index_batch_json(records_json, embedding_provider, embedding_model, max_deletions) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(embedding_provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(embedding_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_vector_file_index_batch_json(ptr0, len0, ptr1, len1, ptr2, len2, max_deletions);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * Plans stale vector ids from a bounded metadata-only host page.
+ * @param {string} records_json
+ * @param {string} embedding_provider
+ * @param {string} embedding_model
+ * @param {number} expected_dimension
+ * @param {number} max_deletions
+ * @returns {string}
+ */
+export function plan_vector_record_batch_json(records_json, embedding_provider, embedding_model, expected_dimension, max_deletions) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(embedding_provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(embedding_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_vector_record_batch_json(ptr0, len0, ptr1, len1, ptr2, len2, expected_dimension, max_deletions);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * vector store add mutation plan을 `JSON` 문자열로 만든다.
  * @param {string} existing_ids_json
  * @param {string} incoming_ids_json
@@ -3122,36 +3248,6 @@ export function plan_vector_store_lookup_by_ids_json(entry_ids_json, requested_i
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Selects stale vector file records for a bounded reconciliation pass.
- * @param {string} records_json
- * @param {string} valid_file_paths_json
- * @param {string} embedding_provider
- * @param {string} embedding_model
- * @param {number} max_deletions
- * @returns {string}
- */
-export function plan_vector_store_reconciliation_json(records_json, valid_file_paths_json, embedding_provider, embedding_model, max_deletions) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const ptr0 = passStringToWasm0(records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(valid_file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(embedding_provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(embedding_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_vector_store_reconciliation_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, max_deletions);
-        deferred5_0 = ret[0];
-        deferred5_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
     }
 }
 
@@ -3247,6 +3343,16 @@ export function prune_graph_indexes_json(config, indices, wire_values) {
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
+}
+
+/**
+ * Returns the Rust-owned delay for a recovery attempt, or zero when the session is exhausted.
+ * @param {number} attempt
+ * @returns {number}
+ */
+export function rag_automatic_recovery_delay_ms(attempt) {
+    const ret = wasm.rag_automatic_recovery_delay_ms(attempt);
+    return ret >>> 0;
 }
 
 /**
