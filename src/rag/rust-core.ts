@@ -76,6 +76,7 @@ import {
   plan_index_pending_files_json,
   plan_claim_evidence_scores_json,
   plan_evidence_candidate_order_json,
+  plan_empty_file_index_record_json,
   plan_local_evidence_scores_json,
   plan_file_index_records_json,
   plan_indexed_db_bounded_cleanup_json,
@@ -2936,6 +2937,53 @@ export function planFileIndexRecordsRust(
   }
 }
 
+export function planEmptyFileIndexRecordRust(
+  entry: RustFileIndexEntryInput,
+  updated: number,
+): RustFileIndexRecordPlan | null {
+  const { sourceMtime, sourceSize, contentHash, indexedAt, embeddingProvider, embeddingModel } =
+    entry;
+  if (
+    !Number.isFinite(updated) ||
+    !isValidFileIndexEntryInput(entry) ||
+    sourceMtime === undefined ||
+    sourceSize === undefined ||
+    contentHash === undefined ||
+    indexedAt === undefined ||
+    embeddingProvider === undefined ||
+    embeddingModel === undefined
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+
+  try {
+    const raw = plan_empty_file_index_record_json(
+      JSON.stringify([
+        {
+          filePath: entry.filePath,
+          sourceMtime,
+          sourceSize,
+          contentHash,
+          indexedAt,
+          embeddingProvider,
+          embeddingModel,
+        },
+      ]),
+      updated,
+    );
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    const records: readonly unknown[] = Array.isArray(parsed)
+      ? (parsed as readonly unknown[])
+      : [];
+    const record: unknown = records[0];
+    return isFileIndexRecordPlan(record) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
 export function planIndexedDbStorageLayoutRust(
   pluginId: string,
   vaultIdentity: string,
@@ -3665,9 +3713,6 @@ function ragFileIndexStateFallback(
   inputEmbeddingModel: string,
 ): { status: RustRagDocumentStatus; reason: string } {
   if (!record) {
-    return { status: 'missing', reason: reasons.missing };
-  }
-  if (record.vectorCount === 0) {
     return { status: 'missing', reason: reasons.missing };
   }
   if (isLegacyRagRecordFallback(record)) {

@@ -46,6 +46,7 @@ import { IndexedDbBM25Index } from './src/rag/bm25';
 import {
   VaultIndexer,
   registerModifyEvent,
+  registerCreateEvent,
   registerDeleteEvent,
   registerRenameEvent,
   isIndexingCancelledError,
@@ -258,6 +259,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private mcpConnectionRunId = 0;
   private mcpRetryTimers = new Map<number, () => void>();
   private modifyCleanup: (() => void) | null = null;
+  private createCleanup: (() => void) | null = null;
   private deleteCleanup: (() => void) | null = null;
   private renameCleanup: (() => void) | null = null;
   private autoUpdateTimer: number | null = null;
@@ -373,7 +375,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // 설정 탭
     this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
     this.startDeferredStartupTasks();
-    void this.writeAgentDiagnosticsSnapshot('startup');
+    if (this.settings.agentDiagnostics.enabled) {
+      void this.agentDiagnosticsService?.writeNow('startup');
+    }
     this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
     await this.recordAgentDiagnosticsBreadcrumb({
       phase: 'plugin.lifecycle',
@@ -535,8 +539,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async writeAgentDiagnosticsSnapshot(reason: string): Promise<void> {
     const service = this.getOrCreateAgentDiagnosticsService();
-    await service.setEnabled(true);
-    await service.writeNow(reason);
+    const wasRunning = service.isRunning();
+    if (!wasRunning) {
+      await service.setEnabled(true);
+    }
+    try {
+      await service.writeNow(reason);
+    } finally {
+      if (!wasRunning) {
+        await service.setEnabled(false);
+      }
+    }
   }
 
   async clearAgentDiagnosticsDetailedLogging(): Promise<void> {
@@ -560,7 +573,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async configureAgentDiagnosticsService(): Promise<void> {
     const service = this.getOrCreateAgentDiagnosticsService();
-    await service.setEnabled(true);
+    await service.setEnabled(this.settings.agentDiagnostics.enabled);
   }
 
   private getOrCreateAgentDiagnosticsService(): AgentDiagnosticsService {
@@ -1378,9 +1391,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       migratedRag.performanceTuningMode = normalizeRagPerformanceTuningMode(
         migratedRag.performanceTuningMode,
       );
-      if (typeof migratedRag.performanceGuardEnabled !== 'boolean') {
-        migratedRag.performanceGuardEnabled = true;
-      }
+      migratedRag.performanceGuardEnabled = true;
       if (typeof migratedRag.maxEmbeddingBatchSize !== 'number') {
         migratedRag.maxEmbeddingBatchSize = migratedRag.embeddingProvider === 'ollama' ? 1 : 32;
       }
@@ -1730,8 +1741,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
       window.clearTimeout(this.statsDebounceTimer);
     }
     this.statsDebounceTimer = window.setTimeout(() => {
-      void this.computeAndEmitRagStats();
+      this.refreshRagStatusInBackground();
     }, 500);
+  }
+
+  private async canRunRagBackgroundWork(): Promise<boolean> {
+    const guard = this.ragPerformanceGuard;
+    if (!guard) return true;
+    await guard.measureEventLoopLag();
+    return guard.getState().mode !== 'paused';
+  }
+
+  private async waitForRagBackgroundCapacity(): Promise<void> {
+    const guard = this.ragPerformanceGuard;
+    if (!guard) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      return;
+    }
+    while (true) {
+      await guard.measureEventLoopLag();
+      const state = guard.getState();
+      if (state.mode !== 'paused') return;
+      await new Promise<void>((resolve) =>
+        window.setTimeout(resolve, Math.max(50, Math.min(state.remainingPauseMs ?? 1_000, 1_000))),
+      );
+    }
   }
 
   private async maybeAutoSyncGraphRag(): Promise<void> {
@@ -1740,6 +1774,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (!this.graphRagIndexingRunner) return;
     if (this.isGraphRagIndexing()) return;
     if (Date.now() < this.graphAutoSyncNextAllowedAt) return;
+    if (!(await this.canRunRagBackgroundWork())) return;
     await this.computeAndEmitGraphRagStatus();
     if (this.graphRagStatus?.state !== 'stale' && this.graphRagStatus?.state !== 'partial') {
       this.resetGraphAutoSyncBackoff();
@@ -1821,11 +1856,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async prepareRagForChat(): Promise<boolean> {
-    const initialized = this.ragEngine ? true : await this.ensureRagRuntimeInitialized();
-    if (initialized && this.settings.rag.autoUpdateEnabled && !this.isRagIndexing()) {
-      void this.autoIndex();
-    }
-    return initialized;
+    return this.ragEngine ? true : this.ensureRagRuntimeInitialized();
   }
 
   private getRagIndexerNotInitializedReason(): string {
@@ -2157,6 +2188,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       this.embeddingProvider = embeddingProvider;
 
+      const performanceSettings = resolveRagPerformanceSettings(rag);
+      this.ragPerformanceGuard = new PerformanceGuard({
+        enabled: true,
+        initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
+        initialYieldMs: performanceSettings.indexingYieldMs,
+        slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
+        slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
+        onPolicyError: (message) => {
+          this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
+            source: 'rag.performance-guard',
+            data: { message },
+          });
+          void this.recordAgentDiagnosticsBreadcrumb({
+            phase: 'rag.performance-guard',
+            action: 'error',
+            detail: message,
+          });
+        },
+      });
+
       // Vector store
       const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
       await this.runRagRuntimeInitStep('legacy-vector-import', () =>
@@ -2320,25 +2371,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.getLogger(),
       );
 
-      const performanceSettings = resolveRagPerformanceSettings(rag);
-      this.ragPerformanceGuard = new PerformanceGuard({
-        enabled: performanceSettings.enabled,
-        initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
-        initialYieldMs: performanceSettings.indexingYieldMs,
-        slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
-        slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
-        onPolicyError: (message) => {
-          this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
-            source: 'rag.performance-guard',
-            data: { message },
-          });
-          void this.recordAgentDiagnosticsBreadcrumb({
-            phase: 'rag.performance-guard',
-            action: 'error',
-            detail: message,
-          });
-        },
-      });
       this.ragIndexingScheduler = new RAGIndexingScheduler({
         debounceMs: 500,
         indexFile: (file, options) => this.vaultIndexer!.indexFile(file, options),
@@ -2389,37 +2421,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           force
             ? (this.ragPerformanceGuard?.forceResume() ?? null)
             : (this.ragPerformanceGuard?.resume() ?? null),
-        onStatusChange: (status) => {
-          this.ragIndexingStatus = status;
-          if (status.running) {
-            void this.recordAgentDiagnosticsBreadcrumb({
-              phase: 'rag.indexing',
-              action: 'mark',
-              detail: 'operation',
-              data: {
-                phase: status.phase,
-                queuedFiles: status.queuedFiles,
-                currentFile: status.progress?.currentFilePath ?? null,
-                completedFiles: status.progress?.completedFiles ?? null,
-                totalFiles: status.progress?.totalFiles ?? null,
-              },
-            });
-          }
-          this.getLogger().debug('RAG indexing scheduler status changed.', {
-            source: 'rag.indexing',
-            data: {
-              running: status.running,
-              phase: status.phase,
-              queuedFiles: status.queuedFiles,
-              lastIndexed: status.lastResult?.indexed ?? null,
-              lastVectors: status.lastResult?.vectors ?? null,
-            },
-          });
-          this.refreshBus?.emit('rag', {
-            status: status.running ? 'partial' : 'success',
-            detail: this.formatRagIndexingStatus(status),
-          });
-        },
+        onStatusChange: (status) => this.handleRagIndexingStatusChange(status),
       });
 
       const scheduler = this.ragIndexingScheduler;
@@ -2495,7 +2497,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
                 cleanupStaleIndexedDbGenerations(storageLayout, {
                   preserveEmbeddingCache: embeddingProvider.persistentCacheEnabled,
                 }),
-              yieldToHost: () => new Promise((resolve) => window.setTimeout(resolve, 0)),
+              yieldToHost: () => this.waitForRagBackgroundCapacity(),
             },
             fingerprint,
             force,
@@ -2509,7 +2511,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       // Auto-update timer
       this.setupAutoUpdate();
       this.setupGraphRagAutoSync();
-      // RAG 상태 자동 갱신 타이머 (30초 간격)
+      // 초기 상태 계산 이후에는 vault 이벤트가 상태 갱신을 유도한다.
       this.setupRagStatusTimer();
       this.registerRAGEvents();
       await this.automaticRagRecovery.start();
@@ -2591,6 +2593,42 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
     }
     return t('ragIdle');
+  }
+
+  private handleRagIndexingStatusChange(status: RagIndexingSchedulerStatus): void {
+    const wasRunning = this.ragIndexingStatus?.running === true;
+    this.ragIndexingStatus = status;
+    if (status.running) {
+      void this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.indexing',
+        action: 'mark',
+        detail: 'operation',
+        data: {
+          phase: status.phase,
+          queuedFiles: status.queuedFiles,
+          currentFile: status.progress?.currentFilePath ?? null,
+          completedFiles: status.progress?.completedFiles ?? null,
+          totalFiles: status.progress?.totalFiles ?? null,
+        },
+      });
+    }
+    this.getLogger().debug('RAG indexing scheduler status changed.', {
+      source: 'rag.indexing',
+      data: {
+        running: status.running,
+        phase: status.phase,
+        queuedFiles: status.queuedFiles,
+        lastIndexed: status.lastResult?.indexed ?? null,
+        lastVectors: status.lastResult?.vectors ?? null,
+      },
+    });
+    this.refreshBus?.emit('rag', {
+      status: status.running ? 'partial' : 'success',
+      detail: this.formatRagIndexingStatus(status),
+    });
+    if (wasRunning && !status.running) {
+      this.debouncedRefreshStats();
+    }
   }
 
   private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
@@ -2697,6 +2735,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private unregisterRAGEvents(): void {
+    if (this.createCleanup) {
+      this.createCleanup();
+      this.createCleanup = null;
+    }
     if (this.modifyCleanup) {
       this.modifyCleanup();
       this.modifyCleanup = null;
@@ -2742,6 +2784,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       () => {
         this.debouncedRefreshStats();
       },
+    );
+    this.createCleanup = registerCreateEvent(
+      this.app.vault,
+      {
+        indexFile: (file: TFile) => {
+          this.getLogger().debug('Scheduling RAG indexing for created file.', {
+            source: 'rag.events',
+            data: { path: file.path },
+          });
+          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
+          return Promise.resolve();
+        },
+      },
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+      () => this.debouncedRefreshStats(),
     );
 
     if (!this.vectorStore || !this.ragIndexingScheduler) return;
@@ -2795,7 +2853,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     );
   }
 
-  /** RAG 상태 계산을 30초 간격으로 자동 갱신하고 RefreshBus로 발행 */
+  /** RAG 상태를 초기화 시 한 번 계산하고 이후 vault 이벤트로 갱신한다. */
   private setupRagStatusTimer(): void {
     if (this.ragStatusTimer) {
       window.clearInterval(this.ragStatusTimer);
@@ -2804,28 +2862,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (!shouldRunRagStatusBackgroundRefresh(this.settings.rag)) {
       return;
     }
-    // 초기 1회 즉시 실행
     this.refreshRagStatusInBackground();
-    // 30초 간격 갱신
-    this.ragStatusTimer = window.setInterval(() => {
-      this.refreshRagStatusInBackground();
-    }, 30_000);
   }
 
   private refreshRagStatusInBackground(): void {
-    void Promise.allSettled([
+    void this.runRagStatusBackgroundRefresh();
+  }
+
+  private async runRagStatusBackgroundRefresh(): Promise<void> {
+    if (!(await this.canRunRagBackgroundWork())) return;
+    const results = await Promise.allSettled([
       this.computeAndEmitRagStats(),
       this.computeAndEmitGraphRagStatus(),
-    ]).then((results) => {
-      for (const result of results) {
-        if (result.status === 'rejected') {
-          this.getLogger().warn('Background RAG status refresh failed.', {
-            source: 'rag.status',
-            error: result.reason,
-          });
-        }
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.getLogger().warn('Background RAG status refresh failed.', {
+          source: 'rag.status',
+          error: result.reason,
+        });
       }
-    });
+    }
   }
 
   private async computeAndEmitGraphRagStatus(): Promise<void> {
@@ -2922,6 +2979,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return;
     }
     this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
+    await this.ragPerformanceGuard?.measureEventLoopLag();
     if (this.isRagIndexing()) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdateAlreadyRunning');
       this.getLogger().debug('Auto RAG indexing skipped because indexing is already running.', {

@@ -15,6 +15,7 @@ import { createContentHash } from './hash';
 import {
   chunkMarkdownRust,
   chunkPlainTextRust,
+  planEmptyFileIndexRecordRust,
   planIndexPendingFilesRust,
   planRagAutomaticRecoveryBatchRust,
 } from './rust-core';
@@ -709,7 +710,22 @@ export class VaultIndexer {
         : chunkPlainText(content, this.ragConfig.chunkSize, this.ragConfig.overlap);
     throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
-      await this.vectorStore.removeByFilePath(file.path);
+      const emptyRecord = planEmptyFileIndexRecordRust(
+        {
+          filePath: file.path,
+          sourceMtime: file.stat.mtime,
+          sourceSize: file.stat.size,
+          contentHash: sourceHash,
+          indexedAt,
+          embeddingProvider: this.ragConfig.embeddingProvider,
+          embeddingModel: this.ragConfig.embeddingModel,
+        },
+        indexedAt,
+      );
+      if (!emptyRecord) {
+        throw new Error('Rust empty-file index record planning failed');
+      }
+      await this.vectorStore.markFileIndexedWithoutVectors(emptyRecord);
       if (this.bm25Index) {
         this.bm25Index.removeDocumentsBySource(file.path);
         await this.bm25Index.persist();
@@ -1029,7 +1045,6 @@ function isCurrentFileIndexRecord(
   ragConfig: RAGConfig,
 ): boolean {
   return (
-    record.vectorCount > 0 &&
     record.hasCompleteMetadata === true &&
     record.sourceMtime === file.stat.mtime &&
     record.sourceSize === file.stat.size &&
@@ -1063,6 +1078,24 @@ async function shouldIndexRagFile(
   );
 }
 
+/** 새 파일 이벤트를 등록하여 자동 인덱싱합니다. */
+export function registerCreateEvent(
+  vault: Vault,
+  indexer: { indexFile(file: TFile): Promise<unknown> },
+  excludePaths: string[],
+  excludeExts: string[],
+  onComplete?: (file: TFile) => void,
+): () => void {
+  const ref = vault.on('create', async (file) => {
+    if (!isTFileLike(file)) return;
+    const target = file;
+    if (!(await shouldIndexRagFile(vault, target, excludePaths, excludeExts))) return;
+    await indexer.indexFile(target);
+    onComplete?.(target);
+  });
+  return () => vault.offref(ref);
+}
+
 /** 파일 변경 이벤트를 등록하여 자동 재인덱싱합니다. */
 export function registerModifyEvent(
   vault: Vault,
@@ -1079,10 +1112,8 @@ export function registerModifyEvent(
     const f = file;
     if (!shouldConsiderRagPath(f.path, excludePaths, excludeExts)) return;
     if (!(await isRagIndexableFile(vault, f))) {
-      const removed = await indexer.removeByFilePath?.(f.path);
-      if (removed && removed > 0) {
-        onComplete?.(f);
-      }
+      await indexer.removeByFilePath?.(f.path);
+      onComplete?.(f);
       return;
     }
     await indexer.indexFile(f);
@@ -1103,10 +1134,8 @@ export function registerDeleteEvent(
     if (!('path' in file)) return;
     const filePath = (file as { path: string }).path;
     if (!shouldConsiderRagPath(filePath, excludePaths, excludeExts)) return;
-    const removed = await vectorStore.removeByFilePath(filePath);
-    if (removed > 0) {
-      onComplete?.(filePath);
-    }
+    await vectorStore.removeByFilePath(filePath);
+    onComplete?.(filePath);
   });
   return () => vault.offref(ref);
 }
@@ -1128,8 +1157,8 @@ export function registerRenameEvent(
     const newIsIndexable = await shouldIndexRagFile(vault, f, excludePaths, excludeExts);
     let changed = false;
     if (oldWasIndexable) {
-      const removed = await vectorStore.removeByFilePath(oldPath);
-      changed = removed > 0;
+      await vectorStore.removeByFilePath(oldPath);
+      changed = true;
     }
     if (newIsIndexable) {
       await indexer.indexFile(f);

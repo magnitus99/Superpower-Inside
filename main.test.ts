@@ -122,7 +122,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.initRAG).toHaveBeenCalledOnce();
   });
 
-  it('채팅 진입은 RAG를 준비하고 pending indexing을 조용히 시작한다', async () => {
+  it('채팅 진입은 RAG runtime만 준비하고 자동 인덱싱 주기를 우회하지 않는다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
       settings: { rag: { autoUpdateEnabled: boolean } };
@@ -138,7 +138,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     await plugin.prepareRagForChat();
 
     expect(plugin.ensureRagRuntimeInitialized).toHaveBeenCalledOnce();
-    expect(plugin.autoIndex).toHaveBeenCalledOnce();
+    expect(plugin.autoIndex).not.toHaveBeenCalled();
   });
 
   it('채팅은 vector 검색 엔진이 준비되면 선택적 BM25 초기화를 기다리지 않는다', async () => {
@@ -307,6 +307,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     await plugin.initRAG();
 
     expect(app.vault.on).toHaveBeenCalledWith('modify', expect.any(Function));
+    expect(app.vault.on).toHaveBeenCalledWith('create', expect.any(Function));
     expect(app.vault.on).toHaveBeenCalledWith('delete', expect.any(Function));
     expect(app.vault.on).toHaveBeenCalledWith('rename', expect.any(Function));
   });
@@ -401,8 +402,92 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     await plugin.initRAG();
     await plugin.initRAG();
 
-    expect(app.vault.offref).toHaveBeenCalledTimes(3);
-    expect(app.vault.on).toHaveBeenCalledTimes(6);
+    expect(app.vault.offref).toHaveBeenCalledTimes(4);
+    expect(app.vault.on).toHaveBeenCalledTimes(8);
+  });
+
+  it('RAG 상태는 초기화 시 한 번 갱신하고 반복 타이머를 만들지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const refresh = vi.fn();
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      settings: typeof DEFAULT_SETTINGS;
+      ragStatusTimer: number | null;
+      refreshRagStatusInBackground: typeof refresh;
+    };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      rag: { ...DEFAULT_SETTINGS.rag, autoUpdateEnabled: true },
+    };
+    plugin.ragStatusTimer = null;
+    plugin.refreshRagStatusInBackground = refresh;
+
+    try {
+      (
+        plugin as unknown as {
+          setupRagStatusTimer(): void;
+        }
+      ).setupRagStatusTimer();
+
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it('RAG 인덱싱 완료 시 전체 상태를 한 번 다시 계산한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = { debug: vi.fn() };
+    const refreshBus = { emit: vi.fn() };
+    const debouncedRefreshStats = vi.fn();
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      ragIndexingStatus: {
+        running: boolean;
+        phase: 'idle' | 'indexing';
+        queuedFiles: number;
+        progress: null;
+        lastResult: null;
+        pausedUntil: null;
+      } | null;
+      refreshBus: typeof refreshBus;
+      getLogger: () => typeof logger;
+      debouncedRefreshStats: typeof debouncedRefreshStats;
+    };
+    plugin.ragIndexingStatus = {
+      running: true,
+      phase: 'indexing',
+      queuedFiles: 0,
+      progress: null,
+      lastResult: null,
+      pausedUntil: null,
+    };
+    plugin.refreshBus = refreshBus;
+    plugin.getLogger = () => logger;
+    plugin.debouncedRefreshStats = debouncedRefreshStats;
+
+    (
+      plugin as unknown as {
+        handleRagIndexingStatusChange(status: {
+          running: boolean;
+          phase: 'idle';
+          queuedFiles: number;
+          progress: null;
+          lastResult: null;
+          pausedUntil: null;
+        }): void;
+      }
+    ).handleRagIndexingStatusChange({
+      running: false,
+      phase: 'idle',
+      queuedFiles: 0,
+      progress: null,
+      lastResult: null,
+      pausedUntil: null,
+    });
+
+    expect(debouncedRefreshStats).toHaveBeenCalledOnce();
   });
 
   it('GraphRAG 변경분 동기화는 실행 상태 재계산 전에 stale 파일 목록을 보존한다', async () => {
@@ -732,6 +817,28 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect('ontologyEnabled' in plugin.settings.rag).toBe(false);
   });
 
+  it('설정 로드 시 레거시 성능 보호 비활성 값을 활성 상태로 정규화한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp({
+      localSettings: {
+        ...DEFAULT_SETTINGS,
+        rag: { ...DEFAULT_SETTINGS.rag, performanceGuardEnabled: false },
+      },
+    });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: typeof DEFAULT_SETTINGS;
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.rag.performanceGuardEnabled).toBe(true);
+  });
+
   it('기존 설정 로드 시 WSL PATH 조회 옵션 기본값을 보강한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -967,7 +1074,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 });
 
 describe('SuperpowerInsidePlugin agent diagnostics view', () => {
-  it('starts background file diagnostics even when detailed diagnostics are disabled', async () => {
+  it('keeps background file diagnostics stopped when diagnostics are disabled', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const service = {
@@ -991,7 +1098,7 @@ describe('SuperpowerInsidePlugin agent diagnostics view', () => {
       }
     ).configureAgentDiagnosticsService();
 
-    expect(service.setEnabled).toHaveBeenCalledWith(true);
+    expect(service.setEnabled).toHaveBeenCalledWith(false);
   });
 
   it('applies the diagnostics safe mode flag before startup work can re-enter RAG', async () => {

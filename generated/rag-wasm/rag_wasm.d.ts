@@ -456,6 +456,11 @@ export function plan_context_sources_json(results_json: string, verifications_js
 export function plan_diverse_result_indices_json(candidates_json: string, top_k: number): string;
 
 /**
+ * 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
+ */
+export function plan_empty_file_index_record_json(entry_json: string, updated: number): string;
+
+/**
  * `GraphRAG` entity resolution 후보 점수에서 최종 merge plan을 계산한다.
  */
 export function plan_entity_resolution_json(input_json: string): string;
@@ -994,6 +999,7 @@ export interface InitOutput {
     readonly plan_context_graph_verification_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_context_sources_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_diverse_result_indices_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_empty_file_index_record_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_entity_resolution_json: (a: number, b: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];

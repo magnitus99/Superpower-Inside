@@ -213,6 +213,30 @@ describe('calculateRagStatus', () => {
     expect(status.totalVectors).toBe(2);
     expect(store.getEntriesCalls).toBe(0);
   });
+
+  it('완료 메타데이터가 있는 zero-vector 파일은 건강한 상태로 유지한다', async () => {
+    const vault = createVault([createFile('empty.md', 1000, 1)]);
+    const store = new MetadataOnlyStore([
+      {
+        filePath: 'empty.md',
+        sourceMtime: 1000,
+        sourceSize: 1,
+        contentHash: createContentHash('empty.md content'),
+        indexedAt: 1000,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+        hasCompleteMetadata: true,
+        vectorCount: 0,
+        updated: 1000,
+      },
+    ]);
+
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
+
+    expect(status.healthyDocuments).toBe(1);
+    expect(status.missingDocuments).toBe(0);
+    expect(status.updateRequiredDocuments).toEqual([]);
+  });
 });
 
 function createFile(path: string, mtime: number, size: number): TFile {

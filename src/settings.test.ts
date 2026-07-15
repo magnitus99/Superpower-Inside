@@ -498,7 +498,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     });
   });
 
-  it('수동 성능 설정은 저장된 override 값을 그대로 사용한다', () => {
+  it('수동 성능 설정에서도 보호 장치는 항상 활성화한다', () => {
     expect(
       resolveRagPerformanceSettings({
         ...DEFAULT_SETTINGS.rag,
@@ -510,7 +510,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         slowBatchThresholdMs: 4200,
       }),
     ).toEqual({
-      enabled: false,
+      enabled: true,
       maxEmbeddingBatchSize: 7,
       indexingYieldMs: 80,
       slowEventLoopThresholdMs: 220,

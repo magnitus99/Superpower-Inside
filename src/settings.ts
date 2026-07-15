@@ -4845,15 +4845,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (this.plugin.settings.rag.performanceTuningMode === 'custom') {
       new Setting(section)
-        .setName(t('settingsAuto189'))
-        .setDesc(t('settingsAuto190'))
-        .addToggle((toggle) =>
-          toggle.setValue(this.plugin.settings.rag.performanceGuardEnabled).onChange((value) => {
-            this.plugin.settings.rag.performanceGuardEnabled = value;
-            this.debouncedRagSave();
-          }),
-        );
-      new Setting(section)
         .setName(t('settingsAuto191'))
         .setDesc(t('settingsAuto192'))
         .addText((text) => {

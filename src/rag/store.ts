@@ -103,6 +103,7 @@ export interface VectorSearchResult {
 export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
+  markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void>;
   removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]>;
   search(request: VectorSearchRequest): Promise<VectorSearchResult[]>;
@@ -582,6 +583,19 @@ export class IndexedDbVectorStore implements VectorStore {
         ...this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath),
         ...copyEntries(entries),
       ];
+    }
+    this.invalidateRuntimeIndex();
+  }
+
+  async markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void> {
+    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+      await this.db.vectors.where('filePath').equals(record.filePath).delete();
+      await this.db.fileIndex.put({ ...record, vectorCount: 0 });
+    });
+    if (this.entriesCache) {
+      this.entriesCache = this.entriesCache.filter(
+        (entry) => entry.metadata.filePath !== record.filePath,
+      );
     }
     this.invalidateRuntimeIndex();
   }
@@ -1171,6 +1185,7 @@ async function statVaultPath(adapter: DataAdapter, path: string) {
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
 export class MemoryVectorStore implements VectorStore {
   private entries: VectorEntry[];
+  private readonly emptyFileRecords = new Map<string, FileIndexRecord>();
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
   private ivfRuntimeIndexes = new BoundedLruCache<string, RustIvfRuntimeIndex>(
     DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT,
@@ -1182,6 +1197,9 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
+    for (const entry of newEntries) {
+      this.emptyFileRecords.delete(entry.metadata.filePath);
+    }
     this.entries = applyVectorStoreMutationPlan(
       this.entries,
       newEntries,
@@ -1196,6 +1214,7 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
+    this.emptyFileRecords.delete(filePath);
     this.entries = applyVectorStoreMutationPlan(
       this.entries,
       entries,
@@ -1211,6 +1230,7 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   removeByFilePath(filePath: string): Promise<number> {
+    this.emptyFileRecords.delete(filePath);
     const plan = planVectorStoreRemoveFileRust(
       this.entries.map((entry) => entry.metadata.filePath),
       filePath,
@@ -1222,6 +1242,11 @@ export class MemoryVectorStore implements VectorStore {
     });
     this.invalidateRuntimeIndex();
     return Promise.resolve(removed);
+  }
+
+  async markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void> {
+    await this.removeByFilePath(record.filePath);
+    this.emptyFileRecords.set(record.filePath, { ...record, vectorCount: 0 });
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {
@@ -1243,6 +1268,7 @@ export class MemoryVectorStore implements VectorStore {
 
   async clear(): Promise<void> {
     this.entries = [];
+    this.emptyFileRecords.clear();
     this.invalidateRuntimeIndex();
     return Promise.resolve();
   }
@@ -1261,17 +1287,28 @@ export class MemoryVectorStore implements VectorStore {
 
   getStats(): Promise<VectorStoreStats> {
     const stats = vectorStoreStatsFromRust(this.entries);
+    const emptyRecords = [...this.emptyFileRecords.values()];
     return Promise.resolve({
       totalEntries: stats.totalEntries,
-      totalFiles: stats.totalFiles,
+      totalFiles: stats.totalFiles + emptyRecords.length,
       totalVectors: stats.totalVectors,
-      averageVectorsPerFile: stats.averageVectorsPerFile,
-      lastUpdated: stats.lastUpdated,
+      averageVectorsPerFile:
+        stats.totalFiles + emptyRecords.length > 0
+          ? stats.totalVectors / (stats.totalFiles + emptyRecords.length)
+          : 0,
+      lastUpdated: emptyRecords.reduce<number | null>(
+        (latest, record) => (latest === null ? record.updated : Math.max(latest, record.updated)),
+        stats.lastUpdated,
+      ),
     });
   }
 
   getIndexedFilePaths(): Promise<string[]> {
-    return Promise.resolve(vectorStoreStatsFromRust(this.entries).indexedFilePaths);
+    return Promise.resolve(
+      [...vectorStoreStatsFromRust(this.entries).indexedFilePaths, ...this.emptyFileRecords.keys()]
+        .filter((path, index, paths) => paths.indexOf(path) === index)
+        .sort(),
+    );
   }
 
   async getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null> {
@@ -1281,7 +1318,12 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   getFileIndexRecords(): Promise<FileIndexRecord[]> {
-    return Promise.resolve(fileIndexRecordsFromRust(this.entries, Date.now()));
+    const records = fileIndexRecordsFromRust(this.entries, Date.now());
+    const vectorPaths = new Set(records.map((record) => record.filePath));
+    return Promise.resolve([
+      ...records,
+      ...[...this.emptyFileRecords.values()].filter((record) => !vectorPaths.has(record.filePath)),
+    ]);
   }
 
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]> {

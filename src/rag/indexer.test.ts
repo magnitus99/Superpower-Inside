@@ -177,9 +177,10 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
   it('applies adaptive batch sizes inside one job without skipping or duplicating texts', async () => {
     const file = createFile('adaptive.md', 1000, 4000);
-    const content = Array.from({ length: 24 }, (_, index) => `line-${index}-${'x'.repeat(24)}`).join(
-      '\n',
-    );
+    const content = Array.from(
+      { length: 24 },
+      (_, index) => `line-${index}-${'x'.repeat(24)}`,
+    ).join('\n');
     const vault = createVault(new Map([[file.path, content]]));
     const store = new MemoryVectorStore();
     const batchSizes: number[] = [];
@@ -322,7 +323,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(await store.getEntries()).toEqual([]);
   });
 
-  it('빈 파일은 기존 벡터를 제거한다', async () => {
+  it('빈 파일은 기존 벡터를 제거하고 완료 메타데이터를 보존한다', async () => {
     const file = createFile('empty.md', 1000, 0);
     const vault = createVault(new Map([[file.path, '']]));
     const store = new MemoryVectorStore();
@@ -343,6 +344,20 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
     expect(result).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
     expect(await store.getEntries()).toEqual([]);
+    expect(await store.getFileIndexRecord(file.path)).toEqual(
+      expect.objectContaining({
+        filePath: file.path,
+        sourceMtime: file.stat.mtime,
+        sourceSize: file.stat.size,
+        contentHash: createContentHash(''),
+        hasCompleteMetadata: true,
+        vectorCount: 0,
+      }),
+    );
+
+    const secondResult = await indexer.indexFile(file);
+
+    expect(secondResult).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
   });
 
   it('modify 이벤트에서 파일이 비워지면 기존 벡터를 제거한다', async () => {

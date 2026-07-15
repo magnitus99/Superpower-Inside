@@ -1737,6 +1737,27 @@ export function plan_diverse_result_indices_json(candidates_json, top_k) {
 }
 
 /**
+ * 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
+ * @param {string} entry_json
+ * @param {number} updated
+ * @returns {string}
+ */
+export function plan_empty_file_index_record_json(entry_json, updated) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(entry_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_empty_file_index_record_json(ptr0, len0, updated);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * `GraphRAG` entity resolution 후보 점수에서 최종 merge plan을 계산한다.
  * @param {string} input_json
  * @returns {string}

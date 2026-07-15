@@ -431,6 +431,41 @@ describe('VectorStore contract', () => {
     await expectVectorStoreContract(createStore());
   });
 
+  it.each([
+    ['MemoryVectorStore', () => new MemoryVectorStore()],
+    ['IndexedDbVectorStore', () => createStore()],
+  ])('%s는 벡터가 없는 완료 파일 메타데이터를 보존한다', async (_name, create) => {
+    const store = create();
+    await store.markFileIndexedWithoutVectors({
+      filePath: 'empty.md',
+      sourceMtime: 1000,
+      sourceSize: 0,
+      contentHash: '811c9dc5',
+      indexedAt: 1200,
+      embeddingProvider: 'openai',
+      embeddingModel: 'text-embedding-3-small',
+      hasCompleteMetadata: true,
+      updated: 1200,
+    });
+
+    expect(await store.getFileIndexRecord('empty.md')).toEqual({
+      filePath: 'empty.md',
+      sourceMtime: 1000,
+      sourceSize: 0,
+      contentHash: '811c9dc5',
+      indexedAt: 1200,
+      embeddingProvider: 'openai',
+      embeddingModel: 'text-embedding-3-small',
+      hasCompleteMetadata: true,
+      vectorCount: 0,
+      updated: 1200,
+    });
+    expect(await store.getIndexedFilePaths()).toEqual(['empty.md']);
+    expect(await store.getStats()).toEqual(
+      expect.objectContaining({ totalFiles: 1, totalVectors: 0 }),
+    );
+  });
+
   it('MemoryVectorStore 파일 인덱스 메타는 Rust plan으로 complete/incomplete를 구분한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

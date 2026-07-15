@@ -1900,6 +1900,56 @@ pub fn plan_file_index_records_json(entries_json: &str, updated: f64) -> String 
     serialize_file_index_records_json(&records)
 }
 
+/// 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_empty_file_index_record_json(entry_json: &str, updated: f64) -> String {
+    let Some(mut entries) = parse_file_index_entries_json(entry_json) else {
+        return String::new();
+    };
+    let Some(entry) = entries.pop().filter(|_| entries.is_empty()) else {
+        return String::new();
+    };
+    let (
+        Some(source_mtime),
+        Some(source_size),
+        Some(content_hash),
+        Some(indexed_at),
+        Some(embedding_provider),
+        Some(embedding_model),
+    ) = (
+        entry.source_mtime,
+        entry.source_size,
+        entry.content_hash,
+        entry.indexed_at,
+        entry.embedding_provider,
+        entry.embedding_model,
+    )
+    else {
+        return String::new();
+    };
+    if entry.file_path.trim().is_empty()
+        || content_hash.trim().is_empty()
+        || embedding_provider.trim().is_empty()
+        || embedding_model.trim().is_empty()
+        || !updated.is_finite()
+    {
+        return String::new();
+    }
+    serialize_file_index_records_json(&[FileIndexRecordPlan {
+        file_path: entry.file_path,
+        source_mtime: Some(source_mtime),
+        source_size: Some(source_size),
+        content_hash: Some(content_hash),
+        indexed_at: Some(indexed_at),
+        embedding_provider: Some(embedding_provider),
+        embedding_model: Some(embedding_model),
+        has_complete_metadata: true,
+        vector_count: 0,
+        updated,
+    }])
+}
+
 /// vector store add mutation plan을 `JSON` 문자열로 만든다.
 #[must_use]
 #[wasm_bindgen]
@@ -8156,9 +8206,6 @@ fn rag_file_index_state(
     let Some(record) = record else {
         return (RagDocumentStatus::Missing, input.reasons.missing.clone());
     };
-    if record.vector_count == 0 {
-        return (RagDocumentStatus::Missing, input.reasons.missing.clone());
-    }
     if record.is_legacy_record() {
         return (RagDocumentStatus::Unknown, input.reasons.legacy.clone());
     }
@@ -19273,38 +19320,38 @@ mod tests {
         plan_chat_messages_json, plan_chat_meta_json, plan_chat_save_metadata_json,
         plan_claim_evidence_scores_json, plan_context_budget_append_json,
         plan_context_graph_verification_json, plan_context_sources_json,
-        plan_diverse_result_indices_json, plan_entity_resolution_json,
-        plan_evidence_candidate_order_json, plan_file_index_records_json,
-        plan_folder_lexical_evidence_indices_json, plan_folder_mention_file_indices_json,
-        plan_graph_claim_entity_ids_json, plan_graph_community_replacement_delete_ids_json,
-        plan_graph_community_summary_groups_json, plan_graph_deletion_indices_json,
-        plan_graph_edge_records_json, plan_graph_entity_merge_json,
-        plan_graph_evidence_candidate_lookup_json, plan_graph_evidence_entry_candidates_json,
-        plan_graph_extraction_child_units_json, plan_graph_mention_context_json,
-        plan_graph_query_execution_json, plan_graph_query_json, plan_graph_query_response_json,
-        plan_graph_rag_markdown_file_paths_json, plan_graph_rag_run_file_selection_json,
-        plan_graph_rag_status_entry_lookups_json, plan_graph_rag_status_entry_snapshot_json,
-        plan_graph_rag_status_file_snapshot_json, plan_graph_rag_status_json,
-        plan_graph_rag_unsupported_prune_paths_json, plan_graph_relation_endpoint_indices_json,
-        plan_graph_schema_community_indices_json, plan_graph_schema_relation_indices_json,
-        plan_implicit_folder_query_paths_json, plan_index_pending_files_json,
-        plan_indexed_db_storage_layout_json, plan_local_evidence_scores_json,
-        plan_mcp_server_candidates_json, plan_merged_retrieval_candidates,
-        plan_merged_retrieval_candidates_by_entry_id, plan_query_result_score_json,
-        plan_rag_file_content_probe_indices_json, plan_rag_file_indexability_json,
-        plan_rag_file_type_summary_json, plan_rag_indexing_eta_json, plan_rag_status_json,
-        plan_reference_file_indices_json, plan_rerank_messages_json, plan_rerank_response_json,
-        plan_rerank_result_order_json, plan_source_references_json,
-        plan_source_validation_inputs_json, plan_source_validation_warnings_json,
-        plan_structural_heading_neighbors_json, plan_structural_linked_paths_json,
-        plan_vault_link_candidates_json, plan_vault_link_fallback_index_json,
-        plan_vector_store_add_json, plan_vector_store_lookup_by_file_paths_json,
-        plan_vector_store_lookup_by_ids_json, plan_vector_store_remove_file_json,
-        plan_vector_store_replace_file_json, plan_vector_store_stats_json,
-        prune_graph_indexes_json, rank_top_k_pairs, recall_at_k, recompute_centroids,
-        rewrite_graph_entity_references_json, rrf_score_or_nan, sanitize_graph_id_part,
-        score_entity_match_or_nan, score_local_evidence_pairs, select_diverse_indices,
-        select_relevant_result_indices, should_append_mcp_path_hint_rust,
+        plan_diverse_result_indices_json, plan_empty_file_index_record_json,
+        plan_entity_resolution_json, plan_evidence_candidate_order_json,
+        plan_file_index_records_json, plan_folder_lexical_evidence_indices_json,
+        plan_folder_mention_file_indices_json, plan_graph_claim_entity_ids_json,
+        plan_graph_community_replacement_delete_ids_json, plan_graph_community_summary_groups_json,
+        plan_graph_deletion_indices_json, plan_graph_edge_records_json,
+        plan_graph_entity_merge_json, plan_graph_evidence_candidate_lookup_json,
+        plan_graph_evidence_entry_candidates_json, plan_graph_extraction_child_units_json,
+        plan_graph_mention_context_json, plan_graph_query_execution_json, plan_graph_query_json,
+        plan_graph_query_response_json, plan_graph_rag_markdown_file_paths_json,
+        plan_graph_rag_run_file_selection_json, plan_graph_rag_status_entry_lookups_json,
+        plan_graph_rag_status_entry_snapshot_json, plan_graph_rag_status_file_snapshot_json,
+        plan_graph_rag_status_json, plan_graph_rag_unsupported_prune_paths_json,
+        plan_graph_relation_endpoint_indices_json, plan_graph_schema_community_indices_json,
+        plan_graph_schema_relation_indices_json, plan_implicit_folder_query_paths_json,
+        plan_index_pending_files_json, plan_indexed_db_storage_layout_json,
+        plan_local_evidence_scores_json, plan_mcp_server_candidates_json,
+        plan_merged_retrieval_candidates, plan_merged_retrieval_candidates_by_entry_id,
+        plan_query_result_score_json, plan_rag_file_content_probe_indices_json,
+        plan_rag_file_indexability_json, plan_rag_file_type_summary_json,
+        plan_rag_indexing_eta_json, plan_rag_status_json, plan_reference_file_indices_json,
+        plan_rerank_messages_json, plan_rerank_response_json, plan_rerank_result_order_json,
+        plan_source_references_json, plan_source_validation_inputs_json,
+        plan_source_validation_warnings_json, plan_structural_heading_neighbors_json,
+        plan_structural_linked_paths_json, plan_vault_link_candidates_json,
+        plan_vault_link_fallback_index_json, plan_vector_store_add_json,
+        plan_vector_store_lookup_by_file_paths_json, plan_vector_store_lookup_by_ids_json,
+        plan_vector_store_remove_file_json, plan_vector_store_replace_file_json,
+        plan_vector_store_stats_json, prune_graph_indexes_json, rank_top_k_pairs, recall_at_k,
+        recompute_centroids, rewrite_graph_entity_references_json, rrf_score_or_nan,
+        sanitize_graph_id_part, score_entity_match_or_nan, score_local_evidence_pairs,
+        select_diverse_indices, select_relevant_result_indices, should_append_mcp_path_hint_rust,
         should_offer_context7_for_prompt, should_rebuild_graph_runtime_for_graph_status,
         token_frequencies_json, tokenize, validate_mcp_json,
     };
@@ -21951,6 +21998,18 @@ mod tests {
         );
     }
 
+    /// 청크가 없는 파일은 완전한 zero-vector record로 계획한다.
+    #[test]
+    fn empty_file_index_record_is_planned_in_rust() {
+        assert_eq!(
+            plan_empty_file_index_record_json(
+                r#"[{"filePath":"empty.txt","sourceMtime":100,"sourceSize":1,"contentHash":"hash-empty","indexedAt":200,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base"}]"#,
+                201.0,
+            ),
+            r#"[{"filePath":"empty.txt","sourceMtime":100,"sourceSize":1,"contentHash":"hash-empty","indexedAt":200,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base","hasCompleteMetadata":true,"vectorCount":0,"updated":201}]"#,
+        );
+    }
+
     /// vector store mutation과 lookup source index plan은 Rust가 담당한다.
     #[test]
     fn vector_store_mutations_are_planned_in_rust() {
@@ -22054,6 +22113,17 @@ mod tests {
                 r#"{"includedFiles":[{"path":"healthy.md","mtime":100,"size":10},{"path":"missing.md","mtime":200,"size":20},{"path":"stale.md","mtime":300,"size":30},{"path":"legacy.md","mtime":400,"size":40},{"path":"embedding.md","mtime":500,"size":50}],"records":[{"filePath":"healthy.md","sourceMtime":100,"sourceSize":10,"contentHash":"healthy-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":2},{"filePath":"stale.md","sourceMtime":299,"sourceSize":30,"contentHash":"stale-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":3},{"filePath":"legacy.md","hasCompleteMetadata":false,"vectorCount":4},{"filePath":"embedding.md","sourceMtime":500,"sourceSize":50,"contentHash":"embedding-hash","indexedAt":900,"embeddingProvider":"ollama","embeddingModel":"nomic-embed-text","hasCompleteMetadata":true,"vectorCount":5}],"totalVaultFiles":7,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","reasons":{"missing":"missing reason","legacy":"legacy reason","staleFile":"stale file reason","embeddingChanged":"embedding changed reason"}}"#
             ),
             r#"{"totalDocuments":5,"healthyDocuments":1,"missingDocuments":1,"staleDocuments":2,"unknownDocuments":1,"excludedDocuments":2,"totalVectors":14,"updateRequiredDocuments":[{"path":"missing.md","status":"missing","reason":"missing reason","mtime":200,"size":20},{"path":"embedding.md","status":"stale","reason":"embedding changed reason","mtime":500,"size":50},{"path":"stale.md","status":"stale","reason":"stale file reason","mtime":300,"size":30},{"path":"legacy.md","status":"unknown","reason":"legacy reason","mtime":400,"size":40}]}"#,
+        );
+    }
+
+    /// 완전한 zero-vector record는 반복 인덱싱 없이 healthy로 유지한다.
+    #[test]
+    fn rag_status_treats_complete_empty_file_as_healthy() {
+        assert_eq!(
+            plan_rag_status_json(
+                r#"{"includedFiles":[{"path":"empty.txt","mtime":100,"size":1}],"records":[{"filePath":"empty.txt","sourceMtime":100,"sourceSize":1,"contentHash":"hash-empty","indexedAt":200,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base","hasCompleteMetadata":true,"vectorCount":0}],"totalVaultFiles":1,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base","reasons":{"missing":"missing","legacy":"legacy","staleFile":"stale","embeddingChanged":"embedding"}}"#,
+            ),
+            r#"{"totalDocuments":1,"healthyDocuments":1,"missingDocuments":0,"staleDocuments":0,"unknownDocuments":0,"excludedDocuments":0,"totalVectors":0,"updateRequiredDocuments":[]}"#,
         );
     }
 

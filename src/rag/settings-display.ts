@@ -260,7 +260,7 @@ export interface GraphRagLiveStatusPresentation {
 export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
   if (normalizeRagPerformanceTuningMode(rag.performanceTuningMode) === 'custom') {
     return {
-      enabled: rag.performanceGuardEnabled,
+      enabled: true,
       maxEmbeddingBatchSize: clampInteger(rag.maxEmbeddingBatchSize, 1, 128),
       indexingYieldMs: clampInteger(rag.indexingYieldMs, 0, 1000),
       slowEventLoopThresholdMs: clampInteger(rag.slowEventLoopThresholdMs, 16, 5000),
