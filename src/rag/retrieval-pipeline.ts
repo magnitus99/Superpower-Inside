@@ -236,18 +236,10 @@ export class BM25CandidateProvider implements CandidateProvider {
     if (!this.bm25Index.isReady) return [];
 
     const lookupLimit = request.candidateLimit * 4;
-    const scores = this.bm25Index.searchTop(request.question, lookupLimit);
-    if (scores.size === 0) return [];
+    const hits = await this.bm25Index.searchTopWithSources(request.question, lookupLimit, signal);
+    if (hits.length === 0) return [];
 
-    const hitPlan = planBm25HitLookupRust(
-      [...scores.entries()].map(([docId, score]) => ({
-        docId,
-        sourcePath: this.bm25Index.getDocumentSource(docId) ?? docId,
-        score,
-      })),
-      request.candidateLimit,
-      4,
-    );
+    const hitPlan = planBm25HitLookupRust(hits, request.candidateLimit, 4);
     if (hitPlan === null || hitPlan.hits.length === 0) return [];
 
     const foundEntries = await this.vectorStore.getEntriesByIds(hitPlan.lookupDocIds);

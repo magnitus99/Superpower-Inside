@@ -58,7 +58,7 @@ describe('Rust wrapper boundary', () => {
     const scripts = readPackageScripts();
 
     expect(scripts['wasm:build']).toBe(
-      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-graph-worker.mjs && node scripts/build-ternlight-worker.mjs',
+      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-graph-worker.mjs && node scripts/build-bm25-worker.mjs && node scripts/build-ternlight-worker.mjs',
     );
     expect(scripts.build?.startsWith('npm run wasm:build && ')).toBe(true);
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);

@@ -1,6 +1,7 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
+import { BM25WorkerRuntime, canUseBM25Worker, type BM25WorkerHit } from './bm25-worker-runtime';
 
 export interface BM25DocumentInput {
   id: string;
@@ -84,6 +85,12 @@ export class IndexedDbBM25Index {
   private readonly maxSnapshotBytes: number;
   private pendingOperations: BM25PendingOperation[];
   private nextOperationOrderValue: number;
+  private workerRuntime: BM25WorkerRuntime | null = null;
+  private workerQueue: Promise<void> = Promise.resolve();
+  private workerReady = false;
+  private workerTokenizerCurrent = false;
+  private workerTotalDocs = 0;
+  private workerFailure: Error | null = null;
 
   constructor(
     dbName = 'SuperpowerInsideBM25Index',
@@ -105,8 +112,33 @@ export class IndexedDbBM25Index {
 
   async load(): Promise<void> {
     this.runtime?.dispose();
+    this.workerRuntime?.close();
+    this.workerRuntime = null;
+    this.workerQueue = Promise.resolve();
+    this.workerFailure = null;
     const snapshot = await this.loadSnapshot();
     const raw = snapshot.raw.trim();
+    if (canUseBM25Worker()) {
+      const worker = new BM25WorkerRuntime();
+      this.workerRuntime = worker;
+      try {
+        const state = await worker.initialize(
+          this.db.name,
+          raw.length > 0 && raw.length <= this.maxSnapshotBytes ? raw : '',
+        );
+        this.applyWorkerState(state);
+        this.runtime = null;
+        this.loaded = true;
+        if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
+          await this.persistSnapshotRaw(raw);
+        }
+        return;
+      } catch (error) {
+        worker.close();
+        this.workerRuntime = null;
+        throw error;
+      }
+    }
     const snapshotRuntime =
       raw.length > 0 && raw.length <= this.maxSnapshotBytes
         ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
@@ -159,13 +191,21 @@ export class IndexedDbBM25Index {
   }
 
   async clear(): Promise<void> {
-    this.runtime?.dispose();
-    this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    if (this.workerRuntime) {
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.clear());
+      });
+    } else {
+      this.runtime?.dispose();
+      this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    }
     this.queueMutation('clear', '*');
     await this.persist();
   }
 
   async deleteDatabase(): Promise<void> {
+    this.workerRuntime?.close();
+    this.workerRuntime = null;
     this.runtime?.dispose();
     this.runtime = null;
     this.pendingOperations = [];
@@ -175,6 +215,8 @@ export class IndexedDbBM25Index {
   }
 
   close(): void {
+    this.workerRuntime?.close();
+    this.workerRuntime = null;
     this.runtime?.dispose();
     this.runtime = null;
     this.pendingOperations = [];
@@ -183,6 +225,27 @@ export class IndexedDbBM25Index {
   }
 
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
+    if (this.workerRuntime) {
+      await this.withBatch(() => {
+        this.queueMutation('clear', '*');
+        for (const document of documents) {
+          this.queueDocument(document.id, document.text, document.sourcePath ?? document.id);
+        }
+        this.batchDirty = true;
+        return Promise.resolve();
+      });
+      const workerDocuments = documents.map((document) => ({
+        id: document.id,
+        text: document.text,
+        sourcePath: document.sourcePath ?? document.id,
+      }));
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.rebuild(workerDocuments));
+      });
+      await this.workerQueue;
+      if (this.workerFailure) throw this.workerFailure;
+      return;
+    }
     await this.withBatch(async () => {
       await this.clear();
       const seenDocIds = new Set<string>();
@@ -210,17 +273,35 @@ export class IndexedDbBM25Index {
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
-    this.ensureRuntime().addDocument(docId, text, sourcePath, TOKENIZER_VERSION);
+    if (this.workerRuntime) {
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.add({ id: docId, text, sourcePath }));
+      });
+    } else {
+      this.ensureRuntime().addDocument(docId, text, sourcePath, TOKENIZER_VERSION);
+    }
     this.queueDocument(docId, text, sourcePath);
   }
 
   removeDocument(docId: string): void {
-    this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
+    if (this.workerRuntime) {
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.removeDocument(docId));
+      });
+    } else {
+      this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
+    }
     this.queueMutation('remove-doc', docId);
   }
 
   removeDocumentsBySource(sourcePath: string): void {
-    this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
+    if (this.workerRuntime) {
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.removeSource(sourcePath));
+      });
+    } else {
+      this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
+    }
     this.queueMutation('remove-source', sourcePath);
   }
 
@@ -243,16 +324,41 @@ export class IndexedDbBM25Index {
     return mappedScores;
   }
 
+  async searchTopWithSources(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<BM25WorkerHit[]> {
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+    if (normalizedLimit === 0) return [];
+    if (this.workerRuntime) {
+      await this.workerQueue;
+      if (this.workerFailure) return [];
+      return this.workerRuntime.searchTop(query, normalizedLimit, signal);
+    }
+    return [...this.searchTop(query, normalizedLimit)].map(([docId, score]) => ({
+      docId,
+      sourcePath: this.getDocumentSource(docId) ?? docId,
+      score,
+    }));
+  }
+
   get isReady(): boolean {
-    return this.loaded && (this.runtime?.isReady() ?? false);
+    return (
+      this.loaded &&
+      this.workerFailure === null &&
+      (this.workerRuntime ? this.workerReady : (this.runtime?.isReady() ?? false))
+    );
   }
 
   get isTokenizerCurrent(): boolean {
-    return this.runtime?.isTokenizerCurrent(TOKENIZER_VERSION) ?? false;
+    return this.workerRuntime
+      ? this.workerTokenizerCurrent
+      : (this.runtime?.isTokenizerCurrent(TOKENIZER_VERSION) ?? false);
   }
 
   get totalDocs(): number {
-    return this.runtime?.totalDocs() ?? 0;
+    return this.workerRuntime ? this.workerTotalDocs : (this.runtime?.totalDocs() ?? 0);
   }
 
   getDocumentSource(docId: string): string | undefined {
@@ -275,6 +381,28 @@ export class IndexedDbBM25Index {
       throw new Error('Rust BM25 runtime is unavailable');
     }
     return this.runtime;
+  }
+
+  private enqueueWorkerMutation(operation: (worker: BM25WorkerRuntime) => Promise<void>): void {
+    const worker = this.workerRuntime;
+    if (!worker) return;
+    this.workerQueue = this.workerQueue
+      .then(() => operation(worker))
+      .catch((error: unknown) => {
+        this.workerFailure = error instanceof Error ? error : new Error(String(error));
+        this.workerReady = false;
+        worker.close(this.workerFailure);
+      });
+  }
+
+  private applyWorkerState(state: {
+    ready?: boolean;
+    tokenizerCurrent?: boolean;
+    totalDocs?: number;
+  }): void {
+    this.workerReady = state.ready ?? false;
+    this.workerTokenizerCurrent = state.tokenizerCurrent ?? false;
+    this.workerTotalDocs = state.totalDocs ?? 0;
   }
 
   private async replayPersistedOperations(): Promise<void> {
