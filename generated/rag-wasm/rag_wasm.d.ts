@@ -606,9 +606,19 @@ export function plan_graph_schema_community_indices_json(community_schema_ids_js
 export function plan_graph_schema_relation_indices_json(relation_schema_ids_json: string, ontology_schema_id: string): string;
 
 /**
+ * Plans bounded retention of rebuildable `GraphRAG` jobs, responses, and circuit state.
+ */
+export function plan_graph_storage_maintenance_json(input_json: string): string;
+
+/**
  * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
  */
 export function plan_implicit_folder_query_paths_json(question: string, folder_paths_json: string): string;
+
+/**
+ * Tracks plugin-owned databases across vaults and retires generations unseen past a grace age.
+ */
+export function plan_inactive_indexed_db_cleanup_json(input_json: string): string;
 
 /**
  * indexPending이 처리할 file index와 skip count plan을 만든다.
@@ -649,6 +659,11 @@ export function plan_merged_retrieval_candidates(entry_indices: Uint32Array, sou
  * retrieval provider 후보를 `entry id`별로 병합할 numeric plan을 계산한다.
  */
 export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json: string, source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
+
+/**
+ * Plans bounded cleanup for files whose names prove that this plugin owns them.
+ */
+export function plan_plugin_owned_file_maintenance_json(input_json: string): string;
 
 /**
  * Vault prompt 생성용 summary를 `JSON` 계획 형태로 계산한다.
@@ -742,6 +757,11 @@ export function plan_source_validation_inputs_json(references_json: string, cita
  * 출처 참조 plan과 host boundary 검증 결과를 warning key plan으로 합친다.
  */
 export function plan_source_validation_warnings_json(references_json: string, verified_citation_ids_json: string, verified_paths_json: string, existing_aliases_json: string): string;
+
+/**
+ * Plans a bounded set difference between persisted source paths and current vault paths.
+ */
+export function plan_stale_index_source_paths_json(indexed_paths_json: string, valid_paths_json: string, max_deletions: number): string;
 
 /**
  * structural retrieval에서 같은 heading 주변 entry index plan을 JSON으로 반환한다.
@@ -1086,17 +1106,21 @@ export interface InitOutput {
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_graph_storage_maintenance_json: (a: number, b: number) => [number, number];
+    readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly plan_plugin_owned_file_maintenance_json: (a: number, b: number) => [number, number];
+    readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
     readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
-    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
-    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

@@ -77,6 +77,32 @@ describe('RAG IndexedDB storage lifecycle', () => {
     expect(deleteDatabase).toHaveBeenCalledWith(layout.active.embeddingCache);
   });
 
+  it('retires rebuildable BM25 and Graph stores while their features are disabled', async () => {
+    const layout = createRagStorageLayout({
+      pluginId: 'superpower-inside',
+      vaultIdentity: 'C:/Vaults/Example',
+      legacyVaultName: 'Example',
+      embeddingNamespace: 'memory-only',
+    });
+    const deleteDatabase = vi.fn(() => Promise.resolve<'deleted'>('deleted'));
+    const host: IndexedDbLifecycleHost = {
+      listDatabaseNames: vi.fn(() =>
+        Promise.resolve([layout.active.vector, layout.active.bm25, layout.active.graph]),
+      ),
+      deleteDatabase,
+    };
+
+    await cleanupStaleIndexedDbGenerations(
+      layout,
+      { maxDeletions: 4, preserveBm25: false, preserveGraph: false },
+      host,
+    );
+
+    expect(deleteDatabase).toHaveBeenCalledWith(layout.active.bm25);
+    expect(deleteDatabase).toHaveBeenCalledWith(layout.active.graph);
+    expect(deleteDatabase).not.toHaveBeenCalledWith(layout.active.vector);
+  });
+
   it('deletes active and stale current-vault generations during a full plugin reset', async () => {
     const layout = createRagStorageLayout({
       pluginId: 'superpower-inside',

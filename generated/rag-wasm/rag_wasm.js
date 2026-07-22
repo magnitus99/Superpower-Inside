@@ -2428,6 +2428,26 @@ export function plan_graph_schema_relation_indices_json(relation_schema_ids_json
 }
 
 /**
+ * Plans bounded retention of rebuildable `GraphRAG` jobs, responses, and circuit state.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_graph_storage_maintenance_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_graph_storage_maintenance_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
  * @param {string} question
  * @param {string} folder_paths_json
@@ -2447,6 +2467,26 @@ export function plan_implicit_folder_query_paths_json(question, folder_paths_jso
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Tracks plugin-owned databases across vaults and retires generations unseen past a grace age.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_inactive_indexed_db_cleanup_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_inactive_indexed_db_cleanup_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -2654,6 +2694,26 @@ export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json, sou
     var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v5;
+}
+
+/**
+ * Plans bounded cleanup for files whose names prove that this plugin owns them.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_plugin_owned_file_maintenance_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_plugin_owned_file_maintenance_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**
@@ -3070,6 +3130,30 @@ export function plan_source_validation_warnings_json(references_json, verified_c
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * Plans a bounded set difference between persisted source paths and current vault paths.
+ * @param {string} indexed_paths_json
+ * @param {string} valid_paths_json
+ * @param {number} max_deletions
+ * @returns {string}
+ */
+export function plan_stale_index_source_paths_json(indexed_paths_json, valid_paths_json, max_deletions) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(indexed_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(valid_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_stale_index_source_paths_json(ptr0, len0, ptr1, len1, max_deletions);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 

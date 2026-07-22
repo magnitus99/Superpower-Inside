@@ -23,6 +23,8 @@ export interface IndexedDbCleanupResult {
 export interface IndexedDbCleanupOptions {
   maxDeletions?: number;
   preserveEmbeddingCache?: boolean;
+  preserveBm25?: boolean;
+  preserveGraph?: boolean;
 }
 
 export function createRagStorageLayout(input: {
@@ -50,7 +52,9 @@ export async function cleanupStaleIndexedDbGenerations(
 ): Promise<IndexedDbCleanupResult> {
   const databaseNames = await host.listDatabaseNames();
   const preserveEmbeddingCache = options.preserveEmbeddingCache ?? true;
-  const activeNames = [layout.active.vector, layout.active.bm25, layout.active.graph];
+  const activeNames = [layout.active.vector];
+  if (options.preserveBm25 ?? true) activeNames.push(layout.active.bm25);
+  if (options.preserveGraph ?? true) activeNames.push(layout.active.graph);
   if (preserveEmbeddingCache) activeNames.push(layout.active.embeddingCache);
   const plan = planIndexedDbBoundedCleanupRust(
     databaseNames,

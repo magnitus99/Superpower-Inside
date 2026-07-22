@@ -1,6 +1,6 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
-import { RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
+import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
 import { BM25WorkerRuntime, canUseBM25Worker, type BM25WorkerHit } from './bm25-worker-runtime';
 
 export interface BM25DocumentInput {
@@ -371,6 +371,25 @@ export class IndexedDbBM25Index {
     return [...new Set(records.map((record) => record.sourcePath))].sort((a, b) =>
       a.localeCompare(b),
     );
+  }
+
+  async reconcileSourcePaths(
+    validSourcePaths: readonly string[],
+    maxDeletions = 128,
+  ): Promise<{ deletedSourcePaths: string[]; remainingWork: boolean }> {
+    const sourcePaths = await this.getSourcePaths();
+    const plan = planStaleIndexSourcePathsRust(sourcePaths, validSourcePaths, maxDeletions);
+    if (!plan) throw new Error('Rust BM25 source reconciliation planning failed');
+    await this.withBatch(async () => {
+      for (const sourcePath of plan.deletePaths) this.removeDocumentsBySource(sourcePath);
+      await this.persist();
+    });
+    await this.workerQueue;
+    if (this.workerFailure) throw this.workerFailure;
+    return {
+      deletedSourcePaths: plan.deletePaths,
+      remainingWork: plan.remainingDeleteCount > 0,
+    };
   }
 
   private ensureRuntime(): RustBm25RuntimeIndex {

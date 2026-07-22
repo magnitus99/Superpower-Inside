@@ -12,7 +12,12 @@ describe('RAG storage maintenance', () => {
 
     await runRagStorageMaintenance(fixture.host, fixture.fingerprint, false, () => false);
 
-    expect(fixture.order).toEqual(['prune-cache']);
+    expect(fixture.order).toEqual([
+      'prune-cache',
+      'reconcile-bm25',
+      'maintain-graph',
+      'cleanup-inactive',
+    ]);
   });
 
   it('reconciles against every valid RAG path, including files outside quiet recovery', async () => {
@@ -34,6 +39,7 @@ describe('RAG storage maintenance', () => {
     ).rejects.toThrow('health gate');
     expect(fixture.host.reconcileActiveStoreBatch).not.toHaveBeenCalled();
     expect(fixture.host.cleanupStaleGenerationBatch).not.toHaveBeenCalled();
+    expect(fixture.host.cleanupLegacyFileArtifacts).not.toHaveBeenCalled();
   });
 
   it('runs reconciliation before bounded stale generation cleanup and records completion last', async () => {
@@ -49,9 +55,13 @@ describe('RAG storage maintenance', () => {
       'yield',
       'reconcile',
       'prune-cache',
+      'reconcile-bm25',
+      'maintain-graph',
+      'cleanup-inactive',
       'cleanup',
       'yield',
       'cleanup',
+      'cleanup-files',
       'complete',
     ]);
   });
@@ -75,6 +85,19 @@ describe('RAG storage maintenance', () => {
     await expect(
       runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
     ).rejects.toThrow('blocked');
+    expect(fixture.host.writeMaintenanceFingerprint).not.toHaveBeenCalled();
+  });
+
+  it('does not record completion when legacy file cleanup is incomplete', async () => {
+    const fixture = await createFixture();
+    fixture.host.cleanupLegacyFileArtifacts.mockResolvedValue({
+      failedPaths: ['.superpower-inside/vectors.json'],
+      remainingDeleteCount: 0,
+    });
+
+    await expect(
+      runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
+    ).rejects.toThrow('Legacy plugin file cleanup');
     expect(fixture.host.writeMaintenanceFingerprint).not.toHaveBeenCalled();
   });
 
@@ -135,10 +158,28 @@ async function createFixture(options: FixtureOptions = {}) {
       order.push('prune-cache');
       return Promise.resolve({ remainingWork: false });
     }),
+    reconcileBm25SourceBatch: vi.fn(() => {
+      order.push('reconcile-bm25');
+      return Promise.resolve({ remainingWork: false });
+    }),
+    maintainGraphStorageBatch: vi.fn(() => {
+      order.push('maintain-graph');
+      return Promise.resolve({ remainingWork: false });
+    }),
     cleanupStaleGenerationBatch: vi.fn(() => {
       order.push('cleanup');
       return Promise.resolve(cleanup.shift() ?? cleanupResult([], 0));
     }),
+    cleanupInactiveVaultDatabaseBatch: vi.fn(() => {
+      order.push('cleanup-inactive');
+      return Promise.resolve(cleanupResult([], 0));
+    }),
+    cleanupLegacyFileArtifacts: vi.fn<RagStorageMaintenanceHost['cleanupLegacyFileArtifacts']>(
+      () => {
+        order.push('cleanup-files');
+        return Promise.resolve({ failedPaths: [], remainingDeleteCount: 0 });
+      },
+    ),
     yieldToHost: vi.fn(() => {
       order.push('yield');
       return Promise.resolve();

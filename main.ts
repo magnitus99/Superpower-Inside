@@ -121,7 +121,9 @@ import {
   RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
   runRagStorageMaintenance,
 } from './src/rag/storage-maintenance';
+import { cleanupInactiveRagIndexedDb } from './src/rag/storage-registry';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
+import { maintainPluginOwnedFiles } from './src/utils/plugin-file-maintenance';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
@@ -284,6 +286,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     await this.loadSettings();
+    await this.runStartupPluginFileMaintenance();
     await this.configureAgentDiagnosticsService();
     await this.recordAgentDiagnosticsBreadcrumb({
       phase: 'plugin.lifecycle',
@@ -528,6 +531,43 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.app.vault.configDir,
       this.manifest?.id ?? 'superpower-inside',
     );
+  }
+
+  private getPluginDirectoryPath(): string {
+    return `${this.app.vault.configDir}/plugins/${this.manifest?.id ?? 'superpower-inside'}`;
+  }
+
+  private async runStartupPluginFileMaintenance(): Promise<void> {
+    try {
+      const result = await maintainPluginOwnedFiles({
+        adapter: this.app.vault.adapter,
+        pluginDirectory: this.getPluginDirectoryPath(),
+        eventLogPath: this.getAgentDiagnosticsEventLogPath(),
+      });
+      if (result.deletedPaths.length > 0 || result.rotatedEventLogPath) {
+        this.getLogger().info('Plugin-owned file maintenance completed.', {
+          source: 'storage.maintenance',
+          data: {
+            deletedFileCount: result.deletedPaths.length,
+            rotatedDiagnosticsLog: result.rotatedEventLogPath !== null,
+          },
+        });
+      }
+      if (result.failedPaths.length > 0 || result.remainingDeleteCount > 0) {
+        this.getLogger().warn('Plugin-owned file maintenance remains incomplete.', {
+          source: 'storage.maintenance',
+          data: {
+            failedFileCount: result.failedPaths.length,
+            remainingDeleteCount: result.remainingDeleteCount,
+          },
+        });
+      }
+    } catch (error) {
+      this.getLogger().warn('Plugin-owned file maintenance failed.', {
+        source: 'storage.maintenance',
+        error,
+      });
+    }
   }
 
   getAgentDiagnosticsSnapshotText(): string {
@@ -2493,9 +2533,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
                   expectedDimension: input.expectedDimension,
                 }),
               pruneEmbeddingCacheBatch: () => embeddingProvider.prunePersistentCacheBatch(),
+              reconcileBm25SourceBatch: (validFilePaths) =>
+                bm25Index?.reconcileSourcePaths(validFilePaths) ??
+                Promise.resolve({ remainingWork: false }),
+              maintainGraphStorageBatch: (validFilePaths) =>
+                this.knowledgeGraphStore?.maintainDerivedData({ validFilePaths }) ??
+                Promise.resolve({ remainingWork: false }),
               cleanupStaleGenerationBatch: () =>
                 cleanupStaleIndexedDbGenerations(storageLayout, {
                   preserveEmbeddingCache: embeddingProvider.persistentCacheEnabled,
+                  preserveBm25: bm25Index !== undefined,
+                  preserveGraph: this.knowledgeGraphStore !== null,
+                }),
+              cleanupInactiveVaultDatabaseBatch: () =>
+                cleanupInactiveRagIndexedDb(storageLayout, this.manifest.id),
+              cleanupLegacyFileArtifacts: () =>
+                maintainPluginOwnedFiles({
+                  adapter: this.app.vault.adapter,
+                  pluginDirectory: this.getPluginDirectoryPath(),
+                  eventLogPath: this.getAgentDiagnosticsEventLogPath(),
+                  allowLegacyCleanup: true,
+                  includePluginDirectory: false,
                 }),
               yieldToHost: () => this.waitForRagBackgroundCapacity(),
             },

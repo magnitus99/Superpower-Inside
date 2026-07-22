@@ -14,8 +14,10 @@ use wasm_bindgen::prelude::wasm_bindgen;
 /// IndexedDB naming, generation cleanup, and stale-record reconciliation policy.
 mod storage_lifecycle;
 pub use storage_lifecycle::{
-    create_indexed_db_record_key, plan_indexed_db_bounded_cleanup_json,
+    create_indexed_db_record_key, plan_graph_storage_maintenance_json,
+    plan_inactive_indexed_db_cleanup_json, plan_indexed_db_bounded_cleanup_json,
     plan_indexed_db_bounded_retention_json, plan_indexed_db_storage_layout_json,
+    plan_plugin_owned_file_maintenance_json, plan_stale_index_source_paths_json,
     plan_vector_file_index_batch_json, plan_vector_record_batch_json,
 };
 

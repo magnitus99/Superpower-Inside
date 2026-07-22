@@ -39,6 +39,20 @@ class RecordingAdapter {
     return value === undefined ? Promise.reject(new Error('missing file')) : Promise.resolve(value);
   }
 
+  stat(path: string): Promise<{
+    type: 'file';
+    ctime: number;
+    mtime: number;
+    size: number;
+  } | null> {
+    const value = this.files.get(path);
+    return Promise.resolve(
+      value === undefined
+        ? null
+        : { type: 'file', ctime: 0, mtime: 0, size: new TextEncoder().encode(value).byteLength },
+    );
+  }
+
   rename(from: string, to: string): Promise<void> {
     this.renamePairs.push([from, to]);
     const value = this.files.get(from);
@@ -74,6 +88,7 @@ function createService(options: {
   enabled: boolean;
   adapter?: RecordingAdapter;
   maxBreadcrumbs?: number;
+  maxEventLogBytes?: number;
 }) {
   const adapter = options.adapter ?? new RecordingAdapter();
   const refreshBus = new RefreshBus();
@@ -89,6 +104,7 @@ function createService(options: {
     maxRefreshEvents: 2,
     maxLogEntries: 3,
     maxBreadcrumbs: options.maxBreadcrumbs,
+    maxEventLogBytes: options.maxEventLogBytes,
     now: () => Date.now(),
     buildSnapshot: (state) => {
       snapshots.push(state);
@@ -321,6 +337,22 @@ describe('AgentDiagnosticsService', () => {
         }),
       ]),
     );
+  });
+
+  it('rotates oversized event logs while preserving one previous generation', async () => {
+    const adapter = new RecordingAdapter();
+    adapter.writeRaw(eventLogPath, 'x'.repeat(2_048));
+    adapter.writeRaw(`${eventLogPath}.previous`, 'older');
+    const { service } = createService({ enabled: true, adapter, maxEventLogBytes: 1_024 });
+
+    await service.recordBreadcrumb({
+      phase: 'rag.runtime',
+      action: 'enter',
+      detail: 'vector-store-open',
+    });
+
+    expect(adapter.readRaw(`${eventLogPath}.previous`)).toBe('x'.repeat(2_048));
+    expect(adapter.readRaw(eventLogPath)).toContain('operation_start');
   });
 
   it('removes an active operation when the matching breadcrumb leaves or errors', async () => {

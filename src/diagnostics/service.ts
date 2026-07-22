@@ -15,6 +15,10 @@ import type { RefreshBus, RefreshDomain } from '../utils/refresh-bus';
 import type { RefreshResult } from '../utils/refresh-action';
 import { redactLogValue, type AppLogger, type LogEntry, type LoggerChangeEvent } from '../utils/logger';
 import { writeJsonToVault } from '../utils/vault';
+import {
+  DEFAULT_DIAGNOSTICS_EVENT_LOG_MAX_BYTES,
+  rotatePluginEventLog,
+} from '../utils/plugin-file-maintenance';
 
 const REFRESH_DOMAINS: readonly RefreshDomain[] = [
   'rag',
@@ -61,6 +65,7 @@ export interface AgentDiagnosticsServiceOptions {
   maxRefreshEvents?: number;
   maxLogEntries?: number;
   maxBreadcrumbs?: number;
+  maxEventLogBytes?: number;
   now?: () => number;
 }
 
@@ -75,6 +80,7 @@ export class AgentDiagnosticsService {
   private readonly maxRefreshEvents: number;
   private readonly maxLogEntries: number;
   private readonly maxBreadcrumbs: number;
+  private readonly maxEventLogBytes: number;
   private readonly now: () => number;
   private refreshEvents: AgentDiagnosticsRefreshEvent[] = [];
   private breadcrumbs: AgentDiagnosticsBreadcrumb[] = [];
@@ -90,6 +96,8 @@ export class AgentDiagnosticsService {
   private nextEventId = 1;
   private nextBreadcrumbId = 1;
   private writeInProgress = false;
+  private eventLogBytes: number | null = null;
+  private eventLogAppendQueue: Promise<void> = Promise.resolve();
 
   constructor(options: AgentDiagnosticsServiceOptions) {
     this.adapter = options.adapter;
@@ -110,6 +118,10 @@ export class AgentDiagnosticsService {
     this.maxBreadcrumbs = Math.max(
       1,
       Math.floor(options.maxBreadcrumbs ?? DEFAULT_MAX_BREADCRUMBS),
+    );
+    this.maxEventLogBytes = Math.max(
+      1,
+      Math.floor(options.maxEventLogBytes ?? DEFAULT_DIAGNOSTICS_EVENT_LOG_MAX_BYTES),
     );
     this.now = options.now ?? (() => Date.now());
   }
@@ -151,6 +163,7 @@ export class AgentDiagnosticsService {
       lastAppendAt: null,
       lastError: null,
     };
+    this.eventLogBytes = null;
     this.subscribe();
     this.startHeartbeat();
     void this.appendEventLog({
@@ -213,6 +226,7 @@ export class AgentDiagnosticsService {
   }
 
   async clearDetailedLogging(): Promise<void> {
+    await this.eventLogAppendQueue;
     this.logger.clear();
     this.refreshEvents = [];
     this.breadcrumbs = [];
@@ -236,6 +250,11 @@ export class AgentDiagnosticsService {
     if (await this.adapter.exists(this.eventLogPath)) {
       await this.adapter.remove(this.eventLogPath);
     }
+    const previousEventLogPath = `${this.eventLogPath}.previous`;
+    if (await this.adapter.exists(previousEventLogPath)) {
+      await this.adapter.remove(previousEventLogPath);
+    }
+    this.eventLogBytes = 0;
   }
 
   getFilePath(): string {
@@ -377,7 +396,13 @@ export class AgentDiagnosticsService {
     });
   }
 
-  private async appendEventLog(event: AgentDiagnosticsEventLogInput): Promise<void> {
+  private appendEventLog(event: AgentDiagnosticsEventLogInput): Promise<void> {
+    const operation = this.eventLogAppendQueue.then(() => this.appendEventLogNow(event));
+    this.eventLogAppendQueue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async appendEventLogNow(event: AgentDiagnosticsEventLogInput): Promise<void> {
     if (!this.session) return;
     const timestamp = this.now();
     const payload = {
@@ -405,7 +430,11 @@ export class AgentDiagnosticsService {
       if (dir) {
         await this.adapter.mkdir(dir);
       }
-      await append.call(this.adapter, this.eventLogPath, `${JSON.stringify(payload)}\n`);
+      const line = `${JSON.stringify(payload)}\n`;
+      const lineBytes = new TextEncoder().encode(line).byteLength;
+      await this.rotateEventLogIfNeeded(lineBytes);
+      await append.call(this.adapter, this.eventLogPath, line);
+      this.eventLogBytes = (this.eventLogBytes ?? 0) + lineBytes;
       this.eventLog = {
         path: this.eventLogPath,
         lastAppendAt: timestamp,
@@ -425,6 +454,16 @@ export class AgentDiagnosticsService {
         });
       }
     }
+  }
+
+  private async rotateEventLogIfNeeded(pendingBytes: number): Promise<void> {
+    if (this.eventLogBytes === null) {
+      const stat = await this.adapter.stat(this.eventLogPath);
+      this.eventLogBytes = stat?.type === 'file' ? stat.size : 0;
+    }
+    if (this.eventLogBytes + pendingBytes <= this.maxEventLogBytes) return;
+    await rotatePluginEventLog(this.adapter, this.eventLogPath);
+    this.eventLogBytes = 0;
   }
 
   private async writeSnapshot(reason: string): Promise<void> {

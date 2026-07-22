@@ -7,10 +7,12 @@ import {
   planGraphCommunityReplacementDeleteIdsRust,
   planGraphDeletionIndicesRust,
   planGraphEntityMergeRust,
+  planGraphStorageMaintenanceRust,
   planGraphPruneRust,
   rewriteGraphEntityReferencesRust,
   type RustGraphExtractionCacheKey,
   type RustGraphEntityMergeInput,
+  type RustGraphStorageMaintenancePlan,
   type RustGraphPruneInput,
   type RustGraphPrunePlan,
 } from '../rag/rust-core';
@@ -241,6 +243,13 @@ export interface PendingEntityMergeRecord {
 export type PendingEntityMergeDecision = 'merge' | 'separate';
 
 const KEPT_SEPARATE_REASON = 'kept-separate';
+const GRAPH_DERIVED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const GRAPH_EXTRACTION_JOB_LIMIT = 1024;
+const GRAPH_RAW_RESPONSE_LIMIT = 512;
+const GRAPH_COMMUNITY_SUMMARY_JOB_LIMIT = 256;
+const GRAPH_GLOBAL_SEARCH_JOB_LIMIT = 256;
+const GRAPH_PROVIDER_CIRCUIT_LIMIT = 64;
+const GRAPH_MAINTENANCE_BATCH_SIZE = 128;
 
 export interface GraphPruneResult {
   evidence: number;
@@ -251,6 +260,19 @@ export interface GraphPruneResult {
   extractionCache: number;
   rejectedFacts: number;
   pendingEntityMerges: number;
+}
+
+export interface GraphStorageMaintenanceOptions {
+  validFilePaths: readonly string[];
+  now?: number;
+  maxAgeMs?: number;
+  maxDeletions?: number;
+}
+
+export interface GraphStorageMaintenanceResult {
+  deletedFilePaths: string[];
+  deletedRecordCount: number;
+  remainingWork: boolean;
 }
 
 export interface KnowledgeGraphStore {
@@ -297,6 +319,9 @@ export interface KnowledgeGraphStore {
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
   pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult>;
+  maintainDerivedData(
+    options: GraphStorageMaintenanceOptions,
+  ): Promise<GraphStorageMaintenanceResult>;
   clear(): Promise<void>;
   close(): void;
   replaceCommunities(
@@ -849,8 +874,15 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         this.db.graphPendingEntityMerges,
         this.db.graphExtractionJobs,
         this.db.graphRawResponses,
+        this.db.graphCommunitySummaryJobs,
+        this.db.graphGlobalSearchJobs,
       ],
       async () => {
+        const [extractionJobs, communitySummaryJobs, globalSearchJobs] = await Promise.all([
+          this.db.graphExtractionJobs.toArray(),
+          this.db.graphCommunitySummaryJobs.toArray(),
+          this.db.graphGlobalSearchJobs.toArray(),
+        ]);
         const snapshot = createPrunedGraphSnapshot(filePaths, {
           evidence: await this.db.graphEvidence.toArray(),
           entities: await this.db.graphEntities.toArray(),
@@ -895,9 +927,83 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         if (snapshot.deletedPendingMergeIds.length > 0) {
           await this.db.graphPendingEntityMerges.bulkDelete(snapshot.deletedPendingMergeIds);
         }
+        const deletedExtractionJobs = extractionJobs.filter((job) =>
+          filePaths.includes(job.filePath),
+        );
+        if (deletedExtractionJobs.length > 0) {
+          await this.db.graphExtractionJobs.bulkDelete(deletedExtractionJobs.map((job) => job.id));
+          const deletedJobIds = new Set(deletedExtractionJobs.map((job) => job.id));
+          const retainedRawResponseIds = extractionJobs
+            .filter((job) => !deletedJobIds.has(job.id))
+            .map((job) => job.rawResponseId)
+            .concat(communitySummaryJobs.map((job) => job.rawResponseId))
+            .concat(globalSearchJobs.map((job) => job.rawResponseId))
+            .filter((id): id is string => id !== undefined);
+          const retainedRawResponseIdSet = new Set(retainedRawResponseIds);
+          const orphanedRawResponseIds = deletedExtractionJobs
+            .map((job) => job.rawResponseId)
+            .filter((id): id is string => id !== undefined && !retainedRawResponseIdSet.has(id));
+          if (orphanedRawResponseIds.length > 0) {
+            await this.db.graphRawResponses.bulkDelete(orphanedRawResponseIds);
+          }
+        }
         return snapshot.result;
       },
     );
+  }
+
+  async maintainDerivedData(
+    options: GraphStorageMaintenanceOptions,
+  ): Promise<GraphStorageMaintenanceResult> {
+    const [
+      extractionJobs,
+      rawResponses,
+      communitySummaryJobs,
+      globalSearchJobs,
+      providerCircuits,
+      evidence,
+      rejectedFacts,
+    ] = await Promise.all([
+      this.db.graphExtractionJobs.toArray(),
+      this.db.graphRawResponses.toArray(),
+      this.db.graphCommunitySummaryJobs.toArray(),
+      this.db.graphGlobalSearchJobs.toArray(),
+      this.db.graphProviderCircuits.toArray(),
+      this.db.graphEvidence.toArray(),
+      this.db.graphRejectedFacts.toArray(),
+    ]);
+    const plan = createGraphStorageMaintenancePlan(options, {
+      extractionJobs,
+      rawResponses,
+      communitySummaryJobs,
+      globalSearchJobs,
+      providerCircuits,
+      graphFilePaths: [
+        ...evidence.map((record) => record.filePath),
+        ...rejectedFacts.map((record) => record.filePath),
+      ],
+    });
+    if (plan.deleteFilePaths.length > 0) await this.pruneByFilePaths(plan.deleteFilePaths);
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.graphExtractionJobs,
+        this.db.graphRawResponses,
+        this.db.graphCommunitySummaryJobs,
+        this.db.graphGlobalSearchJobs,
+        this.db.graphProviderCircuits,
+      ],
+      async () => {
+        await Promise.all([
+          this.db.graphExtractionJobs.bulkDelete(plan.deleteExtractionJobIds),
+          this.db.graphRawResponses.bulkDelete(plan.deleteRawResponseIds),
+          this.db.graphCommunitySummaryJobs.bulkDelete(plan.deleteCommunitySummaryJobIds),
+          this.db.graphGlobalSearchJobs.bulkDelete(plan.deleteGlobalSearchJobIds),
+          this.db.graphProviderCircuits.bulkDelete(plan.deleteProviderCircuitIds),
+        ]);
+      },
+    );
+    return graphStorageMaintenanceResult(plan);
   }
 
   async clear(): Promise<void> {
@@ -1347,8 +1453,49 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     for (const id of snapshot.deletedRejectedFactIds) this.rejectedFacts.delete(id);
     for (const id of snapshot.deletedExtractionCacheEntryIds) this.extractionCache.delete(id);
     for (const id of snapshot.deletedPendingMergeIds) this.pendingEntityMerges.delete(id);
+    const deletedJobRawResponseIds = new Set<string>();
+    for (const [id, job] of this.extractionJobs) {
+      if (!filePaths.includes(job.filePath)) continue;
+      this.extractionJobs.delete(id);
+      if (job.rawResponseId) deletedJobRawResponseIds.add(job.rawResponseId);
+    }
+    const retainedRawResponseIds = new Set(
+      [
+        ...this.extractionJobs.values(),
+        ...this.communitySummaryJobs.values(),
+        ...this.globalSearchJobs.values(),
+      ]
+        .map((job) => job.rawResponseId)
+        .filter((id): id is string => id !== undefined),
+    );
+    for (const id of deletedJobRawResponseIds) {
+      if (!retainedRawResponseIds.has(id)) this.rawResponses.delete(id);
+    }
 
     return Promise.resolve(snapshot.result);
+  }
+
+  async maintainDerivedData(
+    options: GraphStorageMaintenanceOptions,
+  ): Promise<GraphStorageMaintenanceResult> {
+    const plan = createGraphStorageMaintenancePlan(options, {
+      extractionJobs: [...this.extractionJobs.values()],
+      rawResponses: [...this.rawResponses.values()],
+      communitySummaryJobs: [...this.communitySummaryJobs.values()],
+      globalSearchJobs: [...this.globalSearchJobs.values()],
+      providerCircuits: [...this.providerCircuits.values()],
+      graphFilePaths: [
+        ...[...this.evidence.values()].map((record) => record.filePath),
+        ...[...this.rejectedFacts.values()].map((record) => record.filePath),
+      ],
+    });
+    if (plan.deleteFilePaths.length > 0) await this.pruneByFilePaths(plan.deleteFilePaths);
+    for (const id of plan.deleteExtractionJobIds) this.extractionJobs.delete(id);
+    for (const id of plan.deleteRawResponseIds) this.rawResponses.delete(id);
+    for (const id of plan.deleteCommunitySummaryJobIds) this.communitySummaryJobs.delete(id);
+    for (const id of plan.deleteGlobalSearchJobIds) this.globalSearchJobs.delete(id);
+    for (const id of plan.deleteProviderCircuitIds) this.providerCircuits.delete(id);
+    return graphStorageMaintenanceResult(plan);
   }
 
   clear(): Promise<void> {
@@ -1375,6 +1522,63 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
 
 function copyExtractionJob(record: GraphExtractionJobRecord): GraphExtractionJobRecord {
   return { ...record };
+}
+
+interface GraphDerivedStorageSnapshot {
+  extractionJobs: readonly GraphExtractionJobRecord[];
+  rawResponses: readonly GraphRawResponseRecord[];
+  communitySummaryJobs: readonly GraphCommunitySummaryJobRecord[];
+  globalSearchJobs: readonly GraphGlobalSearchJobRecord[];
+  providerCircuits: readonly GraphProviderCircuitRecord[];
+  graphFilePaths: readonly string[];
+}
+
+function createGraphStorageMaintenancePlan(
+  options: GraphStorageMaintenanceOptions,
+  snapshot: GraphDerivedStorageSnapshot,
+): RustGraphStorageMaintenancePlan {
+  const plan = planGraphStorageMaintenanceRust({
+    validFilePaths: options.validFilePaths,
+    graphFilePaths: snapshot.graphFilePaths,
+    extractionJobs: snapshot.extractionJobs,
+    rawResponses: snapshot.rawResponses.map((record) => ({
+      id: record.id,
+      receivedAt: record.receivedAt,
+    })),
+    communitySummaryJobs: snapshot.communitySummaryJobs,
+    globalSearchJobs: snapshot.globalSearchJobs,
+    providerCircuits: snapshot.providerCircuits.map((record) => ({
+      id: record.providerEpochId,
+      state: record.state,
+      openUntil: record.openUntil,
+      updatedAt: record.updatedAt,
+    })),
+    now: options.now ?? Date.now(),
+    maxAgeMs: options.maxAgeMs ?? GRAPH_DERIVED_RETENTION_MS,
+    maxExtractionJobs: GRAPH_EXTRACTION_JOB_LIMIT,
+    maxRawResponses: GRAPH_RAW_RESPONSE_LIMIT,
+    maxCommunitySummaryJobs: GRAPH_COMMUNITY_SUMMARY_JOB_LIMIT,
+    maxGlobalSearchJobs: GRAPH_GLOBAL_SEARCH_JOB_LIMIT,
+    maxProviderCircuits: GRAPH_PROVIDER_CIRCUIT_LIMIT,
+    maxDeletions: options.maxDeletions ?? GRAPH_MAINTENANCE_BATCH_SIZE,
+  });
+  if (!plan) throw new Error('Rust GraphRAG storage maintenance planning failed');
+  return plan;
+}
+
+function graphStorageMaintenanceResult(
+  plan: RustGraphStorageMaintenancePlan,
+): GraphStorageMaintenanceResult {
+  return {
+    deletedFilePaths: plan.deleteFilePaths,
+    deletedRecordCount:
+      plan.deleteExtractionJobIds.length +
+      plan.deleteRawResponseIds.length +
+      plan.deleteCommunitySummaryJobIds.length +
+      plan.deleteGlobalSearchJobIds.length +
+      plan.deleteProviderCircuitIds.length,
+    remainingWork: plan.remainingWork,
+  };
 }
 
 interface GraphStoreSnapshot {

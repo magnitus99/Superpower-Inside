@@ -62,6 +62,14 @@ describe('KnowledgeGraphStore contract', () => {
     await expectExpiredLeaseRecovery(createIndexedDbStore());
   });
 
+  it('InMemoryKnowledgeGraphStore가 삭제된 파일의 작업과 응답을 자동 정리한다', async () => {
+    await expectDerivedStorageMaintenance(new InMemoryKnowledgeGraphStore());
+  });
+
+  it('IndexedDbKnowledgeGraphStore가 삭제된 파일의 작업과 응답을 자동 정리한다', async () => {
+    await expectDerivedStorageMaintenance(createIndexedDbStore());
+  });
+
   it('InMemoryKnowledgeGraphStore가 provider 회로 상태를 보존한다', async () => {
     await expectProviderCircuitContract(new InMemoryKnowledgeGraphStore());
   });
@@ -240,7 +248,9 @@ describe('IndexedDbKnowledgeGraphStore', () => {
   it('upsertEntity는 alias와 evidence를 보존 병합한다', async () => {
     const store = createIndexedDbStore();
 
-    await store.upsertEntity(createEntity({ aliases: ['Paul'], evidenceIds: ['ev-1'], confidence: 0.6 }));
+    await store.upsertEntity(
+      createEntity({ aliases: ['Paul'], evidenceIds: ['ev-1'], confidence: 0.6 }),
+    );
     await store.upsertEntity(
       createEntity({
         aliases: ['Paul', 'Apostle Paul'],
@@ -349,6 +359,63 @@ function createIndexedDbStore(): IndexedDbKnowledgeGraphStore {
   const dbName = `SuperpowerInsideGraphStoreTest-${crypto.randomUUID()}`;
   dbNames.add(dbName);
   return new IndexedDbKnowledgeGraphStore(dbName);
+}
+
+async function expectDerivedStorageMaintenance(store: KnowledgeGraphStore): Promise<void> {
+  await store.addEvidence(
+    createEvidence({ id: 'gone-evidence', filePath: 'gone.md', entryId: 'gone.md::0' }),
+  );
+  await store.putExtractionJob(
+    createExtractionJob({
+      id: 'gone-job',
+      filePath: 'gone.md',
+      entryId: 'gone.md::0',
+      state: 'committed',
+      rawResponseId: 'gone-raw',
+      updatedAt: 1,
+    }),
+  );
+  await store.putRawResponse({
+    id: 'gone-raw',
+    requestFingerprint: 'gone',
+    providerEpochId: 'epoch-1',
+    body: '{}',
+    bodyHash: 'gone-hash',
+    receivedAt: 1,
+  });
+  await store.putExtractionJob(
+    createExtractionJob({
+      id: 'live-job',
+      filePath: 'keep.md',
+      entryId: 'keep.md::0',
+      state: 'leased',
+      leaseExpiresAt: 200,
+      rawResponseId: 'live-raw',
+      updatedAt: 1,
+    }),
+  );
+  await store.putRawResponse({
+    id: 'live-raw',
+    requestFingerprint: 'live',
+    providerEpochId: 'epoch-1',
+    body: '{}',
+    bodyHash: 'live-hash',
+    receivedAt: 1,
+  });
+
+  const result = await store.maintainDerivedData({
+    validFilePaths: ['keep.md'],
+    now: 100,
+    maxAgeMs: 50,
+  });
+
+  expect(result.deletedFilePaths).toEqual(['gone.md']);
+  await expect(store.getExtractionJob('gone-job')).resolves.toBeUndefined();
+  await expect(store.getRawResponse('gone-raw')).resolves.toBeUndefined();
+  await expect(store.getExtractionJob('live-job')).resolves.toEqual(
+    expect.objectContaining({ state: 'leased' }),
+  );
+  await expect(store.getRawResponse('live-raw')).resolves.toBeDefined();
 }
 
 async function expectKnowledgeGraphStoreContract(store: KnowledgeGraphStore): Promise<void> {
@@ -515,19 +582,76 @@ async function expectClearTables(store: KnowledgeGraphStore): Promise<void> {
 }
 
 async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<void> {
-  await store.addEvidence(createEvidence({ id: 'ev-old', filePath: 'old.md', entryId: 'old.md::0' }));
-  await store.addEvidence(createEvidence({ id: 'ev-keep', filePath: 'keep.md', entryId: 'keep.md::0' }));
+  await store.addEvidence(
+    createEvidence({ id: 'ev-old', filePath: 'old.md', entryId: 'old.md::0' }),
+  );
+  await store.addEvidence(
+    createEvidence({ id: 'ev-keep', filePath: 'keep.md', entryId: 'keep.md::0' }),
+  );
   await store.upsertEntity(createEntity({ id: 'entity-old', evidenceIds: ['ev-old'] }));
-  await store.upsertEntity(createEntity({ id: 'entity-shared', evidenceIds: ['ev-old', 'ev-keep'] }));
+  await store.upsertEntity(
+    createEntity({ id: 'entity-shared', evidenceIds: ['ev-old', 'ev-keep'] }),
+  );
   await store.upsertEntity(createEntity({ id: 'entity-keep', evidenceIds: ['ev-keep'] }));
-  await store.addRelation(createRelation({ id: 'rel-old', sourceEntityId: 'entity-old', targetEntityId: 'entity-shared', evidenceIds: ['ev-old'] }));
-  await store.addRelation(createRelation({ id: 'rel-shared', sourceEntityId: 'entity-shared', targetEntityId: 'entity-keep', evidenceIds: ['ev-old', 'ev-keep'] }));
-  await store.addClaim(createClaim({ id: 'claim-old', entityIds: ['entity-old'], relationIds: ['rel-old'], evidenceIds: ['ev-old'] }));
-  await store.addClaim(createClaim({ id: 'claim-shared', entityIds: ['entity-old', 'entity-shared', 'entity-keep'], relationIds: ['rel-old', 'rel-shared'], evidenceIds: ['ev-old', 'ev-keep'] }));
-  await store.addCommunity(createCommunity({ id: 'community-old', entityIds: ['entity-old'], relationIds: ['rel-old'], claimIds: ['claim-old'] }));
-  await store.addCommunity(createCommunity({ id: 'community-other-schema', ontologySchemaId: 'other' }));
-  await store.addRejectedFact({ id: 'reject-old', filePath: 'old.md', entryId: 'old.md::0', reason: 'schema', rawFact: {}, updatedAt: 1000 });
-  await store.addRejectedFact({ id: 'reject-keep', filePath: 'keep.md', entryId: 'keep.md::0', reason: 'schema', rawFact: {}, updatedAt: 1000 });
+  await store.addRelation(
+    createRelation({
+      id: 'rel-old',
+      sourceEntityId: 'entity-old',
+      targetEntityId: 'entity-shared',
+      evidenceIds: ['ev-old'],
+    }),
+  );
+  await store.addRelation(
+    createRelation({
+      id: 'rel-shared',
+      sourceEntityId: 'entity-shared',
+      targetEntityId: 'entity-keep',
+      evidenceIds: ['ev-old', 'ev-keep'],
+    }),
+  );
+  await store.addClaim(
+    createClaim({
+      id: 'claim-old',
+      entityIds: ['entity-old'],
+      relationIds: ['rel-old'],
+      evidenceIds: ['ev-old'],
+    }),
+  );
+  await store.addClaim(
+    createClaim({
+      id: 'claim-shared',
+      entityIds: ['entity-old', 'entity-shared', 'entity-keep'],
+      relationIds: ['rel-old', 'rel-shared'],
+      evidenceIds: ['ev-old', 'ev-keep'],
+    }),
+  );
+  await store.addCommunity(
+    createCommunity({
+      id: 'community-old',
+      entityIds: ['entity-old'],
+      relationIds: ['rel-old'],
+      claimIds: ['claim-old'],
+    }),
+  );
+  await store.addCommunity(
+    createCommunity({ id: 'community-other-schema', ontologySchemaId: 'other' }),
+  );
+  await store.addRejectedFact({
+    id: 'reject-old',
+    filePath: 'old.md',
+    entryId: 'old.md::0',
+    reason: 'schema',
+    rawFact: {},
+    updatedAt: 1000,
+  });
+  await store.addRejectedFact({
+    id: 'reject-keep',
+    filePath: 'keep.md',
+    entryId: 'keep.md::0',
+    reason: 'schema',
+    rawFact: {},
+    updatedAt: 1000,
+  });
   await store.addPendingEntityMerge({
     id: 'merge-old',
     ontologySchemaId: 'default',
@@ -537,29 +661,47 @@ async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<v
     reason: 'similar alias',
     updatedAt: 1000,
   });
-  await store.markExtractionCached({ entryId: 'old.md::0', contentHash: 'hash-old', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: 1000 });
-  await store.markExtractionCached({ entryId: 'keep.md::0', contentHash: 'hash-keep', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1, updatedAt: 1000 });
+  await store.markExtractionCached({
+    entryId: 'old.md::0',
+    contentHash: 'hash-old',
+    extractionModelKey: 'model',
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    updatedAt: 1000,
+  });
+  await store.markExtractionCached({
+    entryId: 'keep.md::0',
+    contentHash: 'hash-keep',
+    extractionModelKey: 'model',
+    ontologySchemaId: 'default',
+    ontologyVersion: 1,
+    updatedAt: 1000,
+  });
 
   const result = await store.pruneByFilePaths(['old.md']);
 
-  expect(result).toEqual(expect.objectContaining({
-    evidence: 1,
-    entities: 1,
-    relations: 1,
-    claims: 1,
-    communities: 1,
-    extractionCache: 1,
-    rejectedFacts: 1,
-    pendingEntityMerges: 1,
-  }));
+  expect(result).toEqual(
+    expect.objectContaining({
+      evidence: 1,
+      entities: 1,
+      relations: 1,
+      claims: 1,
+      communities: 1,
+      extractionCache: 1,
+      rejectedFacts: 1,
+      pendingEntityMerges: 1,
+    }),
+  );
   expect((await store.getEvidence()).map((record) => record.id)).toEqual(['ev-keep']);
-  expect(sortPairs((await store.getEntities()).map((record) => [record.id, record.evidenceIds]))).toEqual([
+  expect(
+    sortPairs((await store.getEntities()).map((record) => [record.id, record.evidenceIds])),
+  ).toEqual([
     ['entity-keep', ['ev-keep']],
     ['entity-shared', ['ev-keep']],
   ]);
-  expect(sortPairs((await store.getRelations()).map((record) => [record.id, record.evidenceIds]))).toEqual([
-    ['rel-shared', ['ev-keep']],
-  ]);
+  expect(
+    sortPairs((await store.getRelations()).map((record) => [record.id, record.evidenceIds])),
+  ).toEqual([['rel-shared', ['ev-keep']]]);
   expect(await store.getClaims()).toEqual([
     expect.objectContaining({
       id: 'claim-shared',
@@ -568,10 +710,28 @@ async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<v
       evidenceIds: ['ev-keep'],
     }),
   ]);
-  expect((await store.getCommunities()).map((record) => record.id)).toEqual(['community-other-schema']);
+  expect((await store.getCommunities()).map((record) => record.id)).toEqual([
+    'community-other-schema',
+  ]);
   expect((await store.getRejectedFacts()).map((record) => record.id)).toEqual(['reject-keep']);
-  await expect(store.isExtractionCached({ entryId: 'old.md::0', contentHash: 'hash-old', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1 })).resolves.toBe(false);
-  await expect(store.isExtractionCached({ entryId: 'keep.md::0', contentHash: 'hash-keep', extractionModelKey: 'model', ontologySchemaId: 'default', ontologyVersion: 1 })).resolves.toBe(true);
+  await expect(
+    store.isExtractionCached({
+      entryId: 'old.md::0',
+      contentHash: 'hash-old',
+      extractionModelKey: 'model',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+    }),
+  ).resolves.toBe(false);
+  await expect(
+    store.isExtractionCached({
+      entryId: 'keep.md::0',
+      contentHash: 'hash-keep',
+      extractionModelKey: 'model',
+      ontologySchemaId: 'default',
+      ontologyVersion: 1,
+    }),
+  ).resolves.toBe(true);
   expect(await store.getPendingEntityMerges()).toEqual([]);
 
   await store.replaceCommunities('default', [createCommunity({ id: 'community-new' })]);
@@ -580,7 +740,9 @@ async function expectGraphPruningContract(store: KnowledgeGraphStore): Promise<v
     'community-other-schema',
   ]);
   await store.replaceCommunities('default', []);
-  expect((await store.getCommunities()).map((record) => record.id)).toEqual(['community-other-schema']);
+  expect((await store.getCommunities()).map((record) => record.id)).toEqual([
+    'community-other-schema',
+  ]);
 }
 
 async function expectPendingMergeResolutionContract(store: KnowledgeGraphStore): Promise<void> {
@@ -604,12 +766,8 @@ async function expectPendingMergeResolutionContract(store: KnowledgeGraphStore):
   await store.addRelation(
     createRelation({ sourceEntityId: 'entity-paul-2', targetEntityId: 'entity-paul' }),
   );
-  await store.addClaim(
-    createClaim({ entityIds: ['entity-paul', 'entity-paul-2', 'entity-paul'] }),
-  );
-  await store.addCommunity(
-    createCommunity({ entityIds: ['entity-paul-2', 'entity-paul'] }),
-  );
+  await store.addClaim(createClaim({ entityIds: ['entity-paul', 'entity-paul-2', 'entity-paul'] }));
+  await store.addCommunity(createCommunity({ entityIds: ['entity-paul-2', 'entity-paul'] }));
   await store.addPendingEntityMerge(createPendingMerge());
 
   await expect(store.resolvePendingEntityMerge('merge-1', 'merge')).resolves.toBe(true);

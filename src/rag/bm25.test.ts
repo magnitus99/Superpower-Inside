@@ -270,6 +270,20 @@ describe('IndexedDbBM25Index', () => {
 
     expect(await countBm25Mutations(dbName)).toBe(0);
   });
+
+  it('removes sources for files deleted while the plugin was not running', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    bm25.addDocument('keep.md::0', 'keep text', 'keep.md');
+    bm25.addDocument('gone.md::0', 'gone text', 'gone.md');
+    await bm25.persist();
+
+    const result = await bm25.reconcileSourcePaths(['keep.md']);
+
+    expect(result).toEqual({ deletedSourcePaths: ['gone.md'], remainingWork: false });
+    await expect(bm25.getSourcePaths()).resolves.toEqual(['keep.md']);
+    expect([...bm25.search('gone').keys()]).toEqual([]);
+  });
 });
 
 async function createBm25(

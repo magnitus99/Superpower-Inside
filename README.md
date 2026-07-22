@@ -108,6 +108,8 @@ RAG and GraphRAG maintain local state for this vault. When notes, models, or gra
 
 Superpower Inside reuses compatible local index data and works through missing or stale coverage in small background batches after startup. Interrupted work keeps its partial progress and resumes automatically, while oversized or binary sources never monopolize the app, so reindexing stays a recovery tool rather than routine maintenance.
 
+The same background maintenance removes orphaned keyword and GraphRAG records, retires unused local database generations after a safety grace period, and keeps rebuildable caches and diagnostic logs bounded. Vault notes, saved chats, settings, and active indexing work are never treated as cleanup targets.
+
 While RAG indexing runs, Superpower Inside watches both embedding throughput and Obsidian's responsiveness. It quietly reduces batch pressure when needed, pauses only when the app itself remains unresponsive, and resumes the same queued work safely after recovery. Existing index coverage stays available throughout, including during a full refresh.
 
 GraphRAG extraction uses one concurrent model request by default. If your provider supports more throughput, the GraphRAG settings let you raise the concurrent request count from 1 to 10 while keeping the current value visible beside the slider.
@@ -208,6 +210,8 @@ Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치�
 RAG와 GraphRAG는 이 볼트의 로컬 상태를 유지합니다. 노트, 모델, 그래프 evidence에 사용자의 주의가 필요할 때만 설정 화면이 이유와 다음 행동을 보여줍니다. 목표는 사용자가 인덱스 대시보드를 운영하게 만드는 것이 아니라, 답변이 조용히 출처를 갖추도록 돕는 것입니다.
 
 Superpower Inside는 호환되는 로컬 인덱스를 그대로 재사용하고, 시작 후 누락되거나 오래된 범위를 작은 백그라운드 배치로 조용히 채웁니다. 중단된 작업은 완료된 부분부터 자동으로 이어지고, 과도하게 크거나 바이너리인 자료가 앱을 독점하지 않으므로 재인덱싱은 일상 관리가 아니라 마지막 복구 수단으로 남습니다.
+
+같은 백그라운드 유지보수 과정에서 고아 키워드·GraphRAG 레코드를 제거하고, 안전 유예 기간이 지난 미사용 로컬 데이터베이스 세대를 정리하며, 재생성 가능한 캐시와 진단 로그의 크기를 제한합니다. 볼트 노트, 저장한 채팅, 설정, 현재 진행 중인 인덱싱 작업은 정리 대상으로 취급하지 않습니다.
 
 GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. provider가 더 높은 처리량을 지원한다면 GraphRAG 설정의 슬라이더에서 동시 요청 수를 1~10으로 조절하고 현재 숫자를 바로 확인할 수 있습니다.
 

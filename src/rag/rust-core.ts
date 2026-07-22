@@ -82,6 +82,10 @@ import {
   plan_indexed_db_bounded_cleanup_json,
   plan_indexed_db_bounded_retention_json,
   plan_indexed_db_storage_layout_json,
+  plan_graph_storage_maintenance_json,
+  plan_inactive_indexed_db_cleanup_json,
+  plan_plugin_owned_file_maintenance_json,
+  plan_stale_index_source_paths_json,
   plan_folder_mention_file_indices_json,
   plan_graph_community_replacement_delete_ids_json,
   plan_graph_community_summary_groups_json,
@@ -748,6 +752,98 @@ export interface RustIndexedDbBoundedRetentionPlan {
   deleteIds: string[];
   remainingWork: boolean;
   remainingRecordCount: number;
+}
+
+export interface RustStaleIndexSourcePathsPlan {
+  deletePaths: string[];
+  remainingDeleteCount: number;
+}
+
+export interface RustInactiveIndexedDbRecord {
+  key: string;
+  firstSeen: number;
+  lastSeen: number | null;
+}
+
+export interface RustInactiveIndexedDbCleanupInput {
+  databaseNames: readonly string[];
+  activeNames: readonly string[];
+  currentVaultPrefixes: readonly string[];
+  currentLegacyNames: readonly string[];
+  pluginId: string;
+  records: readonly RustInactiveIndexedDbRecord[];
+  now: number;
+  maxInactiveAgeMs: number;
+  maxDeletions: number;
+}
+
+export interface RustInactiveIndexedDbCleanupPlan {
+  records: RustInactiveIndexedDbRecord[];
+  deleteNames: string[];
+  remainingDeleteCount: number;
+}
+
+export interface RustGraphStorageRecord {
+  id: string;
+  state?: string;
+  filePath?: string;
+  rawResponseId?: string;
+  leaseExpiresAt?: number;
+  openUntil?: number;
+  updatedAt?: number;
+  receivedAt?: number;
+}
+
+export interface RustGraphStorageMaintenanceInput {
+  validFilePaths: readonly string[];
+  graphFilePaths: readonly string[];
+  extractionJobs: readonly RustGraphStorageRecord[];
+  rawResponses: readonly RustGraphStorageRecord[];
+  communitySummaryJobs: readonly RustGraphStorageRecord[];
+  globalSearchJobs: readonly RustGraphStorageRecord[];
+  providerCircuits: readonly RustGraphStorageRecord[];
+  now: number;
+  maxAgeMs: number;
+  maxExtractionJobs: number;
+  maxRawResponses: number;
+  maxCommunitySummaryJobs: number;
+  maxGlobalSearchJobs: number;
+  maxProviderCircuits: number;
+  maxDeletions: number;
+}
+
+export interface RustGraphStorageMaintenancePlan {
+  deleteFilePaths: string[];
+  deleteExtractionJobIds: string[];
+  deleteRawResponseIds: string[];
+  deleteCommunitySummaryJobIds: string[];
+  deleteGlobalSearchJobIds: string[];
+  deleteProviderCircuitIds: string[];
+  remainingWork: boolean;
+}
+
+export interface RustPluginOwnedFileRecord {
+  path: string;
+  mtime: number;
+  size: number;
+}
+
+export interface RustPluginOwnedFileMaintenanceInput {
+  records: readonly RustPluginOwnedFileRecord[];
+  pluginDirectory: string;
+  legacyDataDirectory: string;
+  eventLogPath: string;
+  now: number;
+  staleTempAgeMs: number;
+  maxEventLogBytes: number;
+  allowLegacyCleanup: boolean;
+  maxDeletions: number;
+}
+
+export interface RustPluginOwnedFileMaintenancePlan {
+  deletePaths: string[];
+  remainingDeleteCount: number;
+  rotateEventLogPath: string | null;
 }
 
 export interface RustVectorFileIndexBatchInput {
@@ -2974,9 +3070,7 @@ export function planEmptyFileIndexRecordRust(
     );
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    const records: readonly unknown[] = Array.isArray(parsed)
-      ? (parsed as readonly unknown[])
-      : [];
+    const records: readonly unknown[] = Array.isArray(parsed) ? (parsed as readonly unknown[]) : [];
     const record: unknown = records[0];
     return isFileIndexRecordPlan(record) ? record : null;
   } catch {
@@ -3168,6 +3262,72 @@ export function planIndexedDbBoundedRetentionRust(
     );
     const parsed: unknown = JSON.parse(raw);
     return isIndexedDbBoundedRetentionPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planStaleIndexSourcePathsRust(
+  indexedPaths: readonly string[],
+  validPaths: readonly string[],
+  maxDeletions: number,
+): RustStaleIndexSourcePathsPlan | null {
+  if (
+    !indexedPaths.every((path) => isStringValue(path) && path.length > 0) ||
+    !validPaths.every((path) => isStringValue(path) && path.length > 0) ||
+    !isValidNonNegativeInteger(maxDeletions) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_stale_index_source_paths_json(
+      JSON.stringify(indexedPaths),
+      JSON.stringify(validPaths),
+      maxDeletions,
+    );
+    const parsed: unknown = JSON.parse(raw);
+    return isStaleIndexSourcePathsPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planInactiveIndexedDbCleanupRust(
+  input: RustInactiveIndexedDbCleanupInput,
+): RustInactiveIndexedDbCleanupPlan | null {
+  if (!isInactiveIndexedDbCleanupInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_inactive_indexed_db_cleanup_json(JSON.stringify(input));
+    const parsed: unknown = JSON.parse(raw);
+    return isInactiveIndexedDbCleanupPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planGraphStorageMaintenanceRust(
+  input: RustGraphStorageMaintenanceInput,
+): RustGraphStorageMaintenancePlan | null {
+  if (!isGraphStorageMaintenanceInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_graph_storage_maintenance_json(JSON.stringify(input));
+    const parsed: unknown = JSON.parse(raw);
+    return isGraphStorageMaintenancePlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planPluginOwnedFileMaintenanceRust(
+  input: RustPluginOwnedFileMaintenanceInput,
+): RustPluginOwnedFileMaintenancePlan | null {
+  if (!isPluginOwnedFileMaintenanceInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_plugin_owned_file_maintenance_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isPluginOwnedFileMaintenancePlan(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -7328,8 +7488,155 @@ function isIndexedDbBoundedCleanupPlan(value: unknown): value is RustIndexedDbBo
   );
 }
 
+function isStaleIndexSourcePathsPlan(value: unknown): value is RustStaleIndexSourcePathsPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustStaleIndexSourcePathsPlan>;
+  return (
+    Array.isArray(plan.deletePaths) &&
+    plan.deletePaths.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.remainingDeleteCount)
+  );
+}
+
+function isInactiveIndexedDbCleanupInput(value: RustInactiveIndexedDbCleanupInput): boolean {
+  return (
+    [value.databaseNames, value.activeNames, value.currentVaultPrefixes, value.currentLegacyNames]
+      .flat()
+      .every((name) => isStringValue(name) && name.length > 0) &&
+    isStringValue(value.pluginId) &&
+    value.pluginId.length > 0 &&
+    value.records.every(isInactiveIndexedDbRecord) &&
+    Number.isFinite(value.now) &&
+    Number.isFinite(value.maxInactiveAgeMs) &&
+    value.maxInactiveAgeMs >= 0 &&
+    isValidNonNegativeInteger(value.maxDeletions)
+  );
+}
+
+function isInactiveIndexedDbRecord(value: unknown): value is RustInactiveIndexedDbRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustInactiveIndexedDbRecord>;
+  return (
+    isStringValue(record.key) &&
+    record.key.length > 0 &&
+    Number.isFinite(record.firstSeen) &&
+    (record.lastSeen === null || Number.isFinite(record.lastSeen))
+  );
+}
+
+function isInactiveIndexedDbCleanupPlan(value: unknown): value is RustInactiveIndexedDbCleanupPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustInactiveIndexedDbCleanupPlan>;
+  return (
+    Array.isArray(plan.records) &&
+    plan.records.every(isInactiveIndexedDbRecord) &&
+    Array.isArray(plan.deleteNames) &&
+    plan.deleteNames.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.remainingDeleteCount)
+  );
+}
+
+function isGraphStorageMaintenanceInput(value: RustGraphStorageMaintenanceInput): boolean {
+  const recordGroups = [
+    value.extractionJobs,
+    value.rawResponses,
+    value.communitySummaryJobs,
+    value.globalSearchJobs,
+    value.providerCircuits,
+  ];
+  return (
+    value.validFilePaths.every((path) => isStringValue(path) && path.length > 0) &&
+    value.graphFilePaths.every((path) => isStringValue(path) && path.length > 0) &&
+    recordGroups.every((records) => records.every(isGraphStorageRecord)) &&
+    Number.isFinite(value.now) &&
+    Number.isFinite(value.maxAgeMs) &&
+    value.maxAgeMs >= 0 &&
+    [
+      value.maxExtractionJobs,
+      value.maxRawResponses,
+      value.maxCommunitySummaryJobs,
+      value.maxGlobalSearchJobs,
+      value.maxProviderCircuits,
+      value.maxDeletions,
+    ].every(isValidNonNegativeInteger)
+  );
+}
+
+function isGraphStorageRecord(value: RustGraphStorageRecord): boolean {
+  return (
+    isStringValue(value.id) &&
+    value.id.length > 0 &&
+    (value.state === undefined || isStringValue(value.state)) &&
+    (value.filePath === undefined ||
+      (isStringValue(value.filePath) && value.filePath.length > 0)) &&
+    (value.rawResponseId === undefined ||
+      (isStringValue(value.rawResponseId) && value.rawResponseId.length > 0)) &&
+    [value.leaseExpiresAt, value.openUntil, value.updatedAt, value.receivedAt].every(
+      (timestamp) => timestamp === undefined || Number.isFinite(timestamp),
+    )
+  );
+}
+
+function isGraphStorageMaintenancePlan(value: unknown): value is RustGraphStorageMaintenancePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustGraphStorageMaintenancePlan>;
+  return (
+    [
+      plan.deleteFilePaths,
+      plan.deleteExtractionJobIds,
+      plan.deleteRawResponseIds,
+      plan.deleteCommunitySummaryJobIds,
+      plan.deleteGlobalSearchJobIds,
+      plan.deleteProviderCircuitIds,
+    ].every((ids) => Array.isArray(ids) && ids.every(isStringValue)) &&
+    typeof plan.remainingWork === 'boolean'
+  );
+}
+
 function isIndexedDbRetentionRecord(value: RustIndexedDbRetentionRecord): boolean {
   return isStringValue(value.id) && value.id.length > 0 && Number.isFinite(value.updated);
+}
+
+function isPluginOwnedFileMaintenanceInput(value: RustPluginOwnedFileMaintenanceInput): boolean {
+  return (
+    Array.isArray(value.records) &&
+    value.records.every(isPluginOwnedFileRecord) &&
+    [value.pluginDirectory, value.legacyDataDirectory, value.eventLogPath].every(
+      (path) => isStringValue(path) && path.length > 0,
+    ) &&
+    Number.isFinite(value.now) &&
+    value.now >= 0 &&
+    Number.isFinite(value.staleTempAgeMs) &&
+    value.staleTempAgeMs >= 0 &&
+    isValidNonNegativeInteger(value.maxEventLogBytes) &&
+    typeof value.allowLegacyCleanup === 'boolean' &&
+    isValidNonNegativeInteger(value.maxDeletions)
+  );
+}
+
+function isPluginOwnedFileRecord(value: unknown): value is RustPluginOwnedFileRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<RustPluginOwnedFileRecord>;
+  return (
+    isStringValue(record.path) &&
+    record.path.length > 0 &&
+    Number.isFinite(record.mtime) &&
+    (record.mtime ?? -1) >= 0 &&
+    isValidNonNegativeInteger(record.size)
+  );
+}
+
+function isPluginOwnedFileMaintenancePlan(
+  value: unknown,
+): value is RustPluginOwnedFileMaintenancePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustPluginOwnedFileMaintenancePlan>;
+  return (
+    Array.isArray(plan.deletePaths) &&
+    plan.deletePaths.every(isStringValue) &&
+    isValidNonNegativeInteger(plan.remainingDeleteCount) &&
+    (plan.rotateEventLogPath === null || isStringValue(plan.rotateEventLogPath))
+  );
 }
 
 function isIndexedDbBoundedRetentionPlan(
