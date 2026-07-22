@@ -1,6 +1,6 @@
 {
   "name": "superpower-inside",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "description": "Desktop AI copilot with LLM chat, RAG, MCP tools, and source-aware context.",
   "main": "main.js",
   "scripts": {
