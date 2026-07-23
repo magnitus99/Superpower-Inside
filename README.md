@@ -6,13 +6,14 @@
 ![RAG](https://img.shields.io/badge/RAG-vault%20notes-0f766e)
 ![MCP](https://img.shields.io/badge/MCP-stdio%20tools-f97316)
 
-> **Desktop AI copilot for Obsidian.** Chat with LLMs, search your vault with RAG and GraphRAG, call trusted MCP tools, and keep source-aware answers close to your notes.
+> **Native research agent for Obsidian.** Ask an LLM to search, inspect, connect, and summarize your vault through a source-grounded read-only tool—not just a one-shot context attachment.
 
 Superpower Inside is built for people who use Obsidian as a working knowledge base. The plugin should feel quiet and competent: connect the pieces once, ask in natural language, and let the assistant prepare context, sources, and tool results without turning daily note work into system maintenance.
 
 | What it helps with | How it works |
 | --- | --- |
-| Find answers in your vault | Uses local indexes and graph-aware context when they are available |
+| Find answers in your vault | Keeps keyword search available without embeddings and adds vector and graph signals when ready |
+| Research the whole vault | Reads every eligible note in bounded batches, then builds a hierarchical source-backed synthesis |
 | Work with sources | Shows source cards, evidence, and citation actions beside the answer |
 | Use your preferred model | Pick a model first, then let Superpower Inside prepare the matching provider profile |
 | Extend the assistant | Lets a trusted local MCP stdio server help when you mention it |
@@ -25,12 +26,13 @@ Superpower Inside is built for people who use Obsidian as a working knowledge ba
 
 ```mermaid
 flowchart LR
-    A["Your Obsidian vault"] --> B["RAG and GraphRAG context"]
-    C["Chat sidebar"] --> D["LLM provider"]
+    A["Your Obsidian vault"] --> B["Native read-only vault tool"]
+    C["Chat and research agent"] --> D["LLM provider"]
     B --> C
-    E["Trusted MCP stdio servers"] --> C
-    C --> F["Answer with sources"]
-    F --> G["Open, copy, or insert citations"]
+    E["Keyword, vector, structure, and graph evidence"] --> B
+    F["Trusted MCP stdio servers"] --> C
+    C --> G["Answer with sources"]
+    G --> H["Open, copy, or insert citations"]
 ```
 
 ## Features
@@ -38,7 +40,9 @@ flowchart LR
 | Feature | Description |
 | --- | --- |
 | Chat sidebar | Ask questions without leaving Obsidian. |
-| Vault RAG | Finds relevant Markdown context with vector, keyword, and structural retrieval paths. |
+| Native vault tool | Lets the model iteratively search, read, list, inspect links, and check vault scope through one first-class read-only tool. |
+| Whole-vault research | Maps every eligible note, reduces large result sets hierarchically, and synthesizes a cited answer instead of sampling only top-k chunks. |
+| Vault retrieval | Uses BM25 as the always-available lexical baseline, with vector and structural retrieval as optional accelerators. |
 | GraphRAG | Uses local graph evidence for entity, relation, theme, and source-backed questions. |
 | File and folder mentions | Attach exact notes or folders with `@file.md` or `@[folder/path]`. |
 | MCP mentions | Use `@server` when you want a trusted MCP server to help. |
@@ -66,7 +70,7 @@ flowchart LR
 
 ## First Setup
 
-Choose the model profile you want to use first. Superpower Inside fills in the matching provider shape for chat, embedding, and graph extraction, while still letting you adjust advanced fields when a custom endpoint needs them. If you use local Ollama, set the local base URL and model. If you use a remote provider, add the API key in Obsidian's local plugin storage.
+Choose the chat model profile you want to use first. Superpower Inside fills in the matching provider shape while still letting you adjust advanced fields when a custom endpoint needs them. Keyword retrieval and the native vault tool do not require an embedding provider. If you use local Ollama, set the local base URL and model. If you use a remote provider, add the API key in Obsidian's local plugin storage.
 
 Ternlight is always available as the built-in embedding option and is the default for new installations. It runs entirely on this device. If its WASM model file is missing, Superpower Inside downloads the asset for the installed plugin version from this repository's GitHub Release, verifies its size and SHA-256 checksum, and then reuses it offline.
 
@@ -76,10 +80,10 @@ After that, open the chat sidebar and ask a question. When RAG or GraphRAG needs
 
 ### Chat With Your Vault
 
-Ask natural questions in the sidebar. When RAG is enabled, Superpower Inside attaches relevant note context before the model answers. When GraphRAG is enabled, graph evidence can also help answer questions about entities, relationships, themes, and source-backed claims.
+Ask natural questions in the sidebar. The model can call Superpower Inside's native read-only vault tool repeatedly to search, open the relevant ranges, follow links, and verify scope before answering. Keyword retrieval remains available without embeddings; compatible vector, structural, and GraphRAG evidence improves ranking and relationship questions when ready.
 
 ```text
-Summarize my notes about active projects.
+Summarize this entire vault and cite the major themes.
 What did I write about retrieval-augmented generation last month?
 Find contradictions between my planning notes and meeting notes.
 ```
@@ -123,6 +127,7 @@ The Agent Diagnostics view writes a local JSON snapshot and append-only event lo
 
 - Settings and API keys are stored in this device's Obsidian local storage and are not newly saved to the synced plugin `data.json` file.
 - Chat messages, selected notes, retrieved RAG chunks, tool arguments, and tool results may be sent to the configured LLM, embedding provider, or MCP server.
+- The built-in `superpower_inside` model tool is read-only. It can search, read bounded line ranges, list Markdown notes, inspect resolved links, and report vault statistics; it cannot create, modify, move, or delete notes.
 - RAG and GraphRAG features enumerate Markdown files in the vault to build and refresh local indexes.
 - Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
 - Citation actions and copy buttons write text to the system clipboard.
@@ -142,13 +147,14 @@ The Agent Diagnostics view writes a local JSON snapshot and append-only event lo
 
 ## 한국어 안내
 
-> **Obsidian 데스크톱용 AI 코파일럿.** LLM 채팅, 볼트 RAG/GraphRAG 검색, 신뢰한 MCP 도구 호출, 출처 기반 답변을 노트 작업 흐름 안에서 제공합니다.
+> **Obsidian 네이티브 리서치 에이전트.** LLM이 단발성 컨텍스트 첨부에 머물지 않고, 출처가 보존되는 읽기 전용 도구로 볼트를 검색하고 읽고 연결하며 전체를 요약합니다.
 
 Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람을 위한 플러그인입니다. 한 번 연결해 두면 질문, 컨텍스트 준비, 출처 확인, 필요한 인용 삽입이 한 화면 안에서 조용히 이어지도록 설계합니다.
 
 | 도움이 되는 일 | 작동 방식 |
 | --- | --- |
-| 볼트에서 답 찾기 | 사용 가능한 로컬 인덱스와 graph-aware 컨텍스트를 활용 |
+| 볼트에서 답 찾기 | 임베딩 없이도 키워드 검색을 유지하고 준비된 벡터·그래프 신호를 함께 활용 |
+| 볼트 전체 조사하기 | 모든 대상 노트를 제한된 배치로 읽고 계층적으로 종합해 출처 있는 답변 생성 |
 | 출처 확인하기 | 답변 아래 출처 카드와 evidence를 보여주고 노트로 다시 삽입 |
 | 원하는 모델 쓰기 | OpenAI, Claude, Ollama, OpenRouter, Ollama Cloud, 커스텀 OpenAI-compatible provider 지원 |
 | 도구 확장하기 | 신뢰한 로컬 MCP stdio 서버를 필요할 때 연결 |
@@ -162,7 +168,9 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | 기능 | 설명 |
 | --- | --- |
 | 사이드바 채팅 | Obsidian을 떠나지 않고 AI와 대화합니다. |
-| 볼트 RAG | 벡터, 키워드, 구조 기반 검색으로 Markdown 노트의 관련 청크를 모델 컨텍스트로 보냅니다. |
+| 네이티브 볼트 도구 | 모델이 하나의 읽기 전용 도구로 검색, 범위 읽기, 파일 목록, 링크, 볼트 범위를 반복 확인합니다. |
+| 볼트 전체 리서치 | 일부 top-k 청크만 뽑지 않고 모든 대상 노트를 map/reduce해 출처가 포함된 종합 답변을 만듭니다. |
+| 볼트 검색 | BM25를 항상 사용 가능한 기반으로 두고 벡터와 구조 검색을 선택적 가속 계층으로 결합합니다. |
 | GraphRAG | 노트에서 만든 로컬 지식 그래프로 entity, relation, evidence, community 기반 컨텍스트를 제공합니다. |
 | 파일/폴더 멘션 | `@file.md`, `@[folder/path]`로 특정 노트나 폴더를 붙입니다. |
 | MCP 멘션 | `@server`로 신뢰한 MCP 서버를 사용합니다. |
@@ -173,7 +181,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 
 ## 첫 설정
 
-먼저 채팅 provider를 연결합니다. 로컬 Ollama를 쓰면 로컬 base URL과 모델을 지정하고, 원격 provider를 쓰면 API 키를 Obsidian 로컬 플러그인 저장소에 입력합니다.
+먼저 채팅 provider를 연결합니다. 키워드 검색과 네이티브 볼트 도구는 임베딩 provider가 없어도 작동합니다. 로컬 Ollama를 쓰면 로컬 base URL과 모델을 지정하고, 원격 provider를 쓰면 API 키를 Obsidian 로컬 플러그인 저장소에 입력합니다.
 
 Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치의 기본값입니다. 모델은 기기 안에서만 실행됩니다. WASM 모델 파일이 없으면 설치된 플러그인과 같은 버전의 GitHub Release에서 내려받아 크기와 SHA-256을 검증한 뒤 오프라인으로 재사용합니다.
 
@@ -183,10 +191,10 @@ Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치�
 
 ### 볼트와 대화하기
 
-사이드바에서 자연어로 질문하세요. RAG가 켜져 있으면 관련 노트 컨텍스트가 모델 요청에 함께 들어갑니다. GraphRAG가 켜져 있으면 entity, relation, theme, source-backed claim 질문에 그래프 evidence도 함께 사용할 수 있습니다.
+사이드바에서 자연어로 질문하세요. 모델은 Superpower Inside의 네이티브 읽기 전용 볼트 도구를 반복 호출해 검색하고, 필요한 줄을 읽고, 링크와 범위를 확인한 뒤 답할 수 있습니다. 임베딩이 없어도 키워드 검색은 유지되며, 준비된 벡터·구조·GraphRAG evidence는 랭킹과 관계형 질문을 강화합니다.
 
 ```text
-진행 중인 프로젝트 노트를 요약해줘.
+이 볼트 전체를 요약하고 주요 주제마다 출처를 달아줘.
 지난달에 RAG에 대해 적은 내용을 찾아줘.
 기획 노트와 회의 노트 사이의 모순을 찾아줘.
 ```
@@ -220,6 +228,7 @@ GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. p
 
 - 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며, 동기화되는 플러그인 `data.json` 파일에는 새로 저장하지 않습니다.
 - 채팅 메시지, 선택된 노트, RAG 청크, 도구 호출 인자와 결과는 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
+- 내장 `superpower_inside` 모델 도구는 읽기 전용입니다. Markdown 검색, 제한된 줄 범위 읽기, 파일 목록, 확인된 링크, 볼트 통계를 제공하지만 노트를 생성·수정·이동·삭제할 수 없습니다.
 - RAG와 GraphRAG 기능은 인덱스 생성과 갱신을 위해 볼트의 Markdown 파일 목록을 열람합니다.
 - 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 저장됩니다.
 - 출처 복사와 메시지 복사 기능은 시스템 클립보드에 텍스트를 씁니다.
