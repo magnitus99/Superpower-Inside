@@ -41,6 +41,7 @@ export interface EntityResolutionInput {
 }
 
 export type EntityResolutionStatus = 'new' | 'auto-merge' | 'pending-merge';
+const ENTITY_EMBEDDING_BATCH_SIZE = 32;
 
 export interface EntityResolutionResult {
   status: EntityResolutionStatus;
@@ -125,48 +126,84 @@ async function createScoredResolutionCandidates(
   embeddingProvider?: EmbeddingProvider,
   autoMergeThreshold?: number,
 ): Promise<RustEntityResolutionCandidate[]> {
-  const candidates: RustEntityResolutionCandidate[] = [];
-  for (const entity of entities) {
-    const score =
-      entity.ontologySchemaId === input.knowledgeContract.id && entity.typeId === input.typeId
-        ? await scoreEntityMatch(entity, input, embeddingProvider, autoMergeThreshold)
-        : 0;
-    candidates.push({
+  const rustInputs = entities.map((entity) => createRustEntityMatchInput(entity, input, 0));
+  const scores = entities.map((entity, index) =>
+    entity.ontologySchemaId === input.knowledgeContract.id && entity.typeId === input.typeId
+      ? (scoreEntityMatchRust(rustInputs[index] ?? createRustEntityMatchInput(entity, input, 0)) ?? 0)
+      : 0,
+  );
+  if (embeddingProvider) {
+    await applyEmbeddingScores(
+      entities,
+      input,
+      rustInputs,
+      scores,
+      embeddingProvider,
+      autoMergeThreshold,
+    );
+  }
+  return entities.map((entity, index) => ({
       entityId: entity.id,
       ontologySchemaId: entity.ontologySchemaId,
       typeId: entity.typeId,
-      score,
-    });
-  }
-  return candidates;
+      score: scores[index] ?? 0,
+    }));
 }
 
-async function scoreEntityMatch(
-  entity: GraphEntityRecord,
+async function applyEmbeddingScores(
+  entities: readonly GraphEntityRecord[],
   input: EntityResolutionInput,
-  embeddingProvider?: EmbeddingProvider,
-  autoMergeThreshold?: number,
-): Promise<number> {
-  const rustInput = createRustEntityMatchInput(entity, input, 0);
-  const candidateNames = getResolutionInputLabelValues(input);
-  const existingNames = getEntityLabelValues(entity);
-  const exactLabelMatch = hasExactGraphEntityLabelMatch(candidateNames, existingNames);
-  const rustScoreWithoutEmbedding = scoreEntityMatchRust(rustInput);
-  if (rustScoreWithoutEmbedding === 1 || !embeddingProvider) {
-    return rustScoreWithoutEmbedding ?? 0;
-  }
-
-  const embeddingScore = await embeddingSimilarityScore(entity, input, embeddingProvider);
-  const rustScore = scoreEntityMatchRust({
-    ...rustInput,
-    embeddingScore,
-  });
-  return capCrossLanguageSemanticScore(
-    rustScore ?? 0,
-    exactLabelMatch,
-    hasCrossLanguageGraphEntityLabelPair(candidateNames, existingNames),
-    autoMergeThreshold,
+  rustInputs: readonly RustEntityMatchInput[],
+  scores: number[],
+  embeddingProvider: EmbeddingProvider,
+  autoMergeThreshold: number | undefined,
+): Promise<void> {
+  const eligibleIndices = entities.flatMap((entity, index) =>
+    entity.ontologySchemaId === input.knowledgeContract.id &&
+    entity.typeId === input.typeId &&
+    scores[index] !== 1
+      ? [index]
+      : [],
   );
+  if (eligibleIndices.length === 0) return;
+  let candidateVector: number[];
+  try {
+    candidateVector = await embeddingProvider.embed(createCandidateEmbeddingText(input));
+  } catch {
+    return;
+  }
+  for (let offset = 0; offset < eligibleIndices.length; offset += ENTITY_EMBEDDING_BATCH_SIZE) {
+    const batchIndices = eligibleIndices.slice(offset, offset + ENTITY_EMBEDDING_BATCH_SIZE);
+    try {
+      const vectors = await embeddingProvider.embedBatch(
+        batchIndices.flatMap((index) => {
+          const entity = entities[index];
+          return entity ? [createExistingEntityEmbeddingText(entity)] : [];
+        }),
+      );
+      for (let batchIndex = 0; batchIndex < batchIndices.length; batchIndex++) {
+        const entityIndex = batchIndices[batchIndex];
+        const entity = entityIndex === undefined ? undefined : entities[entityIndex];
+        const rustInput = entityIndex === undefined ? undefined : rustInputs[entityIndex];
+        const vector = vectors[batchIndex];
+        if (!entity || !rustInput || !vector) continue;
+        const candidateNames = getResolutionInputLabelValues(input);
+        const existingNames = getEntityLabelValues(entity);
+        const rustScore = scoreEntityMatchRust({
+          ...rustInput,
+          embeddingScore: cosineSimilarityFromRust(candidateVector, vector),
+        });
+        scores[entityIndex] = capCrossLanguageSemanticScore(
+          rustScore ?? scores[entityIndex] ?? 0,
+          hasExactGraphEntityLabelMatch(candidateNames, existingNames),
+          hasCrossLanguageGraphEntityLabelPair(candidateNames, existingNames),
+          autoMergeThreshold,
+        );
+      }
+    } catch {
+      // 실패한 배치는 lexical score를 유지하고 다음 배치로 진행합니다.
+    }
+  }
 }
 
 function createRustEntityMatchInput(
@@ -186,21 +223,12 @@ function createRustEntityMatchInput(
   };
 }
 
-async function embeddingSimilarityScore(
-  entity: GraphEntityRecord,
-  input: EntityResolutionInput,
-  embeddingProvider?: EmbeddingProvider,
-): Promise<number> {
-  if (!embeddingProvider) return 0;
-  try {
-    const [left, right] = await embeddingProvider.embedBatch([
-      `${getEntityLabelValues(entity).join('\n')}\n${entity.description}`.trim(),
-      `${getResolutionInputLabelValues(input).join('\n')}\n${input.description}`.trim(),
-    ]);
-    return cosineSimilarityFromRust(left, right);
-  } catch {
-    return 0;
-  }
+function createCandidateEmbeddingText(input: EntityResolutionInput): string {
+  return `${getResolutionInputLabelValues(input).join('\n')}\n${input.description}`.trim();
+}
+
+function createExistingEntityEmbeddingText(entity: GraphEntityRecord): string {
+  return `${getEntityLabelValues(entity).join('\n')}\n${entity.description}`.trim();
 }
 
 function cosineSimilarityFromRust(left: readonly number[], right: readonly number[]): number {

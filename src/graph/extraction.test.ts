@@ -608,6 +608,10 @@ describe('GraphExtractionIndexer', () => {
 
     const systemPrompt = provider.messages[0]?.[0]?.content ?? '';
     expect(systemPrompt).toContain('Unknown relations are allowed.');
+    expect(systemPrompt).toContain('Suggested relation type hints:');
+    expect(systemPrompt).toContain('decision_claim|hypothesis_claim|requirement_claim|action_item_claim');
+    expect(systemPrompt).toContain('project|task|decision|question|requirement|metric|product|technology');
+    expect(systemPrompt).toContain('Preserve explicit negation, uncertainty, and temporal order.');
     expect(systemPrompt).toContain('Relations must use sourceRef and targetRef.');
     expect(systemPrompt).toContain('Claims must reference only directly relevant entity and relation ids.');
     expect(systemPrompt).toContain(

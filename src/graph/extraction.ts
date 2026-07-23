@@ -624,13 +624,18 @@ function planGraphRelationEndpointIndicesFallback(
 }
 
 function buildExtractionSystemPrompt(schema: KnowledgeGraphContract): string {
-  const entityTypes = schema.entityTypes.map((entityType) => entityType.id).join(', ');
+  const entityTypes = schema.entityTypes.map((entityType) => entityType.id);
+  const claimTypes = schema.claimTypes.map((claimType) => claimType.id);
+  const relationTypeHints = schema.relationTypeHints
+    .map((relationType) => relationType.id)
+    .join(', ');
   return [
     'Extract evidence-grounded knowledge graph facts as JSON only.',
-    `Suggested entity type hints: ${entityTypes}. Use other when none fit.`,
-    'Use concise snake_case relationTypeId values that preserve the source meaning. Unknown relations are allowed.',
+    `Suggested entity type hints: ${entityTypes.join(', ')}. Use other when none fit.`,
+    `Suggested relation type hints: ${relationTypeHints}.`,
+    `Use concise snake_case relationTypeId values that preserve the source meaning. ${schema.allowUnknownRelationTypes ? 'Unknown relations are allowed.' : 'Use only the suggested relation types.'}`,
     'Return exactly one JSON object with this shape:',
-    '{"entities":[{"id":"e1","name":"string","typeId":"person|organization|place|document|event|concept|other","description":"string","aliases":["string"],"confidence":0.0,"evidenceSpans":[{"start":0,"end":5}]}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}],"claims":[{"id":"c1","text":"string","claimTypeId":"factual_claim|interpretive_claim|evaluative_claim","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}]}',
+    `{"entities":[{"id":"e1","name":"string","typeId":"${entityTypes.join('|')}","description":"string","aliases":["string"],"confidence":0.0,"evidenceSpans":[{"start":0,"end":5}]}],"relations":[{"id":"r1","sourceRef":"e1","targetRef":"e2","relationTypeId":"snake_case_label","description":"string","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}],"claims":[{"id":"c1","text":"string","claimTypeId":"${claimTypes.join('|')}","entityRefs":["e1"],"relationRefs":["r1"],"stance":"supports|opposes|neutral|interprets","confidence":0.0,"evidenceSpans":[{"start":0,"end":12}]}]}`,
     'Use entities, relations, claims as arrays even when empty.',
     'Every entity, relation, and claim must have a unique response-local id.',
     'evidenceSpans use zero-based UTF-16 offsets into the provided source text. Include the narrowest directly supporting span for every fact.',
@@ -640,6 +645,7 @@ function buildExtractionSystemPrompt(schema: KnowledgeGraphContract): string {
     'Do not invent translated aliases just to make the graph multilingual.',
     'Every sourceRef, targetRef, entityRef, and relationRef must match a response-local id.',
     'Do not use generic role words as entities unless the source explicitly names them.',
+    'Preserve explicit negation, uncertainty, and temporal order.',
     schema.extractionGuidelines,
   ].join('\n');
 }

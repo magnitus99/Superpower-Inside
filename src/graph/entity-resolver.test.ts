@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { createEntityId, EntityResolver, normalizeEntityName } from './entity-resolver';
@@ -241,6 +241,40 @@ describe('EntityResolver', () => {
 
     expect(result.status).toBe('pending-merge');
     expect(result.matchedEntityId).toBe('entity::knowledge-graph::concept::grace');
+  });
+
+  it('대형 entity 후보의 임베딩을 한 번의 candidate와 32개 단위 batch로 제한한다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    for (let index = 0; index < 65; index++) {
+      await store.upsertEntity(
+        createEntity({
+          canonicalName: `Concept ${index}`,
+          typeId: 'concept',
+          description: `description ${index}`,
+        }),
+      );
+    }
+    const embed = vi.fn(() => Promise.resolve([1, 0]));
+    const embedBatch = vi.fn((texts: string[]) =>
+      Promise.resolve(texts.map(() => [0, 1])),
+    );
+    const resolver = new EntityResolver(store, {
+      autoMergeThreshold: 0.92,
+      pendingMergeThreshold: 0.72,
+      embeddingProvider: { embed, embedBatch },
+    });
+
+    await resolver.resolve({
+      knowledgeContract: buildKnowledgeGraphContract(),
+      typeId: 'concept',
+      canonicalName: 'Different idea',
+      aliases: [],
+      description: 'unrelated',
+    });
+
+    expect(embed).toHaveBeenCalledOnce();
+    expect(embedBatch).toHaveBeenCalledTimes(3);
+    expect(embedBatch.mock.calls.map(([texts]) => texts.length)).toEqual([32, 32, 1]);
   });
 });
 
