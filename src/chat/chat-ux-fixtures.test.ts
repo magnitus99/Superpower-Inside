@@ -48,6 +48,7 @@ describe('chat UX fixture gate', () => {
     expect(viewSource).toContain('severity-${item.severity}');
     expect(styles).toContain('.superpower-inside-chat-empty-state-prompts button');
     expect(styles).toContain('.superpower-inside-chat-readiness.superpower-inside-hidden');
+    expect(styles).toContain('.superpower-inside-chat-run-control.superpower-inside-hidden');
     expect(styles).toContain('@container (max-width: 420px)');
   });
 

@@ -24,6 +24,7 @@
 .superpower-inside-rag-graph-progress-banner.superpower-inside-hidden,
 .superpower-inside-graph-view-progress.superpower-inside-hidden,
 .superpower-inside-chat-readiness.superpower-inside-hidden,
+.superpower-inside-chat-run-control.superpower-inside-hidden,
 .superpower-inside-chat-mcp-status-bar.superpower-inside-hidden {
   display: none;
 }
