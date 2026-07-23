@@ -26,6 +26,11 @@
     "cytoscape": "^3.33.4",
     "dexie": "^4.0.11"
   },
+  "overrides": {
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "2.0.11"
+    }
+  },
   "devDependencies": {
     "@types/cytoscape": "^3.21.9",
     "@types/node": "^22.15.14",
