@@ -9,7 +9,7 @@ target/
 main.js
 data.json
 agent-diagnostics.json*
-agent-diagnostics.ndjson
+agent-diagnostics.ndjson*
 agent-diagnostics-safe-mode.json
 .env.test.local
 
