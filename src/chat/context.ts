@@ -354,6 +354,7 @@ async function appendImplicitFolderEvidence(
       expandedQuery,
       readable.map(({ file, content }) => `${file.path}\n${content}`),
       topK,
+      'any',
     ) ?? undefined,
     { dedupe: true },
   );

@@ -2,6 +2,8 @@ export type ProviderTransport = 'request-url-buffered';
 
 export type ProviderAbortCapability = 'native' | 'best-effort';
 
+export const MAX_PROVIDER_TOOL_ROUNDS = 20;
+
 export interface ProviderCapabilitySnapshot {
   providerKey: string;
   model: string;
@@ -55,7 +57,7 @@ export function normalizeProviderCapabilityOverrides(
     Number.isInteger(source.maxToolRounds) &&
     source.maxToolRounds >= 0
   ) {
-    overrides.maxToolRounds = source.maxToolRounds;
+    overrides.maxToolRounds = Math.min(source.maxToolRounds, MAX_PROVIDER_TOOL_ROUNDS);
   }
   if (Array.isArray(source.knownLimitations)) {
     const knownLimitations = source.knownLimitations
@@ -191,7 +193,7 @@ function applyProviderCapabilityOverrides(
   if (!overrides) return capability;
   const maxToolRounds =
     overrides.maxToolRounds !== undefined
-      ? Math.max(0, Math.trunc(overrides.maxToolRounds))
+      ? Math.min(MAX_PROVIDER_TOOL_ROUNDS, Math.max(0, Math.trunc(overrides.maxToolRounds)))
       : capability.maxToolRounds;
   const toolCalling = overrides.toolCalling ?? capability.toolCalling;
   return {

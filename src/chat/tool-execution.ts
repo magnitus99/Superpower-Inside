@@ -110,6 +110,7 @@ export function markRepeatedToolCalls(
   history: readonly ToolCallRecord[],
   candidates: readonly ToolCallRecord[],
   maxRepeats = 2,
+  maxNativeSearchCalls = 4,
 ): ToolCallRecord[] {
   const completedHistory = history.filter(
     (toolCall) => toolCall.status === 'success' || toolCall.status === 'error',
@@ -124,6 +125,7 @@ export function markRepeatedToolCalls(
       arguments: toolArguments,
     })),
     maxRepeats,
+    maxNativeSearchCalls,
   );
   if (!repeatedIndices) throw new Error(t('toolLoopPolicyUnavailable'));
   const repeated = new Set(repeatedIndices);
@@ -172,6 +174,14 @@ export function appendAssistantToolRound(
       tool_result_is_error: toolCall.status === 'error',
     })),
   ];
+}
+
+export function joinAssistantToolRoundText(current: string, next: string): string {
+  const left = current.trimEnd();
+  const right = next.trimStart();
+  if (!left) return right;
+  if (!right) return left;
+  return `${left}\n\n${right}`;
 }
 
 async function executeNativeToolCall(

@@ -29,8 +29,13 @@ pub fn is_whole_vault_research_intent(question: &str) -> bool {
         "요약",
         "정리",
         "개요",
+        "조사",
+        "전수",
         "분석",
         "종합",
+        "research",
+        "investigate",
+        "inspect",
         "summary",
         "summarize",
         "overview",
@@ -93,6 +98,7 @@ pub fn plan_research_summary_batches_json(
 pub fn plan_research_citation_indices_json(
     content: &str,
     citation_ids_json: &str,
+    citation_paths_json: &str,
     fallback_limit: usize,
 ) -> String {
     let Ok(value) = serde_json::from_str::<JsonValue>(citation_ids_json) else {
@@ -108,18 +114,44 @@ pub fn plan_research_citation_indices_json(
         };
         citation_ids.push(citation_id);
     }
+    let Ok(path_value) = serde_json::from_str::<JsonValue>(citation_paths_json) else {
+        return String::new();
+    };
+    let Some(path_values) = path_value.as_array() else {
+        return String::new();
+    };
+    let mut citation_paths = Vec::<&str>::with_capacity(path_values.len());
+    for value in path_values {
+        let Some(citation_path) = value.as_str() else {
+            return String::new();
+        };
+        citation_paths.push(citation_path);
+    }
+    if citation_paths.len() != citation_ids.len() {
+        return String::new();
+    }
 
-    let referenced = citation_ids
+    let referenced_ids = citation_ids
         .iter()
         .enumerate()
         .filter_map(|(index, citation_id)| {
             contains_bounded_marker(content, citation_id).then_some(index)
         })
         .collect::<Vec<_>>();
-    if referenced.is_empty() {
-        return json!((0..citation_ids.len().min(fallback_limit)).collect::<Vec<_>>()).to_string();
+    if !referenced_ids.is_empty() {
+        return json!(referenced_ids).to_string();
     }
-    json!(referenced).to_string()
+    let referenced_paths = citation_paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, citation_path)| {
+            (!citation_path.is_empty() && content.contains(citation_path)).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if !referenced_paths.is_empty() {
+        return json!(referenced_paths).to_string();
+    }
+    json!((0..citation_ids.len().min(fallback_limit)).collect::<Vec<_>>()).to_string()
 }
 
 /// Classifies a provider failure and returns a bounded retry plan for research requests.
@@ -191,8 +223,9 @@ pub fn plan_repeated_tool_call_indices_json(
     history_json: &str,
     candidates_json: &str,
     max_repeats: usize,
+    max_native_search_calls: usize,
 ) -> String {
-    if max_repeats == 0 {
+    if max_repeats == 0 || max_native_search_calls == 0 {
         return String::new();
     }
     let Some(history) = parse_tool_call_signatures(history_json) else {
@@ -202,22 +235,39 @@ pub fn plan_repeated_tool_call_indices_json(
         return String::new();
     };
     let mut counts = BTreeMap::<String, usize>::new();
+    let mut native_search_count = 0_usize;
     for signature in history {
-        *counts.entry(signature).or_default() += 1;
+        if signature.is_native_search {
+            native_search_count = native_search_count.saturating_add(1);
+        }
+        *counts.entry(signature.canonical).or_default() += 1;
     }
     let mut repeated = Vec::<usize>::new();
     for (index, signature) in candidates.into_iter().enumerate() {
-        let count = counts.entry(signature).or_default();
-        if *count >= max_repeats {
+        let exceeds_search_budget =
+            signature.is_native_search && native_search_count >= max_native_search_calls;
+        let count = counts.entry(signature.canonical).or_default();
+        if *count >= max_repeats || exceeds_search_budget {
             repeated.push(index);
         }
         *count += 1;
+        if signature.is_native_search {
+            native_search_count = native_search_count.saturating_add(1);
+        }
     }
     json!(repeated).to_string()
 }
 
+/// 도구 호출의 정규화된 중복 판정 정보.
+struct ToolCallSignature {
+    /// 이름과 canonical JSON 인자를 결합한 안정된 호출 식별자.
+    canonical: String,
+    /// 읽기 전용 Vault 도구의 search 액션인지 여부.
+    is_native_search: bool,
+}
+
 /// Parses tool-call records into stable name and canonical-argument signatures.
-fn parse_tool_call_signatures(raw: &str) -> Option<Vec<String>> {
+fn parse_tool_call_signatures(raw: &str) -> Option<Vec<ToolCallSignature>> {
     let value = serde_json::from_str::<JsonValue>(raw).ok()?;
     value
         .as_array()?
@@ -229,9 +279,20 @@ fn parse_tool_call_signatures(raw: &str) -> Option<Vec<String>> {
             if name.is_empty() {
                 return None;
             }
-            let canonical_arguments = serde_json::from_str::<JsonValue>(arguments)
-                .map_or_else(|_| arguments.to_owned(), |value| canonical_json(&value));
-            Some(format!("{name}\0{canonical_arguments}"))
+            let parsed_arguments = serde_json::from_str::<JsonValue>(arguments).ok();
+            let is_native_search = name == "superpower_inside"
+                && parsed_arguments
+                    .as_ref()
+                    .and_then(JsonValue::as_object)
+                    .and_then(|object| object.get("action"))
+                    .and_then(JsonValue::as_str)
+                    == Some("search");
+            let canonical_arguments = parsed_arguments
+                .map_or_else(|| arguments.to_owned(), |value| canonical_json(&value));
+            Some(ToolCallSignature {
+                canonical: format!("{name}\0{canonical_arguments}"),
+                is_native_search,
+            })
         })
         .collect()
 }
@@ -347,6 +408,7 @@ mod tests {
         let raw = plan_research_citation_indices_json(
             "결론 [vault:Alpha.md:1-10] 및 Source graph-2",
             r#"["vault:Alpha.md:1-1","vault:Alpha.md:1-10","graph-2","unused"]"#,
+            r#"["Alpha.md","Alpha.md","graph://2","Unused.md"]"#,
             2,
         );
 
@@ -355,8 +417,24 @@ mod tests {
 
     #[test]
     fn citation_selection_uses_a_bounded_fallback_when_the_model_omits_markers() {
-        let raw =
-            plan_research_citation_indices_json("출처 표기가 없는 요약", r#"["a","b","c","d"]"#, 2);
+        let raw = plan_research_citation_indices_json(
+            "출처 표기가 없는 요약",
+            r#"["a","b","c","d"]"#,
+            r#"["A.md","B.md","C.md","D.md"]"#,
+            2,
+        );
+
+        assert_eq!(raw, "[0,1]");
+    }
+
+    #[test]
+    fn citation_selection_uses_paths_named_in_the_final_answer() {
+        let raw = plan_research_citation_indices_json(
+            "Bible/Genesis.md와 People/Neville.md를 확인했다.",
+            r#"["a","b","c"]"#,
+            r#"["Bible/Genesis.md","People/Neville.md","Archive/Other.md"]"#,
+            2,
+        );
 
         assert_eq!(raw, "[0,1]");
     }
@@ -399,14 +477,31 @@ mod tests {
         ]"#;
 
         assert_eq!(
-            plan_repeated_tool_call_indices_json(history, candidates, 2),
+            plan_repeated_tool_call_indices_json(history, candidates, 2, 4),
             "[0]"
         );
     }
 
     #[test]
     fn repeated_tool_call_plan_rejects_invalid_input() {
-        assert!(plan_repeated_tool_call_indices_json("{}", "[]", 2).is_empty());
-        assert!(plan_repeated_tool_call_indices_json("[]", "[]", 0).is_empty());
+        assert!(plan_repeated_tool_call_indices_json("{}", "[]", 2, 4).is_empty());
+        assert!(plan_repeated_tool_call_indices_json("[]", "[]", 0, 4).is_empty());
+    }
+
+    #[test]
+    fn native_search_calls_have_a_per_turn_budget() {
+        let candidates = r#"[
+            {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"one\"}"},
+            {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"two\"}"},
+            {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"three\"}"},
+            {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"four\"}"},
+            {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"five\"}"},
+            {"name":"superpower_inside","arguments":"{\"action\":\"read\",\"path\":\"Alpha.md\"}"}
+        ]"#;
+
+        assert_eq!(
+            plan_repeated_tool_call_indices_json("[]", candidates, 2, 4),
+            "[4]",
+        );
     }
 }

@@ -1858,22 +1858,25 @@ export function plan_file_index_records_json(entries_json, updated) {
  * @param {string} query
  * @param {string} samples_json
  * @param {number} top_k
+ * @param {string} match_mode
  * @returns {string}
  */
-export function plan_folder_lexical_evidence_indices_json(query, samples_json, top_k) {
-    let deferred3_0;
-    let deferred3_1;
+export function plan_folder_lexical_evidence_indices_json(query, samples_json, top_k, match_mode) {
+    let deferred4_0;
+    let deferred4_1;
     try {
         const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(samples_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_folder_lexical_evidence_indices_json(ptr0, len0, ptr1, len1, top_k);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
+        const ptr2 = passStringToWasm0(match_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_folder_lexical_evidence_indices_json(ptr0, len0, ptr1, len1, top_k, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -3129,9 +3132,10 @@ export function plan_reference_file_indices_json(source_path, file_paths_json) {
  * @param {string} history_json
  * @param {string} candidates_json
  * @param {number} max_repeats
+ * @param {number} max_native_search_calls
  * @returns {string}
  */
-export function plan_repeated_tool_call_indices_json(history_json, candidates_json, max_repeats) {
+export function plan_repeated_tool_call_indices_json(history_json, candidates_json, max_repeats, max_native_search_calls) {
     let deferred3_0;
     let deferred3_1;
     try {
@@ -3139,7 +3143,7 @@ export function plan_repeated_tool_call_indices_json(history_json, candidates_js
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(candidates_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_repeated_tool_call_indices_json(ptr0, len0, ptr1, len1, max_repeats);
+        const ret = wasm.plan_repeated_tool_call_indices_json(ptr0, len0, ptr1, len1, max_repeats, max_native_search_calls);
         deferred3_0 = ret[0];
         deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -3222,23 +3226,26 @@ export function plan_rerank_result_order_json(result_ids_json, ranked_ids_json) 
  * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
  * @param {string} content
  * @param {string} citation_ids_json
+ * @param {string} citation_paths_json
  * @param {number} fallback_limit
  * @returns {string}
  */
-export function plan_research_citation_indices_json(content, citation_ids_json, fallback_limit) {
-    let deferred3_0;
-    let deferred3_1;
+export function plan_research_citation_indices_json(content, citation_ids_json, citation_paths_json, fallback_limit) {
+    let deferred4_0;
+    let deferred4_1;
     try {
         const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(citation_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_research_citation_indices_json(ptr0, len0, ptr1, len1, fallback_limit);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
+        const ptr2 = passStringToWasm0(citation_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_citation_indices_json(ptr0, len0, ptr1, len1, ptr2, len2, fallback_limit);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 

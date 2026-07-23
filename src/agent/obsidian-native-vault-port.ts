@@ -11,6 +11,7 @@ import {
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
 import { t } from '../i18n';
+import { isExcludedPath } from '../utils/vault';
 import type {
   NativeVaultLinksResult,
   NativeVaultListResult,
@@ -37,6 +38,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   constructor(
     private readonly app: App,
     private readonly getQueryEngine: () => NativeVaultQueryEngineLike | null = () => null,
+    private readonly getExcludedPaths: () => readonly string[] = () => [],
   ) {}
 
   async search(
@@ -45,7 +47,27 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const lexical = await this.searchLexically(request);
     if (lexical.hits.length >= request.limit) return lexical;
 
-    const semantic = buildSearchResult(request.query, await this.tryIndexedSearch(request));
+    const indexed = (await this.tryIndexedSearch(request)).filter((result) =>
+      this.isVisiblePath(result.sourcePath),
+    );
+    const semanticMatchIndices =
+      planFolderLexicalEvidenceIndicesRust(
+        request.query,
+        indexed.map(
+          (result) =>
+            `${result.sourcePath}\n${result.entry.metadata.heading ?? ''}\n${result.entry.metadata.text}`,
+        ),
+        indexed.length,
+        request.match,
+      ) ?? [];
+    const semantic = buildSearchResult(
+      request.query,
+      request.match,
+      semanticMatchIndices.flatMap((index) => {
+        const result = indexed[index];
+        return result ? [result] : [];
+      }),
+    );
     const hits = [...lexical.hits];
     const seen = new Set(hits.map(searchHitKey));
     for (const hit of semantic.hits) {
@@ -55,7 +77,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       seen.add(key);
       hits.push(hit);
     }
-    return buildSearchResult(request.query, hits);
+    return buildSearchResult(request.query, request.match, hits);
   }
 
   async read(
@@ -94,7 +116,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   list(
     request: Extract<RustNativeVaultToolRequest, { action: 'list' }>,
   ): Promise<NativeVaultListResult> {
-    const files = this.app.vault.getMarkdownFiles();
+    const files = this.getVisibleMarkdownFiles();
     const plan = planNativeVaultListRust(
       files.map((file) => file.path),
       request.path,
@@ -106,6 +128,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     return Promise.resolve({
       action: 'list',
       path: request.path,
+      exists:
+        this.isVisiblePath(request.path) &&
+        (request.path.length === 0 ||
+          plan.total > 0 ||
+          this.app.vault.getAbstractFileByPath(request.path) !== null),
       files: plan.paths.flatMap((path) => {
         const file = filesByPath.get(path);
         return file ? [{ path: file.path, modifiedAt: file.stat.mtime, size: file.stat.size }] : [];
@@ -122,9 +149,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const file = this.resolveMarkdownFile(request.path);
     if (!file) throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
     const resolvedLinks = this.app.metadataCache.resolvedLinks;
-    const outgoingCandidates = Object.keys(resolvedLinks[file.path] ?? {});
+    const outgoingCandidates = Object.keys(resolvedLinks[file.path] ?? {}).filter((path) =>
+      this.isVisiblePath(path),
+    );
     const incomingCandidates = Object.entries(resolvedLinks).flatMap(([sourcePath, targets]) =>
-      Object.hasOwn(targets, file.path) ? [sourcePath] : [],
+      Object.hasOwn(targets, file.path) && this.isVisiblePath(sourcePath) ? [sourcePath] : [],
     );
     const outgoing =
       request.direction === 'incoming'
@@ -148,7 +177,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     _request: Extract<RustNativeVaultToolRequest, { action: 'stats' }>,
   ): Promise<NativeVaultStatsResult> {
     const plan = planNativeVaultStatsRust(
-      this.app.vault.getMarkdownFiles().map((file) => file.stat.size),
+      this.getVisibleMarkdownFiles().map((file) => file.stat.size),
     );
     if (!plan) return Promise.reject(new Error(t('nativeVaultStatsFailed')));
     return Promise.resolve({ action: 'stats', ...plan, citations: [] });
@@ -174,7 +203,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   private async searchLexically(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
   ): Promise<NativeVaultSearchResult> {
-    const files = this.app.vault.getMarkdownFiles();
+    const files = this.getVisibleMarkdownFiles();
     const scope = planNativeVaultListRust(
       files.map((file) => file.path),
       request.path,
@@ -206,6 +235,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         request.query,
         readable.map(({ file, content }) => `${file.path}\n${content}`),
         request.limit,
+        request.match,
       ) ?? [];
     const hits = selectedIndices.flatMap((index) => {
       const entry = readable[index];
@@ -218,17 +248,29 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         },
       ];
     });
-    return buildSearchResult(request.query, hits);
+    return buildSearchResult(request.query, request.match, hits);
+  }
+
+  private getVisibleMarkdownFiles(): TFile[] {
+    const excludedPaths = this.getExcludedPaths();
+    return this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => !isExcludedPath(file.path, excludedPaths));
+  }
+
+  private isVisiblePath(path: string): boolean {
+    return !isExcludedPath(path, this.getExcludedPaths());
   }
 
   private resolveMarkdownFile(path: string): TFile | null {
+    if (!this.isVisiblePath(path)) return null;
     const candidates = path.endsWith('.md') ? [path] : [path, `${path}.md`];
     for (const candidate of candidates) {
       const file = this.app.vault.getAbstractFileByPath(candidate);
-      if (file instanceof TFile) return file;
+      if (file instanceof TFile && this.isVisiblePath(file.path)) return file;
     }
     const resolved = this.app.metadataCache.getFirstLinkpathDest(path, '');
-    return resolved instanceof TFile ? resolved : null;
+    return resolved instanceof TFile && this.isVisiblePath(resolved.path) ? resolved : null;
   }
 }
 
@@ -238,6 +280,7 @@ function searchHitKey(hit: NativeVaultSearchHit): string {
 
 function buildSearchResult(
   query: string,
+  match: 'all' | 'any' | 'phrase',
   rawHits: readonly QueryResult[] | readonly NativeVaultSearchHit[],
 ): NativeVaultSearchResult {
   const hits = rawHits.map((rawHit): NativeVaultSearchHit => {
@@ -256,7 +299,7 @@ function buildSearchResult(
   const citations = hits.map((hit) =>
     createCitation(hit.path, hit.startLine, hit.endLine, hit.preview, hit.heading, hit.score),
   );
-  return { action: 'search', query, hits, citations };
+  return { action: 'search', query, match, hits, citations };
 }
 
 function createCitation(

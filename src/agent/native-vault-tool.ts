@@ -28,6 +28,7 @@ interface NativeVaultResultBase {
 export interface NativeVaultSearchResult extends NativeVaultResultBase {
   action: 'search';
   query: string;
+  match: 'all' | 'any' | 'phrase';
   hits: NativeVaultSearchHit[];
 }
 
@@ -44,6 +45,7 @@ export interface NativeVaultReadResult extends NativeVaultResultBase {
 export interface NativeVaultListResult extends NativeVaultResultBase {
   action: 'list';
   path: string;
+  exists: boolean;
   files: NativeVaultFileSummary[];
   nextCursor: number | null;
   total: number;
@@ -154,7 +156,7 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
     function: {
       name: NATIVE_VAULT_TOOL_NAME,
       description:
-        'Explore the Obsidian vault read-only. Combine listing, search, bounded reads, link traversal, and statistics to verify evidence step by step.',
+        'Explore the Obsidian vault read-only. Search and list results are bounded candidates, not proof of exhaustive coverage. Search defaults to matching all meaningful terms; use match="any" for alternatives instead of writing OR in the query. Follow list nextCursor pages and bounded reads before claiming complete coverage. Configured excluded paths, including the chat save folder when enabled, are omitted.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -166,6 +168,12 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
             description: 'Read-only action to perform',
           },
           query: { type: 'string', description: 'Search query for the search action' },
+          match: {
+            type: 'string',
+            enum: ['all', 'any', 'phrase'],
+            description:
+              'Search matching policy. all is the precise default, any is for alternatives, and phrase requires the exact phrase.',
+          },
           path: { type: 'string', description: 'Vault-relative file or folder path' },
           start_line: { type: 'integer', minimum: 1, description: 'First line to read' },
           end_line: { type: 'integer', minimum: 1, description: 'Last line to read' },
@@ -198,6 +206,8 @@ function getRequestErrorMessage(code: string): string {
       return t('nativeVaultInvalidLineRange');
     case 'invalid_direction':
       return t('nativeVaultInvalidDirection');
+    case 'invalid_match':
+      return t('nativeVaultInvalidMatch');
     default:
       return t('nativeVaultInvalidArguments');
   }
@@ -214,7 +224,9 @@ function formatDisplayText(result: NativeVaultToolResult): string {
         end: String(result.endLine),
       });
     case 'list':
-      return t('nativeVaultListDisplay', { count: String(result.files.length) });
+      return result.exists
+        ? t('nativeVaultListDisplay', { count: String(result.files.length) })
+        : t('nativeVaultListPathMissing', { path: result.path });
     case 'links':
       return t('nativeVaultLinksDisplay', {
         path: result.path,

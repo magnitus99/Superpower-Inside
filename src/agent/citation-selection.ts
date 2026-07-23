@@ -2,7 +2,7 @@ import { t } from '../i18n';
 import { planResearchCitationIndicesRust } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
 
-const DEFAULT_FALLBACK_LIMIT = 12;
+const DEFAULT_FALLBACK_LIMIT = 4;
 
 export function selectAnswerCitations(
   content: string,
@@ -12,6 +12,7 @@ export function selectAnswerCitations(
   const indices = planResearchCitationIndicesRust(
     content,
     citations.map((citation) => citation.id),
+    citations.map((citation) => citation.filePath),
     fallbackLimit,
   );
   if (!indices) throw new Error(t('sourceCitationSelectionFailed'));

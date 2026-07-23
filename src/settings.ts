@@ -68,6 +68,7 @@ import {
 import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
 import { type Language, t } from './i18n';
 import {
+  MAX_PROVIDER_TOOL_ROUNDS,
   normalizeProviderCapabilityOverrides,
   type ProviderCapabilityOverrides,
 } from './llm/provider-capabilities';
@@ -6446,7 +6447,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const parsed = Number(value.trim());
               updateCapabilityOverride(
                 'maxToolRounds',
-                Number.isInteger(parsed) && parsed >= 0 ? parsed : 0,
+                Number.isInteger(parsed) && parsed >= 0
+                  ? Math.min(parsed, MAX_PROVIDER_TOOL_ROUNDS)
+                  : 0,
               );
             }),
         );

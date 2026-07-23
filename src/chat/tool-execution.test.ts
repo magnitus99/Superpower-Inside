@@ -4,6 +4,7 @@ import {
   appendAssistantToolRound,
   collectToolCitations,
   executeAssistantToolCalls,
+  joinAssistantToolRoundText,
   markRepeatedToolCalls,
   prepareAssistantToolCalls,
 } from './tool-execution';
@@ -92,6 +93,14 @@ describe('LLM 도구 실행 라우터', () => {
     expect(secondRound[4]?.content).toContain('evidence');
   });
 
+  it('도구 라운드 사이의 설명과 최종 답변을 문단으로 분리한다', () => {
+    expect(joinAssistantToolRoundText('먼저 검색하겠습니다.', '검색 결과를 확인했습니다.')).toBe(
+      '먼저 검색하겠습니다.\n\n검색 결과를 확인했습니다.',
+    );
+    expect(joinAssistantToolRoundText('첫 문단\n', '\n둘째 문단')).toBe('첫 문단\n\n둘째 문단');
+    expect(joinAssistantToolRoundText('', '최종 답변')).toBe('최종 답변');
+  });
+
   it('실패한 도구 결과도 모델 대화 이력에 오류로 전달한다', () => {
     const messages = appendAssistantToolRound(
       [{ role: 'user', content: '찾아줘' }],
@@ -158,6 +167,25 @@ describe('LLM 도구 실행 라우터', () => {
       expect.objectContaining({ id: 'read', status: 'running' }),
     ]);
     expect(typeof planned[0]?.result).toBe('string');
+  });
+
+  it('한 답변에서 서로 다른 Vault 검색도 네 번까지만 허용한다', () => {
+    const searches = Array.from({ length: 5 }, (_, index) =>
+      createToolCall({
+        id: `search-${index}`,
+        arguments: JSON.stringify({ action: 'search', query: `query-${index}` }),
+      }),
+    );
+    const read = createToolCall({
+      id: 'read',
+      arguments: '{"action":"read","path":"Alpha.md"}',
+    });
+
+    const planned = markRepeatedToolCalls([], [...searches, read]);
+
+    expect(planned.slice(0, 4).every((call) => call.status === 'running')).toBe(true);
+    expect(planned[4]).toMatchObject({ id: 'search-4', status: 'error' });
+    expect(planned[5]).toMatchObject({ id: 'read', status: 'running' });
   });
 });
 

@@ -23,6 +23,7 @@ export interface CitationCardView {
 
 export interface CitationSectionView {
   labelText: string;
+  collapsedByDefault: boolean;
   cards: CitationCardView[];
 }
 
@@ -42,6 +43,7 @@ export interface ContextAttachmentChipView {
 }
 
 export interface SourcePanelHandlers {
+  setIcon(element: HTMLElement, icon: string): void;
   openCitation(citation: SourceCitation): void | Promise<void>;
   copyCitationLink(citation: SourceCitation, button: HTMLButtonElement): void | Promise<void>;
   insertCitation(citation: SourceCitation): void | Promise<void>;
@@ -57,6 +59,7 @@ export function createCitationSectionView(
       verifiedCount === citations.length
         ? t('sourceVerifiedCount', { count: verifiedCount })
         : t('sourceSearchVerifiedCount', { verified: verifiedCount, total: citations.length }),
+    collapsedByDefault: true,
     cards: citations.map(createCitationCardView),
   };
 }
@@ -291,6 +294,8 @@ function formatExcludedBoundaryNote(count: number): string {
 }
 
 export class SourcePanel {
+  private sectionSequence = 0;
+
   constructor(private readonly handlers: SourcePanelHandlers) {}
 
   renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
@@ -304,15 +309,37 @@ export class SourcePanel {
     }
     section.empty();
     const view = createCitationSectionView(citations);
-    section.createDiv({
+    const contentId = `superpower-inside-chat-citations-${++this.sectionSequence}`;
+    const toggle = section.createEl('button', {
       cls: 'superpower-inside-chat-citations-label',
-      text: view.labelText,
+      attr: {
+        type: 'button',
+        'aria-expanded': String(!view.collapsedByDefault),
+        'aria-controls': contentId,
+      },
+    });
+    const toggleIcon = toggle.createSpan({
+      cls: 'superpower-inside-chat-citations-toggle-icon',
+    });
+    this.handlers.setIcon(
+      toggleIcon,
+      view.collapsedByDefault ? 'chevron-right' : 'chevron-down',
+    );
+    toggle.createSpan({ text: view.labelText });
+    const content = section.createDiv({ cls: 'superpower-inside-chat-citations-content' });
+    content.id = contentId;
+    content.hidden = view.collapsedByDefault;
+    toggle.addEventListener('click', () => {
+      const expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', String(!expanded));
+      content.hidden = expanded;
+      this.handlers.setIcon(toggleIcon, expanded ? 'chevron-right' : 'chevron-down');
     });
 
     for (const [index, citation] of citations.entries()) {
       const cardView = view.cards[index];
       if (!cardView) continue;
-      const card = section.createDiv({ cls: cardView.className });
+      const card = content.createDiv({ cls: cardView.className });
       card.setAttribute('tabindex', '0');
       card.setAttribute('data-citation-id', cardView.id);
       card.setAttribute('aria-label', t('citationMarkerAria', { id: cardView.id }));

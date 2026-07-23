@@ -39,6 +39,7 @@ import {
   appendAssistantToolRound,
   executeAssistantToolCalls as executeToolCalls,
   collectToolCitations,
+  joinAssistantToolRoundText,
   markRepeatedToolCalls,
   prepareAssistantToolCalls,
 } from './tool-execution';
@@ -84,6 +85,7 @@ import {
 } from './conversation-variants';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
 import { createProviderWaitStatus } from './provider-wait';
+import { getEffectiveExcludePaths } from '../utils/vault';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
 import { createCompatibilityToolPrompt, parseCompatibilityToolResponse } from './tool-protocol';
@@ -245,10 +247,20 @@ export class ChatView extends ItemView {
     this.lastStreamingMarkdownAt = 0;
     this.localToolCallSequence = 0;
     this.nativeVaultTool = new NativeVaultToolRuntime(
-      new ObsidianNativeVaultToolPort(this.app, () => this.plugin.ragEngine),
+      new ObsidianNativeVaultToolPort(
+        this.app,
+        () => this.plugin.ragEngine,
+        () =>
+          getEffectiveExcludePaths(
+            this.plugin.settings.rag,
+            this.plugin.settings.chat,
+            this.app.vault.configDir,
+          ),
+      ),
     );
     this.vaultResearchCache = new IndexedDbVaultResearchCache();
     this.sourcePanel = new SourcePanel({
+      setIcon: (element, icon) => setIcon(element, icon),
       openCitation: (citation) => this.openCitation(citation),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
       insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
@@ -2792,13 +2804,16 @@ export class ChatView extends ItemView {
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        toolCalls = await prepareAssistantToolCalls({
-          toolCalls,
-          nativeTool: this.nativeVaultTool,
-          registry: this.plugin.mcpRegistry,
-          preferredServerNames: mentionedServers,
-          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
-        });
+        toolCalls = markRepeatedToolCalls(
+          [],
+          await prepareAssistantToolCalls({
+            toolCalls,
+            nativeTool: this.nativeVaultTool,
+            registry: this.plugin.mcpRegistry,
+            preferredServerNames: mentionedServers,
+            mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          }),
+        );
         const pendingApproval = toolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
         );
@@ -3285,8 +3300,13 @@ export class ChatView extends ItemView {
         meta: { ...args.meta, citations: turnCitations },
       });
 
-      accumulatedText += result.finalText;
-      if (result.finalReasoning) accumulatedReasoning += result.finalReasoning;
+      accumulatedText = joinAssistantToolRoundText(accumulatedText, result.finalText);
+      if (result.finalReasoning) {
+        accumulatedReasoning = joinAssistantToolRoundText(
+          accumulatedReasoning,
+          result.finalReasoning,
+        );
+      }
       conversationMessages = result.conversationMessages;
 
       if (result.newToolCalls.length > 0) {

@@ -544,10 +544,12 @@ export interface I18nKeys {
   nativeVaultInvalidPath: string;
   nativeVaultInvalidLineRange: string;
   nativeVaultInvalidDirection: string;
+  nativeVaultInvalidMatch: string;
   nativeVaultInvalidArguments: string;
   nativeVaultSearchDisplay: string;
   nativeVaultReadDisplay: string;
   nativeVaultListDisplay: string;
+  nativeVaultListPathMissing: string;
   nativeVaultLinksDisplay: string;
   nativeVaultStatsDisplay: string;
   nativeVaultFileNotFound: string;
@@ -1700,7 +1702,7 @@ const ko: I18nKeys = {
     'AbortSignal로 요청을 실제 중단할 수 있을 때 켭니다. requestUrl은 best-effort입니다.',
   providerCapabilityMaxToolRounds: '최대 툴 라운드',
   providerCapabilityMaxToolRoundsDesc:
-    '이 provider에서 한 답변 중 허용할 tool loop 라운드 수입니다. 툴 호출 미지원이면 0으로 둡니다.',
+    '한 답변에서 허용할 tool loop 라운드 수입니다. 안전을 위해 최대 20회로 제한하며, 툴 호출 미지원이면 0으로 둡니다.',
   providerCapabilityBufferedNoTools: 'buffered · tools off',
   providerCapabilityBuffered: 'buffered',
   providerCapabilityNoTools: 'tools off',
@@ -2121,10 +2123,12 @@ const ko: I18nKeys = {
   nativeVaultInvalidPath: '볼트 내부의 안전한 경로만 사용할 수 있습니다.',
   nativeVaultInvalidLineRange: '읽기 행 범위가 올바르지 않습니다.',
   nativeVaultInvalidDirection: '링크 탐색 방향이 올바르지 않습니다.',
+  nativeVaultInvalidMatch: '검색 일치 방식이 올바르지 않습니다.',
   nativeVaultInvalidArguments: '도구 인자 형식이 올바르지 않습니다.',
   nativeVaultSearchDisplay: '볼트 검색 결과 {count}개',
   nativeVaultReadDisplay: '{path} {start}-{end}행',
   nativeVaultListDisplay: '볼트 문서 목록 {count}개',
+  nativeVaultListPathMissing: '볼트 경로를 찾을 수 없음: {path}',
   nativeVaultLinksDisplay: '{path} 링크 {count}개',
   nativeVaultStatsDisplay: '볼트 문서 {count}개',
   nativeVaultFileNotFound: '볼트 문서를 찾을 수 없습니다: {path}',
@@ -3045,6 +3049,8 @@ const ko: I18nKeys = {
     '답변은 사용자의 노트 작성 흐름에 바로 붙일 수 있도록 명확한 Markdown으로 작성하세요.',
     'Vault Context에 없는 문서명은 출처로 쓰지 말고, 새 노트나 링크 후보는 반드시 "제안"으로 분리하세요.',
     '관련 근거가 부족하면 관련 문서를 찾지 못했다고 답하세요.',
+    '도구의 단일 search/list 결과는 제한된 후보 목록이므로 전체 부재나 전수 조사의 근거로 과장하지 마세요. 전체 범위를 주장하려면 모든 페이지와 필요한 문서를 실제로 확인하고 읽은 범위와 누락을 밝혀야 합니다.',
+    '도구 결과의 출처 ID나 실제 파일 경로를 근거 문장에 표시하고, 볼트 근거와 모델의 일반 지식을 명확히 구분하세요.',
     '코드리뷰, 번역, 단순 요약을 기본 역할로 삼지 말고, 사용자가 명시적으로 요청한 경우에만 해당 작업에 집중하세요.',
   ].join('\n'),
   promptPresetKnowledgeConnectionLabel: '지식 연결',
@@ -3382,7 +3388,7 @@ const en: I18nKeys = {
     'Enable when AbortSignal can actually cancel the request. requestUrl is best-effort.',
   providerCapabilityMaxToolRounds: 'Max tool rounds',
   providerCapabilityMaxToolRoundsDesc:
-    'Maximum tool-loop rounds allowed for one answer on this provider. Keep 0 when tool calling is disabled.',
+    'Maximum tool-loop rounds allowed for one answer. It is capped at 20 for safety; keep 0 when tool calling is disabled.',
   providerCapabilityBufferedNoTools: 'buffered · tools off',
   providerCapabilityBuffered: 'buffered',
   providerCapabilityNoTools: 'tools off',
@@ -3804,10 +3810,12 @@ const en: I18nKeys = {
   nativeVaultInvalidPath: 'Only safe paths inside the vault are allowed.',
   nativeVaultInvalidLineRange: 'The requested line range is invalid.',
   nativeVaultInvalidDirection: 'The link direction is invalid.',
+  nativeVaultInvalidMatch: 'The search match mode is invalid.',
   nativeVaultInvalidArguments: 'The tool arguments are invalid.',
   nativeVaultSearchDisplay: '{count} vault search results',
   nativeVaultReadDisplay: '{path}, lines {start}-{end}',
   nativeVaultListDisplay: '{count} vault documents listed',
+  nativeVaultListPathMissing: 'Vault path not found: {path}',
   nativeVaultLinksDisplay: '{count} links for {path}',
   nativeVaultStatsDisplay: '{count} vault documents',
   nativeVaultFileNotFound: 'Vault document not found: {path}',
@@ -4751,6 +4759,8 @@ const en: I18nKeys = {
     'Write clear Markdown that the user can paste directly into their note-writing flow.',
     'Do not cite document names that are absent from Vault Context, and separate new note or link candidates as suggestions.',
     'If relevant evidence is insufficient, say that you could not find relevant documents.',
+    'A single tool search or list response is a bounded candidate set, not proof of absence or exhaustive research. Claim complete coverage only after following every page and reading the required documents, and state both the inspected scope and any gaps.',
+    'Name tool-result source IDs or real file paths on evidence-backed claims, and clearly separate vault evidence from general model knowledge.',
     'Do not treat code review, translation, or simple summarization as the default role; focus on those only when the user explicitly asks.',
   ].join('\n'),
   promptPresetKnowledgeConnectionLabel: 'Knowledge connections',

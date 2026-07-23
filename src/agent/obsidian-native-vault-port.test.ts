@@ -1,5 +1,6 @@
 import { TFile, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
+import type { QueryResult } from '../rag/query';
 import { ObsidianNativeVaultToolPort } from './obsidian-native-vault-port';
 
 vi.mock('obsidian', () => {
@@ -48,6 +49,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const result = await port.list({ action: 'list', path: 'Projects', cursor: 0, limit: 1 });
 
     expect(result).toMatchObject({
+      exists: true,
       files: [{ path: 'Projects/Alpha.md' }],
       nextCursor: 1,
       total: 2,
@@ -61,7 +63,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     ]);
     const port = new ObsidianNativeVaultToolPort(app);
 
-    const result = await port.search({ action: 'search', query: '고객 문제', path: '', limit: 3 });
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
 
     expect(result.hits[0]?.path).toBe('Projects/Alpha.md');
     expect(result.hits[0]?.preview).toContain('고객 문제');
@@ -79,10 +87,53 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     ]);
     const port = new ObsidianNativeVaultToolPort(app, () => ({ query }));
 
-    const result = await port.search({ action: 'search', query: '고객 문제', path: '', limit: 2 });
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 2,
+      match: 'all',
+    });
 
     expect(result.hits).toHaveLength(2);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('indexed 후보도 요청한 모든 검색어 일치 조건을 통과해야 한다', async () => {
+    const indexedResults = [
+      {
+        sourcePath: 'Bible/Genesis.md',
+        score: 0.9,
+        vectorScore: 0.9,
+        bm25Score: 0,
+        combinedScore: 0.9,
+        keywordMatches: 1,
+        chunkRange: { startLine: 1, endLine: 1 },
+        entry: {
+          id: 'genesis',
+          vector: [],
+          metadata: {
+            filePath: 'Bible/Genesis.md',
+            text: '창세기 본문',
+            startLine: 1,
+            endLine: 1,
+          },
+        },
+      },
+    ] satisfies QueryResult[];
+    const query = vi.fn(() => Promise.resolve(indexedResults));
+    const app = createApp([createFile('Bible/Genesis.md', '창세기 본문')]);
+    const port = new ObsidianNativeVaultToolPort(app, () => ({ query }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '네빌 창세기',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+
+    expect(result.hits).toEqual([]);
   });
 
   it('비상 lexical 검색은 큰 Vault를 제한된 I/O 배치로 읽는다', async () => {
@@ -104,6 +155,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       query: '고객 근거',
       path: '',
       limit: 3,
+      match: 'all',
     });
 
     expect(result.hits[0]?.path).toBe('Notes/24.md');
@@ -141,6 +193,80 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       fileCount: 2,
       totalBytes: 10,
     });
+  });
+
+  it('모든 검색어가 일치하지 않으면 일부 단어만 맞는 문서를 반환하지 않는다', async () => {
+    const app = createApp([
+      createFile('Bible/Genesis.md', '창세기 본문'),
+      createFile('People/Neville.md', '네빌 고다드 강연'),
+      createFile('Research/Neville-Genesis.md', '네빌 고다드의 창세기 해석'),
+    ]);
+
+    const result = await new ObsidianNativeVaultToolPort(app).search({
+      action: 'search',
+      query: '네빌 창세기',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+
+    expect(result.hits.map((hit) => hit.path)).toEqual(['Research/Neville-Genesis.md']);
+  });
+
+  it('제외 경로는 모든 Vault 탐색 액션에서 일관되게 숨긴다', async () => {
+    const app = createApp([
+      createFile('Notes/Genesis.md', '창세기'),
+      createFile('SuperpowerInsideChats/Current.md', '네빌 창세기'),
+    ]);
+    const port = new ObsidianNativeVaultToolPort(app, () => null, () => [
+      'SuperpowerInsideChats',
+    ]);
+
+    const search = await port.search({
+      action: 'search',
+      query: '네빌 창세기',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+    const list = await port.list({ action: 'list', path: '', cursor: 0, limit: 100 });
+    const excludedList = await port.list({
+      action: 'list',
+      path: 'SuperpowerInsideChats',
+      cursor: 0,
+      limit: 100,
+    });
+    const stats = await port.stats({ action: 'stats' });
+
+    expect(search.hits).toEqual([]);
+    expect(list.files.map((file) => file.path)).toEqual(['Notes/Genesis.md']);
+    expect(excludedList).toMatchObject({ exists: false, files: [], total: 0 });
+    expect(stats.fileCount).toBe(1);
+    await expect(
+      port.read({
+        action: 'read',
+        path: 'SuperpowerInsideChats/Current.md',
+        startLine: 1,
+        endLine: null,
+      }),
+    ).rejects.toThrow('SuperpowerInsideChats/Current.md');
+    expect(() =>
+      port.links({
+        action: 'links',
+        path: 'SuperpowerInsideChats/Current.md',
+        direction: 'both',
+        limit: 10,
+      }),
+    ).toThrow('SuperpowerInsideChats/Current.md');
+  });
+
+  it('존재하지 않는 폴더와 빈 폴더를 구분한다', async () => {
+    const app = createApp([createFile('Projects/Alpha.md', 'alpha')]);
+    const port = new ObsidianNativeVaultToolPort(app);
+
+    await expect(
+      port.list({ action: 'list', path: 'Missing', cursor: 0, limit: 10 }),
+    ).resolves.toMatchObject({ exists: false, total: 0, files: [] });
   });
 });
 

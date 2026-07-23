@@ -52,6 +52,7 @@ describe('SourcePanel view model contract', () => {
     const view = createCitationSectionView(citations);
 
     expect(view.labelText).toBe('2/3 sources checked');
+    expect(view.collapsedByDefault).toBe(true);
     expect(view.cards[0]).toEqual(
       expect.objectContaining({
         statusText: 'Checked',

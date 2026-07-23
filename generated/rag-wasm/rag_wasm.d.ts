@@ -488,7 +488,7 @@ export function plan_file_index_records_json(entries_json: string, updated: numb
 /**
  * 확장 query keyword가 많이 나타나는 folder file sample index를 관련도 순으로 고른다.
  */
-export function plan_folder_lexical_evidence_indices_json(query: string, samples_json: string, top_k: number): string;
+export function plan_folder_lexical_evidence_indices_json(query: string, samples_json: string, top_k: number, match_mode: string): string;
 
 /**
  * folder mention에 포함할 markdown file index와 partial 여부를 `JSON` 문자열로 반환한다.
@@ -766,7 +766,7 @@ export function plan_reference_file_indices_json(source_path: string, file_paths
 /**
  * Finds repeated tool calls after canonicalizing JSON argument object key order.
  */
-export function plan_repeated_tool_call_indices_json(history_json: string, candidates_json: string, max_repeats: number): string;
+export function plan_repeated_tool_call_indices_json(history_json: string, candidates_json: string, max_repeats: number, max_native_search_calls: number): string;
 
 /**
  * LLM reranker provider에 넘길 system/user message content를 JSON으로 계획한다.
@@ -786,7 +786,7 @@ export function plan_rerank_result_order_json(result_ids_json: string, ranked_id
 /**
  * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
  */
-export function plan_research_citation_indices_json(content: string, citation_ids_json: string, fallback_limit: number): string;
+export function plan_research_citation_indices_json(content: string, citation_ids_json: string, citation_paths_json: string, fallback_limit: number): string;
 
 /**
  * Classifies a provider failure and returns a bounded retry plan for research requests.
@@ -1083,7 +1083,7 @@ export interface InitOutput {
     readonly plan_entity_resolution_json: (a: number, b: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_claim_entity_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_community_replacement_delete_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1179,20 +1179,20 @@ export interface InitOutput {
     readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
     readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
-    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
-    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
-    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
+    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
+    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
+    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

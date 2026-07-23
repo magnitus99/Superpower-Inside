@@ -166,6 +166,7 @@ describe('Rust WASM RAG core bridge', () => {
         'Aurora migration',
         ['unrelated', 'Aurora migration plan', 'migration only'],
         2,
+        'any',
       ),
     ).toEqual([1, 2]);
     expect(shouldOfferContext7ForPromptRust('Rust API 예제를 보여줘')).toBe(true);

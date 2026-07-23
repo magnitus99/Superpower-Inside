@@ -3113,6 +3113,15 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin-top: 10px;
 }
 
+.superpower-inside-chat-citations-content {
+  display: grid;
+  gap: 8px;
+}
+
+.superpower-inside-chat-citations-content[hidden] {
+  display: none;
+}
+
 .superpower-inside-chat-context-preview,
 .superpower-inside-chat-context-attachments {
   display: flex;
@@ -3280,9 +3289,38 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-citations-label {
+  align-items: center;
+  align-self: start;
+  background: transparent;
+  border: 0;
   color: var(--text-muted);
+  display: inline-flex;
   font-size: 12px;
   font-weight: 600;
+  gap: 4px;
+  justify-self: start;
+  min-height: 30px;
+  padding: 4px 2px;
+}
+
+.superpower-inside-chat-citations-label:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.superpower-inside-chat-citations-label:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.superpower-inside-chat-citations-toggle-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.superpower-inside-chat-citations-toggle-icon svg {
+  height: 14px;
+  width: 14px;
 }
 
 .superpower-inside-chat-citation-card {

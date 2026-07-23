@@ -205,6 +205,7 @@ function createVaultPort(): NativeVaultToolPort {
         withoutCitations({
           action: 'list',
           path: request.path,
+          exists: true,
           files: selected,
           nextCursor: nextCursor < files.length ? nextCursor : null,
           total: files.length,
@@ -250,6 +251,7 @@ function createVaultPort(): NativeVaultToolPort {
       return Promise.resolve({
         action: 'search',
         query: request.query,
+        match: request.match,
         hits,
         citations: hits.map((hit) => ({
           id: `vault:${hit.path}:1-2`,

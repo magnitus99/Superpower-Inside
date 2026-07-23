@@ -3329,23 +3329,52 @@ pub fn plan_folder_lexical_evidence_indices_json(
     query: &str,
     samples_json: &str,
     top_k: usize,
+    match_mode: &str,
 ) -> String {
     let Some(samples) = parse_raw_string_array_json(samples_json) else {
         return String::new();
     };
-    let tokens = tokenize(query);
+    if !matches!(match_mode, "all" | "any" | "phrase") {
+        return String::new();
+    }
+    let query_has_or = query
+        .split_whitespace()
+        .any(|token| token.eq_ignore_ascii_case("or"));
+    let effective_match_mode = if match_mode == "all" && query_has_or {
+        "any"
+    } else {
+        match_mode
+    };
+    let tokens = tokenize(query)
+        .into_iter()
+        .filter(|token| token != "or" && token != "and")
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return "[]".to_owned();
+    }
     let joined_tokens = tokens.join("\u{1f}");
+    let normalized_phrase = query.trim().to_lowercase();
     let mut scored = samples
         .iter()
         .enumerate()
         .filter_map(|(index, sample)| {
             let (file_path, content) = sample.split_once('\n').unwrap_or((sample, ""));
+            let combined = format!("{file_path}\n{content}").to_lowercase();
             let path_score = count_keyword_matches(&joined_tokens, file_path);
             let content_score = count_keyword_matches(&joined_tokens, content).min(9_999);
+            let matched_tokens = count_keyword_matches(&joined_tokens, &combined);
+            let is_match = match effective_match_mode {
+                "all" => usize::try_from(matched_tokens).ok() == Some(tokens.len()),
+                "any" => matched_tokens > 0,
+                "phrase" => combined.contains(&normalized_phrase),
+                _ => false,
+            };
             let score = path_score
                 .saturating_mul(10_000)
                 .saturating_add(content_score);
-            (score > 0).then_some((index, score))
+            is_match.then_some((index, score))
         })
         .collect::<Vec<_>>();
     scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -21370,11 +21399,21 @@ mod tests {
                 "Aurora migration",
                 r#"["aurora/Overview.txt unrelated","aurora/Migration Plan.txt Aurora migration steps","archive/Other.txt migration"]"#,
                 2,
+                "all",
             ),
-            "[1,0]",
+            "[1]",
         );
         assert_eq!(
-            plan_folder_lexical_evidence_indices_json("missing", r#"["alpha","beta"]"#, 3),
+            plan_folder_lexical_evidence_indices_json(
+                "Aurora migration",
+                r#"["aurora/Overview.txt unrelated","aurora/Migration Plan.txt Aurora migration steps","archive/Other.txt migration"]"#,
+                3,
+                "any",
+            ),
+            "[1,0,2]",
+        );
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json("missing", r#"["alpha","beta"]"#, 3, "all",),
             "[]",
         );
         assert_eq!(
@@ -21382,8 +21421,18 @@ mod tests {
                 "배포 계획을 알려줘",
                 r#"["Migration\ndeployment deployment deployment deployment","Release Plan\nshort","Meeting\nnotes"]"#,
                 1,
+                "all",
             ),
             "[]",
+        );
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json(
+                "고다드",
+                r#"["Genesis\n가로채다","Neville\n네빌 고다드"]"#,
+                2,
+                "all",
+            ),
+            "[1]",
         );
     }
 

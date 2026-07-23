@@ -166,12 +166,22 @@ fn normalize_search_request(
     let query = required_string(object, "query", "query_required")?;
     let raw_path = optional_string(object, "path")?;
     let path = normalize_optional_path(raw_path.as_deref())?;
+    let match_mode = optional_string(object, "match")?.unwrap_or_else(|| "all".to_owned());
+    if !matches!(match_mode.as_str(), "all" | "any" | "phrase") {
+        return Err("invalid_match");
+    }
     let limit = normalize_limit(
         optional_usize(object, "limit")?,
         DEFAULT_SEARCH_LIMIT,
         MAX_SEARCH_LIMIT,
     );
-    Ok(json!({ "action": "search", "query": query, "path": path, "limit": limit }))
+    Ok(json!({
+        "action": "search",
+        "query": query,
+        "path": path,
+        "limit": limit,
+        "match": match_mode
+    }))
 }
 
 /// Validates a bounded partial-read request.
@@ -281,7 +291,14 @@ fn normalize_limit(limit: Option<usize>, default: usize, maximum: usize) -> usiz
 
 /// Normalizes an optional vault path, using an empty string for the vault root.
 fn normalize_optional_path(path: Option<&str>) -> Result<String, &'static str> {
-    path.map_or_else(|| Ok(String::new()), normalize_required_path)
+    let Some(path) = path else {
+        return Ok(String::new());
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed.chars().all(|character| character == '/') {
+        return Ok(String::new());
+    }
+    normalize_required_path(trimmed)
 }
 
 /// Normalizes one vault-relative path and rejects traversal segments.
@@ -345,6 +362,42 @@ mod tests {
                 "cursor": 4,
                 "limit": 100
             }))
+        );
+    }
+
+    #[test]
+    fn list_request_accepts_common_root_aliases() {
+        for path in ["/", "."] {
+            let raw = plan_native_vault_tool_request_json(&format!(
+                r#"{{"action":"list","path":"{path}"}}"#
+            ));
+            let parsed = parse_json(&raw);
+
+            assert_eq!(
+                parsed.pointer("/request/path"),
+                Some(&JsonValue::from("")),
+                "{path} should resolve to the vault root",
+            );
+        }
+    }
+
+    #[test]
+    fn search_request_defaults_to_all_terms_and_accepts_explicit_match_mode() {
+        let default_raw =
+            plan_native_vault_tool_request_json(r#"{"action":"search","query":"Neville Genesis"}"#);
+        let default_parsed = parse_json(&default_raw);
+        assert_eq!(
+            default_parsed.pointer("/request/match"),
+            Some(&JsonValue::from("all")),
+        );
+
+        let any_raw = plan_native_vault_tool_request_json(
+            r#"{"action":"search","query":"Neville Genesis","match":"any"}"#,
+        );
+        let any_parsed = parse_json(&any_raw);
+        assert_eq!(
+            any_parsed.pointer("/request/match"),
+            Some(&JsonValue::from("any")),
         );
     }
 

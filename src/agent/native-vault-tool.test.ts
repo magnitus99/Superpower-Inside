@@ -17,6 +17,7 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
         parameters: {
           properties: {
             action: { enum: ['search', 'read', 'list', 'links', 'stats'] },
+            match: { enum: ['all', 'any', 'phrase'] },
           },
         },
       },
@@ -88,6 +89,21 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     ]);
   });
 
+  it('search는 기본적으로 모든 검색어가 일치하는 요청으로 정규화한다', async () => {
+    const { port, search } = createPort();
+    const runtime = new NativeVaultToolRuntime(port);
+
+    await runtime.execute(JSON.stringify({ action: 'search', query: '네빌 창세기' }));
+
+    expect(search).toHaveBeenCalledWith({
+      action: 'search',
+      query: '네빌 창세기',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+  });
+
   it('잘못된 JSON과 지원하지 않는 action을 실행 전에 거부한다', async () => {
     const runtime = new NativeVaultToolRuntime(createPort().port);
 
@@ -116,6 +132,7 @@ function createPort(): {
   port: NativeVaultToolPort;
   read: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
+  search: ReturnType<typeof vi.fn>;
 } {
   const citation = {
     id: 'vault:Projects/Alpha.md:2-3',
@@ -138,32 +155,35 @@ function createPort(): {
     }),
   );
   const list = vi.fn(() =>
-    Promise.resolve({
-      action: 'list' as const,
-      path: 'Projects',
-      files: [{ path: 'Projects/Alpha.md', modifiedAt: 1, size: 24 }],
+      Promise.resolve({
+        action: 'list' as const,
+        path: 'Projects',
+        exists: true,
+        files: [{ path: 'Projects/Alpha.md', modifiedAt: 1, size: 24 }],
       nextCursor: null,
       total: 1,
       citations: [],
     }),
   );
+  const search = vi.fn(() =>
+    Promise.resolve({
+      action: 'search' as const,
+      query: '고객 문제',
+      match: 'all' as const,
+      hits: [
+        {
+          path: 'Projects/Alpha.md',
+          startLine: 2,
+          endLine: 3,
+          preview: '둘째 줄 셋째 줄',
+          score: 0.91,
+        },
+      ],
+      citations: [citation],
+    }),
+  );
   const port: NativeVaultToolPort = {
-    search: vi.fn(() =>
-      Promise.resolve({
-        action: 'search' as const,
-        query: '고객 문제',
-        hits: [
-          {
-            path: 'Projects/Alpha.md',
-            startLine: 2,
-            endLine: 3,
-            preview: '둘째 줄 셋째 줄',
-            score: 0.91,
-          },
-        ],
-        citations: [citation],
-      }),
-    ),
+    search,
     read,
     list,
     links: vi.fn(() =>
@@ -185,5 +205,5 @@ function createPort(): {
       }),
     ),
   };
-  return { port, read, list };
+  return { port, read, list, search };
 }

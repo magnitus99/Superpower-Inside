@@ -24,8 +24,11 @@ describe('계층형 Vault Research Agent', () => {
     setLanguage('ko');
   });
 
-  it('명시적인 볼트 전체 요약만 research workflow로 분류한다', () => {
+  it('명시적인 볼트 전체 요약과 전수 조사를 research workflow로 분류한다', () => {
     expect(isWholeVaultResearchRequest('이 옵시디언 볼트를 요약해줘')).toBe(true);
+    expect(
+      isWholeVaultResearchRequest('볼트 내에서 genesis와 관련된 모든 것들을 조사하면 되지 않아?'),
+    ).toBe(true);
     expect(isWholeVaultResearchRequest('Alpha 노트의 고객 문제는 뭐야?')).toBe(false);
   });
 

@@ -18,7 +18,22 @@ describe('최종 답변 citation 선택', () => {
   it('모델이 citation id를 빠뜨리면 검증된 근거를 제한된 수만 반환한다', () => {
     const citations = Array.from({ length: 20 }, (_, index) => citation(`vault:${index}.md:1-1`));
 
-    expect(selectAnswerCitations('출처 표기가 없는 최종 요약', citations)).toHaveLength(12);
+    expect(selectAnswerCitations('출처 표기가 없는 최종 요약', citations)).toHaveLength(4);
+  });
+
+  it('답변에 언급된 파일 경로만 출처 카드로 남긴다', () => {
+    const citations = [
+      citation('vault:Bible/Genesis.md:1-10'),
+      citation('vault:People/Neville.md:2-8'),
+      citation('vault:Archive/Other.md:1-1'),
+    ];
+
+    expect(
+      selectAnswerCitations(
+        '`Bible/Genesis.md`와 People/Neville.md를 근거로 확인했습니다.',
+        citations,
+      ),
+    ).toEqual([citations[0], citations[1]]);
   });
 });
 

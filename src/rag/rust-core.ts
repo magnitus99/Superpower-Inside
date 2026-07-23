@@ -203,7 +203,13 @@ export interface RustBm25TermFrequencies {
 }
 
 export type RustNativeVaultToolRequest =
-  | { action: 'search'; query: string; path: string; limit: number }
+  | {
+      action: 'search';
+      query: string;
+      path: string;
+      limit: number;
+      match: 'all' | 'any' | 'phrase';
+    }
   | { action: 'read'; path: string; startLine: number; endLine: number | null }
   | { action: 'list'; path: string; cursor: number; limit: number }
   | {
@@ -5356,11 +5362,14 @@ export function planResearchSummaryBatchesRust(
 export function planResearchCitationIndicesRust(
   content: string,
   citationIds: readonly string[],
+  citationPaths: readonly string[],
   fallbackLimit: number,
 ): number[] | null {
   if (
     !isStringValue(content) ||
     !citationIds.every(isStringValue) ||
+    !citationPaths.every(isStringValue) ||
+    citationPaths.length !== citationIds.length ||
     !isNonNegativeSafeInteger(fallbackLimit) ||
     !ensureRustCore()
   ) {
@@ -5368,7 +5377,12 @@ export function planResearchCitationIndicesRust(
   }
   try {
     const parsed: unknown = JSON.parse(
-      plan_research_citation_indices_json(content, JSON.stringify(citationIds), fallbackLimit),
+      plan_research_citation_indices_json(
+        content,
+        JSON.stringify(citationIds),
+        JSON.stringify(citationPaths),
+        fallbackLimit,
+      ),
     );
     return Array.isArray(parsed) && parsed.every(isNonNegativeSafeInteger) ? parsed : null;
   } catch {
@@ -5423,11 +5437,13 @@ export function planRepeatedToolCallIndicesRust(
   history: readonly RustToolCallSignatureInput[],
   candidates: readonly RustToolCallSignatureInput[],
   maxRepeats: number,
+  maxNativeSearchCalls: number,
 ): number[] | null {
   if (
     !history.every(isRustToolCallSignatureInput) ||
     !candidates.every(isRustToolCallSignatureInput) ||
     !isNonNegativeSafeInteger(maxRepeats) ||
+    !isNonNegativeSafeInteger(maxNativeSearchCalls) ||
     !ensureRustCore()
   ) {
     return null;
@@ -5438,6 +5454,7 @@ export function planRepeatedToolCallIndicesRust(
         JSON.stringify(history),
         JSON.stringify(candidates),
         maxRepeats,
+        maxNativeSearchCalls,
       ),
     );
     return Array.isArray(parsed) && parsed.every(isNonNegativeSafeInteger) ? parsed : null;
@@ -6270,6 +6287,7 @@ export function planFolderLexicalEvidenceIndicesRust(
   query: string,
   samples: readonly string[],
   topK: number,
+  matchMode: 'all' | 'any' | 'phrase' = 'all',
 ): number[] | null {
   if (
     !samples.every(isStringValue) ||
@@ -6280,7 +6298,12 @@ export function planFolderLexicalEvidenceIndicesRust(
     return null;
   }
   try {
-    const raw = plan_folder_lexical_evidence_indices_json(query, JSON.stringify(samples), topK);
+    const raw = plan_folder_lexical_evidence_indices_json(
+      query,
+      JSON.stringify(samples),
+      topK,
+      matchMode,
+    );
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) && parsed.every(isValidNonNegativeInteger) ? parsed : null;
@@ -7189,7 +7212,8 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
     return (
       typeof value.query === 'string' &&
       typeof value.path === 'string' &&
-      isNonNegativeSafeInteger(value.limit)
+      isNonNegativeSafeInteger(value.limit) &&
+      (value.match === 'all' || value.match === 'any' || value.match === 'phrase')
     );
   }
   if (value.action === 'read') {
