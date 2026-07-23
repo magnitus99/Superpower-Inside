@@ -526,6 +526,47 @@ export interface I18nKeys {
   variantCompareActive: string;
   variantCompareRow: string;
   chatGenerationStopped: string;
+  vaultResearchProgress: string;
+  vaultResearchPhaseInventory: string;
+  vaultResearchPhaseMap: string;
+  vaultResearchPhaseReduce: string;
+  vaultResearchPhaseComplete: string;
+  nativeVaultActionSearch: string;
+  nativeVaultActionRead: string;
+  nativeVaultActionList: string;
+  nativeVaultActionLinks: string;
+  nativeVaultActionStats: string;
+  nativeVaultPlanUnavailable: string;
+  nativeVaultInvalidJson: string;
+  nativeVaultUnsupportedAction: string;
+  nativeVaultQueryRequired: string;
+  nativeVaultPathRequired: string;
+  nativeVaultInvalidPath: string;
+  nativeVaultInvalidLineRange: string;
+  nativeVaultInvalidDirection: string;
+  nativeVaultInvalidArguments: string;
+  nativeVaultSearchDisplay: string;
+  nativeVaultReadDisplay: string;
+  nativeVaultListDisplay: string;
+  nativeVaultLinksDisplay: string;
+  nativeVaultStatsDisplay: string;
+  nativeVaultFileNotFound: string;
+  nativeVaultReadRangeFailed: string;
+  nativeVaultListFailed: string;
+  nativeVaultStatsFailed: string;
+  nativeVaultSearchScopeFailed: string;
+  vaultResearchListStalled: string;
+  vaultResearchBatchPlanFailed: string;
+  vaultResearchEmptySummary: string;
+  vaultResearchInvalidListResult: string;
+  vaultResearchInvalidListItem: string;
+  vaultResearchInvalidListPage: string;
+  vaultResearchInvalidReadResult: string;
+  vaultResearchCancelled: string;
+  vaultResearchCoverageWarning: string;
+  vaultResearchFailurePlanFailed: string;
+  toolLoopPolicyUnavailable: string;
+  repeatedToolCallBlocked: string;
   chatGeneratingResponse: string;
   assistantQuestionReasoningTitle: string;
   assistantQuestionSelectionTitle: string;
@@ -535,6 +576,7 @@ export interface I18nKeys {
   assistantQuestionRequiredNotice: string;
   toolApproveExecution: string;
   sourceVerifiedCount: string;
+  sourceCitationSelectionFailed: string;
   sourceSearchVerifiedCount: string;
   sourceOpenAction: string;
   sourceCopyLinkAction: string;
@@ -584,6 +626,8 @@ export interface I18nKeys {
   mcpApprovalRequiredNotice: string;
   llmApiError: string;
   stopButton: string;
+  stopAllButton: string;
+  chatRunActive: string;
   assistantQuestionProviderContent: string;
   mcpToolFinalAnswerMissing: string;
   cancelledLabel: string;
@@ -1835,8 +1879,7 @@ const ko: I18nKeys = {
   ragStatusSectionDescription: '검색 준비 상태와 지금 필요한 행동을 확인합니다.',
   ragFoundationTitle: '검색 기반 설정',
   ragFoundationDescription: '검색에 사용할 모델과 인덱싱 범위를 정합니다.',
-  ragGraphSectionDescription:
-    '연결 정보를 보강하며, 세부 추출과 운영 도구는 필요할 때만 펼칩니다.',
+  ragGraphSectionDescription: '연결 정보를 보강하며, 세부 추출과 운영 도구는 필요할 때만 펼칩니다.',
   ragGraphDisclosureTitle: '세부 설정과 작업',
   ragGraphDisclosureDescription: '모델, 동기화, 추출과 결과 확인을 관리합니다.',
   ragDiagnosticsTitle: '진단 및 복구',
@@ -1910,7 +1953,7 @@ const ko: I18nKeys = {
   mcpToolExecutionAlwaysAuto: '항상 자동 실행',
   resetToDefault: '기본값으로 초기화',
   chatClear: '대화 지우기',
-  chatScrollToBottom: '맨 아래로',
+  chatScrollToBottom: '최신 답변으로',
   chatTyping: 'AI가 생각 중...',
   copyCode: '복사',
   copied: '복사됨',
@@ -2060,6 +2103,48 @@ const ko: I18nKeys = {
   variantCompareRow:
     '{provider} · 출처 {citations}개 · 경고 {warnings}개 · 도구 {tools}개 · 컨텍스트 {contexts}개',
   chatGenerationStopped: '응답 생성이 중단되었습니다.',
+  vaultResearchProgress: '볼트 조사 중 · {phase} · {completed}/{total}',
+  vaultResearchPhaseInventory: '문서 확인',
+  vaultResearchPhaseMap: '문서 읽기',
+  vaultResearchPhaseReduce: '내용 종합',
+  vaultResearchPhaseComplete: '완료',
+  nativeVaultActionSearch: '검색',
+  nativeVaultActionRead: '문서 읽기',
+  nativeVaultActionList: '문서 목록',
+  nativeVaultActionLinks: '링크 확인',
+  nativeVaultActionStats: '볼트 범위 확인',
+  nativeVaultPlanUnavailable: '네이티브 볼트 도구 요청을 검증할 수 없습니다.',
+  nativeVaultInvalidJson: '도구 인자가 유효한 JSON이 아닙니다.',
+  nativeVaultUnsupportedAction: '지원하지 않는 동작입니다.',
+  nativeVaultQueryRequired: '검색어가 필요합니다.',
+  nativeVaultPathRequired: '볼트 경로가 필요합니다.',
+  nativeVaultInvalidPath: '볼트 내부의 안전한 경로만 사용할 수 있습니다.',
+  nativeVaultInvalidLineRange: '읽기 행 범위가 올바르지 않습니다.',
+  nativeVaultInvalidDirection: '링크 탐색 방향이 올바르지 않습니다.',
+  nativeVaultInvalidArguments: '도구 인자 형식이 올바르지 않습니다.',
+  nativeVaultSearchDisplay: '볼트 검색 결과 {count}개',
+  nativeVaultReadDisplay: '{path} {start}-{end}행',
+  nativeVaultListDisplay: '볼트 문서 목록 {count}개',
+  nativeVaultLinksDisplay: '{path} 링크 {count}개',
+  nativeVaultStatsDisplay: '볼트 문서 {count}개',
+  nativeVaultFileNotFound: '볼트 문서를 찾을 수 없습니다: {path}',
+  nativeVaultReadRangeFailed: '읽을 수 없는 행 범위입니다: {path}',
+  nativeVaultListFailed: '볼트 문서 목록을 계산할 수 없습니다.',
+  nativeVaultStatsFailed: '볼트 통계를 계산할 수 없습니다.',
+  nativeVaultSearchScopeFailed: '볼트 검색 범위를 계산할 수 없습니다.',
+  vaultResearchListStalled: '볼트 목록 페이지가 앞으로 진행되지 않았습니다.',
+  vaultResearchBatchPlanFailed: '계층 요약 배치를 계산할 수 없습니다.',
+  vaultResearchEmptySummary: 'Research Agent가 빈 요약을 반환했습니다.',
+  vaultResearchInvalidListResult: '볼트 목록 결과 형식이 올바르지 않습니다.',
+  vaultResearchInvalidListItem: '볼트 목록에 잘못된 문서 항목이 있습니다.',
+  vaultResearchInvalidListPage: '볼트 목록 페이지 정보가 올바르지 않습니다.',
+  vaultResearchInvalidReadResult: '볼트 읽기 결과 형식이 올바르지 않습니다.',
+  vaultResearchCancelled: 'Research Agent 실행이 취소되었습니다.',
+  vaultResearchCoverageWarning:
+    '⚠️ 전체 {total}개 문서 중 {processed}개를 읽었습니다. {failed}개 문서는 읽지 못해 아래 답변에서 제외되었습니다.',
+  vaultResearchFailurePlanFailed: 'Research Agent의 재시도 정책을 계산할 수 없습니다.',
+  toolLoopPolicyUnavailable: '도구 반복 실행 정책을 계산할 수 없습니다.',
+  repeatedToolCallBlocked: '같은 도구와 인자가 반복되어 이 호출을 중단했습니다.',
   chatGeneratingResponse: '응답 생성 중...',
   assistantQuestionReasoningTitle: '모델의 thinking 출력에서 사용자 질문을 감지했습니다.',
   assistantQuestionSelectionTitle: '모델이 사용자 선택을 요청했습니다.',
@@ -2069,6 +2154,7 @@ const ko: I18nKeys = {
   assistantQuestionRequiredNotice: '답변할 항목을 선택하거나 직접 입력하세요.',
   toolApproveExecution: '실행 승인',
   sourceVerifiedCount: '출처 {count}개 확인됨',
+  sourceCitationSelectionFailed: '최종 답변의 출처를 정리할 수 없습니다.',
   sourceSearchVerifiedCount: '출처 {verified}/{total}개 확인됨',
   sourceOpenAction: '열기',
   sourceCopyLinkAction: '링크 복사',
@@ -2118,6 +2204,8 @@ const ko: I18nKeys = {
   mcpApprovalRequiredNotice: '일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.',
   llmApiError: 'LLM API 오류: {detail}',
   stopButton: '중단',
+  stopAllButton: '전체 중단',
+  chatRunActive: '답변 작업 중',
   assistantQuestionProviderContent: '질문: {prompt}\n{choices}',
   mcpToolFinalAnswerMissing:
     'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
@@ -2373,7 +2461,7 @@ const ko: I18nKeys = {
     '기본값은 임베딩 프로바이더에 맞춰 자동으로 적용하고, 필요할 때만 직접 조정합니다.',
   settingsAuto186: '자동',
   settingsAuto187: '수동',
-  settingsAuto188: '자동 적용 중: 배치 {v0}, 대기 {v1}ms, 느림 감지 {v2}ms/{v3}ms',
+  settingsAuto188: '자동 조절 중 · 최대 배치 {v0} · 요청 간격과 부하는 실시간으로 최적화됩니다.',
   settingsAuto189: '성능 보호',
   settingsAuto190: '인덱싱 중 Obsidian이 느려지면 배치 크기와 대기 시간을 자동으로 조절합니다.',
   settingsAuto191: '임베딩 배치 크기',
@@ -3164,12 +3252,14 @@ const en: I18nKeys = {
   languageChangeConfirm:
     'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
   generalStatusTitle: 'Current status',
-  generalStatusDesc: 'See whether chat and search are ready, with only the next useful action surfaced.',
+  generalStatusDesc:
+    'See whether chat and search are ready, with only the next useful action surfaced.',
   generalAllReady: 'Nothing needs immediate attention.',
   generalBasicsTitle: 'Essentials',
   generalBasicsDesc: 'Choose the language, default model, and settings save behavior.',
   generalDiagnosticsTitle: 'Diagnostics',
-  generalDiagnosticsDesc: 'Inspect runtime state and detailed records only when something needs attention.',
+  generalDiagnosticsDesc:
+    'Inspect runtime state and detailed records only when something needs attention.',
   generalDiagnosticsDisclosureTitle: 'Show diagnostic tools',
   generalDiagnosticsDisclosureDesc:
     'Reveal status capture, the diagnostics view, and log cleanup actions.',
@@ -3218,7 +3308,8 @@ const en: I18nKeys = {
   mcpReconnectDesc: 'Try connecting again with the current server setup.',
   mcpStatusServerDetail: 'Current server command and connection state.',
   advancedPluginAwareTitle: 'Plugin-aware generation',
-  advancedPluginAwareDesc: 'Use active plugin information to improve Obsidian syntax compatibility.',
+  advancedPluginAwareDesc:
+    'Use active plugin information to improve Obsidian syntax compatibility.',
   advancedEnabledStatus: 'On',
   advancedDisabledStatus: 'Off',
   advancedPluginAwareOnDetail: 'New requests include a limited summary of active plugins.',
@@ -3544,7 +3635,7 @@ const en: I18nKeys = {
   mcpToolExecutionAlwaysAuto: 'Always auto-run',
   resetToDefault: 'Reset to Default',
   chatClear: 'Clear Chat',
-  chatScrollToBottom: 'Scroll to Bottom',
+  chatScrollToBottom: 'Latest answer',
   chatTyping: 'AI is thinking...',
   copyCode: 'Copy',
   copied: 'Copied',
@@ -3695,6 +3786,48 @@ const en: I18nKeys = {
   variantCompareRow:
     '{provider} · {citations} sources · {warnings} warnings · {tools} tools · {contexts} contexts',
   chatGenerationStopped: 'Response generation was stopped.',
+  vaultResearchProgress: 'Researching vault · {phase} · {completed}/{total}',
+  vaultResearchPhaseInventory: 'Checking documents',
+  vaultResearchPhaseMap: 'Reading documents',
+  vaultResearchPhaseReduce: 'Synthesizing',
+  vaultResearchPhaseComplete: 'Complete',
+  nativeVaultActionSearch: 'Search',
+  nativeVaultActionRead: 'Read document',
+  nativeVaultActionList: 'List documents',
+  nativeVaultActionLinks: 'Inspect links',
+  nativeVaultActionStats: 'Check vault scope',
+  nativeVaultPlanUnavailable: 'The native vault tool request could not be validated.',
+  nativeVaultInvalidJson: 'Tool arguments are not valid JSON.',
+  nativeVaultUnsupportedAction: 'This action is not supported.',
+  nativeVaultQueryRequired: 'A search query is required.',
+  nativeVaultPathRequired: 'A vault path is required.',
+  nativeVaultInvalidPath: 'Only safe paths inside the vault are allowed.',
+  nativeVaultInvalidLineRange: 'The requested line range is invalid.',
+  nativeVaultInvalidDirection: 'The link direction is invalid.',
+  nativeVaultInvalidArguments: 'The tool arguments are invalid.',
+  nativeVaultSearchDisplay: '{count} vault search results',
+  nativeVaultReadDisplay: '{path}, lines {start}-{end}',
+  nativeVaultListDisplay: '{count} vault documents listed',
+  nativeVaultLinksDisplay: '{count} links for {path}',
+  nativeVaultStatsDisplay: '{count} vault documents',
+  nativeVaultFileNotFound: 'Vault document not found: {path}',
+  nativeVaultReadRangeFailed: 'This line range cannot be read: {path}',
+  nativeVaultListFailed: 'The vault document list could not be calculated.',
+  nativeVaultStatsFailed: 'Vault statistics could not be calculated.',
+  nativeVaultSearchScopeFailed: 'The vault search scope could not be calculated.',
+  vaultResearchListStalled: 'Vault list pagination did not advance.',
+  vaultResearchBatchPlanFailed: 'The hierarchical summary batches could not be calculated.',
+  vaultResearchEmptySummary: 'The Research Agent returned an empty summary.',
+  vaultResearchInvalidListResult: 'The vault list result has an invalid format.',
+  vaultResearchInvalidListItem: 'The vault list contains an invalid document item.',
+  vaultResearchInvalidListPage: 'The vault list pagination data is invalid.',
+  vaultResearchInvalidReadResult: 'The vault read result has an invalid format.',
+  vaultResearchCancelled: 'The Research Agent run was cancelled.',
+  vaultResearchCoverageWarning:
+    '⚠️ Read {processed} of {total} documents. {failed} documents could not be read and were omitted from the answer below.',
+  vaultResearchFailurePlanFailed: 'The Research Agent retry policy could not be calculated.',
+  toolLoopPolicyUnavailable: 'The repeated tool-call policy could not be calculated.',
+  repeatedToolCallBlocked: 'This call was stopped because the same tool and arguments repeated.',
   chatGeneratingResponse: 'Generating response...',
   assistantQuestionReasoningTitle: 'Detected a user question in the model thinking output.',
   assistantQuestionSelectionTitle: 'The model requested a user selection.',
@@ -3704,6 +3837,7 @@ const en: I18nKeys = {
   assistantQuestionRequiredNotice: 'Select an item to answer or enter a response directly.',
   toolApproveExecution: 'Approve run',
   sourceVerifiedCount: '{count} sources checked',
+  sourceCitationSelectionFailed: 'The final answer sources could not be prepared.',
   sourceSearchVerifiedCount: '{verified}/{total} sources checked',
   sourceOpenAction: 'Open',
   sourceCopyLinkAction: 'Copy link',
@@ -3753,6 +3887,8 @@ const en: I18nKeys = {
   mcpApprovalRequiredNotice: 'Some MCP tools require the “Approve run” button in the message.',
   llmApiError: 'LLM API error: {detail}',
   stopButton: 'Stop',
+  stopAllButton: 'Stop all',
+  chatRunActive: 'Working on your answer',
   assistantQuestionProviderContent: 'Question: {prompt}\n{choices}',
   mcpToolFinalAnswerMissing:
     'MCP tool results were received, but the model did not produce a final answer. Review the tool results below and try again.',
@@ -4011,7 +4147,7 @@ const en: I18nKeys = {
     'Defaults are applied automatically for the embedding provider; adjust manually only when needed.',
   settingsAuto186: 'Automatic',
   settingsAuto187: 'Manual',
-  settingsAuto188: 'Auto applying: batch {v0}, wait {v1}ms, slowdown detection {v2}ms/{v3}ms',
+  settingsAuto188: 'Auto adjusting · max batch {v0} · request pacing and load are optimized live.',
   settingsAuto189: 'Performance guard',
   settingsAuto190:
     'Automatically adjusts batch size and wait time if Obsidian becomes slow during indexing.',
@@ -4596,7 +4732,8 @@ const en: I18nKeys = {
   rejectedFactUnknownRelationEntityDesc:
     'The relation source/target names returned by the model did not match the entities in the same response.',
   rejectedFactRelationMismatchTitle: 'Relation source/target type mismatch',
-  rejectedFactRelationMismatchDesc: 'A legacy extraction used a relation rejected by its old contract.',
+  rejectedFactRelationMismatchDesc:
+    'A legacy extraction used a relation rejected by its old contract.',
   rejectedFactUnknownClaimTitle: 'Unknown claim type',
   rejectedFactUnknownClaimDesc:
     'A legacy extraction used a claim type that its old contract did not allow.',

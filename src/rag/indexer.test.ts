@@ -121,6 +121,28 @@ describe('chunkMarkdown + buildSearchText Ollama context length scenario', () =>
 });
 
 describe('VaultIndexer 배치 인덱싱', () => {
+  it('임베딩이 실패해도 청크를 BM25 corpus에 먼저 보존한다', async () => {
+    const file = createFile('lexical-first.md', 1000, 40);
+    const vault = createVault(new Map([[file.path, '고객 문제를 해결하는 제품 전략']]));
+    const bm25 = new IndexedDbBM25Index(createBm25DbName());
+    await bm25.load();
+    const indexer = new VaultIndexer(
+      vault,
+      new MemoryVectorStore(),
+      {
+        embed: () => Promise.reject(new Error('embedding unavailable')),
+        embedBatch: () => Promise.reject(new Error('embedding unavailable')),
+      },
+      createRagConfig(),
+      createChatConfig(),
+      bm25,
+    );
+
+    await expect(indexer.indexFile(file)).rejects.toThrow('embedding unavailable');
+
+    expect([...bm25.search('고객 문제').keys()]).toEqual([expect.stringContaining(file.path)]);
+  });
+
   it('임베딩 요청을 maxEmbeddingBatchSize 단위로 나눈다', async () => {
     const file = createFile('note.md', 1000, 1500);
     const vault = createVault(

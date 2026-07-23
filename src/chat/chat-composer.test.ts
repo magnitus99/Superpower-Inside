@@ -15,6 +15,7 @@ describe('ChatComposer state contract', () => {
       inputDisabled: true,
       toolsDisabled: true,
       modelSelectDisabled: true,
+      runControl: { hidden: false, statusText: '답변 작업 중', stopText: '전체 중단' },
     });
   });
 
@@ -25,6 +26,7 @@ describe('ChatComposer state contract', () => {
       inputDisabled: false,
       toolsDisabled: false,
       modelSelectDisabled: false,
+      runControl: { hidden: true, statusText: '답변 작업 중', stopText: '전체 중단' },
     });
   });
 

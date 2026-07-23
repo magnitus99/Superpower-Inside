@@ -4,7 +4,7 @@ import { PerformanceGuard } from './performance-guard';
 const OPTIONS = {
   enabled: true,
   initialBatchSize: 32,
-  initialYieldMs: 25,
+  initialYieldMs: 0,
   slowEventLoopThresholdMs: 150,
   slowBatchThresholdMs: 3000,
 } as const;
@@ -14,64 +14,57 @@ describe('PerformanceGuard', () => {
     vi.useRealTimers();
   });
 
-  it('progressively throttles slow provider batches without pausing the renderer', () => {
+  it('느린 요청은 고정 sleep을 추가하지 않고 다음 배치 크기를 자동 축소한다', () => {
     const guard = new PerformanceGuard(OPTIONS);
 
-    for (let index = 0; index < 12; index++) {
-      guard.recordBatchDuration(3500);
-    }
+    guard.recordBatchDuration(6_000, 32);
 
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'throttled',
-        currentBatchSize: 2,
-        currentYieldMs: 400,
+        currentBatchSize: 20,
+        currentYieldMs: 0,
         pauseUntilMs: null,
       }),
     );
   });
 
-  it('pauses only after sustained event-loop pressure', () => {
+  it('이벤트 루프 압력에만 요청 사이 대기를 자동 추가하고 심각할 때만 잠시 멈춘다', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
     const guard = new PerformanceGuard(OPTIONS);
 
-    for (let index = 0; index < 6; index++) {
-      guard.recordEventLoopLag(200);
+    for (let index = 0; index < 3; index++) {
+      guard.recordEventLoopLag(300);
     }
 
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'paused',
         currentBatchSize: 1,
-        currentYieldMs: 500,
-        pauseUntilMs: Date.now() + 30_000,
-        remainingPauseMs: 30_000,
-        lastSlowReason: '이벤트 루프 지연 200ms',
+        currentYieldMs: 250,
+        pauseUntilMs: Date.now() + 15_000,
+        remainingPauseMs: 15_000,
+        lastSlowReason: '이벤트 루프 지연 300ms',
       }),
     );
   });
 
-  it('requires healthy samples from both channels before restoring defaults', () => {
+  it('건강한 요청과 이벤트 루프 샘플에서 배치 크기를 늘리고 대기를 제거한다', () => {
     const guard = new PerformanceGuard(OPTIONS);
-    guard.recordBatchDuration(3500);
-    guard.recordBatchDuration(3500);
-    guard.recordBatchDuration(3500);
+    guard.recordBatchDuration(6_000, 32);
+    guard.recordEventLoopLag(80);
     expect(guard.getState().mode).toBe('throttled');
 
-    guard.recordEventLoopLag(10);
-    guard.recordEventLoopLag(10);
-    guard.recordEventLoopLag(10);
-    expect(guard.getState().mode).toBe('throttled');
-
-    guard.recordBatchDuration(100);
-    guard.recordBatchDuration(100);
-    guard.recordBatchDuration(100);
+    for (let index = 0; index < 20; index++) {
+      guard.recordBatchDuration(100, guard.getBatchSize());
+      guard.recordEventLoopLag(5);
+    }
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'normal',
         currentBatchSize: 32,
-        currentYieldMs: 25,
+        currentYieldMs: 0,
       }),
     );
   });
@@ -80,16 +73,16 @@ describe('PerformanceGuard', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
     const guard = new PerformanceGuard(OPTIONS);
-    for (let index = 0; index < 6; index++) {
-      guard.recordEventLoopLag(200);
+    for (let index = 0; index < 3; index++) {
+      guard.recordEventLoopLag(300);
     }
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(15_000);
 
     expect(guard.resume()).toEqual(
       expect.objectContaining({
         mode: 'throttled',
         currentBatchSize: 1,
-        currentYieldMs: 500,
+        currentYieldMs: 250,
         pauseUntilMs: null,
         remainingPauseMs: null,
       }),
@@ -100,15 +93,15 @@ describe('PerformanceGuard', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
     const guard = new PerformanceGuard(OPTIONS);
-    for (let index = 0; index < 6; index++) {
-      guard.recordEventLoopLag(200);
+    for (let index = 0; index < 3; index++) {
+      guard.recordEventLoopLag(300);
     }
 
     expect(guard.forceResume()).toEqual(
       expect.objectContaining({
         mode: 'throttled',
         currentBatchSize: 1,
-        currentYieldMs: 500,
+        currentYieldMs: 250,
         pauseUntilMs: null,
       }),
     );
@@ -117,7 +110,7 @@ describe('PerformanceGuard', () => {
   it('keeps a disabled guard inert', () => {
     const guard = new PerformanceGuard({ ...OPTIONS, enabled: false });
     for (let index = 0; index < 12; index++) {
-      guard.recordBatchDuration(10000);
+      guard.recordBatchDuration(10000, 32);
       guard.recordEventLoopLag(10000);
     }
 
@@ -125,24 +118,24 @@ describe('PerformanceGuard', () => {
       expect.objectContaining({
         mode: 'normal',
         currentBatchSize: 32,
-        currentYieldMs: 25,
+        currentYieldMs: 0,
         pauseUntilMs: null,
       }),
     );
   });
 
-  it('preserves a user-configured yield above the default protection floor', () => {
+  it('레거시 수동 대기값을 무시하고 자동 제어만 사용한다', () => {
     const guard = new PerformanceGuard({ ...OPTIONS, initialYieldMs: 1_000 });
 
-    for (let index = 0; index < 3; index++) guard.recordBatchDuration(5_000);
+    guard.recordBatchDuration(5_000, 32);
     expect(guard.getState()).toEqual(
-      expect.objectContaining({ mode: 'throttled', currentYieldMs: 1_000 }),
+      expect.objectContaining({ mode: 'throttled', currentYieldMs: 0 }),
     );
 
-    for (let index = 0; index < 6; index++) guard.recordEventLoopLag(500);
+    for (let index = 0; index < 3; index++) guard.recordEventLoopLag(500);
     guard.forceResume();
     expect(guard.getState()).toEqual(
-      expect.objectContaining({ mode: 'throttled', currentYieldMs: 1_000 }),
+      expect.objectContaining({ mode: 'throttled', currentYieldMs: 250 }),
     );
   });
 });

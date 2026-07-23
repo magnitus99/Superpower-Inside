@@ -37,7 +37,7 @@ export class PerformanceGuard {
       initialBatchSize: Math.max(1, Math.floor(options.initialBatchSize)),
       initialYieldMs: Math.max(0, Math.floor(options.initialYieldMs)),
     };
-    const initialState = this.plan('initialize', undefined, null);
+    const initialState = this.plan('initialize', undefined, undefined, null);
     if (!initialState) {
       throw new Error('Rust RAG performance guard initialization failed');
     }
@@ -82,8 +82,8 @@ export class PerformanceGuard {
     return this.toPublicState();
   }
 
-  recordBatchDuration(durationMs: number): PerformanceGuardState {
-    this.apply('batch_sample', durationMs);
+  recordBatchDuration(durationMs: number, batchSize: number): PerformanceGuardState {
+    this.apply('batch_sample', durationMs, batchSize);
     return this.toPublicState();
   }
 
@@ -98,8 +98,12 @@ export class PerformanceGuard {
     return lagMs;
   }
 
-  private apply(kind: RustRagPerformanceGuardEventKind, durationMs?: number): boolean {
-    const nextState = this.plan(kind, durationMs);
+  private apply(
+    kind: RustRagPerformanceGuardEventKind,
+    durationMs?: number,
+    batchSize?: number,
+  ): boolean {
+    const nextState = this.plan(kind, durationMs, batchSize);
     if (!nextState) {
       const message = `Rust RAG performance guard rejected the ${kind} transition`;
       this.options.onPolicyError?.(message);
@@ -112,6 +116,7 @@ export class PerformanceGuard {
   private plan(
     kind: RustRagPerformanceGuardEventKind,
     durationMs?: number,
+    batchSize?: number,
     state: RustRagPerformanceGuardPolicyState | null = this.policyState,
   ): RustRagPerformanceGuardPolicyState | null {
     return planRagPerformanceGuardRust({
@@ -123,7 +128,12 @@ export class PerformanceGuard {
         slowBatchThresholdMs: this.options.slowBatchThresholdMs,
       },
       state,
-      event: durationMs === undefined ? { kind } : { kind, durationMs },
+      event:
+        durationMs === undefined
+          ? { kind }
+          : batchSize === undefined
+            ? { kind, durationMs }
+            : { kind, durationMs, batchSize },
       nowMs: Date.now(),
     });
   }
@@ -144,10 +154,7 @@ export class PerformanceGuard {
         this.policyState.mode === 'paused' && this.policyState.pauseUntilMs !== null
           ? Math.max(0, this.policyState.pauseUntilMs - Date.now())
           : null,
-      lastSlowReason: formatSlowReason(
-        this.policyState.lastSlowKind,
-        this.policyState.lastSlowMs,
-      ),
+      lastSlowReason: formatSlowReason(this.policyState.lastSlowKind, this.policyState.lastSlowMs),
     };
   }
 }

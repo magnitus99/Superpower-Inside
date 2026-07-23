@@ -30,6 +30,23 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('임베딩과 벡터 저장소 없이 BM25 corpus만으로 결과를 반환한다', async () => {
+    const bm25 = await createBm25([['notes/customer.md::0', '핵심 고객 문제와 해결 전략']]);
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+
+    const results = await engine.query('고객 문제', 5, 0);
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        sourcePath: 'notes/customer.md::0',
+        vectorScore: 0,
+      }),
+    ]);
+    expect(results[0]?.bm25Score).toBeGreaterThan(0);
+    expect(results[0]?.entry.metadata.text).toContain('고객 문제');
+  });
+
   it('folder scope가 있으면 해당 경로의 후보만 검색한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

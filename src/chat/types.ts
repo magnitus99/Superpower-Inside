@@ -13,6 +13,8 @@ export interface ToolCallRecord {
   status: 'running' | 'success' | 'error';
   serverName?: string;
   approved?: boolean;
+  executionKind?: 'native' | 'mcp';
+  citations?: SourceCitation[];
 }
 
 /** 채팅 메시지의 저장/표시 상태 */

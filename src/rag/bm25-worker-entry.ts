@@ -71,10 +71,11 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
 async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25WorkerResponse, 'id'>> {
   if (request.operation === 'initialize') {
     replaceRuntime(createRuntime(request.snapshot));
-    const documents = request.dbName
-      ? await readPersistedDocuments(request.dbName)
-      : (request.documents ?? []);
-    addDocuments(documents);
+    if (request.dbName) {
+      await hydratePersistedDocuments(request.dbName);
+    } else {
+      addDocuments(request.documents ?? []);
+    }
     return runtimeState();
   }
   if (request.operation === 'rebuild') {
@@ -109,7 +110,7 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   return runtimeState();
 }
 
-function readPersistedDocuments(dbName: string): Promise<BM25WorkerDocument[]> {
+function hydratePersistedDocuments(dbName: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const openRequest = indexedDB.open(dbName);
     openRequest.onerror = () =>
@@ -118,23 +119,27 @@ function readPersistedDocuments(dbName: string): Promise<BM25WorkerDocument[]> {
       const database = openRequest.result;
       if (!database.objectStoreNames.contains('documents')) {
         database.close();
-        resolve([]);
+        resolve();
         return;
       }
       const transaction = database.transaction('documents', 'readonly');
-      const documents: BM25WorkerDocument[] = [];
       const cursorRequest = transaction.objectStore('documents').openCursor();
       cursorRequest.onerror = () => reject(cursorRequest.error ?? new Error('BM25 cursor failed.'));
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result;
         if (!cursor) return;
         const value = cursor.value as BM25WorkerDocument;
-        documents.push({ id: value.id, text: value.text, sourcePath: value.sourcePath });
+        ensureRuntime().add_document(
+          value.id,
+          value.text,
+          value.sourcePath,
+          TOKENIZER_VERSION,
+        );
         cursor.continue();
       };
       transaction.oncomplete = () => {
         database.close();
-        resolve(documents);
+        resolve();
       };
       transaction.onerror = () => reject(transaction.error ?? new Error('BM25 read failed.'));
     };

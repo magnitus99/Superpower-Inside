@@ -307,6 +307,25 @@ describe('RagRetrievalPipeline', () => {
     expect(store.getEntriesCalls).toBe(0);
   });
 
+  it('IvfVectorCandidateProvider는 대형 볼트 worker의 exact 실행을 ANN으로 오표기하지 않는다', async () => {
+    const best = createEntry('best.md', [1, 0], '가장 가까운 문서');
+    const store = new SearchOnlyStore([best]);
+    store.resultMode = 'exact';
+    const provider = new IvfVectorCandidateProvider(store, {
+      minEntryCount: 1,
+      clusterCount: 2,
+      probeCount: 1,
+    });
+
+    const candidates = await provider.getCandidates(createRequest([1, 0], 1));
+
+    expect(candidates[0]).toEqual(expect.objectContaining({ source: 'vector' }));
+    expect(candidates[0]).not.toHaveProperty('reason');
+    expect(provider.getState()).toEqual(
+      expect.objectContaining({ mode: 'exact', clusterCount: 0, probeCount: 0 }),
+    );
+  });
+
   it('calculateRecallAtK는 exact 상위 후보 대비 ANN recall을 계산한다', () => {
     const recall = calculateRecallAtK(['a', 'b', 'c'], ['c', 'x', 'a'], 3);
 
@@ -526,6 +545,7 @@ class PathLookupStore extends MemoryVectorStore {
 class SearchOnlyStore extends MemoryVectorStore {
   getEntriesCalls = 0;
   searchCalls: unknown[] = [];
+  resultMode: 'exact' | 'ann' | null = null;
 
   constructor(private readonly searchEntries: VectorEntry[]) {
     super();
@@ -558,7 +578,8 @@ class SearchOnlyStore extends MemoryVectorStore {
       this.searchEntries.map((entry) => ({
         entry,
         score: 1,
-        mode: isRecord(request) && request.mode === 'ann' ? 'ann' : 'exact',
+        mode:
+          this.resultMode ?? (isRecord(request) && request.mode === 'ann' ? 'ann' : 'exact'),
       })),
     );
   }

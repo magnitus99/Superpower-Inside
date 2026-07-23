@@ -26,6 +26,9 @@ const PERFORMANCE_BUDGETS_MS = {
   bm25_add_search_bridge: 250,
   bm25_persist_bridge: 75,
   markdown_chunk_2mb_bridge: 750,
+  vector_large_build_bridge: 1500,
+  vector_large_query_bridge: 100,
+  bm25_large_search_bridge: 100,
 };
 
 const dimensions = 64;
@@ -36,6 +39,12 @@ const vectorIndex = new VectorRuntimeIndex(vectors, dimensions);
 const ivfIndex = new IvfRuntimeIndex(vectors, dimensions, 32, 4);
 const markdown = fixtureMarkdown2Mb();
 const bm25PersistIndex = buildBm25Index(1000);
+const largeDimensions = 384;
+const largeRowCount = 10_000;
+const largeVectors = fixtureVectors(largeRowCount, largeDimensions);
+const largeQuery = fixtureQuery(largeDimensions);
+const largeVectorIndex = new VectorRuntimeIndex(largeVectors, largeDimensions);
+const largeBm25Index = buildBm25Index(20_000);
 
 const results = [
   ['vector_exact_query_bridge', medianNs(60, () => vectorIndex.rank_top_k(query, 16))],
@@ -49,6 +58,9 @@ const results = [
   })],
   ['bm25_persist_bridge', medianNs(30, () => bm25PersistIndex.to_json())],
   ['markdown_chunk_2mb_bridge', medianNs(16, () => chunk_markdown_json(markdown, 1200, 120))],
+  ['vector_large_build_bridge', medianNs(3, () => new VectorRuntimeIndex(largeVectors, largeDimensions).free())],
+  ['vector_large_query_bridge', medianNs(20, () => largeVectorIndex.rank_top_k(largeQuery, 40))],
+  ['bm25_large_search_bridge', medianNs(20, () => largeBm25Index.search_top_json('alpha graph evidence', 40))],
 ];
 
 console.log('RAG wrapper benchmark (generated WASM bridge, median ns)');
@@ -65,6 +77,8 @@ for (const [name, median] of results) {
 vectorIndex.free();
 ivfIndex.free();
 bm25PersistIndex.free();
+largeVectorIndex.free();
+largeBm25Index.free();
 
 function medianNs(sampleCount, operation) {
   const samples = [];

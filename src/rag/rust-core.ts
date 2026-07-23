@@ -38,6 +38,7 @@ import {
   is_excluded_ext_json,
   is_recommendable_exclude_extension_json,
   is_mcp_tool_name_available,
+  is_whole_vault_research_intent,
   parse_mcp_tool_arguments_json,
   normalize_mcp_tool_result_json,
   is_mcp_tool_result_empty_json,
@@ -56,8 +57,15 @@ import {
   plan_implicit_folder_query_paths_json,
   plan_assistant_response_classification_json,
   split_reasoning_tags_json,
+  strip_compatibility_tool_calls,
   plan_chat_context_mentions_json,
+  plan_compatibility_tool_calls_json,
   plan_mcp_server_candidates_json,
+  plan_native_vault_link_paths_json,
+  plan_native_vault_list_json,
+  plan_native_vault_read_range_json,
+  plan_native_vault_stats_json,
+  plan_native_vault_tool_request_json,
   plan_bm25_candidate_resolution_json,
   plan_bm25_hit_lookup_json,
   plan_bm25_index_add_document_json,
@@ -129,6 +137,10 @@ import {
   plan_rerank_messages_json,
   plan_rerank_response_json,
   plan_rerank_result_order_json,
+  plan_research_summary_batches_json,
+  plan_research_citation_indices_json,
+  plan_research_request_failure_json,
+  plan_repeated_tool_call_indices_json,
   format_mcp_json,
   validate_exclude_extension_input_json,
   validate_exclude_path_input_json,
@@ -188,6 +200,39 @@ export interface RustBm25Term {
 export interface RustBm25TermFrequencies {
   totalTokens: number;
   frequencies: Record<string, number>;
+}
+
+export type RustNativeVaultToolRequest =
+  | { action: 'search'; query: string; path: string; limit: number }
+  | { action: 'read'; path: string; startLine: number; endLine: number | null }
+  | { action: 'list'; path: string; cursor: number; limit: number }
+  | {
+      action: 'links';
+      path: string;
+      direction: 'incoming' | 'outgoing' | 'both';
+      limit: number;
+    }
+  | { action: 'stats' };
+
+export type RustNativeVaultToolRequestPlan =
+  | { ok: true; request: RustNativeVaultToolRequest }
+  | { ok: false; error: { code: string } };
+
+export interface RustNativeVaultListPlan {
+  paths: string[];
+  nextCursor: number | null;
+  total: number;
+}
+
+export interface RustNativeVaultReadRangePlan {
+  startLine: number;
+  endLine: number;
+  truncated: boolean;
+}
+
+export interface RustNativeVaultStatsPlan {
+  fileCount: number;
+  totalBytes: number;
 }
 
 export interface RustHybridScoreInput {
@@ -941,6 +986,7 @@ export interface RustRagPerformanceGuardInput {
   event: {
     kind: RustRagPerformanceGuardEventKind;
     durationMs?: number;
+    batchSize?: number;
   };
   nowMs: number;
 }
@@ -5188,6 +5234,258 @@ export function parseMcpToolArgumentsRust(argumentsText: string): Record<string,
   }
 }
 
+export function planNativeVaultToolRequestRust(
+  argumentsText: string,
+): RustNativeVaultToolRequestPlan | null {
+  if (!isStringValue(argumentsText) || !ensureRustCore()) return null;
+
+  try {
+    const raw = plan_native_vault_tool_request_json(argumentsText);
+    const parsed: unknown = JSON.parse(raw);
+    return isNativeVaultToolRequestPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultListRust(
+  filePaths: readonly string[],
+  pathPrefix: string,
+  cursor: number,
+  limit: number,
+): RustNativeVaultListPlan | null {
+  if (!filePaths.every(isStringValue) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_native_vault_list_json(
+      JSON.stringify(filePaths),
+      pathPrefix,
+      normalizeNonNegativeInteger(cursor),
+      normalizeNonNegativeInteger(limit),
+    );
+    const parsed: unknown = JSON.parse(raw);
+    return isNativeVaultListPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultReadRangeRust(
+  totalLines: number,
+  startLine: number,
+  endLine: number | null,
+  maxLines: number,
+): RustNativeVaultReadRangePlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_native_vault_read_range_json(
+      normalizeNonNegativeInteger(totalLines),
+      normalizeNonNegativeInteger(startLine),
+      endLine === null ? undefined : normalizeNonNegativeInteger(endLine),
+      normalizeNonNegativeInteger(maxLines),
+    );
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isNativeVaultReadRangePlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultLinkPathsRust(
+  paths: readonly string[],
+  limit: number,
+): string[] | null {
+  if (!paths.every(isStringValue) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_native_vault_link_paths_json(JSON.stringify(paths), normalizeNonNegativeInteger(limit)),
+    );
+    return Array.isArray(parsed) && parsed.every(isStringValue) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultStatsRust(
+  fileSizes: readonly number[],
+): RustNativeVaultStatsPlan | null {
+  if (!fileSizes.every(isNonNegativeSafeInteger) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_native_vault_stats_json(JSON.stringify(fileSizes)));
+    return isNativeVaultStatsPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isWholeVaultResearchIntentRust(question: string): boolean | null {
+  if (!isStringValue(question) || !ensureRustCore()) return null;
+  try {
+    return is_whole_vault_research_intent(question);
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchSummaryBatchesRust(
+  itemSizes: readonly number[],
+  maxItems: number,
+  maxChars: number,
+): number[][] | null {
+  if (
+    !itemSizes.every(isNonNegativeSafeInteger) ||
+    !isNonNegativeSafeInteger(maxItems) ||
+    !isNonNegativeSafeInteger(maxChars) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_summary_batches_json(JSON.stringify(itemSizes), maxItems, maxChars),
+    );
+    return Array.isArray(parsed) &&
+      parsed.every((batch) => Array.isArray(batch) && batch.every(isNonNegativeSafeInteger))
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchCitationIndicesRust(
+  content: string,
+  citationIds: readonly string[],
+  fallbackLimit: number,
+): number[] | null {
+  if (
+    !isStringValue(content) ||
+    !citationIds.every(isStringValue) ||
+    !isNonNegativeSafeInteger(fallbackLimit) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_citation_indices_json(content, JSON.stringify(citationIds), fallbackLimit),
+    );
+    return Array.isArray(parsed) && parsed.every(isNonNegativeSafeInteger) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface RustResearchRequestFailurePlan {
+  code: string;
+  retryable: boolean;
+  retryDelayMs: number;
+}
+
+export interface RustToolCallSignatureInput {
+  name: string;
+  arguments: string;
+}
+
+export interface RustCompatibilityToolCall {
+  name: string;
+  arguments: string;
+}
+
+export function planCompatibilityToolCallsRust(
+  content: string,
+): RustCompatibilityToolCall[] | null {
+  if (!isStringValue(content) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_compatibility_tool_calls_json(content));
+    return Array.isArray(parsed) && parsed.every(isRustToolCallSignatureInput) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function stripCompatibilityToolCallsRust(content: string): string | null {
+  if (!isStringValue(content) || !ensureRustCore()) return null;
+  try {
+    return strip_compatibility_tool_calls(content);
+  } catch {
+    return null;
+  }
+}
+
+function isRustToolCallSignatureInput(value: unknown): value is RustToolCallSignatureInput {
+  return (
+    isStringRecordValueMap(value) && isStringValue(value.name) && isStringValue(value.arguments)
+  );
+}
+
+export function planRepeatedToolCallIndicesRust(
+  history: readonly RustToolCallSignatureInput[],
+  candidates: readonly RustToolCallSignatureInput[],
+  maxRepeats: number,
+): number[] | null {
+  if (
+    !history.every(isRustToolCallSignatureInput) ||
+    !candidates.every(isRustToolCallSignatureInput) ||
+    !isNonNegativeSafeInteger(maxRepeats) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_repeated_tool_call_indices_json(
+        JSON.stringify(history),
+        JSON.stringify(candidates),
+        maxRepeats,
+      ),
+    );
+    return Array.isArray(parsed) && parsed.every(isNonNegativeSafeInteger) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchRequestFailureRust(input: {
+  message: string;
+  status?: number;
+  failedAttempt: number;
+  retryAfterMs?: number;
+}): RustResearchRequestFailurePlan | null {
+  if (
+    !isStringValue(input.message) ||
+    !isNonNegativeSafeInteger(input.failedAttempt) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_request_failure_json(
+        input.message,
+        input.status ?? 0,
+        input.failedAttempt,
+        input.retryAfterMs ?? Number.NaN,
+      ),
+    );
+    if (
+      !isStringRecordValueMap(parsed) ||
+      !isStringValue(parsed.code) ||
+      typeof parsed.retryable !== 'boolean' ||
+      !isNonNegativeSafeInteger(parsed.retryDelayMs)
+    ) {
+      return null;
+    }
+    return {
+      code: parsed.code,
+      retryable: parsed.retryable,
+      retryDelayMs: parsed.retryDelayMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeMcpToolResultRust(result: unknown): RustMcpToolNormalizedResult | null {
   if (!ensureRustCore()) return null;
 
@@ -6876,6 +7174,79 @@ function isStringRecordValueMap(value: unknown): value is Record<string, unknown
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isNativeVaultToolRequestPlan(value: unknown): value is RustNativeVaultToolRequestPlan {
+  if (!isStringRecordValueMap(value) || typeof value.ok !== 'boolean') return false;
+  if (!value.ok) {
+    return isStringRecordValueMap(value.error) && typeof value.error.code === 'string';
+  }
+  return isNativeVaultToolRequest(value.request);
+}
+
+function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolRequest {
+  if (!isStringRecordValueMap(value) || typeof value.action !== 'string') return false;
+  if (value.action === 'stats') return true;
+  if (value.action === 'search') {
+    return (
+      typeof value.query === 'string' &&
+      typeof value.path === 'string' &&
+      isNonNegativeSafeInteger(value.limit)
+    );
+  }
+  if (value.action === 'read') {
+    return (
+      typeof value.path === 'string' &&
+      isNonNegativeSafeInteger(value.startLine) &&
+      (value.endLine === null || isNonNegativeSafeInteger(value.endLine))
+    );
+  }
+  if (value.action === 'list') {
+    return (
+      typeof value.path === 'string' &&
+      isNonNegativeSafeInteger(value.cursor) &&
+      isNonNegativeSafeInteger(value.limit)
+    );
+  }
+  return (
+    value.action === 'links' &&
+    typeof value.path === 'string' &&
+    (value.direction === 'incoming' ||
+      value.direction === 'outgoing' ||
+      value.direction === 'both') &&
+    isNonNegativeSafeInteger(value.limit)
+  );
+}
+
+function isNativeVaultListPlan(value: unknown): value is RustNativeVaultListPlan {
+  return (
+    isStringRecordValueMap(value) &&
+    Array.isArray(value.paths) &&
+    value.paths.every(isStringValue) &&
+    (value.nextCursor === null || isNonNegativeSafeInteger(value.nextCursor)) &&
+    isNonNegativeSafeInteger(value.total)
+  );
+}
+
+function isNativeVaultReadRangePlan(value: unknown): value is RustNativeVaultReadRangePlan {
+  return (
+    isStringRecordValueMap(value) &&
+    isNonNegativeSafeInteger(value.startLine) &&
+    isNonNegativeSafeInteger(value.endLine) &&
+    typeof value.truncated === 'boolean'
+  );
+}
+
+function isNativeVaultStatsPlan(value: unknown): value is RustNativeVaultStatsPlan {
+  return (
+    isStringRecordValueMap(value) &&
+    isNonNegativeSafeInteger(value.fileCount) &&
+    isNonNegativeSafeInteger(value.totalBytes)
+  );
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustMentionCandidate>;
@@ -7727,6 +8098,7 @@ function isRagPerformanceGuardInput(input: RustRagPerformanceGuardInput): boolea
     'reset',
   ];
   const requiresDuration = event.kind === 'batch_sample' || event.kind === 'event_loop_sample';
+  const requiresBatchSize = event.kind === 'batch_sample';
   return (
     typeof config.enabled === 'boolean' &&
     isValidNonNegativeInteger(config.initialBatchSize) &&
@@ -7741,6 +8113,10 @@ function isRagPerformanceGuardInput(input: RustRagPerformanceGuardInput): boolea
       (event.durationMs !== undefined &&
         Number.isFinite(event.durationMs) &&
         event.durationMs >= 0)) &&
+    (!requiresBatchSize ||
+      (event.batchSize !== undefined &&
+        isValidNonNegativeInteger(event.batchSize) &&
+        event.batchSize > 0)) &&
     Number.isFinite(input.nowMs) &&
     input.nowMs >= 0 &&
     (input.state === null || isRagPerformanceGuardPolicyState(input.state, config))
@@ -7769,24 +8145,22 @@ function isRagPerformanceGuardPolicyState(
     state.currentBatchSize > 0 &&
     state.currentBatchSize <= config.initialBatchSize &&
     isValidNonNegativeInteger(state.currentYieldMs) &&
-    state.currentYieldMs <= Math.max(500, config.initialYieldMs) &&
+    state.currentYieldMs <= 1_000 &&
     isValidNonNegativeInteger(state.slowBatchSamples) &&
-    state.slowBatchSamples < 3 &&
+    state.slowBatchSamples <= 2 &&
     isValidNonNegativeInteger(state.slowEventLoopSamples) &&
-    state.slowEventLoopSamples <= 6 &&
+    state.slowEventLoopSamples <= 3 &&
     isValidNonNegativeInteger(state.healthyBatchSamples) &&
-    state.healthyBatchSamples <= 3 &&
+    state.healthyBatchSamples <= 2 &&
     isValidNonNegativeInteger(state.healthyEventLoopSamples) &&
-    state.healthyEventLoopSamples <= 3 &&
+    state.healthyEventLoopSamples <= 2 &&
     validOptionalReason(state.reasonKind) &&
     validOptionalTime(state.reasonMs) &&
     validOptionalTime(state.pauseUntilMs) &&
     validOptionalReason(state.lastSlowKind) &&
     validOptionalTime(state.lastSlowMs) &&
     (state.mode === 'paused'
-      ? state.pauseUntilMs !== null &&
-        state.currentBatchSize === 1 &&
-        state.currentYieldMs === Math.max(500, config.initialYieldMs)
+      ? state.pauseUntilMs !== null && state.currentBatchSize === 1 && state.currentYieldMs === 250
       : state.pauseUntilMs === null)
   );
 }

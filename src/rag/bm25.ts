@@ -7,6 +7,17 @@ export interface BM25DocumentInput {
   id: string;
   text: string;
   sourcePath?: string;
+  heading?: string;
+  startLine?: number;
+  endLine?: number;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
+}
+
+export interface BM25CorpusDocument extends BM25DocumentInput {
+  sourcePath: string;
 }
 
 export function tokenize(text: string): string[] {
@@ -31,6 +42,13 @@ interface BM25DocumentRecord {
   sourcePath: string;
   updated: number;
   order: number;
+  heading?: string;
+  startLine?: number;
+  endLine?: number;
+  sourceMtime?: number;
+  sourceSize?: number;
+  contentHash?: string;
+  indexedAt?: number;
 }
 
 interface BM25MutationRecord {
@@ -229,7 +247,7 @@ export class IndexedDbBM25Index {
       await this.withBatch(() => {
         this.queueMutation('clear', '*');
         for (const document of documents) {
-          this.queueDocument(document.id, document.text, document.sourcePath ?? document.id);
+          this.queueDocument(normalizeCorpusDocument(document));
         }
         this.batchDirty = true;
         return Promise.resolve();
@@ -253,7 +271,7 @@ export class IndexedDbBM25Index {
         const document = documents[index];
         if (document === undefined) continue;
         if (seenDocIds.has(document.id)) {
-          this.addDocument(document.id, document.text, document.sourcePath);
+          this.addCorpusDocument(normalizeCorpusDocument(document));
         } else {
           this.ensureRuntime().addNewDocument(
             document.id,
@@ -261,7 +279,7 @@ export class IndexedDbBM25Index {
             document.sourcePath ?? document.id,
             TOKENIZER_VERSION,
           );
-          this.queueDocument(document.id, document.text, document.sourcePath ?? document.id);
+          this.queueDocument(normalizeCorpusDocument(document));
           seenDocIds.add(document.id);
         }
         if (index + 1 < documents.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) {
@@ -273,14 +291,29 @@ export class IndexedDbBM25Index {
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
+    this.addCorpusDocument({ id: docId, text, sourcePath });
+  }
+
+  addCorpusDocument(document: BM25CorpusDocument): void {
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.add({ id: docId, text, sourcePath }));
+        this.applyWorkerState(
+          await worker.add({
+            id: document.id,
+            text: document.text,
+            sourcePath: document.sourcePath,
+          }),
+        );
       });
     } else {
-      this.ensureRuntime().addDocument(docId, text, sourcePath, TOKENIZER_VERSION);
+      this.ensureRuntime().addDocument(
+        document.id,
+        document.text,
+        document.sourcePath,
+        TOKENIZER_VERSION,
+      );
     }
-    this.queueDocument(docId, text, sourcePath);
+    this.queueDocument(document);
   }
 
   removeDocument(docId: string): void {
@@ -371,6 +404,21 @@ export class IndexedDbBM25Index {
     return [...new Set(records.map((record) => record.sourcePath))].sort((a, b) =>
       a.localeCompare(b),
     );
+  }
+
+  async getCorpusDocumentsByIds(ids: readonly string[]): Promise<BM25CorpusDocument[]> {
+    await this.persist();
+    const records = await this.db.documents.bulkGet([...ids]);
+    return records.flatMap((record) => (record ? [toCorpusDocument(record)] : []));
+  }
+
+  async getCorpusDocumentsBySourcePaths(
+    sourcePaths: readonly string[],
+  ): Promise<BM25CorpusDocument[]> {
+    await this.persist();
+    if (sourcePaths.length === 0) return [];
+    const records = await this.db.documents.where('sourcePath').anyOf([...sourcePaths]).toArray();
+    return records.map(toCorpusDocument);
   }
 
   async reconcileSourcePaths(
@@ -495,16 +543,23 @@ export class IndexedDbBM25Index {
     this.ensureRuntime().removeSource(record.target, TOKENIZER_VERSION);
   }
 
-  private queueDocument(docId: string, text: string, sourcePath: string): void {
+  private queueDocument(document: BM25CorpusDocument): void {
     const now = Date.now();
     this.pendingOperations.push({
       kind: 'upsert-document',
       record: {
-        id: docId,
-        text,
-        sourcePath,
+        id: document.id,
+        text: document.text,
+        sourcePath: document.sourcePath,
         updated: now,
         order: this.nextOperationOrder(),
+        heading: document.heading,
+        startLine: document.startLine,
+        endLine: document.endLine,
+        sourceMtime: document.sourceMtime,
+        sourceSize: document.sourceSize,
+        contentHash: document.contentHash,
+        indexedAt: document.indexedAt,
       },
     });
   }
@@ -555,6 +610,25 @@ export class IndexedDbBM25Index {
     }
     return { raw: await this.legacyAdapter.read(this.legacyPath), source: 'legacy' };
   }
+}
+
+function toCorpusDocument(record: BM25DocumentRecord): BM25CorpusDocument {
+  return {
+    id: record.id,
+    text: record.text,
+    sourcePath: record.sourcePath,
+    heading: record.heading,
+    startLine: record.startLine,
+    endLine: record.endLine,
+    sourceMtime: record.sourceMtime,
+    sourceSize: record.sourceSize,
+    contentHash: record.contentHash,
+    indexedAt: record.indexedAt,
+  };
+}
+
+function normalizeCorpusDocument(document: BM25DocumentInput): BM25CorpusDocument {
+  return { ...document, sourcePath: document.sourcePath ?? document.id };
 }
 
 async function statLegacyPath(adapter: DataAdapter, path: string) {

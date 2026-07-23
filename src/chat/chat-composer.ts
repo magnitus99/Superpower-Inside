@@ -9,6 +9,11 @@ export interface ComposerLoadingState {
   inputDisabled: boolean;
   toolsDisabled: boolean;
   modelSelectDisabled: boolean;
+  runControl: {
+    hidden: boolean;
+    statusText: string;
+    stopText: string;
+  };
 }
 
 export type ComposerKeyAction =
@@ -58,6 +63,11 @@ export function createComposerLoadingState(loading: boolean): ComposerLoadingSta
     inputDisabled: loading,
     toolsDisabled: loading,
     modelSelectDisabled: loading,
+    runControl: {
+      hidden: !loading,
+      statusText: t('chatRunActive'),
+      stopText: t('stopAllButton'),
+    },
   };
 }
 

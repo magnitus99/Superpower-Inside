@@ -1,6 +1,7 @@
 import type { IndexedDbBM25Index } from './bm25';
 import type { VectorEntry, VectorSearchFilter, VectorStore } from './store';
 import type { CachedMetadata, TFile } from 'obsidian';
+import type { RetrievalCorpusStore } from './corpus-store';
 import {
   collectCandidateReasonsRust,
   calculateRecallAtKRust,
@@ -34,6 +35,7 @@ export interface RagRetrievalRequest {
   candidateLimit: number;
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
+  isEntryInScope?: (entry: VectorEntry) => boolean;
 }
 
 export interface RetrievalCandidate {
@@ -194,22 +196,29 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
       annProbeCount: this.options.probeCount,
       signal,
     });
-    const clusterCount = this.options.clusterCount > 0 ? this.options.clusterCount : results.length;
+    const usedAnn = results.some((result) => result.mode === 'ann');
+    const clusterCount = usedAnn
+      ? this.options.clusterCount > 0
+        ? this.options.clusterCount
+        : results.length
+      : 0;
     this.state = {
       ...this.state,
-      mode: 'ann',
+      mode: usedAnn ? 'ann' : results.length === 0 ? 'empty' : 'exact',
       entryCount: stats.totalEntries,
       clusterCount,
-      probeCount: Math.max(1, Math.min(this.options.probeCount, Math.max(1, clusterCount))),
+      probeCount: usedAnn
+        ? Math.max(1, Math.min(this.options.probeCount, Math.max(1, clusterCount)))
+        : 0,
       lastQueriedAt: Date.now(),
     };
     return results
       .filter((result) => request.isEntryCompatible?.(result.entry) ?? true)
-      .map(({ entry, score }) => ({
+      .map(({ entry, score, mode }) => ({
         entry,
-        source: this.source,
+        source: mode === 'ann' ? this.source : 'vector',
         sourceScore: score,
-        reason: 'ivf',
+        ...(mode === 'ann' ? { reason: 'ivf' } : {}),
       }));
   }
 
@@ -223,7 +232,7 @@ export class BM25CandidateProvider implements CandidateProvider {
   readonly source = 'bm25';
 
   constructor(
-    private readonly vectorStore: VectorStore,
+    private readonly corpusStore: RetrievalCorpusStore,
     private readonly bm25Index: IndexedDbBM25Index,
     readonly deadlineMs = 80,
   ) {}
@@ -242,7 +251,7 @@ export class BM25CandidateProvider implements CandidateProvider {
     const hitPlan = planBm25HitLookupRust(hits, request.candidateLimit, 4);
     if (hitPlan === null || hitPlan.hits.length === 0) return [];
 
-    const foundEntries = await this.vectorStore.getEntriesByIds(hitPlan.lookupDocIds);
+    const foundEntries = await this.corpusStore.getEntriesByIds(hitPlan.lookupDocIds);
     throwIfAborted(signal);
     const sourceLookupPaths = planBm25SourceLookupsRust(
       hitPlan.hits,
@@ -252,7 +261,7 @@ export class BM25CandidateProvider implements CandidateProvider {
 
     const pathEntries =
       sourceLookupPaths.length > 0
-        ? await this.vectorStore.getEntriesByFilePaths(sourceLookupPaths)
+        ? await this.corpusStore.getEntriesByFilePaths(sourceLookupPaths)
         : [];
     throwIfAborted(signal);
 
@@ -287,7 +296,7 @@ function toBm25EntryInput(entry: VectorEntry, request: RagRetrievalRequest): Rus
   return {
     id: entry.id,
     filePath: entry.metadata.filePath,
-    compatible: request.isEntryCompatible?.(entry) ?? true,
+    compatible: request.isEntryInScope?.(entry) ?? true,
   };
 }
 

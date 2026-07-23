@@ -35,7 +35,26 @@ import {
   type RagQueryLike,
 } from './context';
 import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
-import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
+import {
+  appendAssistantToolRound,
+  executeAssistantToolCalls as executeToolCalls,
+  collectToolCitations,
+  markRepeatedToolCalls,
+  prepareAssistantToolCalls,
+} from './tool-execution';
+import {
+  NativeVaultToolRuntime,
+  createNativeVaultToolDefinition,
+  type NativeVaultToolRuntimeLike,
+} from '../agent/native-vault-tool';
+import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
+import { selectAnswerCitations } from '../agent/citation-selection';
+import { IndexedDbVaultResearchCache } from '../agent/research-cache';
+import {
+  VaultResearchAgent,
+  getVaultResearchPhaseLabel,
+  isWholeVaultResearchRequest,
+} from '../agent/research-agent';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
@@ -67,6 +86,7 @@ import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
 import { createProviderWaitStatus } from './provider-wait';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
+import { createCompatibilityToolPrompt, parseCompatibilityToolResponse } from './tool-protocol';
 import {
   createChatTurnState,
   getChatTurnStageStatus,
@@ -82,6 +102,7 @@ import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 import { appLogger } from '../utils/logger';
+import { recoverInterruptedSessionMessages } from './session-recovery';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
@@ -152,6 +173,8 @@ export class ChatView extends ItemView {
   private scrollBtn: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
   private readinessEl: HTMLElement | null;
+  private runControlEl: HTMLElement | null;
+  private stopAllBtn: HTMLButtonElement | null;
   private modelSelectEl: HTMLSelectElement | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
@@ -167,7 +190,10 @@ export class ChatView extends ItemView {
   private pendingRegeneration: RegenerationDraft | null;
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
+  private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private readonly vaultResearchCache: IndexedDbVaultResearchCache;
   private lastStreamingMarkdownAt: number;
+  private localToolCallSequence: number;
 
   // RefreshAction 인스턴스
   private mcpRefreshAction: RefreshAction | null = null;
@@ -199,6 +225,8 @@ export class ChatView extends ItemView {
     this.scrollBtn = null;
     this.mcpStatusBar = null;
     this.readinessEl = null;
+    this.runControlEl = null;
+    this.stopAllBtn = null;
     this.modelSelectEl = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
@@ -215,6 +243,11 @@ export class ChatView extends ItemView {
     this.pendingSubmittedDraft = null;
     this.pendingRegeneration = null;
     this.lastStreamingMarkdownAt = 0;
+    this.localToolCallSequence = 0;
+    this.nativeVaultTool = new NativeVaultToolRuntime(
+      new ObsidianNativeVaultToolPort(this.app, () => this.plugin.ragEngine),
+    );
+    this.vaultResearchCache = new IndexedDbVaultResearchCache();
     this.sourcePanel = new SourcePanel({
       openCitation: (citation) => this.openCitation(citation),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
@@ -245,16 +278,21 @@ export class ChatView extends ItemView {
     this.buildHeader(root);
     this.buildMcpStatusBar(root);
 
-    this.messagesArea = root.createDiv({
+    const messagesShell = root.createDiv({ cls: 'superpower-inside-chat-messages-shell' });
+    this.messagesArea = messagesShell.createDiv({
       cls: 'superpower-inside-chat-messages',
       attr: { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions text' },
     });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
     this.renderEmptyState();
 
-    this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
+    this.scrollBtn = messagesShell.createEl('button', {
+      cls: 'superpower-inside-scroll-to-bottom',
+      attr: { type: 'button', 'aria-label': t('chatScrollToBottom') },
+    });
     setHidden(this.scrollBtn, true);
-    this.scrollBtn.setText(t('chatScrollToBottom'));
+    setIcon(this.scrollBtn, 'arrow-down');
+    this.scrollBtn.createSpan({ text: t('chatScrollToBottom') });
     this.scrollBtn.addEventListener('click', () => this.scrollToBottom());
 
     this.typingIndicator = this.messagesArea.createDiv({
@@ -309,6 +347,8 @@ export class ChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.clearAutoSaveTimer();
+    this.abortController?.abort();
+    this.abortController = null;
     this.isStreaming = false;
     this.setLoading(false);
     this.cancelStreamingMarkdownRender();
@@ -320,6 +360,7 @@ export class ChatView extends ItemView {
       unsub();
     }
     this.refreshBusUnsubscribers = [];
+    this.vaultResearchCache.close();
     await this.saveCurrentSession();
   }
 
@@ -501,6 +542,27 @@ export class ChatView extends ItemView {
       attr: { role: 'status', 'aria-live': 'polite' },
     });
 
+    this.runControlEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-run-control',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+    setHidden(this.runControlEl, true);
+    const runStatus = this.runControlEl.createSpan({
+      cls: 'superpower-inside-chat-run-control-status',
+    });
+    const runStatusIcon = runStatus.createSpan({
+      cls: 'superpower-inside-chat-run-control-status-icon',
+    });
+    setIcon(runStatusIcon, 'sparkles');
+    runStatus.createSpan({ text: t('chatRunActive') });
+    this.stopAllBtn = this.runControlEl.createEl('button', {
+      cls: 'superpower-inside-chat-stop-all',
+      attr: { type: 'button' },
+    });
+    setIcon(this.stopAllBtn, 'square');
+    this.stopAllBtn.createSpan({ text: t('stopAllButton') });
+    this.stopAllBtn.addEventListener('click', () => this.stopStreaming());
+
     const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
 
     this.modelSelectEl = toolbar.createEl('select', {
@@ -603,12 +665,22 @@ export class ChatView extends ItemView {
     setHidden(this.typingIndicator, true);
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
     if (current) {
+      const cancelledToolCalls = current.toolCalls?.map((toolCall) =>
+        toolCall.status === 'running'
+          ? {
+              ...toolCall,
+              status: 'error' as const,
+              result: t('cancelledLabel'),
+              resultSummary: t('cancelledLabel'),
+            }
+          : { ...toolCall },
+      );
       this.updateMessage(
         current.id,
         current.content || t('chatGenerationStopped'),
         true,
         current.reasoning,
-        current.toolCalls,
+        cancelledToolCalls,
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
@@ -2036,48 +2108,53 @@ export class ChatView extends ItemView {
       await this.saveCurrentSession(true);
       const session = await loadChat(this.app.vault, filePath);
       const now = new Date().toISOString();
-      this.messages = session.messages.map((m) => ({
-        id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp ?? Date.now(),
-        createdAt: m.createdAt ?? now,
-        updatedAt: m.updatedAt ?? m.createdAt ?? now,
-        providerKey: m.providerKey,
-        providerLabel: m.providerLabel,
-        model: m.model,
-        status: m.status ?? 'complete',
-        errorMessage: m.errorMessage,
-        reasoning: m.reasoning,
-        toolCalls: m.toolCalls
-          ? m.toolCalls.map((tc) => ({
-              id: tc.id,
-              name: tc.name,
-              arguments: tc.arguments,
-              result: tc.result,
-              resultSummary: tc.resultSummary,
-              normalizedResult: tc.normalizedResult,
-              status: tc.status,
-              serverName: tc.serverName,
-              approved: tc.approved,
-            }))
-          : undefined,
-        citations: m.citations,
-        sourceWarnings: m.sourceWarnings,
-        contextAttachments: m.contextAttachments,
-        branchOf: m.branchOf,
-        branchRoot: m.branchRoot,
-        variantOf: m.variantOf,
-        stopReason: m.stopReason,
-        providerCapability: m.providerCapability,
-        turnStage: m.turnStage,
-        toolRound: m.toolRound,
-        toolRoundLogs: m.toolRoundLogs,
-        contextBudgetSnapshot: m.contextBudgetSnapshot,
-        dataBoundarySnapshot: m.dataBoundarySnapshot,
-        errorKind: m.errorKind,
-        actionHistory: m.actionHistory,
-      }));
+      this.messages = recoverInterruptedSessionMessages(
+        session.messages.map((m) => ({
+          id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp ?? Date.now(),
+          createdAt: m.createdAt ?? now,
+          updatedAt: m.updatedAt ?? m.createdAt ?? now,
+          providerKey: m.providerKey,
+          providerLabel: m.providerLabel,
+          model: m.model,
+          status: m.status ?? 'complete',
+          errorMessage: m.errorMessage,
+          reasoning: m.reasoning,
+          toolCalls: m.toolCalls
+            ? m.toolCalls.map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments,
+                result: tc.result,
+                resultSummary: tc.resultSummary,
+                normalizedResult: tc.normalizedResult,
+                status: tc.status,
+                serverName: tc.serverName,
+                approved: tc.approved,
+                executionKind: tc.executionKind,
+                citations: tc.citations,
+              }))
+            : undefined,
+          citations: m.citations,
+          sourceWarnings: m.sourceWarnings,
+          contextAttachments: m.contextAttachments,
+          branchOf: m.branchOf,
+          branchRoot: m.branchRoot,
+          variantOf: m.variantOf,
+          stopReason: m.stopReason,
+          providerCapability: m.providerCapability,
+          turnStage: m.turnStage,
+          toolRound: m.toolRound,
+          toolRoundLogs: m.toolRoundLogs,
+          contextBudgetSnapshot: m.contextBudgetSnapshot,
+          dataBoundarySnapshot: m.dataBoundarySnapshot,
+          errorKind: m.errorKind,
+          actionHistory: m.actionHistory,
+        })),
+        t('chatGenerationStopped'),
+      );
       this.sessionSystemPrompt = session.systemPrompt ?? null;
       this.session = {
         filePath,
@@ -2141,6 +2218,8 @@ export class ChatView extends ItemView {
           status: tc.status,
           serverName: tc.serverName,
           approved: tc.approved,
+          executionKind: tc.executionKind,
+          citations: tc.citations,
         })),
         msg.citations,
         msg.sourceWarnings,
@@ -2386,9 +2465,13 @@ export class ChatView extends ItemView {
     let restoreDraft = false;
 
     try {
-      const systemPrompt = promptContext.systemPrompt;
       const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
       const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
+      const systemPrompt = providerCapability.toolCalling
+        ? promptContext.systemPrompt
+        : [promptContext.systemPrompt, createCompatibilityToolPrompt(toolDefinitions)]
+            .filter((part): part is string => Boolean(part))
+            .join('\n\n');
       if (!providerCapability.toolCalling && mentionedServers.length > 0) {
         new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
       }
@@ -2421,6 +2504,54 @@ export class ChatView extends ItemView {
       assistantWrapper = this.messageEls.get(assistantId);
       if (assistantWrapper) {
         assistantWrapper.classList.add('generating');
+      }
+
+      if (isWholeVaultResearchRequest(text)) {
+        const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool, {
+          cache: this.vaultResearchCache,
+        }).run({
+          question: text,
+          cacheNamespace: `${key}:${modelName}`,
+          signal: abortController.signal,
+          onProgress: (progress) => {
+            const progressText = t('vaultResearchProgress', {
+              phase: getVaultResearchPhaseLabel(progress.phase),
+              completed: String(progress.completedFiles),
+              total: String(progress.totalFiles),
+            });
+            this.updateMessage(assistantId, progressText, false, undefined, undefined, {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...toTurnMeta(),
+              ...contextMeta,
+              ...assistantVariantMeta,
+            });
+          },
+        });
+        const researchCitations = selectAnswerCitations(
+          researchResult.content,
+          collectToolCitations([...promptContext.citations, ...researchResult.citations], []),
+        );
+        const sourceWarnings = this.validateAssistantSources(
+          researchResult.content,
+          researchCitations,
+        );
+        this.updateMessage(assistantId, researchResult.content, true, undefined, undefined, {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...applyTurnEvent({ type: 'complete' }),
+          ...contextMeta,
+          ...assistantVariantMeta,
+          citations: researchCitations,
+          sourceWarnings,
+        });
+        setHidden(this.typingIndicator, true);
+        assistantWrapper?.classList.remove('generating');
+        return;
       }
 
       let fullText = '';
@@ -2511,7 +2642,15 @@ export class ChatView extends ItemView {
         return;
       }
 
-      const parsedToolCalls = this.parseInlineToolRequests(fullText);
+      const compatibility = parseCompatibilityToolResponse(
+        fullText,
+        (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
+      );
+      fullText = compatibility.visibleContent;
+      const parsedToolCalls = [
+        ...this.parseInlineToolRequests(fullText),
+        ...compatibility.toolCalls,
+      ];
       if (parsedToolCalls.length > 0) {
         fullText = this.stripInlineToolRequests(fullText);
         const baseToolCallIndex = toolCallMap.size;
@@ -2653,12 +2792,13 @@ export class ChatView extends ItemView {
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        toolCalls = await prepareToolCallsForExecution(
+        toolCalls = await prepareAssistantToolCalls({
           toolCalls,
-          this.plugin.mcpRegistry,
-          mentionedServers,
-          this.plugin.settings.chat.mcpToolExecutionPolicy,
-        );
+          nativeTool: this.nativeVaultTool,
+          registry: this.plugin.mcpRegistry,
+          preferredServerNames: mentionedServers,
+          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+        });
         const pendingApproval = toolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
         );
@@ -2696,27 +2836,40 @@ export class ChatView extends ItemView {
           mentionedServers,
           fullReasoning || undefined,
         );
-        await this.runToolResponseLoop({
-          provider,
-          messageId: assistantId,
-          baseMessages: messages,
-          toolDefinitions: providerToolDefinitions ?? [],
-          maxToolRounds: providerCapability.maxToolRounds,
-          toolCalls,
-          abortController,
-          meta: {
+        if (pendingApproval) {
+          this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
             providerKey: key,
             providerLabel,
             model: modelName,
             providerCapability,
-            ...applyTurnEvent({ type: 'tools-complete' }),
+            ...applyTurnEvent({ type: 'await-tool-approval' }),
             ...contextMeta,
             ...assistantVariantMeta,
-          },
-          mentionedServers,
-          initialText: fullText,
-          initialReasoning: fullReasoning,
-        });
+            sourceWarnings,
+          });
+        } else {
+          await this.runToolResponseLoop({
+            provider,
+            messageId: assistantId,
+            baseMessages: messages,
+            toolDefinitions: providerToolDefinitions ?? [],
+            maxToolRounds: providerCapability.maxToolRounds,
+            toolCalls,
+            abortController,
+            meta: {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...applyTurnEvent({ type: 'tools-complete' }),
+              ...contextMeta,
+              ...assistantVariantMeta,
+            },
+            mentionedServers,
+            initialText: fullText,
+            initialReasoning: fullReasoning,
+          });
+        }
       }
       if (assistantWrapper) {
         assistantWrapper.classList.remove('generating');
@@ -2831,6 +2984,10 @@ export class ChatView extends ItemView {
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
     if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
+    setHidden(this.runControlEl, state.runControl.hidden);
+    if (this.stopAllBtn) {
+      this.stopAllBtn.setAttribute('aria-label', state.runControl.stopText);
+    }
     if (!loading) this.renderChatReadiness();
   }
 
@@ -2900,7 +3057,7 @@ export class ChatView extends ItemView {
           existing.arguments += toolCallDelta.function.arguments;
       } else {
         toolCallMap.set(toolCallDelta.index, {
-          id: toolCallDelta.id ?? '',
+          id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
           arguments: toolCallDelta.function?.arguments ?? '',
           status: 'running',
@@ -2982,13 +3139,17 @@ export class ChatView extends ItemView {
   }
 
   private async collectToolDefinitions(serverNames: string[]): Promise<ToolDefinition[]> {
-    const toolDefinitions: ToolDefinition[] = [];
+    const nativeDefinition = createNativeVaultToolDefinition();
+    const toolDefinitions: ToolDefinition[] = [nativeDefinition];
+    const registeredNames = new Set([nativeDefinition.function.name]);
     for (const serverName of serverNames) {
       const client = this.plugin.mcpRegistry?.getClient(serverName);
       if (!client) continue;
       try {
         const tools = await client.listTools();
         for (const tool of tools) {
+          if (registeredNames.has(tool.name)) continue;
+          registeredNames.add(tool.name);
           toolDefinitions.push({
             type: 'function',
             function: {
@@ -3011,45 +3172,40 @@ export class ChatView extends ItemView {
   private async streamFinalAnswerAfterTools(args: {
     provider: LLMProvider;
     messageId: string;
-    baseMessages: ChatMessage[];
+    conversationMessages: ChatMessage[];
+    assistantContent: string;
     toolDefinitions: ToolDefinition[];
     toolCalls: ToolCallRecord[];
     abortController: AbortController;
     meta: MessageMetaInput;
-  }): Promise<{ finalText: string; finalReasoning: string; newToolCalls: ToolCallRecord[] }> {
-    const successfulToolCalls = args.toolCalls.filter(
-      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
+  }): Promise<{
+    finalText: string;
+    finalReasoning: string;
+    newToolCalls: ToolCallRecord[];
+    conversationMessages: ChatMessage[];
+  }> {
+    const completedToolCalls = args.toolCalls.filter(
+      (toolCall) =>
+        (toolCall.status === 'success' || toolCall.status === 'error') &&
+        (toolCall.normalizedResult || toolCall.result),
     );
-    if (successfulToolCalls.length === 0) {
-      return { finalText: '', finalReasoning: '', newToolCalls: [] };
+    if (completedToolCalls.length === 0) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
     }
 
     let finalText = '';
     let finalReasoning = '';
     const newToolCallMap = new Map<number, ToolCallRecord>();
-    const assistantMsg = this.messages.find((message) => message.id === args.messageId);
-    const toolCallsPayload = successfulToolCalls.map((toolCall) => ({
-      id: toolCall.id,
-      type: 'function' as const,
-      function: {
-        name: toolCall.name,
-        arguments: toolCall.arguments,
-      },
-    }));
-    const secondMessages: ChatMessage[] = [
-      ...args.baseMessages,
-      {
-        role: 'assistant',
-        content: assistantMsg?.content ?? '',
-        toolCalls: toolCallsPayload,
-      },
-      ...successfulToolCalls.map((toolCall) => ({
-        role: 'tool' as const,
-        content: toolCall.normalizedResult ?? toolCall.result ?? '',
-        tool_call_id: toolCall.id,
-        name: toolCall.name,
-      })),
-    ];
+    const secondMessages = appendAssistantToolRound(
+      args.conversationMessages,
+      args.assistantContent,
+      completedToolCalls,
+    );
 
     const visibleToolCalls = [...args.toolCalls];
     await args.provider.streamChat(
@@ -3074,10 +3230,20 @@ export class ChatView extends ItemView {
       { signal: args.abortController.signal },
     );
 
-    return {
+    const compatibility = parseCompatibilityToolResponse(
       finalText,
+      (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
+    );
+    const compatibilityBaseIndex = newToolCallMap.size;
+    compatibility.toolCalls.forEach((toolCall, index) => {
+      newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
+    });
+
+    return {
+      finalText: compatibility.visibleContent,
       finalReasoning,
       newToolCalls: Array.from(newToolCallMap.values()),
+      conversationMessages: secondMessages,
     };
   }
 
@@ -3097,9 +3263,12 @@ export class ChatView extends ItemView {
     const maxRounds = Math.max(0, Math.trunc(args.maxToolRounds ?? 10));
     let round = 0;
     let currentToolCalls = args.toolCalls;
+    let conversationMessages = [...args.baseMessages];
+    let currentAssistantContent = args.initialText ?? '';
     let accumulatedText = args.initialText ?? '';
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
+    let turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
 
     while (round < maxRounds) {
       if (args.abortController.signal.aborted) break;
@@ -3108,32 +3277,67 @@ export class ChatView extends ItemView {
       const result = await this.streamFinalAnswerAfterTools({
         provider: args.provider,
         messageId: args.messageId,
-        baseMessages: args.baseMessages,
+        conversationMessages,
+        assistantContent: currentAssistantContent,
         toolDefinitions: args.toolDefinitions,
         toolCalls: currentToolCalls,
         abortController: args.abortController,
-        meta: args.meta,
+        meta: { ...args.meta, citations: turnCitations },
       });
 
       accumulatedText += result.finalText;
       if (result.finalReasoning) accumulatedReasoning += result.finalReasoning;
+      conversationMessages = result.conversationMessages;
 
       if (result.newToolCalls.length > 0) {
-        allToolCalls.push(...result.newToolCalls);
+        const preparedToolCalls = markRepeatedToolCalls(
+          allToolCalls,
+          await prepareAssistantToolCalls({
+            toolCalls: result.newToolCalls,
+            nativeTool: this.nativeVaultTool,
+            registry: this.plugin.mcpRegistry,
+            preferredServerNames: args.mentionedServers,
+            mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          }),
+        );
+        if (
+          preparedToolCalls.some(
+            (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+          )
+        ) {
+          allToolCalls.push(...preparedToolCalls);
+          this.updateMessage(
+            args.messageId,
+            accumulatedText,
+            true,
+            accumulatedReasoning || undefined,
+            allToolCalls,
+            {
+              ...args.meta,
+              citations: turnCitations,
+              status: 'complete',
+              turnStage: 'awaiting-tool-approval',
+            },
+          );
+          new Notice(t('mcpApprovalRequiredNotice'));
+          return;
+        }
         currentToolCalls = await this.executeAssistantToolCalls(
           args.messageId,
-          result.newToolCalls,
+          preparedToolCalls,
           args.mentionedServers,
           accumulatedReasoning || undefined,
         );
         allToolCalls.push(...currentToolCalls);
+        currentAssistantContent = result.finalText;
+        turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
         this.updateMessage(
           args.messageId,
           accumulatedText,
           false,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'streaming' },
+          { ...args.meta, citations: turnCitations, status: 'streaming' },
         );
         continue;
       }
@@ -3147,6 +3351,7 @@ export class ChatView extends ItemView {
           allToolCalls,
           {
             ...args.meta,
+            citations: turnCitations,
             status: 'error',
             turnStage: 'error',
             errorMessage: t('mcpToolFinalAnswerMissing'),
@@ -3165,6 +3370,7 @@ export class ChatView extends ItemView {
           reasoning: accumulatedReasoning,
         });
         if (classification.type === 'question') {
+          const answerCitations = selectAnswerCitations(classification.content, turnCitations);
           this.updateMessage(
             args.messageId,
             classification.content,
@@ -3173,6 +3379,7 @@ export class ChatView extends ItemView {
             allToolCalls,
             {
               ...args.meta,
+              citations: answerCitations,
               assistantQuestion: classification.question,
               status: 'complete',
               turnStage: 'complete',
@@ -3181,10 +3388,8 @@ export class ChatView extends ItemView {
           );
           return;
         }
-        const sourceWarnings = this.validateAssistantSources(
-          accumulatedText,
-          args.meta.citations ?? [],
-        );
+        const answerCitations = selectAnswerCitations(accumulatedText, turnCitations);
+        const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
         this.updateMessage(
           args.messageId,
           accumulatedText,
@@ -3193,6 +3398,7 @@ export class ChatView extends ItemView {
           allToolCalls,
           {
             ...args.meta,
+            citations: answerCitations,
             sourceWarnings,
             status: 'complete',
             turnStage: 'complete',
@@ -3204,10 +3410,8 @@ export class ChatView extends ItemView {
     }
 
     if (args.abortController.signal.aborted) {
-      const sourceWarnings = this.validateAssistantSources(
-        accumulatedText,
-        args.meta.citations ?? [],
-      );
+      const answerCitations = selectAnswerCitations(accumulatedText, turnCitations);
+      const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
       this.updateMessage(
         args.messageId,
         accumulatedText || t('cancelledLabel'),
@@ -3216,6 +3420,7 @@ export class ChatView extends ItemView {
         allToolCalls,
         {
           ...args.meta,
+          citations: answerCitations,
           sourceWarnings,
           status: 'complete',
           turnStage: 'cancelled',
@@ -3224,14 +3429,22 @@ export class ChatView extends ItemView {
       );
     } else {
       const content = accumulatedText || t('tooManyToolCalls');
-      const sourceWarnings = this.validateAssistantSources(content, args.meta.citations ?? []);
+      const answerCitations = selectAnswerCitations(content, turnCitations);
+      const sourceWarnings = this.validateAssistantSources(content, answerCitations);
       this.updateMessage(
         args.messageId,
         content,
         true,
         accumulatedReasoning || undefined,
         allToolCalls,
-        { ...args.meta, sourceWarnings, status: 'error', turnStage: 'error', stopReason: 'error' },
+        {
+          ...args.meta,
+          citations: answerCitations,
+          sourceWarnings,
+          status: 'error',
+          turnStage: 'error',
+          stopReason: 'error',
+        },
       );
     }
   }
@@ -3280,10 +3493,12 @@ export class ChatView extends ItemView {
     if (!message) {
       throw new Error(t('mcpResultMessageMissing', { messageId }));
     }
-    return executeMcpToolCalls({
+    return executeToolCalls({
+      nativeTool: this.nativeVaultTool,
       registry: this.plugin.mcpRegistry,
       toolCalls,
       preferredServerNames,
+      signal: this.abortController?.signal,
       onUpdate: (updatedToolCalls) => {
         const current = this.messages.find((m) => m.id === messageId);
         if (!current) {
@@ -3312,6 +3527,22 @@ export class ChatView extends ItemView {
       this.getEffectiveMcpServerNames(this.lastUserPrompt ?? ''),
       message.reasoning,
     );
+    const pendingApproval = updated.some(
+      (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+    );
+    if (pendingApproval) {
+      const current = this.messages.find((item) => item.id === messageId);
+      this.updateMessage(
+        messageId,
+        current?.content ?? message.content,
+        true,
+        current?.reasoning ?? message.reasoning,
+        updated,
+        { turnStage: 'awaiting-tool-approval' },
+      );
+      await this.saveCurrentSession(true);
+      return;
+    }
     const stopReason = updated.some((toolCall) => toolCall.status === 'error')
       ? 'tool-failed'
       : 'complete';
@@ -3355,7 +3586,11 @@ export class ChatView extends ItemView {
               message.model,
             );
       const mentionedServers = this.getEffectiveMcpServerNames(this.lastUserPrompt ?? '');
-      const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '', undefined, provider);
+      const promptContext = await this.buildPromptContext(
+        this.lastUserPrompt ?? '',
+        undefined,
+        provider,
+      );
       const systemPrompt = promptContext.systemPrompt;
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
       const previousMessages = this.messages
@@ -3426,11 +3661,7 @@ export class ChatView extends ItemView {
       }
     }
 
-    const ragEngine = (
-      this.plugin as unknown as {
-        ragEngine?: RagQueryLike | null;
-      }
-    ).ragEngine;
+    const ragEngine: RagQueryLike | null = this.plugin.ragEngine;
     const context = await buildChatContext(ragQuery, {
       app: this.app,
       ragEngine,

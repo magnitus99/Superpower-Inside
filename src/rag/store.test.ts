@@ -7,6 +7,7 @@ import {
   importLegacyJsonVectorStore,
   MemoryVectorStore,
   type VectorEntry,
+  type VectorSearchWorkerLike,
   type VectorStore,
 } from './store';
 
@@ -185,6 +186,41 @@ describe('IndexedDbVectorStore', () => {
         entriesCacheLoaded: false,
         searchEntriesCacheSize: 0,
       }),
+    );
+  });
+
+  it('대형 볼트 검색은 사용 가능한 worker에서 id와 점수만 받아 결과를 복원한다', async () => {
+    const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
+      Promise.resolve([{ id: 'd.md::0', score: 0.99 }]),
+    );
+    const close = vi.fn();
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 2,
+      vectorSearchWorkerFactory: () => ({ search, close }),
+    });
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('d.md', 0, [0.9, 0.1], 'd'),
+    ]);
+
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 1,
+      mode: 'ann',
+      filter: { embeddingModel: 'text-embedding-3-small', dimension: 2 },
+    });
+
+    expect(search).toHaveBeenCalledOnce();
+    const request = search.mock.calls[0]?.[0];
+    expect(typeof request?.dbName).toBe('string');
+    expect(request?.queryVector).toEqual([1, 0]);
+    expect(request?.topK).toBe(1);
+    expect(results.map((result) => [result.entry.id, result.score, result.mode])).toEqual([
+      ['d.md::0', 0.99, 'exact'],
+    ]);
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({ entriesCacheLoaded: false, workerSearchActive: true }),
     );
   });
 

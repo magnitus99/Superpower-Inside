@@ -23,6 +23,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallInfo[];
   reasoning?: string;
   name?: string;
+  tool_result_is_error?: boolean;
 }
 
 /** LLM이 호출한 툴 정보 (스트리밍 중 점진적 누적) */
@@ -109,6 +110,11 @@ function parseToolArgs(args: string): unknown {
   }
 }
 
+function isToolResultContentBlock(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return (value as Record<string, unknown>).type === 'tool_result';
+}
+
 function throwIfChatAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('LLM request cancelled', 'AbortError');
@@ -120,7 +126,7 @@ export function normalizeForOpenAI(messages: ChatMessage[]): Record<string, unkn
   return messages.map((m) => {
     const msg: Record<string, unknown> = { role: m.role };
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-      msg.content = null;
+      msg.content = m.content || null;
       msg.tool_calls = m.toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',
@@ -155,10 +161,22 @@ export function normalizeForClaude(messages: ChatMessage[]): Record<string, unkn
       }
       result.push({ role: 'assistant', content });
     } else if (m.role === 'tool') {
-      result.push({
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content }],
-      });
+      const block: Record<string, unknown> = {
+        type: 'tool_result',
+        tool_use_id: m.tool_call_id,
+        content: m.content,
+        ...(m.tool_result_is_error === true ? { is_error: true } : {}),
+      };
+      const previous = result.at(-1);
+      if (
+        previous?.role === 'user' &&
+        Array.isArray(previous.content) &&
+        (previous.content as unknown[]).every(isToolResultContentBlock)
+      ) {
+        previous.content.push(block);
+      } else {
+        result.push({ role: 'user', content: [block] });
+      }
     } else {
       result.push({ role: m.role, content: m.content });
     }
@@ -170,7 +188,7 @@ export function normalizeForClaude(messages: ChatMessage[]): Record<string, unkn
 export function normalizeForOllama(messages: ChatMessage[]): Record<string, unknown>[] {
   return messages.map((m) => {
     if (m.role === 'tool') {
-      return { role: 'tool', content: m.content, name: m.name ?? 'unknown_tool' };
+      return { role: 'tool', content: m.content, tool_name: m.name ?? 'unknown_tool' };
     }
     const normalized: Record<string, unknown> = { role: m.role, content: m.content };
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
@@ -303,7 +321,7 @@ class OpenAICompatibleProvider implements LLMProvider {
       throw: false,
     });
     if (res.status >= 400) {
-      throw new Error(`LLM stream failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('LLM stream failed', res);
     }
     const lines = res.text.split('\n');
     for (const line of lines) {
@@ -487,7 +505,7 @@ class ClaudeProvider implements LLMProvider {
       throw: false,
     });
     if (res.status >= 400) {
-      throw new Error(`Claude stream failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('Claude stream failed', res);
     }
     const lines = res.text.split('\n');
 
@@ -656,7 +674,7 @@ class OllamaProvider implements LLMProvider {
         body: JSON.stringify(body),
       });
       if (res.status >= 400) {
-        throw new Error(`Ollama stream failed: ${res.status} ${res.text}`);
+        throw createProviderHttpError('Ollama stream failed', res);
       }
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
@@ -681,7 +699,7 @@ class OllamaProvider implements LLMProvider {
       throw: false,
     });
     if (res.status >= 400) {
-      throw new Error(`Ollama stream failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('Ollama stream failed', res);
     }
 
     for (const line of res.text.split('\n')) {

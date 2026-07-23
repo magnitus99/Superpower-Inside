@@ -165,6 +165,27 @@ describe('MCP 툴 실행 결과 반영', () => {
     expect(executed[0]?.result).toContain('빈 결과');
   });
 
+  it('이미 완료된 MCP 호출은 승인 흐름에서 다시 실행하지 않는다', async () => {
+    const client = createClient({ content: [{ type: 'text', text: '새 결과' }] });
+    const registry = createRegistry(client);
+
+    const executed = await executeMcpToolCalls({
+      registry,
+      toolCalls: [
+        createToolCall({
+          name: 'search',
+          status: 'success',
+          approved: true,
+          result: '기존 결과',
+        }),
+      ],
+      preferredServerNames: ['serper'],
+    });
+
+    expect(client.callTool).not.toHaveBeenCalled();
+    expect(executed[0]).toMatchObject({ status: 'success', result: '기존 결과' });
+  });
+
   it('JSON이 아닌 인자는 input 필드로 보존한다', () => {
     expect(parseToolArguments('대추방울토마토 영양성분')).toEqual({
       input: '대추방울토마토 영양성분',
@@ -204,6 +225,7 @@ function createToolCall(patch: Partial<ToolCallRecord>): ToolCallRecord {
     status: patch.status ?? 'running',
     serverName: patch.serverName,
     approved: patch.approved,
+    result: patch.result,
   };
 }
 

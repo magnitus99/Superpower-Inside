@@ -125,7 +125,7 @@ describe('normalizeForOpenAI', () => {
     ]);
   });
 
-  it('assistant with text + toolCalls → content null, tool_calls has snake_case key', () => {
+  it('assistant with text + toolCalls → content와 tool_calls를 함께 보존한다', () => {
     const messages: ChatMessage[] = [
       {
         role: 'assistant',
@@ -135,7 +135,7 @@ describe('normalizeForOpenAI', () => {
     ];
     const result = normalizeForOpenAI(messages);
     const assistantMsg = result[0];
-    expect(assistantMsg.content).toBeNull();
+    expect(assistantMsg.content).toBe('Let me check...');
     expect(assistantMsg.tool_calls).toBeDefined();
     expect(assistantMsg.toolCalls).toBeUndefined();
   });
@@ -710,6 +710,34 @@ describe('normalizeForClaude', () => {
     });
   });
 
+  it('병렬 tool result를 하나의 user 메시지에 묶고 오류 상태를 보존한다', () => {
+    const messages: ChatMessage[] = [
+      { role: 'tool', content: 'first', tool_call_id: 'toolu_1', name: 'first_tool' },
+      {
+        role: 'tool',
+        content: 'second failed',
+        tool_call_id: 'toolu_2',
+        name: 'second_tool',
+        tool_result_is_error: true,
+      },
+    ];
+
+    expect(normalizeForClaude(messages)).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'first' },
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_2',
+            content: 'second failed',
+            is_error: true,
+          },
+        ],
+      },
+    ]);
+  });
+
   it('the exact bug scenario: tool result after assistant tool call', () => {
     const messages: ChatMessage[] = [
       { role: 'system', content: 'You are helpful.' },
@@ -775,7 +803,7 @@ describe('normalizeForOllama', () => {
     });
   });
 
-  it('tool role preserves name, omits id and type', () => {
+  it('tool role preserves tool_name, omits id and type', () => {
     const messages: ChatMessage[] = [
       { role: 'tool', content: '[FILE] test.md', tool_call_id: 'call_1', name: 'list_directory' },
     ];
@@ -783,7 +811,7 @@ describe('normalizeForOllama', () => {
     expect(result[0]).toEqual({
       role: 'tool',
       content: '[FILE] test.md',
-      name: 'list_directory',
+      tool_name: 'list_directory',
     });
   });
 
@@ -793,7 +821,7 @@ describe('normalizeForOllama', () => {
     expect(result[0]).toEqual({
       role: 'tool',
       content: 'result',
-      name: 'unknown_tool',
+      tool_name: 'unknown_tool',
     });
   });
 

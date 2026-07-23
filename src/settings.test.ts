@@ -475,13 +475,13 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.graphRagMaxConcurrentRequests).toBe(1);
   });
 
-  it('자동 성능 설정은 Ollama와 그 외 프로바이더에 다른 기본값을 적용한다', () => {
+  it('자동 페이서는 정상 상태에서 고정 대기 없이 프로바이더별 최대 배치만 정한다', () => {
     expect(resolveRagPerformanceSettings(DEFAULT_SETTINGS.rag)).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 32,
-      indexingYieldMs: 25,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
+      indexingYieldMs: 0,
+      slowEventLoopThresholdMs: 24,
+      slowBatchThresholdMs: 1500,
     });
 
     expect(
@@ -492,13 +492,13 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 1,
-      indexingYieldMs: 50,
-      slowEventLoopThresholdMs: 150,
-      slowBatchThresholdMs: 3000,
+      indexingYieldMs: 0,
+      slowEventLoopThresholdMs: 24,
+      slowBatchThresholdMs: 1500,
     });
   });
 
-  it('수동 성능 설정에서도 보호 장치는 항상 활성화한다', () => {
+  it('레거시 수동 성능 값은 더 이상 런타임 페이싱을 바꾸지 않는다', () => {
     expect(
       resolveRagPerformanceSettings({
         ...DEFAULT_SETTINGS.rag,
@@ -511,10 +511,10 @@ describe('RAG 설정 표시 헬퍼', () => {
       }),
     ).toEqual({
       enabled: true,
-      maxEmbeddingBatchSize: 7,
-      indexingYieldMs: 80,
-      slowEventLoopThresholdMs: 220,
-      slowBatchThresholdMs: 4200,
+      maxEmbeddingBatchSize: 32,
+      indexingYieldMs: 0,
+      slowEventLoopThresholdMs: 24,
+      slowBatchThresholdMs: 1500,
     });
   });
 

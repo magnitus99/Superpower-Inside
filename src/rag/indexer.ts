@@ -753,6 +753,28 @@ export class VaultIndexer {
     emitIndexingProgress(options, tracker, 'file-chunks');
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
+    if (this.bm25Index) {
+      this.bm25Index.removeDocumentsBySource(file.path);
+      for (let index = 0; index < chunks.length; index++) {
+        const chunk = chunks[index];
+        const text = texts[index];
+        if (!chunk || text === undefined) continue;
+        this.bm25Index.addCorpusDocument({
+          id: `${file.path}::${chunk.metadata.startLine}::${index}`,
+          text,
+          sourcePath: file.path,
+          heading: chunk.metadata.heading,
+          startLine: chunk.metadata.startLine,
+          endLine: chunk.metadata.endLine,
+          sourceMtime: file.stat.mtime,
+          sourceSize: file.stat.size,
+          contentHash: sourceHash,
+          indexedAt,
+        });
+      }
+      await this.bm25Index.persist();
+      throwIfIndexingCancelled(options.signal);
+    }
     const vectors = await this.embedTextsInBatches(texts, options, tracker);
     throwIfIndexingCancelled(options.signal);
 
@@ -775,15 +797,6 @@ export class VaultIndexer {
     }));
 
     await this.vectorStore.replaceFileEntries(file.path, entries);
-
-    if (this.bm25Index) {
-      this.bm25Index.removeDocumentsBySource(file.path);
-      for (const entry of entries) {
-        this.bm25Index.addDocument(entry.id, entry.metadata.text, file.path);
-      }
-      await this.bm25Index.persist();
-      throwIfIndexingCancelled(options.signal);
-    }
 
     const finished = finishIndexingResult(
       { indexed: 1, vectors: entries.length, skipped: 0, documents: [file.path] },

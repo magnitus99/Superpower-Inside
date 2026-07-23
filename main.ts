@@ -42,9 +42,12 @@ import {
   importLegacyJsonVectorStore,
   type VectorStore,
 } from './src/rag/store';
-import { IndexedDbBM25Index } from './src/rag/bm25';
+import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
 import {
   VaultIndexer,
+  buildSearchText,
+  chunkMarkdown,
+  chunkPlainText,
   registerModifyEvent,
   registerCreateEvent,
   registerDeleteEvent,
@@ -1426,7 +1429,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         migratedRag.enableBM25 = true;
       }
       if (typeof migratedRag.bm25Weight !== 'number') {
-        migratedRag.bm25Weight = 0.3;
+        migratedRag.bm25Weight = 0.15;
+      } else if (migratedRag.bm25Weight === 0.3) {
+        migratedRag.bm25Weight = 0.15;
       }
       migratedRag.performanceTuningMode = normalizeRagPerformanceTuningMode(
         migratedRag.performanceTuningMode,
@@ -1872,15 +1877,70 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async rebuildBM25Index(bm25Index: IndexedDbBM25Index): Promise<void> {
-    if (!this.vectorStore) return;
-    const entries = await this.vectorStore.getEntries();
-    await bm25Index.rebuild(
-      entries.map((entry) => ({
-        id: entry.id,
-        text: entry.metadata.text,
-        sourcePath: entry.metadata.filePath,
-      })),
-    );
+    const entries = await this.vectorStore?.getEntries();
+    if (entries && entries.length > 0) {
+      await bm25Index.rebuild(
+        entries.map((entry) => ({
+          id: entry.id,
+          text: entry.metadata.text,
+          sourcePath: entry.metadata.filePath,
+          heading: entry.metadata.heading,
+          startLine: entry.metadata.startLine,
+          endLine: entry.metadata.endLine,
+          sourceMtime: entry.metadata.sourceMtime,
+          sourceSize: entry.metadata.sourceSize,
+          contentHash: entry.metadata.contentHash,
+          indexedAt: entry.metadata.indexedAt,
+        })),
+      );
+      return;
+    }
+    await this.rebuildBM25IndexFromVault(bm25Index);
+  }
+
+  private async rebuildBM25IndexFromVault(bm25Index: IndexedDbBM25Index): Promise<void> {
+    const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
+    const documents: BM25CorpusDocument[] = [];
+    for (const file of files) {
+      const content = await this.app.vault.cachedRead(file);
+      documents.push(...this.buildBM25CorpusDocuments(file, content));
+    }
+    await bm25Index.rebuild(documents);
+  }
+
+  private buildBM25CorpusDocuments(file: TFile, content: string): BM25CorpusDocument[] {
+    const chunks =
+      file.extension.toLowerCase() === 'md'
+        ? chunkMarkdown(content, this.settings.rag.chunkSize, this.settings.rag.overlap)
+        : chunkPlainText(content, this.settings.rag.chunkSize, this.settings.rag.overlap);
+    const indexedAt = Date.now();
+    return chunks.map((chunk, index) => ({
+      id: `${file.path}::${chunk.metadata.startLine}::${index}`,
+      text: buildSearchText(file, chunk),
+      sourcePath: file.path,
+      heading: chunk.metadata.heading,
+      startLine: chunk.metadata.startLine,
+      endLine: chunk.metadata.endLine,
+      sourceMtime: file.stat.mtime,
+      sourceSize: file.stat.size,
+      indexedAt,
+    }));
+  }
+
+  private async indexBM25File(bm25Index: IndexedDbBM25Index, file: TFile): Promise<void> {
+    const content = await this.app.vault.cachedRead(file);
+    const documents = this.buildBM25CorpusDocuments(file, content);
+    await bm25Index.withBatch(async () => {
+      bm25Index.removeDocumentsBySource(file.path);
+      for (const document of documents) bm25Index.addCorpusDocument(document);
+      await bm25Index.persist();
+    });
+  }
+
+  private async removeBM25File(bm25Index: IndexedDbBM25Index, filePath: string): Promise<number> {
+    bm25Index.removeDocumentsBySource(filePath);
+    await bm25Index.persist();
+    return 0;
   }
 
   async initRAG(): Promise<void> {
@@ -2122,6 +2182,45 @@ export default class SuperpowerInsidePlugin extends Plugin {
         },
       });
 
+      const embeddingNamespace = resolvedEmbeddingModel
+        ? createEmbeddingCacheNamespace(providerKey, resolvedEmbeddingModel.modelId)
+        : 'lexical-baseline';
+      const storageLayout = createRagStorageLayout({
+        pluginId: this.manifest?.id ?? 'superpower-inside',
+        vaultIdentity: this.getVaultStorageIdentity(),
+        legacyVaultName: this.getVaultName(),
+        embeddingNamespace,
+      });
+      let bm25Index: IndexedDbBM25Index | undefined;
+      if (rag.enableBM25) {
+        const nextBm25Index = new IndexedDbBM25Index(
+          storageLayout.active.bm25,
+          this.app.vault.adapter,
+        );
+        try {
+          await this.runRagRuntimeInitStep('bm25-load', () => nextBm25Index.load());
+          if (!nextBm25Index.isTokenizerCurrent || nextBm25Index.totalDocs === 0) {
+            this.getLogger().notice('BM25 corpus is missing or outdated; rebuilding it.', {
+              source: 'rag.bm25',
+            });
+            await this.runRagRuntimeInitStep(
+              'bm25-rebuild',
+              () => this.rebuildBM25Index(nextBm25Index),
+              120_000,
+            );
+          }
+          bm25Index = nextBm25Index;
+          this.bm25Index = nextBm25Index;
+          this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore);
+        } catch (err) {
+          nextBm25Index.close();
+          this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
+            source: 'rag.bm25',
+            error: err,
+          });
+        }
+      }
+
       if (!resolvedEmbeddingModel) {
         this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
         this.lastRagRuntimeInitStage = null;
@@ -2130,6 +2229,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingModelRef: rag.embeddingModelRef },
         });
+        this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
@@ -2145,6 +2245,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingProvider: providerKey },
         });
+        this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
@@ -2163,6 +2264,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           source: 'rag',
           data: { embeddingProvider: providerKey, strategy: profile.strategy },
         });
+        this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
         return;
       }
@@ -2186,14 +2288,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           baseUrl = 'http://localhost:11434';
         }
       }
-
-      const embeddingNamespace = createEmbeddingCacheNamespace(providerKey, embeddingModel);
-      const storageLayout = createRagStorageLayout({
-        pluginId: this.manifest?.id ?? 'superpower-inside',
-        vaultIdentity: this.getVaultStorageIdentity(),
-        legacyVaultName: this.getVaultName(),
-        embeddingNamespace,
-      });
 
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
@@ -2266,7 +2360,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       );
 
       // BM25 is attached after the vector/Graph runtime is already usable.
-      let bm25Index: IndexedDbBM25Index | undefined;
       const structuralMetadataContext = this.app.metadataCache
         ? {
             resolvedLinks: this.app.metadataCache.resolvedLinks,
@@ -2297,8 +2390,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       const createQueryEngine = (index?: IndexedDbBM25Index): RAGQueryEngine =>
         new RAGQueryEngine(
-          this.vectorStore!,
-          this.embeddingProvider!,
+          this.vectorStore,
+          this.embeddingProvider,
           index,
           rag.bm25Weight,
           rag.minScore,
@@ -2316,7 +2409,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         );
 
       // Vector/Graph retrieval is usable before optional BM25 loading starts.
-      this.ragEngine = createQueryEngine();
+      this.ragEngine = createQueryEngine(bm25Index);
 
       this.graphRagIndexingRunner =
         graphProvider && this.knowledgeGraphStore && this.embeddingProvider
@@ -2373,33 +2466,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.computeAndEmitGraphRagStatus(),
       );
 
-      if (rag.enableBM25) {
-        const nextBm25Index = new IndexedDbBM25Index(
-          storageLayout.active.bm25,
-          this.app.vault.adapter,
-        );
-        try {
-          await this.runRagRuntimeInitStep('bm25-load', () => nextBm25Index.load());
-          if (!nextBm25Index.isTokenizerCurrent) {
-            this.getLogger().notice('BM25 tokenizer version changed; rebuilding index.', {
-              source: 'rag.bm25',
-            });
-            await this.runRagRuntimeInitStep('bm25-rebuild', () =>
-              this.rebuildBM25Index(nextBm25Index),
-            );
-          }
-          bm25Index = nextBm25Index;
-        } catch (err) {
-          this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
-            source: 'rag.bm25',
-            error: err,
-          });
-        }
-      }
       this.bm25Index = bm25Index ?? null;
-      if (bm25Index) {
-        this.ragEngine = createQueryEngine(bm25Index);
-      }
 
       this.vaultIndexer = new VaultIndexer(
         this.app.vault,
@@ -2436,7 +2503,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
                 guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
               },
             });
-            this.ragPerformanceGuard?.recordBatchDuration(durationMs);
+            this.ragPerformanceGuard?.recordBatchDuration(durationMs, batchSize);
             await this.ragPerformanceGuard?.measureEventLoopLag();
           },
           onProgress: (progress) => {
@@ -2908,6 +2975,41 @@ export default class SuperpowerInsidePlugin extends Plugin {
           void this.cleanupGraphRagForDeletedFiles([oldPath]);
         }
       },
+    );
+  }
+
+  private registerLexicalRAGEvents(bm25Index: IndexedDbBM25Index | undefined): void {
+    this.unregisterRAGEvents();
+    if (!bm25Index) return;
+    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+    const indexer = {
+      indexFile: (file: TFile) => this.indexBM25File(bm25Index, file),
+      removeByFilePath: (filePath: string) => this.removeBM25File(bm25Index, filePath),
+    };
+    this.modifyCleanup = registerModifyEvent(
+      this.app.vault,
+      indexer,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+    );
+    this.createCleanup = registerCreateEvent(
+      this.app.vault,
+      indexer,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+    );
+    this.deleteCleanup = registerDeleteEvent(
+      this.app.vault,
+      indexer,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
+    );
+    this.renameCleanup = registerRenameEvent(
+      this.app.vault,
+      indexer,
+      indexer,
+      effectiveExcludePaths,
+      this.settings.rag.excludeExts,
     );
   }
 

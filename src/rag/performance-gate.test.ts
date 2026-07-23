@@ -21,6 +21,9 @@ describe('RAG performance gate wiring', () => {
     expect(source).toContain('vector_exact_query_bridge');
     expect(source).toContain('ivf_query_bridge');
     expect(source).toContain('markdown_chunk_2mb_bridge');
+    expect(source).toContain('vector_large_build_bridge');
+    expect(source).toContain('vector_large_query_bridge');
+    expect(source).toContain('bm25_large_search_bridge');
     expect(source).toContain('process.exitCode = 1');
   });
 });

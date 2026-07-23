@@ -97,6 +97,8 @@ describe('chat UX fixture gate', () => {
         'send-with-enter',
         'force-send-with-mod-enter',
         'cancel-with-escape',
+        'cancel-with-stop-all',
+        'scroll-to-latest-answer',
         'mention-select-with-keyboard',
         'tool-approve',
       ]),
@@ -106,6 +108,9 @@ describe('chat UX fixture gate', () => {
       expect.arrayContaining([
         '.superpower-inside-chat-input',
         '.superpower-inside-chat-readiness',
+        '.superpower-inside-chat-run-control',
+        '.superpower-inside-chat-stop-all',
+        '.superpower-inside-scroll-to-bottom',
         '.superpower-inside-chat-message-status',
         '.superpower-inside-chat-citation-card',
         '.superpower-inside-chat-context-budget',

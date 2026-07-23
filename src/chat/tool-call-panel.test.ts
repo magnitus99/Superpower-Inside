@@ -71,4 +71,24 @@ describe('ToolCallPanel view model contract', () => {
       },
     ]);
   });
+
+  it('네이티브 Vault 호출은 내부 함수명 대신 작업과 결과를 표시한다', () => {
+    const [row] = createToolCallPanelView(
+      [
+        {
+          id: 'native-search',
+          name: 'superpower_inside',
+          serverName: 'Superpower Inside',
+          executionKind: 'native',
+          arguments: '{"action":"search","query":"Alpha"}',
+          status: 'success',
+          resultSummary: '볼트 검색 결과 4개',
+        },
+      ],
+      false,
+    ).rows;
+
+    expect(row?.nameText).toBe('Superpower Inside · 검색');
+    expect(row?.resultSummary).toBe('볼트 검색 결과 4개');
+  });
 });

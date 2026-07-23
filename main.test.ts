@@ -60,6 +60,39 @@ vi.mock('obsidian', () => {
 });
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
+  it('임베딩 모델이 없어도 BM25 lexical runtime을 채팅에 준비한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      manifest: { id: string };
+      bm25Index: { isReady: boolean } | null;
+      ragEngine: { query(question: string): Promise<unknown[]> } | null;
+      vectorStore: unknown;
+    };
+    plugin.app = createApp();
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [],
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        embeddingModelRef: '',
+        enableBM25: true,
+        graphRagEnabled: false,
+      },
+    };
+
+    await plugin.initRAG();
+
+    expect(plugin.bm25Index).not.toBeNull();
+    expect(plugin.ragEngine).not.toBeNull();
+    await expect(plugin.ragEngine?.query('아무 질의')).resolves.toEqual([]);
+    expect(plugin.vectorStore).toBeNull();
+    expect(plugin.app.vault.on).toHaveBeenCalledTimes(4);
+  });
+
   it('플러그인 시작 직후 RAG 런타임을 자동 초기화하지 않는다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     vi.useFakeTimers();
@@ -1357,6 +1390,7 @@ function createApp(
       read: vi.fn(() => Promise.resolve('')),
       write: vi.fn(() => Promise.resolve()),
     },
+    getFiles: vi.fn(() => []),
     getMarkdownFiles: vi.fn(() => []),
     on: vi.fn((event: string, callback: unknown) => {
       const ref = { event, callback };

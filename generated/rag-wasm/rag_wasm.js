@@ -1115,6 +1115,18 @@ export function is_same_graph_entity_pair(first_left, first_right, second_left, 
 }
 
 /**
+ * Detects explicit requests that require whole-vault coverage instead of top-k retrieval.
+ * @param {string} question
+ * @returns {boolean}
+ */
+export function is_whole_vault_research_intent(question) {
+    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_whole_vault_research_intent(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
  * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
  * @param {string} name
  * @returns {string}
@@ -1636,6 +1648,26 @@ export function plan_claim_evidence_scores_json(claims_json) {
         const ptr0 = passStringToWasm0(claims_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_claim_evidence_scores_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Extracts bounded JSON tool calls from the compatibility protocol.
+ * @param {string} content
+ * @returns {string}
+ */
+export function plan_compatibility_tool_calls_json(content) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_compatibility_tool_calls_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -2697,6 +2729,113 @@ export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json, sou
 }
 
 /**
+ * Sorts, de-duplicates, and bounds one side of the structural link graph.
+ * @param {string} paths_json
+ * @param {number} limit
+ * @returns {string}
+ */
+export function plan_native_vault_link_paths_json(paths_json, limit) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_link_paths_json(ptr0, len0, limit);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Selects one stable, bounded page of Markdown paths under a vault folder prefix.
+ * @param {string} file_paths_json
+ * @param {string} path_prefix
+ * @param {number} cursor
+ * @param {number} limit
+ * @returns {string}
+ */
+export function plan_native_vault_list_json(file_paths_json, path_prefix, cursor, limit) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(path_prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_list_json(ptr0, len0, ptr1, len1, cursor, limit);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Clamps a one-based inclusive read range to the document and per-call line budget.
+ * @param {number} total_lines
+ * @param {number} start_line
+ * @param {number | null | undefined} end_line
+ * @param {number} max_lines
+ * @returns {string}
+ */
+export function plan_native_vault_read_range_json(total_lines, start_line, end_line, max_lines) {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.plan_native_vault_read_range_json(total_lines, start_line, isLikeNone(end_line) ? Number.MAX_SAFE_INTEGER : (end_line) >>> 0, max_lines);
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * Aggregates Markdown file sizes for a read-only vault stats response.
+ * @param {string} file_sizes_json
+ * @returns {string}
+ */
+export function plan_native_vault_stats_json(file_sizes_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(file_sizes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_stats_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates one model-generated request for the built-in read-only vault tool.
+ * @param {string} arguments_json
+ * @returns {string}
+ */
+export function plan_native_vault_tool_request_json(arguments_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(arguments_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_tool_request_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Plans bounded cleanup for files whose names prove that this plugin owns them.
  * @param {string} input_json
  * @returns {string}
@@ -2986,6 +3125,30 @@ export function plan_reference_file_indices_json(source_path, file_paths_json) {
 }
 
 /**
+ * Finds repeated tool calls after canonicalizing JSON argument object key order.
+ * @param {string} history_json
+ * @param {string} candidates_json
+ * @param {number} max_repeats
+ * @returns {string}
+ */
+export function plan_repeated_tool_call_indices_json(history_json, candidates_json, max_repeats) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(history_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(candidates_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_repeated_tool_call_indices_json(ptr0, len0, ptr1, len1, max_repeats);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * LLM reranker provider에 넘길 system/user message content를 JSON으로 계획한다.
  * @param {string} question
  * @param {string} candidates_json
@@ -3052,6 +3215,75 @@ export function plan_rerank_result_order_json(result_ids_json, ranked_ids_json) 
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
+ * @param {string} content
+ * @param {string} citation_ids_json
+ * @param {number} fallback_limit
+ * @returns {string}
+ */
+export function plan_research_citation_indices_json(content, citation_ids_json, fallback_limit) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(citation_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_citation_indices_json(ptr0, len0, ptr1, len1, fallback_limit);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Classifies a provider failure and returns a bounded retry plan for research requests.
+ * @param {string} message
+ * @param {number} status
+ * @param {number} failed_attempt
+ * @param {number} retry_after_ms
+ * @returns {string}
+ */
+export function plan_research_request_failure_json(message, status, failed_attempt, retry_after_ms) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_request_failure_json(ptr0, len0, status, failed_attempt, retry_after_ms);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Groups summary items into stable bounded reduce batches without dropping any item.
+ * @param {string} item_sizes_json
+ * @param {number} max_items
+ * @param {number} max_chars
+ * @returns {string}
+ */
+export function plan_research_summary_batches_json(item_sizes_json, max_items, max_chars) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(item_sizes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_summary_batches_json(ptr0, len0, max_items, max_chars);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -3758,6 +3990,26 @@ export function split_reasoning_tags_json(content) {
 }
 
 /**
+ * Removes only complete compatibility tool-call blocks from visible answer text.
+ * @param {string} content
+ * @returns {string}
+ */
+export function strip_compatibility_tool_calls(content) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.strip_compatibility_tool_calls(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
  * @param {string} text
  * @returns {string}
@@ -3939,6 +4191,10 @@ function getUint8ArrayMemory0() {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passArray32ToWasm0(arg, malloc) {

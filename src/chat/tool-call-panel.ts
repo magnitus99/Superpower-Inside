@@ -1,6 +1,7 @@
 import { t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import type { ToolCallRecord } from './types';
+import { planNativeVaultToolRequestRust } from '../rag/rust-core';
 
 export interface ToolCallPlaceholderView {
   className: string;
@@ -63,7 +64,7 @@ export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView
     rowId: `tool-call-${toolCall.id || toolCall.name}`,
     className: 'superpower-inside-tool-call',
     iconText: '🔧',
-    nameText: toolCall.name || t('toolCallLabel'),
+    nameText: getToolCallName(toolCall),
     status: toolCall.status,
     statusClassName: `superpower-inside-tool-call-status ${toolCall.status}`,
     showRunningDots: status.showRunningDots,
@@ -79,6 +80,29 @@ export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView
     resultApplied:
       toolCall.status === 'success' && Boolean(toolCall.normalizedResult || toolCall.resultSummary),
   };
+}
+
+function getToolCallName(toolCall: ToolCallRecord): string {
+  if (toolCall.executionKind !== 'native') return toolCall.name || t('toolCallLabel');
+  const plan = planNativeVaultToolRequestRust(toolCall.arguments);
+  if (!plan?.ok) return toolCall.serverName ?? toolCall.name ?? t('toolCallLabel');
+  const actionLabel = getNativeVaultActionLabel(plan.request.action);
+  return `${toolCall.serverName ?? 'Superpower Inside'} · ${actionLabel}`;
+}
+
+function getNativeVaultActionLabel(action: 'search' | 'read' | 'list' | 'links' | 'stats'): string {
+  switch (action) {
+    case 'search':
+      return t('nativeVaultActionSearch');
+    case 'read':
+      return t('nativeVaultActionRead');
+    case 'list':
+      return t('nativeVaultActionList');
+    case 'links':
+      return t('nativeVaultActionLinks');
+    case 'stats':
+      return t('nativeVaultActionStats');
+  }
 }
 
 function getSafetyDecision(toolCall: ToolCallRecord): ToolCallRowView['safetyDecision'] {
@@ -177,6 +201,18 @@ export class ToolCallPanel {
           statusBadge.className = rowView.statusClassName;
           this.renderToolCallStatus(statusBadge, rowView);
         }
+      }
+
+      let resultSummary = callRow.querySelector('.superpower-inside-tool-call-summary');
+      if (rowView.resultSummary) {
+        if (!isDomInstance(resultSummary, HTMLElement)) {
+          resultSummary = callRow.createSpan({
+            cls: 'superpower-inside-tool-call-summary',
+          });
+        }
+        resultSummary.setText(rowView.resultSummary);
+      } else if (isDomInstance(resultSummary, HTMLElement)) {
+        resultSummary.remove();
       }
 
       const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');

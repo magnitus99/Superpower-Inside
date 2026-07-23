@@ -3,16 +3,18 @@
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Consecutive slow samples required before reducing indexing pressure.
-const SLOW_SAMPLE_LIMIT: u32 = 3;
-/// Consecutive slow event-loop samples required before pausing indexing.
-const PAUSE_SAMPLE_LIMIT: u32 = 6;
-/// Healthy samples required from both channels before restoring defaults.
-const RECOVERY_SAMPLE_LIMIT: u32 = 3;
-/// Default conservative cooperative delay between embedding batches.
-const PROTECTION_YIELD_FLOOR_MS: u32 = 500;
-/// Default cooldown after sustained renderer pressure.
-const DEFAULT_PAUSE_MS: f64 = 30_000.0;
+/// Provider requests are resized toward this wall-clock duration.
+const TARGET_BATCH_DURATION_MS: f64 = 1_500.0;
+/// Event-loop samples below this value progressively remove cooperative delay.
+const HEALTHY_EVENT_LOOP_MS: f64 = 24.0;
+/// Sustained severe renderer pressure parks indexing briefly.
+const SEVERE_EVENT_LOOP_MS: f64 = 250.0;
+/// Maximum delay the controller may insert between provider requests.
+const MAX_ADAPTIVE_YIELD_MS: u32 = 1_000;
+/// Severe samples required before parking the current indexing job.
+const PAUSE_SAMPLE_LIMIT: u32 = 3;
+/// Cooldown after sustained renderer pressure.
+const DEFAULT_PAUSE_MS: f64 = 15_000.0;
 
 /// Current protection level applied to RAG indexing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,12 +86,6 @@ struct Config {
     enabled: bool,
     /// User-configured embedding batch size.
     initial_batch_size: u32,
-    /// User-configured cooperative delay.
-    initial_yield_ms: u32,
-    /// Event-loop lag considered slow.
-    slow_event_loop_threshold_ms: f64,
-    /// Embedding batch duration considered slow.
-    slow_batch_threshold_ms: f64,
 }
 
 /// Complete deterministic state carried between policy events.
@@ -127,7 +123,7 @@ impl PolicyState {
         Self {
             mode: Mode::Normal,
             current_batch_size: config.initial_batch_size,
-            current_yield_ms: config.initial_yield_ms,
+            current_yield_ms: 0,
             slow_batch_samples: 0,
             slow_event_loop_samples: 0,
             healthy_batch_samples: 0,
@@ -141,11 +137,11 @@ impl PolicyState {
     }
 
     /// Creates the conservative state used immediately after a pause.
-    const fn safe_resume(previous: &Self, config: &Config) -> Self {
+    const fn safe_resume(previous: &Self, _config: &Config) -> Self {
         Self {
             mode: Mode::Throttled,
             current_batch_size: 1,
-            current_yield_ms: maximum_yield_ms(config),
+            current_yield_ms: 250,
             slow_batch_samples: 0,
             slow_event_loop_samples: 0,
             healthy_batch_samples: 0,
@@ -158,24 +154,19 @@ impl PolicyState {
         }
     }
 
-    /// Reduces batch pressure without pausing the current job.
-    fn throttle(&mut self, config: &Config, reason_kind: ReasonKind, duration_ms: f64) {
+    /// Reduces request pressure without pausing the current job.
+    fn throttle(&mut self, reason_kind: ReasonKind, duration_ms: f64) {
         self.mode = Mode::Throttled;
         self.current_batch_size = (self.current_batch_size >> 1).max(1);
-        self.current_yield_ms = self
-            .current_yield_ms
-            .saturating_mul(2)
-            .max(config.initial_yield_ms.saturating_mul(2))
-            .min(maximum_yield_ms(config));
         self.reason_kind = Some(reason_kind);
         self.reason_ms = Some(duration_ms);
     }
 
     /// Parks indexing for the standard cooldown.
-    fn pause(&mut self, config: &Config, now_ms: f64, duration_ms: f64) {
+    fn pause(&mut self, _config: &Config, now_ms: f64, duration_ms: f64) {
         self.mode = Mode::Paused;
         self.current_batch_size = 1;
-        self.current_yield_ms = maximum_yield_ms(config);
+        self.current_yield_ms = 250;
         self.pause_until_ms = Some(now_ms + DEFAULT_PAUSE_MS);
         self.reason_kind = Some(ReasonKind::EventLoop);
         self.reason_ms = Some(duration_ms);
@@ -183,13 +174,16 @@ impl PolicyState {
         self.last_slow_ms = Some(duration_ms);
     }
 
-    /// Restores configured defaults once both channels remain healthy.
-    fn recover_if_healthy(&mut self, config: &Config) {
-        if self.mode == Mode::Throttled
-            && self.healthy_batch_samples >= RECOVERY_SAMPLE_LIMIT
-            && self.healthy_event_loop_samples >= RECOVERY_SAMPLE_LIMIT
-        {
-            *self = Self::baseline(config);
+    /// Reports whether the controller has returned to its zero-delay ceiling.
+    fn refresh_mode(&mut self, config: &Config) {
+        if self.mode != Mode::Paused {
+            self.mode = if self.current_batch_size == config.initial_batch_size
+                && self.current_yield_ms == 0
+            {
+                Mode::Normal
+            } else {
+                Mode::Throttled
+            };
         }
     }
 }
@@ -250,8 +244,11 @@ pub fn plan_rag_performance_guard_json(input_json: &str) -> String {
             let Some(duration_ms) = finite_non_negative(event.get("durationMs")) else {
                 return String::new();
             };
+            let Some(batch_size) = positive_u32(event.get("batchSize")) else {
+                return String::new();
+            };
             if resume_expired_pause(&mut state, &config, now_ms) {
-                record_batch_sample(&mut state, &config, duration_ms);
+                record_batch_sample(&mut state, &config, duration_ms, batch_size);
             }
         }
         "event_loop_sample" => {
@@ -283,35 +280,42 @@ fn resume_expired_pause(state: &mut PolicyState, config: &Config, now_ms: f64) -
     false
 }
 
-/// Returns the conservative yield without reducing a user-configured delay.
-const fn maximum_yield_ms(config: &Config) -> u32 {
-    if config.initial_yield_ms > PROTECTION_YIELD_FLOOR_MS {
-        config.initial_yield_ms
-    } else {
-        PROTECTION_YIELD_FLOOR_MS
-    }
-}
-
-/// Applies one embedding-provider duration sample.
-fn record_batch_sample(state: &mut PolicyState, config: &Config, duration_ms: f64) {
-    if duration_ms > config.slow_batch_threshold_ms {
-        state.slow_batch_samples = state.slow_batch_samples.saturating_add(1);
-        state.healthy_batch_samples = 0;
-        state.last_slow_kind = Some(ReasonKind::Batch);
-        state.last_slow_ms = Some(duration_ms);
-        if state.slow_batch_samples >= SLOW_SAMPLE_LIMIT {
-            state.slow_batch_samples = 0;
-            state.throttle(config, ReasonKind::Batch, duration_ms);
-        }
+/// Resizes future provider requests toward a stable target duration.
+fn record_batch_sample(
+    state: &mut PolicyState,
+    config: &Config,
+    duration_ms: f64,
+    batch_size: u32,
+) {
+    if duration_ms == 0.0 {
         return;
     }
-
-    state.slow_batch_samples = 0;
-    state.healthy_batch_samples = state
-        .healthy_batch_samples
-        .saturating_add(1)
-        .min(RECOVERY_SAMPLE_LIMIT);
-    state.recover_if_healthy(config);
+    let desired = bounded_rounded_u32(
+        f64::from(batch_size) * TARGET_BATCH_DURATION_MS / duration_ms,
+        1,
+        config.initial_batch_size,
+    );
+    if desired < state.current_batch_size {
+        state.current_batch_size = u32::midpoint(state.current_batch_size, desired).max(1);
+        state.slow_batch_samples = state.slow_batch_samples.saturating_add(1).min(2);
+        state.healthy_batch_samples = 0;
+        state.reason_kind = Some(ReasonKind::Batch);
+        state.reason_ms = Some(duration_ms);
+        state.last_slow_kind = Some(ReasonKind::Batch);
+        state.last_slow_ms = Some(duration_ms);
+    } else if duration_ms <= TARGET_BATCH_DURATION_MS * 0.8 {
+        state.slow_batch_samples = 0;
+        state.healthy_batch_samples = state.healthy_batch_samples.saturating_add(1).min(2);
+        if state.healthy_batch_samples >= 2 {
+            let growth = state.current_batch_size.div_ceil(4).max(1);
+            state.current_batch_size = state
+                .current_batch_size
+                .saturating_add(growth)
+                .min(config.initial_batch_size);
+            state.healthy_batch_samples = 0;
+        }
+    }
+    state.refresh_mode(config);
 }
 
 /// Applies one renderer event-loop duration sample.
@@ -321,37 +325,66 @@ fn record_event_loop_sample(
     now_ms: f64,
     duration_ms: f64,
 ) {
-    if duration_ms > config.slow_event_loop_threshold_ms {
+    if duration_ms > HEALTHY_EVENT_LOOP_MS {
         state.slow_event_loop_samples = state.slow_event_loop_samples.saturating_add(1);
         state.healthy_event_loop_samples = 0;
         state.last_slow_kind = Some(ReasonKind::EventLoop);
         state.last_slow_ms = Some(duration_ms);
-        if state.slow_event_loop_samples >= PAUSE_SAMPLE_LIMIT {
+        let pressure_ms = bounded_rounded_u32(
+            (duration_ms - HEALTHY_EVENT_LOOP_MS).ceil(),
+            1,
+            MAX_ADAPTIVE_YIELD_MS,
+        );
+        state.current_yield_ms = state
+            .current_yield_ms
+            .saturating_add(pressure_ms)
+            .min(MAX_ADAPTIVE_YIELD_MS);
+        state.reason_kind = Some(ReasonKind::EventLoop);
+        state.reason_ms = Some(duration_ms);
+        if duration_ms >= SEVERE_EVENT_LOOP_MS
+            && state.slow_event_loop_samples >= PAUSE_SAMPLE_LIMIT
+        {
             state.pause(config, now_ms, duration_ms);
-        } else if state.slow_event_loop_samples == SLOW_SAMPLE_LIMIT {
-            state.throttle(config, ReasonKind::EventLoop, duration_ms);
+        } else if state.slow_event_loop_samples >= 2 {
+            state.throttle(ReasonKind::EventLoop, duration_ms);
         }
         return;
     }
 
     state.slow_event_loop_samples = 0;
-    state.healthy_event_loop_samples = state
-        .healthy_event_loop_samples
-        .saturating_add(1)
-        .min(RECOVERY_SAMPLE_LIMIT);
-    state.recover_if_healthy(config);
+    state.healthy_event_loop_samples = state.healthy_event_loop_samples.saturating_add(1).min(2);
+    if state.healthy_event_loop_samples >= 2 {
+        state.current_yield_ms = state
+            .current_yield_ms
+            .saturating_sub(state.current_yield_ms.div_ceil(2).max(1));
+        state.healthy_event_loop_samples = 0;
+    }
+    state.refresh_mode(config);
 }
 
 /// Parses and validates the policy configuration object.
 fn parse_config(input: &JsonMap<String, JsonValue>) -> Option<Config> {
     let config = input.get("config")?.as_object()?;
+    non_negative_u32(config.get("initialYieldMs"))?;
+    positive_finite(config.get("slowEventLoopThresholdMs"))?;
+    positive_finite(config.get("slowBatchThresholdMs"))?;
     Some(Config {
         enabled: config.get("enabled")?.as_bool()?,
         initial_batch_size: positive_u32(config.get("initialBatchSize"))?,
-        initial_yield_ms: non_negative_u32(config.get("initialYieldMs"))?,
-        slow_event_loop_threshold_ms: positive_finite(config.get("slowEventLoopThresholdMs"))?,
-        slow_batch_threshold_ms: positive_finite(config.get("slowBatchThresholdMs"))?,
     })
+}
+
+/// Converts one finite measurement to a bounded integer without unchecked casts.
+fn bounded_rounded_u32(value: f64, minimum: u32, maximum: u32) -> u32 {
+    if !value.is_finite() {
+        return minimum;
+    }
+    value
+        .round()
+        .clamp(f64::from(minimum), f64::from(maximum))
+        .to_string()
+        .parse::<u32>()
+        .unwrap_or(minimum)
 }
 
 /// Parses and validates a previously serialized policy state.
@@ -440,7 +473,13 @@ mod tests {
     fn input(state: &JsonValue, kind: &str, duration_ms: Option<f64>, now_ms: f64) -> String {
         let event = duration_ms.map_or_else(
             || json!({ "kind": kind }),
-            |duration_ms| json!({ "kind": kind, "durationMs": duration_ms }),
+            |duration_ms| {
+                if kind == "batch_sample" {
+                    json!({ "kind": kind, "durationMs": duration_ms, "batchSize": 32 })
+                } else {
+                    json!({ "kind": kind, "durationMs": duration_ms })
+                }
+            },
         );
         json!({
             "config": {
@@ -464,29 +503,28 @@ mod tests {
     }
 
     #[test]
-    fn slow_batches_throttle_without_pausing() {
+    fn slow_batches_resize_the_next_request_without_fixed_sleep() {
         let mut state = plan(&JsonValue::Null, "initialize", None, 1_000.0);
-        for _ in 0..12 {
-            state = plan(&state, "batch_sample", Some(3_500.0), 1_000.0);
-        }
+        state = plan(&state, "batch_sample", Some(6_000.0), 1_000.0);
         assert_eq!(state.get("mode"), Some(&json!("throttled")));
-        assert_eq!(state.get("currentBatchSize"), Some(&json!(2)));
+        assert_eq!(state.get("currentBatchSize"), Some(&json!(20)));
+        assert_eq!(state.get("currentYieldMs"), Some(&json!(0)));
         assert!(state.get("pauseUntilMs").is_some_and(JsonValue::is_null));
     }
 
     #[test]
     fn event_loop_pressure_pauses_and_timer_tick_resumes_safely() {
         let mut state = plan(&JsonValue::Null, "initialize", None, 1_000.0);
-        for _ in 0..6 {
-            state = plan(&state, "event_loop_sample", Some(200.0), 1_000.0);
+        for _ in 0..3 {
+            state = plan(&state, "event_loop_sample", Some(300.0), 1_000.0);
         }
         assert_eq!(state.get("mode"), Some(&json!("paused")));
-        assert_eq!(state.get("pauseUntilMs"), Some(&json!(31_000.0)));
+        assert_eq!(state.get("pauseUntilMs"), Some(&json!(16_000.0)));
 
-        state = plan(&state, "timer_tick", None, 31_000.0);
+        state = plan(&state, "timer_tick", None, 16_000.0);
         assert_eq!(state.get("mode"), Some(&json!("throttled")));
         assert_eq!(state.get("currentBatchSize"), Some(&json!(1)));
-        assert_eq!(state.get("currentYieldMs"), Some(&json!(500)));
+        assert_eq!(state.get("currentYieldMs"), Some(&json!(250)));
     }
 
     #[test]

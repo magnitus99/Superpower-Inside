@@ -513,7 +513,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     autoUpdateIntervalMin: 5,
     minScore: 0.5,
     enableBM25: true,
-    bm25Weight: 0.3,
+    bm25Weight: 0.15,
     performanceTuningMode: 'auto',
     performanceGuardEnabled: true,
     maxEmbeddingBatchSize: 32,
@@ -610,7 +610,7 @@ function normalizeProviderProfile(
       ? 'openAICompatible'
       : source.strategy === 'ternlight'
         ? 'ternlight'
-      : null;
+        : null;
   if (!strategy) return null;
   const rawModels = Array.isArray(source.models) ? source.models : [];
   const models = rawModels.reduce<ProviderModelConfig[]>((acc, model) => {
@@ -880,6 +880,7 @@ export function migrateLegacyProviderProfiles(
 
 export interface PluginLike {
   app: App;
+  ragEngine: import('./rag/query').RAGQueryEngine | null;
   manifest?: { id?: string; version?: string };
   settings: SuperpowerInsideSettings;
   graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
@@ -1619,11 +1620,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   ): { section: HTMLElement; body: HTMLElement } {
     const variantClass = options.variantClass;
     const section = containerEl.createDiv({
-      cls: [
-        'superpower-inside-settings-section',
-        variantClass,
-        options.className,
-      ]
+      cls: ['superpower-inside-settings-section', variantClass, options.className]
         .filter((value): value is string => Boolean(value))
         .join(' '),
     });
@@ -1636,18 +1633,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .join(' '),
     });
     const copy = header.createDiv({
-      cls: [
-        'superpower-inside-settings-section-copy',
-        variantClass ? `${variantClass}-copy` : '',
-      ]
+      cls: ['superpower-inside-settings-section-copy', variantClass ? `${variantClass}-copy` : '']
         .filter(Boolean)
         .join(' '),
     });
     copy.createDiv({
-      cls: [
-        'superpower-inside-settings-section-title',
-        variantClass ? `${variantClass}-title` : '',
-      ]
+      cls: ['superpower-inside-settings-section-title', variantClass ? `${variantClass}-title` : '']
         .filter(Boolean)
         .join(' '),
       text: titleText,
@@ -1664,10 +1655,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     }
     const body = section.createDiv({
-      cls: [
-        'superpower-inside-settings-section-body',
-        variantClass ? `${variantClass}-body` : '',
-      ]
+      cls: ['superpower-inside-settings-section-body', variantClass ? `${variantClass}-body` : '']
         .filter(Boolean)
         .join(' '),
     });
@@ -4816,100 +4804,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '1';
         text.inputEl.max = '99';
       });
-    new Setting(section)
-      .setName(t('settingsAuto184'))
-      .setDesc(t('settingsAuto185'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('auto', t('settingsAuto186'))
-          .addOption('custom', t('settingsAuto187'))
-          .setValue(this.plugin.settings.rag.performanceTuningMode)
-          .onChange((value) => {
-            this.plugin.settings.rag.performanceTuningMode = value === 'custom' ? 'custom' : 'auto';
-            this.debouncedRagSave();
-            section.remove();
-            this.buildIndexingOptionsSection(containerEl);
-          }),
-      );
-    if (this.plugin.settings.rag.performanceTuningMode !== 'custom') {
-      const performanceSettings = resolveRagPerformanceSettings(this.plugin.settings.rag);
-      section.createDiv({
-        cls: 'superpower-inside-rag-performance-summary',
-        text: t('settingsAuto188', {
-          v0: String(performanceSettings.maxEmbeddingBatchSize),
-          v1: String(performanceSettings.indexingYieldMs),
-          v2: String(performanceSettings.slowEventLoopThresholdMs),
-          v3: String(performanceSettings.slowBatchThresholdMs),
-        }),
-      });
-    }
-    if (this.plugin.settings.rag.performanceTuningMode === 'custom') {
-      new Setting(section)
-        .setName(t('settingsAuto191'))
-        .setDesc(t('settingsAuto192'))
-        .addText((text) => {
-          text
-            .setValue(String(this.plugin.settings.rag.maxEmbeddingBatchSize))
-            .setPlaceholder(this.plugin.settings.rag.embeddingProvider === 'ollama' ? '1' : '32')
-            .onChange((value) => {
-              const num = Number.parseInt(value, 10);
-              if (Number.isNaN(num) || num < 1 || num > 128 || !Number.isInteger(num)) return;
-              this.plugin.settings.rag.maxEmbeddingBatchSize = num;
-              this.debouncedRagSave();
-            });
-          text.inputEl.type = 'number';
-          text.inputEl.min = '1';
-          text.inputEl.max = '128';
-        });
-      new Setting(section)
-        .setName(t('settingsAuto193'))
-        .setDesc(t('settingsAuto194'))
-        .addText((text) => {
-          text
-            .setValue(String(this.plugin.settings.rag.indexingYieldMs))
-            .setPlaceholder('25')
-            .onChange((value) => {
-              const num = Number.parseInt(value, 10);
-              if (Number.isNaN(num) || num < 0 || num > 1000 || !Number.isInteger(num)) return;
-              this.plugin.settings.rag.indexingYieldMs = num;
-              this.debouncedRagSave();
-            });
-          text.inputEl.type = 'number';
-          text.inputEl.min = '0';
-          text.inputEl.max = '1000';
-        });
-      new Setting(section)
-        .setName(t('settingsAuto195'))
-        .setDesc(t('settingsAuto196'))
-        .addText((text) => {
-          text
-            .setValue(String(this.plugin.settings.rag.slowEventLoopThresholdMs))
-            .setPlaceholder('150')
-            .onChange((value) => {
-              const num = Number.parseInt(value, 10);
-              if (Number.isNaN(num) || num < 16 || num > 5000 || !Number.isInteger(num)) return;
-              this.plugin.settings.rag.slowEventLoopThresholdMs = num;
-              this.debouncedRagSave();
-            });
-          text.inputEl.type = 'number';
-          text.inputEl.min = '16';
-          text.inputEl.max = '5000';
-        })
-        .addText((text) => {
-          text
-            .setValue(String(this.plugin.settings.rag.slowBatchThresholdMs))
-            .setPlaceholder('3000')
-            .onChange((value) => {
-              const num = Number.parseInt(value, 10);
-              if (Number.isNaN(num) || num < 100 || num > 60000 || !Number.isInteger(num)) return;
-              this.plugin.settings.rag.slowBatchThresholdMs = num;
-              this.debouncedRagSave();
-            });
-          text.inputEl.type = 'number';
-          text.inputEl.min = '100';
-          text.inputEl.max = '60000';
-        });
-    }
+    const performanceSettings = resolveRagPerformanceSettings(this.plugin.settings.rag);
+    section.createDiv({
+      cls: 'superpower-inside-rag-performance-summary',
+      text: t('settingsAuto188', { v0: String(performanceSettings.maxEmbeddingBatchSize) }),
+    });
     // 청크 크기
     const chunkSizeSetting = new Setting(section)
       .setName(t('chunkSize'))
@@ -5025,7 +4924,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       value: this.getChatToolPolicyLabel(),
       statusLabel: t('chatSelectedStatus'),
       detail: t('chatStatusToolsDetail'),
-      tone: this.plugin.settings.chat.mcpToolExecutionPolicy === 'always-auto' ? 'warning' : 'neutral',
+      tone:
+        this.plugin.settings.chat.mcpToolExecutionPolicy === 'always-auto' ? 'warning' : 'neutral',
     });
   }
   private buildChatPromptSection(containerEl: HTMLElement): void {
@@ -5079,7 +4979,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const row = presetList.createDiv({ cls: 'superpower-inside-chat-preset-row' });
       const copy = row.createDiv({ cls: 'superpower-inside-chat-preset-copy' });
       copy.createDiv({ cls: 'superpower-inside-chat-preset-label', text: preset.label });
-      copy.createDiv({ cls: 'superpower-inside-chat-preset-description', text: preset.description });
+      copy.createDiv({
+        cls: 'superpower-inside-chat-preset-description',
+        text: preset.description,
+      });
       const button = row.createEl('button', {
         text: t('chatApplyPreset'),
         attr: { type: 'button', title: preset.description },
@@ -5133,9 +5036,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     ];
   }
   private applyChatPromptPreset(preset: {
-      label: string;
-      description: string;
-      prompt: string;
+    label: string;
+    description: string;
+    prompt: string;
   }): void {
     const entry = createPromptEntry({
       title: preset.label,
@@ -5582,17 +5485,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               enabled: enabledCount,
               ready: readyCount,
             }),
-      tone:
-        attentionCount > 0 ? 'warning' : readyCount > 0 ? 'success' : 'neutral',
+      tone: attentionCount > 0 ? 'warning' : readyCount > 0 ? 'success' : 'neutral',
     });
     if (firstAttention) {
       const tone = this.getProviderProfileTone(firstAttention);
       this.createSettingsActionRow(section.body, {
         label: t('providerAttentionTitle', { provider: firstAttentionName }),
         detail:
-          tone === 'needs-key'
-            ? t('providerSummaryNeedsKey')
-            : t('providerSummaryNeedsModels'),
+          tone === 'needs-key' ? t('providerSummaryNeedsKey') : t('providerSummaryNeedsModels'),
         actionLabel: t('providerContinueSetup'),
         tone: 'warning',
         onActivate: () => {
@@ -5878,7 +5778,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     await runActionWithFeedback({
       button,
       action: async () => {
-        if (!(await confirmWithModal(this.app, t('providerRemoveConfirm', { provider: profileName })))) {
+        if (
+          !(await confirmWithModal(this.app, t('providerRemoveConfirm', { provider: profileName })))
+        ) {
           return { status: 'noop', detail: t('actionCancelledNotice') };
         }
         this.plugin.settings.providerProfiles = this.plugin.settings.providerProfiles.filter(

@@ -20,6 +20,10 @@ import {
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { createPagedVectorMatrix, enforceRuntimePayloadBudget } from './runtime-boundary';
+import {
+  VectorSearchWorkerRuntime,
+  canUseVectorSearchWorker,
+} from './vector-search-worker-runtime';
 
 export interface VectorEntry {
   id: string;
@@ -67,6 +71,18 @@ export interface IndexedDbVectorStoreOptions {
   searchCacheLimit?: number;
   runtimeIndexCacheLimit?: number;
   ivfRuntimeIndexCacheLimit?: number;
+  vectorSearchWorkerFactory?: () => VectorSearchWorkerLike;
+}
+
+export interface VectorSearchWorkerLike {
+  search(input: {
+    dbName: string;
+    queryVector: readonly number[];
+    topK: number;
+    filter?: Omit<VectorSearchFilter, 'filePathPrefixes'>;
+    signal?: AbortSignal;
+  }): Promise<Array<{ id: string; score: number }>>;
+  close(reason?: Error): void;
 }
 
 export interface VectorRuntimeCacheStats {
@@ -74,6 +90,7 @@ export interface VectorRuntimeCacheStats {
   searchEntriesCacheSize: number;
   filteredRuntimeIndexCount: number;
   ivfRuntimeIndexCount: number;
+  workerSearchActive: boolean;
 }
 
 export interface VectorSearchFilter {
@@ -517,6 +534,9 @@ export class IndexedDbVectorStore implements VectorStore {
   private searchEntriesCache: BoundedLruCache<string, VectorEntry[]>;
   private filteredRuntimeIndexes: BoundedLruCache<string, RustVectorRuntimeIndex>;
   private ivfRuntimeIndexes: BoundedLruCache<string, RustIvfRuntimeIndex>;
+  private vectorSearchWorker: VectorSearchWorkerLike | null = null;
+  private readonly vectorSearchWorkerFactory: () => VectorSearchWorkerLike;
+  private readonly vectorSearchWorkerAvailable: boolean;
   private readonly hydrateAllEntryLimit: number;
   private readonly pageSize: number;
   private readonly maxRuntimePayloadBytes: number;
@@ -549,6 +569,10 @@ export class IndexedDbVectorStore implements VectorStore {
       options.ivfRuntimeIndexCacheLimit ?? DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT,
       (index) => index.dispose(),
     );
+    this.vectorSearchWorkerFactory =
+      options.vectorSearchWorkerFactory ?? (() => new VectorSearchWorkerRuntime());
+    this.vectorSearchWorkerAvailable =
+      options.vectorSearchWorkerFactory !== undefined || canUseVectorSearchWorker();
   }
 
   async add(newEntries: VectorEntry[]): Promise<void> {
@@ -622,6 +646,18 @@ export class IndexedDbVectorStore implements VectorStore {
   async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
     const totalEntries = await this.db.vectors.count();
     if (totalEntries > this.hydrateAllEntryLimit) {
+      if (
+        this.vectorSearchWorkerAvailable &&
+        normalizeFilePathPrefixes(request.filter?.filePathPrefixes).length === 0
+      ) {
+        try {
+          return await this.searchInWorker(request);
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          this.vectorSearchWorker?.close();
+          this.vectorSearchWorker = null;
+        }
+      }
       return this.searchPagedExact(request);
     }
     const key = vectorSearchFilterKey(request.filter);
@@ -641,6 +677,7 @@ export class IndexedDbVectorStore implements VectorStore {
       searchEntriesCacheSize: this.searchEntriesCache.size,
       filteredRuntimeIndexCount: this.filteredRuntimeIndexes.size,
       ivfRuntimeIndexCount: this.ivfRuntimeIndexes.size,
+      workerSearchActive: this.vectorSearchWorker !== null,
     };
   }
 
@@ -988,6 +1025,32 @@ export class IndexedDbVectorStore implements VectorStore {
     return selected;
   }
 
+  private async searchInWorker(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    this.vectorSearchWorker ??= this.vectorSearchWorkerFactory();
+    const hits = await this.vectorSearchWorker.search({
+      dbName: this.db.name,
+      queryVector: request.queryVector,
+      topK: request.topK,
+      filter: request.filter
+        ? {
+            embeddingProvider: request.filter.embeddingProvider,
+            embeddingModel: request.filter.embeddingModel,
+            dimension: request.filter.dimension,
+          }
+        : undefined,
+      signal: request.signal,
+    });
+    throwIfAborted(request.signal);
+    const records = await this.db.vectors.bulkGet(hits.map((hit) => hit.id));
+    return hits.flatMap((hit, index) => {
+      const record = records[index];
+      if (!record || !matchesVectorRecordSearchFilter(record, request.filter)) return [];
+      // The large-vault worker builds a Rust exact runtime index. Report the
+      // algorithm that actually ran even when the caller merely preferred ANN.
+      return [{ entry: vectorEntryFromRecord(record), score: hit.score, mode: 'exact' }];
+    });
+  }
+
   private enforceRuntimeBoundary(entries: readonly VectorEntry[]): void {
     for (const page of createPagedVectorMatrix(
       entries.map((entry) => ({ id: entry.id, vector: entry.vector })),
@@ -1038,6 +1101,8 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   private invalidateRuntimeIndex(): void {
+    this.vectorSearchWorker?.close();
+    this.vectorSearchWorker = null;
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
     this.filteredRuntimeIndexes.clear();

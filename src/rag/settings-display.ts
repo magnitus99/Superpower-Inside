@@ -258,22 +258,12 @@ export interface GraphRagLiveStatusPresentation {
 }
 
 export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
-  if (normalizeRagPerformanceTuningMode(rag.performanceTuningMode) === 'custom') {
-    return {
-      enabled: true,
-      maxEmbeddingBatchSize: clampInteger(rag.maxEmbeddingBatchSize, 1, 128),
-      indexingYieldMs: clampInteger(rag.indexingYieldMs, 0, 1000),
-      slowEventLoopThresholdMs: clampInteger(rag.slowEventLoopThresholdMs, 16, 5000),
-      slowBatchThresholdMs: clampInteger(rag.slowBatchThresholdMs, 100, 60000),
-    };
-  }
-
   return {
     enabled: true,
     maxEmbeddingBatchSize: rag.embeddingProvider === 'ollama' ? 1 : 32,
-    indexingYieldMs: rag.embeddingProvider === 'ollama' ? 50 : 25,
-    slowEventLoopThresholdMs: 150,
-    slowBatchThresholdMs: 3000,
+    indexingYieldMs: 0,
+    slowEventLoopThresholdMs: 24,
+    slowBatchThresholdMs: 1500,
   };
 }
 
@@ -299,15 +289,13 @@ export function shouldRequireProviderApiKey(key: string): boolean {
   return shouldShowProviderApiKey(key) && key !== 'customOpenAI';
 }
 
-export function resolveProviderReadiness(
-  input: ProviderReadinessInput,
-): ProviderReadinessState {
+export function resolveProviderReadiness(input: ProviderReadinessInput): ProviderReadinessState {
   const validationAccepted = Boolean(
     input.validation?.authenticated ||
-      input.validation?.serverReachable ||
-      input.validation?.modelsFetched ||
-      input.validation?.connectionTested ||
-      input.validation?.generationTested,
+    input.validation?.serverReachable ||
+    input.validation?.modelsFetched ||
+    input.validation?.connectionTested ||
+    input.validation?.generationTested,
   );
   if (!input.enabled) {
     return { tone: 'disabled', validationAccepted };
@@ -341,11 +329,7 @@ export function getRagIndexingControlState(
     updatePending: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noUpdatesReason),
     reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
     cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
-    resume: toButtonState(
-      input.guardMode === 'paused'
-        ? null
-        : t('ragNotPerformancePaused'),
-    ),
+    resume: toButtonState(input.guardMode === 'paused' ? null : t('ragNotPerformancePaused')),
   };
 }
 
@@ -582,32 +566,32 @@ export function buildGraphRagActionGroups(input: GraphRagActionGroupInput): Grap
         },
       ],
     },
-      {
-        id: 'maintain',
-        label: t('graphRagMaintain'),
-        actions: [
-          {
-            id: 'buildCommunities',
-            groupId: 'maintain',
-            groupLabel: t('graphRagMaintain'),
-            label: t('graphRagBuildCommunities'),
-            description: t('graphRagBuildCommunitiesDesc'),
-            iconName: 'git-fork',
-            state: input.buildCommunities,
-            tone: 'normal',
-          },
-          {
-            id: 'resetGraphRag',
-            groupId: 'maintain',
-            groupLabel: t('graphRagMaintain'),
-            label: t('graphRagResetData'),
-            description: t('graphRagResetDataDesc'),
-            iconName: 'trash-2',
-            state: input.resetGraphRag,
-            tone: 'danger',
-          },
-        ],
-      },
+    {
+      id: 'maintain',
+      label: t('graphRagMaintain'),
+      actions: [
+        {
+          id: 'buildCommunities',
+          groupId: 'maintain',
+          groupLabel: t('graphRagMaintain'),
+          label: t('graphRagBuildCommunities'),
+          description: t('graphRagBuildCommunitiesDesc'),
+          iconName: 'git-fork',
+          state: input.buildCommunities,
+          tone: 'normal',
+        },
+        {
+          id: 'resetGraphRag',
+          groupId: 'maintain',
+          groupLabel: t('graphRagMaintain'),
+          label: t('graphRagResetData'),
+          description: t('graphRagResetDataDesc'),
+          iconName: 'trash-2',
+          state: input.resetGraphRag,
+          tone: 'danger',
+        },
+      ],
+    },
     {
       id: 'inspect',
       label: t('graphRagInspect'),

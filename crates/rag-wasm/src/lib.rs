@@ -32,6 +32,26 @@ pub use rag_recovery::{
 mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
+/// Native read-only vault tool request validation and bounded execution policy.
+mod native_vault_tool;
+pub use native_vault_tool::{
+    plan_native_vault_link_paths_json, plan_native_vault_list_json,
+    plan_native_vault_read_range_json, plan_native_vault_stats_json,
+    plan_native_vault_tool_request_json,
+};
+
+/// Whole-vault research intent and hierarchical reduce batching policy.
+mod research_agent;
+pub use research_agent::{
+    is_whole_vault_research_intent, plan_repeated_tool_call_indices_json,
+    plan_research_citation_indices_json, plan_research_request_failure_json,
+    plan_research_summary_batches_json,
+};
+
+/// Model-neutral tool-call fallback protocol.
+mod tool_protocol;
+pub use tool_protocol::{plan_compatibility_tool_calls_json, strip_compatibility_tool_calls};
+
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.

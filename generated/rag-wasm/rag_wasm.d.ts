@@ -316,6 +316,11 @@ export function is_relevant_result(config: Float64Array, source_codes: Uint8Arra
 export function is_same_graph_entity_pair(first_left: string, first_right: string, second_left: string, second_right: string): boolean;
 
 /**
+ * Detects explicit requests that require whole-vault coverage instead of top-k retrieval.
+ */
+export function is_whole_vault_research_intent(question: string): boolean;
+
+/**
  * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
  */
 export function normalize_entity_name(name: string): string;
@@ -434,6 +439,11 @@ export function plan_chat_save_metadata_json(messages_json: string, existing_cre
  * claim record snapshot에서 evidence score JSON plan을 만든다.
  */
 export function plan_claim_evidence_scores_json(claims_json: string): string;
+
+/**
+ * Extracts bounded JSON tool calls from the compatibility protocol.
+ */
+export function plan_compatibility_tool_calls_json(content: string): string;
 
 /**
  * Context budget append 결과를 Rust에서 계산한다.
@@ -661,6 +671,31 @@ export function plan_merged_retrieval_candidates(entry_indices: Uint32Array, sou
 export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json: string, source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
 
 /**
+ * Sorts, de-duplicates, and bounds one side of the structural link graph.
+ */
+export function plan_native_vault_link_paths_json(paths_json: string, limit: number): string;
+
+/**
+ * Selects one stable, bounded page of Markdown paths under a vault folder prefix.
+ */
+export function plan_native_vault_list_json(file_paths_json: string, path_prefix: string, cursor: number, limit: number): string;
+
+/**
+ * Clamps a one-based inclusive read range to the document and per-call line budget.
+ */
+export function plan_native_vault_read_range_json(total_lines: number, start_line: number, end_line: number | null | undefined, max_lines: number): string;
+
+/**
+ * Aggregates Markdown file sizes for a read-only vault stats response.
+ */
+export function plan_native_vault_stats_json(file_sizes_json: string): string;
+
+/**
+ * Validates one model-generated request for the built-in read-only vault tool.
+ */
+export function plan_native_vault_tool_request_json(arguments_json: string): string;
+
+/**
  * Plans bounded cleanup for files whose names prove that this plugin owns them.
  */
 export function plan_plugin_owned_file_maintenance_json(input_json: string): string;
@@ -729,6 +764,11 @@ export function plan_rag_storage_health_json(health_json: string): string;
 export function plan_reference_file_indices_json(source_path: string, file_paths_json: string): string;
 
 /**
+ * Finds repeated tool calls after canonicalizing JSON argument object key order.
+ */
+export function plan_repeated_tool_call_indices_json(history_json: string, candidates_json: string, max_repeats: number): string;
+
+/**
  * LLM reranker provider에 넘길 system/user message content를 JSON으로 계획한다.
  */
 export function plan_rerank_messages_json(question: string, candidates_json: string, max_text_chars: number): string;
@@ -742,6 +782,21 @@ export function plan_rerank_response_json(raw_response: string, allowed_ids_json
  * RAG reranker ranked id 목록을 전체 result index 순서 plan으로 변환한다.
  */
 export function plan_rerank_result_order_json(result_ids_json: string, ranked_ids_json: string): string;
+
+/**
+ * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
+ */
+export function plan_research_citation_indices_json(content: string, citation_ids_json: string, fallback_limit: number): string;
+
+/**
+ * Classifies a provider failure and returns a bounded retry plan for research requests.
+ */
+export function plan_research_request_failure_json(message: string, status: number, failed_attempt: number, retry_after_ms: number): string;
+
+/**
+ * Groups summary items into stable bounded reduce batches without dropping any item.
+ */
+export function plan_research_summary_batches_json(item_sizes_json: string, max_items: number, max_chars: number): string;
 
 /**
  * assistant 답변에서 출처 참조와 path alias plan을 `JSON` 문자열로 만든다.
@@ -902,6 +957,11 @@ export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled:
  * `<think>`류 태그를 reasoning/content로 분할한다.
  */
 export function split_reasoning_tags_json(content: string): string;
+
+/**
+ * Removes only complete compatibility tool-call blocks from visible answer text.
+ */
+export function strip_compatibility_tool_calls(content: string): string;
 
 /**
  * 텍스트의 `BM25` term frequency map을 `JSON` 문자열로 반환한다.
@@ -1116,11 +1176,23 @@ export interface InitOutput {
     readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
+    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
     readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
     readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
+    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
-    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

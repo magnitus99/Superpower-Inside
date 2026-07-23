@@ -30,6 +30,7 @@ export interface ExecuteMcpToolCallsOptions {
   toolCalls: ToolCallRecord[];
   preferredServerNames: string[];
   onUpdate?: (toolCalls: ToolCallRecord[]) => void;
+  signal?: AbortSignal;
 }
 
 export async function prepareToolCallsForExecution(
@@ -63,7 +64,8 @@ export async function executeMcpToolCalls(
   options.onUpdate?.(updatedToolCalls);
 
   for (const toolCall of updatedToolCalls) {
-    if (toolCall.approved === false) {
+    throwIfAborted(options.signal);
+    if (toolCall.status !== 'running' || toolCall.approved === false) {
       continue;
     }
 
@@ -91,6 +93,7 @@ export async function executeMcpToolCalls(
 
     try {
       const result = await client.callTool(toolCall.name, parseToolArguments(toolCall.arguments));
+      throwIfAborted(options.signal);
       const isErrorResult =
         typeof result === 'object' &&
         result !== null &&
@@ -105,6 +108,7 @@ export async function executeMcpToolCalls(
       toolCall.normalizedResult = normalized.modelText;
       toolCall.status = isErrorResult ? 'error' : 'success';
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
       const rawMsg = err instanceof Error ? err.message : String(err);
       toolCall.result = t('mcpToolErrorPrefix', { message: normalizeToolError(rawMsg) });
       toolCall.status = 'error';
@@ -115,6 +119,10 @@ export async function executeMcpToolCalls(
 
   options.onUpdate?.(updatedToolCalls);
   return updatedToolCalls;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException(t('cancelledLabel'), 'AbortError');
 }
 
 export async function findServerForTool(
@@ -140,7 +148,12 @@ export async function findServerForTool(
     if (!client) continue;
     try {
       const tools = await client.listTools();
-      if (isMcpToolAvailableRust(toolName, tools.map((tool) => tool.name)) === true) {
+      if (
+        isMcpToolAvailableRust(
+          toolName,
+          tools.map((tool) => tool.name),
+        ) === true
+      ) {
         return serverName;
       }
     } catch {
