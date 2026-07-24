@@ -2,6 +2,8 @@ import { ItemView, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'ob
 import {
   buildChatModelOptions,
   CHAT_PROVIDER_KEYS,
+  getCustomOpenAIProviderDisplayName,
+  getProviderProfileDisplayName,
   PROVIDER_LABELS,
   resolveProviderModelRef,
   type PluginLike,
@@ -2578,7 +2580,7 @@ export class ChatView extends ItemView {
       }
       key = `profile:${profile.id}`;
       modelName = modelId;
-      providerLabel = profile.name.trim() || profile.strategy;
+      providerLabel = getProviderProfileDisplayName(profile);
       provider = createProviderForStrategy(
         profile.strategy,
         { ...profile, models: profile.models.map((model) => model.id) },
@@ -2602,7 +2604,7 @@ export class ChatView extends ItemView {
         return;
       }
       key = `customOpenAI:${providerId}`;
-      providerLabel = customProvider.name.trim() || 'Custom OpenAI-Compatible';
+      providerLabel = getCustomOpenAIProviderDisplayName(customProvider);
       provider = createCustomOpenAIProvider(customProvider, modelName);
     } else {
       const fixedKey = parts[0] as ProviderKey;

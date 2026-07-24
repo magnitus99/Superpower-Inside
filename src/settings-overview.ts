@@ -12,10 +12,11 @@ import type {
 } from './settings';
 import {
   buildProviderModelRef,
+  getCustomOpenAIProviderDisplayName,
+  getProviderProfileDisplayName,
   parseProviderModelRef,
   PROVIDER_KEYS,
   PROVIDER_LABELS,
-  PROVIDER_STRATEGY_LABELS,
 } from './settings';
 
 export type SettingsOverviewTone = 'neutral' | 'success' | 'warning' | 'danger';
@@ -161,7 +162,7 @@ function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[
   if (settings.providerProfiles.length > 0) {
     return settings.providerProfiles.map((profile) => ({
       id: `profile-${profile.id}`,
-      label: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      label: getProviderProfileDisplayName(profile),
       key: profile.strategy === 'openAICompatible' ? ('customOpenAI' as const) : profile.strategy,
       config: {
         ...profile,
@@ -177,7 +178,7 @@ function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[
   }));
   const custom = settings.customOpenAIProviders.map((provider) => ({
     id: `custom-${provider.id}`,
-    label: provider.name.trim() || 'Custom OpenAI',
+    label: getCustomOpenAIProviderDisplayName(provider),
     key: 'customOpenAI' as const,
     config: provider,
   }));
@@ -208,7 +209,7 @@ function buildProviderMetric(rows: readonly SettingsOverviewStatusRow[]): Settin
 
   return {
     id: 'providers',
-    label: 'Providers',
+    label: t('tabProviders'),
     value: `${readyRows.length}/${enabledRows.length}`,
     statusLabel,
     detail:
@@ -463,7 +464,7 @@ function buildChatMetric(settings: SuperpowerInsideSettings): SettingsOverviewMe
   );
   return {
     id: 'chat',
-    label: 'Chat',
+    label: t('tabChat'),
     value: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
     statusLabel: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
     detail: defaultModelAvailable
@@ -478,7 +479,7 @@ function getChatModelLabel(settings: SuperpowerInsideSettings): string {
   const parsed = parseProviderModelRef(settings.chat.defaultModel);
   if (parsed.kind === 'profile') {
     const profile = settings.providerProfiles.find((candidate) => candidate.id === parsed.profileId);
-    return profile ? `${profile.name} / ${parsed.modelId}` : parsed.modelId;
+    return profile ? `${getProviderProfileDisplayName(profile)} / ${parsed.modelId}` : parsed.modelId;
   }
   if (parsed.kind === 'legacy') {
     return `${PROVIDER_LABELS[parsed.providerKey]} / ${parsed.modelId}`;
@@ -487,7 +488,9 @@ function getChatModelLabel(settings: SuperpowerInsideSettings): string {
     const provider = settings.customOpenAIProviders.find(
       (candidate) => candidate.id === parsed.providerId,
     );
-    return provider ? `${provider.name} / ${parsed.modelId}` : parsed.modelId;
+    return provider
+      ? `${getCustomOpenAIProviderDisplayName(provider)} / ${parsed.modelId}`
+      : parsed.modelId;
   }
   return settings.chat.defaultModel;
 }

@@ -1527,6 +1527,18 @@ describe('Rust WASM RAG core bridge', () => {
             indexable: false,
             recommendationReason: 'binary',
           },
+          {
+            filePath: 'broken.weird',
+            extension: 'weird',
+            indexable: false,
+            recommendationReason: 'unreadable',
+          },
+          {
+            filePath: 'large.opaque',
+            extension: 'opaque',
+            indexable: false,
+            recommendationReason: 'too-large',
+          },
         ],
         '확장자 없음',
       ),
@@ -1536,8 +1548,8 @@ describe('Rust WASM RAG core bridge', () => {
         { extension: 'md', label: '.md', count: 1 },
       ],
       excludeRecommendations: [
-        { extension: '(none)', label: '확장자 없음', count: 1, reason: 'sensitive' },
-        { extension: 'png', label: '.png', count: 1, reason: 'binary' },
+        { extension: 'opaque', label: '.opaque', count: 1, reason: 'too-large' },
+        { extension: 'weird', label: '.weird', count: 1, reason: 'unreadable' },
       ],
       totalTargetFiles: 3,
     });
@@ -1554,6 +1566,12 @@ describe('Rust WASM RAG core bridge', () => {
       { filePath: 'Archive/old.txt', fileName: 'old.txt', extension: 'txt', size: 10 },
       { filePath: 'image.png', fileName: 'image.png', extension: 'png', size: 10 },
       { filePath: 'empty.txt', fileName: 'empty.txt', extension: 'txt', size: 0 },
+      {
+        filePath: 'large.opaque',
+        fileName: 'large.opaque',
+        extension: 'opaque',
+        size: 512 * 1024 + 1,
+      },
     ];
 
     expect(planRagFileContentProbeIndicesRust(files, ['Archive'], ['png'])).toEqual([4, 5]);
@@ -1578,7 +1596,7 @@ describe('Rust WASM RAG core bridge', () => {
           filePath: 'empty.md',
           extension: 'md',
           indexable: false,
-          recommendationReason: 'unreadable',
+          recommendationReason: 'empty',
         },
         { filePath: 'custom.weird', extension: 'weird', indexable: true },
         {
@@ -1591,7 +1609,13 @@ describe('Rust WASM RAG core bridge', () => {
           filePath: 'empty.txt',
           extension: 'txt',
           indexable: false,
-          recommendationReason: 'unreadable',
+          recommendationReason: 'empty',
+        },
+        {
+          filePath: 'large.opaque',
+          extension: 'opaque',
+          indexable: false,
+          recommendationReason: 'too-large',
         },
       ],
     });
@@ -3427,6 +3451,7 @@ describe('Rust WASM RAG core bridge', () => {
   it('불완전한 조사 범위의 scoped negative 위반 코드를 중복 없이 전달한다', () => {
     const plan = planResearchAnswerContractRust({
       answer: '현재 검색 범위에서 네빌의 창세기 직접 언급을 찾지 못했습니다.',
+      language: 'ko',
       receipt: {
         inventoryCount: 2,
         pagedCount: 2,
@@ -3445,6 +3470,33 @@ describe('Rust WASM RAG core bridge', () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.violationCodes).toEqual(['exact-negative-coverage-incomplete']);
+  });
+
+  it('명시한 영어 locale은 답변의 한국어 고유명사보다 우선한다', () => {
+    const plan = planResearchAnswerContractRust({
+      answer: 'After checking every note, I found evidence about 네빌.',
+      language: 'en',
+      receipt: {
+        inventoryCount: 2,
+        pagedCount: 2,
+        locallyScreenedCount: 2,
+        selectedEvidenceCount: 1,
+        providerTransferredCount: 1,
+        providerAnalyzedCount: 1,
+        providerOmittedCount: 0,
+        wholeVaultLocallyScreened: true,
+        allSelectedEvidenceAnalyzed: true,
+        allInventoryEvidenceAnalyzed: false,
+        exactNegativeAllowed: true,
+        reasonCodes: [],
+      },
+    });
+
+    expect(plan).toMatchObject({
+      allowed: false,
+      safeCoverageText:
+        'The whole vault was screened locally and all selected evidence was analyzed.',
+    });
   });
 
   it('provider batch 의미를 유지하면서 final과 repair가 예약된 호출 상한을 전달한다', () => {
@@ -3547,6 +3599,7 @@ describe('Rust WASM RAG core bridge', () => {
       receipt
         ? planResearchAnswerContractRust({
             answer: '현재 검색 범위에서 Beta 내용은 없습니다.',
+            language: 'ko',
             receipt,
           })
         : null,
@@ -3558,6 +3611,7 @@ describe('Rust WASM RAG core bridge', () => {
       receipt
         ? planResearchAnswerContractRust({
             answer: '현재 검색 범위에서 Alpha 내용은 없습니다.',
+            language: 'ko',
             receipt,
           })
         : null,
@@ -3587,6 +3641,7 @@ describe('Rust WASM RAG core bridge', () => {
       receipt
         ? planResearchAnswerContractRust({
             answer: '현재 검색 범위에서 Alpha 내용은 없습니다.',
+            language: 'ko',
             receipt,
           })
         : null,
@@ -3595,6 +3650,7 @@ describe('Rust WASM RAG core bridge', () => {
       receipt
         ? planResearchAnswerContractRust({
             answer: '현재 검색 범위 Projects에서 Alpha 내용은 없습니다.',
+            language: 'ko',
             receipt,
           })
         : null,

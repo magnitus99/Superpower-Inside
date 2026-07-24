@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DataAdapter, TFile, Vault } from 'obsidian';
+import { t } from '../i18n';
 import type { ChatConfig, RAGConfig } from '../settings';
 import {
   getEffectiveExcludePaths,
@@ -215,12 +216,10 @@ describe('RAG 후보 파일', () => {
       { extension: 'md', label: '.md', count: 1 },
       { extension: 'ts', label: '.ts', count: 1 },
     ]);
-    expect(summary.excludeRecommendations).toEqual([
-      expect.objectContaining({ extension: '(none)', label: '확장자 없음', count: 1 }),
-    ]);
+    expect(summary.excludeRecommendations).toEqual([]);
   });
 
-  it('비어 있거나 읽을 수 없는 마크다운 파일은 제외 추천에 올리지 않는다', async () => {
+  it('비어 있는 파일은 확장자와 관계없이 제외 추천에 올리지 않는다', async () => {
     const vault = createVault(
       [createFile('empty.md', 0), createFile('empty.markdown', 0), createFile('empty.txt', 0)],
       new Map([
@@ -232,16 +231,10 @@ describe('RAG 후보 파일', () => {
 
     const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
 
-    expect(summary.excludeRecommendations).toEqual([
-      expect.objectContaining({ extension: 'txt', label: '.txt', count: 1 }),
-    ]);
-    expect(summary.excludeRecommendations.some((item) => item.extension === 'md')).toBe(false);
-    expect(summary.excludeRecommendations.some((item) => item.extension === 'markdown')).toBe(
-      false,
-    );
+    expect(summary.excludeRecommendations).toEqual([]);
   });
 
-  it('지원되는 마크다운 파일이 하나도 없어도 Obsidian 핵심 문서 확장자는 제외 추천하지 않는다', async () => {
+  it('알려진 바이너리 확장자는 자동 제외되므로 제외 추천에 올리지 않는다', async () => {
     const vault = createVault(
       [createFile('empty.md', 0), createFile('empty.markdown', 0), createFile('image.png')],
       new Map([
@@ -253,7 +246,34 @@ describe('RAG 후보 파일', () => {
 
     const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
 
-    expect(summary.excludeRecommendations.map((item) => item.extension)).toEqual(['png']);
+    expect(summary.excludeRecommendations).toEqual([]);
+  });
+
+  it('읽을 수 없거나 너무 큰 미확인 확장자만 제외 추천에 올린다', async () => {
+    const vault = createVault(
+      [createFile('broken.weird'), createFile('large.opaque', 512 * 1024 + 1)],
+      new Map([
+        ['broken.weird', '\u0000binary'],
+        ['large.opaque', 'text'],
+      ]),
+    );
+
+    const summary = await getRagFileTypeSummary(vault, baseRagConfig, baseChatConfig);
+
+    expect(summary.excludeRecommendations).toEqual([
+      {
+        extension: 'opaque',
+        label: '.opaque',
+        count: 1,
+        reason: t('ragExcludeTooLargeReason'),
+      },
+      {
+        extension: 'weird',
+        label: '.weird',
+        count: 1,
+        reason: t('ragExcludeUnreadableReason'),
+      },
+    ]);
   });
 });
 

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { LLMProvider } from '../llm/providers';
+import type { ChatMessage, LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
+import { setLanguage } from '../i18n';
 import { CommunitySummarizer } from './community-summarizer';
 import {
   InMemoryKnowledgeGraphStore,
@@ -16,6 +17,10 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
 });
 
 describe('CommunitySummarizer', () => {
+  beforeEach(() => {
+    setLanguage('ko');
+  });
+
   it('community별 entity, relation, claim grouping은 Rust index plan을 따른다', async () => {
     const store = new InMemoryKnowledgeGraphStore();
     await store.upsertEntity(createEntity('entity::paul', 'Paul'));
@@ -144,6 +149,32 @@ describe('CommunitySummarizer', () => {
     expect(records[1]?.parentCommunityId).toBe(records[2]?.id);
     expect(prompts[2]).toContain('summary-1');
     expect(prompts[2]).toContain('summary-2');
+  });
+
+  it('영어 UI에서는 community summary를 영어로 요청한다', async () => {
+    setLanguage('en');
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity('entity::paul', 'Paul'));
+    const capturedMessages: ChatMessage[][] = [];
+    const provider: LLMProvider = {
+      capability: TEST_PROVIDER_CAPABILITY,
+      chat: (messages) => {
+        capturedMessages.push(messages);
+        return Promise.resolve('English community summary.');
+      },
+      streamChat: () => Promise.resolve(),
+    };
+
+    await new CommunitySummarizer({
+      provider,
+      embeddingProvider: createEmbeddingProvider(),
+      store,
+      ontologySchemaId: 'default',
+    }).summarizeCommunities(new Map([['entity::paul', 0]]), [0]);
+
+    const prompt = capturedMessages[0]?.map((message) => message.content).join('\n') ?? '';
+    expect(prompt).toContain('in English');
+    expect(prompt).not.toContain('in Korean');
   });
 
   it('embedding 단계가 중단돼도 저장한 summary 응답으로 provider 재호출 없이 재개한다', async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({
   App: class {},
@@ -15,6 +15,7 @@ vi.mock('obsidian', () => ({
 }));
 
 import type { GraphRagStatusSummary } from './graph/status';
+import { setLanguage } from './i18n';
 import type { RagStatusSummary } from './rag/status';
 import {
   buildSettingsOverviewSnapshot,
@@ -91,6 +92,39 @@ function buildGraphStatus(
 }
 
 describe('설정 Overview snapshot', () => {
+  beforeEach(() => {
+    setLanguage('ko');
+  });
+
+  it('Provider metric과 사용자 지정 fallback 이름을 현재 UI 언어로 표시한다', () => {
+    const settings = buildSettings({
+      customOpenAIProviders: [
+        {
+          id: 'local',
+          name: '',
+          apiKey: '',
+          baseUrl: 'http://localhost:1234/v1',
+          models: ['local-model'],
+          enabled: true,
+          useRequestUrl: true,
+        },
+      ],
+    });
+
+    const korean = buildSettingsOverviewSnapshot({ settings, runtime: buildRuntime() });
+    setLanguage('en');
+    const english = buildSettingsOverviewSnapshot({ settings, runtime: buildRuntime() });
+
+    expect(korean.metrics.find((metric) => metric.id === 'providers')?.label).toBe('프로바이더');
+    expect(korean.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
+      '사용자 지정 OpenAI 호환',
+    );
+    expect(english.metrics.find((metric) => metric.id === 'providers')?.label).toBe('Providers');
+    expect(english.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
+      'Custom OpenAI-compatible',
+    );
+  });
+
   it('Provider enabled/model/key 상태를 조밀한 행으로 요약한다', () => {
     const snapshot = buildSettingsOverviewSnapshot({
       settings: buildSettings({

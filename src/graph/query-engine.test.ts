@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
-import type { LLMProvider } from '../llm/providers';
+import type { ChatMessage, LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
+import { setLanguage } from '../i18n';
 import {
   GraphRagCandidateProvider,
   GraphRagQueryEngine,
@@ -17,6 +18,10 @@ import {
 } from './store';
 
 describe('GraphRagQueryEngine', () => {
+  beforeEach(() => {
+    setLanguage('ko');
+  });
+
   it('factual 질문은 local graph traversal로 관련 evidence 후보를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixture();
     const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
@@ -143,6 +148,40 @@ describe('GraphRagQueryEngine', () => {
     expect(resumed[0]?.entry.metadata.text).toContain('협력과 갈등');
     expect(provider.calls).toBe(3);
     expect(await graphStore.getRawResponses()).toHaveLength(2);
+  });
+
+  it('영어 UI에서는 global map과 reduce 답변을 영어로 요청한다', async () => {
+    setLanguage('en');
+    const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
+    const capturedMessages: ChatMessage[][] = [];
+    const provider: LLMProvider = {
+      capability: resolveProviderCapability({ providerKey: 'openai', model: 'global-test' }),
+      chat: (messages) => {
+        capturedMessages.push(messages);
+        return Promise.resolve(
+          capturedMessages.length === 1
+            ? 'Mission conflict is relevant.'
+            : 'The recurring theme is mission conflict.',
+        );
+      },
+      streamChat: () => Promise.resolve(),
+    };
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+
+    await engine.query({
+      question: 'What recurring theme appears?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+    });
+
+    expect(capturedMessages).toHaveLength(2);
+    for (const messages of capturedMessages) {
+      const prompt = messages.map((message) => message.content).join('\n');
+      expect(prompt).toContain('English');
+      expect(prompt).not.toContain('Korean');
+    }
   });
 
   it('query mode가 local이면 thematic 질문도 evidence 후보만 반환한다', async () => {

@@ -52,7 +52,6 @@ import {
   type ProviderValidationSnapshot,
 } from './rag/settings-display';
 import {
-  createDefaultPromptEntry,
   createPromptEntry,
   getActivePromptEntry,
   type PromptLibraryEntry,
@@ -66,7 +65,7 @@ import {
   type ExcludeValidationResult,
 } from './utils/rag-exclude-validation';
 import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
-import { type Language, t } from './i18n';
+import { isLocalizedValue, type Language, t } from './i18n';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
   normalizeProviderCapabilityOverrides,
@@ -366,6 +365,11 @@ export function getCustomOpenAIEmbeddingProviderId(
 ): string {
   return providerKey.slice('customOpenAI:'.length);
 }
+export function getCustomOpenAIProviderDisplayName(
+  provider: Pick<CustomOpenAIProviderConfig, 'name'>,
+): string {
+  return provider.name.trim() || t('providerCustomDockTitle');
+}
 export function buildEmbeddingProviderOptions(
   customProviders: readonly CustomOpenAIProviderConfig[],
 ): EmbeddingProviderOption[] {
@@ -379,7 +383,7 @@ export function buildEmbeddingProviderOptions(
     if (!provider.enabled || !provider.baseUrl?.trim()) continue;
     options.push({
       value: `customOpenAI:${provider.id}`,
-      label: provider.name.trim() || 'Custom OpenAI-Compatible',
+      label: getCustomOpenAIProviderDisplayName(provider),
     });
   }
   return options;
@@ -542,7 +546,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     saveFolder: DEFAULT_CHAT_SAVE_FOLDER,
     defaultModel: '',
     systemPrompt: '',
-    promptLibrary: [createDefaultPromptEntry()],
+    promptLibrary: [],
     activePromptId: 'default-obsidian-knowledge-work',
     mcpToolExecutionPolicy: 'mentioned-auto',
     autoSaveEnabled: true,
@@ -552,7 +556,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
   autoSaveDebounceMs: 1000,
-  language: 'ko',
+  language: 'en',
   logging: {
     minLevel: 'info',
     maxEntries: 1000,
@@ -619,12 +623,10 @@ function normalizeProviderProfile(
     return normalized ? upsertProviderProfileModel(acc, normalized) : acc;
   }, []);
   const capabilityOverrides = normalizeProviderCapabilityOverrides(source.capabilityOverrides);
+  const rawName = typeof source.name === 'string' ? source.name.trim() : '';
   return {
     id,
-    name:
-      typeof source.name === 'string' && source.name.trim()
-        ? source.name.trim()
-        : PROVIDER_STRATEGY_LABELS[strategy],
+    name: rawName && !isLocalizedValue('providerNewName', rawName) ? rawName : '',
     strategy,
     apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
     baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl.trim() : undefined,
@@ -633,6 +635,10 @@ function normalizeProviderProfile(
     ...(typeof source.useRequestUrl === 'boolean' ? { useRequestUrl: source.useRequestUrl } : {}),
     ...(capabilityOverrides ? { capabilityOverrides } : {}),
   };
+}
+
+export function getProviderProfileDisplayName(profile: ProviderProfileConfig): string {
+  return profile.name.trim() || t('providerNewName');
 }
 
 function legacyProfileIdForCustomOpenAI(
@@ -1113,7 +1119,11 @@ class ProviderModelImportModal extends Modal {
     const searchRow = contentEl.createDiv({ cls: 'superpower-inside-provider-import-search-row' });
     const searchInput = searchRow.createEl('input', {
       cls: 'superpower-inside-provider-import-search',
-      attr: { type: 'text', placeholder: t('providerImportSearchPlaceholder') },
+      attr: {
+        type: 'text',
+        placeholder: t('providerImportSearchPlaceholder'),
+        'aria-label': t('providerImportSearchPlaceholder'),
+      },
     });
     this.countEl = searchRow.createDiv({ cls: 'superpower-inside-provider-import-count' });
     searchInput.addEventListener('input', () => {
@@ -1556,7 +1566,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
       for (const provider of this.plugin.settings.customOpenAIProviders) {
         if (!provider.enabled) continue;
-        const label = provider.name.trim() || 'Custom OpenAI-Compatible';
+        const label = getCustomOpenAIProviderDisplayName(provider);
         for (const model of provider.models) {
           allModels.push({
             value: `customOpenAI:${provider.id}:${model}`,
@@ -1953,7 +1963,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }
       for (const provider of this.plugin.settings.customOpenAIProviders) {
         if (!provider.enabled) continue;
-        const label = provider.name.trim() || 'Custom OpenAI-Compatible';
+        const label = getCustomOpenAIProviderDisplayName(provider);
         for (const model of provider.models) {
           allModels.push({
             value: `customOpenAI:${provider.id}:${model}`,
@@ -2477,7 +2487,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             v2: String(failed > 0 ? t('settingsAuto031', { v0: String(failed) }) : ''),
             v3: String(stale > 0 ? t('settingsAuto032', { v0: String(stale) }) : ''),
           })
-        : t('settingsAuto033');
+        : t('graphRagNoFilesReason');
     const banner = section.createDiv({ cls: 'superpower-inside-rag-graph-summary-banner' });
     this.graphRagSummaryBanner = banner;
     banner.setText(summaryText);
@@ -2863,7 +2873,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               v2: String(failed > 0 ? t('settingsAuto031', { v0: String(failed) }) : ''),
               v3: String(stale > 0 ? t('settingsAuto032', { v0: String(stale) }) : ''),
             })
-          : t('settingsAuto033');
+          : t('graphRagNoFilesReason');
       this.graphRagSummaryBanner.setText(summaryText);
     }
     if (this.graphRagStatusGrid) {
@@ -4256,7 +4266,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const provider = this.plugin.settings.customOpenAIProviders.find(
         (item) => item.id === providerId,
       );
-      return provider?.name.trim() || 'Custom OpenAI-Compatible';
+      return provider ? getCustomOpenAIProviderDisplayName(provider) : t('providerCustomDockTitle');
     }
     return EMBEDDING_PROVIDER_LABELS[providerKey];
   }
@@ -4268,8 +4278,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       'embedding',
     );
     if (!resolved) return t('ragIndexerSelectEmbeddingModel');
-    const label =
-      resolved.profile.name.trim() || PROVIDER_STRATEGY_LABELS[resolved.profile.strategy];
+    const label = getProviderProfileDisplayName(resolved.profile);
     if (!resolved.profile.enabled) {
       return t('ragIndexerEnableProvider', { provider: label });
     }
@@ -4767,8 +4776,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       countMeta: {
         getCounts: () =>
           countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
-        getItemLabel: (count) => t('excludeExtFileCount').replace('{count}', String(count)),
-        getSummaryLabel: (count) => t('excludeExtTotalFileCount').replace('{count}', String(count)),
+        getItemLabel: (count) => t('excludeExtFileCount', { count }),
+        getSummaryLabel: (count) => t('excludeExtTotalFileCount', { count }),
         refreshLabel: t('refresh'),
       },
     });
@@ -5461,9 +5470,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const tone = this.getProviderProfileTone(profile);
       return tone === 'needs-key' || tone === 'needs-models';
     });
-    const firstAttentionName = firstAttention
-      ? firstAttention.name.trim() || PROVIDER_STRATEGY_LABELS[firstAttention.strategy]
-      : '';
+    const firstAttentionName = firstAttention ? getProviderProfileDisplayName(firstAttention) : '';
     const section = this.createSettingsSection(containerEl, t('providerStatusSectionTitle'), {
       description: t('providerStatusSectionDesc'),
     });
@@ -5541,7 +5548,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const disclosure = this.createSettingsDisclosure(
       containerEl,
       `provider-${profile.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
-      profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      getProviderProfileDisplayName(profile),
       t('providerModelCountLine', {
         provider: PROVIDER_STRATEGY_LABELS[profile.strategy],
         general: String(profile.models.filter((model) => model.kind === 'general').length),
@@ -5608,7 +5615,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       { idPrefix: `superpower-inside-provider-${profile.id}` },
     );
     danger.button.addClass('is-danger');
-    const profileName = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    const profileName = getProviderProfileDisplayName(profile);
     this.createSettingsNotice(danger.content, {
       text: t('providerRemoveWarning', { provider: profileName }),
       tone: 'danger',
@@ -5753,7 +5760,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const id = this.createProviderProfileId();
     this.plugin.settings.providerProfiles.push({
       id,
-      name: t('providerNewName'),
+      name: '',
       strategy: 'openAICompatible',
       apiKey: '',
       baseUrl: '',
@@ -5775,7 +5782,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     profile: ProviderProfileConfig,
     button: HTMLButtonElement,
   ): Promise<void> {
-    const profileName = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    const profileName = getProviderProfileDisplayName(profile);
     await runActionWithFeedback({
       button,
       action: async () => {
@@ -5867,7 +5874,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 ? result.modelDetails
                 : result.models.map((id) => ({ id }));
             this.openProviderModelImportModal(profile, candidates, statusEl);
-            return { status: 'success', detail: String(candidates.length) };
+            return {
+              status: 'success',
+              detail: t('providerImportFound', { count: candidates.length }),
+              notice: false,
+            };
           },
         });
       });
@@ -5877,6 +5888,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       type: 'text',
       placeholder: kind === 'embedding' ? 'text-embedding-3-small' : 'gpt-4o-mini',
       cls: 'superpower-inside-provider-model-add-input',
+      attr: {
+        'aria-label':
+          kind === 'embedding' ? t('providerEmbeddingModelId') : t('providerChatModelId'),
+      },
     });
     const addButton = addRow.createEl('button', {
       cls: 'superpower-inside-provider-model-add-btn',
@@ -5918,7 +5933,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const models = profile.models.filter((model) => model.kind === kind);
     if (models.length === 0) {
-      list.createDiv({ cls: 'superpower-inside-provider-empty-models', text: t('noModelsFound') });
+      list.createDiv({
+        cls: 'superpower-inside-provider-empty-models',
+        text: t('providerNoModelsAdded'),
+      });
       return;
     }
     for (const model of models) {
@@ -5940,6 +5958,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           type: 'button',
           'aria-label':
             kind === 'embedding' ? t('providerTestEmbeddingModel') : t('providerTestChatModel'),
+          title:
+            kind === 'embedding' ? t('providerTestEmbeddingModel') : t('providerTestChatModel'),
         },
       });
       setIcon(verifyButton, kind === 'embedding' ? 'scan-search' : 'sparkles');
@@ -5948,7 +5968,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
       const removeButton = actions.createEl('button', {
         cls: 'superpower-inside-provider-model-action-btn',
-        attr: { type: 'button', 'aria-label': t('settingsAuto267') },
+        attr: {
+          type: 'button',
+          'aria-label': t('providerRemoveModel'),
+          title: t('providerRemoveModel'),
+        },
       });
       setIcon(removeButton, 'x');
       removeButton.addEventListener('click', () => {
@@ -5965,7 +5989,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     statusEl: HTMLElement,
   ): void {
     const modal = new ProviderModelImportModal(this.app, {
-      providerName: profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy],
+      providerName: getProviderProfileDisplayName(profile),
       candidates,
       existingIds: new Set(profile.models.map((model) => model.id)),
       onSubmit: (modelIds) => {
@@ -6882,7 +6906,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.buildProviderSettings(slot, {
         kind: 'custom',
         key: `customOpenAI:${provider.id}`,
-        label: provider.name.trim() || 'Custom OpenAI-Compatible',
+        label: getCustomOpenAIProviderDisplayName(provider),
         config: provider,
       });
       const removeButton = slot.createEl('button', {
@@ -6902,7 +6926,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const id = this.createCustomProviderId();
       this.plugin.settings.customOpenAIProviders.push({
         id,
-        name: 'Custom OpenAI-Compatible',
+        name: '',
         apiKey: '',
         baseUrl: 'http://localhost:1234/v1',
         models: [],
@@ -7054,7 +7078,7 @@ function buildProfileModelOptions(
   const result: ChatModelOption[] = [];
   for (const profile of settings.providerProfiles) {
     if (!profile.enabled) continue;
-    const profileLabel = profile.name.trim() || PROVIDER_STRATEGY_LABELS[profile.strategy];
+    const profileLabel = getProviderProfileDisplayName(profile);
     for (const model of profile.models) {
       if (model.kind !== kind) continue;
       result.push({
@@ -7127,7 +7151,7 @@ export function buildChatModelOptions(
   }
   for (const provider of settings.customOpenAIProviders) {
     if (!provider.enabled) continue;
-    const providerLabel = provider.name.trim() || 'Custom OpenAI-Compatible';
+    const providerLabel = getCustomOpenAIProviderDisplayName(provider);
     for (const model of provider.models) {
       const value = `customOpenAI:${provider.id}:${model}`;
       result.push({ value, label: `${providerLabel} / ${model}` });

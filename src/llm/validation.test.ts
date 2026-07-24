@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLanguage } from '../i18n';
 import type { ProviderConfig } from '../settings';
+import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import {
   fetchProviderModels,
   fetchProviderModelsForStrategy,
@@ -12,9 +14,16 @@ import {
 } from './validation';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
+const ternlightEmbedMock = vi.hoisted(() => vi.fn());
 
 vi.mock('obsidian', () => ({
   requestUrl: requestUrlMock,
+}));
+
+vi.mock('./embedding', () => ({
+  TernlightEmbeddingProvider: class {
+    embed = ternlightEmbedMock;
+  },
 }));
 
 const baseConfig: ProviderConfig = {
@@ -22,10 +31,17 @@ const baseConfig: ProviderConfig = {
   models: [],
   enabled: true,
 };
+const ternlightRuntime = {
+  app: {} as TernlightRuntimeOptions['app'],
+  pluginId: 'test-plugin',
+  pluginVersion: 'test-version',
+} satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
   beforeEach(() => {
     requestUrlMock.mockReset();
+    ternlightEmbedMock.mockReset();
+    setLanguage('ko');
   });
 
   it('OpenAI 기본 연결 테스트는 모델 목록만 조회하고 생성 endpoint를 호출하지 않는다', async () => {
@@ -242,8 +258,62 @@ describe('provider validation', () => {
     const result = await testEmbeddingGenerationForStrategy('claude', 'claude-sonnet', baseConfig);
 
     expect(result.valid).toBe(false);
-    expect(result.error).toBe('Embedding is not supported by this provider profile.');
+    expect(result.error).toBe('이 프로바이더 연결은 임베딩을 지원하지 않습니다.');
     expect(requestUrlMock).not.toHaveBeenCalled();
+  });
+
+  it('검증 오류는 현재 UI 언어에 맞춰 다시 계산한다', async () => {
+    const korean = await fetchProviderModelsForStrategy('ternlight', baseConfig);
+
+    setLanguage('en');
+    const english = await fetchProviderModelsForStrategy('ternlight', baseConfig);
+
+    expect(korean.error).toBe('Ternlight는 임베딩만 지원합니다.');
+    expect(english.error).toBe('Ternlight supports embeddings only.');
+  });
+
+  it('잘못된 임베딩 응답을 현재 UI 언어로 설명한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [] },
+      text: '',
+    });
+
+    const result = await testEmbeddingGeneration('openai', 'text-embedding-3-small', baseConfig);
+
+    expect(result).toMatchObject({
+      valid: false,
+      error: '프로바이더가 올바르지 않은 임베딩 응답을 반환했습니다.',
+    });
+  });
+
+  it('Ternlight 모델과 runtime 검증 오류를 현재 UI 언어로 설명한다', async () => {
+    const unknownModel = await validateEmbeddingConnection(
+      'ternlight',
+      'unknown-model',
+      baseConfig,
+    );
+    const unavailable = await testEmbeddingGenerationForStrategy(
+      'ternlight',
+      'ternlight-base',
+      baseConfig,
+    );
+
+    expect(unknownModel.error).toBe('알 수 없는 Ternlight 모델입니다: unknown-model');
+    expect(unavailable.error).toBe('Ternlight 임베딩 엔진을 사용할 수 없습니다.');
+  });
+
+  it('Ternlight 벡터 차원 오류에 실제 차원을 포함한다', async () => {
+    ternlightEmbedMock.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+
+    const result = await testEmbeddingGenerationForStrategy(
+      'ternlight',
+      'ternlight-base',
+      baseConfig,
+      ternlightRuntime,
+    );
+
+    expect(result.error).toBe('Ternlight가 올바르지 않은 임베딩 벡터를 반환했습니다: 3차원');
   });
 
   it('Custom OpenAI 호환 모델 검색 URL을 /v1/models로 정규화한다', async () => {

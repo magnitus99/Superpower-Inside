@@ -45,6 +45,8 @@ import {
   buildEmbeddingProfileModelOptions,
   buildProviderModelRef,
   DEFAULT_SETTINGS,
+  getCustomOpenAIProviderDisplayName,
+  getProviderProfileDisplayName,
   migrateLegacyProviderProfiles,
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
@@ -167,6 +169,44 @@ describe('RAG 설정 표시 헬퍼', () => {
       verification: { embeddingStatus: 'success' },
     });
     expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:ternlight-base');
+  });
+
+  it('저장된 자동 프로바이더 이름은 현재 언어로 표시하고 사용자 이름은 보존한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'auto-name',
+          name: '새 프로바이더',
+          strategy: 'openAICompatible',
+          apiKey: '',
+          enabled: false,
+          models: [],
+        },
+        {
+          id: 'custom-name',
+          name: '서울 연구 서버',
+          strategy: 'openAICompatible',
+          apiKey: '',
+          enabled: false,
+          models: [],
+        },
+      ],
+    });
+
+    setLanguage('en');
+
+    expect(migrated.providerProfiles[0]?.name).toBe('');
+    expect(getProviderProfileDisplayName(migrated.providerProfiles[0])).toBe('New provider');
+    expect(getProviderProfileDisplayName(migrated.providerProfiles[1])).toBe('서울 연구 서버');
+  });
+
+  it('비어 있는 사용자 지정 OpenAI 이름도 현재 언어로 표시한다', () => {
+    setLanguage('en');
+    expect(getCustomOpenAIProviderDisplayName({ name: '' })).toBe('Custom OpenAI-compatible');
+
+    setLanguage('ko');
+    expect(getCustomOpenAIProviderDisplayName({ name: '' })).toBe('사용자 지정 OpenAI 호환');
   });
 
   it('기존 프로바이더 프로필이 있어도 Ternlight 옵션을 추가하고 현재 임베딩 선택은 보존한다', () => {
@@ -688,7 +728,9 @@ describe('RAG 설정 표시 헬퍼', () => {
       'GraphRAG 데이터 초기화',
       '탐색기 열기',
     ]);
-    expect(groups[0]?.actions[0]?.description).toContain('대상 50개 중 최대 20개');
+    expect(groups[0]?.actions[0]?.description).toContain(
+      '대상 .md 노트 50개 중 최대 20개',
+    );
     expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
     expect(groups[1]?.actions[1]?.description).toContain(
       '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
@@ -938,7 +980,9 @@ describe('RAG 설정 표시 헬퍼', () => {
       failedFileCount: 0,
     });
 
-    expect(state.start.reason).toBe('GraphRAG 인덱싱 대상 파일이 없습니다.');
+    expect(state.start.reason).toBe(
+      '공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.',
+    );
   });
 
   it('일반 설정 자동 저장은 RAG 런타임을 재초기화하지 않는다', async () => {

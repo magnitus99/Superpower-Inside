@@ -18,7 +18,7 @@ import {
   type RustResearchProviderRequestBudgetPlan,
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
-import { t } from '../i18n';
+import { getLanguage, t } from '../i18n';
 import type { NativeVaultToolRuntimeLike } from './native-vault-tool';
 import { selectAnswerCitations } from './citation-selection';
 
@@ -680,7 +680,8 @@ export class VaultResearchAgent {
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
   ): Promise<string> {
-    const firstPlan = planResearchAnswerContractRust({ answer, receipt: coverage });
+    const language = getLanguage();
+    const firstPlan = planResearchAnswerContractRust({ answer, language, receipt: coverage });
     if (!firstPlan) throw new Error(t('vaultResearchContractUnavailable'));
     if (firstPlan.allowed) return answer;
     consumeProviderRequest(requestLedger, 'repair');
@@ -703,7 +704,11 @@ export class VaultResearchAgent {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
       return t('vaultResearchAnswerContractFallback');
     }
-    const secondPlan = planResearchAnswerContractRust({ answer: repaired, receipt: coverage });
+    const secondPlan = planResearchAnswerContractRust({
+      answer: repaired,
+      language,
+      receipt: coverage,
+    });
     if (!secondPlan) throw new Error(t('vaultResearchContractUnavailable'));
     return secondPlan.allowed ? repaired : t('vaultResearchAnswerContractFallback');
   }

@@ -19,6 +19,7 @@ import type {
 } from './store';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { getEntityDisplayAliases } from './entity-labels';
+import { getLanguage } from '../i18n';
 
 export interface CommunitySummarizerOptions {
   provider: LLMProvider;
@@ -248,6 +249,7 @@ export class CommunitySummarizer {
     signal?: AbortSignal,
   ): Promise<string> {
     const entityMap = new Map(entities.map((e) => [e.id, e]));
+    const responseLanguage = getLanguage() === 'ko' ? 'Korean' : 'English';
 
     const entityLines = entities.map((e) => `  - ${formatEntitySummary(e)}`).join('\n');
     const relationLines = relations
@@ -280,11 +282,14 @@ export class CommunitySummarizer {
       '## Child community reports',
       childReportLines || '  (none)',
       '',
-      'Write a concise thematic summary (2-4 sentences in Korean) describing the main topic, key entities, and relationships found in this community. Focus on what connects these entities together thematically.',
+      `Write a concise thematic summary (2-4 sentences in ${responseLanguage}) describing the main topic, key entities, and relationships found in this community. Focus on what connects these entities together thematically.`,
     ].join('\n');
 
     const messages: ChatMessage[] = [
-      { role: 'system', content: 'You are a knowledge graph analyst. Write concise community summaries in Korean (2-4 sentences).' },
+      {
+        role: 'system',
+        content: `You are a knowledge graph analyst. Write concise community summaries in ${responseLanguage} (2-4 sentences).`,
+      },
       { role: 'user', content: prompt },
     ];
 

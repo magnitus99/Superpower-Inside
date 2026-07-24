@@ -17,7 +17,7 @@ import {
   type RustResearchAnswerViolationCode,
   type RustToolCallBlockReason,
 } from '../rag/rust-core';
-import { t } from '../i18n';
+import { getLanguage, t } from '../i18n';
 import {
   executeMcpToolCalls,
   prepareToolCallsForExecution,
@@ -154,7 +154,13 @@ export function enforceNativeToolAnswerContract(
 
   // 성공한 네이티브 검색이 없어도 Rust의 빈 coverage receipt로 vault 범위 단정만 보수적으로 판정합니다.
   const receipt = deriveNativeToolCoverageReceiptRust(nativeResults);
-  const plan = receipt ? planResearchAnswerContractRust({ answer: content, receipt }) : null;
+  const plan = receipt
+    ? planResearchAnswerContractRust({
+        answer: content,
+        language: getLanguage(),
+        receipt,
+      })
+    : null;
   if (!plan) {
     return {
       content: t('vaultResearchAnswerContractFallback'),

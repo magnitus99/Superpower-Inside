@@ -10,7 +10,6 @@ import {
   type RustRagFileEligibilityInput,
   type RustRagFileIndexabilityPlan,
   type RustRagFileTextProbeInput,
-  type RustRagFileTypeInput,
 } from '../rag/rust-core';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { normalizeRustIndices, selectByRustIndices } from './rust-index-plan';
@@ -102,15 +101,16 @@ export async function getRagFileTypeSummary(
     effectiveExcludePaths,
     ragConfig.excludeExts,
   );
-  const fileTypeInputs = plan.summaryInputs.map(localizeRagFileTypeInputReason);
-
-  return (
-    planRagFileTypeSummaryRust(fileTypeInputs, t('noExtensionLabel')) ?? {
+  const summary =
+    planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
       targetTypes: [],
       excludeRecommendations: [],
       totalTargetFiles: 0,
-    }
-  );
+    };
+  return {
+    ...summary,
+    excludeRecommendations: summary.excludeRecommendations.map(localizeRagExcludeRecommendation),
+  };
 }
 
 /**
@@ -226,13 +226,14 @@ function toRagFileEligibilityInput(file: TFile): RustRagFileEligibilityInput {
   };
 }
 
-function localizeRagFileTypeInputReason(input: RustRagFileTypeInput): RustRagFileTypeInput {
-  if (input.indexable || !input.recommendationReason) return input;
+function localizeRagExcludeRecommendation(
+  recommendation: RagExcludeRecommendation,
+): RagExcludeRecommendation {
   return {
-    ...input,
-    recommendationReason:
-      input.recommendationReason === 'sensitive'
-        ? t('ragExcludeSensitiveReason')
+    ...recommendation,
+    reason:
+      recommendation.reason === 'too-large'
+        ? t('ragExcludeTooLargeReason')
         : t('ragExcludeUnreadableReason'),
   };
 }

@@ -1,4 +1,11 @@
-import { Plugin, Notice, Platform, TFile, type WorkspaceLeaf } from 'obsidian';
+import {
+  getLanguage as getObsidianLanguage,
+  Plugin,
+  Notice,
+  Platform,
+  TFile,
+  type WorkspaceLeaf,
+} from 'obsidian';
 import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
@@ -99,7 +106,7 @@ import {
 } from './src/mcp/connection-state';
 import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { getMcpDesktopOnlyMessage, isMcpStdioAvailable } from './src/mcp/platform';
-import { setLanguage, t } from './src/i18n';
+import { isLocalizedValue, resolveUiLanguage, setLanguage, t } from './src/i18n';
 import { RefreshBus } from './src/utils/refresh-bus';
 import {
   loadLocalSettings,
@@ -1143,10 +1150,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
       indexedDbNames,
     });
 
+    const resetLanguage = resolveUiLanguage(undefined, getObsidianLanguage());
+    setLanguage(resetLanguage);
     this.settings = structuredClone(DEFAULT_SETTINGS);
+    this.settings.language = resetLanguage;
+    const resetPromptLibrary = normalizePromptLibrary([], undefined, '');
+    this.settings.chat.promptLibrary = resetPromptLibrary.promptLibrary;
+    this.settings.chat.activePromptId = resetPromptLibrary.activePromptId;
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
     this.getLogger().configure(this.settings.logging);
-    setLanguage(this.settings.language);
     saveLocalSettings(this.app, this.settings);
     await this.saveData(this.settings);
     await this.agentDiagnosticsService?.stop('plugin-reset');
@@ -1230,6 +1242,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const legacyRaw = (await this.loadData()) as unknown;
     const { raw, migratedFromLegacyData } = resolveSettingsLoadData(localRaw, legacyRaw);
     const data = { ...raw };
+    const resolvedLanguage = resolveUiLanguage(data.language, getObsidianLanguage());
+    data.language = resolvedLanguage;
+    setLanguage(resolvedLanguage);
 
     const providerKeys = ['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'] as const;
     for (const pk of providerKeys) {
@@ -1262,10 +1277,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
         .map((provider, index) => {
           const id =
             typeof provider.id === 'string' && provider.id ? provider.id : `custom-${index + 1}`;
-          const name =
+          const storedName =
             typeof provider.name === 'string' && provider.name.trim()
               ? provider.name.trim()
-              : 'Custom OpenAI-Compatible';
+              : '';
+          const name =
+            storedName === 'Custom OpenAI-Compatible' ||
+            isLocalizedValue('providerCustomDockTitle', storedName)
+              ? ''
+              : storedName;
           const apiKey = typeof provider.apiKey === 'string' ? provider.apiKey : '';
           const baseUrl = typeof provider.baseUrl === 'string' ? provider.baseUrl.trim() : '';
           const models = Array.isArray(provider.models)
@@ -1304,50 +1324,42 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data.providerValidation = {};
     }
 
-    const chat = data.chat;
+    const chat =
+      data.chat && typeof data.chat === 'object' && !Array.isArray(data.chat)
+        ? { ...(data.chat as Record<string, unknown>) }
+        : {};
+    data.chat = chat;
     if (
-      chat &&
-      typeof chat === 'object' &&
-      !Array.isArray(chat) &&
       'defaultProvider' in chat &&
       !('defaultModel' in chat)
     ) {
-      const chatObj = chat as Record<string, unknown>;
-      const rawProvider = chatObj.defaultProvider;
+      const rawProvider = chat.defaultProvider;
       const oldProvider = typeof rawProvider === 'string' ? rawProvider : '';
       const oldModel =
         (
           (data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined
-        )?.[0] ?? '';
+      )?.[0] ?? '';
       if (oldProvider && oldModel) {
-        chatObj.defaultModel = `${oldProvider}:${oldModel}`;
+        chat.defaultModel = `${oldProvider}:${oldModel}`;
       }
     }
 
-    if (chat && typeof chat === 'object' && !Array.isArray(chat) && !('systemPrompt' in chat)) {
-      (chat as Record<string, unknown>).systemPrompt = '';
+    if (!('systemPrompt' in chat)) {
+      chat.systemPrompt = '';
     }
-    if (chat && typeof chat === 'object' && !Array.isArray(chat)) {
-      const chatObj = chat as Record<string, unknown>;
-      const normalizedSaveFolder = normalizeChatSaveFolder(chatObj.saveFolder);
-      if (normalizedSaveFolder !== null) {
-        chatObj.saveFolder = normalizedSaveFolder;
-      }
-      const migratedPromptLibrary = normalizePromptLibrary(
-        chatObj.promptLibrary,
-        chatObj.activePromptId,
-        typeof chatObj.systemPrompt === 'string' ? chatObj.systemPrompt : '',
-      );
-      chatObj.promptLibrary = migratedPromptLibrary.promptLibrary;
-      chatObj.activePromptId = migratedPromptLibrary.activePromptId;
+    const normalizedSaveFolder = normalizeChatSaveFolder(chat.saveFolder);
+    if (normalizedSaveFolder !== null) {
+      chat.saveFolder = normalizedSaveFolder;
     }
-    if (
-      chat &&
-      typeof chat === 'object' &&
-      !Array.isArray(chat) &&
-      !('mcpToolExecutionPolicy' in chat)
-    ) {
-      (chat as Record<string, unknown>).mcpToolExecutionPolicy = 'mentioned-auto';
+    const migratedPromptLibrary = normalizePromptLibrary(
+      chat.promptLibrary,
+      chat.activePromptId,
+      typeof chat.systemPrompt === 'string' ? chat.systemPrompt : '',
+    );
+    chat.promptLibrary = migratedPromptLibrary.promptLibrary;
+    chat.activePromptId = migratedPromptLibrary.activePromptId;
+    if (!('mcpToolExecutionPolicy' in chat)) {
+      chat.mcpToolExecutionPolicy = 'mentioned-auto';
     }
 
     // Migrate old RAG settings (pre-overhaul)
@@ -1522,6 +1534,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.rag = {
       ...DEFAULT_SETTINGS.rag,
       ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
+    };
+    this.settings.chat = {
+      ...DEFAULT_SETTINGS.chat,
+      ...(data.chat as Partial<SuperpowerInsideSettings['chat']> | undefined),
     };
     this.settings = migrateLegacyProviderProfiles(this.settings);
     this.settings.logging = normalizeLoggerConfig(

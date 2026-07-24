@@ -2407,7 +2407,13 @@ pub fn plan_rag_file_type_summary_json(files_json: &str, no_extension_label: &st
             continue;
         }
 
-        let reason = file.recommendation_reason.unwrap_or_default();
+        let Some(reason) = file
+            .recommendation_reason
+            .as_deref()
+            .filter(|reason| is_actionable_rag_exclude_reason(reason))
+        else {
+            continue;
+        };
         let entry = recommendation_counts.entry(key.clone()).or_insert_with(|| {
             RagExcludeRecommendationPlan {
                 extension: key,
@@ -2417,7 +2423,7 @@ pub fn plan_rag_file_type_summary_json(files_json: &str, no_extension_label: &st
             }
         });
         entry.count = entry.count.saturating_add(1);
-        entry.reason = reason;
+        reason.clone_into(&mut entry.reason);
     }
 
     let mut target_types = target_counts
@@ -16208,10 +16214,10 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
         return RagFileProbeDecision::NotIndexable("sensitive");
     }
     if file.size == 0 {
-        return RagFileProbeDecision::NotIndexable("unreadable");
+        return RagFileProbeDecision::NotIndexable("empty");
     }
     if is_known_binary_extension(&rag_file_extension(file)) {
-        return RagFileProbeDecision::NotIndexable("unreadable");
+        return RagFileProbeDecision::NotIndexable("binary");
     }
     if is_known_text_extension(&rag_file_extension(file))
         || is_known_text_file_name(&file.file_name)
@@ -16219,7 +16225,7 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
         return RagFileProbeDecision::Indexable;
     }
     if file.size > MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES {
-        return RagFileProbeDecision::NotIndexable("unreadable");
+        return RagFileProbeDecision::NotIndexable("too-large");
     }
     RagFileProbeDecision::NeedsProbe
 }
@@ -16394,6 +16400,11 @@ fn is_probably_text_sample(sample: &str) -> bool {
 /// exclude recommendation으로 제안 가능한 확장자인지 확인한다.
 fn is_recommendable_exclude_extension(extension: &str) -> bool {
     !extension.is_empty() && extension != "md" && extension != "markdown"
+}
+
+/// 사용자가 확장자 제외로 반복 판정을 줄일 수 있는 reason code인지 확인한다.
+fn is_actionable_rag_exclude_reason(reason: &str) -> bool {
+    matches!(reason, "unreadable" | "too-large")
 }
 
 /// file type label을 만든다. `(none)`은 caller가 전달한 i18n label을 쓴다.
@@ -19803,17 +19814,17 @@ mod tests {
     fn rag_file_type_summary_is_planned_in_rust() {
         assert_eq!(
             plan_rag_file_type_summary_json(
-                r#"[{"filePath":"notes/a.md","extension":"MD","indexable":true},{"filePath":"src/main.ts","extension":"ts","indexable":true},{"filePath":"src/other.ts","extension":".TS","indexable":true},{"filePath":".env","extension":"","indexable":false,"recommendationReason":"sensitive"},{"filePath":"empty.markdown","extension":"markdown","indexable":false,"recommendationReason":"empty"},{"filePath":"image.PNG","extension":"PNG","indexable":false,"recommendationReason":"binary"}]"#,
+                r#"[{"filePath":"notes/a.md","extension":"MD","indexable":true},{"filePath":"src/main.ts","extension":"ts","indexable":true},{"filePath":"src/other.ts","extension":".TS","indexable":true},{"filePath":".env","extension":"","indexable":false,"recommendationReason":"sensitive"},{"filePath":"empty.txt","extension":"txt","indexable":false,"recommendationReason":"empty"},{"filePath":"image.PNG","extension":"PNG","indexable":false,"recommendationReason":"binary"},{"filePath":"broken.weird","extension":"weird","indexable":false,"recommendationReason":"unreadable"},{"filePath":"large.opaque","extension":"opaque","indexable":false,"recommendationReason":"too-large"}]"#,
                 "확장자 없음",
             ),
-            "{\"targetTypes\":[{\"extension\":\"ts\",\"label\":\".ts\",\"count\":2},{\"extension\":\"md\",\"label\":\".md\",\"count\":1}],\"excludeRecommendations\":[{\"extension\":\"(none)\",\"label\":\"확장자 없음\",\"count\":1,\"reason\":\"sensitive\"},{\"extension\":\"png\",\"label\":\".png\",\"count\":1,\"reason\":\"binary\"}],\"totalTargetFiles\":3}",
+            "{\"targetTypes\":[{\"extension\":\"ts\",\"label\":\".ts\",\"count\":2},{\"extension\":\"md\",\"label\":\".md\",\"count\":1}],\"excludeRecommendations\":[{\"extension\":\"opaque\",\"label\":\".opaque\",\"count\":1,\"reason\":\"too-large\"},{\"extension\":\"weird\",\"label\":\".weird\",\"count\":1,\"reason\":\"unreadable\"}],\"totalTargetFiles\":3}",
         );
     }
 
     /// RAG 후보 파일 판정과 unknown text probe 선택은 Rust에서 계산해야 한다.
     #[test]
     fn rag_file_indexability_is_planned_in_rust() {
-        let files = r#"[{"filePath":"note.md","fileName":"note.md","extension":"MD","size":10},{"filePath":"src/main.ts","fileName":"main.ts","extension":"ts","size":10},{"filePath":".env","fileName":".env","extension":"","size":10},{"filePath":"empty.md","fileName":"empty.md","extension":"md","size":0},{"filePath":"custom.weird","fileName":"custom.weird","extension":"weird","size":10},{"filePath":"bin.weird","fileName":"bin.weird","extension":"weird","size":10},{"filePath":"Archive/old.txt","fileName":"old.txt","extension":"txt","size":10},{"filePath":"image.png","fileName":"image.png","extension":"png","size":10},{"filePath":"empty.txt","fileName":"empty.txt","extension":"txt","size":0}]"#;
+        let files = r#"[{"filePath":"note.md","fileName":"note.md","extension":"MD","size":10},{"filePath":"src/main.ts","fileName":"main.ts","extension":"ts","size":10},{"filePath":".env","fileName":".env","extension":"","size":10},{"filePath":"empty.md","fileName":"empty.md","extension":"md","size":0},{"filePath":"custom.weird","fileName":"custom.weird","extension":"weird","size":10},{"filePath":"bin.weird","fileName":"bin.weird","extension":"weird","size":10},{"filePath":"Archive/old.txt","fileName":"old.txt","extension":"txt","size":10},{"filePath":"image.png","fileName":"image.png","extension":"png","size":10},{"filePath":"empty.txt","fileName":"empty.txt","extension":"txt","size":0},{"filePath":"large.opaque","fileName":"large.opaque","extension":"opaque","size":524289}]"#;
 
         assert_eq!(
             plan_rag_file_content_probe_indices_json(files, r#"["Archive"]"#, r#"["png"]"#),
@@ -19826,7 +19837,7 @@ mod tests {
                 r#"["png"]"#,
                 r#"[{"index":4,"readable":true,"sample":"plain text content"},{"index":5,"readable":true,"sample":"\u0000binary"}]"#,
             ),
-            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}]}",
+            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
         );
     }
 
@@ -19838,8 +19849,10 @@ mod tests {
             "[]"
         );
         let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
-        assert!(plan.contains("\"candidateIndices\":[]"));
-        assert_eq!(plan.matches("recommendationReason").count(), 2);
+        assert_eq!(
+            plan,
+            "{\"candidateIndices\":[],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":false,\"recommendationReason\":\"binary\"}]}",
+        );
     }
 
     /// 민감한 설정/키 파일은 사용자가 따로 제외하지 않아도 기본 RAG 후보에서 빠져야 한다.

@@ -77,7 +77,7 @@ function getFixedProviderBaseUrl(key: ProviderKey): string {
     case 'openRouter':
       return OPENROUTER_BASE_URL;
     default:
-      throw new Error(`Unknown provider: ${String(key)}`);
+      throw new Error(t('validationUnknownProvider'));
   }
 }
 
@@ -420,7 +420,7 @@ class OpenAICompatibleEmbeddingValidator implements EmbeddingConnectionValidator
       if (data.data?.[0]?.embedding) {
         return { valid: true, models: [modelId] };
       }
-      return { valid: false, models: [], error: 'Invalid embedding response' };
+      return { valid: false, models: [], error: t('validationInvalidEmbeddingResponse') };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
     }
@@ -462,7 +462,7 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
       if (Array.isArray(data.embeddings) && data.embeddings.length > 0) {
         return { valid: true, models: [modelId] };
       }
-      return { valid: false, models: [], error: 'Invalid embedding response' };
+      return { valid: false, models: [], error: t('validationInvalidEmbeddingResponse') };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
     }
@@ -477,7 +477,7 @@ class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
       return {
         valid: false,
         models: [],
-        error: `Unknown Ternlight model: ${modelId}`,
+        error: t('validationTernlightUnknownModel', { model: modelId }),
       };
     }
     const result = await this.testEmbedding(modelId);
@@ -492,14 +492,18 @@ class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
 
   async testEmbedding(modelId: string): Promise<ValidationResult> {
     if (!this.runtime) {
-      return { valid: false, models: [], error: 'Ternlight runtime context is unavailable.' };
+      return { valid: false, models: [], error: t('validationTernlightUnavailable') };
     }
     try {
       const provider = new TernlightEmbeddingProvider(modelId, this.runtime);
       const vector = await provider.embed('test');
       return vector.length === 384
         ? { valid: true, models: [modelId] }
-        : { valid: false, models: [], error: `Unexpected Ternlight vector size: ${vector.length}` };
+        : {
+            valid: false,
+            models: [],
+            error: t('validationEmbeddingVectorInvalid', { size: vector.length }),
+          };
     } catch (err) {
       return { valid: false, models: [], error: err instanceof Error ? err.message : String(err) };
     }
@@ -581,7 +585,10 @@ export async function fetchProviderModels(
     return {
       valid: false,
       models: [],
-      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
     };
   }
   return validator.fetchModels();
@@ -595,7 +602,7 @@ export async function fetchProviderModelsForStrategy(
     return {
       valid: false,
       models: [],
-      error: 'Ternlight provides embeddings locally and does not expose chat models.',
+      error: t('validationTernlightEmbeddingOnly'),
     };
   }
   return fetchProviderModels(key === 'openAICompatible' ? 'customOpenAI' : key, config);
@@ -610,7 +617,10 @@ export async function validateProviderConnection(
     return {
       valid: false,
       models: [],
-      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
     };
   }
   return validator.validateConnection();
@@ -626,7 +636,10 @@ export async function testProviderGeneration(
     return {
       valid: false,
       models: [],
-      error: key === 'customOpenAI' ? t('customProviderBaseUrlRequired') : 'Unknown provider',
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
     };
   }
   return validator.testGeneration(modelId);
@@ -641,7 +654,7 @@ export async function testProviderGenerationForStrategy(
     return {
       valid: false,
       models: [],
-      error: 'Ternlight is an embedding-only provider.',
+      error: t('validationTernlightEmbeddingOnly'),
     };
   }
   return testProviderGeneration(key === 'openAICompatible' ? 'customOpenAI' : key, config, modelId);
@@ -662,7 +675,7 @@ export async function validateEmbeddingConnection(
 ): Promise<ValidationResult> {
   const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
   if (!validator) {
-    return { valid: false, models: [], error: 'Unknown embedding provider' };
+    return { valid: false, models: [], error: t('validationUnknownProvider') };
   }
   return validator.validateConnection(modelId);
 }
@@ -675,7 +688,7 @@ export async function testEmbeddingGeneration(
 ): Promise<ValidationResult> {
   const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
   if (!validator) {
-    return { valid: false, models: [], error: 'Unknown embedding provider' };
+    return { valid: false, models: [], error: t('validationUnknownProvider') };
   }
   return validator.testEmbedding(modelId);
 }
@@ -691,7 +704,7 @@ export async function testEmbeddingGenerationForStrategy(
     return {
       valid: false,
       models: [],
-      error: 'Embedding is not supported by this provider profile.',
+      error: t('validationEmbeddingUnsupported'),
     };
   }
   return validator.testEmbedding(modelId);

@@ -1,4 +1,4 @@
-import { t } from '../i18n';
+import { isLocalizedValue, t } from '../i18n';
 import type { SuperpowerInsideSettings } from '../settings';
 import type { ChatMessage } from '../llm/providers';
 import {
@@ -120,7 +120,15 @@ export function normalizePromptLibrary(
   if (Array.isArray(entries)) {
     for (const item of entries) {
       const entry = normalizePromptEntry(item);
-      if (entry) pushEntry(entry);
+      if (!entry) continue;
+      if (entry.id === DEFAULT_OBSIDIAN_PROMPT_ID && entry.source === 'default') {
+        pushEntry({
+          ...createDefaultPromptEntry(now),
+          createdAt: entry.createdAt,
+        });
+        continue;
+      }
+      pushEntry(entry);
     }
   }
 
@@ -130,7 +138,11 @@ export function normalizePromptLibrary(
 
   const legacyPrompt = legacySystemPrompt?.trim();
   let legacyEntryId: string | null = null;
-  if (legacyPrompt && legacyPrompt !== getDefaultObsidianSystemPrompt()) {
+  if (
+    legacyPrompt &&
+    legacyPrompt !== getDefaultObsidianSystemPrompt() &&
+    !isLocalizedValue('defaultObsidianSystemPrompt', legacyPrompt)
+  ) {
     legacyEntryId = 'legacy-user-system-prompt';
     pushEntry({
       id: legacyEntryId,

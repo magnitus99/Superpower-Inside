@@ -55,6 +55,7 @@ vi.mock('obsidian', () => {
     TFile: MockTFile,
     TFolder: MockTFolder,
     WorkspaceLeaf: class {},
+    getLanguage: () => 'en',
     requestUrl: vi.fn(),
   };
 });
@@ -1189,6 +1190,37 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect('ontologyEnabled' in plugin.settings.rag).toBe(false);
   });
 
+  it('저장된 언어가 없으면 Obsidian 호스트 언어로 기본 프롬프트까지 초기화한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { t } = await import('./src/i18n');
+    const app = createApp({ localSettings: {} });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      loadData: ReturnType<typeof vi.fn>;
+      settings: {
+        language: string;
+        chat: {
+          promptLibrary: Array<{ source: string; content: string }>;
+        };
+      };
+    };
+    plugin.app = app;
+    plugin.loadData = vi.fn();
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.language).toBe('en');
+    expect(plugin.settings.chat.promptLibrary).toContainEqual(
+      expect.objectContaining({
+        source: 'default',
+        content: t('defaultObsidianSystemPrompt'),
+      }),
+    );
+    expect(
+      plugin.settings.chat.promptLibrary.some((entry) => /[가-힣]/u.test(entry.content)),
+    ).toBe(false);
+  });
+
   it('설정 로드 시 레거시 성능 보호 비활성 값을 활성 상태로 정규화한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -1433,9 +1465,31 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(app.vault.adapter.remove).not.toHaveBeenCalledWith('Notes/user-note.md');
     expect(app.saveLocalStorage).toHaveBeenCalledWith(
       'superpower-inside:settings',
-      DEFAULT_SETTINGS,
+      expect.objectContaining({
+        language: 'en',
+        chat: expect.objectContaining({
+          promptLibrary: [
+            expect.objectContaining({
+              id: 'default-obsidian-knowledge-work',
+              source: 'default',
+            }),
+          ],
+        }),
+      }),
     );
-    expect(plugin.saveData).toHaveBeenCalledWith(DEFAULT_SETTINGS);
+    expect(plugin.saveData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        language: 'en',
+        chat: expect.objectContaining({
+          promptLibrary: [
+            expect.objectContaining({
+              id: 'default-obsidian-knowledge-work',
+              source: 'default',
+            }),
+          ],
+        }),
+      }),
+    );
     expect(plugin.settings.openai.apiKey).toBe('');
     expect(plugin.initMCP).toHaveBeenCalledOnce();
     expect(plugin.refreshBus.emit).toHaveBeenCalledWith('rag', {

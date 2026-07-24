@@ -5512,6 +5512,7 @@ export type RustResearchAnswerViolationCode =
 
 export interface RustResearchAnswerContractInput {
   answer: string;
+  language: 'ko' | 'en';
   receipt: RustResearchCoverageReceipt;
 }
 
@@ -5604,6 +5605,7 @@ export function planResearchAnswerContractRust(
 ): RustResearchAnswerContractPlan | null {
   if (
     !isStringValue(input.answer) ||
+    !isResearchAnswerLanguage(input.language) ||
     !isResearchCoverageReceipt(input.receipt) ||
     !ensureRustCore()
   ) {
@@ -5615,6 +5617,10 @@ export function planResearchAnswerContractRust(
   } catch {
     return null;
   }
+}
+
+function isResearchAnswerLanguage(value: unknown): value is RustResearchAnswerContractInput['language'] {
+  return value === 'ko' || value === 'en';
 }
 
 function isResearchCandidateSelectionInput(input: RustResearchCandidateSelectionInput): boolean {

@@ -229,6 +229,13 @@ export interface I18nKeys {
   selectAndSaveModel: string;
   enterModelId: string;
   connectionFailedGeneric: string;
+  validationUnknownProvider: string;
+  validationEmbeddingUnsupported: string;
+  validationInvalidEmbeddingResponse: string;
+  validationTernlightEmbeddingOnly: string;
+  validationTernlightUnknownModel: string;
+  validationTernlightUnavailable: string;
+  validationEmbeddingVectorInvalid: string;
 
   // RAG 제어
   indexingControls: string;
@@ -1065,6 +1072,10 @@ export interface I18nKeys {
   providerConnectionsSectionDesc: string;
   providerConnectionsEmpty: string;
   providerNewName: string;
+  providerRemoveModel: string;
+  providerNoModelsAdded: string;
+  providerChatModelId: string;
+  providerEmbeddingModelId: string;
   providerDangerTitle: string;
   providerDangerDesc: string;
   providerRemoveWarning: string;
@@ -1137,6 +1148,8 @@ export interface I18nKeys {
   providerImportContext: string;
   providerImportMoreResults: string;
   providerImportAdded: string;
+  providerImportFound: string;
+  overviewCustomOpenAIProvider: string;
   tabRag: string;
   tabChat: string;
   tabMcp: string;
@@ -1376,6 +1389,7 @@ export interface I18nKeys {
   perfPausedWithReason: string;
   ragExcludeSensitiveReason: string;
   ragExcludeUnreadableReason: string;
+  ragExcludeTooLargeReason: string;
   noExtensionLabel: string;
   assistantQuestionPrefix: string;
   assistantQuestionSelectedItems: string;
@@ -1795,7 +1809,8 @@ const ko: I18nKeys = {
   totalVectors: '전체 벡터',
   totalVectorsDesc: '저장된 임베딩 벡터 개수',
   targetFileTypes: '대상 파일 형식',
-  targetFileTypesDesc: '현재 설정 기준으로 RAG 후보인 파일 형식과 파일 수입니다.',
+  targetFileTypesDesc:
+    '임베딩·BM25·내장 볼트 도구가 함께 사용할 수 있는 파일 형식과 파일 수입니다.',
   targetFileTypesEmpty: '현재 설정 기준으로 RAG 대상 파일이 없습니다.',
   excludeRecommendations: '제외 추천',
   excludeRecommendationEmpty: '추가로 제외할 파일 형식 추천이 없습니다.',
@@ -1810,6 +1825,15 @@ const ko: I18nKeys = {
   enterModelId: '임베딩 모델 ID를 직접 입력하고 "저장" 버튼을 클릭하세요.',
   connectionFailedGeneric:
     '프로바이더 "{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
+  validationUnknownProvider: '지원하지 않는 프로바이더입니다.',
+  validationEmbeddingUnsupported: '이 프로바이더 연결은 임베딩을 지원하지 않습니다.',
+  validationInvalidEmbeddingResponse:
+    '프로바이더가 올바르지 않은 임베딩 응답을 반환했습니다.',
+  validationTernlightEmbeddingOnly: 'Ternlight는 임베딩만 지원합니다.',
+  validationTernlightUnknownModel: '알 수 없는 Ternlight 모델입니다: {model}',
+  validationTernlightUnavailable: 'Ternlight 임베딩 엔진을 사용할 수 없습니다.',
+  validationEmbeddingVectorInvalid:
+    'Ternlight가 올바르지 않은 임베딩 벡터를 반환했습니다: {size}차원',
 
   // RAG Controls
   indexingControls: '인덱싱 제어',
@@ -1832,21 +1856,24 @@ const ko: I18nKeys = {
 
   // RAG Options
   autoUpdate: '자동 업데이트',
-  autoUpdateDesc: '설정된 간격으로 새 파일을 자동으로 인덱싱합니다',
+  autoUpdateDesc:
+    '주기적으로 누락되거나 변경된 파일을 확인해 인덱스를 보정합니다. 파일 변경 감지는 별도로 계속 작동합니다.',
   autoUpdateInterval: '자동 업데이트 간격',
   autoUpdateIntervalDesc: '자동 인덱싱 간격 (1~99분, 자연수)',
   intervalMinutes: '분',
   excludePaths: '제외할 경로',
-  excludePathsDesc: '인덱싱에서 제외할 폴더나 경로 패턴을 목록으로 관리합니다.',
+  excludePathsDesc:
+    '임베딩·BM25·내장 볼트 도구에서 함께 제외할 폴더나 경로 패턴을 관리합니다.',
   excludeExts: '제외할 확장자',
-  excludeExtsDesc: '인덱싱에서 제외할 파일 확장자를 목록으로 관리합니다.',
+  excludeExtsDesc:
+    '임베딩·BM25·내장 볼트 도구에서 함께 제외할 파일 확장자를 관리합니다.',
   excludeListAdd: '추가',
   excludeListRemove: '삭제',
   excludeListEmpty: '등록된 항목이 없습니다.',
   excludeExtFileCount: '{count}개',
-  excludeExtTotalFileCount: '총 {count}개 파일 제외 대상',
+  excludeExtTotalFileCount: '볼트에서 {count}개 파일과 일치',
   excludePathPlaceholder: '예: Archive 또는 **/drafts',
-  excludeExtPlaceholder: '예: pdf 또는 .png',
+  excludeExtPlaceholder: '예: log 또는 .csv',
   excludeInputEmpty: '값을 입력하세요.',
   excludeInputTrimmed: '앞뒤 공백은 저장 시 제거됩니다.',
   excludeInputDuplicate: '이미 목록에 있습니다.',
@@ -1854,30 +1881,31 @@ const ko: I18nKeys = {
   excludePathBackslash: '경로 구분자는 / 를 사용하세요.',
   excludePathLeadingSlash: '볼트 기준 상대 경로로 입력하세요. 앞의 / 는 제외합니다.',
   excludePathMissingWarning:
-    '현재 볼트에서 찾을 수 없습니다. 패턴이라면 그대로 저장할 수 있습니다.',
+    '현재 볼트에서 찾을 수 없습니다. 나중에 생길 경로나 패턴으로 그대로 저장할 수 있습니다.',
   excludeExtLeadingDot: '앞의 점은 저장 시 제거됩니다.',
   excludeExtInvalid: '확장자는 영문/숫자/하이픈/밑줄만 입력하세요.',
   excludeExtProtectedDocument:
-    'Obsidian 핵심 문서 확장자는 제외할 수 없습니다. 문제가 있는 파일은 경로나 폴더로 제외하세요.',
+    'Markdown 문서 확장자는 제외할 수 없습니다. 문제가 있는 파일은 경로나 폴더로 제외하세요.',
   excludeChatFolder: '채팅 저장 폴더 RAG 제외',
-  excludeChatFolderDesc: '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다',
+  excludeChatFolderDesc:
+    '채팅 저장 폴더를 임베딩·BM25·내장 볼트 도구의 공통 파일 범위에서 제외합니다.',
   chunkSize: '청크 크기',
   chunkSizeDesc: '문서 청크당 최대 문자 수 (100~5000)',
   ragChunkSizeOllamaWarning:
     'Ollama 로컬 임베딩 모델 중 일부는 컨텍스트 길이 제한이 작습니다. 400 오류가 발생하면 이 값을 500 이하로 줄여보세요.',
   ollamaEmbeddingContextError:
     'Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 설정 > RAG > 청크 크기(chunkSize)를 줄이고 다시 인덱싱해보세요.',
-  minScore: '최소 유사도 점수',
+  minScore: '최소 관련도 점수',
   minScoreDesc:
-    '임베딩 검색 결과 중 이 점수(0~1) 미만은 제외합니다. 낮을수록 더 많은 결과를 포함하지만 품질이 떨어질 수 있습니다.',
+    '통합 검색 결과 중 이 점수(0~1) 미만은 제외합니다. 낮을수록 더 많은 결과를 포함하지만 품질이 떨어질 수 있습니다.',
   enableBM25: 'BM25 키워드 검색 활성화',
   enableBM25Desc:
-    '임베딩 유사도와 BM25 키워드 매칭을 결합한 하이브리드 검색을 사용합니다. 한국어 검색 정확도 향상에 도움이 됩니다.',
+    '임베딩이 준비되면 하이브리드 검색을 사용하고, 준비되지 않았으면 키워드 검색만으로 계속 작동합니다.',
   bm25Weight: 'BM25 가중치',
   bm25WeightDesc:
     '0~1 사이. 0에 가까울수록 임베딩 유사도 위주, 1에 가까울수록 키워드 매칭 위주로 검색합니다.',
   bm25Guidance:
-    '💡 BM25는 키워드 기반 검색으로, 임베딩 유사도만으로는 잡아내기 어려운 한국어 키워드 매칭을 보완합니다. RAG 컨텍스트가 빈번하게 무관한 결과를 반환한다면 BM25를 활성화하고 가중치를 조정해보세요.',
+    'BM25는 정확한 용어와 파일 속 표현을 찾는 키워드 검색입니다. 임베딩과 함께 쓰면 의미 검색을 보완하고, 임베딩 없이도 기본 검색을 유지합니다.',
 
   // RAG 상태 대시보드
   ragStatusTotalDocs: '전체 문서',
@@ -1910,8 +1938,10 @@ const ko: I18nKeys = {
     '노트는 기기를 벗어나지 않으며 API 키나 Ollama 서버가 필요 없습니다. 모델 파일이 없으면 한 번 자동으로 내려받아 무결성을 확인한 뒤 오프라인으로 사용합니다.',
   ragStatusSectionDescription: '검색 준비 상태와 지금 필요한 행동을 확인합니다.',
   ragFoundationTitle: '검색 기반 설정',
-  ragFoundationDescription: '검색에 사용할 모델과 인덱싱 범위를 정합니다.',
-  ragGraphSectionDescription: '연결 정보를 보강하며, 세부 추출과 운영 도구는 필요할 때만 펼칩니다.',
+  ragFoundationDescription:
+    '임베딩 모델과 임베딩·BM25·내장 볼트 도구가 함께 사용할 파일 범위를 정합니다.',
+  ragGraphSectionDescription:
+    '공통 파일 범위 중 .md 노트만 연결 정보로 추출합니다. 세부 추출과 운영 도구는 필요할 때만 펼칩니다.',
   ragGraphDisclosureTitle: '세부 설정과 작업',
   ragGraphDisclosureDescription: '모델, 동기화, 추출과 결과 확인을 관리합니다.',
   ragDiagnosticsTitle: '진단 및 복구',
@@ -2079,12 +2109,12 @@ const ko: I18nKeys = {
   contextNotePlural: '노트',
   contextItemSingular: '항목',
   contextItemPlural: '항목',
-  contextChipRelatedNotes: '관련 노트 {count}개 확인',
+  contextChipRelatedNotes: '관련 {noteLabel} {count}개 확인',
   contextChipNoRelatedNotes: '가까운 노트를 찾지 못함',
   contextChipVaultSearchSkipped: '볼트 검색 건너뜀',
   contextChipKnowledgeGraph: '지식 그래프 확인',
   contextChipKnowledgeGraphMissing: '지식 그래프에서 찾지 못함',
-  contextChipFolderNotesUsed: '{name}: 노트 {count}개 사용',
+  contextChipFolderNotesUsed: '{name}: {noteLabel} {count}개 사용',
   contextChipFileAttached: '{name}',
   contextChipReferenceAttached: '연결된 노트 {name}',
   contextChipToolReady: '도구 준비됨: {name}',
@@ -2092,8 +2122,8 @@ const ko: I18nKeys = {
   contextChipDetailAuto: '관련 노트를 자동으로 찾았습니다.',
   contextChipDetailSkipped: '이 질문에서는 볼트 검색을 건너뛰었습니다.',
   contextChipDetailShortened: '들어가는 만큼만 포함했습니다.',
-  contextBudgetItemsPrepared: '컨텍스트 {count}개 준비됨',
-  contextBudgetItemsLeftOut: '{count}개 제외됨',
+  contextBudgetItemsPrepared: '컨텍스트 {itemLabel} {count}개 준비됨',
+  contextBudgetItemsLeftOut: '{itemLabel} {count}개 제외됨',
   contextBudgetUsage: '컨텍스트 {used}/{max}자',
   contextBudgetTruncated: '일부 자료를 줄였습니다.',
   contextBudgetIncludedExcluded: '포함 {included}개 · 제외 {excluded}개',
@@ -2341,13 +2371,13 @@ const ko: I18nKeys = {
   settingsAuto027: 'RAG 운영 상태',
   settingsAuto028: '상태 계산 중...',
   settingsAuto029: 'GraphRAG 선택 운영',
-  settingsAuto030: '전체 {v0}개 파일 대상에서 {v1}개 증거 항목 처리 완료{v2}{v3}',
+  settingsAuto030: '전체 {v0}개 .md 노트에서 {v1}개 증거 항목 처리 완료{v2}{v3}',
   settingsAuto030Desc: 'GraphRAG의 처리 완료 수치는 파일 수가 아닌 증거 단위의 개수입니다.',
   settingsAuto031: ', {v0}개 실패',
   settingsAuto032: ', {v0}개 동기화 필요',
   settingsAuto033: 'RAG 인덱싱 대상 파일이 없습니다.',
   settingsAuto034: '상태',
-  settingsAuto035: '전체 파일',
+  settingsAuto035: '전체 .md 노트',
   settingsAuto036: '처리 완료(증거)',
   settingsAuto036Desc: '저장된 증거 항목 총량입니다. 파일 수와 동일하지 않을 수 있습니다.',
   settingsAuto037: '실패 파일',
@@ -2511,7 +2541,8 @@ const ko: I18nKeys = {
   settingsAuto180: '실행할 작업을 선택하세요.',
   settingsAuto181: '핵심 인덱싱 제외 대상',
   settingsAuto182: '자동 업데이트와 성능 튜닝',
-  settingsAuto183: '설정된 간격으로 새 파일을 자동으로 인덱싱합니다',
+  settingsAuto183:
+    '주기적으로 누락되거나 변경된 파일을 확인해 인덱스를 보정합니다. 파일 변경 감지는 별도로 계속 작동합니다.',
   settingsAuto184: '성능 튜닝',
   settingsAuto185:
     '기본값은 임베딩 프로바이더에 맞춰 자동으로 적용하고, 필요할 때만 직접 조정합니다.',
@@ -2702,21 +2733,25 @@ const ko: I18nKeys = {
   providerStatusSectionTitle: '현재 상태',
   providerStatusSectionDesc: '채팅과 검색에 사용할 프로바이더의 준비 상태를 확인합니다.',
   providerStatusNone: '아직 없음',
-  providerStatusNeedsSetup: '{count}개 설정 필요',
+  providerStatusNeedsSetup: '{count}개 연결 설정 필요',
   providerStatusSummaryDetail: '전체 {total}개 중 {enabled}개 활성, {ready}개 준비됨',
   providerAttentionTitle: '{provider} 설정을 마무리하세요',
   providerContinueSetup: '설정 계속',
   providerAddTitle: '새 프로바이더 연결',
-  providerAddDesc: 'OpenAI, Claude, Ollama 또는 OpenAI 호환 서버를 추가합니다.',
+  providerAddDesc: 'OpenAI, Claude, Ollama, OpenRouter 또는 OpenAI 호환 서버를 추가합니다.',
   providerConnectionsSectionTitle: '연결 목록',
   providerConnectionsSectionDesc: '프로바이더를 펼쳐 연결 정보와 사용할 모델을 관리합니다.',
   providerConnectionsEmpty: '연결된 프로바이더가 없습니다. 위에서 새 연결을 추가하세요.',
   providerNewName: '새 프로바이더',
+  providerRemoveModel: '모델 제거',
+  providerNoModelsAdded: '아직 추가한 모델이 없습니다.',
+  providerChatModelId: '채팅 모델 ID',
+  providerEmbeddingModelId: '임베딩 모델 ID',
   providerDangerTitle: '프로바이더 제거',
   providerDangerDesc: '이 연결과 저장된 모델 설정을 삭제합니다.',
   providerRemoveWarning: '{provider} 연결과 모델 목록이 설정에서 제거됩니다.',
-  providerRemoveConfirm: '{provider} 프로바이더를 제거할까요?',
-  providerRemoved: '{provider} 프로바이더를 제거했습니다.',
+  providerRemoveConfirm: '“{provider}” 연결을 제거할까요?',
+  providerRemoved: '“{provider}” 연결을 제거했습니다.',
   providerModelCountLine: '{provider} · 채팅 {general} · 임베딩 {embedding}',
   providerApiKeyShow: 'API 키 보기',
   providerApiKeyHide: 'API 키 숨기기',
@@ -2753,7 +2788,7 @@ const ko: I18nKeys = {
   providerModelEmbeddingVerified: 'Embedding 확인됨',
   providerModelEmbeddingUnknown: 'Embedding 미검증',
   providerModelEmbeddingFailed: 'Embedding 실패',
-  providerTestChatModel: '이 모델 최소 생성 테스트',
+  providerTestChatModel: '이 모델 채팅 생성 테스트',
   providerTestEmbeddingModel: '이 모델 임베딩 테스트',
   providerEmbeddingUnsupported: '이 provider는 임베딩 테스트를 지원하지 않습니다.',
   providerModelsSelected: '{v0}개 선택',
@@ -2763,16 +2798,16 @@ const ko: I18nKeys = {
   providerQuickKey: '인증',
   providerQuickModels: '모델',
   providerQuickType: '유형',
-  providerCustomDockTitle: 'Custom OpenAI-Compatible',
+  providerCustomDockTitle: '사용자 지정 OpenAI 호환',
   providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 endpoint를 같은 카드 흐름에서 관리합니다.',
   providerStrategyLabel: '프로바이더 종류',
   providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
   providerBaseUrl: '엔드포인트 URL',
-  providerGeneralModels: '일반 모델',
+  providerGeneralModels: '채팅 모델',
   providerEmbeddingModels: '임베딩 모델',
   providerGeneralModelsDesc: '채팅과 GraphRAG 생성',
   providerEmbeddingModelsDesc: 'RAG 인덱싱과 검색',
-  providerAddGeneralModel: '일반 모델 추가',
+  providerAddGeneralModel: '채팅 모델 추가',
   providerAddEmbeddingModel: '임베딩 모델 추가',
   providerImportModelsTitle: '가져올 모델 선택',
   providerImportModelsDesc: '{v0}에서 가져온 모델 중 사용할 모델만 선택합니다.',
@@ -2781,9 +2816,11 @@ const ko: I18nKeys = {
   providerImportCount: '{v0}개 선택 / {v1}개 표시',
   providerImportNoNewModels: '새로 추가할 모델이 없습니다.',
   providerImportNoMatches: '검색 결과가 없습니다.',
-  providerImportContext: '컨텍스트 {v0}',
+  providerImportContext: '컨텍스트 창: {v0} 토큰',
   providerImportMoreResults: '{v0}개 더 있습니다. 검색어를 입력해 좁혀 보세요.',
   providerImportAdded: '{v0}개 모델을 추가했습니다.',
+  providerImportFound: '사용 가능한 모델 {count}개를 찾았습니다.',
+  overviewCustomOpenAIProvider: '사용자 지정 OpenAI 호환',
   tabRag: 'RAG',
   tabChat: '채팅',
   tabMcp: 'MCP',
@@ -2858,7 +2895,7 @@ const ko: I18nKeys = {
     'JSON File은 기존 IndexedDB 벡터를 자동 복사하지 않습니다. 전체 재인덱싱을 실행하거나 IndexedDB 저장소로 되돌리세요.',
   unsetLabel: '미설정',
   chatFolderExcludeCurrentDesc:
-    '채팅 저장 폴더를 RAG 인덱싱 대상에서 자동으로 제외합니다. 현재 제외 대상: {folder}',
+    '채팅 저장 폴더를 임베딩·BM25·내장 볼트 도구의 공통 파일 범위에서 제외합니다. 현재 제외 대상: {folder}',
   ragNoUpdates: '업데이트가 필요한 문서가 없습니다.',
   ragNoDocuments: 'RAG 대상 문서가 없습니다.',
   ragNoPendingUpdatesNotice: '이미 최신입니다.',
@@ -2888,7 +2925,7 @@ const ko: I18nKeys = {
     '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
   graphRagModelMissingReason: 'GraphRAG 추출 모델을 선택하세요.',
   graphRagAlreadyRunningReason: 'GraphRAG 인덱싱이 이미 실행 중입니다.',
-  graphRagNoFilesReason: 'GraphRAG 인덱싱 대상 파일이 없습니다.',
+  graphRagNoFilesReason: '공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.',
   graphRagNoRunningReason: '실행 중인 GraphRAG 인덱싱이 없습니다.',
   graphRagNoFailedReason: '이어 실행할 실패 파일이 없습니다.',
   graphRagLiveStatusRunningTitle: '지금 GraphRAG가 인덱싱 중입니다',
@@ -2909,8 +2946,9 @@ const ko: I18nKeys = {
   graphRagPhaseBuildingCommunities: '커뮤니티 정리 중',
   graphRagPhaseCompleted: '추출 완료',
   graphRagPhaseCancelled: '취소됨',
-  graphRagStartScopeLimited: '대상 {total}개 중 최대 {limit}개 파일을 새로 추출합니다.',
-  graphRagStartScopeAll: 'GraphRAG 대상 파일을 새로 추출합니다.',
+  graphRagStartScopeLimited:
+    '대상 .md 노트 {total}개 중 최대 {limit}개를 새로 추출합니다.',
+  graphRagStartScopeAll: 'GraphRAG 대상 .md 노트를 새로 추출합니다.',
   graphRagActionExtract: '추출 실행',
   graphRagStartAll: '전체 추출 실행',
   graphRagStartDescription: '{scope} 실패 기록은 해당 파일을 다시 처리할 때 정리됩니다.',
@@ -3054,6 +3092,8 @@ const ko: I18nKeys = {
   perfPausedWithReason: '성능 보호 대기 중: {reason}',
   ragExcludeSensitiveReason: '민감 정보 가능성이 있어 기본 RAG 대상에서 제외됩니다.',
   ragExcludeUnreadableReason: '텍스트로 안전하게 읽을 수 없어 RAG 대상에서 제외됩니다.',
+  ragExcludeTooLargeReason:
+    '일부 파일이 안전한 읽기 크기를 초과합니다. 필요하지 않은 형식이라면 제외할 수 있습니다.',
   noExtensionLabel: '확장자 없음',
   assistantQuestionPrefix: '질문: {question}',
   assistantQuestionSelectedItems: '선택한 항목:',
@@ -3511,7 +3551,8 @@ const en: I18nKeys = {
   totalVectors: 'Total Vectors',
   totalVectorsDesc: 'Stored embedding vectors',
   targetFileTypes: 'Target File Types',
-  targetFileTypesDesc: 'File types and counts currently eligible for RAG.',
+  targetFileTypesDesc:
+    'File types and counts shared by embeddings, BM25, and the built-in vault tools.',
   targetFileTypesEmpty: 'No files are currently eligible for RAG.',
   excludeRecommendations: 'Exclude Recommendations',
   excludeRecommendationEmpty: 'No additional file types are recommended for exclusion.',
@@ -3526,6 +3567,15 @@ const en: I18nKeys = {
   enterModelId: 'Please enter the embedding model ID and click "Save".',
   connectionFailedGeneric:
     'Failed to connect to provider "{provider}" ({model}). Please check Base URL or API Key.',
+  validationUnknownProvider: 'This provider is not supported.',
+  validationEmbeddingUnsupported: 'This provider connection does not support embeddings.',
+  validationInvalidEmbeddingResponse:
+    'The provider returned an invalid embedding response.',
+  validationTernlightEmbeddingOnly: 'Ternlight supports embeddings only.',
+  validationTernlightUnknownModel: 'Unknown Ternlight model: {model}',
+  validationTernlightUnavailable: 'The Ternlight embedding engine is unavailable.',
+  validationEmbeddingVectorInvalid:
+    'Ternlight returned an invalid embedding vector: {size} dimensions',
 
   // RAG Controls
   indexingControls: 'Indexing Controls',
@@ -3548,21 +3598,24 @@ const en: I18nKeys = {
 
   // RAG Options
   autoUpdate: 'Auto Update',
-  autoUpdateDesc: 'Automatically index new files at the set interval',
+  autoUpdateDesc:
+    'Periodically reconcile missing or changed files. Live file-change detection continues independently.',
   autoUpdateInterval: 'Auto-update Interval',
   autoUpdateIntervalDesc: 'Automatic indexing interval (1–99 minutes, integer)',
   intervalMinutes: 'minutes',
   excludePaths: 'Exclude Paths',
-  excludePathsDesc: 'Manage folders or path patterns excluded from indexing as a list.',
+  excludePathsDesc:
+    'Manage folders or path patterns shared by the embedding, BM25, and built-in vault tool exclusions.',
   excludeExts: 'Exclude Extensions',
-  excludeExtsDesc: 'Manage file extensions excluded from indexing as a list.',
+  excludeExtsDesc:
+    'Manage file extensions shared by the embedding, BM25, and built-in vault tool exclusions.',
   excludeListAdd: 'Add',
   excludeListRemove: 'Remove',
   excludeListEmpty: 'No items registered.',
   excludeExtFileCount: '{count} files',
-  excludeExtTotalFileCount: '{count} files excluded in total',
+  excludeExtTotalFileCount: 'Matches {count} vault files',
   excludePathPlaceholder: 'e.g. Archive or **/drafts',
-  excludeExtPlaceholder: 'e.g. pdf or .png',
+  excludeExtPlaceholder: 'e.g. log or .csv',
   excludeInputEmpty: 'Enter a value.',
   excludeInputTrimmed: 'Leading and trailing spaces will be removed.',
   excludeInputDuplicate: 'This item is already in the list.',
@@ -3570,13 +3623,14 @@ const en: I18nKeys = {
   excludePathBackslash: 'Use / as the path separator.',
   excludePathLeadingSlash: 'Enter a vault-relative path without a leading /.',
   excludePathMissingWarning:
-    'This path was not found in the current vault. You can still save it if it is a pattern.',
+    'This path was not found in the current vault. You can still save it for a future path or pattern.',
   excludeExtLeadingDot: 'The leading dot will be removed.',
   excludeExtInvalid: 'Use only letters, numbers, hyphens, or underscores.',
   excludeExtProtectedDocument:
-    'Obsidian core document extensions cannot be excluded. Exclude the problematic file or folder by path instead.',
+    'Markdown document extensions cannot be excluded. Exclude the problematic file or folder by path instead.',
   excludeChatFolder: 'Exclude Chat Folder from RAG',
-  excludeChatFolderDesc: 'Automatically exclude the chat save folder from RAG indexing',
+  excludeChatFolderDesc:
+    'Exclude the chat save folder from the file scope shared by embeddings, BM25, and the built-in vault tools.',
   chunkSize: 'Chunk Size',
   chunkSizeDesc: 'Maximum characters per document chunk (100–5000)',
   ragChunkSizeOllamaWarning:
@@ -3585,14 +3639,14 @@ const en: I18nKeys = {
     'The input exceeds the maximum context length of the Ollama embedding model. Go to Settings > RAG > Chunk size and lower it, then reindex.',
   minScore: 'Minimum Relevance Score',
   minScoreDesc:
-    'Filter out embedding results below this threshold (0–1). Lower values include more results but may reduce quality.',
+    'Filter out combined search results below this threshold (0–1). Lower values include more results but may reduce quality.',
   enableBM25: 'Enable BM25 Keyword Search',
   enableBM25Desc:
-    'Combine embedding similarity with BM25 keyword matching for hybrid search. Improves Korean text retrieval accuracy.',
+    'Use hybrid search when embeddings are ready, or continue with keyword-only search when they are unavailable.',
   bm25Weight: 'BM25 Weight',
   bm25WeightDesc: 'Closer to 0 favors embedding similarity, closer to 1 favors keyword matching.',
   bm25Guidance:
-    '💡 BM25 complements embedding search by adding keyword matching, which helps with Korean text where semantic embeddings alone may miss relevant terms. If RAG frequently returns irrelevant results, enable BM25 and adjust the weight.',
+    'BM25 finds exact terms and phrases in files. It complements semantic search when embeddings are ready and keeps basic search available without them.',
 
   // RAG Dashboard
   ragStatusTotalDocs: 'Total Documents',
@@ -3625,9 +3679,10 @@ const en: I18nKeys = {
     'Notes stay on this device with no API key or Ollama server. If the model file is missing, it is downloaded once, verified, and then used offline.',
   ragStatusSectionDescription: 'See search readiness and the one action that matters now.',
   ragFoundationTitle: 'Search foundation',
-  ragFoundationDescription: 'Choose the search model and what the index should include.',
+  ragFoundationDescription:
+    'Choose the embedding model and the file scope shared by embeddings, BM25, and the built-in vault tools.',
   ragGraphSectionDescription:
-    'Add connected context while keeping extraction and maintenance tools out of the daily flow.',
+    'Extract connected context only from eligible .md notes in the shared file scope. Open extraction and maintenance tools only when needed.',
   ragGraphDisclosureTitle: 'Detailed settings and actions',
   ragGraphDisclosureDescription: 'Manage the model, sync, extraction, and result inspection.',
   ragDiagnosticsTitle: 'Diagnostics and recovery',
@@ -4059,14 +4114,14 @@ const en: I18nKeys = {
   settingsAuto027: 'RAG operations status',
   settingsAuto028: 'Calculating status...',
   settingsAuto029: 'Optional GraphRAG operations',
-  settingsAuto030: 'Processed {v1} evidence items of {v0} files{v2}{v3}',
+  settingsAuto030: 'Processed {v1} evidence items from {v0} eligible .md notes{v2}{v3}',
   settingsAuto030Desc:
     'This processed count is the number of extracted evidence units, not file count.',
   settingsAuto031: ', {v0} failed',
   settingsAuto032: ', {v0} need sync',
   settingsAuto033: 'No files are eligible for RAG indexing.',
   settingsAuto034: 'Status',
-  settingsAuto035: 'Total files',
+  settingsAuto035: 'Total .md notes',
   settingsAuto036: 'Processed (evidence)',
   settingsAuto036Desc: 'Total saved evidence items. This can differ from the file count.',
   settingsAuto037: 'Failed files',
@@ -4232,7 +4287,8 @@ const en: I18nKeys = {
   settingsAuto180: 'Select an action to run.',
   settingsAuto181: 'Core indexing exclusions',
   settingsAuto182: 'Auto-update and performance tuning',
-  settingsAuto183: 'Automatically index new files at the configured interval',
+  settingsAuto183:
+    'Periodically reconcile missing or changed files. Live file-change detection continues independently.',
   settingsAuto184: 'Performance tuning',
   settingsAuto185:
     'Defaults are applied automatically for the embedding provider; adjust manually only when needed.',
@@ -4428,21 +4484,26 @@ const en: I18nKeys = {
   providerStatusSectionTitle: 'Current status',
   providerStatusSectionDesc: 'Check whether providers for chat and search are ready.',
   providerStatusNone: 'None yet',
-  providerStatusNeedsSetup: '{count} need setup',
+  providerStatusNeedsSetup: 'Setup needed for {count} connections',
   providerStatusSummaryDetail: '{enabled} of {total} enabled, {ready} ready',
   providerAttentionTitle: 'Finish setting up {provider}',
   providerContinueSetup: 'Continue setup',
   providerAddTitle: 'Connect a new provider',
-  providerAddDesc: 'Add OpenAI, Claude, Ollama, or an OpenAI-compatible server.',
+  providerAddDesc:
+    'Connect OpenAI, Claude, Ollama, OpenRouter, or another OpenAI-compatible endpoint.',
   providerConnectionsSectionTitle: 'Connections',
   providerConnectionsSectionDesc: 'Expand a provider to manage its connection and models.',
-  providerConnectionsEmpty: 'No providers are connected. Add a new connection above.',
+  providerConnectionsEmpty: 'No provider connections are configured. Add one above.',
   providerNewName: 'New provider',
+  providerRemoveModel: 'Remove model',
+  providerNoModelsAdded: 'No models added yet.',
+  providerChatModelId: 'Chat model ID',
+  providerEmbeddingModelId: 'Embedding model ID',
   providerDangerTitle: 'Remove provider',
   providerDangerDesc: 'Delete this connection and its saved model settings.',
   providerRemoveWarning: '{provider} and its model list will be removed from settings.',
-  providerRemoveConfirm: 'Remove the {provider} provider?',
-  providerRemoved: 'Removed the {provider} provider.',
+  providerRemoveConfirm: 'Remove “{provider}”?',
+  providerRemoved: 'Removed “{provider}”.',
   providerModelCountLine: '{provider} · {general} chat · {embedding} embedding',
   providerApiKeyShow: 'Show API key',
   providerApiKeyHide: 'Hide API key',
@@ -4481,7 +4542,7 @@ const en: I18nKeys = {
   providerModelEmbeddingVerified: 'Embedding verified',
   providerModelEmbeddingUnknown: 'Embedding untested',
   providerModelEmbeddingFailed: 'Embedding failed',
-  providerTestChatModel: 'Test minimal generation for this model',
+  providerTestChatModel: 'Test chat generation for this model',
   providerTestEmbeddingModel: 'Test embeddings for this model',
   providerEmbeddingUnsupported: 'This provider does not support embedding tests.',
   providerModelsSelected: '{v0} selected',
@@ -4491,17 +4552,17 @@ const en: I18nKeys = {
   providerQuickKey: 'Auth',
   providerQuickModels: 'Models',
   providerQuickType: 'Type',
-  providerCustomDockTitle: 'Custom OpenAI-Compatible',
+  providerCustomDockTitle: 'Custom OpenAI-compatible',
   providerCustomDockDesc:
     'Manage local servers or internal OpenAI-compatible endpoints in the same card flow.',
   providerStrategyLabel: 'Provider type',
   providerStrategyDesc: 'Choose how this profile connects to the model API.',
   providerBaseUrl: 'Endpoint URL',
-  providerGeneralModels: 'General models',
+  providerGeneralModels: 'Chat models',
   providerEmbeddingModels: 'Embedding models',
   providerGeneralModelsDesc: 'Chat and GraphRAG generation',
   providerEmbeddingModelsDesc: 'RAG indexing and retrieval',
-  providerAddGeneralModel: 'Add general model',
+  providerAddGeneralModel: 'Add chat model',
   providerAddEmbeddingModel: 'Add embedding model',
   providerImportModelsTitle: 'Choose models to import',
   providerImportModelsDesc: 'Select only the models you want to use from {v0}.',
@@ -4510,9 +4571,11 @@ const en: I18nKeys = {
   providerImportCount: '{v0} selected / {v1} shown',
   providerImportNoNewModels: 'There are no new models to add.',
   providerImportNoMatches: 'No matching models.',
-  providerImportContext: '{v0} context',
+  providerImportContext: 'Context window: {v0} tokens',
   providerImportMoreResults: '{v0} more models. Search to narrow the list.',
   providerImportAdded: 'Added {v0} models.',
+  providerImportFound: 'Found {count} available models.',
+  overviewCustomOpenAIProvider: 'Custom OpenAI-compatible',
   tabRag: 'RAG',
   tabChat: 'Chat',
   tabMcp: 'MCP',
@@ -4589,7 +4652,7 @@ const en: I18nKeys = {
     'JSON File does not automatically copy existing IndexedDB vectors. Run a full reindex or switch back to IndexedDB storage.',
   unsetLabel: 'Not set',
   chatFolderExcludeCurrentDesc:
-    'Automatically exclude the chat save folder from RAG indexing. Current exclusion target: {folder}',
+    'Exclude the chat save folder from the file scope shared by embeddings, BM25, and the built-in vault tools. Current exclusion target: {folder}',
   ragNoUpdates: 'No documents need updating.',
   ragNoDocuments: 'No RAG target documents.',
   ragNoPendingUpdatesNotice: 'Already up to date.',
@@ -4618,7 +4681,8 @@ const en: I18nKeys = {
     'Enable the selected GraphRAG model provider and add the model to its model list.',
   graphRagModelMissingReason: 'Select a GraphRAG extraction model.',
   graphRagAlreadyRunningReason: 'GraphRAG indexing is already running.',
-  graphRagNoFilesReason: 'There are no files eligible for GraphRAG indexing.',
+  graphRagNoFilesReason:
+    'The shared file scope has no .md notes that GraphRAG can process.',
   graphRagNoRunningReason: 'No GraphRAG indexing job is running.',
   graphRagNoFailedReason: 'There are no failed files to resume.',
   graphRagLiveStatusRunningTitle: 'GraphRAG is indexing now',
@@ -4639,8 +4703,9 @@ const en: I18nKeys = {
   graphRagPhaseBuildingCommunities: 'Organizing communities',
   graphRagPhaseCompleted: 'Extraction complete',
   graphRagPhaseCancelled: 'Cancelled',
-  graphRagStartScopeLimited: 'Extract up to {limit} new files out of {total} targets.',
-  graphRagStartScopeAll: 'Extract GraphRAG target files.',
+  graphRagStartScopeLimited:
+    'Extract up to {limit} new .md notes out of {total} eligible notes.',
+  graphRagStartScopeAll: 'Extract eligible .md notes for GraphRAG.',
   graphRagActionExtract: 'Extraction',
   graphRagStartAll: 'Run full extraction',
   graphRagStartDescription:
@@ -4791,6 +4856,8 @@ const en: I18nKeys = {
   ragExcludeSensitiveReason:
     'Excluded from default RAG targets because it may contain sensitive information.',
   ragExcludeUnreadableReason: 'Excluded from RAG targets because it cannot be safely read as text.',
+  ragExcludeTooLargeReason:
+    'Some files exceed the safe read size. Exclude this file type if those files are not needed.',
   noExtensionLabel: 'No extension',
   assistantQuestionPrefix: 'Question: {question}',
   assistantQuestionSelectedItems: 'Selected items:',
@@ -5024,6 +5091,17 @@ const en: I18nKeys = {
 const STRINGS: Record<Language, I18nKeys> = { ko, en };
 
 let currentLang: Language = 'ko';
+
+export function resolveUiLanguage(savedLanguage: unknown, hostLanguage: string): Language {
+  if (savedLanguage === 'ko' || savedLanguage === 'en') {
+    return savedLanguage;
+  }
+  return hostLanguage.toLowerCase().split(/[-_]/u)[0] === 'ko' ? 'ko' : 'en';
+}
+
+export function isLocalizedValue<K extends keyof I18nKeys>(key: K, value: string): boolean {
+  return Object.values(STRINGS).some((strings) => strings[key] === value);
+}
 
 /**
  * Set the global UI language.

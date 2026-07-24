@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NativeVaultToolRuntimeLike } from '../agent/native-vault-tool';
 import { setLanguage } from '../i18n';
+import * as rustCore from '../rag/rust-core';
 import {
   appendAssistantToolRound,
   collectCompletedMcpServerNames,
@@ -197,6 +198,28 @@ describe('LLM 도구 실행 라우터', () => {
       content: '분석 결과에 확인 범위를 넘는 단정이 남아 있어 안전하게 표시하지 않았습니다.',
       violationCodes: ['whole-read-claim-unverified', 'broad-negative-claim'],
     });
+  });
+
+  it('네이티브 답변 계약에 현재 UI locale을 명시적으로 전달한다', () => {
+    setLanguage('en');
+    const contractSpy = vi.spyOn(rustCore, 'planResearchAnswerContractRust');
+
+    try {
+      enforceNativeToolAnswerContract(
+        'After checking every note, I found evidence about 네빌.',
+        [],
+      );
+
+      expect(contractSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          answer: 'After checking every note, I found evidence about 네빌.',
+          language: 'en',
+        }),
+      );
+    } finally {
+      contractSpy.mockRestore();
+      setLanguage('ko');
+    }
   });
 
   it('네이티브 도구가 없는 일반 지식 답변은 변경하지 않는다', () => {

@@ -675,6 +675,15 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
     let Some(answer) = object.get("answer").and_then(JsonValue::as_str) else {
         return String::new();
     };
+    let korean = match object.get("language").and_then(JsonValue::as_str) {
+        Some("ko") => true,
+        Some("en") => false,
+        Some(_) => return String::new(),
+        // Compatibility for callers serialized before the explicit locale contract.
+        None => answer
+            .chars()
+            .any(|character| ('가'..='힣').contains(&character)),
+    };
     let Some(receipt) = object.get("receipt").and_then(JsonValue::as_object) else {
         return String::new();
     };
@@ -720,7 +729,7 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
         "allowed": allowed,
         "action": if allowed { "allow" } else { "repair" },
         "violationCodes": violation_codes,
-        "safeCoverageText": safe_coverage_text(answer, flags, negative_claim),
+        "safeCoverageText": safe_coverage_text(korean, flags, negative_claim),
     })
     .to_string()
 }
@@ -1699,11 +1708,12 @@ fn native_search_scope_matches_fragment(scope: &NativeSearchScope, fragment: &st
     query_matches && (path.is_empty() || fragment.contains(&path))
 }
 
-/// Returns a conservative replacement sentence in the answer's apparent language.
-fn safe_coverage_text(answer: &str, flags: CoverageFlags, negative_claim: bool) -> &'static str {
-    let korean = answer
-        .chars()
-        .any(|character| ('가'..='힣').contains(&character));
+/// Returns a conservative replacement sentence in the requested language.
+const fn safe_coverage_text(
+    korean: bool,
+    flags: CoverageFlags,
+    negative_claim: bool,
+) -> &'static str {
     match (
         korean,
         negative_claim,
@@ -2497,6 +2507,30 @@ mod tests {
                 "violationCodes": ["whole-read-claim-unverified"],
                 "safeCoverageText": "볼트 전체를 로컬로 선별했고 선택된 근거를 모두 분석했습니다.",
             })
+        );
+    }
+
+    #[test]
+    fn answer_contract_prefers_explicit_english_locale_over_korean_proper_nouns() {
+        let paths = numbered_paths(2);
+        let receipt = parse_output(&derive_research_coverage_receipt_json(
+            &coverage_input(&paths, &[0], &[], &[], &[]).to_string(),
+        ));
+        let raw = plan_research_answer_contract_json(
+            &json!({
+                "answer": "After checking every note, I found evidence about 네빌.",
+                "language": "en",
+                "receipt": receipt,
+            })
+            .to_string(),
+        );
+        let output = parse_output(&raw);
+
+        assert_eq!(
+            output.get("safeCoverageText"),
+            Some(&json!(
+                "The whole vault was screened locally and all selected evidence was analyzed."
+            ))
         );
     }
 

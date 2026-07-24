@@ -388,6 +388,42 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     expect(result.content).toContain('선택 근거 일부만 분석했습니다');
   });
 
+  it('영어 UI의 repair 문구는 답변에 한국어 고유명사가 있어도 영어를 유지한다', async () => {
+    setLanguage('en');
+    const repairPrompts: string[] = [];
+    const chat = vi.fn((messages: ChatMessage[]) => {
+      const prompt = lastPrompt(messages);
+      if (prompt.includes('Rewrite the answer')) {
+        repairPrompts.push(prompt);
+        return Promise.resolve(
+          'The whole vault was screened locally, but selected-evidence analysis is incomplete.',
+        );
+      }
+      if (prompt.includes('Write the final answer')) {
+        return Promise.resolve('After checking every note, I found evidence about 네빌.');
+      }
+      return Promise.resolve('Evidence about Neville.');
+    });
+
+    await new VaultResearchAgent(
+      { chat },
+      createRuntime(
+        new Map(
+          Array.from({ length: 65 }, (_, index) => [
+            `Notes/${String(index).padStart(2, '0')}.md`,
+            `네빌 관련 근거 ${index}`,
+          ]),
+        ),
+      ),
+    ).run({ question: '볼트 전체를 요약해줘' });
+
+    expect(repairPrompts).toHaveLength(1);
+    expect(repairPrompts[0]).toContain(
+      'Required coverage wording: The whole vault was screened locally, but selected-evidence analysis is incomplete.',
+    );
+    expect(repairPrompts[0]).not.toContain('Required coverage wording: 볼트');
+  });
+
   it('일시적인 provider 실패만 제한적으로 재시도한다', async () => {
     const wait = vi.fn<(delayMs: number, signal?: AbortSignal) => Promise<void>>(() =>
       Promise.resolve(),

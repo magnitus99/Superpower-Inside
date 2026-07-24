@@ -36,6 +36,7 @@ import type {
 } from './store';
 import { getEntitySearchAliases } from './entity-labels';
 import { createGraphProviderEpochId } from './extraction';
+import { getLanguage } from '../i18n';
 
 export type GraphQueryType =
   | 'factual'
@@ -253,6 +254,7 @@ export class GraphRagQueryEngine {
     provider: LLMProvider,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate | null> {
+    const responseLanguage = getLanguage() === 'ko' ? 'Korean' : 'English';
     const leafCommunities = communities.some((community) => community.level === 0)
       ? communities.filter((community) => community.level === 0)
       : [...communities];
@@ -269,7 +271,7 @@ export class GraphRagQueryEngine {
       const messages: ChatMessage[] = [
         {
           role: 'system',
-          content: 'Extract only findings from this community report that directly help answer the question. Return concise Korean prose. If irrelevant, return IRRELEVANT.',
+          content: `Extract only findings from this community report that directly help answer the question. Return concise ${responseLanguage} prose. If irrelevant, return IRRELEVANT.`,
         },
         {
           role: 'user',
@@ -295,7 +297,7 @@ export class GraphRagQueryEngine {
       messages: [
         {
           role: 'system',
-          content: 'Synthesize the mapped community findings into one evidence-grounded Korean answer. Preserve uncertainty and do not invent facts.',
+          content: `Synthesize the mapped community findings into one evidence-grounded answer in ${responseLanguage}. Preserve uncertainty and do not invent facts.`,
         },
         {
           role: 'user',
