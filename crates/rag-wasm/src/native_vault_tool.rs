@@ -12,6 +12,10 @@ use wasm_bindgen::prelude::wasm_bindgen;
 const DEFAULT_SEARCH_LIMIT: usize = 8;
 /// Maximum number of evidence candidates returned by one search action.
 const MAX_SEARCH_LIMIT: usize = 20;
+/// Maximum number of Unicode scalar values accepted in one model-generated search query.
+const MAX_SEARCH_QUERY_CHARS: usize = 512;
+/// Maximum number of original lexical query items before BM25 expansion.
+const MAX_SEARCH_QUERY_TERMS: usize = 32;
 /// Default number of Markdown paths returned by a list action.
 const DEFAULT_LIST_LIMIT: usize = 50;
 /// Maximum number of Markdown paths returned by one list action.
@@ -164,11 +168,20 @@ fn normalize_search_request(
     object: &JsonMap<String, JsonValue>,
 ) -> Result<JsonValue, &'static str> {
     let query = required_string(object, "query", "query_required")?;
+    if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+        return Err("query_too_long");
+    }
     let raw_path = optional_string(object, "path")?;
     let path = normalize_optional_path(raw_path.as_deref())?;
-    let match_mode = optional_string(object, "match")?.unwrap_or_else(|| "all".to_owned());
+    let (query, match_mode) = match optional_string(object, "match")? {
+        Some(explicit_match_mode) => (query, explicit_match_mode),
+        None => normalize_implicit_search_query(query)?,
+    };
     if !matches!(match_mode.as_str(), "all" | "any" | "phrase") {
         return Err("invalid_match");
+    }
+    if count_original_query_terms(&query) > MAX_SEARCH_QUERY_TERMS {
+        return Err("query_too_many_terms");
     }
     let limit = normalize_limit(
         optional_usize(object, "limit")?,
@@ -182,6 +195,48 @@ fn normalize_search_request(
         "limit": limit,
         "match": match_mode
     }))
+}
+
+/// Counts original query items without multiplying Unicode n-gram or identifier expansions.
+fn count_original_query_terms(query: &str) -> usize {
+    let mut count = 0_usize;
+    let mut part = String::new();
+    for character in query.chars() {
+        if character.is_alphanumeric() || matches!(character, '_' | '-' | '/' | '\\' | '@' | '.') {
+            part.push(character);
+        } else {
+            count = count.saturating_add(query_term_contribution(&part));
+            part.clear();
+        }
+    }
+    count.saturating_add(query_term_contribution(&part))
+}
+
+/// Returns whether one original query fragment contributes a Boolean-independent search term.
+fn query_term_contribution(part: &str) -> usize {
+    let normalized = part
+        .trim_matches(|character: char| !character.is_alphanumeric())
+        .to_lowercase();
+    usize::from(!normalized.is_empty() && !matches!(normalized.as_str(), "or" | "and"))
+}
+
+/// Converts standalone Boolean OR separators into the native any-term search contract.
+fn normalize_implicit_search_query(query: String) -> Result<(String, String), &'static str> {
+    if !query
+        .split_whitespace()
+        .any(|term| term.eq_ignore_ascii_case("or"))
+    {
+        return Ok((query, "all".to_owned()));
+    }
+    let compact_query = query
+        .split_whitespace()
+        .filter(|term| !term.eq_ignore_ascii_case("or"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact_query.is_empty() {
+        return Err("query_required");
+    }
+    Ok((compact_query, "any".to_owned()))
 }
 
 /// Validates a bounded partial-read request.
@@ -398,6 +453,106 @@ mod tests {
         assert_eq!(
             any_parsed.pointer("/request/match"),
             Some(&JsonValue::from("any")),
+        );
+    }
+
+    #[test]
+    fn search_request_treats_implicit_or_as_any_term_separator() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{"action":"search","query":"네빌 OR Neville or Goddard"}"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.get("request"),
+            Some(&serde_json::json!({
+                "action": "search",
+                "query": "네빌 Neville Goddard",
+                "path": "",
+                "limit": 8,
+                "match": "any"
+            }))
+        );
+    }
+
+    #[test]
+    fn search_request_preserves_explicit_match_when_query_contains_or() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{"action":"search","query":"Neville OR Goddard","match":"all"}"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/request/query"),
+            Some(&JsonValue::from("Neville OR Goddard")),
+        );
+        assert_eq!(
+            parsed.pointer("/request/match"),
+            Some(&JsonValue::from("all")),
+        );
+    }
+
+    #[test]
+    fn search_request_does_not_treat_or_inside_a_word_as_separator() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{"action":"search","query":"Goddard organization"}"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/request/query"),
+            Some(&JsonValue::from("Goddard organization")),
+        );
+        assert_eq!(
+            parsed.pointer("/request/match"),
+            Some(&JsonValue::from("all")),
+        );
+    }
+
+    #[test]
+    fn search_request_rejects_query_containing_only_or_separators() {
+        let raw = plan_native_vault_tool_request_json(r#"{"action":"search","query":"OR or Or"}"#);
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/error/code"),
+            Some(&JsonValue::from("query_required")),
+        );
+    }
+
+    #[test]
+    fn search_request_rejects_unbounded_query_length_and_original_term_count() {
+        let long_query = "가".repeat(513);
+        let long_raw = plan_native_vault_tool_request_json(
+            &serde_json::json!({ "action": "search", "query": long_query }).to_string(),
+        );
+        assert_eq!(
+            parse_json(&long_raw).pointer("/error/code"),
+            Some(&JsonValue::from("query_too_long")),
+        );
+
+        let excessive_terms = (0..33)
+            .map(|index| format!("term{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let excessive_raw = plan_native_vault_tool_request_json(
+            &serde_json::json!({ "action": "search", "query": excessive_terms }).to_string(),
+        );
+        assert_eq!(
+            parse_json(&excessive_raw).pointer("/error/code"),
+            Some(&JsonValue::from("query_too_many_terms")),
+        );
+
+        let bounded_terms = (0..32)
+            .map(|index| format!("term{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let bounded_raw = plan_native_vault_tool_request_json(
+            &serde_json::json!({ "action": "search", "query": bounded_terms }).to_string(),
+        );
+        assert_eq!(
+            parse_json(&bounded_raw).pointer("/request/match"),
+            Some(&JsonValue::from("all")),
         );
     }
 

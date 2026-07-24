@@ -167,6 +167,13 @@ export interface I18nKeys {
   chatRecoverySendWithoutRag: string;
   chatRecoverySendWithoutSourceValidation: string;
   chatRecoveryCopyDebug: string;
+  chatRecoveryNoAlternativeProvider: string;
+  chatRecoveryContinuingWithProvider: string;
+  chatErrorGeneric: string;
+  chatErrorRetryAfter: string;
+  chatErrorSeconds: string;
+  chatErrorMinutes: string;
+  chatErrorDiagnostics: string;
   turnStageDraft: string;
   turnStageBuildingContext: string;
   turnStageWaitingProvider: string;
@@ -493,9 +500,16 @@ export interface I18nKeys {
   dataBoundaryProvider: string;
   dataBoundaryMcp: string;
   dataBoundaryLocal: string;
+  dataBoundaryUserQuestion: string;
+  dataBoundaryRecentConversation: string;
+  dataBoundaryRecentConversationSingular: string;
   dataBoundarySystemPrompt: string;
   dataBoundaryAttachedContext: string;
   dataBoundaryCitationPreview: string;
+  dataBoundaryToolResults: string;
+  dataBoundaryToolResultSingular: string;
+  dataBoundaryResearchDocuments: string;
+  dataBoundaryResearchDocumentSingular: string;
   dataBoundaryDraftStore: string;
   dataBoundarySourceCardState: string;
   dataBoundaryExcludedAttachmentNote: string;
@@ -540,6 +554,8 @@ export interface I18nKeys {
   nativeVaultInvalidJson: string;
   nativeVaultUnsupportedAction: string;
   nativeVaultQueryRequired: string;
+  nativeVaultQueryTooLong: string;
+  nativeVaultQueryTooManyTerms: string;
   nativeVaultPathRequired: string;
   nativeVaultInvalidPath: string;
   nativeVaultInvalidLineRange: string;
@@ -566,9 +582,16 @@ export interface I18nKeys {
   vaultResearchInvalidReadResult: string;
   vaultResearchCancelled: string;
   vaultResearchCoverageWarning: string;
+  vaultResearchCoverageComplete: string;
+  vaultResearchCoverageLimited: string;
+  vaultResearchNoMatchingEvidence: string;
+  vaultResearchEvidenceInconclusive: string;
+  vaultResearchAnswerContractFallback: string;
+  vaultResearchContractUnavailable: string;
   vaultResearchFailurePlanFailed: string;
   toolLoopPolicyUnavailable: string;
   repeatedToolCallBlocked: string;
+  nativeVaultSearchLimitReached: string;
   chatGeneratingResponse: string;
   assistantQuestionReasoningTitle: string;
   assistantQuestionSelectionTitle: string;
@@ -1716,13 +1739,20 @@ const ko: I18nKeys = {
   providerWaitElapsedSeconds: '{seconds}초',
   reasoningProvidedLabel: '모델이 제공한 thinking',
   chatRecoveryRetrySameContext: '같은 맥락으로 다시 시도',
-  chatRecoverySwitchProvider: 'Provider/모델 변경',
+  chatRecoverySwitchProvider: '다른 연결로 계속',
   chatRecoveryReconnectMcp: 'MCP 다시 연결',
   chatRecoveryEditToolArgs: '툴 인자 수정',
   chatRecoverySkipFailedTool: '실패한 툴 건너뛰기',
   chatRecoverySendWithoutRag: 'RAG 없이 전송',
   chatRecoverySendWithoutSourceValidation: '출처 검증 없이 전송',
   chatRecoveryCopyDebug: '디버그 복사',
+  chatRecoveryNoAlternativeProvider: '계속 사용할 다른 연결이 없습니다. 모델 선택을 확인해 주세요.',
+  chatRecoveryContinuingWithProvider: '{provider}(으)로 이어서 확인합니다.',
+  chatErrorGeneric: '답변을 만드는 중 문제가 생겼습니다. 같은 맥락으로 다시 이어갈 수 있습니다.',
+  chatErrorRetryAfter: '{delay} 후 같은 연결로 다시 시도할 수 있습니다.',
+  chatErrorSeconds: '{count}초',
+  chatErrorMinutes: '{count}분',
+  chatErrorDiagnostics: '진단 정보',
   turnStageDraft: '초안',
   turnStageBuildingContext: '컨텍스트 준비',
   turnStageWaitingProvider: 'provider 대기',
@@ -2071,9 +2101,16 @@ const ko: I18nKeys = {
   dataBoundaryProvider: '전송됨',
   dataBoundaryMcp: '연결한 도구',
   dataBoundaryLocal: '이 기기에만 보관',
+  dataBoundaryUserQuestion: '현재 질문',
+  dataBoundaryRecentConversation: '최근 대화 {count}개',
+  dataBoundaryRecentConversationSingular: '최근 대화 {count}개',
   dataBoundarySystemPrompt: '답변 지침',
   dataBoundaryAttachedContext: '노트와 참조 {count}개',
   dataBoundaryCitationPreview: '출처 미리보기 {count}개',
+  dataBoundaryToolResults: '도구 결과 {count}개',
+  dataBoundaryToolResultSingular: '도구 결과 {count}개',
+  dataBoundaryResearchDocuments: '로컬에서 선별한 {count}개 문서의 근거',
+  dataBoundaryResearchDocumentSingular: '로컬에서 선별한 {count}개 문서의 근거',
   dataBoundaryDraftStore: '초안과 출처 카드 상태',
   dataBoundarySourceCardState: '출처 카드 상태',
   dataBoundaryExcludedAttachmentNote: '제외된 항목 {count}개는 전송하지 않았습니다.',
@@ -2119,6 +2156,8 @@ const ko: I18nKeys = {
   nativeVaultInvalidJson: '도구 인자가 유효한 JSON이 아닙니다.',
   nativeVaultUnsupportedAction: '지원하지 않는 동작입니다.',
   nativeVaultQueryRequired: '검색어가 필요합니다.',
+  nativeVaultQueryTooLong: '검색어가 너무 깁니다. 더 짧고 구체적인 검색어로 나눠 주세요.',
+  nativeVaultQueryTooManyTerms: '검색 항목이 너무 많습니다. 핵심 검색어를 32개 이하로 줄여 주세요.',
   nativeVaultPathRequired: '볼트 경로가 필요합니다.',
   nativeVaultInvalidPath: '볼트 내부의 안전한 경로만 사용할 수 있습니다.',
   nativeVaultInvalidLineRange: '읽기 행 범위가 올바르지 않습니다.',
@@ -2137,7 +2176,7 @@ const ko: I18nKeys = {
   nativeVaultStatsFailed: '볼트 통계를 계산할 수 없습니다.',
   nativeVaultSearchScopeFailed: '볼트 검색 범위를 계산할 수 없습니다.',
   vaultResearchListStalled: '볼트 목록 페이지가 앞으로 진행되지 않았습니다.',
-  vaultResearchBatchPlanFailed: '계층 요약 배치를 계산할 수 없습니다.',
+  vaultResearchBatchPlanFailed: '선별한 근거의 분석 배치를 계산할 수 없습니다.',
   vaultResearchEmptySummary: 'Research Agent가 빈 요약을 반환했습니다.',
   vaultResearchInvalidListResult: '볼트 목록 결과 형식이 올바르지 않습니다.',
   vaultResearchInvalidListItem: '볼트 목록에 잘못된 문서 항목이 있습니다.',
@@ -2146,9 +2185,22 @@ const ko: I18nKeys = {
   vaultResearchCancelled: 'Research Agent 실행이 취소되었습니다.',
   vaultResearchCoverageWarning:
     '⚠️ 전체 {total}개 문서 중 {processed}개를 읽었습니다. {failed}개 문서는 읽지 못해 아래 답변에서 제외되었습니다.',
+  vaultResearchCoverageComplete:
+    '볼트 문서 {total}개를 로컬에서 확인했고, 선별한 {selected}개 문서의 근거를 분석했습니다.',
+  vaultResearchCoverageLimited:
+    '볼트 문서 {screened}/{total}개를 로컬에서 확인했고, 선별한 {selected}개 문서의 근거를 분석했습니다. 확인 범위나 전송 한계가 있어 전수 결론은 내리지 않았습니다.',
+  vaultResearchNoMatchingEvidence:
+    '현재 질문과 직접 일치하는 볼트 근거를 찾지 못했습니다. 확인한 검색어: {terms}',
+  vaultResearchEvidenceInconclusive:
+    '확인 범위나 전송 한계 때문에 관련 근거 조사를 완료하지 못했습니다.',
+  vaultResearchAnswerContractFallback:
+    '분석 결과에 확인 범위를 넘는 단정이 남아 있어 안전하게 표시하지 않았습니다.',
+  vaultResearchContractUnavailable: '볼트 조사 범위 계약을 계산할 수 없습니다.',
   vaultResearchFailurePlanFailed: 'Research Agent의 재시도 정책을 계산할 수 없습니다.',
   toolLoopPolicyUnavailable: '도구 반복 실행 정책을 계산할 수 없습니다.',
   repeatedToolCallBlocked: '같은 도구와 인자가 반복되어 이 호출을 중단했습니다.',
+  nativeVaultSearchLimitReached:
+    '한 답변에서 허용된 볼트 검색 횟수에 도달해 이 호출을 중단했습니다.',
   chatGeneratingResponse: '응답 생성 중...',
   assistantQuestionReasoningTitle: '모델의 thinking 출력에서 사용자 질문을 감지했습니다.',
   assistantQuestionSelectionTitle: '모델이 사용자 선택을 요청했습니다.',
@@ -2230,7 +2282,7 @@ const ko: I18nKeys = {
   apiHintPaymentRequired: '잔액이 부족합니다. 결제 수단을 확인하세요.',
   apiHintForbidden: '접근이 거부되었습니다. API 키 권한을 확인하세요.',
   apiHintNotFound: '요청한 모델/엔드포인트를 찾을 수 없습니다.',
-  apiHintRateLimited: '요청 횟수 제한을 초과했습니다. 잠시 후 다시 시도하세요.',
+  apiHintRateLimited: '현재 연결의 요청 한도에 도달했습니다.',
   apiHintServerError: '서버 내부 오류입니다. 잠시 후 다시 시도하세요.',
   apiHintBadGateway: '게이트웨이 오류입니다. 서버가 일시적으로 불안정합니다.',
   apiHintServiceUnavailable: '서비스가 일시적으로 사용 불가능합니다.',
@@ -3402,13 +3454,21 @@ const en: I18nKeys = {
   providerWaitElapsedSeconds: '{seconds}s',
   reasoningProvidedLabel: 'Provider-emitted thinking',
   chatRecoveryRetrySameContext: 'Retry with same context',
-  chatRecoverySwitchProvider: 'Switch provider/model',
+  chatRecoverySwitchProvider: 'Continue with another connection',
   chatRecoveryReconnectMcp: 'Reconnect MCP',
   chatRecoveryEditToolArgs: 'Edit tool args',
   chatRecoverySkipFailedTool: 'Skip failed tool',
   chatRecoverySendWithoutRag: 'Send without RAG',
   chatRecoverySendWithoutSourceValidation: 'Send without source validation',
   chatRecoveryCopyDebug: 'Copy debug',
+  chatRecoveryNoAlternativeProvider: 'No other connection is available. Check the model selector.',
+  chatRecoveryContinuingWithProvider: 'Continuing with {provider}.',
+  chatErrorGeneric:
+    'Something went wrong while creating the answer. You can continue with the same context.',
+  chatErrorRetryAfter: 'You can retry this connection in {delay}.',
+  chatErrorSeconds: '{count} seconds',
+  chatErrorMinutes: '{count} minutes',
+  chatErrorDiagnostics: 'Diagnostic details',
   turnStageDraft: 'Draft',
   turnStageBuildingContext: 'Building context',
   turnStageWaitingProvider: 'Waiting for provider',
@@ -3758,9 +3818,16 @@ const en: I18nKeys = {
   dataBoundaryProvider: 'Sent to',
   dataBoundaryMcp: 'Tools contacted',
   dataBoundaryLocal: 'Kept on this device',
+  dataBoundaryUserQuestion: 'Current question',
+  dataBoundaryRecentConversation: '{count} recent conversation messages',
+  dataBoundaryRecentConversationSingular: '{count} recent conversation message',
   dataBoundarySystemPrompt: 'Answer instructions',
   dataBoundaryAttachedContext: '{count} notes and references',
   dataBoundaryCitationPreview: '{count} source previews',
+  dataBoundaryToolResults: '{count} tool results',
+  dataBoundaryToolResultSingular: '{count} tool result',
+  dataBoundaryResearchDocuments: 'Evidence from {count} locally selected documents',
+  dataBoundaryResearchDocumentSingular: 'Evidence from {count} locally selected document',
   dataBoundaryDraftStore: 'Draft and source-card state',
   dataBoundarySourceCardState: 'Source-card state',
   dataBoundaryExcludedAttachmentNote: '{count} items were left out and were not sent.',
@@ -3806,6 +3873,9 @@ const en: I18nKeys = {
   nativeVaultInvalidJson: 'Tool arguments are not valid JSON.',
   nativeVaultUnsupportedAction: 'This action is not supported.',
   nativeVaultQueryRequired: 'A search query is required.',
+  nativeVaultQueryTooLong: 'The search query is too long. Split it into shorter, focused searches.',
+  nativeVaultQueryTooManyTerms:
+    'The search query has too many terms. Use 32 or fewer focused terms.',
   nativeVaultPathRequired: 'A vault path is required.',
   nativeVaultInvalidPath: 'Only safe paths inside the vault are allowed.',
   nativeVaultInvalidLineRange: 'The requested line range is invalid.',
@@ -3824,7 +3894,7 @@ const en: I18nKeys = {
   nativeVaultStatsFailed: 'Vault statistics could not be calculated.',
   nativeVaultSearchScopeFailed: 'The vault search scope could not be calculated.',
   vaultResearchListStalled: 'Vault list pagination did not advance.',
-  vaultResearchBatchPlanFailed: 'The hierarchical summary batches could not be calculated.',
+  vaultResearchBatchPlanFailed: 'The selected-evidence analysis batches could not be calculated.',
   vaultResearchEmptySummary: 'The Research Agent returned an empty summary.',
   vaultResearchInvalidListResult: 'The vault list result has an invalid format.',
   vaultResearchInvalidListItem: 'The vault list contains an invalid document item.',
@@ -3833,9 +3903,22 @@ const en: I18nKeys = {
   vaultResearchCancelled: 'The Research Agent run was cancelled.',
   vaultResearchCoverageWarning:
     '⚠️ Read {processed} of {total} documents. {failed} documents could not be read and were omitted from the answer below.',
+  vaultResearchCoverageComplete:
+    'Locally screened {total} vault documents and analyzed evidence from {selected} selected documents.',
+  vaultResearchCoverageLimited:
+    'Locally screened {screened} of {total} vault documents and analyzed evidence from {selected} selected documents. Coverage or transfer limits prevent an exhaustive conclusion.',
+  vaultResearchNoMatchingEvidence:
+    'No vault evidence directly matching the current question was found. Checked terms: {terms}',
+  vaultResearchEvidenceInconclusive:
+    'Coverage or transfer limits prevented the evidence review from completing.',
+  vaultResearchAnswerContractFallback:
+    'The analysis still exceeded the verified coverage, so the unsupported conclusion was not shown.',
+  vaultResearchContractUnavailable: 'The vault research coverage contract could not be calculated.',
   vaultResearchFailurePlanFailed: 'The Research Agent retry policy could not be calculated.',
   toolLoopPolicyUnavailable: 'The repeated tool-call policy could not be calculated.',
   repeatedToolCallBlocked: 'This call was stopped because the same tool and arguments repeated.',
+  nativeVaultSearchLimitReached:
+    'This call was stopped because the vault search limit for this response was reached.',
   chatGeneratingResponse: 'Generating response...',
   assistantQuestionReasoningTitle: 'Detected a user question in the model thinking output.',
   assistantQuestionSelectionTitle: 'The model requested a user selection.',
@@ -3917,7 +4000,7 @@ const en: I18nKeys = {
   apiHintPaymentRequired: 'Insufficient balance. Check the payment method.',
   apiHintForbidden: 'Access denied. Check API key permissions.',
   apiHintNotFound: 'The requested model or endpoint was not found.',
-  apiHintRateLimited: 'Rate limit exceeded. Try again later.',
+  apiHintRateLimited: 'This connection has reached its request limit.',
   apiHintServerError: 'Internal server error. Try again later.',
   apiHintBadGateway: 'Gateway error. The server is temporarily unstable.',
   apiHintServiceUnavailable: 'The service is temporarily unavailable.',

@@ -1,8 +1,9 @@
-import { TFile, type App } from 'obsidian';
+import { TFile, TFolder, type App } from 'obsidian';
 import type { QueryResult } from '../rag/query';
 import {
   createContextPreviewRust,
   planFolderLexicalEvidenceIndicesRust,
+  planNativeVaultLexicalHitRust,
   planNativeVaultLinkPathsRust,
   planNativeVaultListRust,
   planNativeVaultReadRangeRust,
@@ -11,7 +12,6 @@ import {
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
 import { t } from '../i18n';
-import { isExcludedPath } from '../utils/vault';
 import type {
   NativeVaultLinksResult,
   NativeVaultListResult,
@@ -34,21 +34,37 @@ export interface NativeVaultQueryEngineLike {
   ): Promise<QueryResult[]>;
 }
 
+export interface NativeVaultFileScope {
+  listCandidateFiles(): Promise<readonly TFile[]>;
+  isCandidateFile(file: TFile): Promise<boolean>;
+  isPathVisible(path: string): boolean;
+}
+
+interface NativeVaultListSnapshot {
+  path: string;
+  expectedCursor: number;
+  files: readonly TFile[];
+}
+
 export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
+  private listSnapshot: NativeVaultListSnapshot | null = null;
+
   constructor(
     private readonly app: App,
+    private readonly fileScope: NativeVaultFileScope,
     private readonly getQueryEngine: () => NativeVaultQueryEngineLike | null = () => null,
-    private readonly getExcludedPaths: () => readonly string[] = () => [],
   ) {}
 
   async search(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
   ): Promise<NativeVaultSearchResult> {
-    const lexical = await this.searchLexically(request);
+    const files = await this.fileScope.listCandidateFiles();
+    const candidatePaths = new Set(files.map((file) => file.path));
+    const lexical = await this.searchLexically(request, files);
     if (lexical.hits.length >= request.limit) return lexical;
 
     const indexed = (await this.tryIndexedSearch(request)).filter((result) =>
-      this.isVisiblePath(result.sourcePath),
+      candidatePaths.has(result.sourcePath),
     );
     const semanticMatchIndices =
       planFolderLexicalEvidenceIndicesRust(
@@ -62,14 +78,22 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       ) ?? [];
     const semantic = buildSearchResult(
       request.query,
+      request.path,
       request.match,
       semanticMatchIndices.flatMap((index) => {
         const result = indexed[index];
         return result ? [result] : [];
       }),
+      {
+        scannedFiles: lexical.scannedFiles,
+        unreadableFiles: lexical.unreadableFiles,
+      },
     );
     const hits = [...lexical.hits];
     const seen = new Set(hits.map(searchHitKey));
+    const semanticUniqueHitCount = semantic.hits.filter(
+      (hit) => !seen.has(searchHitKey(hit)),
+    ).length;
     for (const hit of semantic.hits) {
       if (hits.length >= request.limit) break;
       const key = searchHitKey(hit);
@@ -77,14 +101,23 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       seen.add(key);
       hits.push(hit);
     }
-    return buildSearchResult(request.query, request.match, hits);
+    const totalHits = lexical.totalHits + semanticUniqueHitCount;
+    return buildSearchResult(request.query, request.path, request.match, hits, {
+      scannedFiles: lexical.scannedFiles,
+      unreadableFiles: lexical.unreadableFiles,
+      totalHits,
+      truncated:
+        lexical.truncated || semantic.hits.length >= request.limit || totalHits > hits.length,
+    });
   }
 
   async read(
     request: Extract<RustNativeVaultToolRequest, { action: 'read' }>,
   ): Promise<NativeVaultReadResult> {
-    const file = this.resolveMarkdownFile(request.path);
-    if (!file) throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    const file = this.resolveVaultFile(request.path);
+    if (!file || !(await this.fileScope.isCandidateFile(file))) {
+      throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    }
     const content = await this.app.vault.cachedRead(file);
     const lines = content.split('\n');
     const range = planNativeVaultReadRangeRust(
@@ -113,26 +146,36 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     };
   }
 
-  list(
+  async list(
     request: Extract<RustNativeVaultToolRequest, { action: 'list' }>,
   ): Promise<NativeVaultListResult> {
-    const files = this.getVisibleMarkdownFiles();
+    const files = await this.getListCandidateFiles(request.path, request.cursor);
     const plan = planNativeVaultListRust(
       files.map((file) => file.path),
       request.path,
       request.cursor,
       request.limit,
     );
-    if (!plan) throw new Error(t('nativeVaultListFailed'));
+    if (!plan) {
+      this.listSnapshot = null;
+      throw new Error(t('nativeVaultListFailed'));
+    }
+    this.listSnapshot =
+      plan.nextCursor === null
+        ? null
+        : {
+            path: request.path,
+            expectedCursor: plan.nextCursor,
+            files,
+          };
     const filesByPath = new Map(files.map((file) => [file.path, file]));
-    return Promise.resolve({
+    const requestedPath = this.app.vault.getAbstractFileByPath(request.path);
+    return {
       action: 'list',
       path: request.path,
       exists:
-        this.isVisiblePath(request.path) &&
-        (request.path.length === 0 ||
-          plan.total > 0 ||
-          this.app.vault.getAbstractFileByPath(request.path) !== null),
+        this.fileScope.isPathVisible(request.path) &&
+        (request.path.length === 0 || plan.total > 0 || requestedPath instanceof TFolder),
       files: plan.paths.flatMap((path) => {
         const file = filesByPath.get(path);
         return file ? [{ path: file.path, modifiedAt: file.stat.mtime, size: file.stat.size }] : [];
@@ -140,20 +183,22 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       nextCursor: plan.nextCursor,
       total: plan.total,
       citations: [],
-    });
+    };
   }
 
-  links(
+  async links(
     request: Extract<RustNativeVaultToolRequest, { action: 'links' }>,
   ): Promise<NativeVaultLinksResult> {
-    const file = this.resolveMarkdownFile(request.path);
+    const files = await this.fileScope.listCandidateFiles();
+    const candidatePaths = new Set(files.map((candidate) => candidate.path));
+    const file = this.resolveCandidateFile(request.path, files);
     if (!file) throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
     const resolvedLinks = this.app.metadataCache.resolvedLinks;
     const outgoingCandidates = Object.keys(resolvedLinks[file.path] ?? {}).filter((path) =>
-      this.isVisiblePath(path),
+      candidatePaths.has(path),
     );
     const incomingCandidates = Object.entries(resolvedLinks).flatMap(([sourcePath, targets]) =>
-      Object.hasOwn(targets, file.path) && this.isVisiblePath(sourcePath) ? [sourcePath] : [],
+      Object.hasOwn(targets, file.path) && candidatePaths.has(sourcePath) ? [sourcePath] : [],
     );
     const outgoing =
       request.direction === 'incoming'
@@ -163,24 +208,23 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       request.direction === 'outgoing'
         ? []
         : (planNativeVaultLinkPathsRust(incomingCandidates, request.limit) ?? []);
-    return Promise.resolve({
+    return {
       action: 'links',
       path: file.path,
       direction: request.direction,
       outgoing,
       incoming,
       citations: [],
-    });
+    };
   }
 
-  stats(
+  async stats(
     _request: Extract<RustNativeVaultToolRequest, { action: 'stats' }>,
   ): Promise<NativeVaultStatsResult> {
-    const plan = planNativeVaultStatsRust(
-      this.getVisibleMarkdownFiles().map((file) => file.stat.size),
-    );
-    if (!plan) return Promise.reject(new Error(t('nativeVaultStatsFailed')));
-    return Promise.resolve({ action: 'stats', ...plan, citations: [] });
+    const files = await this.fileScope.listCandidateFiles();
+    const plan = planNativeVaultStatsRust(files.map((file) => file.stat.size));
+    if (!plan) throw new Error(t('nativeVaultStatsFailed'));
+    return { action: 'stats', ...plan, citations: [] };
   }
 
   private async tryIndexedSearch(
@@ -202,8 +246,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
 
   private async searchLexically(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
+    files: readonly TFile[],
   ): Promise<NativeVaultSearchResult> {
-    const files = this.getVisibleMarkdownFiles();
     const scope = planNativeVaultListRust(
       files.map((file) => file.path),
       request.path,
@@ -230,47 +274,58 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         ...entries.filter((entry): entry is { file: TFile; content: string } => entry !== null),
       );
     }
-    const selectedIndices =
+    const matchingIndices =
       planFolderLexicalEvidenceIndicesRust(
         request.query,
         readable.map(({ file, content }) => `${file.path}\n${content}`),
-        request.limit,
+        readable.length,
         request.match,
       ) ?? [];
-    const hits = selectedIndices.flatMap((index) => {
+    const hits = matchingIndices.slice(0, request.limit).flatMap((index) => {
       const entry = readable[index];
       if (!entry) return [];
+      const evidence = planNativeVaultLexicalHitRust(request.query, entry.content, request.match);
       return [
         {
           path: entry.file.path,
-          startLine: 1,
-          preview: createContextPreviewRust(entry.content) ?? '',
+          startLine: evidence?.startLine ?? 1,
+          endLine: evidence?.endLine,
+          preview: evidence?.preview ?? createContextPreviewRust(entry.content) ?? '',
+          citationStatus: evidence?.status ?? 'candidate',
         },
       ];
     });
-    return buildSearchResult(request.query, request.match, hits);
+    return buildSearchResult(request.query, request.path, request.match, hits, {
+      scannedFiles: scope.paths.length,
+      unreadableFiles: scope.paths.length - readable.length,
+      totalHits: matchingIndices.length,
+      truncated: matchingIndices.length > hits.length,
+    });
   }
 
-  private getVisibleMarkdownFiles(): TFile[] {
-    const excludedPaths = this.getExcludedPaths();
-    return this.app.vault
-      .getMarkdownFiles()
-      .filter((file) => !isExcludedPath(file.path, excludedPaths));
+  private async getListCandidateFiles(path: string, cursor: number): Promise<readonly TFile[]> {
+    const snapshot = this.listSnapshot;
+    if (cursor > 0 && snapshot?.path === path && snapshot.expectedCursor === cursor) {
+      return snapshot.files;
+    }
+    this.listSnapshot = null;
+    return this.fileScope.listCandidateFiles();
   }
 
-  private isVisiblePath(path: string): boolean {
-    return !isExcludedPath(path, this.getExcludedPaths());
+  private resolveCandidateFile(path: string, files: readonly TFile[]): TFile | null {
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const resolved = this.resolveVaultFile(path);
+    return resolved ? (filesByPath.get(resolved.path) ?? null) : null;
   }
 
-  private resolveMarkdownFile(path: string): TFile | null {
-    if (!this.isVisiblePath(path)) return null;
+  private resolveVaultFile(path: string): TFile | null {
     const candidates = path.endsWith('.md') ? [path] : [path, `${path}.md`];
     for (const candidate of candidates) {
       const file = this.app.vault.getAbstractFileByPath(candidate);
-      if (file instanceof TFile && this.isVisiblePath(file.path)) return file;
+      if (file instanceof TFile) return file;
     }
     const resolved = this.app.metadataCache.getFirstLinkpathDest(path, '');
-    return resolved instanceof TFile && this.isVisiblePath(resolved.path) ? resolved : null;
+    return resolved instanceof TFile ? resolved : null;
   }
 }
 
@@ -280,26 +335,64 @@ function searchHitKey(hit: NativeVaultSearchHit): string {
 
 function buildSearchResult(
   query: string,
+  path: string,
   match: 'all' | 'any' | 'phrase',
   rawHits: readonly QueryResult[] | readonly NativeVaultSearchHit[],
+  coverage: {
+    scannedFiles?: number;
+    unreadableFiles?: number;
+    totalHits?: number;
+    truncated?: boolean;
+  } = {},
 ): NativeVaultSearchResult {
   const hits = rawHits.map((rawHit): NativeVaultSearchHit => {
     if ('entry' in rawHit) {
+      const evidence = planNativeVaultLexicalHitRust(query, rawHit.entry.metadata.text, match);
+      const startLine =
+        evidence === null
+          ? rawHit.chunkRange.startLine
+          : rawHit.chunkRange.startLine + evidence.startLine - 1;
+      const endLine =
+        evidence === null
+          ? rawHit.chunkRange.endLine
+          : rawHit.chunkRange.startLine + evidence.endLine - 1;
       return {
         path: rawHit.sourcePath,
         heading: rawHit.entry.metadata.heading,
-        startLine: rawHit.chunkRange.startLine,
-        endLine: rawHit.chunkRange.endLine,
-        preview: createContextPreviewRust(rawHit.entry.metadata.text) ?? '',
+        startLine,
+        endLine,
+        preview: evidence?.preview ?? createContextPreviewRust(rawHit.entry.metadata.text) ?? '',
         score: rawHit.score,
+        // 인덱스 내용은 현재 Vault 본문과 다를 수 있으므로 live read 전에는 검증하지 않습니다.
+        citationStatus: 'candidate',
       };
     }
     return rawHit;
   });
   const citations = hits.map((hit) =>
-    createCitation(hit.path, hit.startLine, hit.endLine, hit.preview, hit.heading, hit.score),
+    createCitation(
+      hit.path,
+      hit.startLine,
+      hit.endLine,
+      hit.preview,
+      hit.heading,
+      hit.score,
+      hit.citationStatus,
+    ),
   );
-  return { action: 'search', query, match, hits, citations };
+  const totalHits = coverage.totalHits ?? hits.length;
+  return {
+    action: 'search',
+    query,
+    path,
+    match,
+    hits,
+    scannedFiles: coverage.scannedFiles ?? 0,
+    unreadableFiles: coverage.unreadableFiles ?? 0,
+    totalHits,
+    truncated: coverage.truncated ?? totalHits > hits.length,
+    citations,
+  };
 }
 
 function createCitation(
@@ -309,6 +402,7 @@ function createCitation(
   preview: string,
   heading?: string,
   score?: number,
+  status: SourceCitation['status'] = 'verified',
 ): SourceCitation {
   const range = `${line}-${endLine ?? line}`;
   return {
@@ -319,6 +413,6 @@ function createCitation(
     endLine,
     score,
     preview,
-    status: 'verified',
+    status,
   };
 }

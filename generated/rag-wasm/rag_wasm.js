@@ -37,6 +37,19 @@ export class Bm25RuntimeIndex {
         wasm.bm25runtimeindex_add_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
     }
     /**
+     * bounded JSON 문서 batch를 한 번의 bridge 호출로 검증하고 추가한다.
+     * @param {string} documents_json
+     * @param {number} tokenizer_version
+     * @param {boolean} known_unique
+     * @returns {number}
+     */
+    add_documents_json(documents_json, tokenizer_version, known_unique) {
+        const ptr0 = passStringToWasm0(documents_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.bm25runtimeindex_add_documents_json(this.__wbg_ptr, ptr0, len0, tokenizer_version, known_unique);
+        return ret >>> 0;
+    }
+    /**
      * 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
      * @param {string} doc_id
      * @param {string} text
@@ -744,6 +757,52 @@ export function create_indexed_db_record_key(namespace, value) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Derives a conservative coverage receipt from successful native-vault tool result payloads.
+ *
+ * Only an untruncated search that scanned without unreadable files can support a scoped exact
+ * negative claim. Native tool results never prove that every inventory document was read.
+ * @param {string} results_json
+ * @returns {string}
+ */
+export function derive_native_tool_coverage_receipt_json(results_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(results_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.derive_native_tool_coverage_receipt_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Derives auditable whole-vault and selected-evidence coverage booleans.
+ *
+ * Invalid JSON returns an empty string. Semantic inconsistencies produce a receipt with reason
+ * codes and conservative `false` decisions.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function derive_research_coverage_receipt_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.derive_research_coverage_receipt_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -2732,6 +2791,32 @@ export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json, sou
 }
 
 /**
+ * 파일 단위 lexical 일치 결과에서 가장 관련 있는 실제 행과 검증 상태를 반환한다.
+ * @param {string} query
+ * @param {string} content
+ * @param {string} match_mode
+ * @returns {string}
+ */
+export function plan_native_vault_lexical_hit_json(query, content, match_mode) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(match_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_lexical_hit_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Sorts, de-duplicates, and bounds one side of the structural link graph.
  * @param {string} paths_json
  * @param {number} limit
@@ -3128,7 +3213,7 @@ export function plan_reference_file_indices_json(source_path, file_paths_json) {
 }
 
 /**
- * Finds repeated tool calls after canonicalizing JSON argument object key order.
+ * Plans blocked tool calls after canonicalizing JSON argument object key order.
  * @param {string} history_json
  * @param {string} candidates_json
  * @param {number} max_repeats
@@ -3223,6 +3308,51 @@ export function plan_rerank_result_order_json(result_ids_json, ranked_ids_json) 
 }
 
 /**
+ * Validates answer-wide coverage claims against a derived coverage receipt.
+ *
+ * The returned action is `repair` when the answer claims unverified whole-file reading or an
+ * insufficiently scoped negative conclusion.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_research_answer_contract_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_answer_contract_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Plans a bounded, stable local candidate selection from questions and inventory evidence.
+ *
+ * Invalid JSON or mismatched path/sample arrays return an empty string.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_research_candidate_selection_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_candidate_selection_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
  * @param {string} content
  * @param {string} citation_ids_json
@@ -3246,6 +3376,46 @@ export function plan_research_citation_indices_json(content, citation_ids_json, 
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * Advances the global provider-attempt or retry-wait ledger while reserving future logical calls.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_research_provider_ledger_transition_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_provider_ledger_transition_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Plans one hard logical provider-request ceiling without changing evidence-batch semantics.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_research_provider_request_budget_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_research_provider_request_budget_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -3442,6 +3612,26 @@ export function plan_structural_linked_paths_json(seed_paths_json, edges_json) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * citation 배열에서 본문을 제외한 bounded source reference JSON 배열만 만든다.
+ * @param {string} citations_json
+ * @returns {string}
+ */
+export function plan_tool_result_source_references_json(citations_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(citations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_tool_result_source_references_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

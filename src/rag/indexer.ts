@@ -549,6 +549,10 @@ export class VaultIndexer {
     this.logger = createScopedIndexerLogger(logger);
   }
 
+  setBM25Index(index?: IndexedDbBM25Index): void {
+    this.bm25Index = index;
+  }
+
   async indexVault(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);

@@ -2,11 +2,21 @@ import {
   NATIVE_VAULT_TOOL_LABEL,
   type NativeVaultToolRuntimeLike,
 } from '../agent/native-vault-tool';
-import type { ToolExecutionPolicy } from './types';
-import type { ToolCallRecord } from './types';
-import type { SourceCitation } from './types';
+import type {
+  SourceCitation,
+  ToolCallRecord,
+  ToolExecutionPolicy,
+  ToolResultSummaryResumePayload,
+} from './types';
 import type { ChatMessage } from '../llm/providers';
-import { planRepeatedToolCallIndicesRust } from '../rag/rust-core';
+import {
+  deriveNativeToolCoverageReceiptRust,
+  planResearchAnswerContractRust,
+  planToolResultSourceReferencesRust,
+  planToolCallBlocksRust,
+  type RustResearchAnswerViolationCode,
+  type RustToolCallBlockReason,
+} from '../rag/rust-core';
 import { t } from '../i18n';
 import {
   executeMcpToolCalls,
@@ -106,6 +116,59 @@ export function collectToolCitations(
   return [...citationsById.values()];
 }
 
+export function collectCompletedMcpServerNames(toolCalls: readonly ToolCallRecord[]): string[] {
+  return [
+    ...new Set(
+      toolCalls.flatMap((toolCall) => {
+        if (
+          toolCall.executionKind !== 'mcp' ||
+          toolCall.status === 'running' ||
+          !toolCall.serverName?.trim()
+        ) {
+          return [];
+        }
+        return [toolCall.serverName.trim()];
+      }),
+    ),
+  ];
+}
+
+export interface NativeToolAnswerContractResult {
+  content: string;
+  violationCodes: RustResearchAnswerViolationCode[];
+}
+
+/**
+ * 네이티브 볼트 도구가 실제로 확인한 범위보다 넓은 전수·부재 결론을 표시하지 않습니다.
+ * 판정 자체는 Rust/WASM 계약에 맡기고 TS는 런타임 결과를 전달하고 표시 결과만 선택합니다.
+ */
+export function enforceNativeToolAnswerContract(
+  content: string,
+  toolCalls: readonly ToolCallRecord[],
+): NativeToolAnswerContractResult {
+  const nativeResults = toolCalls.flatMap((toolCall) => {
+    if (toolCall.executionKind !== 'native' || toolCall.status !== 'success') return [];
+    const result = getToolReinjectionPayload(toolCall);
+    return result === undefined ? [] : [result];
+  });
+
+  // 성공한 네이티브 검색이 없어도 Rust의 빈 coverage receipt로 vault 범위 단정만 보수적으로 판정합니다.
+  const receipt = deriveNativeToolCoverageReceiptRust(nativeResults);
+  const plan = receipt ? planResearchAnswerContractRust({ answer: content, receipt }) : null;
+  if (!plan) {
+    return {
+      content: t('vaultResearchAnswerContractFallback'),
+      violationCodes: [],
+    };
+  }
+  return plan.allowed
+    ? { content, violationCodes: [] }
+    : {
+        content: t('vaultResearchAnswerContractFallback'),
+        violationCodes: [...plan.violationCodes],
+      };
+}
+
 export function markRepeatedToolCalls(
   history: readonly ToolCallRecord[],
   candidates: readonly ToolCallRecord[],
@@ -115,7 +178,7 @@ export function markRepeatedToolCalls(
   const completedHistory = history.filter(
     (toolCall) => toolCall.status === 'success' || toolCall.status === 'error',
   );
-  const repeatedIndices = planRepeatedToolCallIndicesRust(
+  const blocks = planToolCallBlocksRust(
     completedHistory.map(({ name, arguments: toolArguments }) => ({
       name,
       arguments: toolArguments,
@@ -127,18 +190,27 @@ export function markRepeatedToolCalls(
     maxRepeats,
     maxNativeSearchCalls,
   );
-  if (!repeatedIndices) throw new Error(t('toolLoopPolicyUnavailable'));
-  const repeated = new Set(repeatedIndices);
-  return candidates.map((toolCall, index) =>
-    repeated.has(index)
-      ? {
-          ...toolCall,
-          status: 'error',
-          result: t('repeatedToolCallBlocked'),
-          resultSummary: t('repeatedToolCallBlocked'),
-        }
-      : { ...toolCall },
+  if (!blocks) throw new Error(t('toolLoopPolicyUnavailable'));
+  const blockReasons = new Map(
+    blocks.map(({ candidateIndex, reason }) => [candidateIndex, reason]),
   );
+  return candidates.map((toolCall, index) => {
+    const reason = blockReasons.get(index);
+    if (!reason) return { ...toolCall };
+    const message = getToolCallBlockMessage(reason);
+    return {
+      ...toolCall,
+      status: 'error',
+      result: message,
+      resultSummary: message,
+    };
+  });
+}
+
+function getToolCallBlockMessage(reason: RustToolCallBlockReason): string {
+  return reason === 'duplicate-tool-call'
+    ? t('repeatedToolCallBlocked')
+    : t('nativeVaultSearchLimitReached');
 }
 
 export function appendAssistantToolRound(
@@ -146,18 +218,17 @@ export function appendAssistantToolRound(
   assistantContent: string,
   toolCalls: readonly ToolCallRecord[],
 ): ChatMessage[] {
-  const completedToolCalls = toolCalls.filter(
-    (toolCall) =>
-      (toolCall.status === 'success' || toolCall.status === 'error') &&
-      (toolCall.normalizedResult || toolCall.result),
-  );
+  const completedToolCalls = selectProviderReinjectableToolCalls(toolCalls).flatMap((toolCall) => {
+    const providerPayload = getToolReinjectionPayload(toolCall);
+    return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
+  });
   if (completedToolCalls.length === 0) return [...messages];
   return [
     ...messages,
     {
       role: 'assistant',
       content: assistantContent,
-      toolCalls: completedToolCalls.map((toolCall) => ({
+      toolCalls: completedToolCalls.map(({ toolCall }) => ({
         id: toolCall.id,
         type: 'function' as const,
         function: {
@@ -166,14 +237,50 @@ export function appendAssistantToolRound(
         },
       })),
     },
-    ...completedToolCalls.map((toolCall) => ({
+    ...completedToolCalls.map(({ toolCall, providerPayload }) => ({
       role: 'tool' as const,
-      content: toolCall.normalizedResult ?? toolCall.result ?? '',
+      content: providerPayload,
       tool_call_id: toolCall.id,
       name: toolCall.name,
       tool_result_is_error: toolCall.status === 'error',
     })),
   ];
+}
+
+export function selectProviderReinjectableToolCalls(
+  toolCalls: readonly ToolCallRecord[],
+): ToolCallRecord[] {
+  return toolCalls.filter((toolCall) => {
+    if (toolCall.status !== 'success' && toolCall.status !== 'error') return false;
+    return getToolReinjectionPayload(toolCall) !== undefined;
+  });
+}
+
+/**
+ * 완료된 tool call에서 provider에 다시 넣을 payload를 고릅니다.
+ * 저장본은 명시적으로 허용된 compact summary만 원본 부재 표시와 함께 재사용합니다.
+ */
+export function getToolReinjectionPayload(toolCall: ToolCallRecord): string | undefined {
+  const runtimePayload = [toolCall.normalizedResult, toolCall.result].find(hasText);
+  if (runtimePayload !== undefined) return runtimePayload;
+  if (toolCall.resumePayloadSource !== 'resultSummary' || !hasText(toolCall.resultSummary)) {
+    return undefined;
+  }
+  const payload: ToolResultSummaryResumePayload = {
+    kind: 'tool-result-summary',
+    summary: toolCall.resultSummary,
+    originalResultAvailable: false,
+  };
+  const sourceReferences = planToolResultSourceReferencesRust(toolCall.citations ?? []) ?? [];
+  if (sourceReferences.length > 0) {
+    payload.sourceReferences = sourceReferences;
+    payload.sourceReferencesUntrustedMetadata = true;
+  }
+  return JSON.stringify(payload);
+}
+
+function hasText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 export function joinAssistantToolRoundText(current: string, next: string): string {
@@ -182,6 +289,32 @@ export function joinAssistantToolRoundText(current: string, next: string): strin
   if (!left) return right;
   if (!right) return left;
   return `${left}\n\n${right}`;
+}
+
+export function resolveAssistantToolLoopText(
+  previousProgress: string,
+  roundText: string,
+  hasNewToolCalls: boolean,
+): { displayText: string; finalAnswer: string | null } {
+  const next = roundText.trim();
+  if (hasNewToolCalls) {
+    return {
+      displayText: next || previousProgress.trim(),
+      finalAnswer: null,
+    };
+  }
+  return {
+    displayText: next,
+    finalAnswer: next,
+  };
+}
+
+export function resolveToolLoopTerminalText(
+  progressText: string,
+  reason: 'cancelled' | 'limit',
+): string {
+  if (reason === 'limit') return t('tooManyToolCalls');
+  return progressText.trim() || t('cancelledLabel');
 }
 
 async function executeNativeToolCall(

@@ -5,6 +5,7 @@ import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
   getRagFileTypeSummary,
+  isRagCandidateFile,
   countFilesByExtensions,
   isExcludedExt,
   isExcludedPath,
@@ -176,6 +177,26 @@ describe('RAG 후보 파일', () => {
     const files = await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig);
 
     expect(files.map((file) => file.path)).toEqual(['note.md']);
+  });
+
+  it('단일 파일 판정도 전체 후보와 같은 경로·확장자·민감 파일 정책을 적용한다', async () => {
+    const source = createFile('src/main.ts');
+    const archived = createFile('Archive/old.txt');
+    const excludedExtension = createFile('logs/debug.log');
+    const sensitive = createFile('secrets.json');
+    const vault = createVault([source, archived, excludedExtension, sensitive]);
+    const ragConfig = { ...baseRagConfig, excludeExts: ['log'] };
+
+    await expect(isRagCandidateFile(vault, source, ragConfig, baseChatConfig)).resolves.toBe(true);
+    await expect(isRagCandidateFile(vault, archived, ragConfig, baseChatConfig)).resolves.toBe(
+      false,
+    );
+    await expect(
+      isRagCandidateFile(vault, excludedExtension, ragConfig, baseChatConfig),
+    ).resolves.toBe(false);
+    await expect(isRagCandidateFile(vault, sensitive, ragConfig, baseChatConfig)).resolves.toBe(
+      false,
+    );
   });
 
   it('파일 형식별 대상 수와 제외 추천을 계산한다', async () => {

@@ -52,6 +52,25 @@ describe('chat UX fixture gate', () => {
     expect(styles).toContain('@container (max-width: 420px)');
   });
 
+  it('chat 실행 소유권은 RAG 컨텍스트 준비보다 먼저 시작되어 준비 단계도 취소할 수 있다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const handleSendStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleSendEnd = viewSource.indexOf('private setLoading(', handleSendStart);
+    const handleSendSource = viewSource.slice(handleSendStart, handleSendEnd);
+    const runOwnershipIndex = handleSendSource.indexOf('this.activeRun = run;');
+    const contextBuildIndex = handleSendSource.indexOf('await this.buildPromptContext(');
+    const ownershipCheckIndex = handleSendSource.indexOf(
+      'isChatRunOwner(this.activeRun, run)',
+      contextBuildIndex,
+    );
+    const userMessageIndex = handleSendSource.indexOf("this.addMessage('user'");
+
+    expect(runOwnershipIndex).toBeGreaterThanOrEqual(0);
+    expect(contextBuildIndex).toBeGreaterThan(runOwnershipIndex);
+    expect(ownershipCheckIndex).toBeGreaterThan(contextBuildIndex);
+    expect(userMessageIndex).toBeGreaterThan(ownershipCheckIndex);
+  });
+
   it('provider stream fixture는 주요 provider transport를 네트워크 없이 덮는다', () => {
     const fixtures = readFixture<ProviderStreamFixture[]>('provider-streams.json');
 
@@ -82,6 +101,12 @@ describe('chat UX fixture gate', () => {
     ]);
     expect(fixtures.every((fixture) => fixture.messages.length > 0)).toBe(true);
     expect(fixtures.every((fixture) => fixture.expectedDom['statusLabel'])).toBe(true);
+    expect(fixtures.find((fixture) => fixture.id === 'rate-limit')?.expectedDom).toEqual(
+      expect.objectContaining({
+        primaryAction: '다른 연결로 계속',
+        diagnosticsDisclosure: true,
+      }),
+    );
   });
 
   it('visual/accessibility fixture는 sidebar viewport, reduced motion, keyboard, overflow를 고정한다', () => {
@@ -102,6 +127,7 @@ describe('chat UX fixture gate', () => {
         'scroll-to-latest-answer',
         'mention-select-with-keyboard',
         'tool-approve',
+        'continue-with-other-provider',
       ]),
     );
     expect(fixture.overflowSamples.length).toBeGreaterThanOrEqual(2);
@@ -116,6 +142,7 @@ describe('chat UX fixture gate', () => {
         '.superpower-inside-chat-citation-card',
         '.superpower-inside-chat-context-budget',
         '.superpower-inside-chat-data-boundary',
+        '.superpower-inside-chat-error-diagnostics',
       ]),
     );
     expect(fixture.motionTokens).toEqual(

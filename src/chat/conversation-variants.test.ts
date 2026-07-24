@@ -3,6 +3,7 @@ import {
   createRegenerationDraft,
   createVariantComparisonRows,
   markMessageRegenerated,
+  selectPreviousUserQuestions,
 } from './conversation-variants';
 import type { ChatMessageWithMeta } from './types';
 
@@ -86,6 +87,28 @@ describe('conversation variant contract', () => {
         },
       ],
     });
+  });
+
+  it('현재 세션 메시지에서만 직전 사용자 질문을 선택한다', () => {
+    const loadedSessionMessages = [
+      createMessage({ id: 'loaded-user-1', role: 'user', content: '네빌은 누구야?' }),
+      createMessage({ id: 'loaded-assistant-1', role: 'assistant', content: '답변' }),
+    ];
+
+    expect(selectPreviousUserQuestions([])).toEqual([]);
+    expect(selectPreviousUserQuestions(loadedSessionMessages)).toEqual(['네빌은 누구야?']);
+  });
+
+  it('재시도할 질문 자체를 제외하고 그 앞의 사용자 질문을 선택한다', () => {
+    const messages = [
+      createMessage({ id: 'user-1', role: 'user', content: '네빌은 누구야?' }),
+      createMessage({ id: 'assistant-1', role: 'assistant', content: '답변' }),
+      createMessage({ id: 'user-2', role: 'user', content: '창세기 관련 자료를 조사해줘' }),
+      createMessage({ id: 'assistant-2', role: 'assistant', content: '오류' }),
+    ];
+
+    expect(selectPreviousUserQuestions(messages, 'user-2')).toEqual(['네빌은 누구야?']);
+    expect(selectPreviousUserQuestions(messages, 'missing-user')).toEqual([]);
   });
 });
 

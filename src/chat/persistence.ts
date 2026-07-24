@@ -20,6 +20,7 @@ import {
   type RustChatMessagePlan,
 } from '../rag/rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import { getToolReinjectionPayload } from './tool-execution';
 
 export type { ChatMessage } from '../llm/providers';
 
@@ -28,6 +29,7 @@ const MESSAGE_COMMENT_OPEN = `<!-- ${MESSAGE_PREFIX}-message`;
 const MESSAGE_COMMENT_CLOSE = `<!-- /${MESSAGE_PREFIX}-message -->`;
 const ENCODED_BLOCK_ATTR = 'encoding="base64"';
 const CHAT_SESSION_SCHEMA_VERSION = 2;
+const MAX_PERSISTED_TOOL_RESULT_SUMMARY_CHARS = 1_000;
 
 interface MessagePersistMeta {
   id: string;
@@ -50,7 +52,6 @@ interface MessagePersistMeta {
   branchRoot?: string;
   variantOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
-  originalContent?: string;
   providerCapability?: ChatMessageWithMeta['providerCapability'];
   turnStage?: ChatMessageWithMeta['turnStage'];
   toolRound?: number;
@@ -58,6 +59,7 @@ interface MessagePersistMeta {
   contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
   dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
   errorKind?: ChatMessageWithMeta['errorKind'];
+  errorRetryAt?: string;
   actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
 
@@ -309,18 +311,30 @@ export async function deleteChat(
   await fileManager.trashFile(file);
 }
 
-function redactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
-  return {
-    ...toolCall,
+function compactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
+  const summarySource = [toolCall.resultSummary, toolCall.result, toolCall.normalizedResult].find(
+    (value): value is string => value !== undefined && value.trim().length > 0,
+  );
+  const compacted: ToolCallRecord = {
+    id: toolCall.id,
+    name: toolCall.name,
     arguments: redactSensitiveText(toolCall.arguments),
-    result: redactOptionalSensitiveText(toolCall.result),
-    resultSummary: redactOptionalSensitiveText(toolCall.resultSummary),
-    normalizedResult: redactOptionalSensitiveText(toolCall.normalizedResult),
+    status: toolCall.status,
   };
+  if (summarySource !== undefined) {
+    compacted.resultSummary = compactToolResultSummary(redactSensitiveText(summarySource));
+    compacted.resumePayloadSource = 'resultSummary';
+  }
+  if (toolCall.serverName !== undefined) compacted.serverName = toolCall.serverName;
+  if (toolCall.approved !== undefined) compacted.approved = toolCall.approved;
+  if (toolCall.executionKind !== undefined) compacted.executionKind = toolCall.executionKind;
+  if (toolCall.citations !== undefined) compacted.citations = toolCall.citations;
+  return compacted;
 }
 
-function redactOptionalSensitiveText(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : redactSensitiveText(value);
+function compactToolResultSummary(value: string): string {
+  if (value.length <= MAX_PERSISTED_TOOL_RESULT_SUMMARY_CHARS) return value;
+  return `${value.slice(0, MAX_PERSISTED_TOOL_RESULT_SUMMARY_CHARS - 1)}…`;
 }
 
 function redactSensitiveText(value: string): string {
@@ -331,11 +345,14 @@ function redactSensitiveText(value: string): string {
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;}]+)/gi, '$1=[REDACTED]')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED]');
+    .replace(
+      /\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g,
+      '[REDACTED]',
+    );
 }
 
 function formatMessage(message: ChatMessageWithMeta, index: number): string {
-  const toolCalls = message.toolCalls?.map(redactToolCallRecord);
+  const toolCalls = message.toolCalls?.map(compactToolCallRecord);
   const meta: MessagePersistMeta = {
     id: message.id,
     schemaVersion: CHAT_SESSION_SCHEMA_VERSION,
@@ -356,7 +373,6 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     branchRoot: message.branchRoot,
     variantOf: message.variantOf,
     stopReason: message.stopReason,
-    originalContent: message.originalContent,
     providerCapability: message.providerCapability,
     turnStage: message.turnStage,
     toolRound: message.toolRound,
@@ -364,6 +380,7 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     contextBudgetSnapshot: message.contextBudgetSnapshot,
     dataBoundarySnapshot: message.dataBoundarySnapshot,
     errorKind: message.errorKind,
+    errorRetryAt: message.errorRetryAt,
     actionHistory: message.actionHistory,
   };
   const lines = [
@@ -464,6 +481,9 @@ function loadPersistedMessages(body: string): ChatMessageWithMeta[] {
 }
 
 function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta {
+  const toolCalls = restoreCompactToolResumePayloads(
+    plan.toolCalls as ToolCallRecord[] | undefined,
+  );
   return {
     id: plan.id,
     schemaVersion: plan.schemaVersion,
@@ -478,7 +498,7 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     status: plan.status,
     errorMessage: plan.errorMessage,
     reasoning: plan.reasoning,
-    toolCalls: plan.toolCalls as ToolCallRecord[] | undefined,
+    toolCalls,
     citations: plan.citations as SourceCitation[] | undefined,
     sourceWarnings: plan.sourceWarnings as SourceValidationWarning[] | undefined,
     contextAttachments: plan.contextAttachments as ContextAttachment[] | undefined,
@@ -491,11 +511,36 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     turnStage: plan.turnStage as ChatMessageWithMeta['turnStage'],
     toolRound: plan.toolRound,
     toolRoundLogs: plan.toolRoundLogs as ChatMessageWithMeta['toolRoundLogs'],
-    contextBudgetSnapshot: plan.contextBudgetSnapshot as ChatMessageWithMeta['contextBudgetSnapshot'],
+    contextBudgetSnapshot:
+      plan.contextBudgetSnapshot as ChatMessageWithMeta['contextBudgetSnapshot'],
     dataBoundarySnapshot: plan.dataBoundarySnapshot as ChatMessageWithMeta['dataBoundarySnapshot'],
     errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
+    errorRetryAt: plan.errorRetryAt,
     actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],
   };
+}
+
+function restoreCompactToolResumePayloads(
+  toolCalls: ToolCallRecord[] | undefined,
+): ToolCallRecord[] | undefined {
+  if (
+    !toolCalls?.some((toolCall) => toolCall.status === 'running' && toolCall.approved === false)
+  ) {
+    return toolCalls;
+  }
+  return toolCalls.map((toolCall) => {
+    if (
+      (toolCall.status !== 'success' && toolCall.status !== 'error') ||
+      toolCall.normalizedResult !== undefined ||
+      toolCall.result !== undefined
+    ) {
+      return toolCall;
+    }
+    const providerPayload = getToolReinjectionPayload(toolCall);
+    return providerPayload === undefined
+      ? toolCall
+      : { ...toolCall, normalizedResult: providerPayload };
+  });
 }
 
 function parseLegacyChat(content: string): ChatSession {

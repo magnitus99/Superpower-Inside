@@ -6,6 +6,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 /// Maximum provider-request retry delay accepted from a Retry-After hint.
 const MAX_RESEARCH_RETRY_DELAY_MS: u64 = 30_000;
+/// Floating-point form used for JavaScript numeric Retry-After validation.
+const MAX_RESEARCH_RETRY_DELAY_MS_F64: f64 = 30_000.0;
 
 /// Detects explicit requests that require whole-vault coverage instead of top-k retrieval.
 #[must_use]
@@ -131,25 +133,29 @@ pub fn plan_research_citation_indices_json(
         return String::new();
     }
 
-    let referenced_ids = citation_ids
+    let referenced_id_flags = citation_ids
         .iter()
+        .map(|citation_id| contains_bounded_marker(content, citation_id))
+        .collect::<Vec<_>>();
+    let content_without_ids = citation_ids
+        .iter()
+        .zip(&referenced_id_flags)
+        .filter(|(_, referenced)| **referenced)
+        .fold(content.to_owned(), |remaining, (citation_id, _)| {
+            remaining.replace(citation_id, "")
+        });
+    let referenced_indices = citation_paths
+        .iter()
+        .zip(&referenced_id_flags)
         .enumerate()
-        .filter_map(|(index, citation_id)| {
-            contains_bounded_marker(content, citation_id).then_some(index)
+        .filter_map(|(index, (citation_path, referenced_id))| {
+            (*referenced_id
+                || (!citation_path.is_empty() && content_without_ids.contains(citation_path)))
+            .then_some(index)
         })
         .collect::<Vec<_>>();
-    if !referenced_ids.is_empty() {
-        return json!(referenced_ids).to_string();
-    }
-    let referenced_paths = citation_paths
-        .iter()
-        .enumerate()
-        .filter_map(|(index, citation_path)| {
-            (!citation_path.is_empty() && content.contains(citation_path)).then_some(index)
-        })
-        .collect::<Vec<_>>();
-    if !referenced_paths.is_empty() {
-        return json!(referenced_paths).to_string();
+    if !referenced_indices.is_empty() {
+        return json!(referenced_indices).to_string();
     }
     json!((0..citation_ids.len().min(fallback_limit)).collect::<Vec<_>>()).to_string()
 }
@@ -163,7 +169,8 @@ pub fn plan_research_request_failure_json(
     failed_attempt: usize,
     retry_after_ms: f64,
 ) -> String {
-    const MAX_RETRIES: usize = 2;
+    const MAX_TRANSIENT_RETRIES: usize = 2;
+    const MAX_RATE_LIMIT_RETRIES: usize = 1;
 
     let normalized = message.to_lowercase();
     let (code, transient) = if status == 429
@@ -197,7 +204,14 @@ pub fn plan_research_request_failure_json(
         ("non-retryable", false)
     };
 
-    let retryable = transient && failed_attempt < MAX_RETRIES;
+    let retry_after_exceeds_auto_wait =
+        retry_after_ms.is_finite() && retry_after_ms > MAX_RESEARCH_RETRY_DELAY_MS_F64;
+    let max_retries = if code == "rate-limited" {
+        MAX_RATE_LIMIT_RETRIES
+    } else {
+        MAX_TRANSIENT_RETRIES
+    };
+    let retryable = transient && failed_attempt < max_retries && !retry_after_exceeds_auto_wait;
     let exponential_delay = 500_u64.saturating_mul(1_u64 << failed_attempt.min(5));
     let requested_delay = bounded_retry_delay_ms(retry_after_ms);
     let retry_delay_ms = if retryable {
@@ -216,7 +230,7 @@ pub fn plan_research_request_failure_json(
     .to_string()
 }
 
-/// Finds repeated tool calls after canonicalizing JSON argument object key order.
+/// Plans blocked tool calls after canonicalizing JSON argument object key order.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_repeated_tool_call_indices_json(
@@ -242,20 +256,49 @@ pub fn plan_repeated_tool_call_indices_json(
         }
         *counts.entry(signature.canonical).or_default() += 1;
     }
-    let mut repeated = Vec::<usize>::new();
+    let mut blocked = Vec::<JsonValue>::new();
     for (index, signature) in candidates.into_iter().enumerate() {
         let exceeds_search_budget =
             signature.is_native_search && native_search_count >= max_native_search_calls;
         let count = counts.entry(signature.canonical).or_default();
-        if *count >= max_repeats || exceeds_search_budget {
-            repeated.push(index);
+        let reason = if *count >= max_repeats {
+            Some(ToolCallBlockReason::DuplicateToolCall)
+        } else if exceeds_search_budget {
+            Some(ToolCallBlockReason::NativeSearchBudgetExceeded)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            blocked.push(json!({
+                "candidateIndex": index,
+                "reason": reason.as_str(),
+            }));
         }
         *count += 1;
         if signature.is_native_search {
             native_search_count = native_search_count.saturating_add(1);
         }
     }
-    json!(repeated).to_string()
+    json!(blocked).to_string()
+}
+
+/// 도구 호출을 차단한 결정적 정책 사유.
+#[derive(Clone, Copy)]
+enum ToolCallBlockReason {
+    /// 같은 도구 이름과 정규화된 인자가 허용 횟수 이상 반복됨.
+    DuplicateToolCall,
+    /// 한 답변에서 허용한 네이티브 Vault 검색 횟수를 초과함.
+    NativeSearchBudgetExceeded,
+}
+
+impl ToolCallBlockReason {
+    /// WASM bridge가 소비하는 안정된 사유 코드.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DuplicateToolCall => "duplicate-tool-call",
+            Self::NativeSearchBudgetExceeded => "native-search-budget-exceeded",
+        }
+    }
 }
 
 /// 도구 호출의 정규화된 중복 판정 정보.
@@ -440,12 +483,44 @@ mod tests {
     }
 
     #[test]
-    fn transient_research_failures_retry_with_bounded_provider_delay() {
-        let raw = plan_research_request_failure_json("Too many requests", 429, 0, 45_000.0);
+    fn citation_selection_combines_named_paths_and_explicit_ids() {
+        let raw = plan_research_citation_indices_json(
+            "Notes/Beta.md와 [vault:Gamma.md:3-5]에서 확인했다.",
+            r#"["vault:Alpha.md:1-10","vault:Notes/Beta.md:2-4","vault:Gamma.md:3-5"]"#,
+            r#"["Alpha.md","Notes/Beta.md","Gamma.md"]"#,
+            0,
+        );
+
+        assert_eq!(raw, "[1,2]");
+    }
+
+    #[test]
+    fn long_retry_after_stops_automatic_research_retry() {
+        let raw = plan_research_request_failure_json("Too many requests", 429, 0, 120_000.0);
 
         assert_eq!(
             raw,
-            json!({"code": "rate-limited", "retryable": true, "retryDelayMs": 30_000}).to_string()
+            json!({"code": "rate-limited", "retryable": false, "retryDelayMs": 0}).to_string()
+        );
+    }
+
+    #[test]
+    fn short_retry_after_uses_bounded_exponential_delay() {
+        let raw = plan_research_request_failure_json("Too many requests", 429, 0, 25.0);
+
+        assert_eq!(
+            raw,
+            json!({"code": "rate-limited", "retryable": true, "retryDelayMs": 500}).to_string()
+        );
+    }
+
+    #[test]
+    fn rate_limit_uses_only_one_automatic_retry() {
+        let raw = plan_research_request_failure_json("Too many requests", 429, 1, 25.0);
+
+        assert_eq!(
+            raw,
+            json!({"code": "rate-limited", "retryable": false, "retryDelayMs": 0}).to_string()
         );
     }
 
@@ -478,7 +553,7 @@ mod tests {
 
         assert_eq!(
             plan_repeated_tool_call_indices_json(history, candidates, 2, 4),
-            "[0]"
+            r#"[{"candidateIndex":0,"reason":"duplicate-tool-call"}]"#
         );
     }
 
@@ -501,7 +576,7 @@ mod tests {
 
         assert_eq!(
             plan_repeated_tool_call_indices_json("[]", candidates, 2, 4),
-            "[4]",
+            r#"[{"candidateIndex":4,"reason":"native-search-budget-exceeded"}]"#,
         );
     }
 }

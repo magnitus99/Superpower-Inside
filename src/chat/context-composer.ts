@@ -29,10 +29,24 @@ export interface ContextBudgetInput {
 export interface DataBoundaryInput {
   providerLabel?: string;
   model?: string;
+  hasUserQuestion: boolean;
+  recentConversationMessageCount: number;
   hasSystemPrompt: boolean;
   attachments: readonly ContextAttachment[];
   citations: readonly SourceCitation[];
   mcpServerNames: readonly string[];
+}
+
+export interface DataBoundaryProviderUsage {
+  toolResultCount?: number;
+  researchDocumentCount?: number;
+  mcpServerNames?: readonly string[];
+}
+
+export interface ResearchDataBoundaryInput {
+  providerLabel?: string;
+  model?: string;
+  previousUserQuestionCount: number;
 }
 
 export function createContextAttachmentViews(
@@ -47,7 +61,9 @@ export function createContextAttachmentViews(
         attachment.pinned ? ' pinned' : ''
       }${excluded ? ' excluded' : ''}`,
       label: attachment.label,
-      statusText: excluded ? t('contextAttachmentExcluded') : getContextStatusText(attachment.status),
+      statusText: excluded
+        ? t('contextAttachmentExcluded')
+        : getContextStatusText(attachment.status),
       reasonText: attachment.reason,
       sizeText:
         actualChars === undefined
@@ -77,7 +93,8 @@ export function createContextBudgetSnapshot(input: ContextBudgetInput): ContextB
     attachmentCount: input.attachments.length,
     citationCount: input.citations.length,
     truncated:
-      usedChars >= input.maxChars || input.attachments.some((attachment) => attachment.status === 'partial'),
+      usedChars >= input.maxChars ||
+      input.attachments.some((attachment) => attachment.status === 'partial'),
     includedAttachmentIds,
     excludedAttachmentIds,
   };
@@ -88,17 +105,21 @@ export function createDataBoundarySnapshot(input: DataBoundaryInput): DataBounda
     (attachment) => !attachment.excluded && !isExcludedStatus(attachment.status),
   ).length;
   const excludedCount = input.attachments.length - includedCount;
-  const sentToProvider = [
-    ...(input.hasSystemPrompt ? [t('dataBoundarySystemPrompt')] : []),
-    includedCount > 0 ? t('dataBoundaryAttachedContext', { count: includedCount }) : null,
-    input.citations.length > 0 ? t('dataBoundaryCitationPreview', { count: input.citations.length }) : null,
-  ].filter((item): item is string => item !== null);
+  const providerPayload: NonNullable<DataBoundarySnapshot['providerPayload']> = {
+    userQuestion: input.hasUserQuestion,
+    recentConversationMessages: Math.max(0, Math.trunc(input.recentConversationMessageCount)),
+    systemPrompt: input.hasSystemPrompt,
+    attachedContexts: includedCount,
+    citationPreviews: input.citations.length,
+    toolResults: 0,
+    researchDocuments: 0,
+  };
 
   return {
     providerLabel: input.providerLabel,
     model: input.model,
     localOnly: [t('dataBoundaryDraftStore'), t('dataBoundarySourceCardState')],
-    sentToProvider,
+    sentToProvider: formatProviderPayload(providerPayload),
     sentToMcp: [...input.mcpServerNames],
     privacyNotes:
       excludedCount > 0
@@ -111,7 +132,110 @@ export function createDataBoundarySnapshot(input: DataBoundaryInput): DataBounda
             ),
           ]
         : [],
+    providerPayload,
   };
+}
+
+export function createResearchDataBoundarySnapshot(
+  input: ResearchDataBoundaryInput,
+): DataBoundarySnapshot {
+  return createDataBoundarySnapshot({
+    providerLabel: input.providerLabel,
+    model: input.model,
+    hasUserQuestion: true,
+    recentConversationMessageCount: Math.min(
+      1,
+      Math.max(0, Math.trunc(input.previousUserQuestionCount)),
+    ),
+    hasSystemPrompt: true,
+    attachments: [],
+    citations: [],
+    mcpServerNames: [],
+  });
+}
+
+export function withDataBoundaryProviderUsage(
+  snapshot: DataBoundarySnapshot,
+  usage: DataBoundaryProviderUsage,
+): DataBoundarySnapshot {
+  const sentToMcp =
+    usage.mcpServerNames === undefined
+      ? snapshot.sentToMcp
+      : [...new Set(usage.mcpServerNames.map((name) => name.trim()).filter(Boolean))];
+  const providerPayload = snapshot.providerPayload;
+  if (!providerPayload) {
+    const additionalItems = [
+      usage.toolResultCount && usage.toolResultCount > 0
+        ? t('dataBoundaryToolResults', { count: Math.trunc(usage.toolResultCount) })
+        : null,
+      usage.researchDocumentCount && usage.researchDocumentCount > 0
+        ? t('dataBoundaryResearchDocuments', {
+            count: Math.trunc(usage.researchDocumentCount),
+          })
+        : null,
+    ].filter((item): item is string => item !== null);
+    return {
+      ...snapshot,
+      sentToProvider: [...snapshot.sentToProvider, ...additionalItems],
+      sentToMcp,
+    };
+  }
+  const nextPayload = {
+    ...providerPayload,
+    toolResults:
+      usage.toolResultCount === undefined
+        ? providerPayload.toolResults
+        : Math.max(0, Math.trunc(usage.toolResultCount)),
+    researchDocuments:
+      usage.researchDocumentCount === undefined
+        ? providerPayload.researchDocuments
+        : Math.max(0, Math.trunc(usage.researchDocumentCount)),
+  };
+  return {
+    ...snapshot,
+    sentToProvider: formatProviderPayload(nextPayload),
+    sentToMcp,
+    providerPayload: nextPayload,
+  };
+}
+
+function formatProviderPayload(
+  payload: NonNullable<DataBoundarySnapshot['providerPayload']>,
+): string[] {
+  return [
+    payload.userQuestion ? t('dataBoundaryUserQuestion') : null,
+    payload.recentConversationMessages > 0
+      ? t(
+          payload.recentConversationMessages === 1
+            ? 'dataBoundaryRecentConversationSingular'
+            : 'dataBoundaryRecentConversation',
+          {
+            count: payload.recentConversationMessages,
+          },
+        )
+      : null,
+    payload.systemPrompt ? t('dataBoundarySystemPrompt') : null,
+    payload.attachedContexts > 0
+      ? t('dataBoundaryAttachedContext', { count: payload.attachedContexts })
+      : null,
+    payload.citationPreviews > 0
+      ? t('dataBoundaryCitationPreview', { count: payload.citationPreviews })
+      : null,
+    payload.toolResults > 0
+      ? t(
+          payload.toolResults === 1 ? 'dataBoundaryToolResultSingular' : 'dataBoundaryToolResults',
+          { count: payload.toolResults },
+        )
+      : null,
+    payload.researchDocuments > 0
+      ? t(
+          payload.researchDocuments === 1
+            ? 'dataBoundaryResearchDocumentSingular'
+            : 'dataBoundaryResearchDocuments',
+          { count: payload.researchDocuments },
+        )
+      : null,
+  ].filter((item): item is string => item !== null);
 }
 
 function getContextStatusText(status: ContextAttachment['status']): string {

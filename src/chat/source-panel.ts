@@ -50,6 +50,11 @@ export interface SourcePanelHandlers {
   repairSourceWarning?(warning: SourceValidationWarning): void | Promise<void>;
 }
 
+interface DisclosureSnapshot {
+  expanded: boolean;
+  contentId?: string;
+}
+
 export function createCitationSectionView(
   citations: readonly SourceCitation[],
 ): CitationSectionView {
@@ -299,41 +304,29 @@ export class SourcePanel {
   constructor(private readonly handlers: SourcePanelHandlers) {}
 
   renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
-    let section = container.querySelector('.superpower-inside-chat-citations');
+    const existingSection = container.querySelector('.superpower-inside-chat-citations');
     if (citations.length === 0) {
-      section?.remove();
+      existingSection?.remove();
       return;
     }
-    if (!isDomInstance(section, HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
-    }
-    section.empty();
     const view = createCitationSectionView(citations);
-    const contentId = `superpower-inside-chat-citations-${++this.sectionSequence}`;
-    const toggle = section.createEl('button', {
-      cls: 'superpower-inside-chat-citations-label',
-      attr: {
-        type: 'button',
-        'aria-expanded': String(!view.collapsedByDefault),
-        'aria-controls': contentId,
-      },
-    });
-    const toggleIcon = toggle.createSpan({
-      cls: 'superpower-inside-chat-citations-toggle-icon',
-    });
-    this.handlers.setIcon(
-      toggleIcon,
-      view.collapsedByDefault ? 'chevron-right' : 'chevron-down',
+    const disclosure = readDisclosureSnapshot(
+      existingSection,
+      '.superpower-inside-chat-citations-label',
+      !view.collapsedByDefault,
     );
-    toggle.createSpan({ text: view.labelText });
-    const content = section.createDiv({ cls: 'superpower-inside-chat-citations-content' });
-    content.id = contentId;
-    content.hidden = view.collapsedByDefault;
-    toggle.addEventListener('click', () => {
-      const expanded = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', String(!expanded));
-      content.hidden = expanded;
-      this.handlers.setIcon(toggleIcon, expanded ? 'chevron-right' : 'chevron-down');
+    const section = isDomInstance(existingSection, HTMLElement)
+      ? existingSection
+      : container.createDiv({ cls: 'superpower-inside-chat-citations' });
+    section.empty();
+    const content = this.renderDisclosure(section, {
+      buttonClassName: 'superpower-inside-chat-citations-label',
+      iconClassName: 'superpower-inside-chat-citations-toggle-icon',
+      contentClassName: 'superpower-inside-chat-citations-content',
+      contentId:
+        disclosure.contentId ?? `superpower-inside-chat-citations-${++this.sectionSequence}`,
+      label: view.labelText,
+      expanded: disclosure.expanded,
     });
 
     for (const [index, citation] of citations.entries()) {
@@ -485,35 +478,86 @@ export class SourcePanel {
     container: HTMLElement,
     snapshot: DataBoundarySnapshot | undefined,
   ): void {
-    const section = container.querySelector('.superpower-inside-chat-data-boundary');
+    const existingSection = container.querySelector('.superpower-inside-chat-data-boundary');
     if (!snapshot) {
-      section?.remove();
+      existingSection?.remove();
       return;
     }
-    const boundarySection = isDomInstance(section, HTMLElement)
-      ? section
-      : container.createEl('details', {
-          cls: 'superpower-inside-chat-data-boundary',
-        });
-    boundarySection.empty();
+    const disclosure = readDisclosureSnapshot(
+      existingSection,
+      '.superpower-inside-chat-data-boundary-title',
+      false,
+    );
+    let section: HTMLElement;
+    if (!isDomInstance(existingSection, HTMLElement)) {
+      section = container.createDiv({
+        cls: 'superpower-inside-chat-data-boundary',
+      });
+    } else if (isDomInstance(existingSection, HTMLDetailsElement)) {
+      const replacement = container.createDiv({
+        cls: 'superpower-inside-chat-data-boundary',
+      });
+      existingSection.replaceWith(replacement);
+      section = replacement;
+    } else {
+      section = existingSection;
+    }
+    section.empty();
     const view = createDataBoundaryView(snapshot);
-    const details = isDomInstance(boundarySection, HTMLDetailsElement) ? boundarySection : null;
-    if (details) details.open = false;
-    boundarySection.createEl('summary', {
-      cls: 'superpower-inside-chat-data-boundary-title',
-      text: view.title,
+    const content = this.renderDisclosure(section, {
+      buttonClassName: 'superpower-inside-chat-data-boundary-title',
+      iconClassName: 'superpower-inside-chat-data-boundary-toggle-icon',
+      contentClassName: 'superpower-inside-chat-data-boundary-content',
+      contentId:
+        disclosure.contentId ?? `superpower-inside-chat-data-boundary-${++this.sectionSequence}`,
+      label: view.title,
+      expanded: disclosure.expanded,
     });
-    this.renderDataBoundaryGroup(boundarySection, view.providerLabel, view.providerItems);
-    this.renderDataBoundaryGroup(boundarySection, view.localLabel, view.localItems);
-    this.renderDataBoundaryGroup(boundarySection, view.mcpLabel, view.mcpItems);
+    this.renderDataBoundaryGroup(content, view.providerLabel, view.providerItems);
+    this.renderDataBoundaryGroup(content, view.localLabel, view.localItems);
+    this.renderDataBoundaryGroup(content, view.mcpLabel, view.mcpItems);
     if (view.privacyNotes.length > 0) {
-      const notes = boundarySection.createDiv({
+      const notes = content.createDiv({
         cls: 'superpower-inside-chat-data-boundary-notes',
       });
       for (const note of view.privacyNotes) {
         notes.createDiv({ cls: 'superpower-inside-chat-data-boundary-note', text: note });
       }
     }
+  }
+
+  private renderDisclosure(
+    container: HTMLElement,
+    options: {
+      buttonClassName: string;
+      iconClassName: string;
+      contentClassName: string;
+      contentId: string;
+      label: string;
+      expanded: boolean;
+    },
+  ): HTMLElement {
+    const toggle = container.createEl('button', {
+      cls: options.buttonClassName,
+      attr: {
+        type: 'button',
+        'aria-controls': options.contentId,
+      },
+    });
+    const toggleIcon = toggle.createSpan({ cls: options.iconClassName });
+    toggle.createSpan({ text: options.label });
+    const content = container.createDiv({ cls: options.contentClassName });
+    content.id = options.contentId;
+    const setExpanded = (expanded: boolean): void => {
+      toggle.setAttribute('aria-expanded', String(expanded));
+      content.hidden = !expanded;
+      this.handlers.setIcon(toggleIcon, expanded ? 'chevron-down' : 'chevron-right');
+    };
+    setExpanded(options.expanded);
+    toggle.addEventListener('click', () => {
+      setExpanded(toggle.getAttribute('aria-expanded') !== 'true');
+    });
+    return content;
   }
 
   linkAnswerCitationMarkers(container: HTMLElement, citations: readonly SourceCitation[]): void {
@@ -601,6 +645,28 @@ export class SourcePanel {
       }
     }
   }
+}
+
+function readDisclosureSnapshot(
+  section: Element | null,
+  toggleSelector: string,
+  defaultExpanded: boolean,
+): DisclosureSnapshot {
+  const toggle = section?.querySelector(toggleSelector);
+  const controlledContentId = toggle?.getAttribute('aria-controls')?.trim();
+  const expandedAttribute = toggle?.getAttribute('aria-expanded');
+  let expanded = defaultExpanded;
+  if (expandedAttribute === 'true') {
+    expanded = true;
+  } else if (expandedAttribute === 'false') {
+    expanded = false;
+  } else if (isDomInstance(section, HTMLDetailsElement)) {
+    expanded = section.open;
+  }
+  return {
+    expanded,
+    contentId: controlledContentId || undefined,
+  };
 }
 
 function getCitationStatusText(status: NonNullable<SourceCitation['status']>): string {

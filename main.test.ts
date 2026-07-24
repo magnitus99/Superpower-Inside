@@ -194,6 +194,94 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.ensureRagRuntimeInitialized).not.toHaveBeenCalled();
   });
 
+  it('자동 인덱싱은 플러그인 재로드 중 교체된 RAG runtime을 사용하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      notice: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    let releaseLagMeasurement = (): void => undefined;
+    const lagMeasurement = new Promise<void>((resolve) => {
+      releaseLagMeasurement = resolve;
+    });
+    const vectorStore = {
+      getFileIndexRecords: vi.fn(() => Promise.resolve([])),
+    };
+    const scheduler = {
+      isRunning: vi.fn(() => false),
+      indexPending: vi.fn(() => Promise.resolve({ indexed: 0, vectors: 0, skipped: 0 })),
+    };
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime as object, {
+      app: createApp(),
+      settings: DEFAULT_SETTINGS,
+      unloaded: false,
+      vectorStore,
+      vaultIndexer: {},
+      ragIndexingScheduler: scheduler,
+      ragPerformanceGuard: {
+        measureEventLoopLag: vi.fn(() => lagMeasurement),
+        getState: vi.fn(() => null),
+      },
+      ragIndexAbortController: null,
+      getLogger: () => logger,
+    });
+
+    const run = (
+      runtime as unknown as {
+        autoIndex(): Promise<void>;
+      }
+    ).autoIndex();
+    await Promise.resolve();
+    Object.assign(runtime as object, {
+      unloaded: true,
+      vectorStore: null,
+      vaultIndexer: null,
+      ragIndexingScheduler: null,
+      ragPerformanceGuard: null,
+    });
+    releaseLagMeasurement();
+    await run;
+
+    expect(vectorStore.getFileIndexRecords).not.toHaveBeenCalled();
+    expect(scheduler.indexPending).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'Auto RAG indexing stopped because the runtime changed.',
+      { source: 'rag.auto' },
+    );
+  });
+
+  it('unload된 인스턴스의 늦은 자동 인덱싱 tick은 경고 없이 종료한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = {
+      debug: vi.fn(),
+      warn: vi.fn(),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      unloaded: boolean;
+      getLogger: () => typeof logger;
+    };
+    plugin.unloaded = true;
+    plugin.getLogger = () => logger;
+
+    await (
+      plugin as unknown as {
+        autoIndex(): Promise<void>;
+      }
+    ).autoIndex();
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'Auto RAG indexing stopped because the plugin unloaded.',
+      { source: 'rag.auto' },
+    );
+  });
+
   it('RAG runtime initialization records the stuck stage when a step times out', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     vi.useFakeTimers();
@@ -286,6 +374,92 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     });
   });
 
+  it('BM25 load의 worker 무응답 감시가 진행 중이면 고정 총시간 제한을 중복 적용하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    vi.useFakeTimers();
+    try {
+      let finish = (value: string): void => undefined;
+      const operation = new Promise<string>((resolve) => {
+        finish = resolve;
+      });
+      const logger = {
+        info: vi.fn(),
+        error: vi.fn(),
+      };
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        lastRagRuntimeInitError: string | null;
+        lastRagRuntimeInitStage: string | null;
+        getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+        recordAgentDiagnosticsBreadcrumb: ReturnType<typeof vi.fn>;
+      };
+      plugin.lastRagRuntimeInitError = null;
+      plugin.lastRagRuntimeInitStage = null;
+      plugin.getLogger = vi.fn(() => logger);
+      plugin.recordAgentDiagnosticsBreadcrumb = vi.fn(() => Promise.resolve());
+
+      const result = (
+        plugin as unknown as {
+          runRagRuntimeInitStep(
+            stage: string,
+            operation: () => Promise<string>,
+            timeoutMs: number | null,
+          ): Promise<string>;
+        }
+      ).runRagRuntimeInitStep('bm25-load', () => operation, null);
+      await vi.advanceTimersByTimeAsync(60_000);
+      finish('ready');
+
+      await expect(result).resolves.toBe('ready');
+      expect(logger.error).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('unload로 닫힌 RAG 초기화 단계는 오류로 보고하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      error: vi.fn(),
+    };
+    let rejectOperation = (error: Error): void => undefined;
+    const operation = new Promise<void>((_, reject) => {
+      rejectOperation = reject;
+    });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      unloaded: boolean;
+      lastRagRuntimeInitError: string | null;
+      lastRagRuntimeInitStage: string | null;
+      getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
+      recordAgentDiagnosticsBreadcrumb: ReturnType<typeof vi.fn>;
+    };
+    plugin.unloaded = false;
+    plugin.lastRagRuntimeInitError = null;
+    plugin.lastRagRuntimeInitStage = null;
+    plugin.getLogger = vi.fn(() => logger);
+    plugin.recordAgentDiagnosticsBreadcrumb = vi.fn(() => Promise.resolve());
+
+    const result = (
+      plugin as unknown as {
+        runRagRuntimeInitStep(stage: string, operation: () => Promise<void>): Promise<void>;
+      }
+    ).runRagRuntimeInitStep('bm25-load', () => operation);
+    await Promise.resolve();
+    plugin.unloaded = true;
+    rejectOperation(new Error('BM25 worker was closed.'));
+
+    await expect(result).rejects.toThrow('BM25 worker was closed.');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'RAG runtime initialization step stopped because the plugin unloaded.',
+      expect.objectContaining({
+        source: 'rag',
+        data: expect.objectContaining({ stage: 'bm25-load' }),
+      }),
+    );
+  });
+
   it('RAG indexing operations record active-operation breadcrumbs', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const logger = {
@@ -348,6 +522,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
   it('BM25 load failure does not block the vector RAG runtime', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const { VaultIndexer } = await import('./src/rag/indexer');
     const logger = {
       info: vi.fn(),
       notice: vi.fn(),
@@ -360,13 +536,11 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       settings: typeof DEFAULT_SETTINGS;
       manifest: { id: string };
       getLogger: ReturnType<typeof vi.fn<() => typeof logger>>;
-      runRagRuntimeInitStep: ReturnType<
-        typeof vi.fn<(stage: string, operation: () => Promise<unknown>) => Promise<unknown>>
-      >;
       bm25Index: unknown;
       ragEngine: unknown;
       vaultIndexer: unknown;
       ragIndexingScheduler: unknown;
+      lastRagRuntimeInitError: string | null;
     };
     plugin.app = createApp();
     plugin.manifest = { id: 'superpower-inside' };
@@ -391,29 +565,148 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       chat: vi.fn(() => Promise.resolve('{"entities":[],"relations":[],"claims":[]}')),
       streamChat: vi.fn(() => Promise.resolve()),
     }));
-    plugin.runRagRuntimeInitStep = vi.fn((stage, operation) => {
-      if (stage === 'bm25-load') {
-        expect(plugin.ragEngine).not.toBeNull();
-        expect(plugin.graphRagIndexingRunner).not.toBeNull();
-        return Promise.reject(new Error('BM25 stuck'));
-      }
-      return operation();
-    });
+    const loadSpy = vi
+      .spyOn(IndexedDbBM25Index.prototype, 'load')
+      .mockRejectedValue(new Error('BM25 stuck'));
+    const detachSpy = vi.spyOn(VaultIndexer.prototype, 'setBM25Index');
+    try {
+      await (
+        plugin as unknown as {
+          initRAGRuntime(): Promise<void>;
+        }
+      ).initRAGRuntime();
+      await vi.waitFor(() => {
+        expect(plugin.bm25Index).toBeNull();
+      });
 
-    await (
+      expect(plugin.ragEngine).not.toBeNull();
+      expect(plugin.vaultIndexer).not.toBeNull();
+      expect(plugin.ragIndexingScheduler).not.toBeNull();
+      expect(plugin.lastRagRuntimeInitError).toBeNull();
+      expect(detachSpy).toHaveBeenCalledWith(undefined);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'BM25 index initialization failed; continuing without BM25.',
+        expect.objectContaining({ source: 'rag.bm25' }),
+      );
+    } finally {
+      loadSpy.mockRestore();
+      detachSpy.mockRestore();
+    }
+  });
+
+  it('이전 run의 늦은 BM25 완료는 현재 runtime을 변경하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      notice: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const staleIndex = { close: vi.fn() };
+    const currentIndex = {};
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      unloaded: boolean;
+      ragRuntimeInitRunId: number;
+      bm25Index: unknown;
+      getLogger: () => typeof logger;
+    };
+    plugin.unloaded = false;
+    plugin.ragRuntimeInitRunId = 2;
+    plugin.bm25Index = currentIndex;
+    plugin.getLogger = () => logger;
+
+    const available = await (
+      plugin as unknown as {
+        finishBM25BackgroundLoad(
+          index: unknown,
+          outcome: Promise<{
+            error: Error | null;
+            startedAt: number;
+            loadDurationMs: number;
+          }>,
+          runId: number,
+        ): Promise<boolean>;
+      }
+    ).finishBM25BackgroundLoad(
+      staleIndex,
+      Promise.resolve({ error: null, startedAt: Date.now() - 25, loadDurationMs: 25 }),
+      1,
+    );
+
+    expect(available).toBe(false);
+    expect(staleIndex.close).not.toHaveBeenCalled();
+    expect(plugin.bm25Index).toBe(currentIndex);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('BM25 load가 진행 중이어도 vector RAG runtime 초기화를 즉시 완료한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      manifest: { id: string };
+      bm25Index: unknown;
+      ragEngine: unknown;
+      vaultIndexer: unknown;
+      ragIndexingScheduler: unknown;
+    };
+    plugin.app = createApp();
+    plugin.manifest = { id: 'superpower-inside' };
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'test-key' },
+      providerProfiles: [createOpenAiEmbeddingProfile('test-key')],
+      rag: createRagWithEmbedding(DEFAULT_SETTINGS.rag, {
+        enableBM25: true,
+        graphRagEnabled: false,
+      }),
+    };
+
+    let finishLoad = (): void => undefined;
+    const loadSpy = vi.spyOn(IndexedDbBM25Index.prototype, 'load').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishLoad = resolve;
+        }),
+    );
+    const rebuildSpy = vi
+      .spyOn(IndexedDbBM25Index.prototype, 'rebuild')
+      .mockResolvedValue(undefined);
+    let initializationSettled = false;
+    const initialization = (
       plugin as unknown as {
         initRAGRuntime(): Promise<void>;
       }
-    ).initRAGRuntime();
+    )
+      .initRAGRuntime()
+      .then(() => {
+        initializationSettled = true;
+      });
 
-    expect(plugin.bm25Index).toBeNull();
-    expect(plugin.ragEngine).not.toBeNull();
-    expect(plugin.vaultIndexer).not.toBeNull();
-    expect(plugin.ragIndexingScheduler).not.toBeNull();
-    expect(logger.warn).toHaveBeenCalledWith(
-      'BM25 index initialization failed; continuing without BM25.',
-      expect.objectContaining({ source: 'rag.bm25' }),
-    );
+    try {
+      await vi.waitFor(() => {
+        expect(loadSpy).toHaveBeenCalledOnce();
+      });
+      await vi.waitFor(() => {
+        expect(initializationSettled).toBe(true);
+      });
+
+      expect(plugin.bm25Index).not.toBeNull();
+      expect(plugin.ragEngine).not.toBeNull();
+      expect(plugin.vaultIndexer).not.toBeNull();
+      expect(plugin.ragIndexingScheduler).not.toBeNull();
+    } finally {
+      finishLoad();
+      await initialization;
+      await vi.waitFor(() => {
+        expect(rebuildSpy).toHaveBeenCalledOnce();
+      });
+      loadSpy.mockRestore();
+      rebuildSpy.mockRestore();
+    }
   });
 
   it('RAG 재초기화 시 기존 이벤트를 해제하고 새 이벤트를 등록한다', async () => {
@@ -467,6 +760,52 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(setIntervalSpy).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it('hot reload 시 이전 자동 인덱싱 interval을 회수하고 현재 lifecycle에 등록한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const setIntervalSpy = vi
+      .spyOn(window, 'setInterval')
+      .mockReturnValueOnce(101)
+      .mockReturnValueOnce(202);
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => undefined);
+    const createPlugin = () => {
+      const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+        settings: typeof DEFAULT_SETTINGS;
+        vaultIndexer: object;
+        autoUpdateTimer: number | null;
+        registerInterval: ReturnType<typeof vi.fn<(id: number) => number>>;
+      };
+      plugin.settings = {
+        ...DEFAULT_SETTINGS,
+        rag: {
+          ...DEFAULT_SETTINGS.rag,
+          autoUpdateEnabled: true,
+          autoUpdateIntervalMin: 1,
+        },
+      };
+      plugin.vaultIndexer = {};
+      plugin.autoUpdateTimer = null;
+      plugin.registerInterval = vi.fn((id) => id);
+      return plugin;
+    };
+    const firstPlugin = createPlugin();
+    const secondPlugin = createPlugin();
+
+    try {
+      firstPlugin.setupAutoUpdate();
+      secondPlugin.setupAutoUpdate();
+
+      expect(clearIntervalSpy).toHaveBeenCalledWith(101);
+      expect(firstPlugin.registerInterval).toHaveBeenCalledWith(101);
+      expect(secondPlugin.registerInterval).toHaveBeenCalledWith(202);
+    } finally {
+      secondPlugin.settings.rag.autoUpdateEnabled = false;
+      secondPlugin.setupAutoUpdate();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
     }
   });
 

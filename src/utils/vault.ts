@@ -60,8 +60,29 @@ export async function getRagCandidateFiles(
 ): Promise<TFile[]> {
   const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir);
   const files = vault.getFiles();
-  const plan = await planRagFileIndexability(vault, files, effectiveExcludePaths, ragConfig.excludeExts);
+  const plan = await planRagFileIndexability(
+    vault,
+    files,
+    effectiveExcludePaths,
+    ragConfig.excludeExts,
+  );
   return selectByRustIndices(files, plan.candidateIndices, { dedupe: true });
+}
+
+export async function isRagCandidateFile(
+  vault: Vault,
+  file: TFile,
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): Promise<boolean> {
+  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir);
+  const plan = await planRagFileIndexability(
+    vault,
+    [file],
+    effectiveExcludePaths,
+    ragConfig.excludeExts,
+  );
+  return selectByRustIndices([file], plan.candidateIndices, { dedupe: true }).length === 1;
 }
 
 export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boolean> {
@@ -109,7 +130,9 @@ export function isExcludedPath(filePath: string, patterns: readonly string[]): b
  * 파일 확장자가 제외 목록에 있는지 확인합니다.
  */
 export function isExcludedExt(filePath: string, excludeExts: string[]): boolean {
-  const normalizedKeys = excludeExts.map((extension) => extension.trim().toLowerCase().replace(/^\./, ''));
+  const normalizedKeys = excludeExts.map((extension) =>
+    extension.trim().toLowerCase().replace(/^\./, ''),
+  );
   const normalizedFilePath = filePath.trim();
 
   const rustResult = isExcludedExtRust(normalizedFilePath, normalizedKeys);

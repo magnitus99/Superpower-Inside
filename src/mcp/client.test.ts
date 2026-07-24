@@ -12,10 +12,10 @@ const sdkMocks = vi.hoisted(() => ({
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: vi.fn().mockImplementation(function Client() {
     return {
-    connect: sdkMocks.connect,
-    close: sdkMocks.close,
-    listTools: sdkMocks.listTools,
-    callTool: sdkMocks.callTool,
+      connect: sdkMocks.connect,
+      close: sdkMocks.close,
+      listTools: sdkMocks.listTools,
+      callTool: sdkMocks.callTool,
     };
   }),
 }));
@@ -66,5 +66,25 @@ describe('MCPClientManager', () => {
     await expect(observed).resolves.toBe('MCP stdio connection timed out after 25ms');
     expect(sdkMocks.close).toHaveBeenCalledTimes(1);
     expect(client.isConnected()).toBe(false);
+  });
+
+  it('도구 호출 취소 신호를 SDK RequestOptions까지 그대로 전달한다', async () => {
+    sdkMocks.connect.mockResolvedValue(undefined);
+    sdkMocks.callTool.mockResolvedValue({ content: [] });
+    const client = new MCPClientManager();
+    const controller = new AbortController();
+    await client.connectStdio({
+      name: 'abortable',
+      command: 'npx',
+      args: ['-y', '@upstash/context7-mcp'],
+    });
+
+    await client.callTool('slow_tool', { query: 'obsidian' }, controller.signal);
+
+    expect(sdkMocks.callTool).toHaveBeenCalledWith(
+      { name: 'slow_tool', arguments: { query: 'obsidian' } },
+      undefined,
+      { signal: controller.signal },
+    );
   });
 });

@@ -16,6 +16,7 @@ import {
   countFilesByExtensionsRust,
   bm25TermFrequenciesRust,
   detectCommunitiesRust,
+  deriveNativeToolCoverageReceiptRust,
   countKeywordMatchesRust,
   extractJsonObjectRust,
   extractVaultLinksRust,
@@ -42,6 +43,8 @@ import {
   planFileIndexRecordsRust,
   planFolderMentionFilesRust,
   planFolderLexicalEvidenceIndicesRust,
+  planNativeVaultLexicalHitRust,
+  planToolResultSourceReferencesRust,
   planImplicitFolderQueryPathsRust,
   planGraphEdgeRecordsRust,
   planGraphRagStatusEntryLookupsRust,
@@ -103,6 +106,9 @@ import {
   planRagAutomaticRecoveryBatchRust,
   planRagAutomaticRecoveryRust,
   planReferenceFileIndicesRust,
+  planResearchAnswerContractRust,
+  planResearchProviderLedgerTransitionRust,
+  planResearchProviderRequestBudgetRust,
   planMergedRetrievalCandidatesByEntryIdRust,
   planMergedRetrievalCandidatesRust,
   planSourceReferencesRust,
@@ -171,6 +177,57 @@ describe('Rust WASM RAG core bridge', () => {
     ).toEqual([1, 2]);
     expect(shouldOfferContext7ForPromptRust('Rust API 예제를 보여줘')).toBe(true);
     expect(shouldOfferContext7ForPromptRust('오로라 프로젝트의 진행 상황은?')).toBe(false);
+  });
+
+  it('네이티브 lexical 근거의 실제 일치 행과 검증 상태를 계획한다', () => {
+    expect(
+      planNativeVaultLexicalHitRust(
+        '고객 이탈',
+        '# 제목\n무관한 내용\n고객 이탈의 원인은 느린 온보딩이다.',
+        'all',
+      ),
+    ).toEqual({
+      startLine: 3,
+      endLine: 3,
+      preview: '고객 이탈의 원인은 느린 온보딩이다.',
+      status: 'verified',
+    });
+    expect(
+      planNativeVaultLexicalHitRust('고객 이탈', '고객 인터뷰\n이탈 원인', 'all'),
+    ).toMatchObject({
+      startLine: 1,
+      status: 'candidate',
+    });
+  });
+
+  it('저장된 도구 출처를 본문 없는 재읽기 전용 메타데이터로 제한한다', () => {
+    expect(
+      planToolResultSourceReferencesRust([
+        {
+          id: 'vault:Alpha.md:3-4',
+          filePath: 'Alpha.md',
+          status: 'candidate',
+          line: 3,
+          endLine: 4,
+          heading: 'provider로 보내지 않을 제목',
+          preview: 'provider로 보내지 않을 본문',
+        },
+        {
+          id: 'vault:Stale.md:1-1',
+          filePath: 'Stale.md',
+          status: 'stale',
+          preview: '오래된 근거',
+        },
+      ]),
+    ).toEqual([
+      {
+        filePath: 'Alpha.md',
+        status: 'candidate',
+        requiresRead: true,
+        line: 3,
+        endLine: 4,
+      },
+    ]);
   });
 
   it('returns BM25 term frequencies from Rust tokenizer output', () => {
@@ -1724,6 +1781,7 @@ describe('Rust WASM RAG core bridge', () => {
           id: 'msg-1',
           role: 'assistant',
           providerKey: 'openai',
+          errorRetryAt: '2026-01-01T00:05:00.000Z',
           assistantQuestion: {
             prompt: '어떤 범위를 분석할까요?',
             choices: [{ id: 'choice-1', label: '전체' }],
@@ -1776,6 +1834,7 @@ describe('Rust WASM RAG core bridge', () => {
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
         providerKey: 'openai',
+        errorRetryAt: '2026-01-01T00:05:00.000Z',
         status: 'complete',
         assistantQuestion: {
           prompt: '어떤 범위를 분석할까요?',
@@ -3363,5 +3422,182 @@ describe('Rust WASM RAG core bridge', () => {
         },
       },
     ]);
+  });
+
+  it('불완전한 조사 범위의 scoped negative 위반 코드를 중복 없이 전달한다', () => {
+    const plan = planResearchAnswerContractRust({
+      answer: '현재 검색 범위에서 네빌의 창세기 직접 언급을 찾지 못했습니다.',
+      receipt: {
+        inventoryCount: 2,
+        pagedCount: 2,
+        locallyScreenedCount: 1,
+        selectedEvidenceCount: 0,
+        providerTransferredCount: 0,
+        providerAnalyzedCount: 0,
+        providerOmittedCount: 0,
+        wholeVaultLocallyScreened: false,
+        allSelectedEvidenceAnalyzed: true,
+        allInventoryEvidenceAnalyzed: false,
+        exactNegativeAllowed: false,
+        reasonCodes: ['local-screen-unreadable'],
+      },
+    });
+
+    expect(plan).not.toBeNull();
+    expect(plan?.violationCodes).toEqual(['exact-negative-coverage-incomplete']);
+  });
+
+  it('provider batch 의미를 유지하면서 final과 repair가 예약된 호출 상한을 전달한다', () => {
+    expect(
+      planResearchProviderRequestBudgetRust({
+        providerBatchCount: 8,
+        providerBudget: {
+          maxSelectedItems: 64,
+          batchSize: 8,
+          maxBatches: 8,
+          maxTransferItems: 64,
+        },
+      }),
+    ).toEqual({
+      maxRequests: 12,
+      maxProviderAttempts: 14,
+      maxRetryWaitMs: 30_000,
+      maxMapRequests: 8,
+      maxReductionRequests: 2,
+      reservedFinalRequests: 1,
+      reservedRepairRequests: 1,
+    });
+  });
+
+  it('provider 실제 시도와 누적 retry 대기를 미래 논리 호출 예약 안에서 제한한다', () => {
+    expect(
+      planResearchProviderLedgerTransitionRust({
+        maxProviderAttempts: 14,
+        maxRetryWaitMs: 30_000,
+        providerAttempts: 3,
+        retryWaitMs: 29_000,
+        remainingLogicalRequests: 11,
+        event: { kind: 'retry-wait', retryDelayMs: 500 },
+      }),
+    ).toEqual({
+      allowed: false,
+      providerAttempts: 3,
+      retryWaitMs: 29_000,
+      reason: 'provider-attempt-limit',
+    });
+
+    expect(
+      planResearchProviderLedgerTransitionRust({
+        maxProviderAttempts: 14,
+        maxRetryWaitMs: 30_000,
+        providerAttempts: 2,
+        retryWaitMs: 29_750,
+        remainingLogicalRequests: 10,
+        event: { kind: 'retry-wait', retryDelayMs: 500 },
+      }),
+    ).toEqual({
+      allowed: false,
+      providerAttempts: 2,
+      retryWaitMs: 29_750,
+      reason: 'retry-wait-limit',
+    });
+  });
+
+  it('bounded native 검색 결과를 exact negative 불가 범위로 전달한다', () => {
+    const receipt = deriveNativeToolCoverageReceiptRust([
+      JSON.stringify({
+        action: 'search',
+        query: 'Alpha',
+        path: '',
+        match: 'all',
+        hits: [],
+        scannedFiles: 100,
+        unreadableFiles: 0,
+        totalHits: 20,
+        truncated: true,
+      }),
+    ]);
+
+    expect(receipt).toMatchObject({
+      wholeVaultLocallyScreened: false,
+      exactNegativeAllowed: false,
+      reasonCodes: ['local-screen-omitted'],
+    });
+  });
+
+  it('native 검색과 다른 주제의 부재 단정을 막고 같은 query의 제한 문구만 허용한다', () => {
+    const receipt = deriveNativeToolCoverageReceiptRust([
+      JSON.stringify({
+        action: 'search',
+        query: 'Alpha',
+        path: '',
+        match: 'all',
+        hits: [],
+        scannedFiles: 100,
+        unreadableFiles: 0,
+        totalHits: 0,
+        truncated: false,
+      }),
+    ]);
+
+    expect(receipt?.searchScopes).toEqual([
+      { query: 'Alpha', path: '', match: 'all', complete: true },
+    ]);
+    expect(
+      receipt
+        ? planResearchAnswerContractRust({
+            answer: '현재 검색 범위에서 Beta 내용은 없습니다.',
+            receipt,
+          })
+        : null,
+    ).toMatchObject({
+      allowed: false,
+      violationCodes: ['exact-negative-coverage-incomplete'],
+    });
+    expect(
+      receipt
+        ? planResearchAnswerContractRust({
+            answer: '현재 검색 범위에서 Alpha 내용은 없습니다.',
+            receipt,
+          })
+        : null,
+    ).toMatchObject({ allowed: true, violationCodes: [] });
+  });
+
+  it('path 제한 검색은 whole-vault가 아니며 query와 path를 함께 적은 부재 문구만 허용한다', () => {
+    const receipt = deriveNativeToolCoverageReceiptRust([
+      JSON.stringify({
+        action: 'search',
+        query: 'Alpha',
+        path: 'Projects',
+        match: 'all',
+        hits: [],
+        scannedFiles: 10,
+        unreadableFiles: 0,
+        totalHits: 0,
+        truncated: false,
+      }),
+    ]);
+
+    expect(receipt).toMatchObject({
+      wholeVaultLocallyScreened: false,
+      exactNegativeAllowed: true,
+    });
+    expect(
+      receipt
+        ? planResearchAnswerContractRust({
+            answer: '현재 검색 범위에서 Alpha 내용은 없습니다.',
+            receipt,
+          })
+        : null,
+    ).toMatchObject({ allowed: false });
+    expect(
+      receipt
+        ? planResearchAnswerContractRust({
+            answer: '현재 검색 범위 Projects에서 Alpha 내용은 없습니다.',
+            receipt,
+          })
+        : null,
+    ).toMatchObject({ allowed: true });
   });
 });

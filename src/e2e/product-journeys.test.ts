@@ -11,7 +11,7 @@ import {
   type NativeVaultToolResult,
 } from '../agent/native-vault-tool';
 import { VaultResearchAgent } from '../agent/research-agent';
-import { selectAnswerCitations } from '../agent/citation-selection';
+import { selectDisplayedAnswerCitations } from '../agent/citation-selection';
 import {
   appendAssistantToolRound,
   collectToolCitations,
@@ -54,7 +54,6 @@ describe('유료 제품 핵심 사용자 여정', () => {
 
     const result = await new VaultResearchAgent({ chat }, runtime).run({
       question: '이 옵시디언 볼트를 요약해줘',
-      cacheNamespace: 'journey:test-model',
     });
 
     expect(result).toMatchObject({ processedFiles: 2, totalFiles: 2, failedFiles: [] });
@@ -85,7 +84,8 @@ describe('유료 제품 핵심 사용자 여정', () => {
     messages = appendAssistantToolRound(messages, '장애 기록을 확인하겠습니다.', readCalls);
 
     const finalAnswer = '원인은 인덱스 전체 스캔으로 인한 지연이었다. [vault:Incidents.md:1-2]';
-    const citations = selectAnswerCitations(finalAnswer, collectToolCitations([], allCalls));
+    const toolCitations = collectToolCitations([], allCalls);
+    const citations = selectDisplayedAnswerCitations(finalAnswer, toolCitations);
 
     expect(messages.map((message) => message.role)).toEqual([
       'user',
@@ -106,6 +106,7 @@ describe('유료 제품 핵심 사용자 여정', () => {
     expect(citations).toEqual([
       expect.objectContaining({ filePath: 'Incidents.md', status: 'verified' }),
     ]);
+    expect(selectDisplayedAnswerCitations('출처 표기가 없는 최종 답변', toolCitations)).toEqual([]);
   });
 
   it('function calling이 없는 모델도 compatibility JSON으로 네이티브 조사 도구를 실행한다', async () => {
@@ -251,8 +252,13 @@ function createVaultPort(): NativeVaultToolPort {
       return Promise.resolve({
         action: 'search',
         query: request.query,
+        path: request.path,
         match: request.match,
         hits,
+        scannedFiles: notes.size,
+        unreadableFiles: 0,
+        totalHits: hits.length,
+        truncated: false,
         citations: hits.map((hit) => ({
           id: `vault:${hit.path}:1-2`,
           filePath: hit.path,

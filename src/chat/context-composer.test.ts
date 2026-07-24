@@ -4,6 +4,8 @@ import {
   createContextAttachmentViews,
   createContextBudgetSnapshot,
   createDataBoundarySnapshot,
+  createResearchDataBoundarySnapshot,
+  withDataBoundaryProviderUsage,
 } from './context-composer';
 import type { ContextAttachment, SourceCitation } from './types';
 
@@ -99,6 +101,8 @@ describe('context composer contract', () => {
       createDataBoundarySnapshot({
         providerLabel: 'Ollama',
         model: 'llama3.1',
+        hasUserQuestion: true,
+        recentConversationMessageCount: 4,
         hasSystemPrompt: true,
         attachments,
         citations,
@@ -108,9 +112,103 @@ describe('context composer contract', () => {
       providerLabel: 'Ollama',
       model: 'llama3.1',
       localOnly: ['Draft and source-card state', 'Source-card state'],
-      sentToProvider: ['Answer instructions', '2 notes and references', '2 source previews'],
+      sentToProvider: [
+        'Current question',
+        '4 recent conversation messages',
+        'Answer instructions',
+        '2 notes and references',
+        '2 source previews',
+      ],
       sentToMcp: ['search'],
       privacyNotes: ['1 item was left out and was not sent.'],
+      providerPayload: {
+        userQuestion: true,
+        recentConversationMessages: 4,
+        systemPrompt: true,
+        attachedContexts: 2,
+        citationPreviews: 2,
+        toolResults: 0,
+        researchDocuments: 0,
+      },
     });
+  });
+
+  it('updates provider usage when local tool results and research documents are sent later', () => {
+    const initial = createDataBoundarySnapshot({
+      providerLabel: 'Ollama',
+      model: 'llama3.1',
+      hasUserQuestion: true,
+      recentConversationMessageCount: 1,
+      hasSystemPrompt: false,
+      attachments: [],
+      citations: [],
+      mcpServerNames: [],
+    });
+
+    expect(
+      withDataBoundaryProviderUsage(initial, {
+        toolResultCount: 3,
+        researchDocumentCount: 12,
+        mcpServerNames: ['search', 'search', 'remote'],
+      }),
+    ).toMatchObject({
+      sentToProvider: [
+        'Current question',
+        '1 recent conversation message',
+        '3 tool results',
+        'Evidence from 12 locally selected documents',
+      ],
+      sentToMcp: ['search', 'remote'],
+    });
+  });
+
+  it('언어가 바뀐 뒤에도 semantic system prompt 상태를 유지한다', () => {
+    setLanguage('ko');
+    const initial = createDataBoundarySnapshot({
+      providerLabel: 'Ollama',
+      model: 'llama3.1',
+      hasUserQuestion: true,
+      recentConversationMessageCount: 0,
+      hasSystemPrompt: true,
+      attachments: [],
+      citations: [],
+      mcpServerNames: [],
+    });
+
+    setLanguage('en');
+    const updated = withDataBoundaryProviderUsage(initial, { toolResultCount: 1 });
+
+    expect(updated.providerPayload?.systemPrompt).toBe(true);
+    expect(updated.sentToProvider).toEqual([
+      'Current question',
+      'Answer instructions',
+      '1 tool result',
+    ]);
+  });
+
+  it('볼트 전체 조사는 실제 provider envelope만 데이터 경계에 표시한다', () => {
+    const initial = createResearchDataBoundarySnapshot({
+      providerLabel: 'OpenRouter',
+      model: 'model',
+      previousUserQuestionCount: 3,
+    });
+    const completed = withDataBoundaryProviderUsage(initial, { researchDocumentCount: 12 });
+
+    expect(completed.providerPayload).toEqual({
+      userQuestion: true,
+      recentConversationMessages: 1,
+      systemPrompt: true,
+      attachedContexts: 0,
+      citationPreviews: 0,
+      toolResults: 0,
+      researchDocuments: 12,
+    });
+    expect(completed.sentToMcp).toEqual([]);
+    expect(completed.sentToProvider).toEqual([
+      'Current question',
+      '1 recent conversation message',
+      'Answer instructions',
+      'Evidence from 12 locally selected documents',
+    ]);
   });
 });

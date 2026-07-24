@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SourceCitation } from '../chat/types';
-import { selectAnswerCitations } from './citation-selection';
+import { selectAnswerCitations, selectDisplayedAnswerCitations } from './citation-selection';
 
 describe('최종 답변 citation 선택', () => {
   it('답변에서 실제 언급한 citation만 보존한다', () => {
@@ -34,6 +34,28 @@ describe('최종 답변 citation 선택', () => {
         citations,
       ),
     ).toEqual([citations[0], citations[1]]);
+  });
+
+  it('근거 표기가 없는 답변에서 fallback을 끄면 임의 출처를 붙이지 않는다', () => {
+    const citations = [citation('vault:Alpha.md:1-10'), citation('vault:Beta.md:2-4')];
+
+    expect(selectAnswerCitations('출처 표기가 없는 답변', citations, 0)).toEqual([]);
+  });
+
+  it('사용자 표시 답변은 무표기 fallback 없이 실제 언급한 id와 경로만 남긴다', () => {
+    const citations = [
+      citation('vault:Alpha.md:1-10'),
+      citation('vault:Notes/Beta.md:2-4'),
+      citation('vault:Gamma.md:3-5'),
+    ];
+
+    expect(selectDisplayedAnswerCitations('출처 표기가 없는 답변', citations)).toEqual([]);
+    expect(
+      selectDisplayedAnswerCitations(
+        '`Notes/Beta.md`와 [vault:Gamma.md:3-5]에서 확인했습니다.',
+        citations,
+      ),
+    ).toEqual([citations[1], citations[2]]);
   });
 });
 

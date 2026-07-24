@@ -2,7 +2,12 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { IndexedDbBM25Index, tokenize } from './bm25';
+import { IndexedDbBM25Index, tokenize, type BM25DocumentInput } from './bm25';
+import type {
+  BM25WorkerAdapter,
+  BM25WorkerFactory,
+  BM25WorkerResponse,
+} from './bm25-worker-runtime';
 import { RustBm25RuntimeIndex } from './rust-core';
 
 const dbNames = new Set<string>();
@@ -198,6 +203,88 @@ describe('IndexedDbBM25Index', () => {
     expect(bm25.isTokenizerCurrent).toBe(true);
   });
 
+  it('worker hydration 중 들어온 증분 변경은 초기화 완료 뒤 순서대로 적용한다', async () => {
+    const operations: string[] = [];
+    const workerControl: {
+      initializeRequestId?: number;
+      onMessage?: (event: MessageEvent<BM25WorkerResponse>) => void;
+    } = {};
+    const workerFactory: BM25WorkerFactory = () => ({
+      worker: {
+        postMessage: (message) => {
+          operations.push(message.operation);
+          if (message.operation === 'initialize') {
+            workerControl.initializeRequestId = message.id;
+            return;
+          }
+          queueMicrotask(() => {
+            workerControl.onMessage?.({
+              data: {
+                id: message.id,
+                ready: true,
+                tokenizerCurrent: true,
+                totalDocs: 2,
+                ...(message.operation === 'search-top'
+                  ? {
+                      hits: [
+                        {
+                          docId: 'new.md::0',
+                          sourcePath: 'new.md',
+                          score: 1,
+                        },
+                      ],
+                    }
+                  : {}),
+              },
+            } as unknown as MessageEvent<BM25WorkerResponse>);
+          });
+        },
+        terminate: vi.fn(),
+        setOnMessage: (handler) => {
+          workerControl.onMessage = handler;
+        },
+        setOnError: vi.fn(),
+      } satisfies BM25WorkerAdapter,
+      dispose: vi.fn(),
+    });
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+
+    const loading = bm25.load();
+    await vi.waitFor(() => {
+      expect(operations).toEqual(['initialize']);
+    });
+    bm25.addDocument('new.md::0', 'hydration 이후 반영할 문서', 'new.md');
+    await Promise.resolve();
+    expect(operations).toEqual(['initialize']);
+
+    const initializeRequestId = workerControl.initializeRequestId;
+    const onMessage = workerControl.onMessage;
+    if (initializeRequestId === undefined || onMessage === undefined) {
+      throw new Error('BM25 worker initialize request was not captured.');
+    }
+    onMessage({
+      data: {
+        id: initializeRequestId,
+        ready: true,
+        tokenizerCurrent: true,
+        totalDocs: 1,
+      },
+    } as unknown as MessageEvent<BM25WorkerResponse>);
+    await loading;
+    const hits = await bm25.searchTopWithSources('hydration', 1);
+
+    expect(operations).toEqual(['initialize', 'add', 'search-top']);
+    expect(hits).toEqual([
+      {
+        docId: 'new.md::0',
+        sourcePath: 'new.md',
+        score: 1,
+      },
+    ]);
+  });
+
   it('전체 재빌드 중 긴 문서 루프는 이벤트 루프에 양보하면서 검색 결과를 유지한다', async () => {
     const dbName = createDbName();
     const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
@@ -240,6 +327,40 @@ describe('IndexedDbBM25Index', () => {
 
     expect([...bm25.search('obsoletealpha').keys()]).toEqual([]);
     expect([...bm25.search('freshbeta').keys()]).toEqual(['note.md::0']);
+  });
+
+  it('재빌드 corpus를 준비하는 동안 들어온 증분 변경은 bulk 교체 뒤 다시 적용한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    bm25.addDocument('gone.md::0', 'removeme 이전 문서', 'gone.md');
+    await bm25.persist();
+
+    let finishCorpus = (_documents: BM25DocumentInput[]): void => undefined;
+    const corpus = new Promise<BM25DocumentInput[]>((resolve) => {
+      finishCorpus = resolve;
+    });
+    const rebuilding = bm25.rebuildFrom(() => corpus);
+    bm25.removeDocumentsBySource('gone.md');
+    bm25.addDocument('new.md::0', 'keepme 최신 문서', 'new.md');
+    await bm25.persist();
+    finishCorpus([
+      {
+        id: 'gone.md::0',
+        text: 'removeme stale snapshot',
+        sourcePath: 'gone.md',
+      },
+      {
+        id: 'baseline.md::0',
+        text: 'baseline snapshot',
+        sourcePath: 'baseline.md',
+      },
+    ]);
+
+    await rebuilding;
+
+    expect([...bm25.search('removeme').keys()]).toEqual([]);
+    expect([...bm25.search('keepme').keys()]).toEqual(['new.md::0']);
+    expect([...bm25.search('baseline').keys()]).toEqual(['baseline.md::0']);
   });
 
   it('deleteDatabase는 BM25 문서와 mutation DB를 통째로 삭제한다', async () => {

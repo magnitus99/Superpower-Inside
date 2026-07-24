@@ -18,7 +18,11 @@
     "stage": "streaming-answer",
     "providerCapability": "streaming-reasoning",
     "messages": [
-      { "role": "assistant", "content": "## 제목\n\n- 긴 항목\n- 긴 항목\n- 긴 항목", "status": "streaming" }
+      {
+        "role": "assistant",
+        "content": "## 제목\n\n- 긴 항목\n- 긴 항목\n- 긴 항목",
+        "status": "streaming"
+      }
     ],
     "expectedDom": {
       "statusLabel": "답변 수신",
@@ -49,7 +53,13 @@
         "content": "",
         "status": "pending",
         "toolCalls": [
-          { "id": "call-1", "name": "search_notes", "arguments": "{\"query\":\"alpha\"}", "status": "running", "approved": false }
+          {
+            "id": "call-1",
+            "name": "search_notes",
+            "arguments": "{\"query\":\"alpha\"}",
+            "status": "running",
+            "approved": false
+          }
         ]
       }
     ],
@@ -69,7 +79,13 @@
         "content": "도구 실행 실패",
         "status": "error",
         "toolCalls": [
-          { "id": "call-2", "name": "read_file", "arguments": "{}", "status": "error", "result": "ENOENT" }
+          {
+            "id": "call-2",
+            "name": "read_file",
+            "arguments": "{}",
+            "status": "error",
+            "result": "ENOENT"
+          }
         ]
       }
     ],
@@ -89,7 +105,12 @@
         "content": "Source rag-9 기준입니다.",
         "status": "complete",
         "sourceWarnings": [
-          { "id": "warn-1", "label": "Source rag-9", "detail": "검증된 citation 없음", "kind": "unverified-source" }
+          {
+            "id": "warn-1",
+            "label": "Source rag-9",
+            "detail": "검증된 citation 없음",
+            "kind": "unverified-source"
+          }
         ]
       }
     ],
@@ -104,7 +125,12 @@
     "stage": "cancelled",
     "providerCapability": "streaming",
     "messages": [
-      { "role": "assistant", "content": "중단된 응답", "status": "complete", "stopReason": "cancelled" }
+      {
+        "role": "assistant",
+        "content": "중단된 응답",
+        "status": "complete",
+        "stopReason": "cancelled"
+      }
     ],
     "expectedDom": {
       "statusLabel": "취소됨",
@@ -116,11 +142,20 @@
     "stage": "error",
     "providerCapability": "streaming",
     "messages": [
-      { "role": "assistant", "content": "", "status": "error", "errorMessage": "429 Too Many Requests" }
+      {
+        "role": "assistant",
+        "content": "현재 연결의 요청 한도에 도달했습니다.",
+        "status": "error",
+        "errorMessage": "429 Too Many Requests",
+        "errorKind": "rate-limit",
+        "errorRetryAt": "2026-07-23T08:00:00.000Z"
+      }
     ],
     "expectedDom": {
       "statusLabel": "오류",
-      "statusTitle": "429 Too Many Requests"
+      "statusTitle": "현재 연결의 요청 한도에 도달했습니다.",
+      "primaryAction": "다른 연결로 계속",
+      "diagnosticsDisclosure": true
     }
   },
   {
@@ -128,7 +163,12 @@
     "stage": "error",
     "providerCapability": "buffered-no-tools",
     "messages": [
-      { "role": "assistant", "content": "모델 설정이 필요합니다.", "status": "error", "errorMessage": "provider missing" }
+      {
+        "role": "assistant",
+        "content": "모델 설정이 필요합니다.",
+        "status": "error",
+        "errorMessage": "provider missing"
+      }
     ],
     "expectedDom": {
       "statusLabel": "오류",

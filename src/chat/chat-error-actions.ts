@@ -6,11 +6,30 @@ export interface ChatRecoveryAction {
     | 'retry-same-context'
     | 'switch-provider'
     | 'reconnect-mcp'
-    | 'edit-tool-args'
-    | 'skip-failed-tool'
     | 'send-without-rag'
     | 'copy-debug';
   label: string;
+}
+
+export interface ChatErrorPresentation {
+  content: string;
+  retryAvailableAt?: string;
+}
+
+export function normalizeLoadedChatErrorContent(
+  content: string,
+  kind: ChatErrorKind | undefined,
+  diagnostics?: string,
+): string {
+  if (!kind) return content;
+  const normalized = content.trim();
+  const exposesDiagnostics =
+    normalized.length === 0 ||
+    normalized === diagnostics?.trim() ||
+    /\bLLM\s+(?:API\s+)?(?:stream\s+failed|error)\b|LLM API 오류|오류 코드\s*:|원본\s*:/iu.test(
+      normalized,
+    );
+  return exposesDiagnostics ? createChatErrorPresentation(kind).content : content;
 }
 
 export function classifyChatError(detail: string): ChatErrorKind {
@@ -31,36 +50,102 @@ export function classifyChatError(detail: string): ChatErrorKind {
   return 'unknown';
 }
 
+export function classifyChatFailure(error: unknown): ChatErrorKind {
+  const status = getChatHttpStatus(error);
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 429) return 'rate-limit';
+  if (status !== undefined && status >= 500) return 'provider-response';
+  return classifyChatError(error instanceof Error ? error.message : String(error));
+}
+
+export function getChatHttpStatus(error: unknown): number | undefined {
+  const structuredStatus = getNumericErrorField(error, 'status');
+  if (structuredStatus !== undefined) return structuredStatus;
+  const detail = error instanceof Error ? error.message : String(error);
+  const match = detail.match(/\b(?:status\s*[:=]?\s*|http\s+|:\s*)(\d{3})\b/i);
+  return match?.[1] ? Number(match[1]) : undefined;
+}
+
+export function getChatRetryAfterMs(error: unknown): number | undefined {
+  const retryAfterMs = getNumericErrorField(error, 'retryAfterMs');
+  return retryAfterMs === undefined ? undefined : Math.max(0, retryAfterMs);
+}
+
+export function createChatErrorPresentation(
+  kind: ChatErrorKind,
+  retryAfterMs?: number,
+  nowMs = Date.now(),
+): ChatErrorPresentation {
+  const headline = getChatErrorHeadline(kind);
+  if (kind !== 'rate-limit' || retryAfterMs === undefined || retryAfterMs <= 0) {
+    return { content: headline };
+  }
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1_000));
+  const delay =
+    seconds >= 60
+      ? t('chatErrorMinutes', { count: Math.ceil(seconds / 60) })
+      : t('chatErrorSeconds', { count: seconds });
+  return {
+    content: `${headline}\n\n${t('chatErrorRetryAfter', { delay })}`,
+    retryAvailableAt: new Date(nowMs + retryAfterMs).toISOString(),
+  };
+}
+
 export function createChatRecoveryActions(kind: ChatErrorKind): ChatRecoveryAction[] {
   switch (kind) {
     case 'auth':
       return [retry(), switchProvider(), copyDebug()];
     case 'rate-limit':
-      return [retry(), switchProvider(), copyDebug()];
+      return [switchProvider(), retry(), copyDebug()];
     case 'network':
     case 'timeout':
     case 'provider-response':
       return [retry(), switchProvider(), copyDebug()];
     case 'context-build':
-      return [retry(), { id: 'send-without-rag', label: t('chatRecoverySendWithoutRag') }, copyDebug()];
+      return [
+        retry(),
+        { id: 'send-without-rag', label: t('chatRecoverySendWithoutRag') },
+        copyDebug(),
+      ];
     case 'tool-not-found':
       return [retry(), { id: 'reconnect-mcp', label: t('chatRecoveryReconnectMcp') }, copyDebug()];
     case 'tool-failed':
-      return [
-        retry(),
-        { id: 'edit-tool-args', label: t('chatRecoveryEditToolArgs') },
-        { id: 'skip-failed-tool', label: t('chatRecoverySkipFailedTool') },
-        copyDebug(),
-      ];
+      return [retry(), copyDebug()];
     case 'source-validation':
-      return [
-        retry(),
-        { id: 'send-without-rag', label: t('chatRecoverySendWithoutSourceValidation') },
-        copyDebug(),
-      ];
+      return [retry(), copyDebug()];
     case 'unknown':
       return [retry(), copyDebug()];
   }
+}
+
+function getChatErrorHeadline(kind: ChatErrorKind): string {
+  switch (kind) {
+    case 'auth':
+      return t('apiHintUnauthorized');
+    case 'rate-limit':
+      return t('apiHintRateLimited');
+    case 'network':
+      return t('apiHintFetchCors');
+    case 'timeout':
+      return t('apiHintServiceUnavailable');
+    case 'provider-response':
+      return t('apiHintServerError');
+    case 'context-build':
+    case 'tool-not-found':
+    case 'tool-failed':
+    case 'source-validation':
+    case 'unknown':
+      return t('chatErrorGeneric');
+  }
+}
+
+function getNumericErrorField(
+  error: unknown,
+  field: 'status' | 'retryAfterMs',
+): number | undefined {
+  if (!(error instanceof Error) || !(field in error)) return undefined;
+  const value = (error as Error & Partial<Record<typeof field, unknown>>)[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 export function redactDebugDetail(detail: string): string {
@@ -71,7 +156,10 @@ export function redactDebugDetail(detail: string): string {
       '$1"[REDACTED]"',
     )
     .replace(/\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;}]+)/gi, '$1=[REDACTED]')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED]');
+    .replace(
+      /\b(?:sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g,
+      '[REDACTED]',
+    );
 }
 
 function retry(): ChatRecoveryAction {

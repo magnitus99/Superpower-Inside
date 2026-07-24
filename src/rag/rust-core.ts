@@ -61,6 +61,7 @@ import {
   plan_chat_context_mentions_json,
   plan_compatibility_tool_calls_json,
   plan_mcp_server_candidates_json,
+  plan_native_vault_lexical_hit_json,
   plan_native_vault_link_paths_json,
   plan_native_vault_list_json,
   plan_native_vault_read_range_json,
@@ -138,8 +139,15 @@ import {
   plan_rerank_response_json,
   plan_rerank_result_order_json,
   plan_research_summary_batches_json,
+  plan_tool_result_source_references_json,
   plan_research_citation_indices_json,
   plan_research_request_failure_json,
+  plan_research_candidate_selection_json,
+  plan_research_provider_ledger_transition_json,
+  plan_research_provider_request_budget_json,
+  derive_native_tool_coverage_receipt_json,
+  derive_research_coverage_receipt_json,
+  plan_research_answer_contract_json,
   plan_repeated_tool_call_indices_json,
   format_mcp_json,
   validate_exclude_extension_input_json,
@@ -234,6 +242,21 @@ export interface RustNativeVaultReadRangePlan {
   startLine: number;
   endLine: number;
   truncated: boolean;
+}
+
+export interface RustNativeVaultLexicalHitPlan {
+  startLine: number;
+  endLine: number;
+  preview: string;
+  status: 'candidate' | 'verified';
+}
+
+export interface RustToolResultSourceReference {
+  filePath: string;
+  status: 'candidate' | 'verified';
+  requiresRead: true;
+  line?: number;
+  endLine?: number;
 }
 
 export interface RustNativeVaultStatsPlan {
@@ -1363,6 +1386,7 @@ export interface RustChatMessagePlan {
   contextBudgetSnapshot?: unknown;
   dataBoundarySnapshot?: unknown;
   errorKind?: string;
+  errorRetryAt?: string;
   actionHistory?: unknown[];
 }
 
@@ -5324,6 +5348,612 @@ export function planNativeVaultStatsRust(
   }
 }
 
+export interface RustResearchProviderBudgetInput {
+  maxSelectedItems: number;
+  batchSize: number;
+  maxBatches: number;
+}
+
+export interface RustResearchCandidateSelectionInput {
+  currentQuestion: string;
+  previousUserQuestions: readonly string[];
+  paths: readonly string[];
+  samples: readonly string[];
+  providerBudget?: RustResearchProviderBudgetInput;
+}
+
+export type RustResearchSelectionMode =
+  | 'term-match'
+  | 'bounded-inventory-sample'
+  | 'empty-inventory';
+
+export type RustResearchFacetKind = 'entity' | 'topic' | 'context';
+
+export interface RustResearchFacet {
+  kind: RustResearchFacetKind;
+  terms: string[];
+}
+
+export interface RustResearchProviderBudgetPlan {
+  maxSelectedItems: number;
+  batchSize: number;
+  maxBatches: number;
+  maxTransferItems: number;
+}
+
+export interface RustResearchProviderRequestBudgetInput {
+  providerBatchCount: number;
+  providerBudget: RustResearchProviderBudgetPlan;
+}
+
+export interface RustResearchProviderRequestBudgetPlan {
+  maxRequests: number;
+  maxProviderAttempts: number;
+  maxRetryWaitMs: number;
+  maxMapRequests: number;
+  maxReductionRequests: number;
+  reservedFinalRequests: number;
+  reservedRepairRequests: number;
+}
+
+export type RustResearchProviderLedgerReason = 'provider-attempt-limit' | 'retry-wait-limit';
+
+export interface RustResearchProviderLedgerTransitionInput {
+  maxProviderAttempts: number;
+  maxRetryWaitMs: number;
+  providerAttempts: number;
+  retryWaitMs: number;
+  remainingLogicalRequests: number;
+  event: { kind: 'attempt'; retryDelayMs: 0 } | { kind: 'retry-wait'; retryDelayMs: number };
+}
+
+export interface RustResearchProviderLedgerTransitionPlan {
+  allowed: boolean;
+  providerAttempts: number;
+  retryWaitMs: number;
+  reason: RustResearchProviderLedgerReason | null;
+}
+
+export interface RustResearchCandidateSelectionPlan {
+  inventoryCount: number;
+  selectedIndices: number[];
+  selectionMode: RustResearchSelectionMode;
+  matchedCandidateCount: number;
+  omittedCandidateCount: number;
+  providerBatchCount: number;
+  providerBudget: RustResearchProviderBudgetPlan;
+  terms: string[];
+  facets: RustResearchFacet[];
+  planFingerprint: string;
+}
+
+export interface RustResearchInventorySnapshotInput {
+  paths: readonly string[];
+  total: number;
+}
+
+export interface RustResearchInventoryPageInput {
+  cursor: number;
+  paths: readonly string[];
+  total: number;
+  nextCursor: number | null;
+}
+
+export interface RustResearchLocalScreenInput {
+  screenedIndices: readonly number[];
+  selectedIndices: readonly number[];
+  matchedCandidateCount: number;
+  unreadableIndices: readonly number[];
+  omittedIndices: readonly number[];
+}
+
+export interface RustResearchProviderTransferInput {
+  transferredIndices: readonly number[];
+  analyzedIndices: readonly number[];
+  omittedIndices: readonly number[];
+  failedIndices: readonly number[];
+  omittedCandidateCount: number;
+}
+
+export interface RustResearchCoverageInput {
+  inventory: RustResearchInventorySnapshotInput;
+  pages: readonly RustResearchInventoryPageInput[];
+  localScreen: RustResearchLocalScreenInput;
+  providerTransfer: RustResearchProviderTransferInput;
+}
+
+export type RustResearchCoverageReasonCode =
+  | 'invalid-inventory-path'
+  | 'duplicate-inventory-path'
+  | 'inventory-total-mismatch'
+  | 'page-total-mismatch'
+  | 'pagination-gap'
+  | 'page-path-mismatch'
+  | 'duplicate-page-path'
+  | 'pagination-next-cursor-mismatch'
+  | 'pagination-incomplete'
+  | 'local-screen-incomplete'
+  | 'local-selection-invalid'
+  | 'local-screen-unreadable'
+  | 'local-screen-omitted'
+  | 'provider-transfer-mismatch'
+  | 'provider-analysis-incomplete'
+  | 'provider-budget-omitted'
+  | 'provider-omitted'
+  | 'provider-failed';
+
+export interface RustResearchCoverageReceipt {
+  inventoryCount: number;
+  pagedCount: number;
+  locallyScreenedCount: number;
+  selectedEvidenceCount: number;
+  providerTransferredCount: number;
+  providerAnalyzedCount: number;
+  providerOmittedCount: number;
+  wholeVaultLocallyScreened: boolean;
+  allSelectedEvidenceAnalyzed: boolean;
+  allInventoryEvidenceAnalyzed: boolean;
+  exactNegativeAllowed: boolean;
+  reasonCodes: RustResearchCoverageReasonCode[];
+  searchScopes?: RustResearchSearchScope[];
+}
+
+export interface RustResearchSearchScope {
+  query: string;
+  path: string;
+  match: 'all' | 'any' | 'phrase';
+  complete: boolean;
+}
+
+export type RustResearchAnswerViolationCode =
+  | 'whole-read-claim-unverified'
+  | 'broad-negative-claim'
+  | 'exact-negative-coverage-incomplete';
+
+export interface RustResearchAnswerContractInput {
+  answer: string;
+  receipt: RustResearchCoverageReceipt;
+}
+
+export interface RustResearchAnswerContractPlan {
+  allowed: boolean;
+  action: 'allow' | 'repair';
+  violationCodes: RustResearchAnswerViolationCode[];
+  safeCoverageText: string;
+}
+
+export function planResearchCandidateSelectionRust(
+  input: RustResearchCandidateSelectionInput,
+): RustResearchCandidateSelectionPlan | null {
+  if (!isResearchCandidateSelectionInput(input) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_candidate_selection_json(JSON.stringify(input)),
+    );
+    return isResearchCandidateSelectionPlan(parsed, input.paths.length) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchProviderRequestBudgetRust(
+  input: RustResearchProviderRequestBudgetInput,
+): RustResearchProviderRequestBudgetPlan | null {
+  if (
+    !isNonNegativeSafeInteger(input.providerBatchCount) ||
+    !isResearchProviderBudgetPlan(input.providerBudget) ||
+    input.providerBatchCount > input.providerBudget.maxBatches ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_provider_request_budget_json(JSON.stringify(input)),
+    );
+    return isResearchProviderRequestBudgetPlan(parsed, input) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchProviderLedgerTransitionRust(
+  input: RustResearchProviderLedgerTransitionInput,
+): RustResearchProviderLedgerTransitionPlan | null {
+  if (!isResearchProviderLedgerTransitionInput(input) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_research_provider_ledger_transition_json(JSON.stringify(input)),
+    );
+    return isResearchProviderLedgerTransitionPlan(parsed, input) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function deriveResearchCoverageReceiptRust(
+  input: RustResearchCoverageInput,
+): RustResearchCoverageReceipt | null {
+  if (!isResearchCoverageInput(input) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      derive_research_coverage_receipt_json(JSON.stringify(input)),
+    );
+    return isResearchCoverageReceipt(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function deriveNativeToolCoverageReceiptRust(
+  results: readonly string[],
+): RustResearchCoverageReceipt | null {
+  if (!results.every(isStringValue) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      derive_native_tool_coverage_receipt_json(JSON.stringify(results)),
+    );
+    return isResearchCoverageReceipt(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planResearchAnswerContractRust(
+  input: RustResearchAnswerContractInput,
+): RustResearchAnswerContractPlan | null {
+  if (
+    !isStringValue(input.answer) ||
+    !isResearchCoverageReceipt(input.receipt) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(plan_research_answer_contract_json(JSON.stringify(input)));
+    return isResearchAnswerContractPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isResearchCandidateSelectionInput(input: RustResearchCandidateSelectionInput): boolean {
+  return (
+    isStringValue(input.currentQuestion) &&
+    input.previousUserQuestions.every(isStringValue) &&
+    input.paths.every((path) => isStringValue(path) && path.trim().length > 0) &&
+    input.samples.every(isStringValue) &&
+    input.paths.length === input.samples.length &&
+    (input.providerBudget === undefined || isResearchProviderBudget(input.providerBudget))
+  );
+}
+
+function isResearchProviderBudget(value: unknown): value is RustResearchProviderBudgetInput {
+  return (
+    isStringRecordValueMap(value) &&
+    isPositiveSafeInteger(value.maxSelectedItems) &&
+    isPositiveSafeInteger(value.batchSize) &&
+    isPositiveSafeInteger(value.maxBatches)
+  );
+}
+
+function isResearchCandidateSelectionPlan(
+  value: unknown,
+  inventoryCount: number,
+): value is RustResearchCandidateSelectionPlan {
+  if (!isStringRecordValueMap(value) || !isResearchProviderBudgetPlan(value.providerBudget)) {
+    return false;
+  }
+  const selectedIndices = value.selectedIndices;
+  const terms = value.terms;
+  const facets = value.facets;
+  return (
+    value.inventoryCount === inventoryCount &&
+    isUniqueBoundedIndexArray(selectedIndices, inventoryCount) &&
+    isResearchSelectionMode(value.selectionMode) &&
+    isNonNegativeSafeInteger(value.matchedCandidateCount) &&
+    isNonNegativeSafeInteger(value.omittedCandidateCount) &&
+    value.matchedCandidateCount === selectedIndices.length + value.omittedCandidateCount &&
+    selectedIndices.length <= value.providerBudget.maxTransferItems &&
+    isNonNegativeSafeInteger(value.providerBatchCount) &&
+    value.providerBatchCount <= value.providerBudget.maxBatches &&
+    Array.isArray(terms) &&
+    terms.every((term) => isStringValue(term) && term.length > 0) &&
+    Array.isArray(facets) &&
+    facets.every(isResearchFacet) &&
+    isStringValue(value.planFingerprint) &&
+    /^[0-9a-f]{8}$/u.test(value.planFingerprint)
+  );
+}
+
+function isResearchProviderBudgetPlan(value: unknown): value is RustResearchProviderBudgetPlan {
+  if (
+    !isStringRecordValueMap(value) ||
+    !isPositiveSafeInteger(value.maxSelectedItems) ||
+    !isPositiveSafeInteger(value.batchSize) ||
+    !isPositiveSafeInteger(value.maxBatches) ||
+    !isNonNegativeSafeInteger(value.maxTransferItems)
+  ) {
+    return false;
+  }
+  const batchCapacity = value.batchSize * value.maxBatches;
+  return (
+    Number.isSafeInteger(batchCapacity) &&
+    value.maxTransferItems <= value.maxSelectedItems &&
+    value.maxTransferItems <= batchCapacity
+  );
+}
+
+function isResearchProviderRequestBudgetPlan(
+  value: unknown,
+  input: RustResearchProviderRequestBudgetInput,
+): value is RustResearchProviderRequestBudgetPlan {
+  if (
+    !isStringRecordValueMap(value) ||
+    !isNonNegativeSafeInteger(value.maxRequests) ||
+    !isNonNegativeSafeInteger(value.maxProviderAttempts) ||
+    !isNonNegativeSafeInteger(value.maxRetryWaitMs) ||
+    !isNonNegativeSafeInteger(value.maxMapRequests) ||
+    !isNonNegativeSafeInteger(value.maxReductionRequests) ||
+    !isPositiveSafeInteger(value.reservedFinalRequests) ||
+    !isPositiveSafeInteger(value.reservedRepairRequests)
+  ) {
+    return false;
+  }
+  const plannedRequests =
+    value.maxMapRequests +
+    value.maxReductionRequests +
+    value.reservedFinalRequests +
+    value.reservedRepairRequests;
+  return (
+    Number.isSafeInteger(plannedRequests) &&
+    value.maxRequests === plannedRequests &&
+    value.maxProviderAttempts === value.maxRequests + 2 &&
+    value.maxRetryWaitMs === 30_000 &&
+    value.maxMapRequests === input.providerBatchCount &&
+    value.maxMapRequests <= input.providerBudget.maxBatches &&
+    value.maxReductionRequests <= value.maxMapRequests
+  );
+}
+
+function isResearchProviderLedgerTransitionInput(
+  value: unknown,
+): value is RustResearchProviderLedgerTransitionInput {
+  if (
+    !isStringRecordValueMap(value) ||
+    !isNonNegativeSafeInteger(value.maxProviderAttempts) ||
+    !isNonNegativeSafeInteger(value.maxRetryWaitMs) ||
+    !isNonNegativeSafeInteger(value.providerAttempts) ||
+    !isNonNegativeSafeInteger(value.retryWaitMs) ||
+    !isNonNegativeSafeInteger(value.remainingLogicalRequests) ||
+    value.providerAttempts > value.maxProviderAttempts ||
+    value.retryWaitMs > value.maxRetryWaitMs ||
+    !isStringRecordValueMap(value.event) ||
+    !isNonNegativeSafeInteger(value.event.retryDelayMs)
+  ) {
+    return false;
+  }
+  return (
+    (value.event.kind === 'attempt' && value.event.retryDelayMs === 0) ||
+    value.event.kind === 'retry-wait'
+  );
+}
+
+function isResearchProviderLedgerTransitionPlan(
+  value: unknown,
+  input: RustResearchProviderLedgerTransitionInput,
+): value is RustResearchProviderLedgerTransitionPlan {
+  if (
+    !isStringRecordValueMap(value) ||
+    typeof value.allowed !== 'boolean' ||
+    !isNonNegativeSafeInteger(value.providerAttempts) ||
+    !isNonNegativeSafeInteger(value.retryWaitMs) ||
+    !(
+      value.reason === null ||
+      value.reason === 'provider-attempt-limit' ||
+      value.reason === 'retry-wait-limit'
+    )
+  ) {
+    return false;
+  }
+  if (!value.allowed) {
+    return (
+      value.reason !== null &&
+      value.providerAttempts === input.providerAttempts &&
+      value.retryWaitMs === input.retryWaitMs
+    );
+  }
+  if (value.reason !== null) return false;
+  return input.event.kind === 'attempt'
+    ? value.providerAttempts === input.providerAttempts + 1 &&
+        value.retryWaitMs === input.retryWaitMs
+    : value.providerAttempts === input.providerAttempts &&
+        value.retryWaitMs === input.retryWaitMs + input.event.retryDelayMs;
+}
+
+function isResearchSelectionMode(value: unknown): value is RustResearchSelectionMode {
+  return (
+    value === 'term-match' || value === 'bounded-inventory-sample' || value === 'empty-inventory'
+  );
+}
+
+function isResearchFacet(value: unknown): value is RustResearchFacet {
+  return (
+    isStringRecordValueMap(value) &&
+    (value.kind === 'entity' || value.kind === 'topic' || value.kind === 'context') &&
+    Array.isArray(value.terms) &&
+    value.terms.every((term) => isStringValue(term) && term.length > 0)
+  );
+}
+
+function isResearchCoverageInput(input: RustResearchCoverageInput): boolean {
+  return (
+    isResearchInventorySnapshotInput(input.inventory) &&
+    input.pages.every(isResearchInventoryPageInput) &&
+    isResearchLocalScreenInput(input.localScreen) &&
+    isResearchProviderTransferInput(input.providerTransfer)
+  );
+}
+
+function isResearchInventorySnapshotInput(
+  value: unknown,
+): value is RustResearchInventorySnapshotInput {
+  return (
+    isStringRecordValueMap(value) &&
+    Array.isArray(value.paths) &&
+    value.paths.every(isStringValue) &&
+    isNonNegativeSafeInteger(value.total)
+  );
+}
+
+function isResearchInventoryPageInput(value: unknown): value is RustResearchInventoryPageInput {
+  return (
+    isStringRecordValueMap(value) &&
+    isNonNegativeSafeInteger(value.cursor) &&
+    Array.isArray(value.paths) &&
+    value.paths.every(isStringValue) &&
+    isNonNegativeSafeInteger(value.total) &&
+    (value.nextCursor === null || isNonNegativeSafeInteger(value.nextCursor))
+  );
+}
+
+function isResearchLocalScreenInput(value: unknown): value is RustResearchLocalScreenInput {
+  return (
+    isStringRecordValueMap(value) &&
+    isResearchIndexArray(value.screenedIndices) &&
+    isResearchIndexArray(value.selectedIndices) &&
+    isNonNegativeSafeInteger(value.matchedCandidateCount) &&
+    isResearchIndexArray(value.unreadableIndices) &&
+    isResearchIndexArray(value.omittedIndices)
+  );
+}
+
+function isResearchProviderTransferInput(
+  value: unknown,
+): value is RustResearchProviderTransferInput {
+  return (
+    isStringRecordValueMap(value) &&
+    isResearchIndexArray(value.transferredIndices) &&
+    isResearchIndexArray(value.analyzedIndices) &&
+    isResearchIndexArray(value.omittedIndices) &&
+    isResearchIndexArray(value.failedIndices) &&
+    isNonNegativeSafeInteger(value.omittedCandidateCount)
+  );
+}
+
+function isResearchCoverageReceipt(value: unknown): value is RustResearchCoverageReceipt {
+  if (!isStringRecordValueMap(value)) return false;
+  const reasonCodes = value.reasonCodes;
+  const searchScopes = value.searchScopes;
+  if (
+    typeof value.wholeVaultLocallyScreened !== 'boolean' ||
+    typeof value.allSelectedEvidenceAnalyzed !== 'boolean' ||
+    typeof value.allInventoryEvidenceAnalyzed !== 'boolean' ||
+    typeof value.exactNegativeAllowed !== 'boolean'
+  ) {
+    return false;
+  }
+  if (
+    searchScopes !== undefined &&
+    (!Array.isArray(searchScopes) || !searchScopes.every(isResearchSearchScope))
+  ) {
+    return false;
+  }
+  const expectedExactNegative = Array.isArray(searchScopes)
+    ? searchScopes.length > 0 &&
+      searchScopes.every((scope) => scope.complete) &&
+      value.allSelectedEvidenceAnalyzed
+    : value.wholeVaultLocallyScreened && value.allSelectedEvidenceAnalyzed;
+  const wholeVaultScopeValid =
+    !Array.isArray(searchScopes) ||
+    !value.wholeVaultLocallyScreened ||
+    searchScopes.every((scope) => scope.path.length === 0);
+  return (
+    isNonNegativeSafeInteger(value.inventoryCount) &&
+    isNonNegativeSafeInteger(value.pagedCount) &&
+    isNonNegativeSafeInteger(value.locallyScreenedCount) &&
+    isNonNegativeSafeInteger(value.selectedEvidenceCount) &&
+    isNonNegativeSafeInteger(value.providerTransferredCount) &&
+    isNonNegativeSafeInteger(value.providerAnalyzedCount) &&
+    isNonNegativeSafeInteger(value.providerOmittedCount) &&
+    value.exactNegativeAllowed === expectedExactNegative &&
+    wholeVaultScopeValid &&
+    (!value.allInventoryEvidenceAnalyzed || value.exactNegativeAllowed) &&
+    Array.isArray(reasonCodes) &&
+    reasonCodes.every(isResearchCoverageReasonCode) &&
+    new Set(reasonCodes).size === reasonCodes.length
+  );
+}
+
+function isResearchSearchScope(value: unknown): value is RustResearchSearchScope {
+  return (
+    isStringRecordValueMap(value) &&
+    isStringValue(value.query) &&
+    value.query.trim().length > 0 &&
+    isStringValue(value.path) &&
+    (value.match === 'all' || value.match === 'any' || value.match === 'phrase') &&
+    typeof value.complete === 'boolean'
+  );
+}
+
+function isResearchCoverageReasonCode(value: unknown): value is RustResearchCoverageReasonCode {
+  return (
+    value === 'invalid-inventory-path' ||
+    value === 'duplicate-inventory-path' ||
+    value === 'inventory-total-mismatch' ||
+    value === 'page-total-mismatch' ||
+    value === 'pagination-gap' ||
+    value === 'page-path-mismatch' ||
+    value === 'duplicate-page-path' ||
+    value === 'pagination-next-cursor-mismatch' ||
+    value === 'pagination-incomplete' ||
+    value === 'local-screen-incomplete' ||
+    value === 'local-selection-invalid' ||
+    value === 'local-screen-unreadable' ||
+    value === 'local-screen-omitted' ||
+    value === 'provider-transfer-mismatch' ||
+    value === 'provider-analysis-incomplete' ||
+    value === 'provider-budget-omitted' ||
+    value === 'provider-omitted' ||
+    value === 'provider-failed'
+  );
+}
+
+function isResearchAnswerContractPlan(value: unknown): value is RustResearchAnswerContractPlan {
+  if (!isStringRecordValueMap(value) || !Array.isArray(value.violationCodes)) return false;
+  const allowed = value.allowed;
+  const violationCodes = value.violationCodes;
+  return (
+    typeof allowed === 'boolean' &&
+    (value.action === 'allow' || value.action === 'repair') &&
+    violationCodes.every(isResearchAnswerViolationCode) &&
+    new Set(violationCodes).size === violationCodes.length &&
+    allowed === (value.action === 'allow' && violationCodes.length === 0) &&
+    isStringValue(value.safeCoverageText) &&
+    value.safeCoverageText.length > 0
+  );
+}
+
+function isResearchAnswerViolationCode(value: unknown): value is RustResearchAnswerViolationCode {
+  return (
+    value === 'whole-read-claim-unverified' ||
+    value === 'broad-negative-claim' ||
+    value === 'exact-negative-coverage-incomplete'
+  );
+}
+
+function isResearchIndexArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(isNonNegativeSafeInteger);
+}
+
+function isUniqueBoundedIndexArray(value: unknown, maxExclusive: number): value is number[] {
+  return isBoundedIndexArray(value, maxExclusive) && new Set(value).size === value.length;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return isNonNegativeSafeInteger(value) && value > 0;
+}
+
 export function isWholeVaultResearchIntentRust(question: string): boolean | null {
   if (!isStringValue(question) || !ensureRustCore()) return null;
   try {
@@ -5401,6 +6031,13 @@ export interface RustToolCallSignatureInput {
   arguments: string;
 }
 
+export type RustToolCallBlockReason = 'duplicate-tool-call' | 'native-search-budget-exceeded';
+
+export interface RustToolCallBlock {
+  candidateIndex: number;
+  reason: RustToolCallBlockReason;
+}
+
 export interface RustCompatibilityToolCall {
   name: string;
   arguments: string;
@@ -5433,12 +6070,12 @@ function isRustToolCallSignatureInput(value: unknown): value is RustToolCallSign
   );
 }
 
-export function planRepeatedToolCallIndicesRust(
+export function planToolCallBlocksRust(
   history: readonly RustToolCallSignatureInput[],
   candidates: readonly RustToolCallSignatureInput[],
   maxRepeats: number,
   maxNativeSearchCalls: number,
-): number[] | null {
+): RustToolCallBlock[] | null {
   if (
     !history.every(isRustToolCallSignatureInput) ||
     !candidates.every(isRustToolCallSignatureInput) ||
@@ -5457,10 +6094,23 @@ export function planRepeatedToolCallIndicesRust(
         maxNativeSearchCalls,
       ),
     );
-    return Array.isArray(parsed) && parsed.every(isNonNegativeSafeInteger) ? parsed : null;
+    return Array.isArray(parsed) &&
+      parsed.every(
+        (value) => isRustToolCallBlock(value) && value.candidateIndex < candidates.length,
+      )
+      ? parsed
+      : null;
   } catch {
     return null;
   }
+}
+
+function isRustToolCallBlock(value: unknown): value is RustToolCallBlock {
+  return (
+    isStringRecordValueMap(value) &&
+    isNonNegativeSafeInteger(value.candidateIndex) &&
+    (value.reason === 'duplicate-tool-call' || value.reason === 'native-search-budget-exceeded')
+  );
 }
 
 export function planResearchRequestFailureRust(input: {
@@ -6307,6 +6957,36 @@ export function planFolderLexicalEvidenceIndicesRust(
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) && parsed.every(isValidNonNegativeInteger) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultLexicalHitRust(
+  query: string,
+  content: string,
+  matchMode: 'all' | 'any' | 'phrase',
+): RustNativeVaultLexicalHitPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_native_vault_lexical_hit_json(query, content, matchMode);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isNativeVaultLexicalHitPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planToolResultSourceReferencesRust(
+  citations: readonly unknown[],
+): RustToolResultSourceReference[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_tool_result_source_references_json(JSON.stringify(citations));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isToolResultSourceReference) ? parsed : null;
   } catch {
     return null;
   }
@@ -7203,6 +7883,37 @@ function isNativeVaultToolRequestPlan(value: unknown): value is RustNativeVaultT
     return isStringRecordValueMap(value.error) && typeof value.error.code === 'string';
   }
   return isNativeVaultToolRequest(value.request);
+}
+
+function isNativeVaultLexicalHitPlan(value: unknown): value is RustNativeVaultLexicalHitPlan {
+  if (!isStringRecordValueMap(value)) return false;
+  return (
+    isValidNonNegativeInteger(value.startLine) &&
+    value.startLine > 0 &&
+    isValidNonNegativeInteger(value.endLine) &&
+    value.endLine >= value.startLine &&
+    isStringValue(value.preview) &&
+    (value.status === 'candidate' || value.status === 'verified')
+  );
+}
+
+function isToolResultSourceReference(value: unknown): value is RustToolResultSourceReference {
+  if (!isStringRecordValueMap(value)) return false;
+  const hasValidLine =
+    value.line === undefined || (isValidNonNegativeInteger(value.line) && value.line > 0);
+  const hasValidEndLine =
+    value.endLine === undefined ||
+    (isValidNonNegativeInteger(value.endLine) &&
+      value.endLine > 0 &&
+      isValidNonNegativeInteger(value.line) &&
+      value.endLine >= value.line);
+  return (
+    isStringValue(value.filePath) &&
+    (value.status === 'candidate' || value.status === 'verified') &&
+    value.requiresRead === true &&
+    hasValidLine &&
+    hasValidEndLine
+  );
 }
 
 function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolRequest {
@@ -8862,6 +9573,7 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
       (typeof message.dataBoundarySnapshot === 'object' &&
         message.dataBoundarySnapshot !== null)) &&
     (message.errorKind === undefined || isStringValue(message.errorKind)) &&
+    (message.errorRetryAt === undefined || isStringValue(message.errorRetryAt)) &&
     (message.actionHistory === undefined || Array.isArray(message.actionHistory))
   );
 }

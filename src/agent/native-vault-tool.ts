@@ -13,6 +13,7 @@ export interface NativeVaultSearchHit {
   endLine?: number;
   preview: string;
   score?: number;
+  citationStatus?: 'candidate' | 'verified';
 }
 
 export interface NativeVaultFileSummary {
@@ -28,8 +29,13 @@ interface NativeVaultResultBase {
 export interface NativeVaultSearchResult extends NativeVaultResultBase {
   action: 'search';
   query: string;
+  path: string;
   match: 'all' | 'any' | 'phrase';
   hits: NativeVaultSearchHit[];
+  scannedFiles: number;
+  unreadableFiles: number;
+  totalHits: number;
+  truncated: boolean;
 }
 
 export interface NativeVaultReadResult extends NativeVaultResultBase {
@@ -156,7 +162,7 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
     function: {
       name: NATIVE_VAULT_TOOL_NAME,
       description:
-        'Explore the Obsidian vault read-only. Search and list results are bounded candidates, not proof of exhaustive coverage. Search defaults to matching all meaningful terms; use match="any" for alternatives instead of writing OR in the query. Follow list nextCursor pages and bounded reads before claiming complete coverage. Configured excluded paths, including the chat save folder when enabled, are omitted.',
+        'Explore read-only files selected by the current RAG indexing policy. Search and list results are bounded candidates, not proof of exhaustive coverage. Search defaults to matching all meaningful terms; use match="any" for alternatives instead of writing OR in the query. Follow list nextCursor pages and bounded reads before claiming complete coverage. Configured excluded paths and extensions, the chat save folder when enabled, and files rejected as sensitive, binary, empty, or unreadable are omitted.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -167,7 +173,11 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
             enum: ['search', 'read', 'list', 'links', 'stats'],
             description: 'Read-only action to perform',
           },
-          query: { type: 'string', description: 'Search query for the search action' },
+          query: {
+            type: 'string',
+            maxLength: 512,
+            description: 'Focused search query for the search action (up to 32 lexical terms)',
+          },
           match: {
             type: 'string',
             enum: ['all', 'any', 'phrase'],
@@ -198,6 +208,10 @@ function getRequestErrorMessage(code: string): string {
       return t('nativeVaultUnsupportedAction');
     case 'query_required':
       return t('nativeVaultQueryRequired');
+    case 'query_too_long':
+      return t('nativeVaultQueryTooLong');
+    case 'query_too_many_terms':
+      return t('nativeVaultQueryTooManyTerms');
     case 'path_required':
       return t('nativeVaultPathRequired');
     case 'invalid_path':

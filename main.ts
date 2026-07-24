@@ -132,6 +132,18 @@ const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 const GRAPH_AUTO_SYNC_MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
+const AUTO_UPDATE_TIMER_WINDOW_KEY = '__superpowerInsideAutoUpdateTimerV1' as const;
+
+type AutoUpdateTimerWindow = Window & {
+  [AUTO_UPDATE_TIMER_WINDOW_KEY]?: number;
+};
+
+class RagRuntimeInitializationCancelledError extends Error {
+  constructor() {
+    super('RAG runtime initialization was cancelled.');
+    this.name = 'RagRuntimeInitializationCancelledError';
+  }
+}
 
 function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
   if (!status) return false;
@@ -233,6 +245,12 @@ interface RagRuntimeSnapshot {
   lastAutoUpdateResult: IndexingResult | null;
 }
 
+interface BM25BackgroundLoadOutcome {
+  error: Error | null;
+  startedAt: number;
+  loadDurationMs: number;
+}
+
 export default class SuperpowerInsidePlugin extends Plugin {
   settings!: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
@@ -276,6 +294,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private graphRagProviderAttached = false;
   private ragRuntimeRebuildInProgress = false;
   private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
+  private ragRuntimeInitRunId = 0;
   private unloaded = false;
 
   // 실시간 통계 캐시 (이벤트 기반 업데이트)
@@ -395,6 +414,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   onunload(): void {
     this.unloaded = true;
+    this.ragRuntimeInitRunId =
+      (Number.isSafeInteger(this.ragRuntimeInitRunId) ? this.ragRuntimeInitRunId : 0) + 1;
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
@@ -404,10 +425,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       window.clearTimeout(this.statsDebounceTimer);
       this.statsDebounceTimer = null;
     }
-    if (this.autoUpdateTimer) {
-      window.clearInterval(this.autoUpdateTimer);
-      this.autoUpdateTimer = null;
-    }
+    this.clearAutoUpdateTimer();
     if (this.ragStatusTimer) {
       window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
@@ -1858,6 +1876,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.graphAutoSyncTimer = window.setInterval(() => {
       void this.maybeAutoSyncGraphRag();
     }, intervalMs);
+    this.registerInterval?.(this.graphAutoSyncTimer);
   }
 
   private scheduleGraphAutoSyncBackoff(): void {
@@ -1877,10 +1896,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async rebuildBM25Index(bm25Index: IndexedDbBM25Index): Promise<void> {
-    const entries = await this.vectorStore?.getEntries();
-    if (entries && entries.length > 0) {
-      await bm25Index.rebuild(
-        entries.map((entry) => ({
+    await bm25Index.rebuildFrom(async () => {
+      const entries = await this.vectorStore?.getEntries();
+      if (entries && entries.length > 0) {
+        return entries.map((entry) => ({
           id: entry.id,
           text: entry.metadata.text,
           sourcePath: entry.metadata.filePath,
@@ -1891,21 +1910,148 @@ export default class SuperpowerInsidePlugin extends Plugin {
           sourceSize: entry.metadata.sourceSize,
           contentHash: entry.metadata.contentHash,
           indexedAt: entry.metadata.indexedAt,
-        })),
-      );
-      return;
-    }
-    await this.rebuildBM25IndexFromVault(bm25Index);
+        }));
+      }
+      return this.buildBM25IndexDocumentsFromVault();
+    });
   }
 
-  private async rebuildBM25IndexFromVault(bm25Index: IndexedDbBM25Index): Promise<void> {
+  private startBM25BackgroundLoad(
+    bm25Index: IndexedDbBM25Index,
+  ): Promise<BM25BackgroundLoadOutcome> {
+    const startedAt = Date.now();
+    this.getLogger().info('BM25 index background initialization started.', {
+      source: 'rag.bm25',
+    });
+    void this.recordAgentDiagnosticsBreadcrumb({
+      phase: 'rag.bm25',
+      action: 'enter',
+      detail: 'background-load',
+    });
+    return bm25Index.load().then(
+      () => ({ error: null, startedAt, loadDurationMs: Date.now() - startedAt }),
+      (error: unknown) => ({
+        error: error instanceof Error ? error : new Error(String(error)),
+        startedAt,
+        loadDurationMs: Date.now() - startedAt,
+      }),
+    );
+  }
+
+  private async finishBM25BackgroundLoad(
+    bm25Index: IndexedDbBM25Index,
+    loadOutcome: Promise<BM25BackgroundLoadOutcome>,
+    runId: number,
+  ): Promise<boolean> {
+    const outcome = await loadOutcome;
+    const isCurrent = (): boolean =>
+      !this.unloaded && this.ragRuntimeInitRunId === runId && this.bm25Index === bm25Index;
+    if (!isCurrent()) {
+      this.getLogger().debug('BM25 background initialization stopped because ownership changed.', {
+        source: 'rag.bm25',
+        data: {
+          runId,
+          durationMs: Date.now() - outcome.startedAt,
+          loadDurationMs: outcome.loadDurationMs,
+        },
+      });
+      return false;
+    }
+
+    try {
+      if (outcome.error) throw outcome.error;
+      if (!bm25Index.isTokenizerCurrent || bm25Index.totalDocs === 0) {
+        this.getLogger().notice('BM25 corpus is missing or outdated; rebuilding it.', {
+          source: 'rag.bm25',
+        });
+        await this.rebuildBM25Index(bm25Index);
+      }
+      if (!isCurrent()) {
+        this.getLogger().debug(
+          'BM25 background initialization stopped because ownership changed.',
+          {
+            source: 'rag.bm25',
+            data: {
+              runId,
+              durationMs: Date.now() - outcome.startedAt,
+              loadDurationMs: outcome.loadDurationMs,
+            },
+          },
+        );
+        return false;
+      }
+      this.getLogger().info('BM25 index background initialization completed.', {
+        source: 'rag.bm25',
+        data: {
+          durationMs: Date.now() - outcome.startedAt,
+          loadDurationMs: outcome.loadDurationMs,
+          totalDocs: bm25Index.totalDocs,
+        },
+      });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.bm25',
+        action: 'leave',
+        detail: 'background-load',
+        data: {
+          durationMs: Date.now() - outcome.startedAt,
+          loadDurationMs: outcome.loadDurationMs,
+          totalDocs: bm25Index.totalDocs,
+        },
+      });
+      this.notifyRagStatsRefresh();
+      return true;
+    } catch (error) {
+      if (!isCurrent()) {
+        this.getLogger().debug(
+          'BM25 background initialization stopped because ownership changed.',
+          {
+            source: 'rag.bm25',
+            data: {
+              runId,
+              durationMs: Date.now() - outcome.startedAt,
+              loadDurationMs: outcome.loadDurationMs,
+            },
+          },
+        );
+        return false;
+      }
+      bm25Index.close();
+      this.bm25Index = null;
+      this.vaultIndexer?.setBM25Index(undefined);
+      if (!this.vectorStore) {
+        this.unregisterRAGEvents();
+        this.ragEngine = null;
+      }
+      this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
+        source: 'rag.bm25',
+        data: {
+          durationMs: Date.now() - outcome.startedAt,
+          loadDurationMs: outcome.loadDurationMs,
+        },
+        error,
+      });
+      await this.recordAgentDiagnosticsBreadcrumb({
+        phase: 'rag.bm25',
+        action: 'error',
+        detail: 'background-load',
+        data: {
+          durationMs: Date.now() - outcome.startedAt,
+          loadDurationMs: outcome.loadDurationMs,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return false;
+    }
+  }
+
+  private async buildBM25IndexDocumentsFromVault(): Promise<BM25CorpusDocument[]> {
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
     for (const file of files) {
       const content = await this.app.vault.cachedRead(file);
       documents.push(...this.buildBM25CorpusDocuments(file, content));
     }
-    await bm25Index.rebuild(documents);
+    return documents;
   }
 
   private buildBM25CorpusDocuments(file: TFile, content: string): BM25CorpusDocument[] {
@@ -2004,7 +2150,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async runRagRuntimeInitStep<T>(
     stage: string,
     operation: () => Promise<T>,
-    timeoutMs = RAG_RUNTIME_INIT_STEP_TIMEOUT_MS,
+    timeoutMs: number | null = RAG_RUNTIME_INIT_STEP_TIMEOUT_MS,
   ): Promise<T> {
     const startedAt = Date.now();
     this.lastRagRuntimeInitStage = stage;
@@ -2018,11 +2164,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data: { stage },
     });
     try {
-      const result = await this.withRagRuntimeInitTimeout(
-        Promise.resolve().then(operation),
-        stage,
-        timeoutMs,
-      );
+      const pending = Promise.resolve().then(operation);
+      const result =
+        timeoutMs === null
+          ? await pending
+          : await this.withRagRuntimeInitTimeout(pending, stage, timeoutMs);
       this.getLogger().info('RAG runtime initialization step completed.', {
         source: 'rag',
         data: { stage, durationMs: Date.now() - startedAt },
@@ -2035,6 +2181,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       return result;
     } catch (err) {
+      if (this.unloaded) {
+        this.getLogger().debug(
+          'RAG runtime initialization step stopped because the plugin unloaded.',
+          {
+            source: 'rag',
+            data: { stage, durationMs: Date.now() - startedAt },
+          },
+        );
+        throw err;
+      }
       this.lastRagRuntimeInitError = err instanceof Error ? err.message : String(err);
       this.getLogger().error('RAG runtime initialization step failed.', {
         source: 'rag',
@@ -2150,6 +2306,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // button or "Reindex All" command). Re-initializing RAG with a new provider/model must
     // preserve existing vector store data so users can incrementally reindex.
 
+    const runId =
+      (Number.isSafeInteger(this.ragRuntimeInitRunId) ? this.ragRuntimeInitRunId : 0) + 1;
+    this.ragRuntimeInitRunId = runId;
+    const isCurrentRun = (): boolean => !this.unloaded && this.ragRuntimeInitRunId === runId;
+    const requireCurrentRun = (): void => {
+      if (!isCurrentRun()) throw new RagRuntimeInitializationCancelledError();
+    };
     const previousRuntime = this.captureRagRuntimeSnapshot();
     previousRuntime.automaticRagRecovery?.suspend();
     // Detach the current runtime while the replacement is assembled. Keep its
@@ -2192,33 +2355,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
         embeddingNamespace,
       });
       let bm25Index: IndexedDbBM25Index | undefined;
+      let bm25LoadOutcome: Promise<BM25BackgroundLoadOutcome> | null = null;
+      let bm25BackgroundCompletionStarted = false;
+      const finishBM25InBackground = (): void => {
+        if (bm25BackgroundCompletionStarted || !bm25Index || !bm25LoadOutcome) return;
+        bm25BackgroundCompletionStarted = true;
+        const activeIndex = bm25Index;
+        void this.finishBM25BackgroundLoad(activeIndex, bm25LoadOutcome, runId).then(
+          (available) => {
+            if (!available && bm25Index === activeIndex) {
+              bm25Index = undefined;
+            }
+          },
+        );
+      };
       if (rag.enableBM25) {
         const nextBm25Index = new IndexedDbBM25Index(
           storageLayout.active.bm25,
           this.app.vault.adapter,
         );
-        try {
-          await this.runRagRuntimeInitStep('bm25-load', () => nextBm25Index.load());
-          if (!nextBm25Index.isTokenizerCurrent || nextBm25Index.totalDocs === 0) {
-            this.getLogger().notice('BM25 corpus is missing or outdated; rebuilding it.', {
-              source: 'rag.bm25',
-            });
-            await this.runRagRuntimeInitStep(
-              'bm25-rebuild',
-              () => this.rebuildBM25Index(nextBm25Index),
-              120_000,
-            );
-          }
-          bm25Index = nextBm25Index;
-          this.bm25Index = nextBm25Index;
-          this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore);
-        } catch (err) {
-          nextBm25Index.close();
-          this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
-            source: 'rag.bm25',
-            error: err,
-          });
-        }
+        bm25Index = nextBm25Index;
+        this.bm25Index = nextBm25Index;
+        this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore);
+        // 큰 로컬 색인은 채팅과 vector/Graph 런타임을 막지 않고 worker에서 준비한다.
+        bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index);
       }
 
       if (!resolvedEmbeddingModel) {
@@ -2231,6 +2391,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
         this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
+        finishBM25InBackground();
         return;
       }
 
@@ -2247,6 +2408,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
         this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
+        finishBM25InBackground();
         return;
       }
       if (
@@ -2266,6 +2428,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
         this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
+        finishBM25InBackground();
         return;
       }
 
@@ -2351,6 +2514,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           '.superpower-inside/vectors.json',
         ),
       );
+      requireCurrentRun();
       this.vectorStore = vectorStore;
       this.knowledgeGraphStore = rag.graphRagEnabled
         ? new IndexedDbKnowledgeGraphStore(storageLayout.active.graph)
@@ -2358,6 +2522,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       await this.runRagRuntimeInitStep('graph-status-initial', () =>
         this.computeAndEmitGraphRagStatus(),
       );
+      requireCurrentRun();
 
       // BM25 is attached after the vector/Graph runtime is already usable.
       const structuralMetadataContext = this.app.metadataCache
@@ -2465,6 +2630,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       await this.runRagRuntimeInitStep('graph-status-runner', () =>
         this.computeAndEmitGraphRagStatus(),
       );
+      requireCurrentRun();
 
       this.bm25Index = bm25Index ?? null;
 
@@ -2640,12 +2806,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.setupRagStatusTimer();
       this.registerRAGEvents();
       await this.automaticRagRecovery.start();
+      requireCurrentRun();
       this.getLogger().info('RAG runtime initialization completed.', {
         source: 'rag',
         data: {
           hasVectorStore: this.vectorStore !== null,
           hasGraphRagRunner: this.graphRagIndexingRunner !== null,
-          hasBM25: this.bm25Index !== null,
+          bm25Enabled: this.bm25Index !== null,
+          bm25Ready: this.bm25Index?.isReady ?? false,
         },
       });
       this.lastRagRuntimeInitError = null;
@@ -2653,10 +2821,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.lastRagRuntimeInitStage = null;
       this.lastRagRuntimeInitFinishedAt = Date.now();
       this.disposeRagRuntimeSnapshot(previousRuntime);
+      finishBM25InBackground();
     } catch (err) {
       const failedRuntime = this.captureRagRuntimeSnapshot();
       this.clearRAG({ dispose: false });
       this.disposeRagRuntimeSnapshot(failedRuntime);
+      if (err instanceof RagRuntimeInitializationCancelledError || !isCurrentRun()) {
+        this.disposeRagRuntimeSnapshot(previousRuntime);
+        this.lastRagRuntimeInitStage = null;
+        this.lastRagRuntimeInitFinishedAt = Date.now();
+        this.getLogger().debug('RAG runtime initialization stopped because ownership changed.', {
+          source: 'rag',
+          data: { runId },
+        });
+        return;
+      }
       const restored = this.restoreRagRuntimeSnapshot(previousRuntime);
       this.lastRagRuntimeInitError =
         this.lastRagRuntimeInitError ?? (err instanceof Error ? err.message : String(err));
@@ -2826,10 +3005,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       window.clearTimeout(this.statsDebounceTimer);
       this.statsDebounceTimer = null;
     }
-    if (this.autoUpdateTimer) {
-      window.clearInterval(this.autoUpdateTimer);
-      this.autoUpdateTimer = null;
-    }
+    this.clearAutoUpdateTimer();
     if (this.ragStatusTimer) {
       window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
@@ -2882,7 +3058,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.unregisterRAGEvents();
     if (!this.vaultIndexer || !this.ragIndexingScheduler) return;
 
-    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+    const effectiveExcludePaths = getEffectiveExcludePaths(
+      this.settings.rag,
+      this.settings.chat,
+      this.app.vault.configDir,
+    );
     this.getLogger().debug('Registering RAG vault events.', {
       source: 'rag.events',
       data: {
@@ -2981,7 +3161,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private registerLexicalRAGEvents(bm25Index: IndexedDbBM25Index | undefined): void {
     this.unregisterRAGEvents();
     if (!bm25Index) return;
-    const effectiveExcludePaths = getEffectiveExcludePaths(this.settings.rag, this.settings.chat);
+    const effectiveExcludePaths = getEffectiveExcludePaths(
+      this.settings.rag,
+      this.settings.chat,
+      this.app.vault.configDir,
+    );
     const indexer = {
       indexFile: (file: TFile) => this.indexBM25File(bm25Index, file),
       removeByFilePath: (filePath: string) => this.removeBM25File(bm25Index, filePath),
@@ -3117,29 +3301,72 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   setupAutoUpdate(): void {
-    if (this.autoUpdateTimer) {
-      window.clearInterval(this.autoUpdateTimer);
-      this.autoUpdateTimer = null;
-    }
+    this.clearAutoUpdateTimer(true);
     this.nextAutoUpdateAt = null;
     if (this.settings.rag.autoUpdateEnabled && this.vaultIndexer) {
       this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
       this.autoUpdateTimer = window.setInterval(() => {
         void this.autoIndex();
       }, this.settings.rag.autoUpdateIntervalMin * 60000);
+      (window as AutoUpdateTimerWindow)[AUTO_UPDATE_TIMER_WINDOW_KEY] = this.autoUpdateTimer;
+      this.registerInterval?.(this.autoUpdateTimer);
+    }
+  }
+
+  private clearAutoUpdateTimer(reclaimOrphan = false): void {
+    const timerWindow = window as AutoUpdateTimerWindow;
+    const ownedTimer = typeof this.autoUpdateTimer === 'number' ? this.autoUpdateTimer : null;
+    if (ownedTimer !== null) {
+      window.clearInterval(ownedTimer);
+      this.autoUpdateTimer = null;
+    }
+    const sharedTimer = timerWindow[AUTO_UPDATE_TIMER_WINDOW_KEY];
+    if (sharedTimer === undefined) return;
+    if (sharedTimer === ownedTimer) {
+      delete timerWindow[AUTO_UPDATE_TIMER_WINDOW_KEY];
+      return;
+    }
+    if (reclaimOrphan && ownedTimer === null) {
+      window.clearInterval(sharedTimer);
+      delete timerWindow[AUTO_UPDATE_TIMER_WINDOW_KEY];
     }
   }
 
   private async autoIndex(): Promise<void> {
-    if (!this.vaultIndexer || !this.vectorStore || !this.ragIndexingScheduler) {
+    const vaultIndexer = this.vaultIndexer;
+    const vectorStore = this.vectorStore;
+    const scheduler = this.ragIndexingScheduler;
+    const performanceGuard = this.ragPerformanceGuard;
+    if (this.unloaded) {
+      this.getLogger().debug('Auto RAG indexing stopped because the plugin unloaded.', {
+        source: 'rag.auto',
+      });
+      return;
+    }
+    if (!vaultIndexer || !vectorStore || !scheduler) {
       this.lastAutoUpdateSkippedReason = t('ragIndexerNotInitializedBase');
       this.getLogger().warn('Auto RAG indexing skipped because runtime is not initialized.', {
         source: 'rag.auto',
       });
       return;
     }
+    const stopIfRuntimeChanged = (): boolean => {
+      const changed =
+        this.unloaded ||
+        this.vaultIndexer !== vaultIndexer ||
+        this.vectorStore !== vectorStore ||
+        this.ragIndexingScheduler !== scheduler ||
+        this.ragPerformanceGuard !== performanceGuard;
+      if (changed) {
+        this.getLogger().debug('Auto RAG indexing stopped because the runtime changed.', {
+          source: 'rag.auto',
+        });
+      }
+      return changed;
+    };
     this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
-    await this.ragPerformanceGuard?.measureEventLoopLag();
+    await performanceGuard?.measureEventLoopLag();
+    if (stopIfRuntimeChanged()) return;
     if (this.isRagIndexing()) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdateAlreadyRunning');
       this.getLogger().debug('Auto RAG indexing skipped because indexing is already running.', {
@@ -3148,7 +3375,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragIndexingInProgress') });
       return;
     }
-    const guardState = this.ragPerformanceGuard?.getState() ?? null;
+    const guardState = performanceGuard?.getState() ?? null;
     if (guardState?.mode === 'paused' && (guardState.remainingPauseMs ?? 0) > 0) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
         seconds: Math.ceil((guardState.remainingPauseMs ?? 0) / 1000),
@@ -3163,10 +3390,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     try {
       const status = await calculateRagStatus(
         this.app.vault,
-        this.vectorStore,
+        vectorStore,
         this.settings.rag,
         this.settings.chat,
       );
+      if (stopIfRuntimeChanged()) return;
       if (status.updateRequiredDocuments.length === 0) {
         this.lastAutoUpdateSkippedReason = t('ragAutoUpdateNoTargets');
         this.getLogger().debug('Auto RAG indexing skipped because no documents need updates.', {
@@ -3180,7 +3408,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         data: { updateRequired: status.updateRequiredDocuments.length },
       });
       new Notice(t('autoUpdateIndexingStarted'));
-      const result = await this.ragIndexingScheduler.indexPending();
+      const result = await scheduler.indexPending();
+      if (stopIfRuntimeChanged()) return;
       this.lastAutoUpdateResult = result;
       this.lastAutoUpdateSkippedReason = null;
       this.getLogger().notice('Auto RAG indexing completed.', {
@@ -3192,8 +3421,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
       void this.computeAndEmitRagStats();
     } catch (err) {
+      if (stopIfRuntimeChanged()) return;
       if (isIndexingCancelledError(err)) {
-        const pausedState = this.ragPerformanceGuard?.getState() ?? null;
+        const pausedState = performanceGuard?.getState() ?? null;
         if (pausedState?.mode === 'paused') {
           this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
             seconds: Math.ceil((pausedState.remainingPauseMs ?? 0) / 1000),

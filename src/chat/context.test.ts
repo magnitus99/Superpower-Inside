@@ -4,7 +4,7 @@ import type { GraphEntityRecord, GraphRelationRecord, KnowledgeGraphStore } from
 import type { MCPRegistry } from '../mcp/registry';
 import { createContentHash } from '../rag/hash';
 import type { QueryResult } from '../rag/query';
-import { buildChatContext, type RagQueryLike } from './context';
+import { buildChatContext, resolveChatRagEngine, type RagQueryLike } from './context';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -19,6 +19,15 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('RAG 없이 재전송할 때는 RAG 준비 자체를 건너뛴다', async () => {
+    const prepare = vi.fn(() => Promise.reject(new Error('RAG initialization failed')));
+
+    await expect(
+      resolveChatRagEngine(true, prepare, () => createRagEngine([])),
+    ).resolves.toBeNull();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it('존재하지 않는 파일 후보는 Vault Context에 넣지 않는다', async () => {
     const app = createApp(new Map());
     const ragEngine = createRagEngine([createResult('missing.md', '없는 문서', 'hash')]);
@@ -59,6 +68,43 @@ describe('buildChatContext RAG 출처 검증', () => {
     expect(context.citations[0]).toEqual(
       expect.objectContaining({ filePath: 'note.md', status: 'verified' }),
     );
+  });
+
+  it('기본 점수 검색이 비면 확장된 주제어로 로컬 lexical 후보를 다시 선별한다', async () => {
+    const genesis = createFile('Genesis.md', '창세기 본문과 상징 해석', 1000);
+    const unrelated = createFile('Shopping.md', '주말 장보기 목록', 1000);
+    const app = createApp(
+      new Map([
+        [genesis.path, genesis],
+        [unrelated.path, unrelated],
+      ]),
+    );
+    const query = vi.fn(
+      (_question: string, _topK?: number, minScore?: number): Promise<QueryResult[]> =>
+        Promise.resolve(
+          minScore === 0
+            ? [
+                createResult(genesis.path, genesis.content, createContentHash(genesis.content)),
+                createResult(
+                  unrelated.path,
+                  unrelated.content,
+                  createContentHash(unrelated.content),
+                ),
+              ]
+            : [],
+        ),
+    );
+
+    const context = await buildChatContext('네빌은 창세기를 어떻게 해석했어?', {
+      app,
+      ragEngine: { query },
+      ragMinScore: 0.75,
+      queryExpander: () => Promise.resolve('네빌 Neville Goddard 창세기 Genesis'),
+    });
+
+    expect(query).toHaveBeenNthCalledWith(1, '네빌 Neville Goddard 창세기 Genesis', 5, 0.75);
+    expect(query).toHaveBeenNthCalledWith(2, '네빌 Neville Goddard 창세기 Genesis', 15, 0);
+    expect(context.citations.map((citation) => citation.filePath)).toEqual(['Genesis.md']);
   });
 
   it('RAG provider diagnostic 요약을 attachment detail에 표시한다', async () => {
@@ -109,10 +155,10 @@ describe('buildChatContext RAG 출처 검증', () => {
   it('GraphRAG community 후보는 vault 파일이 없어도 Vault Context에 포함한다', async () => {
     const app = createApp(new Map());
     const graphResult = createResult(
-        'graph://community/community::mission',
-        'Paul and Barnabas missionary conflict',
-        'graph-hash',
-      );
+      'graph://community/community::mission',
+      'Paul and Barnabas missionary conflict',
+      'graph-hash',
+    );
     graphResult.retrievalSources = ['graph-global'];
     const ragEngine = createRagEngine([graphResult]);
 

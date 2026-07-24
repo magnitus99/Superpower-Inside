@@ -30,6 +30,7 @@ import {
   buildChatContext,
   createAppMentionResolver,
   parseMentions as parseContextMentions,
+  resolveChatRagEngine,
   type ContextBuildResult,
   type ParsedMention,
   type RagQueryLike,
@@ -37,11 +38,16 @@ import {
 import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
 import {
   appendAssistantToolRound,
-  executeAssistantToolCalls as executeToolCalls,
+  collectCompletedMcpServerNames,
   collectToolCitations,
+  enforceNativeToolAnswerContract,
+  executeAssistantToolCalls as executeToolCalls,
   joinAssistantToolRoundText,
   markRepeatedToolCalls,
   prepareAssistantToolCalls,
+  resolveAssistantToolLoopText,
+  resolveToolLoopTerminalText,
+  selectProviderReinjectableToolCalls,
 } from './tool-execution';
 import {
   NativeVaultToolRuntime,
@@ -49,8 +55,8 @@ import {
   type NativeVaultToolRuntimeLike,
 } from '../agent/native-vault-tool';
 import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
-import { selectAnswerCitations } from '../agent/citation-selection';
-import { IndexedDbVaultResearchCache } from '../agent/research-cache';
+import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
+import { selectDisplayedAnswerCitations } from '../agent/citation-selection';
 import {
   VaultResearchAgent,
   getVaultResearchPhaseLabel,
@@ -65,7 +71,15 @@ import {
   shouldRenderAssistantQuestion,
 } from './assistant-response-classifier';
 import { formatAssistantQuestionAnswer } from './assistant-question';
-import { classifyChatError, redactDebugDetail } from './chat-error-actions';
+import {
+  classifyChatFailure,
+  createChatErrorPresentation,
+  createChatRecoveryActions,
+  getChatHttpStatus,
+  getChatRetryAfterMs,
+  redactDebugDetail,
+  type ChatRecoveryAction,
+} from './chat-error-actions';
 import {
   createContextPreviewChips,
   createComposerDraftSnapshot,
@@ -75,20 +89,39 @@ import {
 } from './chat-composer';
 import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
 import { createChatMessageMetaItems } from './chat-message-renderer';
+import {
+  CHAT_MESSAGE_ACTION_ATTRIBUTE,
+  createChatMessageActionId,
+  createChatMessageActionRenderState,
+  createRecoveryMessageActionId,
+} from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
-import { createDataBoundarySnapshot } from './context-composer';
+import { expandVaultSearchQueryLocally } from './vault-query-expansion';
+import {
+  createDataBoundarySnapshot,
+  createResearchDataBoundarySnapshot,
+  withDataBoundaryProviderUsage,
+} from './context-composer';
 import {
   createRegenerationDraft,
   createVariantComparisonRows,
   markMessageRegenerated,
+  selectPreviousUserQuestions,
   type RegenerationDraft,
 } from './conversation-variants';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
 import { createProviderWaitStatus } from './provider-wait';
-import { getEffectiveExcludePaths } from '../utils/vault';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
-import { createCompatibilityToolPrompt, parseCompatibilityToolResponse } from './tool-protocol';
+import {
+  createCompatibilityToolPrompt,
+  createNativeVaultEvidencePrompt,
+  parseCompatibilityToolResponse,
+} from './tool-protocol';
+import {
+  createToolApprovalResumePlan,
+  resolveToolApprovalQuestionContext,
+} from './tool-approval-resume';
 import {
   createChatTurnState,
   getChatTurnStageStatus,
@@ -103,14 +136,24 @@ import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
-import { appLogger } from '../utils/logger';
-import { recoverInterruptedSessionMessages } from './session-recovery';
+import { prepareLoadedSessionMessages } from './session-recovery';
+import {
+  isChatRunActive,
+  isChatRunOwner,
+  planChatRunFinalization,
+  type ChatRunHandle,
+} from './run-ownership';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
 const MENTION_TOP_VAR = '--superpower-inside-mention-top';
 const MENTION_BOTTOM_VAR = '--superpower-inside-mention-bottom';
 const CHAT_INPUT_HEIGHT_VAR = '--superpower-inside-chat-input-height';
+
+function getProviderReferenceIdentity(reference: string): string {
+  const [kind = '', id = ''] = reference.split(':');
+  return kind === 'profile' || kind === 'customOpenAI' ? `${kind}:${id}` : kind;
+}
 
 function setHidden(el: HTMLElement | null, hidden: boolean): void {
   if (!el) return;
@@ -150,6 +193,7 @@ interface MessageMetaInput {
   contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
   dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
   errorKind?: ChatMessageWithMeta['errorKind'];
+  errorRetryAt?: string;
   actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
 
@@ -186,14 +230,15 @@ export class ChatView extends ItemView {
   private mentionStartIndex: number;
   private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
+  private activeRun: ChatRunHandle<AbortController> | null;
+  private runTokenSequence: number;
   private lastUserPrompt: string | null;
-  private previousUserQueries: string[];
+  private skipAutoRagOnce = false;
   private pendingSubmittedDraft: ComposerDraftSnapshot | null;
   private pendingRegeneration: RegenerationDraft | null;
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
-  private readonly vaultResearchCache: IndexedDbVaultResearchCache;
   private lastStreamingMarkdownAt: number;
   private localToolCallSequence: number;
 
@@ -240,8 +285,9 @@ export class ChatView extends ItemView {
       .toString(36)
       .slice(2, 8)}`;
     this.abortController = null;
+    this.activeRun = null;
+    this.runTokenSequence = 0;
     this.lastUserPrompt = null;
-    this.previousUserQueries = [];
     this.pendingSubmittedDraft = null;
     this.pendingRegeneration = null;
     this.lastStreamingMarkdownAt = 0;
@@ -249,16 +295,14 @@ export class ChatView extends ItemView {
     this.nativeVaultTool = new NativeVaultToolRuntime(
       new ObsidianNativeVaultToolPort(
         this.app,
+        new RagNativeVaultFileScope(
+          this.app,
+          () => this.plugin.settings.rag,
+          () => this.plugin.settings.chat,
+        ),
         () => this.plugin.ragEngine,
-        () =>
-          getEffectiveExcludePaths(
-            this.plugin.settings.rag,
-            this.plugin.settings.chat,
-            this.app.vault.configDir,
-          ),
       ),
     );
-    this.vaultResearchCache = new IndexedDbVaultResearchCache();
     this.sourcePanel = new SourcePanel({
       setIcon: (element, icon) => setIcon(element, icon),
       openCitation: (citation) => this.openCitation(citation),
@@ -359,10 +403,7 @@ export class ChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.clearAutoSaveTimer();
-    this.abortController?.abort();
-    this.abortController = null;
-    this.isStreaming = false;
-    this.setLoading(false);
+    this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
     // RefreshAction 정리
     this.mcpRefreshAction?.detach();
@@ -372,7 +413,6 @@ export class ChatView extends ItemView {
       unsub();
     }
     this.refreshBusUnsubscribers = [];
-    this.vaultResearchCache.close();
     await this.saveCurrentSession();
   }
 
@@ -670,12 +710,34 @@ export class ChatView extends ItemView {
     }
   }
 
-  private stopStreaming(): void {
-    this.abortController?.abort();
-    this.abortController = null;
+  private invalidateActiveChatRun(restoreDraft: boolean): void {
+    const run = this.activeRun;
+    if (run) {
+      run.controller.abort();
+      if (isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        if (this.abortController === run.controller) {
+          this.abortController = null;
+        }
+      }
+    } else {
+      this.abortController?.abort();
+      this.abortController = null;
+    }
     this.isStreaming = false;
     setHidden(this.typingIndicator, true);
+    if (restoreDraft) {
+      this.restoreSubmittedDraft();
+    } else {
+      this.pendingSubmittedDraft = null;
+      this.pendingRegeneration = null;
+    }
+    this.setLoading(false);
+  }
+
+  private stopStreaming(): void {
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
+    this.invalidateActiveChatRun(true);
     if (current) {
       const cancelledToolCalls = current.toolCalls?.map((toolCall) =>
         toolCall.status === 'running'
@@ -696,7 +758,6 @@ export class ChatView extends ItemView {
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
-    this.setLoading(false);
   }
 
   private populateModelSelect(): void {
@@ -1195,6 +1256,7 @@ export class ChatView extends ItemView {
       contextBudgetSnapshot: metaInput?.contextBudgetSnapshot,
       dataBoundarySnapshot: metaInput?.dataBoundarySnapshot,
       errorKind: metaInput?.errorKind,
+      errorRetryAt: metaInput?.errorRetryAt,
       actionHistory: metaInput?.actionHistory,
     };
     this.messages.push(msg);
@@ -1286,6 +1348,7 @@ export class ChatView extends ItemView {
       message.dataBoundarySnapshot =
         metaInput?.dataBoundarySnapshot ?? message.dataBoundarySnapshot;
       message.errorKind = metaInput?.errorKind ?? message.errorKind;
+      message.errorRetryAt = metaInput?.errorRetryAt ?? message.errorRetryAt;
       message.actionHistory = metaInput?.actionHistory ?? message.actionHistory;
       if (toolCalls) {
         message.toolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
@@ -1312,6 +1375,7 @@ export class ChatView extends ItemView {
         const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
         if (isDomInstance(bubbleContainer, HTMLElement)) {
           this.renderMessageContextSections(bubbleContainer, message);
+          if (isDone) this.renderMessageActions(bubbleContainer, message);
         }
       }
       if (this.autoScroll) {
@@ -1832,25 +1896,200 @@ export class ChatView extends ItemView {
 
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
     const existing = container.querySelector('.superpower-inside-chat-message-actions');
+    const existingActions = isDomInstance(existing, HTMLElement) ? existing : null;
+    const existingDiagnostics = existingActions?.querySelector(
+      '.superpower-inside-chat-error-diagnostics',
+    );
+    const existingDiagnosticsToggle = existingDiagnostics?.querySelector(
+      '.superpower-inside-chat-error-diagnostics-toggle',
+    );
+    const activeElement = container.ownerDocument.activeElement;
+    const focusedActionId =
+      existingActions &&
+      isDomInstance(activeElement, HTMLElement) &&
+      existingActions.contains(activeElement)
+        ? activeElement.getAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE)
+        : undefined;
+    const renderState = createChatMessageActionRenderState({
+      messageId: msg.id,
+      focusedActionId,
+      diagnosticsExpanded: existingDiagnosticsToggle?.getAttribute('aria-expanded'),
+      legacyDiagnosticsOpen: isDomInstance(existingDiagnostics, HTMLDetailsElement)
+        ? existingDiagnostics.open
+        : undefined,
+      diagnosticsContentId: existingDiagnosticsToggle?.getAttribute('aria-controls'),
+    });
     existing?.remove();
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
+    const actionButtons = new Map<string, HTMLButtonElement>();
+    const registerActionButton = (
+      button: HTMLButtonElement,
+      actionId: string,
+    ): HTMLButtonElement => {
+      button.setAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE, actionId);
+      actionButtons.set(actionId, button);
+      return button;
+    };
+    const restoreActionFocus = (): void => {
+      if (!renderState.focusedActionId) return;
+      actionButtons.get(renderState.focusedActionId)?.focus({ preventScroll: true });
+    };
 
-    const copyBtn = actions.createEl('button', { text: t('messageCopyAction') });
+    if (msg.role === 'assistant' && msg.errorKind) {
+      for (const [index, recoveryAction] of createChatRecoveryActions(msg.errorKind).entries()) {
+        const button = registerActionButton(
+          actions.createEl('button', {
+            text: recoveryAction.label,
+            cls: index === 0 ? 'mod-cta' : undefined,
+          }),
+          createRecoveryMessageActionId(recoveryAction.id),
+        );
+        if (
+          recoveryAction.id === 'retry-same-context' &&
+          msg.errorRetryAt &&
+          Date.parse(msg.errorRetryAt) > Date.now()
+        ) {
+          button.disabled = true;
+          const waitMs = Date.parse(msg.errorRetryAt) - Date.now();
+          window.setTimeout(
+            () => {
+              if (button.isConnected) button.disabled = false;
+            },
+            Math.min(waitMs, 2_147_483_647),
+          );
+        }
+        button.addEventListener('click', () => {
+          void this.handleChatRecoveryAction(recoveryAction, msg, button);
+        });
+      }
+      if (msg.errorMessage) {
+        const diagnostics = actions.createDiv({
+          cls: 'superpower-inside-chat-error-diagnostics',
+        });
+        const diagnosticsToggle = registerActionButton(
+          diagnostics.createEl('button', {
+            cls: 'superpower-inside-chat-error-diagnostics-toggle',
+            attr: {
+              type: 'button',
+              'aria-controls': renderState.diagnosticsContentId,
+            },
+          }),
+          createChatMessageActionId('error-diagnostics'),
+        );
+        const diagnosticsIcon = diagnosticsToggle.createSpan({
+          cls: 'superpower-inside-chat-error-diagnostics-toggle-icon',
+        });
+        diagnosticsToggle.createSpan({ text: t('chatErrorDiagnostics') });
+        const diagnosticsContent = diagnostics.createEl('pre', {
+          text: msg.errorMessage,
+        });
+        diagnosticsContent.id = renderState.diagnosticsContentId;
+        const setDiagnosticsExpanded = (expanded: boolean): void => {
+          diagnosticsToggle.setAttribute('aria-expanded', String(expanded));
+          diagnosticsContent.hidden = !expanded;
+          setIcon(diagnosticsIcon, expanded ? 'chevron-down' : 'chevron-right');
+        };
+        setDiagnosticsExpanded(renderState.diagnosticsExpanded);
+        diagnosticsToggle.addEventListener('click', () => {
+          setDiagnosticsExpanded(diagnosticsToggle.getAttribute('aria-expanded') !== 'true');
+        });
+      }
+      restoreActionFocus();
+      return;
+    }
+
+    const copyBtn = registerActionButton(
+      actions.createEl('button', { text: t('messageCopyAction') }),
+      createChatMessageActionId('copy'),
+    );
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const retryBtn = actions.createEl('button', { text: t('messageRetryAction') });
+      const retryBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageRetryAction') }),
+        createChatMessageActionId('regenerate'),
+      );
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
-      const insertBtn = actions.createEl('button', { text: t('sourceInsertIntoNoteAction') });
+      const insertBtn = registerActionButton(
+        actions.createEl('button', { text: t('sourceInsertIntoNoteAction') }),
+        createChatMessageActionId('insert-into-note'),
+      );
       insertBtn.addEventListener('click', () => void this.insertMessageIntoActiveNote(msg));
-      const saveBtn = actions.createEl('button', { text: t('messageNewNoteAction') });
+      const saveBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageNewNoteAction') }),
+        createChatMessageActionId('save-as-note'),
+      );
       saveBtn.addEventListener('click', () => void this.saveMessageAsNote(msg));
-      const branchBtn = actions.createEl('button', { text: t('messageBranchAction') });
+      const branchBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageBranchAction') }),
+        createChatMessageActionId('branch'),
+      );
       branchBtn.addEventListener('click', () => void this.branchFromMessage(msg.id));
     } else if (msg.role === 'user') {
-      const editBtn = actions.createEl('button', { text: t('messageEditAndSendAction') });
+      const editBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageEditAndSendAction') }),
+        createChatMessageActionId('edit-and-send'),
+      );
       editBtn.addEventListener('click', () => void this.editAndResendUserMessage(msg));
     }
+    restoreActionFocus();
+  }
+
+  private async handleChatRecoveryAction(
+    action: ChatRecoveryAction,
+    msg: ChatMessageWithMeta,
+    button: HTMLButtonElement,
+  ): Promise<void> {
+    switch (action.id) {
+      case 'retry-same-context':
+        if (msg.errorRetryAt && Date.parse(msg.errorRetryAt) > Date.now()) return;
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'switch-provider':
+        await this.switchProviderAndRetry(msg);
+        return;
+      case 'reconnect-mcp':
+        await this.plugin.reconnectMCP();
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'send-without-rag':
+        this.skipAutoRagOnce = true;
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'copy-debug':
+        try {
+          await navigator.clipboard.writeText(msg.errorMessage ?? msg.content);
+          button.setText(t('copied'));
+          window.setTimeout(() => button.setText(action.label), 1500);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          new Notice(t('messageCopyFailedNotice', { message }), 5000);
+        }
+        return;
+    }
+  }
+
+  private async switchProviderAndRetry(msg: ChatMessageWithMeta): Promise<void> {
+    if (!this.modelSelectEl) return;
+    const currentModel = this.modelSelectEl.value || this.plugin.settings.chat.defaultModel;
+    const currentProvider = getProviderReferenceIdentity(currentModel);
+    const options = buildChatModelOptions(this.plugin.settings, {
+      currentModel: '',
+    }).sort((left, right) => left.label.localeCompare(right.label, 'en'));
+    const alternative =
+      options.find(
+        (option) =>
+          option.value !== currentModel &&
+          getProviderReferenceIdentity(option.value) !== currentProvider,
+      ) ?? options.find((option) => option.value !== currentModel);
+    if (!alternative) {
+      this.modelSelectEl.focus();
+      new Notice(t('chatRecoveryNoAlternativeProvider'));
+      return;
+    }
+    this.modelSelectEl.value = alternative.value;
+    new Notice(t('chatRecoveryContinuingWithProvider', { provider: alternative.label }), 3000);
+    await this.regenerateFromAssistant(msg.id);
   }
 
   private async copyMessage(msg: ChatMessageWithMeta, button: HTMLButtonElement): Promise<void> {
@@ -1971,12 +2210,11 @@ export class ChatView extends ItemView {
   }
 
   clearMessages(): void {
+    this.invalidateActiveChatRun(false);
     this.messages = [];
     this.sessionSystemPrompt = null;
     this.session = { filePath: null, title: '', isDirty: false };
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     this.updateSessionTitle();
     this.messageEls.clear();
     if (this.messagesArea) {
@@ -2012,9 +2250,8 @@ export class ChatView extends ItemView {
   }
 
   async startNewSession(): Promise<void> {
+    this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     await this.saveCurrentSession(true);
     this.messages = [];
     this.sessionSystemPrompt = null;
@@ -2115,58 +2352,17 @@ export class ChatView extends ItemView {
   }
 
   async loadSession(filePath: string): Promise<void> {
+    this.invalidateActiveChatRun(false);
     try {
       this.clearAutoSaveTimer();
       await this.saveCurrentSession(true);
       const session = await loadChat(this.app.vault, filePath);
       const now = new Date().toISOString();
-      this.messages = recoverInterruptedSessionMessages(
-        session.messages.map((m) => ({
-          id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp ?? Date.now(),
-          createdAt: m.createdAt ?? now,
-          updatedAt: m.updatedAt ?? m.createdAt ?? now,
-          providerKey: m.providerKey,
-          providerLabel: m.providerLabel,
-          model: m.model,
-          status: m.status ?? 'complete',
-          errorMessage: m.errorMessage,
-          reasoning: m.reasoning,
-          toolCalls: m.toolCalls
-            ? m.toolCalls.map((tc) => ({
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments,
-                result: tc.result,
-                resultSummary: tc.resultSummary,
-                normalizedResult: tc.normalizedResult,
-                status: tc.status,
-                serverName: tc.serverName,
-                approved: tc.approved,
-                executionKind: tc.executionKind,
-                citations: tc.citations,
-              }))
-            : undefined,
-          citations: m.citations,
-          sourceWarnings: m.sourceWarnings,
-          contextAttachments: m.contextAttachments,
-          branchOf: m.branchOf,
-          branchRoot: m.branchRoot,
-          variantOf: m.variantOf,
-          stopReason: m.stopReason,
-          providerCapability: m.providerCapability,
-          turnStage: m.turnStage,
-          toolRound: m.toolRound,
-          toolRoundLogs: m.toolRoundLogs,
-          contextBudgetSnapshot: m.contextBudgetSnapshot,
-          dataBoundarySnapshot: m.dataBoundarySnapshot,
-          errorKind: m.errorKind,
-          actionHistory: m.actionHistory,
-        })),
-        t('chatGenerationStopped'),
-      );
+      this.messages = prepareLoadedSessionMessages(session.messages, {
+        cancelledText: t('chatGenerationStopped'),
+        now,
+        createId: () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      });
       this.sessionSystemPrompt = session.systemPrompt ?? null;
       this.session = {
         filePath,
@@ -2298,9 +2494,8 @@ export class ChatView extends ItemView {
       new Notice(t('chatSaveFolder') + t('providerPathRequiredSuffix'));
       return;
     }
+    this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     await this.saveCurrentSession(true);
     openSessionHistoryModal(
       this.container!,
@@ -2317,26 +2512,50 @@ export class ChatView extends ItemView {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
     const regeneration = this.pendingRegeneration;
+    const previousUserQuestions = selectPreviousUserQuestions(
+      this.messages,
+      regeneration?.previousUserId,
+    );
     this.pendingSubmittedDraft = createComposerDraftSnapshot({
       text,
       attachmentIds: this.getDraftAttachmentIds(text),
     });
     this.lastUserPrompt = text;
-    this.previousUserQueries.push(text);
-    if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
+
+    const abortController = new AbortController();
+    const run: ChatRunHandle<AbortController> = {
+      token: ++this.runTokenSequence,
+      controller: abortController,
+    };
+    this.activeRun = run;
+    this.abortController = abortController;
+    this.setLoading(true);
+    const releaseSetupRun = (): void => {
+      if (!isChatRunOwner(this.activeRun, run)) return;
+      this.activeRun = null;
+      this.abortController = null;
+      this.pendingSubmittedDraft = null;
+      this.setLoading(false);
+    };
 
     const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-      await import('../llm/providers');
+      await import('../llm/providers').catch((error: unknown) => {
+        releaseSetupRun();
+        throw error;
+      });
+    if (!isChatRunActive(this.activeRun, run)) return;
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
       new Notice(t('defaultModelMissingNotice'));
+      releaseSetupRun();
       return;
     }
 
     const parts = selectedModel.split(':');
     if (parts.length < 2) {
       new Notice(t('modelSettingInvalid'));
+      releaseSetupRun();
       return;
     }
 
@@ -2354,6 +2573,7 @@ export class ChatView extends ItemView {
       const { profile, modelId } = resolvedProfileModel;
       if (!profile.enabled) {
         new Notice(t('noActiveProviderNotice'));
+        releaseSetupRun();
         return;
       }
       key = `profile:${profile.id}`;
@@ -2368,6 +2588,7 @@ export class ChatView extends ItemView {
     } else if (parts[0] === 'customOpenAI') {
       if (parts.length < 3) {
         new Notice(t('customModelSettingInvalid'));
+        releaseSetupRun();
         return;
       }
       const providerId = parts[1];
@@ -2377,6 +2598,7 @@ export class ChatView extends ItemView {
       );
       if (!customProvider?.enabled) {
         new Notice(t('customProviderDisabled'));
+        releaseSetupRun();
         return;
       }
       key = `customOpenAI:${providerId}`;
@@ -2391,11 +2613,14 @@ export class ChatView extends ItemView {
 
       if (!config?.enabled) {
         new Notice(t('noActiveProviderNotice'));
+        releaseSetupRun();
         return;
       }
 
       provider = createProvider(fixedKey, config, modelName);
     }
+    setHidden(this.typingIndicator, false);
+
     const providerCapability = provider.capability;
     let turnState: ChatTurnState = transitionChatTurn(createChatTurnState(), { type: 'submit' });
     const toTurnMeta = (): Pick<
@@ -2416,17 +2641,42 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const mentionedServers = this.getEffectiveMcpServerNames(text);
-    const promptContext = await this.buildPromptContext(text, this.previousUserQueries, provider);
+    const wholeVaultResearch = isWholeVaultResearchRequest(text);
+    const mentionedServers = wholeVaultResearch ? [] : this.getEffectiveMcpServerNames(text);
+    let promptContext: ContextBuildResult;
+    try {
+      promptContext = wholeVaultResearch
+        ? { systemPrompt: null, attachments: [], citations: [], warnings: [] }
+        : await this.buildPromptContext(text, previousUserQuestions);
+    } catch (error) {
+      if (isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        this.abortController = null;
+        this.restoreSubmittedDraft();
+        this.setLoading(false);
+        const detail = error instanceof Error ? error.message : String(error);
+        new Notice(t('contextRagLoadFailed', { error: redactDebugDetail(detail) }), 5000);
+      }
+      return;
+    }
+    if (!isChatRunActive(this.activeRun, run)) return;
     const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
-    const dataBoundarySnapshot = createDataBoundarySnapshot({
-      providerLabel,
-      model: modelName,
-      hasSystemPrompt: Boolean(promptContext.systemPrompt),
-      attachments: promptContext.attachments,
-      citations: promptContext.citations,
-      mcpServerNames: mentionedServers,
-    });
+    const dataBoundarySnapshot = wholeVaultResearch
+      ? createResearchDataBoundarySnapshot({
+          providerLabel,
+          model: modelName,
+          previousUserQuestionCount: previousUserQuestions.length,
+        })
+      : createDataBoundarySnapshot({
+          providerLabel,
+          model: modelName,
+          hasUserQuestion: true,
+          recentConversationMessageCount: Math.min(9, this.messages.length),
+          hasSystemPrompt: true,
+          attachments: promptContext.attachments,
+          citations: promptContext.citations,
+          mcpServerNames: [],
+        });
     const branchOf = regeneration ? (this.session.filePath ?? undefined) : undefined;
     const userVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
       regeneration
@@ -2446,9 +2696,8 @@ export class ChatView extends ItemView {
         : {};
     const contextMeta: Pick<
       MessageMetaInput,
-      'citations' | 'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot'
+      'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot'
     > = {
-      citations: promptContext.citations,
       contextAttachments: promptContext.attachments,
       contextBudgetSnapshot,
       dataBoundarySnapshot,
@@ -2465,67 +2714,63 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
       ...userVariantMeta,
     });
+    const providerConversationMessages = this.messages
+      .slice(-10)
+      .map((message) => this.toProviderMessage(message));
+    const waitStatus = createProviderWaitStatus({
+      providerLabel,
+      model: modelName,
+      elapsedMs: 0,
+      capability: providerCapability,
+    });
+    const assistantId = this.addMessage(
+      'assistant',
+      providerCapability.streaming ? '' : waitStatus.headline,
+      undefined,
+      undefined,
+      {
+        providerKey: key,
+        providerLabel,
+        model: modelName,
+        providerCapability,
+        ...toTurnMeta(),
+        ...contextMeta,
+        ...assistantVariantMeta,
+      },
+    );
+    const assistantWrapper = this.messageEls.get(assistantId);
+    if (assistantWrapper) {
+      assistantWrapper.classList.add('generating');
+    }
     await this.saveCurrentSession(true);
-    this.setLoading(true);
-
-    setHidden(this.typingIndicator, false);
-
-    let assistantId = '';
-    let assistantWrapper: HTMLElement | undefined;
-    const abortController = new AbortController();
-    this.abortController = abortController;
+    if (!isChatRunActive(this.activeRun, run)) return;
     let restoreDraft = false;
 
     try {
-      const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
+      const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+      if (!isChatRunActive(this.activeRun, run)) return;
       const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
-      const systemPrompt = providerCapability.toolCalling
-        ? promptContext.systemPrompt
-        : [promptContext.systemPrompt, createCompatibilityToolPrompt(toolDefinitions)]
-            .filter((part): part is string => Boolean(part))
-            .join('\n\n');
+      const toolPrompt = providerCapability.toolCalling
+        ? createNativeVaultEvidencePrompt(toolDefinitions)
+        : createCompatibilityToolPrompt(toolDefinitions);
+      const systemPrompt = [promptContext.systemPrompt, toolPrompt]
+        .filter((part): part is string => Boolean(part))
+        .join('\n\n');
       if (!providerCapability.toolCalling && mentionedServers.length > 0) {
         new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
       }
       const messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
+        ...providerConversationMessages,
       ];
 
-      const waitStatus = createProviderWaitStatus({
-        providerLabel,
-        model: modelName,
-        elapsedMs: 0,
-        capability: providerCapability,
-      });
-      assistantId = this.addMessage(
-        'assistant',
-        providerCapability.streaming ? '' : waitStatus.headline,
-        undefined,
-        undefined,
-        {
-          providerKey: key,
-          providerLabel,
-          model: modelName,
-          providerCapability,
-          ...toTurnMeta(),
-          ...contextMeta,
-          ...assistantVariantMeta,
-        },
-      );
-      assistantWrapper = this.messageEls.get(assistantId);
-      if (assistantWrapper) {
-        assistantWrapper.classList.add('generating');
-      }
-
-      if (isWholeVaultResearchRequest(text)) {
-        const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool, {
-          cache: this.vaultResearchCache,
-        }).run({
+      if (wholeVaultResearch) {
+        const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
           question: text,
-          cacheNamespace: `${key}:${modelName}`,
+          previousUserQuestions,
           signal: abortController.signal,
           onProgress: (progress) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
             const progressText = t('vaultResearchProgress', {
               phase: getVaultResearchPhaseLabel(progress.phase),
               completed: String(progress.completedFiles),
@@ -2542,9 +2787,10 @@ export class ChatView extends ItemView {
             });
           },
         });
-        const researchCitations = selectAnswerCitations(
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const researchCitations = selectDisplayedAnswerCitations(
           researchResult.content,
-          collectToolCitations([...promptContext.citations, ...researchResult.citations], []),
+          researchResult.citations,
         );
         const sourceWarnings = this.validateAssistantSources(
           researchResult.content,
@@ -2557,6 +2803,9 @@ export class ChatView extends ItemView {
           providerCapability,
           ...applyTurnEvent({ type: 'complete' }),
           ...contextMeta,
+          dataBoundarySnapshot: withDataBoundaryProviderUsage(dataBoundarySnapshot, {
+            researchDocumentCount: researchResult.providerTransfer.sentFiles,
+          }),
           ...assistantVariantMeta,
           citations: researchCitations,
           sourceWarnings,
@@ -2573,6 +2822,7 @@ export class ChatView extends ItemView {
       await provider.streamChat(
         messages,
         (chunk: StreamChunk) => {
+          if (!isChatRunActive(this.activeRun, run)) return;
           if (chunk.content) {
             fullText += chunk.content;
           }
@@ -2620,6 +2870,7 @@ export class ChatView extends ItemView {
         providerToolDefinitions,
         { signal: abortController.signal },
       );
+      if (!isChatRunActive(this.activeRun, run)) return;
       setHidden(this.typingIndicator, true);
       let normalized = normalizeReasoningChunk({
         content: fullText,
@@ -2633,9 +2884,18 @@ export class ChatView extends ItemView {
         reasoning: fullReasoning,
       });
       if (shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)) {
+        const questionContract = enforceNativeToolAnswerContract(
+          firstClassification.content,
+          Array.from(toolCallMap.values()),
+        );
+        const questionBlocked = questionContract.content !== firstClassification.content;
+        const questionCitations = selectDisplayedAnswerCitations(
+          questionContract.content,
+          promptContext.citations,
+        );
         this.updateMessage(
           assistantId,
-          firstClassification.content,
+          questionContract.content,
           true,
           firstClassification.reasoning || undefined,
           Array.from(toolCallMap.values()),
@@ -2647,8 +2907,13 @@ export class ChatView extends ItemView {
             ...applyTurnEvent({ type: 'complete' }),
             ...contextMeta,
             ...assistantVariantMeta,
-            assistantQuestion: firstClassification.question,
-            originalContent: firstClassification.originalContent,
+            citations: questionCitations,
+            ...(questionBlocked
+              ? {}
+              : {
+                  assistantQuestion: firstClassification.question,
+                  originalContent: firstClassification.originalContent,
+                }),
           },
         );
         return;
@@ -2710,6 +2975,7 @@ export class ChatView extends ItemView {
         await provider.streamChat(
           retryMessages,
           (chunk: StreamChunk) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
             if (chunk.content) fullText += chunk.content;
             if (chunk.reasoning) fullReasoning += chunk.reasoning;
             if (chunk.toolCalls) this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
@@ -2745,6 +3011,7 @@ export class ChatView extends ItemView {
           providerToolDefinitions,
           { signal: abortController.signal },
         );
+        if (!isChatRunActive(this.activeRun, run)) return;
 
         normalized = normalizeReasoningChunk({
           content: fullText,
@@ -2758,9 +3025,18 @@ export class ChatView extends ItemView {
           reasoning: fullReasoning,
         });
         if (shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)) {
+          const questionContract = enforceNativeToolAnswerContract(
+            retryClassification.content,
+            Array.from(toolCallMap.values()),
+          );
+          const questionBlocked = questionContract.content !== retryClassification.content;
+          const questionCitations = selectDisplayedAnswerCitations(
+            questionContract.content,
+            promptContext.citations,
+          );
           this.updateMessage(
             assistantId,
-            retryClassification.content,
+            questionContract.content,
             true,
             retryClassification.reasoning || undefined,
             Array.from(toolCallMap.values()),
@@ -2772,8 +3048,13 @@ export class ChatView extends ItemView {
               ...applyTurnEvent({ type: 'complete' }),
               ...contextMeta,
               ...assistantVariantMeta,
-              assistantQuestion: retryClassification.question,
-              originalContent: retryClassification.originalContent,
+              citations: questionCitations,
+              ...(questionBlocked
+                ? {}
+                : {
+                    assistantQuestion: retryClassification.question,
+                    originalContent: retryClassification.originalContent,
+                  }),
             },
           );
           return;
@@ -2786,7 +3067,9 @@ export class ChatView extends ItemView {
         }
       }
 
-      const sourceWarnings = this.validateAssistantSources(fullText, promptContext.citations);
+      fullText = enforceNativeToolAnswerContract(fullText, toolCalls).content;
+      const displayedCitations = selectDisplayedAnswerCitations(fullText, promptContext.citations);
+      const sourceWarnings = this.validateAssistantSources(fullText, displayedCitations);
       const postProviderTurnMeta =
         toolCalls.length > 0
           ? applyTurnEvent({ type: 'tool-call-delta', activeToolCalls: toolCalls.length })
@@ -2799,21 +3082,21 @@ export class ChatView extends ItemView {
         ...postProviderTurnMeta,
         ...contextMeta,
         ...assistantVariantMeta,
+        citations: displayedCitations,
         sourceWarnings,
       });
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        toolCalls = markRepeatedToolCalls(
-          [],
-          await prepareAssistantToolCalls({
-            toolCalls,
-            nativeTool: this.nativeVaultTool,
-            registry: this.plugin.mcpRegistry,
-            preferredServerNames: mentionedServers,
-            mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
-          }),
-        );
+        const preparedToolCalls = await prepareAssistantToolCalls({
+          toolCalls,
+          nativeTool: this.nativeVaultTool,
+          registry: this.plugin.mcpRegistry,
+          preferredServerNames: mentionedServers,
+          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+        toolCalls = markRepeatedToolCalls([], preparedToolCalls);
         const pendingApproval = toolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
         );
@@ -2826,6 +3109,7 @@ export class ChatView extends ItemView {
             ...applyTurnEvent({ type: 'await-tool-approval' }),
             ...contextMeta,
             ...assistantVariantMeta,
+            citations: displayedCitations,
             sourceWarnings,
           });
           new Notice(t('mcpApprovalRequiredNotice'));
@@ -2842,6 +3126,7 @@ export class ChatView extends ItemView {
             }),
             ...contextMeta,
             ...assistantVariantMeta,
+            citations: displayedCitations,
             sourceWarnings,
           });
         }
@@ -2850,7 +3135,9 @@ export class ChatView extends ItemView {
           toolCalls,
           mentionedServers,
           fullReasoning || undefined,
+          run,
         );
+        if (!isChatRunActive(this.activeRun, run)) return;
         if (pendingApproval) {
           this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
             providerKey: key,
@@ -2860,6 +3147,7 @@ export class ChatView extends ItemView {
             ...applyTurnEvent({ type: 'await-tool-approval' }),
             ...contextMeta,
             ...assistantVariantMeta,
+            citations: displayedCitations,
             sourceWarnings,
           });
         } else {
@@ -2870,7 +3158,7 @@ export class ChatView extends ItemView {
             toolDefinitions: providerToolDefinitions ?? [],
             maxToolRounds: providerCapability.maxToolRounds,
             toolCalls,
-            abortController,
+            run,
             meta: {
               providerKey: key,
               providerLabel,
@@ -2879,11 +3167,13 @@ export class ChatView extends ItemView {
               ...applyTurnEvent({ type: 'tools-complete' }),
               ...contextMeta,
               ...assistantVariantMeta,
+              citations: promptContext.citations,
             },
             mentionedServers,
             initialText: fullText,
             initialReasoning: fullReasoning,
           });
+          if (!isChatRunActive(this.activeRun, run)) return;
         }
       }
       if (assistantWrapper) {
@@ -2896,9 +3186,12 @@ export class ChatView extends ItemView {
         }
       }
     } catch (err) {
-      setHidden(this.typingIndicator, true);
+      const ownsRun = isChatRunOwner(this.activeRun, run);
+      if (ownsRun) {
+        setHidden(this.typingIndicator, true);
+      }
       if (err instanceof DOMException && err.name === 'AbortError') {
-        if (assistantId) {
+        if (ownsRun && assistantId) {
           const assistantMsg = this.messages.find((message) => message.id === assistantId);
           this.updateMessage(
             assistantId,
@@ -2920,29 +3213,33 @@ export class ChatView extends ItemView {
         restoreDraft = true;
         return;
       }
+      if (!ownsRun) {
+        return;
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorKind = classifyChatError(errorMsg);
+      const errorKind = classifyChatFailure(err);
+      const retryAfterMs = getChatRetryAfterMs(err);
+      const presentation = createChatErrorPresentation(errorKind, retryAfterMs);
+      const errDetail = this.formatErrorDetail(
+        key,
+        modelName,
+        redactDebugDetail(errorMsg),
+        getChatHttpStatus(err),
+      );
       if (assistantId) {
-        const errDetail = this.formatErrorDetail(key, modelName, redactDebugDetail(errorMsg));
         const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
-        this.updateMessage(
-          assistantId,
-          t('llmApiError', { detail: errDetail }),
-          true,
-          undefined,
-          undefined,
-          {
-            providerKey: key,
-            providerLabel,
-            model: modelName,
-            providerCapability,
-            ...errorTurnMeta,
-            errorMessage: errDetail,
-            errorKind,
-            ...contextMeta,
-            ...assistantVariantMeta,
-          },
-        );
+        this.updateMessage(assistantId, presentation.content, true, undefined, undefined, {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...errorTurnMeta,
+          errorMessage: errDetail,
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+          ...contextMeta,
+          ...assistantVariantMeta,
+        });
         if (assistantWrapper) {
           assistantWrapper.classList.remove('generating');
           const generatingLabel = assistantWrapper.querySelector(
@@ -2953,39 +3250,39 @@ export class ChatView extends ItemView {
           }
         }
       } else {
-        const errDetail = this.formatErrorDetail(key, modelName, redactDebugDetail(errorMsg));
         const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
-        this.addMessage(
-          'assistant',
-          t('llmApiError', { detail: errDetail }),
-          undefined,
-          undefined,
-          {
-            providerKey: key,
-            providerLabel,
-            model: modelName,
-            providerCapability,
-            ...errorTurnMeta,
-            errorMessage: errDetail,
-            errorKind,
-            ...contextMeta,
-            ...assistantVariantMeta,
-          },
-        );
+        this.addMessage('assistant', presentation.content, undefined, undefined, {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...errorTurnMeta,
+          errorMessage: errDetail,
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+          ...contextMeta,
+          ...assistantVariantMeta,
+        });
       }
       restoreDraft = true;
     } finally {
-      if (this.abortController === abortController) {
-        this.abortController = null;
-      }
-      if (restoreDraft) {
+      const finalization = planChatRunFinalization(this.activeRun, run, restoreDraft);
+      if (finalization.restoreSubmittedDraft) {
         this.restoreSubmittedDraft();
-      } else {
+      } else if (finalization.clearPendingState) {
         this.pendingSubmittedDraft = null;
         this.pendingRegeneration = null;
       }
-      await this.saveCurrentSession(true);
-      this.setLoading(false);
+      if (finalization.saveSession) {
+        await this.saveCurrentSession(true);
+      }
+      if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        if (this.abortController === abortController) {
+          this.abortController = null;
+        }
+        this.setLoading(false);
+      }
     }
   }
 
@@ -3015,7 +3312,10 @@ export class ChatView extends ItemView {
   private restoreSubmittedDraft(): void {
     const draft = this.pendingSubmittedDraft;
     if (!draft || !this.inputArea) return;
-    if (this.inputArea.value.trim()) return;
+    if (this.inputArea.value.trim()) {
+      this.pendingSubmittedDraft = null;
+      return;
+    }
     this.inputArea.value = draft.text;
     this.autoResizeInput();
     this.renderContextPreview(draft.text);
@@ -3153,15 +3453,21 @@ export class ChatView extends ItemView {
       .trim();
   }
 
-  private async collectToolDefinitions(serverNames: string[]): Promise<ToolDefinition[]> {
+  private async collectToolDefinitions(
+    serverNames: string[],
+    run: ChatRunHandle<AbortController>,
+  ): Promise<ToolDefinition[]> {
+    if (!isChatRunActive(this.activeRun, run)) return [];
     const nativeDefinition = createNativeVaultToolDefinition();
     const toolDefinitions: ToolDefinition[] = [nativeDefinition];
     const registeredNames = new Set([nativeDefinition.function.name]);
     for (const serverName of serverNames) {
+      if (!isChatRunActive(this.activeRun, run)) return [];
       const client = this.plugin.mcpRegistry?.getClient(serverName);
       if (!client) continue;
       try {
         const tools = await client.listTools();
+        if (!isChatRunActive(this.activeRun, run)) return [];
         for (const tool of tools) {
           if (registeredNames.has(tool.name)) continue;
           registeredNames.add(tool.name);
@@ -3191,7 +3497,7 @@ export class ChatView extends ItemView {
     assistantContent: string;
     toolDefinitions: ToolDefinition[];
     toolCalls: ToolCallRecord[];
-    abortController: AbortController;
+    run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
   }): Promise<{
     finalText: string;
@@ -3199,11 +3505,15 @@ export class ChatView extends ItemView {
     newToolCalls: ToolCallRecord[];
     conversationMessages: ChatMessage[];
   }> {
-    const completedToolCalls = args.toolCalls.filter(
-      (toolCall) =>
-        (toolCall.status === 'success' || toolCall.status === 'error') &&
-        (toolCall.normalizedResult || toolCall.result),
-    );
+    if (!isChatRunActive(this.activeRun, args.run)) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
+    }
+    const completedToolCalls = selectProviderReinjectableToolCalls(args.toolCalls);
     if (completedToolCalls.length === 0) {
       return {
         finalText: '',
@@ -3226,6 +3536,7 @@ export class ChatView extends ItemView {
     await args.provider.streamChat(
       secondMessages,
       (chunk: StreamChunk) => {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
         if (chunk.content) finalText += chunk.content;
         if (chunk.reasoning) finalReasoning += chunk.reasoning;
         if (chunk.toolCalls) {
@@ -3237,13 +3548,25 @@ export class ChatView extends ItemView {
           false,
           finalReasoning || undefined,
           [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
-          { ...args.meta, status: 'streaming' },
+          {
+            ...args.meta,
+            citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
+            status: 'streaming',
+          },
         );
       },
       0.7,
       args.toolDefinitions,
-      { signal: args.abortController.signal },
+      { signal: args.run.controller.signal },
     );
+    if (!isChatRunActive(this.activeRun, args.run)) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
+    }
 
     const compatibility = parseCompatibilityToolResponse(
       finalText,
@@ -3269,7 +3592,7 @@ export class ChatView extends ItemView {
     toolDefinitions: ToolDefinition[];
     maxToolRounds?: number;
     toolCalls: ToolCallRecord[];
-    abortController: AbortController;
+    run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
     mentionedServers: string[];
     initialText?: string;
@@ -3284,9 +3607,22 @@ export class ChatView extends ItemView {
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
     let turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
+    const withCurrentProviderUsage = (): MessageMetaInput => {
+      const toolResultCount = selectProviderReinjectableToolCalls(allToolCalls).length;
+      const mcpServerNames = collectCompletedMcpServerNames(allToolCalls);
+      return {
+        ...args.meta,
+        dataBoundarySnapshot: args.meta.dataBoundarySnapshot
+          ? withDataBoundaryProviderUsage(args.meta.dataBoundarySnapshot, {
+              toolResultCount,
+              mcpServerNames,
+            })
+          : undefined,
+      };
+    };
 
     while (round < maxRounds) {
-      if (args.abortController.signal.aborted) break;
+      if (!isChatRunActive(this.activeRun, args.run)) return;
       round++;
 
       const result = await this.streamFinalAnswerAfterTools({
@@ -3296,11 +3632,17 @@ export class ChatView extends ItemView {
         assistantContent: currentAssistantContent,
         toolDefinitions: args.toolDefinitions,
         toolCalls: currentToolCalls,
-        abortController: args.abortController,
-        meta: { ...args.meta, citations: turnCitations },
+        run: args.run,
+        meta: { ...withCurrentProviderUsage(), citations: turnCitations },
       });
+      if (!isChatRunActive(this.activeRun, args.run)) return;
 
-      accumulatedText = joinAssistantToolRoundText(accumulatedText, result.finalText);
+      const roundText = resolveAssistantToolLoopText(
+        accumulatedText,
+        result.finalText,
+        result.newToolCalls.length > 0,
+      );
+      accumulatedText = roundText.finalAnswer ?? roundText.displayText;
       if (result.finalReasoning) {
         accumulatedReasoning = joinAssistantToolRoundText(
           accumulatedReasoning,
@@ -3310,22 +3652,22 @@ export class ChatView extends ItemView {
       conversationMessages = result.conversationMessages;
 
       if (result.newToolCalls.length > 0) {
-        const preparedToolCalls = markRepeatedToolCalls(
-          allToolCalls,
-          await prepareAssistantToolCalls({
-            toolCalls: result.newToolCalls,
-            nativeTool: this.nativeVaultTool,
-            registry: this.plugin.mcpRegistry,
-            preferredServerNames: args.mentionedServers,
-            mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
-          }),
-        );
+        const preparedCandidates = await prepareAssistantToolCalls({
+          toolCalls: result.newToolCalls,
+          nativeTool: this.nativeVaultTool,
+          registry: this.plugin.mcpRegistry,
+          preferredServerNames: args.mentionedServers,
+          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+        });
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        const preparedToolCalls = markRepeatedToolCalls(allToolCalls, preparedCandidates);
         if (
           preparedToolCalls.some(
             (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
           )
         ) {
           allToolCalls.push(...preparedToolCalls);
+          const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
           this.updateMessage(
             args.messageId,
             accumulatedText,
@@ -3333,8 +3675,8 @@ export class ChatView extends ItemView {
             accumulatedReasoning || undefined,
             allToolCalls,
             {
-              ...args.meta,
-              citations: turnCitations,
+              ...withCurrentProviderUsage(),
+              citations: displayedCitations,
               status: 'complete',
               turnStage: 'awaiting-tool-approval',
             },
@@ -3347,17 +3689,20 @@ export class ChatView extends ItemView {
           preparedToolCalls,
           args.mentionedServers,
           accumulatedReasoning || undefined,
+          args.run,
         );
+        if (!isChatRunActive(this.activeRun, args.run)) return;
         allToolCalls.push(...currentToolCalls);
         currentAssistantContent = result.finalText;
         turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
+        const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         this.updateMessage(
           args.messageId,
           accumulatedText,
           false,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, citations: turnCitations, status: 'streaming' },
+          { ...withCurrentProviderUsage(), citations: displayedCitations, status: 'streaming' },
         );
         continue;
       }
@@ -3370,8 +3715,8 @@ export class ChatView extends ItemView {
           accumulatedReasoning || undefined,
           allToolCalls,
           {
-            ...args.meta,
-            citations: turnCitations,
+            ...withCurrentProviderUsage(),
+            citations: [],
             status: 'error',
             turnStage: 'error',
             errorMessage: t('mcpToolFinalAnswerMissing'),
@@ -3385,12 +3730,16 @@ export class ChatView extends ItemView {
         });
         accumulatedText = normalized.content;
         accumulatedReasoning = normalized.reasoning ?? '';
+        accumulatedText = enforceNativeToolAnswerContract(accumulatedText, allToolCalls).content;
         const classification = classifyAssistantResponse({
           content: accumulatedText,
           reasoning: accumulatedReasoning,
         });
         if (classification.type === 'question') {
-          const answerCitations = selectAnswerCitations(classification.content, turnCitations);
+          const answerCitations = selectDisplayedAnswerCitations(
+            classification.content,
+            turnCitations,
+          );
           this.updateMessage(
             args.messageId,
             classification.content,
@@ -3398,7 +3747,7 @@ export class ChatView extends ItemView {
             classification.reasoning || undefined,
             allToolCalls,
             {
-              ...args.meta,
+              ...withCurrentProviderUsage(),
               citations: answerCitations,
               assistantQuestion: classification.question,
               status: 'complete',
@@ -3408,7 +3757,7 @@ export class ChatView extends ItemView {
           );
           return;
         }
-        const answerCitations = selectAnswerCitations(accumulatedText, turnCitations);
+        const answerCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
         this.updateMessage(
           args.messageId,
@@ -3417,7 +3766,7 @@ export class ChatView extends ItemView {
           accumulatedReasoning || undefined,
           allToolCalls,
           {
-            ...args.meta,
+            ...withCurrentProviderUsage(),
             citations: answerCitations,
             sourceWarnings,
             status: 'complete',
@@ -3429,44 +3778,25 @@ export class ChatView extends ItemView {
       return;
     }
 
-    if (args.abortController.signal.aborted) {
-      const answerCitations = selectAnswerCitations(accumulatedText, turnCitations);
-      const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
-      this.updateMessage(
-        args.messageId,
-        accumulatedText || t('cancelledLabel'),
-        true,
-        accumulatedReasoning || undefined,
-        allToolCalls,
-        {
-          ...args.meta,
-          citations: answerCitations,
-          sourceWarnings,
-          status: 'complete',
-          turnStage: 'cancelled',
-          stopReason: 'cancelled',
-        },
-      );
-    } else {
-      const content = accumulatedText || t('tooManyToolCalls');
-      const answerCitations = selectAnswerCitations(content, turnCitations);
-      const sourceWarnings = this.validateAssistantSources(content, answerCitations);
-      this.updateMessage(
-        args.messageId,
-        content,
-        true,
-        accumulatedReasoning || undefined,
-        allToolCalls,
-        {
-          ...args.meta,
-          citations: answerCitations,
-          sourceWarnings,
-          status: 'error',
-          turnStage: 'error',
-          stopReason: 'error',
-        },
-      );
-    }
+    if (!isChatRunActive(this.activeRun, args.run)) return;
+    const content = resolveToolLoopTerminalText(accumulatedText, 'limit');
+    const answerCitations = selectDisplayedAnswerCitations(content, turnCitations);
+    const sourceWarnings = this.validateAssistantSources(content, answerCitations);
+    this.updateMessage(
+      args.messageId,
+      content,
+      true,
+      accumulatedReasoning || undefined,
+      allToolCalls,
+      {
+        ...withCurrentProviderUsage(),
+        citations: answerCitations,
+        sourceWarnings,
+        status: 'error',
+        turnStage: 'error',
+        stopReason: 'error',
+      },
+    );
   }
 
   private getMentionedServerNames(text: string): string[] {
@@ -3507,8 +3837,12 @@ export class ChatView extends ItemView {
     messageId: string,
     toolCalls: ToolCallRecord[],
     preferredServerNames: string[],
-    reasoning?: string,
+    reasoning: string | undefined,
+    run: ChatRunHandle<AbortController>,
   ): Promise<ToolCallRecord[]> {
+    if (!isChatRunActive(this.activeRun, run)) {
+      return toolCalls.map((toolCall) => ({ ...toolCall }));
+    }
     const message = this.messages.find((m) => m.id === messageId);
     if (!message) {
       throw new Error(t('mcpResultMessageMissing', { messageId }));
@@ -3518,8 +3852,9 @@ export class ChatView extends ItemView {
       registry: this.plugin.mcpRegistry,
       toolCalls,
       preferredServerNames,
-      signal: this.abortController?.signal,
+      signal: run.controller.signal,
       onUpdate: (updatedToolCalls) => {
+        if (!isChatRunActive(this.activeRun, run)) return;
         const current = this.messages.find((m) => m.id === messageId);
         if (!current) {
           throw new Error(t('mcpResultMessageMissing', { messageId }));
@@ -3533,130 +3868,224 @@ export class ChatView extends ItemView {
   }
 
   private async approveToolCall(messageId: string, toolCallId: string): Promise<void> {
+    if (this.isStreaming) return;
     const message = this.messages.find((m) => m.id === messageId);
     if (!message?.toolCalls) return;
-    const toolCalls = message.toolCalls.map((toolCall) =>
-      toolCall.id === toolCallId || toolCall.name === toolCallId
-        ? { ...toolCall, approved: true }
-        : { ...toolCall },
-    );
-    this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls);
-    const updated = await this.executeAssistantToolCalls(
-      messageId,
-      toolCalls,
-      this.getEffectiveMcpServerNames(this.lastUserPrompt ?? ''),
-      message.reasoning,
-    );
-    const pendingApproval = updated.some(
-      (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
-    );
-    if (pendingApproval) {
-      const current = this.messages.find((item) => item.id === messageId);
-      this.updateMessage(
-        messageId,
-        current?.content ?? message.content,
-        true,
-        current?.reasoning ?? message.reasoning,
-        updated,
-        { turnStage: 'awaiting-tool-approval' },
-      );
-      await this.saveCurrentSession(true);
-      return;
-    }
-    const stopReason = updated.some((toolCall) => toolCall.status === 'error')
-      ? 'tool-failed'
-      : 'complete';
-    const latestMessage = this.messages.find((m) => m.id === messageId);
-    const successfulToolCalls = updated.filter(
-      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
-    );
-    if (successfulToolCalls.length > 0 && message.providerKey && message.model) {
-      const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-        await import('../llm/providers');
-      const profileRef = message.providerKey.startsWith('profile:')
-        ? `${message.providerKey}:${message.model}`
-        : '';
-      const resolvedProfileModel = profileRef
-        ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
-        : null;
-      const provider = resolvedProfileModel
-        ? createProviderForStrategy(
-            resolvedProfileModel.profile.strategy,
-            {
-              ...resolvedProfileModel.profile,
-              models: resolvedProfileModel.profile.models.map((model) => model.id),
-            },
-            resolvedProfileModel.modelId,
-            resolvedProfileModel.profile.id,
-          )
-        : message.providerKey.startsWith('customOpenAI:')
-          ? (() => {
-              const providerId = message.providerKey?.split(':')[1] ?? '';
-              const customProvider = this.plugin.settings.customOpenAIProviders.find(
-                (item) => item.id === providerId,
-              );
-              if (!customProvider) {
-                throw new Error(t('customProviderNotFound'));
-              }
-              return createCustomOpenAIProvider(customProvider, message.model);
-            })()
-          : createProvider(
-              message.providerKey as ProviderKey,
-              this.plugin.settings[message.providerKey as ProviderKey],
-              message.model,
-            );
-      const mentionedServers = this.getEffectiveMcpServerNames(this.lastUserPrompt ?? '');
-      const promptContext = await this.buildPromptContext(
-        this.lastUserPrompt ?? '',
-        undefined,
-        provider,
-      );
-      const systemPrompt = promptContext.systemPrompt;
+    const abortController = new AbortController();
+    const run: ChatRunHandle<AbortController> = {
+      token: ++this.runTokenSequence,
+      controller: abortController,
+    };
+    this.activeRun = run;
+    this.abortController = abortController;
+    this.setLoading(true);
+    setHidden(this.typingIndicator, false);
+
+    try {
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
-      const previousMessages = this.messages
-        .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
-        .map((item) => this.toProviderMessage(item));
-      const baseMessages: ChatMessage[] = [
-        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...previousMessages,
-      ];
-      await this.runToolResponseLoop({
-        provider,
+      const { currentQuestion, previousUserQuestions } = resolveToolApprovalQuestionContext(
+        this.messages,
         messageId,
-        baseMessages,
-        toolDefinitions: provider.capability.toolCalling
-          ? await this.collectToolDefinitions(mentionedServers)
-          : [],
-        maxToolRounds: provider.capability.maxToolRounds,
-        toolCalls: updated,
-        abortController: this.abortController ?? new AbortController(),
-        meta: {
-          providerKey: message.providerKey,
-          providerLabel: message.providerLabel,
-          model: message.model,
-          providerCapability: message.providerCapability,
-          citations: latestMessage?.citations,
-          contextAttachments: latestMessage?.contextAttachments,
-        },
-        mentionedServers,
+        this.lastUserPrompt ?? '',
+      );
+      const toolCalls = message.toolCalls.map((toolCall) =>
+        toolCall.id === toolCallId || toolCall.name === toolCallId
+          ? { ...toolCall, approved: true }
+          : { ...toolCall },
+      );
+      this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls, {
+        status: 'streaming',
+        turnStage: 'running-tools',
       });
-    } else {
+      await this.saveCurrentSession(true);
+      if (!isChatRunActive(this.activeRun, run)) return;
+      const updated = await this.executeAssistantToolCalls(
+        messageId,
+        toolCalls,
+        this.getEffectiveMcpServerNames(currentQuestion),
+        message.reasoning,
+        run,
+      );
+      if (!isChatRunActive(this.activeRun, run)) return;
+
+      const pendingApproval = updated.some(
+        (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+      );
+      if (pendingApproval) {
+        const current = this.messages.find((item) => item.id === messageId);
+        this.updateMessage(
+          messageId,
+          current?.content ?? message.content,
+          true,
+          current?.reasoning ?? message.reasoning,
+          updated,
+          { turnStage: 'awaiting-tool-approval' },
+        );
+        return;
+      }
+      const stopReason = updated.some((toolCall) => toolCall.status === 'error')
+        ? 'tool-failed'
+        : 'complete';
+      const latestMessage = this.messages.find((m) => m.id === messageId);
+      const providerReinjectableToolCalls = selectProviderReinjectableToolCalls(updated);
+      if (providerReinjectableToolCalls.length > 0 && message.providerKey && message.model) {
+        const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
+          await import('../llm/providers');
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const profileRef = message.providerKey.startsWith('profile:')
+          ? `${message.providerKey}:${message.model}`
+          : '';
+        const resolvedProfileModel = profileRef
+          ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
+          : null;
+        const provider = resolvedProfileModel
+          ? createProviderForStrategy(
+              resolvedProfileModel.profile.strategy,
+              {
+                ...resolvedProfileModel.profile,
+                models: resolvedProfileModel.profile.models.map((model) => model.id),
+              },
+              resolvedProfileModel.modelId,
+              resolvedProfileModel.profile.id,
+            )
+          : message.providerKey.startsWith('customOpenAI:')
+            ? (() => {
+                const providerId = message.providerKey?.split(':')[1] ?? '';
+                const customProvider = this.plugin.settings.customOpenAIProviders.find(
+                  (item) => item.id === providerId,
+                );
+                if (!customProvider) {
+                  throw new Error(t('customProviderNotFound'));
+                }
+                return createCustomOpenAIProvider(customProvider, message.model);
+              })()
+            : createProvider(
+                message.providerKey as ProviderKey,
+                this.plugin.settings[message.providerKey as ProviderKey],
+                message.model,
+              );
+        const mentionedServers = this.getEffectiveMcpServerNames(currentQuestion);
+        const promptContext = await this.buildPromptContext(currentQuestion, previousUserQuestions);
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const resumeDataBoundarySnapshot = createDataBoundarySnapshot({
+          providerLabel: message.providerLabel ?? message.providerKey,
+          model: message.model,
+          hasUserQuestion: true,
+          recentConversationMessageCount: Math.min(10, Math.max(0, messageIndex)),
+          hasSystemPrompt: true,
+          attachments: promptContext.attachments,
+          citations: promptContext.citations,
+          mcpServerNames: [],
+        });
+        const resumePlan = createToolApprovalResumePlan({
+          promptSystemPrompt: promptContext.systemPrompt,
+          toolDefinitions,
+          providerSupportsToolCalling: provider.capability.toolCalling,
+          toolCalls: updated,
+          dataBoundarySnapshot: resumeDataBoundarySnapshot,
+        });
+        const previousMessages = this.messages
+          .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
+          .map((item) => this.toProviderMessage(item));
+        const baseMessages: ChatMessage[] = [
+          ...(resumePlan.systemPrompt
+            ? [{ role: 'system' as const, content: resumePlan.systemPrompt }]
+            : []),
+          ...previousMessages,
+        ];
+        await this.runToolResponseLoop({
+          provider,
+          messageId,
+          baseMessages,
+          toolDefinitions: resumePlan.providerToolDefinitions,
+          maxToolRounds: provider.capability.maxToolRounds,
+          toolCalls: updated,
+          run,
+          meta: {
+            providerKey: message.providerKey,
+            providerLabel: message.providerLabel,
+            model: message.model,
+            providerCapability: message.providerCapability,
+            citations: promptContext.citations,
+            contextAttachments: promptContext.attachments,
+            dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
+          },
+          mentionedServers,
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+      } else {
+        this.updateMessage(
+          messageId,
+          latestMessage?.content ?? message.content,
+          true,
+          latestMessage?.reasoning ?? message.reasoning,
+          updated,
+          { stopReason },
+        );
+      }
+    } catch (err) {
+      if (!isChatRunOwner(this.activeRun, run)) return;
+      setHidden(this.typingIndicator, true);
+      const latestMessage = this.messages.find((item) => item.id === messageId);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        this.updateMessage(
+          messageId,
+          latestMessage?.content || t('chatGenerationStopped'),
+          true,
+          latestMessage?.reasoning,
+          latestMessage?.toolCalls,
+          { status: 'complete', stopReason: 'cancelled' },
+        );
+        return;
+      }
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorKind = classifyChatFailure(err);
+      const presentation = createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
+      const errorDetail = this.formatErrorDetail(
+        message.providerKey ?? 'unknown',
+        message.model ?? 'unknown',
+        redactDebugDetail(errorMsg),
+        getChatHttpStatus(err),
+      );
       this.updateMessage(
         messageId,
-        latestMessage?.content ?? message.content,
+        presentation.content,
         true,
-        latestMessage?.reasoning ?? message.reasoning,
-        updated,
-        { stopReason },
+        latestMessage?.reasoning,
+        latestMessage?.toolCalls,
+        {
+          status: 'error',
+          stopReason: 'error',
+          errorMessage: errorDetail,
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+        },
       );
+    } finally {
+      const finalization = planChatRunFinalization(this.activeRun, run, false);
+      if (finalization.clearPendingState) {
+        this.pendingSubmittedDraft = null;
+        this.pendingRegeneration = null;
+      }
+      if (finalization.saveSession) {
+        await this.saveCurrentSession(true);
+      }
+      if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
+        setHidden(this.typingIndicator, true);
+        this.activeRun = null;
+        if (this.abortController === abortController) {
+          this.abortController = null;
+        }
+        this.setLoading(false);
+      }
     }
-    await this.saveCurrentSession(true);
   }
 
   private async buildPromptContext(
     lastUserText: string,
-    previousQueries?: string[],
-    provider?: LLMProvider,
+    previousUserQuestions: readonly string[] = [],
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -3668,29 +4097,21 @@ export class ChatView extends ItemView {
       if (pluginInfo) parts.push(pluginInfo);
     }
 
-    await this.plugin.prepareRagForChat();
-
-    let ragQuery = lastUserText;
-    if (previousQueries && previousQueries.length >= 2) {
-      const prev = previousQueries[previousQueries.length - 2];
-      const isFollowUp =
-        lastUserText.length < 15 ||
-        /^(어|아|왜|근데|그래서|하여튼|아니|잠시|계속|다시).{0,30}$/.test(lastUserText);
-      if (isFollowUp && prev) {
-        ragQuery = prev;
-      }
-    }
-
-    const ragEngine: RagQueryLike | null = this.plugin.ragEngine;
-    const context = await buildChatContext(ragQuery, {
+    const skipAutoRag = this.skipAutoRagOnce;
+    this.skipAutoRagOnce = false;
+    const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
+      skipAutoRag,
+      () => this.plugin.prepareRagForChat(),
+      () => this.plugin.ragEngine,
+    );
+    const context = await buildChatContext(lastUserText, {
       app: this.app,
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
       knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
-      queryExpander: provider
-        ? (question) => this.expandVaultSearchQuery(provider, question)
-        : undefined,
+      queryExpander: (question) =>
+        Promise.resolve(expandVaultSearchQueryLocally(question, previousUserQuestions)),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 
@@ -3698,35 +4119,6 @@ export class ChatView extends ItemView {
       ...context,
       systemPrompt: parts.length > 0 ? parts.join('\n') : null,
     };
-  }
-
-  private async expandVaultSearchQuery(provider: LLMProvider, question: string): Promise<string> {
-    try {
-      const expansion = await Promise.race([
-        provider.chat(
-          [
-            {
-              role: 'system',
-              content:
-                'Expand the user question into compact vault-search terms. Preserve names and topics, add likely English equivalents for Korean terms, and output keywords only. Maximum 20 words.',
-            },
-            { role: 'user', content: question },
-          ],
-          0,
-        ),
-        new Promise<string>((resolve) => {
-          window.setTimeout(() => resolve(''), 3_500);
-        }),
-      ]);
-      const compact = expansion.replace(/\s+/g, ' ').trim().slice(0, 500);
-      return compact ? `${question} ${compact}` : question;
-    } catch (error) {
-      appLogger.warn('Vault search query expansion failed.', {
-        source: 'chat.view',
-        error,
-      });
-      return question;
-    }
   }
 
   private parseMentions(text: string): ParsedMention[] {
@@ -4084,10 +4476,15 @@ export class ChatView extends ItemView {
   }
 
   /** LLM API 에러 발생 시 진단 정보를 포함한 상세 메시지 생성 */
-  private formatErrorDetail(providerKey: string, model: string, rawError: string): string {
+  private formatErrorDetail(
+    providerKey: string,
+    model: string,
+    rawError: string,
+    structuredStatus?: number,
+  ): string {
     const timestamp = new Date().toISOString();
-    const statusMatch = rawError.match(/status\s*(\d{3})/);
-    const statusCode = statusMatch ? statusMatch[1] : '???';
+    const statusMatch = rawError.match(/\b(?:status\s*[:=]?\s*|http\s+|:\s*)(\d{3})\b/i);
+    const statusCode = structuredStatus?.toString() ?? statusMatch?.[1] ?? 'unknown';
 
     const providerHints: Record<number, string> = {
       400: t('apiHintBadRequest'),
@@ -4102,7 +4499,7 @@ export class ChatView extends ItemView {
     };
 
     const hint =
-      statusCode !== '???'
+      statusCode !== 'unknown'
         ? (providerHints[Number(statusCode)] ?? '')
         : rawError.includes('Failed to fetch')
           ? t('apiHintFetchCors')

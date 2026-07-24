@@ -56,6 +56,31 @@ describe('BM25 worker runtime', () => {
     expect(fixture.dispose).toHaveBeenCalledOnce();
   });
 
+  it('문서 hydration 진행 신호가 오면 무응답 제한을 다시 계산한다', async () => {
+    vi.useFakeTimers();
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create, 100);
+    const initialization = runtime.initialize('large-test-db', '');
+
+    await vi.advanceTimersByTimeAsync(75);
+    fixture.respond({
+      id: 1,
+      progress: { processedDocuments: 128 },
+    });
+    await vi.advanceTimersByTimeAsync(75);
+    fixture.respond({
+      id: 1,
+      ready: true,
+      tokenizerCurrent: true,
+      totalDocs: 256,
+    });
+
+    await expect(initialization).resolves.toEqual(
+      expect.objectContaining({ ready: true, totalDocs: 256 }),
+    );
+    expect(fixture.terminate).not.toHaveBeenCalled();
+  });
+
   it('검색이 취소되면 계산 중인 worker를 종료한다', async () => {
     const fixture = createFakeWorker();
     const runtime = new BM25WorkerRuntime(fixture.create);
@@ -104,6 +129,7 @@ interface NodeWorkerResponse {
   ready?: boolean;
   totalDocs?: number;
   hits?: Array<{ docId: string; sourcePath: string; score: number }>;
+  progress?: { processedDocuments: number };
   error?: string;
 }
 
@@ -125,6 +151,7 @@ function waitForNodeWorkerResponse(worker: NodeWorker, id: number): Promise<Node
   return new Promise((resolve, reject) => {
     const onMessage = (response: NodeWorkerResponse): void => {
       if (response.id !== id) return;
+      if (response.progress) return;
       cleanup();
       if (response.error) {
         reject(new Error(response.error));

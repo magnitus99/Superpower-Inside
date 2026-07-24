@@ -237,6 +237,16 @@ export class BM25CandidateProvider implements CandidateProvider {
     readonly deadlineMs = 80,
   ) {}
 
+  getReadiness(): RetrievalProviderReadiness {
+    return this.bm25Index.isReady
+      ? { readiness: 'ready', estimatedCost: 'low' }
+      : {
+          readiness: 'cold',
+          estimatedCost: 'free',
+          reason: 'Lexical index is still preparing.',
+        };
+  }
+
   async getCandidates(
     request: RagRetrievalRequest,
     signal?: AbortSignal,

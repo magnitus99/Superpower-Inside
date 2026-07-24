@@ -23,6 +23,8 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
       },
     });
     expect(JSON.stringify(definition)).not.toMatch(/write|create|delete|modify/iu);
+    expect(definition.function.description).toContain('current RAG indexing policy');
+    expect(definition.function.description).toContain('excluded paths and extensions');
   });
 
   it('read 결과를 모델용 구조화 텍스트와 검증 가능한 출처로 반환한다', async () => {
@@ -104,6 +106,41 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     });
   });
 
+  it('과도하게 긴 검색어와 원래 검색 항목 수를 포트 I/O 전에 거부한다', async () => {
+    const { port, search } = createPort();
+    const runtime = new NativeVaultToolRuntime(port);
+    const excessiveTerms = Array.from({ length: 33 }, (_, index) => `term${index}`).join(',');
+
+    await expect(
+      runtime.execute(JSON.stringify({ action: 'search', query: '가'.repeat(513) })),
+    ).rejects.toThrow('검색어가 너무 깁니다');
+    await expect(
+      runtime.execute(JSON.stringify({ action: 'search', query: excessiveTerms })),
+    ).rejects.toThrow('검색 항목이 너무 많습니다');
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('명시한 match all은 OR가 포함된 query에서도 그대로 보존한다', async () => {
+    const { port, search } = createPort();
+    const runtime = new NativeVaultToolRuntime(port);
+
+    await runtime.execute(
+      JSON.stringify({
+        action: 'search',
+        query: 'Neville OR Goddard',
+        match: 'all',
+      }),
+    );
+
+    expect(search).toHaveBeenCalledWith({
+      action: 'search',
+      query: 'Neville OR Goddard',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+  });
+
   it('잘못된 JSON과 지원하지 않는 action을 실행 전에 거부한다', async () => {
     const runtime = new NativeVaultToolRuntime(createPort().port);
 
@@ -155,11 +192,11 @@ function createPort(): {
     }),
   );
   const list = vi.fn(() =>
-      Promise.resolve({
-        action: 'list' as const,
-        path: 'Projects',
-        exists: true,
-        files: [{ path: 'Projects/Alpha.md', modifiedAt: 1, size: 24 }],
+    Promise.resolve({
+      action: 'list' as const,
+      path: 'Projects',
+      exists: true,
+      files: [{ path: 'Projects/Alpha.md', modifiedAt: 1, size: 24 }],
       nextCursor: null,
       total: 1,
       citations: [],
@@ -169,7 +206,12 @@ function createPort(): {
     Promise.resolve({
       action: 'search' as const,
       query: '고객 문제',
+      path: '',
       match: 'all' as const,
+      scannedFiles: 1,
+      unreadableFiles: 0,
+      totalHits: 1,
+      truncated: false,
       hits: [
         {
           path: 'Projects/Alpha.md',

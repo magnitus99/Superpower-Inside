@@ -16,7 +16,7 @@ export interface MCPToolClientLike {
   listTools(): Promise<
     { name: string; description?: string; inputSchema?: Record<string, unknown> }[]
   >;
-  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface MCPRegistryLike {
@@ -92,7 +92,10 @@ export async function executeMcpToolCalls(
     toolCall.serverName = serverName;
 
     try {
-      const result = await client.callTool(toolCall.name, parseToolArguments(toolCall.arguments));
+      const args = parseToolArguments(toolCall.arguments);
+      const result = options.signal
+        ? await client.callTool(toolCall.name, args, options.signal)
+        : await client.callTool(toolCall.name, args);
       throwIfAborted(options.signal);
       const isErrorResult =
         typeof result === 'object' &&

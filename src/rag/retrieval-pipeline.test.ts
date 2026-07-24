@@ -161,7 +161,9 @@ describe('RagRetrievalPipeline', () => {
         throw new Error('readiness failed');
       },
       getCandidates: () =>
-        Promise.resolve([{ entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'graph-local' }]),
+        Promise.resolve([
+          { entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'graph-local' },
+        ]),
     };
     const pipeline = new RagRetrievalPipeline([provider]);
 
@@ -356,6 +358,29 @@ describe('RagRetrievalPipeline', () => {
     expect(store.requestedIds).toEqual([[keyword.id]]);
   });
 
+  it('BM25 hydration 중에는 provider를 cold 상태로 건너뛴다', async () => {
+    const store = new PathLookupStore();
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    const provider = new BM25CandidateProvider(store, bm25);
+    const getCandidatesSpy = vi.spyOn(provider, 'getCandidates');
+    const pipeline = new RagRetrievalPipeline([provider]);
+
+    const result = await pipeline.retrieve({
+      ...createRequest([1, 0], 5),
+      question: 'specialterm',
+    });
+
+    expect(getCandidatesSpy).not.toHaveBeenCalled();
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        providerId: 'bm25',
+        status: 'skipped',
+        readiness: 'cold',
+        estimatedCost: 'free',
+      }),
+    ]);
+  });
+
   it('BM25CandidateProvider는 BM25 hit를 lookup 예산만큼만 WASM에서 가져온다', async () => {
     const store = new PathLookupStore();
     const entries = Array.from({ length: 12 }, (_, index) =>
@@ -446,7 +471,10 @@ describe('RagRetrievalPipeline', () => {
               {
                 heading: 'Main',
                 level: 2,
-                position: { start: { line: 10, col: 0, offset: 0 }, end: { line: 10, col: 0, offset: 0 } },
+                position: {
+                  start: { line: 10, col: 0, offset: 0 },
+                  end: { line: 10, col: 0, offset: 0 },
+                },
               },
             ],
           },
@@ -572,14 +600,15 @@ class SearchOnlyStore extends MemoryVectorStore {
     });
   }
 
-  search(request: unknown): Promise<Array<{ entry: VectorEntry; score: number; mode: 'exact' | 'ann' }>> {
+  search(
+    request: unknown,
+  ): Promise<Array<{ entry: VectorEntry; score: number; mode: 'exact' | 'ann' }>> {
     this.searchCalls.push(request);
     return Promise.resolve(
       this.searchEntries.map((entry) => ({
         entry,
         score: 1,
-        mode:
-          this.resultMode ?? (isRecord(request) && request.mode === 'ann' ? 'ann' : 'exact'),
+        mode: this.resultMode ?? (isRecord(request) && request.mode === 'ann' ? 'ann' : 'exact'),
       })),
     );
   }
@@ -587,7 +616,27 @@ class SearchOnlyStore extends MemoryVectorStore {
 
 interface TestMetadataContextInput {
   resolvedLinks?: Record<string, Record<string, number>>;
-  fileCaches?: Record<string, { headings?: Array<{ heading: string; level: number; position: { start: { line: number; col: number; offset: number }; end: { line: number; col: number; offset: number } } }>; links?: Array<{ link: string; original: string; position: { start: { line: number; col: number; offset: number }; end: { line: number; col: number; offset: number } } }> }>;
+  fileCaches?: Record<
+    string,
+    {
+      headings?: Array<{
+        heading: string;
+        level: number;
+        position: {
+          start: { line: number; col: number; offset: number };
+          end: { line: number; col: number; offset: number };
+        };
+      }>;
+      links?: Array<{
+        link: string;
+        original: string;
+        position: {
+          start: { line: number; col: number; offset: number };
+          end: { line: number; col: number; offset: number };
+        };
+      }>;
+    }
+  >;
 }
 
 function createMetadataContext(input: TestMetadataContextInput) {

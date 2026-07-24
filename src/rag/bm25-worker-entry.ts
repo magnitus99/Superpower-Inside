@@ -40,8 +40,13 @@ interface BM25WorkerResponse {
   tokenizerCurrent?: boolean;
   totalDocs?: number;
   hits?: BM25WorkerHit[];
+  progress?: {
+    processedDocuments: number;
+  };
   error?: string;
 }
+
+const HYDRATION_PROGRESS_INTERVAL = 128;
 
 let initialized = false;
 let runtime: Bm25RuntimeIndex | null = null;
@@ -70,17 +75,18 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
 
 async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25WorkerResponse, 'id'>> {
   if (request.operation === 'initialize') {
-    replaceRuntime(createRuntime(request.snapshot));
+    const snapshot = request.snapshot?.trim() ?? '';
+    replaceRuntime(createRuntime(snapshot));
     if (request.dbName) {
-      await hydratePersistedDocuments(request.dbName);
+      await hydratePersistedDocuments(request.dbName, request.id, snapshot.length === 0);
     } else {
-      addDocuments(request.documents ?? []);
+      addDocuments(request.documents ?? [], false, request.id);
     }
     return runtimeState();
   }
   if (request.operation === 'rebuild') {
     replaceRuntime(new Bm25RuntimeIndex(TOKENIZER_VERSION));
-    addDocuments(request.documents ?? [], true);
+    addDocuments(request.documents ?? [], false, request.id);
     return runtimeState();
   }
   const active = ensureRuntime();
@@ -110,8 +116,14 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   return runtimeState();
 }
 
-function hydratePersistedDocuments(dbName: string): Promise<void> {
+function hydratePersistedDocuments(
+  dbName: string,
+  requestId: number,
+  knownUnique: boolean,
+): Promise<void> {
   return new Promise((resolve, reject) => {
+    let processedDocuments = 0;
+    const batch: BM25WorkerDocument[] = [];
     const openRequest = indexedDB.open(dbName);
     openRequest.onerror = () =>
       reject(openRequest.error ?? new Error('BM25 database open failed.'));
@@ -127,15 +139,22 @@ function hydratePersistedDocuments(dbName: string): Promise<void> {
       cursorRequest.onerror = () => reject(cursorRequest.error ?? new Error('BM25 cursor failed.'));
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result;
-        if (!cursor) return;
-        const value = cursor.value as BM25WorkerDocument;
-        ensureRuntime().add_document(
-          value.id,
-          value.text,
-          value.sourcePath,
-          TOKENIZER_VERSION,
-        );
-        cursor.continue();
+        try {
+          if (!cursor) {
+            processedDocuments += addDocumentBatch(batch, knownUnique);
+            postHydrationProgress(requestId, processedDocuments);
+            return;
+          }
+          batch.push(parsePersistedDocument(cursor.value));
+          if (batch.length >= HYDRATION_PROGRESS_INTERVAL) {
+            processedDocuments += addDocumentBatch(batch, knownUnique);
+            postHydrationProgress(requestId, processedDocuments);
+          }
+          cursor.continue();
+        } catch (error) {
+          transaction.abort();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       };
       transaction.oncomplete = () => {
         database.close();
@@ -153,15 +172,61 @@ function createRuntime(snapshot: string | undefined): Bm25RuntimeIndex {
     : new Bm25RuntimeIndex(TOKENIZER_VERSION);
 }
 
-function addDocuments(documents: readonly BM25WorkerDocument[], knownUnique = false): void {
-  const active = ensureRuntime();
-  for (const document of documents) {
-    if (knownUnique) {
-      active.add_new_document(document.id, document.text, document.sourcePath, TOKENIZER_VERSION);
-    } else {
-      active.add_document(document.id, document.text, document.sourcePath, TOKENIZER_VERSION);
+function addDocuments(
+  documents: readonly BM25WorkerDocument[],
+  knownUnique = false,
+  requestId?: number,
+): void {
+  let processedDocuments = 0;
+  for (let offset = 0; offset < documents.length; offset += HYDRATION_PROGRESS_INTERVAL) {
+    const batch = documents.slice(offset, offset + HYDRATION_PROGRESS_INTERVAL);
+    processedDocuments += addDocumentBatch(batch, knownUnique);
+    if (requestId !== undefined) {
+      postHydrationProgress(requestId, processedDocuments);
     }
   }
+}
+
+function addDocumentBatch(documents: BM25WorkerDocument[], knownUnique: boolean): number {
+  if (documents.length === 0) return 0;
+  const expected = documents.length;
+  const added = ensureRuntime().add_documents_json(
+    JSON.stringify(documents),
+    TOKENIZER_VERSION,
+    knownUnique,
+  );
+  documents.length = 0;
+  if (added !== expected) {
+    throw new Error('BM25 worker document batch validation failed.');
+  }
+  return added;
+}
+
+function postHydrationProgress(requestId: number, processedDocuments: number): void {
+  if (processedDocuments <= 0) return;
+  self.postMessage({
+    id: requestId,
+    progress: { processedDocuments },
+  } satisfies BM25WorkerResponse);
+}
+
+function parsePersistedDocument(value: unknown): BM25WorkerDocument {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('BM25 persisted document is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.text !== 'string' ||
+    typeof record.sourcePath !== 'string'
+  ) {
+    throw new Error('BM25 persisted document fields are invalid.');
+  }
+  return {
+    id: record.id,
+    text: record.text,
+    sourcePath: record.sourcePath,
+  };
 }
 
 function runtimeState(): Omit<BM25WorkerResponse, 'id'> {

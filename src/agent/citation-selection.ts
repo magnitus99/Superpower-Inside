@@ -21,3 +21,11 @@ export function selectAnswerCitations(
     return citation ? [citation] : [];
   });
 }
+
+/** 사용자에게 표시하는 답변에는 실제 언급된 출처만 연결합니다. */
+export function selectDisplayedAnswerCitations(
+  content: string,
+  citations: readonly SourceCitation[],
+): SourceCitation[] {
+  return selectAnswerCitations(content, citations, 0);
+}

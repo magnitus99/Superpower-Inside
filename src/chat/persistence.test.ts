@@ -3,6 +3,7 @@ import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
 import { listChats, loadChat, saveChat } from './persistence';
+import { appendAssistantToolRound } from './tool-execution';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -99,6 +100,7 @@ describe('chat persistence', () => {
       content: 'legacy content',
       status: 'complete',
     });
+    expect(loaded.messages[0].errorRetryAt).toBeUndefined();
   });
 
   it('assistantQuestion 메타를 저장하고 복원한다', async () => {
@@ -213,6 +215,25 @@ describe('chat persistence', () => {
       turnStage: 'awaiting-tool-approval',
       toolRound: 2,
     });
+  });
+
+  it('429 재시도 가능 시각을 저장하고 Rust parser를 거쳐 복원한다', async () => {
+    const vault = createVault();
+    const errorRetryAt = '2026-05-16T00:03:00.000Z';
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '현재 연결의 요청 한도에 도달했습니다.',
+        status: 'error',
+        errorKind: 'rate-limit',
+        errorRetryAt,
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const loaded = await loadChat(vault, file.path);
+
+    expect(loaded.messages[0].errorRetryAt).toBe(errorRetryAt);
   });
 
   it('schema v2 replay 필드와 redacted tool state를 저장하고 복원한다', async () => {
@@ -342,10 +363,244 @@ describe('chat persistence', () => {
       toolCalls: [
         expect.objectContaining({
           arguments: '{"query":"alpha","apiKey":"[REDACTED]"}',
-          result: 'Authorization: Bearer [REDACTED]\n검색 결과',
+          resultSummary: 'Authorization: Bearer [REDACTED]\n검색 결과',
         }),
       ],
     });
+  });
+
+  it('대용량 normalizedResult는 저장하지 않고 감사용 도구 요약과 출처를 보존한다', async () => {
+    const vault = createVault();
+    const largeNormalizedResult = JSON.stringify({
+      path: 'Notes/Large.md',
+      content: '아주 긴 검색 본문'.repeat(8_000),
+    });
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '검색 결과를 요약했습니다.',
+        originalContent: '검색 결과를 요약했습니다.',
+        toolCalls: [
+          {
+            id: 'call-large',
+            name: 'superpower_inside',
+            arguments: '{"action":"read","path":"Notes/Large.md"}',
+            result: '문서 1개를 읽었습니다.',
+            resultSummary: '문서 1개를 읽었습니다.',
+            normalizedResult: largeNormalizedResult,
+            status: 'success',
+            serverName: 'Superpower Inside',
+            approved: true,
+            executionKind: 'native',
+            citations: [
+              {
+                id: 'tool-source-1',
+                filePath: 'Notes/Large.md',
+                status: 'verified',
+                preview: '근거 미리보기',
+              },
+            ],
+          },
+        ],
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const raw = await vault.cachedRead(file);
+    const loaded = await loadChat(vault, file.path);
+
+    expect(raw).not.toContain('"normalizedResult"');
+    expect(raw).not.toContain('"result":');
+    expect(raw).not.toContain('"originalContent"');
+    expect(raw).not.toContain('아주 긴 검색 본문');
+    expect(raw.length).toBeLessThan(10_000);
+    expect(loaded.messages[0].content).toBe('검색 결과를 요약했습니다.');
+    expect(loaded.messages[0].toolCalls).toEqual([
+      {
+        id: 'call-large',
+        name: 'superpower_inside',
+        arguments: '{"action":"read","path":"Notes/Large.md"}',
+        resultSummary: '문서 1개를 읽었습니다.',
+        resumePayloadSource: 'resultSummary',
+        status: 'success',
+        serverName: 'Superpower Inside',
+        approved: true,
+        executionKind: 'native',
+        citations: [
+          {
+            id: 'tool-source-1',
+            filePath: 'Notes/Large.md',
+            status: 'verified',
+            preview: '근거 미리보기',
+          },
+        ],
+      },
+    ]);
+    const resumedMessages = appendAssistantToolRound(
+      [{ role: 'user', content: '계속해줘' }],
+      loaded.messages[0]?.content ?? '',
+      loaded.messages[0]?.toolCalls ?? [],
+    );
+    expect(JSON.parse(resumedMessages[2]?.content ?? '')).toEqual({
+      kind: 'tool-result-summary',
+      summary: '문서 1개를 읽었습니다.',
+      originalResultAvailable: false,
+      sourceReferences: [
+        {
+          filePath: 'Notes/Large.md',
+          status: 'verified',
+          requiresRead: true,
+        },
+      ],
+      sourceReferencesUntrustedMetadata: true,
+    });
+  });
+
+  it('성공한 A와 승인 대기 B를 다시 열면 A의 compact 요약만 provider에 재주입한다', async () => {
+    const vault = createVault();
+    const largeNormalizedResult = JSON.stringify({
+      content: `비밀 원문 ${'대용량 결과 '.repeat(8_000)}`,
+    });
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '두 도구를 확인합니다.',
+        toolCalls: [
+          {
+            id: 'call-a',
+            name: 'search_notes',
+            arguments: '{"query":"alpha"}',
+            resultSummary: 'Authorization: Bearer secret-token\n검색 결과 3개',
+            normalizedResult: largeNormalizedResult,
+            status: 'success',
+            approved: true,
+          },
+          {
+            id: 'call-b',
+            name: 'delete_note',
+            arguments: '{"path":"Draft.md"}',
+            status: 'running',
+            approved: false,
+          },
+        ],
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const raw = await vault.cachedRead(file);
+    const loaded = await loadChat(vault, file.path);
+    await saveChat(vault, loaded.messages, 'Chats', undefined, { filePath: file.path });
+    const rawAfterResumeSave = await vault.cachedRead(file);
+    const resumedMessages = appendAssistantToolRound(
+      [],
+      loaded.messages[0].content,
+      loaded.messages[0].toolCalls ?? [],
+    );
+
+    expect(raw).not.toContain('"normalizedResult"');
+    expect(raw).not.toContain('"result":');
+    expect(raw).not.toContain('secret-token');
+    expect(raw).not.toContain('비밀 원문');
+    expect(rawAfterResumeSave).not.toContain('"normalizedResult"');
+    expect(rawAfterResumeSave).not.toContain('"result":');
+    expect(rawAfterResumeSave).not.toContain('secret-token');
+    expect(rawAfterResumeSave).not.toContain('비밀 원문');
+    expect(resumedMessages.map((message) => message.role)).toEqual(['assistant', 'tool']);
+    expect(resumedMessages[1]).toMatchObject({
+      tool_call_id: 'call-a',
+      tool_result_is_error: false,
+    });
+    expect(JSON.parse(resumedMessages[1]?.content ?? '')).toEqual({
+      kind: 'tool-result-summary',
+      summary: 'Authorization: Bearer [REDACTED]\n검색 결과 3개',
+      originalResultAvailable: false,
+    });
+  });
+
+  it('명시적 결과 요약이 없으면 도구 결과를 1,000자 이내 요약으로 저장한다', async () => {
+    const vault = createVault();
+    const messages: ChatMessageWithMeta[] = [
+      createMessage({
+        role: 'assistant',
+        content: '도구 실행 완료',
+        toolCalls: [
+          {
+            id: 'call-summary-fallback',
+            name: 'superpower_inside',
+            arguments: '{"action":"stats"}',
+            normalizedResult: `요약 시작 ${'상세 결과 '.repeat(500)}`,
+            status: 'success',
+          },
+        ],
+      }),
+    ];
+
+    const file = await saveChat(vault, messages, 'Chats');
+    const raw = await vault.cachedRead(file);
+    const loaded = await loadChat(vault, file.path);
+    const persistedToolCall = loaded.messages[0].toolCalls?.[0];
+
+    expect(raw).not.toContain('"normalizedResult"');
+    expect(persistedToolCall?.normalizedResult).toBeUndefined();
+    expect(persistedToolCall?.resultSummary).toMatch(/^요약 시작 /);
+    expect(persistedToolCall?.resultSummary).toHaveLength(1_000);
+    expect(persistedToolCall?.resultSummary?.endsWith('…')).toBe(true);
+  });
+
+  it('기존 v2 세션의 전체 도구 결과 필드를 계속 로드한다', async () => {
+    const vault = createVault();
+    const createdAt = '2026-05-16T00:00:00.000Z';
+    const legacyToolCall = {
+      id: 'call-v2',
+      name: 'superpower_inside',
+      arguments: '{"action":"read","path":"Notes/Legacy.md"}',
+      result: '과거 표시 결과',
+      resultSummary: '과거 결과 요약',
+      normalizedResult: '{"content":"과거 정규화 결과"}',
+      status: 'success',
+      citations: [
+        {
+          id: 'legacy-source',
+          filePath: 'Notes/Legacy.md',
+          preview: '과거 근거',
+        },
+      ],
+    };
+    const meta = {
+      id: 'msg-v2',
+      schemaVersion: 2,
+      role: 'assistant',
+      timestamp: Date.parse(createdAt),
+      createdAt,
+      updatedAt: createdAt,
+      status: 'complete',
+      toolCalls: [legacyToolCall],
+    };
+    vault.writeFile(
+      'Chats/v2.md',
+      [
+        '---',
+        'title: "V2"',
+        'messages: 1',
+        '---',
+        '',
+        '<!-- superpower-inside-message',
+        JSON.stringify(meta, null, 2),
+        '-->',
+        '### 1. Assistant',
+        '',
+        '#### Answer',
+        '',
+        '<!-- superpower-inside-content-start encoding="base64" -->',
+        encodeTestBlock('과거 답변'),
+        '<!-- superpower-inside-content-end -->',
+        '<!-- /superpower-inside-message -->',
+      ].join('\n'),
+    );
+
+    const loaded = await loadChat(vault, 'Chats/v2.md');
+
+    expect(loaded.messages[0].toolCalls).toEqual([legacyToolCall]);
   });
 });
 
@@ -412,73 +667,77 @@ function createMessage(
   };
 }
 
-  it('content가 비어 있고 reasoning이 있으면 로드 시 reasoning을 content로 폴백한다', async () => {
-    const vault = createVault();
-    const messages: ChatMessageWithMeta[] = [
-      createMessage({
-        role: 'assistant',
-        content: '',
-        reasoning: '생각의 과정입니다.',
-      }),
-    ];
+function encodeTestBlock(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
 
-    const file = await saveChat(vault, messages, 'Chats');
-    const loaded = await loadChat(vault, file.path);
-
-    expect(loaded.messages[0].content).toBe('생각의 과정입니다.');
-    expect(loaded.messages[0].reasoning).toBe('생각의 과정입니다.');
-  });
-
-  it('originalContent가 있으면 저장 시 사용하고 로드 시 복원한다', async () => {
-    const vault = createVault();
-    const messages: ChatMessageWithMeta[] = [
-      createMessage({
-        role: 'assistant',
-        content: '',
-        originalContent: '원본 답변 내용',
-        reasoning: '생각',
-      }),
-    ];
-
-    const file = await saveChat(vault, messages, 'Chats');
-    const loaded = await loadChat(vault, file.path);
-
-    expect(loaded.messages[0].content).toBe('원본 답변 내용');
-  });
-
-  it('decodeTextBlock 실패 시 [decoding failed]를 반환한다', async () => {
-    const vault = createVault();
-    const badBase64 = '!!!invalid-base64!!!';
-    const meta = {
-      id: 'msg-bad',
+it('content가 비어 있고 reasoning이 있으면 로드 시 reasoning을 content로 폴백한다', async () => {
+  const vault = createVault();
+  const messages: ChatMessageWithMeta[] = [
+    createMessage({
       role: 'assistant',
-      timestamp: Date.now(),
-      createdAt: '2026-05-16T00:00:00.000Z',
-      updatedAt: '2026-05-16T00:00:00.000Z',
-      status: 'complete',
-    };
-    vault.writeFile(
-      'Chats/bad.md',
-      [
-        '---',
-        'title: "Bad"',
-        'messages: 1',
-        '---',
-        '',
-        '<!-- superpower-inside-message',
-        JSON.stringify(meta, null, 2),
-        '-->',
-        '### 1. Assistant',
-        '',
-        '#### Answer',
-        '',
-        '<!-- superpower-inside-content-start encoding="base64" -->',
-        badBase64,
-        '<!-- superpower-inside-content-end -->',
-        '<!-- /superpower-inside-message -->',
-      ].join('\n'),
-    );
+      content: '',
+      reasoning: '생각의 과정입니다.',
+    }),
+  ];
 
-    const loaded = await loadChat(vault, 'Chats/bad.md');
-    expect(loaded.messages[0].content).toBe('[decoding failed]');
-  });
+  const file = await saveChat(vault, messages, 'Chats');
+  const loaded = await loadChat(vault, file.path);
+
+  expect(loaded.messages[0].content).toBe('생각의 과정입니다.');
+  expect(loaded.messages[0].reasoning).toBe('생각의 과정입니다.');
+});
+
+it('originalContent가 있으면 저장 시 사용하고 로드 시 복원한다', async () => {
+  const vault = createVault();
+  const messages: ChatMessageWithMeta[] = [
+    createMessage({
+      role: 'assistant',
+      content: '',
+      originalContent: '원본 답변 내용',
+      reasoning: '생각',
+    }),
+  ];
+
+  const file = await saveChat(vault, messages, 'Chats');
+  const loaded = await loadChat(vault, file.path);
+
+  expect(loaded.messages[0].content).toBe('원본 답변 내용');
+});
+
+it('decodeTextBlock 실패 시 [decoding failed]를 반환한다', async () => {
+  const vault = createVault();
+  const badBase64 = '!!!invalid-base64!!!';
+  const meta = {
+    id: 'msg-bad',
+    role: 'assistant',
+    timestamp: Date.now(),
+    createdAt: '2026-05-16T00:00:00.000Z',
+    updatedAt: '2026-05-16T00:00:00.000Z',
+    status: 'complete',
+  };
+  vault.writeFile(
+    'Chats/bad.md',
+    [
+      '---',
+      'title: "Bad"',
+      'messages: 1',
+      '---',
+      '',
+      '<!-- superpower-inside-message',
+      JSON.stringify(meta, null, 2),
+      '-->',
+      '### 1. Assistant',
+      '',
+      '#### Answer',
+      '',
+      '<!-- superpower-inside-content-start encoding="base64" -->',
+      badBase64,
+      '<!-- superpower-inside-content-end -->',
+      '<!-- /superpower-inside-message -->',
+    ].join('\n'),
+  );
+
+  const loaded = await loadChat(vault, 'Chats/bad.md');
+  expect(loaded.messages[0].content).toBe('[decoding failed]');
+});

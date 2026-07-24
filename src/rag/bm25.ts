@@ -1,7 +1,12 @@
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
-import { BM25WorkerRuntime, canUseBM25Worker, type BM25WorkerHit } from './bm25-worker-runtime';
+import {
+  BM25WorkerRuntime,
+  canUseBM25Worker,
+  type BM25WorkerFactory,
+  type BM25WorkerHit,
+} from './bm25-worker-runtime';
 
 export interface BM25DocumentInput {
   id: string;
@@ -72,6 +77,7 @@ interface BM25Snapshot {
 
 export interface IndexedDbBM25IndexOptions {
   maxSnapshotBytes?: number;
+  workerFactory?: BM25WorkerFactory;
 }
 
 class BM25IndexDB extends Dexie {
@@ -101,6 +107,7 @@ export class IndexedDbBM25Index {
   private batchDepth: number;
   private batchDirty: boolean;
   private readonly maxSnapshotBytes: number;
+  private readonly workerFactory?: BM25WorkerFactory;
   private pendingOperations: BM25PendingOperation[];
   private nextOperationOrderValue: number;
   private workerRuntime: BM25WorkerRuntime | null = null;
@@ -109,6 +116,7 @@ export class IndexedDbBM25Index {
   private workerTokenizerCurrent = false;
   private workerTotalDocs = 0;
   private workerFailure: Error | null = null;
+  private rebuildReplayOperations: BM25PendingOperation[] | null = null;
 
   constructor(
     dbName = 'SuperpowerInsideBM25Index',
@@ -124,6 +132,7 @@ export class IndexedDbBM25Index {
     this.batchDepth = 0;
     this.batchDirty = false;
     this.maxSnapshotBytes = normalizeMaxSnapshotBytes(options.maxSnapshotBytes);
+    this.workerFactory = options.workerFactory;
     this.pendingOperations = [];
     this.nextOperationOrderValue = Date.now() * 1000;
   }
@@ -134,12 +143,16 @@ export class IndexedDbBM25Index {
     this.workerRuntime = null;
     this.workerQueue = Promise.resolve();
     this.workerFailure = null;
-    const snapshot = await this.loadSnapshot();
-    const raw = snapshot.raw.trim();
-    if (canUseBM25Worker()) {
-      const worker = new BM25WorkerRuntime();
+    this.workerReady = false;
+    this.workerTokenizerCurrent = false;
+    this.workerTotalDocs = 0;
+    this.loaded = false;
+    if (this.workerFactory || canUseBM25Worker()) {
+      const worker = new BM25WorkerRuntime(this.workerFactory);
       this.workerRuntime = worker;
-      try {
+      const initialization = (async () => {
+        const snapshot = await this.loadSnapshot();
+        const raw = snapshot.raw.trim();
         const state = await worker.initialize(
           this.db.name,
           raw.length > 0 && raw.length <= this.maxSnapshotBytes ? raw : '',
@@ -150,13 +163,23 @@ export class IndexedDbBM25Index {
         if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
           await this.persistSnapshotRaw(raw);
         }
+      })();
+      // 초기화 중 들어온 파일 변경도 hydration 완료 뒤 같은 worker에 순서대로 적용한다.
+      this.workerQueue = initialization;
+      try {
+        await initialization;
         return;
       } catch (error) {
         worker.close();
-        this.workerRuntime = null;
+        if (this.workerRuntime === worker) {
+          this.workerRuntime = null;
+        }
+        this.loaded = false;
         throw error;
       }
     }
+    const snapshot = await this.loadSnapshot();
+    const raw = snapshot.raw.trim();
     const snapshotRuntime =
       raw.length > 0 && raw.length <= this.maxSnapshotBytes
         ? RustBm25RuntimeIndex.fromJson(raw, TOKENIZER_VERSION)
@@ -227,7 +250,12 @@ export class IndexedDbBM25Index {
     this.runtime?.dispose();
     this.runtime = null;
     this.pendingOperations = [];
+    this.rebuildReplayOperations = null;
     this.batchDirty = false;
+    this.loaded = false;
+    this.workerReady = false;
+    this.workerTokenizerCurrent = false;
+    this.workerTotalDocs = 0;
     this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
   }
@@ -238,16 +266,21 @@ export class IndexedDbBM25Index {
     this.runtime?.dispose();
     this.runtime = null;
     this.pendingOperations = [];
+    this.rebuildReplayOperations = null;
     this.batchDirty = false;
+    this.loaded = false;
+    this.workerReady = false;
+    this.workerTokenizerCurrent = false;
+    this.workerTotalDocs = 0;
     this.db.close({ disableAutoOpen: true });
   }
 
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
     if (this.workerRuntime) {
       await this.withBatch(() => {
-        this.queueMutation('clear', '*');
+        this.queueMutation('clear', '*', false);
         for (const document of documents) {
-          this.queueDocument(normalizeCorpusDocument(document));
+          this.queueDocument(normalizeCorpusDocument(document), false);
         }
         this.batchDirty = true;
         return Promise.resolve();
@@ -265,13 +298,21 @@ export class IndexedDbBM25Index {
       return;
     }
     await this.withBatch(async () => {
-      await this.clear();
+      this.runtime?.dispose();
+      this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+      this.queueMutation('clear', '*', false);
       const seenDocIds = new Set<string>();
       for (let index = 0; index < documents.length; index++) {
         const document = documents[index];
         if (document === undefined) continue;
         if (seenDocIds.has(document.id)) {
-          this.addCorpusDocument(normalizeCorpusDocument(document));
+          this.ensureRuntime().addDocument(
+            document.id,
+            document.text,
+            document.sourcePath ?? document.id,
+            TOKENIZER_VERSION,
+          );
+          this.queueDocument(normalizeCorpusDocument(document), false);
         } else {
           this.ensureRuntime().addNewDocument(
             document.id,
@@ -279,7 +320,7 @@ export class IndexedDbBM25Index {
             document.sourcePath ?? document.id,
             TOKENIZER_VERSION,
           );
-          this.queueDocument(normalizeCorpusDocument(document));
+          this.queueDocument(normalizeCorpusDocument(document), false);
           seenDocIds.add(document.id);
         }
         if (index + 1 < documents.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) {
@@ -288,6 +329,29 @@ export class IndexedDbBM25Index {
       }
       await this.persist();
     });
+  }
+
+  async rebuildFrom(createDocuments: () => Promise<readonly BM25DocumentInput[]>): Promise<void> {
+    if (this.rebuildReplayOperations !== null) {
+      throw new Error('BM25 rebuild is already in progress.');
+    }
+    this.rebuildReplayOperations = [];
+    let rebuildStarted = false;
+    let rebuildError: Error | null = null;
+    try {
+      const documents = await createDocuments();
+      rebuildStarted = true;
+      await this.rebuild(documents);
+    } catch (error) {
+      rebuildError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    const replayOperations = this.rebuildReplayOperations ?? [];
+    this.rebuildReplayOperations = null;
+    if (rebuildStarted && replayOperations.length > 0) {
+      await this.replayOperationsAfterRebuild(replayOperations);
+    }
+    if (rebuildError) throw rebuildError;
   }
 
   addDocument(docId: string, text: string, sourcePath = docId): void {
@@ -417,7 +481,10 @@ export class IndexedDbBM25Index {
   ): Promise<BM25CorpusDocument[]> {
     await this.persist();
     if (sourcePaths.length === 0) return [];
-    const records = await this.db.documents.where('sourcePath').anyOf([...sourcePaths]).toArray();
+    const records = await this.db.documents
+      .where('sourcePath')
+      .anyOf([...sourcePaths])
+      .toArray();
     return records.map(toCorpusDocument);
   }
 
@@ -530,6 +597,53 @@ export class IndexedDbBM25Index {
     }
   }
 
+  private async replayOperationsAfterRebuild(
+    operations: readonly BM25PendingOperation[],
+  ): Promise<void> {
+    await this.withBatch(async () => {
+      for (const operation of operations) {
+        if (operation.kind === 'upsert-document') {
+          const document = toCorpusDocument(operation.record);
+          if (this.workerRuntime) {
+            this.enqueueWorkerMutation(async (worker) => {
+              this.applyWorkerState(
+                await worker.add({
+                  id: document.id,
+                  text: document.text,
+                  sourcePath: document.sourcePath,
+                }),
+              );
+            });
+          } else {
+            this.ensureRuntime().addDocument(
+              document.id,
+              document.text,
+              document.sourcePath,
+              TOKENIZER_VERSION,
+            );
+          }
+        } else if (this.workerRuntime) {
+          const mutation = operation.record;
+          this.enqueueWorkerMutation(async (worker) => {
+            if (mutation.kind === 'clear') {
+              this.applyWorkerState(await worker.clear());
+            } else if (mutation.kind === 'remove-doc') {
+              this.applyWorkerState(await worker.removeDocument(mutation.target));
+            } else {
+              this.applyWorkerState(await worker.removeSource(mutation.target));
+            }
+          });
+        } else {
+          this.applyMutation(operation.record);
+        }
+        this.pendingOperations.push(operation);
+      }
+      await this.persist();
+    });
+    await this.workerQueue;
+    if (this.workerFailure) throw this.workerFailure;
+  }
+
   private applyMutation(record: BM25MutationRecord): void {
     if (record.kind === 'clear') {
       this.runtime?.dispose();
@@ -543,9 +657,9 @@ export class IndexedDbBM25Index {
     this.ensureRuntime().removeSource(record.target, TOKENIZER_VERSION);
   }
 
-  private queueDocument(document: BM25CorpusDocument): void {
+  private queueDocument(document: BM25CorpusDocument, captureForRebuild = true): void {
     const now = Date.now();
-    this.pendingOperations.push({
+    const operation: BM25PendingOperation = {
       kind: 'upsert-document',
       record: {
         id: document.id,
@@ -561,13 +675,21 @@ export class IndexedDbBM25Index {
         contentHash: document.contentHash,
         indexedAt: document.indexedAt,
       },
-    });
+    };
+    this.pendingOperations.push(operation);
+    if (captureForRebuild) {
+      this.rebuildReplayOperations?.push(operation);
+    }
   }
 
-  private queueMutation(kind: BM25MutationRecord['kind'], target: string): void {
+  private queueMutation(
+    kind: BM25MutationRecord['kind'],
+    target: string,
+    captureForRebuild = true,
+  ): void {
     const now = Date.now();
     const order = this.nextOperationOrder();
-    this.pendingOperations.push({
+    const operation: BM25PendingOperation = {
       kind: 'mutation',
       record: {
         id: `${kind}:${target}:${order}`,
@@ -576,7 +698,11 @@ export class IndexedDbBM25Index {
         updated: now,
         order,
       },
-    });
+    };
+    this.pendingOperations.push(operation);
+    if (captureForRebuild) {
+      this.rebuildReplayOperations?.push(operation);
+    }
   }
 
   private nextOperationOrder(): number {

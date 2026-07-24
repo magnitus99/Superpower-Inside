@@ -57,6 +57,18 @@ describe('ChatMessageRenderer meta contract', () => {
     });
   });
 
+  it('분류된 오류는 원본 진단 대신 간결한 사용자 메시지를 title로 사용한다', () => {
+    const items = createChatMessageMetaItems({
+      ...baseMessage,
+      content: '현재 연결의 요청 한도에 도달했습니다.',
+      status: 'error',
+      errorKind: 'rate-limit',
+      errorMessage: '429 upstream provider detail',
+    });
+
+    expect(items.at(-1)?.title).toBe('현재 연결의 요청 한도에 도달했습니다.');
+  });
+
   it('custom buffered/no-tools capability 라벨을 계산한다', () => {
     const items = createChatMessageMetaItems({
       ...baseMessage,

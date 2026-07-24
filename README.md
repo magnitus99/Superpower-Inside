@@ -13,7 +13,7 @@ Superpower Inside is built for people who use Obsidian as a working knowledge ba
 | What it helps with | How it works |
 | --- | --- |
 | Find answers in your vault | Keeps keyword search available without embeddings and adds vector and graph signals when ready |
-| Research the whole vault | Reads every eligible note in bounded batches, then builds a hierarchical source-backed synthesis |
+| Research the whole vault | Screens eligible notes locally, sends only bounded evidence from relevant notes to the chosen model, and returns a cited answer with explicit coverage limits |
 | Work with sources | Shows source cards, evidence, and citation actions beside the answer |
 | Use your preferred model | Pick a model first, then let Superpower Inside prepare the matching provider profile |
 | Extend the assistant | Lets a trusted local MCP stdio server help when you mention it |
@@ -41,7 +41,7 @@ flowchart LR
 | --- | --- |
 | Chat sidebar | Ask questions without leaving Obsidian. |
 | Native vault tool | Lets the model iteratively search, read, list, inspect links, and check vault scope through one first-class read-only tool. |
-| Whole-vault research | Maps every eligible note, reduces large result sets hierarchically, and synthesizes a cited answer instead of sampling only top-k chunks. |
+| Whole-vault research | Screens eligible notes on this device, sends bounded evidence only from locally selected notes, and states coverage limits in the cited answer. |
 | Vault retrieval | Uses BM25 as the always-available lexical baseline, with vector and structural retrieval as optional accelerators. |
 | GraphRAG | Uses local graph evidence for entity, relation, theme, and source-backed questions. |
 | File and folder mentions | Attach exact notes or folders with `@file.md` or `@[folder/path]`. |
@@ -127,6 +127,7 @@ The Agent Diagnostics view writes a local JSON snapshot and append-only event lo
 
 - Settings and API keys are stored in this device's Obsidian local storage and are not newly saved to the synced plugin `data.json` file.
 - Chat messages, selected notes, retrieved RAG chunks, tool arguments, and tool results may be sent to the configured LLM, embedding provider, or MCP server.
+- Whole-vault research inventories and screens eligible notes on this device. Of the vault note content, only bounded evidence from locally selected notes is sent to the configured chat provider; coverage or transfer limits are stated in the answer.
 - The built-in `superpower_inside` model tool is read-only. It can search, read bounded line ranges, list Markdown notes, inspect resolved links, and report vault statistics; it cannot create, modify, move, or delete notes.
 - RAG and GraphRAG features enumerate Markdown files in the vault to build and refresh local indexes.
 - Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
@@ -154,7 +155,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | 도움이 되는 일 | 작동 방식 |
 | --- | --- |
 | 볼트에서 답 찾기 | 임베딩 없이도 키워드 검색을 유지하고 준비된 벡터·그래프 신호를 함께 활용 |
-| 볼트 전체 조사하기 | 모든 대상 노트를 제한된 배치로 읽고 계층적으로 종합해 출처 있는 답변 생성 |
+| 볼트 전체 조사하기 | 대상 노트를 로컬에서 확인하고 관련 문서의 근거만 제한적으로 모델에 보내, 확인 범위가 드러나는 출처 기반 답변 생성 |
 | 출처 확인하기 | 답변 아래 출처 카드와 evidence를 보여주고 노트로 다시 삽입 |
 | 원하는 모델 쓰기 | OpenAI, Claude, Ollama, OpenRouter, Ollama Cloud, 커스텀 OpenAI-compatible provider 지원 |
 | 도구 확장하기 | 신뢰한 로컬 MCP stdio 서버를 필요할 때 연결 |
@@ -169,7 +170,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | --- | --- |
 | 사이드바 채팅 | Obsidian을 떠나지 않고 AI와 대화합니다. |
 | 네이티브 볼트 도구 | 모델이 하나의 읽기 전용 도구로 검색, 범위 읽기, 파일 목록, 링크, 볼트 범위를 반복 확인합니다. |
-| 볼트 전체 리서치 | 일부 top-k 청크만 뽑지 않고 모든 대상 노트를 map/reduce해 출처가 포함된 종합 답변을 만듭니다. |
+| 볼트 전체 리서치 | 대상 노트를 이 기기에서 확인하고 로컬에서 선별한 문서의 근거만 제한적으로 전송하며, 확인 범위를 밝힌 출처 기반 답변을 만듭니다. |
 | 볼트 검색 | BM25를 항상 사용 가능한 기반으로 두고 벡터와 구조 검색을 선택적 가속 계층으로 결합합니다. |
 | GraphRAG | 노트에서 만든 로컬 지식 그래프로 entity, relation, evidence, community 기반 컨텍스트를 제공합니다. |
 | 파일/폴더 멘션 | `@file.md`, `@[folder/path]`로 특정 노트나 폴더를 붙입니다. |
@@ -228,6 +229,7 @@ GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. p
 
 - 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며, 동기화되는 플러그인 `data.json` 파일에는 새로 저장하지 않습니다.
 - 채팅 메시지, 선택된 노트, RAG 청크, 도구 호출 인자와 결과는 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
+- 볼트 전체 리서치는 대상 노트를 이 기기에서 먼저 확인합니다. 볼트 내용 중에는 로컬에서 선별한 문서의 근거만 설정한 채팅 provider로 제한적으로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
 - 내장 `superpower_inside` 모델 도구는 읽기 전용입니다. Markdown 검색, 제한된 줄 범위 읽기, 파일 목록, 확인된 링크, 볼트 통계를 제공하지만 노트를 생성·수정·이동·삭제할 수 없습니다.
 - RAG와 GraphRAG 기능은 인덱스 생성과 갱신을 위해 볼트의 Markdown 파일 목록을 열람합니다.
 - 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 저장됩니다.

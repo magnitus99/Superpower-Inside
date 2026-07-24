@@ -53,6 +53,16 @@ export interface ContextBuildResult {
   contextBudgetSnapshot?: import('./types').ContextBudgetSnapshot;
 }
 
+export async function resolveChatRagEngine(
+  skipAutoRag: boolean,
+  prepare: () => Promise<unknown>,
+  getEngine: () => RagQueryLike | null,
+): Promise<RagQueryLike | null> {
+  if (skipAutoRag) return null;
+  await prepare();
+  return getEngine();
+}
+
 interface BuildContextOptions {
   app: App;
   ragEngine?: RagQueryLike | null;
@@ -155,15 +165,16 @@ export async function buildChatContext(
       (mention) => mention.name,
     ),
   );
-  const implicitFolderPaths = shouldUseAutoRag
-    ? (planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []).filter(
-        (path) => !explicitFolderPaths.has(path),
-      )
-    : [];
-  if (implicitFolderPaths.length > 0) {
-    const expandedQuery = options.queryExpander
+  const expandedQuery =
+    shouldUseAutoRag && options.queryExpander
       ? await options.queryExpander(question).catch(() => question)
       : question;
+  const implicitFolderPaths = shouldUseAutoRag
+    ? (
+        planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []
+      ).filter((path) => !explicitFolderPaths.has(path))
+    : [];
+  if (implicitFolderPaths.length > 0) {
     for (const folderPath of implicitFolderPaths) {
       await appendImplicitFolderEvidence(
         folderPath,
@@ -183,7 +194,23 @@ export async function buildChatContext(
 
   if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence) {
     try {
-      const results = await options.ragEngine.query(question, ragTopK, options.ragMinScore);
+      let results = await options.ragEngine.query(expandedQuery, ragTopK, options.ragMinScore);
+      if (results.length === 0) {
+        const fallbackCandidates = await options.ragEngine.query(expandedQuery, ragTopK * 3, 0);
+        const fallbackIndices =
+          planFolderLexicalEvidenceIndicesRust(
+            expandedQuery,
+            fallbackCandidates.map(
+              (result) =>
+                `${result.entry.metadata.filePath}\n${result.entry.metadata.heading ?? ''}\n${result.entry.metadata.text}`,
+            ),
+            ragTopK,
+            'any',
+          ) ?? [];
+        results = selectByRustIndices(fallbackCandidates, fallbackIndices, {
+          dedupe: true,
+        });
+      }
       const attachedPaths = new Set(citations.map((citation) => citation.filePath));
       const uniqueResults = dedupeQueryResults(results).filter(
         (result) => !attachedPaths.has(result.entry.metadata.filePath),
@@ -693,9 +720,7 @@ async function appendFolderMention(
   }
 
   const folderPrefix = `${path}/`;
-  const folderFiles = app.vault
-    .getFiles()
-    .filter((file) => file.path.startsWith(folderPrefix));
+  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(folderPrefix));
   const indexableFlags = await Promise.all(
     folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
   );

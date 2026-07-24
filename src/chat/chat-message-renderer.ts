@@ -48,7 +48,7 @@ export function createChatMessageMetaItems(msg: ChatMessageWithMeta): ChatMessag
     kind: 'status',
     className: `superpower-inside-chat-message-status ${msg.status}`,
     text: statusText,
-    title: msg.errorMessage,
+    title: msg.errorKind ? msg.content : msg.errorMessage,
   });
 
   return items;

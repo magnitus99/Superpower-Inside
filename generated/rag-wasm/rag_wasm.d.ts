@@ -11,6 +11,10 @@ export class Bm25RuntimeIndex {
      */
     add_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
     /**
+     * bounded JSON 문서 batch를 한 번의 bridge 호출로 검증하고 추가한다.
+     */
+    add_documents_json(documents_json: string, tokenizer_version: number, known_unique: boolean): number;
+    /**
      * 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
      */
     add_new_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
@@ -214,6 +218,22 @@ export function create_graph_id(parts: string): string;
  * Creates a collision-resistant deterministic key for one namespaced `IndexedDB` record.
  */
 export function create_indexed_db_record_key(namespace: string, value: string): string;
+
+/**
+ * Derives a conservative coverage receipt from successful native-vault tool result payloads.
+ *
+ * Only an untruncated search that scanned without unreadable files can support a scoped exact
+ * negative claim. Native tool results never prove that every inventory document was read.
+ */
+export function derive_native_tool_coverage_receipt_json(results_json: string): string;
+
+/**
+ * Derives auditable whole-vault and selected-evidence coverage booleans.
+ *
+ * Invalid JSON returns an empty string. Semantic inconsistencies produce a receipt with reason
+ * codes and conservative `false` decisions.
+ */
+export function derive_research_coverage_receipt_json(input_json: string): string;
 
 /**
  * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
@@ -671,6 +691,11 @@ export function plan_merged_retrieval_candidates(entry_indices: Uint32Array, sou
 export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json: string, source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
 
 /**
+ * 파일 단위 lexical 일치 결과에서 가장 관련 있는 실제 행과 검증 상태를 반환한다.
+ */
+export function plan_native_vault_lexical_hit_json(query: string, content: string, match_mode: string): string;
+
+/**
  * Sorts, de-duplicates, and bounds one side of the structural link graph.
  */
 export function plan_native_vault_link_paths_json(paths_json: string, limit: number): string;
@@ -764,7 +789,7 @@ export function plan_rag_storage_health_json(health_json: string): string;
 export function plan_reference_file_indices_json(source_path: string, file_paths_json: string): string;
 
 /**
- * Finds repeated tool calls after canonicalizing JSON argument object key order.
+ * Plans blocked tool calls after canonicalizing JSON argument object key order.
  */
 export function plan_repeated_tool_call_indices_json(history_json: string, candidates_json: string, max_repeats: number, max_native_search_calls: number): string;
 
@@ -784,9 +809,34 @@ export function plan_rerank_response_json(raw_response: string, allowed_ids_json
 export function plan_rerank_result_order_json(result_ids_json: string, ranked_ids_json: string): string;
 
 /**
+ * Validates answer-wide coverage claims against a derived coverage receipt.
+ *
+ * The returned action is `repair` when the answer claims unverified whole-file reading or an
+ * insufficiently scoped negative conclusion.
+ */
+export function plan_research_answer_contract_json(input_json: string): string;
+
+/**
+ * Plans a bounded, stable local candidate selection from questions and inventory evidence.
+ *
+ * Invalid JSON or mismatched path/sample arrays return an empty string.
+ */
+export function plan_research_candidate_selection_json(input_json: string): string;
+
+/**
  * Selects citations explicitly referenced by the final answer, or a bounded evidence fallback.
  */
 export function plan_research_citation_indices_json(content: string, citation_ids_json: string, citation_paths_json: string, fallback_limit: number): string;
+
+/**
+ * Advances the global provider-attempt or retry-wait ledger while reserving future logical calls.
+ */
+export function plan_research_provider_ledger_transition_json(input_json: string): string;
+
+/**
+ * Plans one hard logical provider-request ceiling without changing evidence-batch semantics.
+ */
+export function plan_research_provider_request_budget_json(input_json: string): string;
 
 /**
  * Classifies a provider failure and returns a bounded retry plan for research requests.
@@ -827,6 +877,11 @@ export function plan_structural_heading_neighbors_json(seeds_json: string, entri
  * structural retrieval에서 link/backlink target path plan을 JSON으로 반환한다.
  */
 export function plan_structural_linked_paths_json(seed_paths_json: string, edges_json: string): string;
+
+/**
+ * citation 배열에서 본문을 제외한 bounded source reference JSON 배열만 만든다.
+ */
+export function plan_tool_result_source_references_json(citations_json: string): string;
 
 /**
  * vault link target의 path candidate와 basename fallback을 `JSON` 문자열로 반환한다.
@@ -1001,6 +1056,7 @@ export interface InitOutput {
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly bm25runtimeindex_add_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly bm25runtimeindex_add_documents_json: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
@@ -1166,6 +1222,12 @@ export interface InitOutput {
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly plan_research_answer_contract_json: (a: number, b: number) => [number, number];
+    readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
     readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_storage_maintenance_json: (a: number, b: number) => [number, number];
     readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
@@ -1178,6 +1240,7 @@ export interface InitOutput {
     readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
     readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
     readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -1193,6 +1256,7 @@ export interface InitOutput {
     readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
+    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

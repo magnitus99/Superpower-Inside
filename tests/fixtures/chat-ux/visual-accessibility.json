@@ -14,7 +14,8 @@
     "mention-select-with-keyboard",
     "tool-approve",
     "assistant-question-submit",
-    "message-action-focus"
+    "message-action-focus",
+    "continue-with-other-provider"
   ],
   "overflowSamples": [
     "긴한국어텍스트긴한국어텍스트긴한국어텍스트긴한국어텍스트긴한국어텍스트",
@@ -34,6 +35,7 @@
     ".superpower-inside-chat-source-warning",
     ".superpower-inside-chat-context-budget",
     ".superpower-inside-chat-data-boundary",
+    ".superpower-inside-chat-error-diagnostics",
     ".superpower-inside-chat-variant-compare",
     ".superpower-inside-tool-call-approve",
     ".superpower-inside-chat-question-submit"

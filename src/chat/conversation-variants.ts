@@ -18,6 +18,21 @@ export interface VariantComparisonRow {
   active: boolean;
 }
 
+export function selectPreviousUserQuestions(
+  messages: readonly ChatMessageWithMeta[],
+  beforeUserMessageId?: string,
+): string[] {
+  const boundaryIndex = beforeUserMessageId
+    ? messages.findIndex((message) => message.id === beforeUserMessageId && message.role === 'user')
+    : messages.length;
+  if (boundaryIndex < 0) return [];
+
+  const previousUser = [...messages.slice(0, boundaryIndex)]
+    .reverse()
+    .find((message) => message.role === 'user' && message.content.trim().length > 0);
+  return previousUser ? [previousUser.content.trim()] : [];
+}
+
 export function createRegenerationDraft(
   messages: readonly ChatMessageWithMeta[],
   assistantMessageId: string,

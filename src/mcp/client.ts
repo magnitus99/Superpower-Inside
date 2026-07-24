@@ -77,9 +77,16 @@ export class MCPClientManager {
     }));
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (!this.client) throw new Error('MCP client not connected');
-    const result = await this.client.callTool({ name, arguments: args });
+    const params = { name, arguments: args };
+    const result = signal
+      ? await this.client.callTool(params, undefined, { signal })
+      : await this.client.callTool(params);
     return result;
   }
 

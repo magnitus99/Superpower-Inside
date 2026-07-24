@@ -40,12 +40,28 @@ pub use native_vault_tool::{
     plan_native_vault_tool_request_json,
 };
 
+/// Native lexical search evidence-location policy.
+mod native_lexical_hit;
+pub use native_lexical_hit::plan_native_vault_lexical_hit_json;
+
+/// Compact persisted tool-result resume policy.
+mod tool_result_resume;
+pub use tool_result_resume::plan_tool_result_source_references_json;
+
 /// Whole-vault research intent and hierarchical reduce batching policy.
 mod research_agent;
 pub use research_agent::{
     is_whole_vault_research_intent, plan_repeated_tool_call_indices_json,
     plan_research_citation_indices_json, plan_research_request_failure_json,
     plan_research_summary_batches_json,
+};
+
+/// Evidence-bounded research planning, coverage, and answer-claim policy.
+mod research_contract;
+pub use research_contract::{
+    derive_native_tool_coverage_receipt_json, derive_research_coverage_receipt_json,
+    plan_research_answer_contract_json, plan_research_candidate_selection_json,
+    plan_research_provider_ledger_transition_json, plan_research_provider_request_budget_json,
 };
 
 /// Model-neutral tool-call fallback protocol.
@@ -64,6 +80,10 @@ const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
 /// compact BM25 저장 포맷 schema version.
 const BM25_COMPACT_SCHEMA_VERSION: u32 = 3;
+/// 한 번의 WASM bridge 호출에서 허용하는 BM25 문서 수.
+const MAX_BM25_DOCUMENT_BATCH_SIZE: usize = 128;
+/// 한 번의 BM25 bulk 입력이 점유할 수 있는 JSON byte 상한.
+const MAX_BM25_DOCUMENT_BATCH_JSON_BYTES: usize = 2 * 1024 * 1024;
 /// 기존 `TypeScript RRF` 계산의 rank smoothing 상수.
 const RRF_K: f64 = 60.0;
 /// 기존 hybrid score의 base vector/BM25 component weight.
@@ -3337,14 +3357,6 @@ pub fn plan_folder_lexical_evidence_indices_json(
     if !matches!(match_mode, "all" | "any" | "phrase") {
         return String::new();
     }
-    let query_has_or = query
-        .split_whitespace()
-        .any(|token| token.eq_ignore_ascii_case("or"));
-    let effective_match_mode = if match_mode == "all" && query_has_or {
-        "any"
-    } else {
-        match_mode
-    };
     let tokens = tokenize(query)
         .into_iter()
         .filter(|token| token != "or" && token != "and")
@@ -3365,7 +3377,7 @@ pub fn plan_folder_lexical_evidence_indices_json(
             let path_score = count_keyword_matches(&joined_tokens, file_path);
             let content_score = count_keyword_matches(&joined_tokens, content).min(9_999);
             let matched_tokens = count_keyword_matches(&joined_tokens, &combined);
-            let is_match = match effective_match_mode {
+            let is_match = match match_mode {
                 "all" => usize::try_from(matched_tokens).ok() == Some(tokens.len()),
                 "any" => matched_tokens > 0,
                 "phrase" => combined.contains(&normalized_phrase),
@@ -5100,6 +5112,39 @@ impl Bm25RuntimeIndex {
         insert_bm25_document(&mut self.index, doc_id, text, source_path);
     }
 
+    /// bounded JSON 문서 batch를 한 번의 bridge 호출로 검증하고 추가한다.
+    #[must_use]
+    pub fn add_documents_json(
+        &mut self,
+        documents_json: &str,
+        tokenizer_version: u32,
+        known_unique: bool,
+    ) -> usize {
+        let Some(documents) = parse_bm25_document_batch_json(documents_json) else {
+            return 0;
+        };
+        self.index.tokenizer_version = tokenizer_version;
+        let count = documents.len();
+        for document in documents {
+            if known_unique {
+                insert_bm25_document(
+                    &mut self.index,
+                    &document.doc_id,
+                    &document.text,
+                    &document.source_path,
+                );
+            } else {
+                add_bm25_document(
+                    &mut self.index,
+                    &document.doc_id,
+                    &document.text,
+                    &document.source_path,
+                );
+            }
+        }
+        count
+    }
+
     /// document 하나를 runtime index에서 제거한다.
     pub fn remove_document(&mut self, doc_id: &str, tokenizer_version: u32) {
         self.index.tokenizer_version = tokenizer_version;
@@ -5266,6 +5311,16 @@ struct Bm25IndexData {
     doc_lengths: BTreeMap<String, f64>,
     /// doc id -> source file path.
     doc_sources: BTreeMap<String, String>,
+}
+
+/// 한 번의 bounded BM25 bulk bridge 호출에 포함된 문서.
+struct Bm25DocumentBatchEntry {
+    /// 안정적인 BM25 문서 식별자.
+    doc_id: String,
+    /// 토큰화할 검색 본문.
+    text: String,
+    /// 원본 vault 파일 경로.
+    source_path: String,
 }
 
 impl Bm25IndexData {
@@ -15715,6 +15770,7 @@ fn parse_chat_message_plan(
     copy_optional_chat_value(object, &mut message, "contextBudgetSnapshot");
     copy_optional_chat_value(object, &mut message, "dataBoundarySnapshot");
     copy_optional_chat_string(object, &mut message, "errorKind");
+    copy_optional_chat_string(object, &mut message, "errorRetryAt");
     copy_optional_chat_value(object, &mut message, "actionHistory");
 
     let error_message = object
@@ -17367,6 +17423,34 @@ fn parse_bm25_hits_json(payload: &str) -> Option<Vec<Bm25Hit>> {
         });
     }
     Some(hits)
+}
+
+/// bounded BM25 문서 JSON 배열을 전체 검증한 뒤 반환한다.
+fn parse_bm25_document_batch_json(payload: &str) -> Option<Vec<Bm25DocumentBatchEntry>> {
+    if payload.len() > MAX_BM25_DOCUMENT_BATCH_JSON_BYTES {
+        return None;
+    }
+    let value = serde_json::from_str::<JsonValue>(payload).ok()?;
+    let values = value.as_array()?;
+    if values.is_empty() || values.len() > MAX_BM25_DOCUMENT_BATCH_SIZE {
+        return None;
+    }
+    let mut documents = Vec::with_capacity(values.len());
+    for value in values {
+        let object = value.as_object()?;
+        let doc_id = object.get("id")?.as_str()?.to_owned();
+        let text = object.get("text")?.as_str()?.to_owned();
+        let source_path = object.get("sourcePath")?.as_str()?.to_owned();
+        if doc_id.is_empty() || source_path.is_empty() {
+            return None;
+        }
+        documents.push(Bm25DocumentBatchEntry {
+            doc_id,
+            text,
+            source_path,
+        });
+    }
+    Some(documents)
 }
 
 /// BM25 index JSON object를 파싱한다.
@@ -19833,7 +19917,7 @@ mod tests {
     fn chat_message_blocks_are_planned_in_rust() {
         let body = [
             "<!-- superpower-inside-message",
-            r#"{"id":"msg-1","role":"assistant","providerKey":"openai","turnStage":"streaming-answer","toolRound":2,"providerCapability":{"providerKey":"openai","model":"gpt-test","streaming":true,"transport":"fetch-sse","toolCalling":true,"reasoning":true,"abort":"native","fileReference":true,"maxToolRounds":10,"knownLimitations":[]}}"#,
+            r#"{"id":"msg-1","role":"assistant","providerKey":"openai","errorRetryAt":"2026-01-01T00:05:00.000Z","turnStage":"streaming-answer","toolRound":2,"providerCapability":{"providerKey":"openai","model":"gpt-test","streaming":true,"transport":"fetch-sse","toolCalling":true,"reasoning":true,"abort":"native","fileReference":true,"maxToolRounds":10,"knownLimitations":[]}}"#,
             "-->",
             "<!-- superpower-inside-reasoning-start encoding=\"base64\" -->",
             "7IOd6rCB7J2YIOqzvOygleyeheuLiOuLpC4=",
@@ -19862,7 +19946,7 @@ mod tests {
                 "2026-01-01T00:00:00.000Z",
                 "[decoding failed]",
             ),
-            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"turnStage\":\"streaming-answer\",\"toolRound\":2,\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
+            "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"turnStage\":\"streaming-answer\",\"toolRound\":2,\"errorRetryAt\":\"2026-01-01T00:05:00.000Z\",\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
         );
     }
 
@@ -20912,6 +20996,40 @@ mod tests {
         );
     }
 
+    /// BM25 bulk append는 bounded JSON batch를 원자적으로 검증하고 한 번의 bridge 호출로 추가해야 한다.
+    #[test]
+    fn bm25_runtime_index_add_documents_json_is_atomic_and_searchable() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        let added = index.add_documents_json(
+            r#"[{"id":"api.md::0","text":"OpenRouter API access key","sourcePath":"api.md"},{"id":"local.md::0","text":"Ollama local model","sourcePath":"local.md"}]"#,
+            2,
+            true,
+        );
+
+        assert_eq!(added, 2);
+        assert_eq!(index.total_docs(), 2);
+        assert!(index.search_json("open router").contains("api.md::0"));
+        assert!(index.search_json("ollama").contains("local.md::0"));
+
+        let rejected = index.add_documents_json(
+            r#"[{"id":"valid.md::0","text":"must not leak","sourcePath":"valid.md"},{"id":"invalid.md::0","text":3,"sourcePath":"invalid.md"}]"#,
+            2,
+            true,
+        );
+        assert_eq!(rejected, 0);
+        assert_eq!(index.total_docs(), 2);
+        assert!(!index.search_json("leak").contains("valid.md::0"));
+
+        let replaced = index.add_documents_json(
+            r#"[{"id":"api.md::0","text":"replacement evidence","sourcePath":"api.md"}]"#,
+            2,
+            false,
+        );
+        assert_eq!(replaced, 1);
+        assert!(!index.search_json("open router").contains("api.md::0"));
+        assert!(index.search_json("replacement").contains("api.md::0"));
+    }
+
     /// BM25 제한 검색은 전체 검색 결과 중 상위 score만 WASM 경계 밖으로 내보내야 한다.
     #[test]
     fn bm25_runtime_index_search_top_json_limits_to_highest_scores() {
@@ -21433,6 +21551,15 @@ mod tests {
                 "all",
             ),
             "[1]",
+        );
+        assert_eq!(
+            plan_folder_lexical_evidence_indices_json(
+                "Neville OR Goddard",
+                r#"["A\nNeville","B\nGoddard","C\nNeville Goddard"]"#,
+                3,
+                "all",
+            ),
+            "[2]",
         );
     }
 

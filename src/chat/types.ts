@@ -8,13 +8,39 @@ export interface ToolCallRecord {
   name: string;
   arguments: string;
   result?: string;
+  /** 사용자 표시와 compact 저장에 사용하는 제한된 결과 요약 */
   resultSummary?: string;
+  /**
+   * 런타임 provider 재주입 payload입니다.
+   * current persistence는 이 필드를 저장하지 않고, 안전한 resultSummary에서 필요할 때 복원합니다.
+   */
   normalizedResult?: string;
+  /** 저장된 resultSummary를 provider 재개에 사용할 수 있음을 명시합니다. */
+  resumePayloadSource?: 'resultSummary';
   status: 'running' | 'success' | 'error';
   serverName?: string;
   approved?: boolean;
   executionKind?: 'native' | 'mcp';
   citations?: SourceCitation[];
+}
+
+/** 저장 후 재개할 때 원본 대신 provider에 전달하는 compact 도구 결과 계약 */
+export interface ToolResultSourceReference {
+  filePath: string;
+  status: 'candidate' | 'verified';
+  requiresRead: true;
+  line?: number;
+  endLine?: number;
+}
+
+export interface ToolResultSummaryResumePayload {
+  kind: 'tool-result-summary';
+  summary: string;
+  originalResultAvailable: false;
+  /** provider가 원본 본문 없이 필요한 파일만 다시 읽을 수 있게 하는 제한된 위치 정보 */
+  sourceReferences?: ToolResultSourceReference[];
+  /** 경로도 신뢰할 수 없는 메타데이터이며, 주장 전에 도구로 다시 읽어야 합니다. */
+  sourceReferencesUntrustedMetadata?: true;
 }
 
 /** 채팅 메시지의 저장/표시 상태 */
@@ -151,6 +177,15 @@ export interface DataBoundarySnapshot {
   sentToProvider: string[];
   sentToMcp: string[];
   privacyNotes: string[];
+  providerPayload?: {
+    userQuestion: boolean;
+    recentConversationMessages: number;
+    systemPrompt?: boolean;
+    attachedContexts: number;
+    citationPreviews: number;
+    toolResults: number;
+    researchDocuments: number;
+  };
 }
 
 export interface ChatActionHistoryEntry {
@@ -199,6 +234,7 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   contextBudgetSnapshot?: ContextBudgetSnapshot;
   dataBoundarySnapshot?: DataBoundarySnapshot;
   errorKind?: ChatErrorKind;
+  errorRetryAt?: string;
   actionHistory?: ChatActionHistoryEntry[];
 }
 

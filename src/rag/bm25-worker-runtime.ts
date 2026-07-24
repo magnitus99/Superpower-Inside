@@ -39,6 +39,9 @@ export interface BM25WorkerResponse {
   tokenizerCurrent?: boolean;
   totalDocs?: number;
   hits?: BM25WorkerHit[];
+  progress?: {
+    processedDocuments: number;
+  };
   error?: string;
 }
 
@@ -46,6 +49,7 @@ interface PendingRequest {
   resolve(response: BM25WorkerResponse): void;
   reject(error: Error): void;
   timeoutId: number;
+  lastProcessedDocuments: number;
   removeAbortListener(): void;
 }
 
@@ -149,6 +153,7 @@ export class BM25WorkerRuntime {
         resolve,
         reject,
         timeoutId,
+        lastProcessedDocuments: 0,
         removeAbortListener: () => signal?.removeEventListener('abort', abort),
       });
       this.worker.postMessage({ id, ...request });
@@ -158,6 +163,21 @@ export class BM25WorkerRuntime {
   private handleMessage(response: BM25WorkerResponse): void {
     const request = this.pending.get(response.id);
     if (!request) return;
+    const processedDocuments = response.progress?.processedDocuments;
+    if (processedDocuments !== undefined) {
+      if (
+        Number.isSafeInteger(processedDocuments) &&
+        processedDocuments > request.lastProcessedDocuments
+      ) {
+        request.lastProcessedDocuments = processedDocuments;
+        window.clearTimeout(request.timeoutId);
+        request.timeoutId = window.setTimeout(() => {
+          const error = new Error('BM25 worker request timed out.');
+          this.close(error);
+        }, this.requestTimeoutMs);
+      }
+      return;
+    }
     this.pending.delete(response.id);
     window.clearTimeout(request.timeoutId);
     request.removeAbortListener();
