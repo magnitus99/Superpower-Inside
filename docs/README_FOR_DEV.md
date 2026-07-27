@@ -28,7 +28,7 @@ flowchart LR
 | 실패가 조용히 숨겨지는가 | 사용자가 행동해야 할 때만 짧고 구체적인 이유와 next action을 보여줍니다. |
 | 내부 복잡도가 사용자 언어로 새는가 | Rust/WASM, index, cache, extraction contract 같은 내부어는 사용자가 판단해야 할 때만 노출합니다. |
 | 복구 기능이 기본 workflow가 되는가 | reindex, reset, migrate, rebuild, retry는 문제 해결용으로 두고 첫 사용법이나 주요 CTA로 만들지 않습니다. |
-| UI를 바꿨는가 | 가능하면 실제 화면으로 밀도, 정렬, 대비, overflow, 상태 변화를 확인합니다. 릴리즈 절차의 필수 스크린샷 게이트로 만들지는 않습니다. |
+| UI를 바꿨는가 | 커밋·태그·푸시·릴리스 전에 실제 Obsidian 화면이나 충실한 시뮬레이션을 스크린샷으로 확인합니다. 밀도, 정렬, 대비, overflow, 상태 변화를 코드나 테스트 결과로 대신하지 않습니다. |
 
 ### 기능별 적용
 
@@ -100,14 +100,19 @@ flowchart TD
     A --> D["llm/embedding.ts<br/>Embedding providers and cache"]
     A --> E["rag/indexer.ts<br/>Chunking and indexing"]
     E --> F["rag/store.ts<br/>Vector store"]
-    F --> G["rag/query.ts<br/>Retrieval and scoring"]
-    G --> H["chat/context.ts<br/>RAG, file, folder, MCP context"]
-    C --> I["chat/view.ts<br/>Sidebar chat UI"]
-    H --> I
-    A --> J["mcp/registry.ts<br/>Server registry"]
-    J --> K["mcp/client.ts<br/>stdio client"]
-    K --> I
-    A --> L["graph/*<br/>GraphRAG store, query, status, view"]
+    F --> G["rag/query.ts<br/>Hybrid retrieval"]
+    G --> H["agent/obsidian-native-vault-port.ts<br/>Read-only vault access"]
+    H --> I["agent/native-vault-tool.ts<br/>Model tool protocol"]
+    I --> J["agent/research-agent.ts<br/>Bounded whole-vault research"]
+    C --> K["chat/tool-execution.ts<br/>Native and MCP tool rounds"]
+    I --> K
+    J --> K
+    K --> L["chat/view.ts<br/>Sidebar chat and run controls"]
+    A --> M["mcp/registry.ts<br/>Server registry"]
+    M --> N["mcp/client.ts<br/>stdio client"]
+    N --> K
+    A --> O["graph/*<br/>GraphRAG store, query, status, view"]
+    O --> G
 ```
 
 | 영역 | 핵심 파일 | 역할 |
@@ -116,9 +121,10 @@ flowchart TD
 | 설정 | `src/settings.ts`, `src/settings-overview.ts` | 설정 타입, 기본값, 설정 탭 UI, 상태 요약 |
 | LLM | `src/llm/providers.ts` | OpenAI-compatible, Claude, Ollama, OpenRouter 채팅/스트리밍 |
 | 임베딩 | `src/llm/embedding.ts` | OpenAI-compatible/Ollama 임베딩, Dexie 캐시 |
-| RAG | `src/rag/indexer.ts`, `src/rag/store.ts`, `src/rag/query.ts`, `src/rag/retrieval-pipeline.ts` | 청킹, 저장, 후보 조회, 점수화 |
+| 네이티브 리서치 | `src/agent/research-agent.ts`, `src/agent/native-vault-tool.ts`, `src/agent/obsidian-native-vault-port.ts` | 로컬 파일 선별, 제한된 근거 전송, 반복 읽기 전용 도구 호출, 확인 범위 보고 |
+| RAG | `src/rag/indexer.ts`, `src/rag/store.ts`, `src/rag/query.ts`, `src/rag/retrieval-pipeline.ts` | 텍스트·코드 청킹, BM25/vector/structural 후보 조회와 점수화 |
 | GraphRAG | `src/graph/*` | 추출, store, entity resolution, community, query, explorer |
-| 채팅 | `src/chat/view.ts`, `src/chat/context.ts`, `src/chat/persistence.ts` | UI, 컨텍스트 구성, 세션 저장/로드 |
+| 채팅 | `src/chat/view.ts`, `src/chat/tool-execution.ts`, `src/chat/run-ownership.ts`, `src/chat/persistence.ts` | UI, 반복 도구 실행, 전체 run 취소·복구, 세션 저장/로드 |
 | MCP | `src/mcp/client.ts`, `src/mcp/registry.ts` | stdio MCP 연결, 도구 목록, 호출 상태 관리 |
 | Rust/WASM 경계 | `crates/rag-wasm/`, `src/rag/rust-core.ts`, `generated/rag-wasm/` | 결정적 계산과 TS bridge |
 
@@ -149,6 +155,27 @@ npm run review -- --tag <manifest-version> --built
 ```
 
 ## 주요 기능을 수정하는 방법
+
+### 네이티브 볼트 도구와 리서치 에이전트 수정
+
+2.0의 기본 모델 인터페이스는 컨텍스트를 한 번 조립해 붙이는 방식이 아니라, 모델이 필요한 근거를 반복해서 요청하는 읽기 전용 `superpower_inside` 볼트 도구입니다. 전체 볼트 리서치는 같은 도구 계약 위에서 대상 파일을 로컬 선별하고, 선택된 근거만 제한적으로 provider에 전송한 뒤 출처와 확인 범위를 함께 반환합니다.
+
+| 파일 | 확인할 내용 |
+| --- | --- |
+| `src/agent/obsidian-native-vault-port.ts` | Obsidian vault I/O, 공통 파일 범위, 검색·읽기·목록·링크·통계 adapter |
+| `src/agent/native-vault-tool.ts` | 모델 도구 인자 검증, 실행, 표시 텍스트·모델 결과·출처 변환 |
+| `src/agent/research-agent.ts` | 전체 파일 inventory, 로컬 screening, provider 예산, reduce/synthesis, coverage |
+| `src/chat/tool-execution.ts` | 네이티브 도구와 MCP 도구의 반복 실행, approval/resume 경계 |
+| `src/chat/run-ownership.ts`, `src/chat/session-recovery.ts` | 전체 run 취소 소유권과 중단 세션 복구 |
+| `crates/rag-wasm/src/research_contract.rs` | 선택, 예산, coverage, wire-format의 결정적 정책 |
+
+수정 기준:
+
+1. 네이티브 볼트 도구는 읽기 전용이어야 하며 생성·수정·이동·삭제 기능을 추가하지 않습니다.
+2. 전체 볼트 주장을 만들기 전에 로컬에서 대상 범위와 후보를 계산하고, provider에는 제한된 선택 근거만 전송합니다.
+3. 답변에는 실제 확인 범위와 제한을 보존하며, 출처가 없는 일반화를 성공으로 처리하지 않습니다.
+4. provider가 native function calling을 지원하지 않아도 호환 프로토콜로 같은 계약을 수행해야 합니다.
+5. 취소 신호는 검색이나 단일 provider 요청이 아니라 inventory부터 최종 합성까지 전체 run을 중단해야 합니다.
 
 ### Provider 추가 또는 수정
 
@@ -197,6 +224,10 @@ npm run review -- --tag <manifest-version> --built
 | 변경 유형 | 권장 위치 |
 | --- | --- |
 | 컨텍스트 조립 | `src/chat/context.ts` |
+| 네이티브/MCP 도구 실행 | `src/chat/tool-execution.ts` |
+| run 취소와 소유권 | `src/chat/run-ownership.ts` |
+| 중단 세션 복구 | `src/chat/session-recovery.ts` |
+| 출처 선택과 표시 | `src/agent/citation-selection.ts`, `src/chat/source-panel.ts` |
 | 저장/로드 포맷 | `src/chat/persistence.ts` |
 | 멘션 파싱 | `src/chat/mention-parser.ts` |
 | 출처 정규화 | `src/chat/source-validation.ts` |
@@ -209,7 +240,7 @@ UI 규칙:
 - 모델 출력이나 사용자 입력을 `innerHTML`로 직접 렌더링하지 않습니다.
 - 긴 텍스트, 빈 상태, 스트리밍 중단, provider 미설정 상태를 함께 확인합니다.
 - CSS 클래스는 `superpower-inside-` 프리픽스를 유지합니다.
-- UI/DOM/CSS/레이아웃/카피/상태 표시를 바꾸면 가능하면 실제 실행 화면을 확인합니다. 릴리즈 자체는 스크린샷 확인을 요구하지 않습니다.
+- UI/DOM/CSS/레이아웃/카피/상태 표시를 바꾸면 커밋·태그·푸시·릴리스 전에 실제 실행 화면을 스크린샷으로 확인합니다.
 
 ### MCP 도구 연결과 자동 실행 정책
 
@@ -271,10 +302,10 @@ UI 규칙:
 - [ ] `npm run security:full`
 - [ ] `npm run build`
 - [ ] `npm run review -- --tag <manifest-version> --built`
-- [ ] Obsidian에서 플러그인 로드, 설정 탭, 채팅 뷰, 변경한 기능의 실패/빈 상태 확인
+- [ ] UI/DOM/CSS/카피/상태 변경이 있으면 Obsidian 또는 충실한 시뮬레이션 스크린샷에서 설정 탭, 채팅 뷰, 실패/빈 상태, 좁은 폭 확인
 - [ ] `git status --short`로 `.test-vault/`, generated, build 산출물 범위 확인
 
-릴리즈 준비 자체에는 별도 비주얼 체크나 스크린샷 확인 단계를 추가하지 않습니다.
+릴리스 후보에 UI 변경이 포함되어 있으면 스크린샷 검수를 누락한 채 커밋·태그·푸시하지 않습니다. 릴리스가 끝난 뒤 임시 화면을 만들어 뒤늦게 검수를 보충하지 않습니다.
 
 ## DevTools 스니펫
 

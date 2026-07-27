@@ -1,8 +1,8 @@
 # AGENTS.md — Superpower-Inside
 
-**Generated:** 2026-05-14
-**Commit:** b02790e
-**Branch:** feat/chat-research-copilot
+**Generated:** 2026-07-27
+**Commit:** 619976d
+**Branch:** main
 
 > Obsidian 플러그인. LLM, RAG, MCP 도구 호출, 인터넷 검색 도구, 사이드바 채팅, 채팅 세션 저장, 출처/컨텍스트 첨부를 통합한다.
 > TypeScript strict 모드, esbuild CJS 번들, Obsidian DOM API 기반 UI.
@@ -86,15 +86,16 @@
 
 ```
 .
-├── main.ts                       # Plugin 진입점(onload/onunload), provider/RAG/MCP 조립 — 533줄
+├── main.ts                       # Plugin 진입점, provider/RAG/GraphRAG/agent/MCP 조립
 ├── manifest.json                 # Obsidian plugin metadata (id: superpower-inside)
-├── styles.css                    # 플러그인 전용 CSS, superpower-inside- 프리픽스 — 2533줄
+├── styles.css                    # 플러그인 전용 CSS, superpower-inside- 프리픽스
 ├── src/
-│   ├── settings.ts               # 설정 타입 + PluginSettingTab UI — 1590줄
-│   ├── i18n.ts                   # 한국어/영어 다국어 문자열 — 790줄
+│   ├── settings.ts               # 설정 타입 + PluginSettingTab UI
+│   ├── i18n.ts                   # 한국어/영어 다국어 문자열
+│   ├── agent/                    # 네이티브 읽기 전용 볼트 도구 + 전체 볼트 리서치
 │   ├── llm/                      # Provider, 스트리밍, 도구 호출 delta, 임베딩
-│   ├── rag/                      # 청킹, 벡터 저장소, RAG 쿼리
-│   ├── chat/                     # ItemView 채팅 UI, 저장, 멘션/컨텍스트, 세션 모달
+│   ├── rag/                      # 청킹, BM25/vector worker, 저장소, hybrid retrieval
+│   ├── chat/                     # 채팅 UI, 도구 실행, run 제어, 저장, 출처
 │   ├── mcp/                      # MCP stdio client/registry
 │   └── utils/                    # vault adapter JSON IO, 플러그인 탐지, MCP JSON 검증
 ├── scripts/                      # Windows PowerShell, macOS fish 개발 진입점 + Rust/WASM helper
@@ -119,15 +120,19 @@
 | LLM Provider 변경        | `src/llm/providers.ts` + `src/settings.ts`           | `createProvider`, `PROVIDER_KEYS`, `PROVIDER_LABELS`, 기본 설정 동시 확인 |
 | 임베딩 변경              | `src/llm/embedding.ts`                               | OpenAI-compatible/Ollama 임베딩 + Dexie 캐시 래퍼                         |
 | LLM/임베딩 연결 테스트   | `src/llm/validation.ts`                              | 설정 UI의 연결 검증과 연결됨                                              |
+| 네이티브 볼트 도구       | `src/agent/native-vault-tool.ts` + `src/agent/obsidian-native-vault-port.ts` | 읽기 전용 검색·읽기·목록·링크·통계와 모델 도구 결과 변환 |
+| 전체 볼트 리서치         | `src/agent/research-agent.ts`                        | 로컬 screening, 제한된 근거 전송, reduce/synthesis, coverage 보고         |
 | RAG 청킹/인덱싱          | `src/rag/indexer.ts`                                 | `chunkMarkdown`, `VaultIndexer`, 파일 modify/delete/rename 이벤트         |
 | RAG 저장소/파일 필터     | `src/rag/store.ts` + `src/utils/vault.ts`            | vector JSON 저장소, Rust/WASM exclude path matching, vault file filtering |
 | RAG retrieval pipeline   | `src/rag/retrieval-pipeline.ts`                      | exact/ANN/BM25/structural 후보 wrapper, Rust/WASM 후보 계산/병합          |
 | RAG 질의/컨텍스트        | `src/rag/query.ts` + `src/chat/context.ts`           | 유사도 검색 결과가 채팅 system prompt와 출처 카드로 들어감                |
-| 채팅 UI                  | `src/chat/view.ts`                                   | 3141줄. DOM, 스트리밍, 도구 호출, 출처, 세션 상태가 집중됨                |
+| 채팅 UI                  | `src/chat/view.ts`                                   | DOM, 스트리밍, 진행 상태, 출처, 세션 UI                                   |
+| 채팅 도구 실행           | `src/chat/tool-execution.ts`                         | 네이티브/MCP 도구 반복 실행과 결과 resume                                 |
+| 채팅 run 제어            | `src/chat/run-ownership.ts` + `src/chat/session-recovery.ts` | 전체 run 취소 소유권과 중단 세션 복구                        |
 | 채팅 저장/로드           | `src/chat/persistence.ts`                            | 프론트매터 + HTML 주석 기반 Markdown 직렬화, 레거시 로드 지원             |
 | 채팅 참조 확장           | `src/chat/context-expansion.ts`                      | Rust/WASM link extraction, Obsidian metadata/vault resolve                |
 | 멘션 처리                | `src/chat/mention-parser.ts` + `src/chat/context.ts` | Rust/WASM mention candidate extraction, TS resolver classification        |
-| 멘션 테스트              | `src/chat/mention-parser.test.ts`                    | 현재 유일한 Vitest 테스트                                                 |
+| 멘션 테스트              | `src/chat/mention-parser.test.ts`                    | 공백 경로, 중복 제거, 파일/폴더/MCP 분류 계약                             |
 | 세션 히스토리 모달       | `src/chat/session-modal.ts`                          | `FuzzySuggestModal`, 채팅 메타 로드                                       |
 | MCP 연결/도구 호출       | `src/mcp/client.ts` + `src/mcp/registry.ts`          | stdio 전용. `mcpPath`/env PATH 처리                                       |
 | MCP JSON 편집            | `src/utils/mcp-json.ts`                              | 표준 `mcpServers` JSON 검증/포맷                                          |
@@ -152,6 +157,9 @@
 | `ClaudeProvider`                                                                | class     | `src/llm/providers.ts`            | Anthropic Claude Provider                                           |
 | `OllamaProvider`                                                                | class     | `src/llm/providers.ts`            | Ollama Local/Cloud Provider                                         |
 | `CachedEmbeddingProvider`                                                       | class     | `src/llm/embedding.ts`            | 메모리 + IndexedDB(Dexie) 임베딩 캐시                               |
+| `ObsidianNativeVaultToolPort`                                                   | class     | `src/agent/obsidian-native-vault-port.ts` | Obsidian 파일 범위를 읽기 전용 도구 계약으로 연결          |
+| `NativeVaultToolRuntime`                                                        | class     | `src/agent/native-vault-tool.ts`  | Rust 요청 plan을 실행하고 모델 결과·표시 텍스트·출처로 변환          |
+| `VaultResearchAgent`                                                            | class     | `src/agent/research-agent.ts`     | 전체 볼트 inventory, 로컬 선별, 제한된 근거 분석과 최종 합성          |
 | `chunkMarkdown`                                                                 | function  | `src/rag/indexer.ts`              | 헤딩/코드블록 경계 존중 Markdown 청킹                               |
 | `VaultIndexer`                                                                  | class     | `src/rag/indexer.ts`              | 전체/증분/파일별 인덱싱                                             |
 | `JsonFileVectorStore`                                                           | class     | `src/rag/store.ts`                | vault.adapter 기반 JSON 벡터 저장소                                 |
@@ -476,7 +484,7 @@ Obsidian 커뮤니티 리뷰에 걸리는 DOM/CSS 정적 오류는 로컬 ESLint
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | `as any`, `@ts-ignore`, `@ts-expect-error` | TS strict와 ESLint 정책 위반                                                                                   |
 | `eslint-disable`, `prettier-ignore`        | 예외를 만들기보다 타입/구조를 바로잡을 것                                                                      |
-| `ChatView`에 큰 기능을 계속 누적           | 이미 3141줄. 가능하면 `context.ts`, `persistence.ts`, 새 helper로 분리                                         |
+| `ChatView`에 큰 기능을 계속 누적           | `tool-execution.ts`, `run-ownership.ts`, `source-panel.ts`, `persistence.ts` 같은 전용 helper로 분리            |
 | 새 `console.*` 직접 호출                   | 에이전트 진단 탭에서 보이지 않아 런타임 진단이 분산된다. `appLogger` 또는 `plugin.logger`를 사용              |
 | 런타임 TS에서 `.style.*` 직접 대입         | Obsidian 커뮤니티 리뷰의 `obsidianmd/no-static-styles-assignment` Error. CSS class 또는 `setCssProps` 사용     |
 | `innerHTML` / `outerHTML` 대입             | Obsidian 커뮤니티 리뷰 Error 및 XSS 위험. text node, `createSpan`, Markdown renderer 사용                      |
