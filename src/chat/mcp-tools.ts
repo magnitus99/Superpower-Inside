@@ -1,4 +1,12 @@
+import {
+  classifyMcpToolErrorRust,
+  isMcpToolResultEmptyRust,
+  normalizeMcpToolResultRust,
+  parseMcpToolArgumentsRust,
+  type RustMcpToolNormalizedResult,
+} from '../rag/rust-core';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
+import { t } from '../i18n';
 
 const DEFAULT_DANGEROUS_TOOL_PATTERNS = [
   /delete/i,
@@ -27,6 +35,26 @@ export function createToolExecutionPolicy(
   };
 }
 
+export function parseToolArguments(argumentsText: string): Record<string, unknown> {
+  const parsed = parseMcpToolArgumentsRust(argumentsText);
+  if (parsed !== null) {
+    return parsed;
+  }
+
+  const trimmed = argumentsText.trim();
+  if (!trimmed) return {};
+
+  try {
+    const json = JSON.parse(trimmed) as unknown;
+    if (json && typeof json === 'object' && !Array.isArray(json)) {
+      return json as Record<string, unknown>;
+    }
+    return { input: json };
+  } catch {
+    return { input: argumentsText };
+  }
+}
+
 export function shouldAutoExecuteToolCall(
   toolCall: ToolCallRecord,
   policy: ToolExecutionPolicy,
@@ -52,6 +80,11 @@ export function shouldAutoExecuteToolCall(
 }
 
 export function normalizeToolResult(result: unknown): NormalizedToolResult {
+  const normalized = normalizeMcpToolResultRust(result);
+  if (normalized !== null) {
+    return normalized;
+  }
+
   const text = extractMcpTextContent(result);
   if (text) {
     return {
@@ -65,6 +98,50 @@ export function normalizeToolResult(result: unknown): NormalizedToolResult {
     displayText: fallback,
     modelText: fallback,
   };
+}
+
+export function isMcpToolResultEmpty(
+  result: unknown,
+  normalizedResult: RustMcpToolNormalizedResult,
+): boolean {
+  const isEmpty = isMcpToolResultEmptyRust(result, normalizedResult);
+  if (isEmpty !== null) {
+    return isEmpty;
+  }
+
+  if (normalizedResult.displayText.trim().length === 0) {
+    return true;
+  }
+
+  if (!isRecord(result) || !Array.isArray(result.content)) return false;
+  return !hasMeaningfulMcpContent(result.content);
+}
+
+export function classifyMcpToolError(
+  rawMsg: string,
+  mode: 'execution' | 'view' = 'execution',
+): string {
+  const parsed = classifyMcpToolErrorRust(rawMsg);
+  if (!parsed) {
+    return rawMsg;
+  }
+
+  switch (parsed.kind) {
+    case 'validation-pattern':
+      return t('mcpValidationPattern', { pattern: parsed.pattern ?? '' });
+    case 'validation-field':
+      return t('mcpValidationField', { field: parsed.field ?? '' });
+    case 'validation-required':
+      return t('mcpValidationRequiredMissing');
+    case 'validation-schema-failed':
+      return t('mcpValidationSchemaFailed');
+    case 'validation-generic':
+      return mode === 'view' ? t('mcpValidationSchemaFailed') : t('mcpValidationGeneric');
+    case 'raw':
+      return parsed.message ?? rawMsg;
+    default:
+      return rawMsg;
+  }
 }
 
 function isDangerousToolName(toolName: string, policy: ToolExecutionPolicy): boolean {
@@ -94,6 +171,16 @@ function extractMcpTextContent(result: unknown): string | null {
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
 
   return textParts.length > 0 ? textParts.join('\n\n') : null;
+}
+
+function hasMeaningfulMcpContent(items: unknown[]): boolean {
+  return items.some((item) => {
+    if (!isRecord(item)) return false;
+    if (item.type === 'text') {
+      return typeof item.text === 'string' && item.text.trim().length > 0;
+    }
+    return Object.keys(item).length > 0;
+  });
 }
 
 function stringifyUnknown(value: unknown): string {

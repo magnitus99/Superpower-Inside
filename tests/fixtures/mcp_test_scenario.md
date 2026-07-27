@@ -7,7 +7,7 @@
 ```
 
 ```
-[[catholic bible/04-요한 복음서-입문.md]] 이거 요약해줘.
+[[research/project-overview.md]] 이거 요약해줘.
 ```
 
 ```

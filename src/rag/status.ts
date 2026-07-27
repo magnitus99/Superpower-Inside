@@ -1,7 +1,14 @@
 import type { TFile, Vault } from 'obsidian';
+import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
-import { getEffectiveExcludePaths, getMarkdownFilesFiltered, isExcludedExt } from '../utils/vault';
-import type { VectorEntry, VectorStore } from './store';
+import { getRagCandidateFiles } from '../utils/vault';
+import {
+  planRagStatusFallback,
+  planRagStatusRust,
+  type RustRagStatusFileInput,
+  type RustRagStatusRecordInput,
+} from './rust-core';
+import type { FileIndexRecord, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
 
@@ -25,139 +32,70 @@ export interface RagStatusSummary {
   updateRequiredDocuments: RagDocumentUpdate[];
 }
 
-interface FileIndexState {
-  status: RagDocumentStatus;
-  reason: string;
-}
-
-export async function getIncludedMarkdownFiles(
+export async function getIncludedRagFiles(
   vault: Vault,
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
 ): Promise<TFile[]> {
-  const effectiveExcludePaths = getEffectiveExcludePaths(ragConfig, chatConfig);
-  return Promise.resolve(
-    getMarkdownFilesFiltered(vault, effectiveExcludePaths).filter(
-      (file) => !isExcludedExt(file.path, ragConfig.excludeExts),
-    ),
-  );
+  return getRagCandidateFiles(vault, ragConfig, chatConfig);
 }
 
+/** AbortSignal을 받아 취소 가능한 RAG 상태 계산 */
 export async function calculateRagStatus(
   vault: Vault,
   vectorStore: VectorStore,
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
+  signal?: AbortSignal,
 ): Promise<RagStatusSummary> {
-  const includedFiles = await getIncludedMarkdownFiles(vault, ragConfig, chatConfig);
-  const allMarkdownFiles = vault.getMarkdownFiles();
-  const entries = await vectorStore.getEntries();
-  const entriesByPath = groupEntriesByPath(entries);
+  const includedFiles = await getIncludedRagFiles(vault, ragConfig, chatConfig);
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const updateRequiredDocuments: RagDocumentUpdate[] = [];
-  let healthyDocuments = 0;
-  let missingDocuments = 0;
-  let staleDocuments = 0;
-  let unknownDocuments = 0;
+  const allFiles = vault.getFiles();
+  const fileIndexRecords = await vectorStore.getFileIndexRecords();
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  for (const file of includedFiles) {
-    const state = getFileIndexState(file, entriesByPath.get(file.path) ?? [], ragConfig);
-    if (state.status === 'healthy') {
-      healthyDocuments++;
-      continue;
-    }
+  const input = {
+    includedFiles: includedFiles.map(toRagStatusFileInput),
+    records: fileIndexRecords.map(toRagStatusRecordInput),
+    totalVaultFiles: allFiles.length,
+    embeddingProvider: ragConfig.embeddingProvider,
+    embeddingModel: ragConfig.embeddingModel,
+    reasons: {
+      missing: t('ragStatusMissingReason'),
+      legacy: t('ragStatusLegacyReason'),
+      staleFile: t('ragStatusStaleFileReason'),
+      embeddingChanged: t('ragStatusEmbeddingChangedReason'),
+    },
+  };
+  const plan = planRagStatusRust(input) ?? planRagStatusFallback(input);
 
-    if (state.status === 'missing') missingDocuments++;
-    if (state.status === 'stale') staleDocuments++;
-    if (state.status === 'unknown') unknownDocuments++;
-
-    updateRequiredDocuments.push({
-      path: file.path,
-      status: state.status,
-      reason: state.reason,
-      mtime: file.stat.mtime,
-      size: file.stat.size,
-    });
-  }
-
-  updateRequiredDocuments.sort((a, b) => {
-    const statusOrder = statusSortOrder(a.status) - statusSortOrder(b.status);
-    if (statusOrder !== 0) return statusOrder;
-    return a.path.localeCompare(b.path);
-  });
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   return {
-    totalDocuments: includedFiles.length,
-    healthyDocuments,
-    missingDocuments,
-    staleDocuments,
-    unknownDocuments,
-    excludedDocuments: Math.max(0, allMarkdownFiles.length - includedFiles.length),
-    totalVectors: entries.length,
+    ...plan,
     lastCalculatedAt: Date.now(),
-    updateRequiredDocuments,
   };
 }
 
-function groupEntriesByPath(entries: VectorEntry[]): Map<string, VectorEntry[]> {
-  const grouped = new Map<string, VectorEntry[]>();
-  for (const entry of entries) {
-    const path = entry.metadata.filePath;
-    const existing = grouped.get(path);
-    if (existing) {
-      existing.push(entry);
-    } else {
-      grouped.set(path, [entry]);
-    }
-  }
-  return grouped;
+function toRagStatusFileInput(file: TFile): RustRagStatusFileInput {
+  return {
+    path: file.path,
+    mtime: file.stat.mtime,
+    size: file.stat.size,
+  };
 }
 
-function getFileIndexState(
-  file: TFile,
-  entries: VectorEntry[],
-  ragConfig: RAGConfig,
-): FileIndexState {
-  if (entries.length === 0) {
-    return { status: 'missing', reason: '아직 인덱싱되지 않았습니다.' };
-  }
-
-  const hasLegacyEntry = entries.some(
-    (entry) =>
-      typeof entry.metadata.sourceMtime !== 'number' ||
-      typeof entry.metadata.sourceSize !== 'number' ||
-      typeof entry.metadata.embeddingProvider !== 'string' ||
-      typeof entry.metadata.embeddingModel !== 'string',
-  );
-  if (hasLegacyEntry) {
-    return {
-      status: 'unknown',
-      reason: '이전 형식의 벡터라 파일 변경 여부를 확인할 수 없습니다.',
-    };
-  }
-
-  const hasDifferentSource = entries.some(
-    (entry) =>
-      entry.metadata.sourceMtime !== file.stat.mtime || entry.metadata.sourceSize !== file.stat.size,
-  );
-  if (hasDifferentSource) {
-    return { status: 'stale', reason: '파일이 마지막 인덱싱 이후 수정되었습니다.' };
-  }
-
-  const hasDifferentEmbedding = entries.some(
-    (entry) =>
-      entry.metadata.embeddingProvider !== ragConfig.embeddingProvider ||
-      entry.metadata.embeddingModel !== ragConfig.embeddingModel,
-  );
-  if (hasDifferentEmbedding) {
-    return { status: 'stale', reason: '현재 임베딩 설정과 저장된 벡터 설정이 다릅니다.' };
-  }
-
-  return { status: 'healthy', reason: '최신 상태입니다.' };
-}
-
-function statusSortOrder(status: Exclude<RagDocumentStatus, 'healthy'>): number {
-  if (status === 'missing') return 0;
-  if (status === 'stale') return 1;
-  return 2;
+function toRagStatusRecordInput(record: FileIndexRecord): RustRagStatusRecordInput {
+  return {
+    filePath: record.filePath,
+    sourceMtime: record.sourceMtime,
+    sourceSize: record.sourceSize,
+    contentHash: record.contentHash,
+    indexedAt: record.indexedAt,
+    embeddingProvider: record.embeddingProvider,
+    embeddingModel: record.embeddingModel,
+    hasCompleteMetadata: record.hasCompleteMetadata,
+    vectorCount: record.vectorCount,
+  };
 }

@@ -1,11 +1,22 @@
 import type { MCPServerConnectionStatus } from '../mcp/connection-state';
 import type { MCPServerConfig } from '../settings';
-import { createToolExecutionPolicy, normalizeToolResult, shouldAutoExecuteToolCall } from './mcp-tools';
+import { t } from '../i18n';
+import { isMcpToolAvailableRust, planMcpServerCandidatesRust } from '../rag/rust-core';
+import {
+  createToolExecutionPolicy,
+  classifyMcpToolError,
+  isMcpToolResultEmpty,
+  normalizeToolResult,
+  parseToolArguments as parseMcpToolArguments,
+  shouldAutoExecuteToolCall,
+} from './mcp-tools';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 
 export interface MCPToolClientLike {
-  listTools(): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]>;
-  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  listTools(): Promise<
+    { name: string; description?: string; inputSchema?: Record<string, unknown> }[]
+  >;
+  callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface MCPRegistryLike {
@@ -19,6 +30,7 @@ export interface ExecuteMcpToolCallsOptions {
   toolCalls: ToolCallRecord[];
   preferredServerNames: string[];
   onUpdate?: (toolCalls: ToolCallRecord[]) => void;
+  signal?: AbortSignal;
 }
 
 export async function prepareToolCallsForExecution(
@@ -52,7 +64,8 @@ export async function executeMcpToolCalls(
   options.onUpdate?.(updatedToolCalls);
 
   for (const toolCall of updatedToolCalls) {
-    if (toolCall.approved === false) {
+    throwIfAborted(options.signal);
+    if (toolCall.status !== 'running' || toolCall.approved === false) {
       continue;
     }
 
@@ -63,7 +76,7 @@ export async function executeMcpToolCalls(
     );
     if (!serverName) {
       toolCall.status = 'error';
-      toolCall.result = `연결된 MCP 서버에서 \`${toolCall.name}\` 도구를 찾을 수 없습니다.`;
+      toolCall.result = t('mcpToolNotFoundInConnectedServers', { tool: toolCall.name });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
@@ -71,7 +84,7 @@ export async function executeMcpToolCalls(
     const client = options.registry?.getClient(serverName);
     if (!client) {
       toolCall.status = 'error';
-      toolCall.result = `MCP 서버 \`${serverName}\`에 연결되어 있지 않습니다.`;
+      toolCall.result = t('mcpServerNotConnected', { server: serverName });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
@@ -79,22 +92,28 @@ export async function executeMcpToolCalls(
     toolCall.serverName = serverName;
 
     try {
-      const result = await client.callTool(toolCall.name, parseToolArguments(toolCall.arguments));
-      assertMcpContentIsNotEmpty(toolCall.name, result);
+      const args = parseToolArguments(toolCall.arguments);
+      const result = options.signal
+        ? await client.callTool(toolCall.name, args, options.signal)
+        : await client.callTool(toolCall.name, args);
+      throwIfAborted(options.signal);
       const isErrorResult =
         typeof result === 'object' &&
         result !== null &&
         'isError' in result &&
         result.isError === true;
       const normalized = normalizeToolResult(result);
-      assertNonEmptyToolResult(toolCall.name, normalized.displayText, normalized.modelText);
+      if (isMcpToolResultEmpty(result, normalized)) {
+        throw new Error(t('mcpToolEmptyResult', { tool: toolCall.name }));
+      }
       toolCall.result = normalized.displayText;
       toolCall.resultSummary = normalized.displayText;
       toolCall.normalizedResult = normalized.modelText;
       toolCall.status = isErrorResult ? 'error' : 'success';
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
       const rawMsg = err instanceof Error ? err.message : String(err);
-      toolCall.result = `[MCP 도구 오류] ${normalizeToolError(rawMsg)}`;
+      toolCall.result = t('mcpToolErrorPrefix', { message: normalizeToolError(rawMsg) });
       toolCall.status = 'error';
     }
 
@@ -105,6 +124,10 @@ export async function executeMcpToolCalls(
   return updatedToolCalls;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException(t('cancelledLabel'), 'AbortError');
+}
+
 export async function findServerForTool(
   registry: MCPRegistryLike | null,
   toolName: string,
@@ -112,23 +135,28 @@ export async function findServerForTool(
 ): Promise<string | null> {
   if (!registry) return null;
 
-  const preferred = preferredServerNames.filter(
-    (serverName) => registry.getConnectionStatus(serverName) === 'connected',
-  );
-  const fallback = registry
-    .getEnabledServers()
-    .map((server) => server.name)
-    .filter(
-      (serverName) =>
-        registry.getConnectionStatus(serverName) === 'connected' && !preferred.includes(serverName),
-    );
+  const enabledServerNames = registry.getEnabledServers().map((server) => server.name);
+  const connectionStatuses: Record<string, string> = {};
+  for (const serverName of preferredServerNames) {
+    connectionStatuses[serverName] = registry.getConnectionStatus(serverName);
+  }
+  for (const serverName of enabledServerNames) {
+    connectionStatuses[serverName] = registry.getConnectionStatus(serverName);
+  }
+  const candidateServerNames =
+    planMcpServerCandidatesRust(preferredServerNames, enabledServerNames, connectionStatuses) ?? [];
 
-  for (const serverName of [...preferred, ...fallback]) {
+  for (const serverName of candidateServerNames) {
     const client = registry.getClient(serverName);
     if (!client) continue;
     try {
       const tools = await client.listTools();
-      if (tools.some((tool) => tool.name === toolName)) {
+      if (
+        isMcpToolAvailableRust(
+          toolName,
+          tools.map((tool) => tool.name),
+        ) === true
+      ) {
         return serverName;
       }
     } catch {
@@ -140,54 +168,9 @@ export async function findServerForTool(
 }
 
 export function parseToolArguments(argumentsText: string): Record<string, unknown> {
-  const trimmed = argumentsText.trim();
-  if (!trimmed) return {};
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return { input: parsed };
-  } catch {
-    return { input: argumentsText };
-  }
-}
-
-function assertNonEmptyToolResult(toolName: string, displayText: string, modelText: string): void {
-  if (displayText.trim().length === 0 || modelText.trim().length === 0) {
-    throw new Error(`MCP 도구 \`${toolName}\`가 빈 결과를 반환했습니다.`);
-  }
-}
-
-function assertMcpContentIsNotEmpty(toolName: string, result: unknown): void {
-  if (!isRecord(result) || !Array.isArray(result.content)) return;
-  const hasContent = result.content.some((item) => {
-    if (!isRecord(item)) return false;
-    if (item.type === 'text') {
-      return typeof item.text === 'string' && item.text.trim().length > 0;
-    }
-    return Object.keys(item).length > 0;
-  });
-  if (!hasContent) {
-    throw new Error(`MCP 도구 \`${toolName}\`가 빈 결과를 반환했습니다.`);
-  }
+  return parseMcpToolArguments(argumentsText);
 }
 
 function normalizeToolError(rawMsg: string): string {
-  if (rawMsg.includes('Input validation error')) {
-    const match = rawMsg.match(/does not match '(.+?)'/);
-    if (match) {
-      return `입력값의 형식이 올바르지 않습니다. 요구되는 패턴: \`${match[1]}\``;
-    }
-    const fieldMatch = rawMsg.match(/'([^']+)'/);
-    if (fieldMatch) {
-      return `필드 \`${fieldMatch[1]}\`의 입력값이 잘못되었습니다.`;
-    }
-    return '입력값 검증에 실패했습니다.';
-  }
-  return rawMsg;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return classifyMcpToolError(rawMsg);
 }

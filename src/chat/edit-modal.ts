@@ -1,4 +1,5 @@
 import { App, Modal } from 'obsidian';
+import { t } from '../i18n';
 
 export class EditMessageModal extends Modal {
   private originalContent: string;
@@ -13,12 +14,15 @@ export class EditMessageModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.addClass('superpower-inside-edit-modal');
-    contentEl.createEl('h3', { text: '메시지 수정' });
+    contentEl.createDiv({
+      cls: 'superpower-inside-edit-modal-heading',
+      text: t('editMessageTitle'),
+    });
 
     const textarea = contentEl.createEl('textarea', {
+      cls: 'superpower-inside-edit-modal-textarea',
       attr: {
         rows: '6',
-        style: 'width: 100%; box-sizing: border-box; resize: vertical;',
       },
     });
     textarea.value = this.originalContent;
@@ -34,13 +38,13 @@ export class EditMessageModal extends Modal {
     });
 
     const cancelBtn = btnRow.createEl('button', {
-      text: '취소',
+      text: t('cancel'),
       cls: 'mod-cta',
     });
     cancelBtn.addEventListener('click', () => this.close());
 
     const saveBtn = btnRow.createEl('button', {
-      text: '전송',
+      text: t('sendButton'),
       cls: 'mod-cta',
     });
     saveBtn.addEventListener('click', () => this.submit(textarea));

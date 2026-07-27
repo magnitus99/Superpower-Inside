@@ -9,7 +9,6 @@ src/chat/
 ├── view.ts           # ChatView (ItemView) — 2812줄, 분할 권장
 ├── persistence.ts     # 채팅 → 마크다운 파일 저장/불러오기
 ├── session-modal.ts   # 세션 히스토리 모달 (인라인 CSS 250줄 포함)
-├── commands.ts        # 에디터 내 AI 지시어 (parseDirective, executeDirective)
 ├── markdown.ts        # Obsidian 마크다운 렌더링 + 코드블록 강조
 └── types.ts           # ChatMessageStatus, ChatSession, SessionState 등 타입
 ```
@@ -21,7 +20,6 @@ src/chat/
 | 채팅 UI 수정 | `view.ts` | ItemView 확장. DOM 직접 조작. 분할 권장(2812줄) |
 | 메시지 저장/불러오기 | `persistence.ts` | 프론트매터 + HTML 주석 직렬화. 레거시 포맷 호환 |
 | 세션 목록 UI | `session-modal.ts` | FuzzySuggestModal. 인라인 CSS 존재 |
-| AI 지시어 추가 | `commands.ts` | `parseDirective` → `executeDirective` 파이프라인 |
 | 마크다운 렌더링 | `markdown.ts` | `renderMarkdownToElement`, `enhanceCodeBlocks` |
 | 채팅 타입 정의 | `types.ts` | `ChatMessageWithMeta`, `ChatSession`, `AutoSaveConfig` |
 
@@ -31,8 +29,6 @@ src/chat/
 |--------|------|------|
 | `ChatView` | class | 사이드바 채팅 ItemView. 40+ 필드, 50+ 메서드 |
 | `CHAT_VIEW_TYPE` | const | `'superpower-inside-chat'` 뷰 타입 식별자 |
-| `executeDirective` | function | 에디터 AI 지시어 실행 |
-| `parseDirective` | function | `>AI: ...` 지시어 파싱 |
 | `saveChat` | function | ChatSession → 마크다운 파일 저장 |
 | `loadChat` | function | 마크다운 파일 → ChatSession 역직렬화 |
 | `openSessionHistoryModal` | function | 세션 히스토리 모달 열기 |

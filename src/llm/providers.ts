@@ -1,6 +1,14 @@
 import { requestUrl } from 'obsidian';
-import type { CustomOpenAIProviderConfig, ProviderConfig } from '../settings';
-import { REASONING_EXTRACTORS, type ReasoningExtractor } from './reasoning';
+import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
+import {
+  REASONING_EXTRACTORS,
+  normalizeReasoningChunk,
+  type ReasoningExtractor,
+} from './reasoning';
+import {
+  resolveProviderCapability,
+  type ProviderCapabilitySnapshot,
+} from './provider-capabilities';
 
 const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -15,6 +23,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallInfo[];
   reasoning?: string;
   name?: string;
+  tool_result_is_error?: boolean;
 }
 
 /** LLM이 호출한 툴 정보 (스트리밍 중 점진적 누적) */
@@ -54,8 +63,37 @@ export interface ToolDefinition {
   };
 }
 
-export interface StreamChatOptions {
+export interface ChatOptions {
   signal?: AbortSignal;
+}
+
+export type StreamChatOptions = ChatOptions;
+
+export class LLMProviderHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'LLMProviderHttpError';
+  }
+}
+
+function createProviderHttpError(
+  prefix: string,
+  response: { status: number; text: string; headers?: Record<string, string> },
+): LLMProviderHttpError {
+  const rawRetryAfter = response.headers?.['retry-after'] ?? response.headers?.['Retry-After'];
+  const retryAfterSeconds = rawRetryAfter === undefined ? Number.NaN : Number(rawRetryAfter);
+  const retryAfterMs = Number.isFinite(retryAfterSeconds)
+    ? Math.max(0, retryAfterSeconds * 1_000)
+    : undefined;
+  return new LLMProviderHttpError(
+    `${prefix}: ${response.status} ${response.text}`,
+    response.status,
+    retryAfterMs,
+  );
 }
 
 /* ---------- Message Normalizers ---------- */
@@ -72,12 +110,23 @@ function parseToolArgs(args: string): unknown {
   }
 }
 
+function isToolResultContentBlock(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return (value as Record<string, unknown>).type === 'tool_result';
+}
+
+function throwIfChatAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('LLM request cancelled', 'AbortError');
+  }
+}
+
 /** OpenAI/OpenRouter/custom 호환: toolCalls → tool_calls(snake_case), content → null */
 export function normalizeForOpenAI(messages: ChatMessage[]): Record<string, unknown>[] {
   return messages.map((m) => {
     const msg: Record<string, unknown> = { role: m.role };
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-      msg.content = null;
+      msg.content = m.content || null;
       msg.tool_calls = m.toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',
@@ -95,9 +144,7 @@ export function normalizeForOpenAI(messages: ChatMessage[]): Record<string, unkn
 }
 
 /** Anthropic Claude: flat role → content block format (tool_use/tool_result) */
-export function normalizeForClaude(
-  messages: ChatMessage[],
-): Record<string, unknown>[] {
+export function normalizeForClaude(messages: ChatMessage[]): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
@@ -114,10 +161,22 @@ export function normalizeForClaude(
       }
       result.push({ role: 'assistant', content });
     } else if (m.role === 'tool') {
-      result.push({
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: m.content }],
-      });
+      const block: Record<string, unknown> = {
+        type: 'tool_result',
+        tool_use_id: m.tool_call_id,
+        content: m.content,
+        ...(m.tool_result_is_error === true ? { is_error: true } : {}),
+      };
+      const previous = result.at(-1);
+      if (
+        previous?.role === 'user' &&
+        Array.isArray(previous.content) &&
+        (previous.content as unknown[]).every(isToolResultContentBlock)
+      ) {
+        previous.content.push(block);
+      } else {
+        result.push({ role: 'user', content: [block] });
+      }
     } else {
       result.push({ role: m.role, content: m.content });
     }
@@ -129,7 +188,7 @@ export function normalizeForClaude(
 export function normalizeForOllama(messages: ChatMessage[]): Record<string, unknown>[] {
   return messages.map((m) => {
     if (m.role === 'tool') {
-      return { role: 'tool', content: m.content, name: m.name ?? 'unknown_tool' };
+      return { role: 'tool', content: m.content, tool_name: m.name ?? 'unknown_tool' };
     }
     const normalized: Record<string, unknown> = { role: m.role, content: m.content };
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
@@ -145,10 +204,13 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 }
 
 export interface LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
+  getObservedModel?(): string | undefined;
   chat(
     messages: ChatMessage[],
     temperature?: number,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string>;
   streamChat(
     messages: ChatMessage[],
@@ -162,11 +224,16 @@ export interface LLMProvider {
 /* ---------- OpenAI / OpenRouter Compatible ---------- */
 
 class OpenAICompatibleProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   protected config: ProviderConfig;
   protected endpoint: string;
   protected modelOverride?: string;
   protected reasoningExtractor: ReasoningExtractor;
-  protected useRequestUrl: boolean;
 
   constructor(
     config: ProviderConfig,
@@ -174,12 +241,19 @@ class OpenAICompatibleProvider implements LLMProvider {
     modelOverride?: string,
     reasoningExtractor?: ReasoningExtractor,
     useRequestUrl = false,
+    capability?: ProviderCapabilitySnapshot,
   ) {
     this.config = config;
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
     this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
-    this.useRequestUrl = useRequestUrl;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: 'openai',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        useRequestUrl,
+      });
   }
 
   private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
@@ -190,34 +264,26 @@ class OpenAICompatibleProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const body = this.buildChatBody(messages, temperature, false, tools);
-    if (this.useRequestUrl) {
-      const res = await requestUrl({
-        url: this.endpoint,
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (res.status >= 400) {
-        throw new Error(`LLM chat failed: ${res.status} ${res.text}`);
-      }
-      const data = res.json as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      return data.choices?.[0]?.message?.content ?? '';
-    }
-    const res = await fetch(this.endpoint, {
+    const res = await requestUrl({
+      url: this.endpoint,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`LLM chat failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw createProviderHttpError('LLM chat failed', res);
     }
-    const data = (await res.json()) as {
+    const data = res.json as {
+      model?: string;
       choices?: Array<{ message?: { content?: string } }>;
     };
+    this.observedModel = data.model?.trim() || this.observedModel;
+    throwIfChatAborted(options?.signal);
     return data.choices?.[0]?.message?.content ?? '';
   }
 
@@ -233,7 +299,7 @@ class OpenAICompatibleProvider implements LLMProvider {
       temperature,
       stream,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
     return body;
@@ -247,56 +313,23 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: StreamChatOptions,
   ): Promise<void> {
     const body = this.buildChatBody(messages, temperature, true, tools);
-    if (this.useRequestUrl) {
-      const res = await requestUrl({
-        url: this.endpoint,
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (res.status >= 400) {
-        throw new Error(`LLM stream failed: ${res.status} ${res.text}`);
-      }
-      const lines = res.text.split('\n');
-      for (const line of lines) {
-        if (options?.signal?.aborted) {
-          onChunk({ content: '', done: true });
-          return;
-        }
-        if (this.processSSELine(line, onChunk)) return;
-      }
-      onChunk({ content: '', done: true });
-      return;
-    }
-    const res = await fetch(this.endpoint, {
+    const res = await requestUrl({
+      url: this.endpoint,
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`LLM stream failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw createProviderHttpError('LLM stream failed', res);
     }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
+    const lines = res.text.split('\n');
+    for (const line of lines) {
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (this.processSSELine(line, onChunk)) return;
-      }
+      if (this.processSSELine(line, onChunk)) return;
     }
     onChunk({ content: '', done: true });
   }
@@ -311,10 +344,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     return h;
   }
 
-  private processSSELine(
-    line: string,
-    onChunk: (chunk: StreamChunk) => void,
-  ): boolean {
+  private processSSELine(line: string, onChunk: (chunk: StreamChunk) => void): boolean {
     if (!line.startsWith('data: ')) return false;
     const data = line.slice(6).trim();
     if (data === '[DONE]') return true;
@@ -335,8 +365,12 @@ class OpenAICompatibleProvider implements LLMProvider {
         }>;
       };
       const delta = chunk.choices?.[0]?.delta;
-      const content = delta?.content ?? '';
-      const reasoning = this.reasoningExtractor.extract(delta ?? {});
+      const normalized = normalizeReasoningChunk({
+        content: delta?.content ?? '',
+        reasoning: this.reasoningExtractor.extract(delta ?? {}),
+      });
+      const content = normalized.content;
+      const reasoning = normalized.reasoning;
       const toolCalls = delta?.tool_calls?.map(
         (tc): ToolCallDelta => ({
           index: tc.index,
@@ -365,12 +399,28 @@ class OpenAICompatibleProvider implements LLMProvider {
 /* ---------- Claude (Anthropic Messages API) ---------- */
 
 class ClaudeProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   private config: ProviderConfig;
   private modelOverride?: string;
 
-  constructor(config: ProviderConfig, modelOverride?: string) {
+  constructor(
+    config: ProviderConfig,
+    modelOverride?: string,
+    capability?: ProviderCapabilitySnapshot,
+  ) {
     this.config = config;
     this.modelOverride = modelOverride;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: 'claude',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+      });
   }
 
   private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
@@ -381,7 +431,9 @@ class ClaudeProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       max_tokens: 4096,
@@ -389,14 +441,15 @@ class ClaudeProvider implements LLMProvider {
       messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
         name: t.function.name,
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    const res = await requestUrl({
+      url: ANTHROPIC_MESSAGES_URL,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -404,13 +457,17 @@ class ClaudeProvider implements LLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`Claude chat failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw createProviderHttpError('Claude chat failed', res);
     }
-    const data = (await res.json()) as {
+    const data = res.json as {
+      model?: string;
       content?: Array<{ type: string; text?: string }>;
     };
+    this.observedModel = data.model?.trim() || this.observedModel;
+    throwIfChatAborted(options?.signal);
     return data.content?.find((c) => c.type === 'text')?.text ?? '';
   }
 
@@ -429,14 +486,15 @@ class ClaudeProvider implements LLMProvider {
       messages: this.normalizeMessages(messages),
       system: messages.find((m) => m.role === 'system')?.content,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
         name: t.function.name,
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
     }
-    const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    const res = await requestUrl({
+      url: ANTHROPIC_MESSAGES_URL,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -444,77 +502,62 @@ class ClaudeProvider implements LLMProvider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: options?.signal,
+      throw: false,
     });
-    if (!res.ok) {
-      throw new Error(`Claude stream failed: ${res.status} ${await res.text()}`);
+    if (res.status >= 400) {
+      throw createProviderHttpError('Claude stream failed', res);
     }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const lines = res.text.split('\n');
 
-    while (true) {
+    for (const line of lines) {
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data) continue;
-        try {
-          const event = JSON.parse(data) as {
-            type: string;
-            content_block?: { type: string; id?: string; name?: string };
-            index?: number;
-            delta?: {
-              type?: string;
-              text?: string;
-              thinking?: string;
-              partial_json?: string;
-            };
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (!data) continue;
+      try {
+        const event = JSON.parse(data) as {
+          type: string;
+          content_block?: { type: string; id?: string; name?: string };
+          index?: number;
+          delta?: {
+            type?: string;
+            text?: string;
+            thinking?: string;
+            partial_json?: string;
           };
-          if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
-            const toolCall: ToolCallDelta = {
-              index: event.index ?? 0,
-              id: event.content_block.id ?? '',
-              type: 'function',
-              function: { name: event.content_block.name ?? '', arguments: '' },
-            };
-            onChunk({ content: '', done: false, toolCalls: [toolCall] });
-          } else if (
-            event.type === 'content_block_delta' &&
-            event.delta?.type === 'thinking_delta'
-          ) {
-            onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
-          } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            onChunk({ content: event.delta.text ?? '', done: false });
-          } else if (
-            event.type === 'content_block_delta' &&
-            event.delta?.type === 'input_json_delta'
-          ) {
-            const toolCall: ToolCallDelta = {
-              index: event.index ?? 0,
-              function: { arguments: event.delta.partial_json ?? '' },
-            };
-            onChunk({ content: '', done: false, toolCalls: [toolCall] });
-          } else if (event.type === 'content_block_delta' && !event.delta?.type) {
-            onChunk({ content: event.delta?.text ?? '', done: false });
-          } else if (event.type === 'message_stop') {
-            onChunk({ content: '', done: true });
-            return;
-          }
-        } catch {
-          // malformed SSE line — skip
+        };
+        if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+          const toolCall: ToolCallDelta = {
+            index: event.index ?? 0,
+            id: event.content_block.id ?? '',
+            type: 'function',
+            function: { name: event.content_block.name ?? '', arguments: '' },
+          };
+          onChunk({ content: '', done: false, toolCalls: [toolCall] });
+        } else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+          onChunk({ content: '', done: false, reasoning: event.delta.thinking ?? '' });
+        } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          onChunk({ content: event.delta.text ?? '', done: false });
+        } else if (
+          event.type === 'content_block_delta' &&
+          event.delta?.type === 'input_json_delta'
+        ) {
+          const toolCall: ToolCallDelta = {
+            index: event.index ?? 0,
+            function: { arguments: event.delta.partial_json ?? '' },
+          };
+          onChunk({ content: '', done: false, toolCalls: [toolCall] });
+        } else if (event.type === 'content_block_delta' && !event.delta?.type) {
+          onChunk({ content: event.delta?.text ?? '', done: false });
+        } else if (event.type === 'message_stop') {
+          onChunk({ content: '', done: true });
+          return;
         }
+      } catch {
+        // malformed SSE line — skip
       }
     }
     onChunk({ content: '', done: true });
@@ -524,12 +567,32 @@ class ClaudeProvider implements LLMProvider {
 /* ---------- Ollama (Local) ---------- */
 
 class OllamaProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
   private config: ProviderConfig;
   private modelOverride?: string;
+  private useRequestUrlForStreaming: boolean;
 
-  constructor(config: ProviderConfig, modelOverride?: string) {
+  constructor(
+    config: ProviderConfig,
+    modelOverride?: string,
+    useRequestUrlForStreaming = false,
+    capability?: ProviderCapabilitySnapshot,
+  ) {
     this.config = config;
     this.modelOverride = modelOverride;
+    this.useRequestUrlForStreaming = useRequestUrlForStreaming;
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: useRequestUrlForStreaming ? 'ollamaCloud' : 'ollama',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+        useRequestUrl: useRequestUrlForStreaming,
+      });
   }
 
   private buildHeaders(): Record<string, string> {
@@ -551,7 +614,9 @@ class OllamaProvider implements LLMProvider {
     messages: ChatMessage[],
     temperature = 0.7,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Promise<string> {
+    throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
     const body: Record<string, unknown> = {
@@ -560,7 +625,7 @@ class OllamaProvider implements LLMProvider {
       options: { temperature },
       stream: false,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
     const res = await requestUrl({
@@ -570,9 +635,11 @@ class OllamaProvider implements LLMProvider {
       body: JSON.stringify(body),
     });
     if (res.status >= 400) {
-      throw new Error(`Ollama chat failed: ${res.status} ${res.text}`);
+      throw createProviderHttpError('Ollama chat failed', res);
     }
-    const data = res.json as { message?: { content?: string } };
+    const data = res.json as { model?: string; message?: { content?: string } };
+    this.observedModel = data.model?.trim() || this.observedModel;
+    throwIfChatAborted(options?.signal);
     return data.message?.content ?? '';
   }
 
@@ -593,89 +660,118 @@ class OllamaProvider implements LLMProvider {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
       options: { temperature },
-      stream: true,
+      stream: !this.useRequestUrlForStreaming,
       think: true,
     };
-    if (tools && tools.length > 0) {
+    if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
-    const res = await fetch(targetUrl, {
-      method: 'POST',
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`Ollama stream failed: ${res.status} ${await res.text()}`);
-    }
-    const reader = res.body?.getReader();
-    if (!reader) {
-      throw new Error('ReadableStream not available');
-    }
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
+    if (this.useRequestUrlForStreaming) {
+      const res = await requestUrl({
+        url: targetUrl,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (res.status >= 400) {
+        throw createProviderHttpError('Ollama stream failed', res);
+      }
       if (options?.signal?.aborted) {
         onChunk({ content: '', done: true });
         return;
       }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const data = JSON.parse(trimmed) as {
-            message?: {
-              content?: string;
-              thinking?: string;
-              tool_calls?: Array<{
-                index?: number;
-                function?: { name?: string; arguments?: unknown };
-              }>;
-            };
-            done?: boolean;
-            error?: string;
-          };
-          if (data.error) {
-            throw new Error(`Ollama chat failed: ${data.error}`);
-          }
-          const content = data.message?.content ?? '';
-          const thinking = data.message?.thinking;
-          const toolCalls = data.message?.tool_calls?.map(
-            (tc, index): ToolCallDelta => ({
-              index: tc.index ?? index,
-              type: 'function' as const,
-              function: {
-                name: tc.function?.name,
-                arguments: stringifyToolArguments(tc.function?.arguments),
-              },
-            }),
-          );
-          if (content || thinking || (toolCalls && toolCalls.length > 0)) {
-            onChunk({
-              content,
-              done: false,
-              ...(thinking ? { reasoning: thinking } : {}),
-              ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-            });
-          }
-          if (data.done) {
-            onChunk({ content: '', done: true });
-            return;
-          }
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
+      const data = res.json as OllamaChatResponse;
+      if (data.error) {
+        throw new Error(`Ollama chat failed: ${data.error}`);
+      }
+      const chunk = toOllamaStreamChunk(data);
+      if (chunk) {
+        onChunk(chunk);
+      }
+      onChunk({ content: '', done: true });
+      return;
+    }
+    const res = await requestUrl({
+      url: targetUrl,
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+      throw: false,
+    });
+    if (res.status >= 400) {
+      throw createProviderHttpError('Ollama stream failed', res);
+    }
+
+    for (const line of res.text.split('\n')) {
+      if (options?.signal?.aborted) {
+        onChunk({ content: '', done: true });
+        return;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const data = JSON.parse(trimmed) as OllamaChatResponse;
+        if (data.error) {
+          throw new Error(`Ollama chat failed: ${data.error}`);
         }
+        const chunk = toOllamaStreamChunk(data);
+        if (chunk) {
+          onChunk(chunk);
+        }
+        if (data.done) {
+          onChunk({ content: '', done: true });
+          return;
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
       }
     }
     onChunk({ content: '', done: true });
   }
+}
+
+interface OllamaChatResponse {
+  message?: {
+    content?: string;
+    thinking?: string;
+    tool_calls?: Array<{
+      index?: number;
+      function?: { name?: string; arguments?: unknown };
+    }>;
+  };
+  done?: boolean;
+  error?: string;
+}
+
+function toOllamaStreamChunk(data: OllamaChatResponse): StreamChunk | null {
+  const normalized = normalizeReasoningChunk({
+    content: data.message?.content ?? '',
+    reasoning: data.message?.thinking,
+  });
+  const content = normalized.content;
+  const thinking = normalized.reasoning;
+  const toolCalls = data.message?.tool_calls?.map(
+    (tc, index): ToolCallDelta => ({
+      index: tc.index ?? index,
+      type: 'function' as const,
+      function: {
+        name: tc.function?.name,
+        arguments: stringifyToolArguments(tc.function?.arguments),
+      },
+    }),
+  );
+  if (!content && !thinking && (!toolCalls || toolCalls.length === 0)) {
+    return null;
+  }
+  // Ollama Cloud에서 content가 비고 thinking만 오는 경우에도 content를 폴백
+  const finalContent = content || thinking || '';
+  return {
+    content: finalContent,
+    done: false,
+    ...(thinking ? { reasoning: thinking } : {}),
+    ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+  };
 }
 
 function stringifyToolArguments(args: unknown): string {
@@ -721,20 +817,42 @@ export function createProvider(
   config: ProviderConfig,
   modelOverride?: string,
 ): LLMProvider {
+  const model = modelOverride ?? config.models[0] ?? '';
+  const capability = resolveProviderCapability({ providerKey: key, model });
   switch (key) {
     case 'openai':
       return new OpenAICompatibleProvider(
-        config, OPENAI_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openai,
+        config,
+        OPENAI_CHAT_COMPLETIONS_URL,
+        modelOverride,
+        REASONING_EXTRACTORS.openai,
+        false,
+        capability,
       );
     case 'claude':
-      return new ClaudeProvider(config, modelOverride);
+      return new ClaudeProvider(config, modelOverride, capability);
     case 'ollama':
-      return new OllamaProvider({ ...config, baseUrl: OLLAMA_LOCAL_BASE_URL }, modelOverride);
+      return new OllamaProvider(
+        { ...config, baseUrl: OLLAMA_LOCAL_BASE_URL },
+        modelOverride,
+        false,
+        capability,
+      );
     case 'ollamaCloud':
-      return new OllamaProvider({ ...config, baseUrl: OLLAMA_CLOUD_BASE_URL }, modelOverride);
+      return new OllamaProvider(
+        { ...config, baseUrl: OLLAMA_CLOUD_BASE_URL },
+        modelOverride,
+        true,
+        capability,
+      );
     case 'openRouter':
       return new OpenAICompatibleProvider(
-        config, OPENROUTER_CHAT_COMPLETIONS_URL, modelOverride, REASONING_EXTRACTORS.openRouter,
+        config,
+        OPENROUTER_CHAT_COMPLETIONS_URL,
+        modelOverride,
+        REASONING_EXTRACTORS.openRouter,
+        false,
+        capability,
       );
     default:
       throw new Error(`Unknown provider: ${String(key)}`);
@@ -749,8 +867,45 @@ export function createCustomOpenAIProvider(
     throw new Error('Custom OpenAI-compatible provider requires a base URL.');
   }
   const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
+  const useRequestUrl = config.useRequestUrl ?? true;
+  const model = modelOverride ?? config.models[0] ?? '';
+  const providerKey = `customOpenAI:${config.id}`;
+  const capability = resolveProviderCapability({
+    providerKey,
+    model,
+    useRequestUrl,
+    overrides: config.capabilityOverrides,
+  });
   return new OpenAICompatibleProvider(
-    config, `${baseUrl}/chat/completions`, modelOverride, REASONING_EXTRACTORS.openRouter,
-    config.useRequestUrl ?? true,
+    config,
+    `${baseUrl}/chat/completions`,
+    modelOverride,
+    REASONING_EXTRACTORS.openRouter,
+    useRequestUrl,
+    capability,
   );
+}
+
+export function createProviderForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig & Partial<CustomOpenAIProviderConfig>,
+  modelOverride?: string,
+  profileId = 'profile',
+): LLMProvider {
+  if (key === 'ternlight') {
+    throw new Error('Ternlight is an embedding-only provider.');
+  }
+  if (key === 'openAICompatible') {
+    return createCustomOpenAIProvider(
+      {
+        ...config,
+        id: config.id ?? profileId,
+        name: config.name ?? 'OpenAI-Compatible',
+        useRequestUrl: config.useRequestUrl ?? true,
+        capabilityOverrides: config.capabilityOverrides,
+      },
+      modelOverride,
+    );
+  }
+  return createProvider(key, config, modelOverride);
 }

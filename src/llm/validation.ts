@@ -1,5 +1,13 @@
 import { requestUrl } from 'obsidian';
-import type { CustomOpenAIProviderConfig, EmbeddingProviderKey, ProviderConfig } from '../settings';
+import { t } from '../i18n';
+import type {
+  CustomOpenAIProviderConfig,
+  EmbeddingProviderKey,
+  ProviderConfig,
+  ProviderStrategyKey,
+} from '../settings';
+import { TernlightEmbeddingProvider } from './embedding';
+import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import type { ProviderKey } from './providers';
 
 export interface ProviderModelInfo {
@@ -13,6 +21,17 @@ export interface ValidationResult {
   models: string[];
   error?: string;
   modelDetails?: ProviderModelInfo[];
+}
+
+export interface ProviderConnectionValidator {
+  fetchModels(): Promise<ValidationResult>;
+  validateConnection(): Promise<ValidationResult>;
+  testGeneration(modelId: string): Promise<ValidationResult>;
+}
+
+export interface EmbeddingConnectionValidator {
+  validateConnection(modelId: string): Promise<ValidationResult>;
+  testEmbedding(modelId: string): Promise<ValidationResult>;
 }
 
 export type ProviderValidationKey = ProviderKey | 'customOpenAI';
@@ -58,88 +77,21 @@ function getFixedProviderBaseUrl(key: ProviderKey): string {
     case 'openRouter':
       return OPENROUTER_BASE_URL;
     default:
-      throw new Error(`Unknown provider: ${String(key)}`);
+      throw new Error(t('validationUnknownProvider'));
   }
-}
-
-export async function fetchProviderModels(
-  key: ProviderValidationKey,
-  config: ProviderConfig | CustomOpenAIProviderConfig,
-): Promise<ValidationResult> {
-  if (key === 'claude') {
-    return fetchClaudeModelsWithoutStoredKey();
-  }
-  if (key === 'ollama' || key === 'ollamaCloud') {
-    const baseUrl = getFixedProviderBaseUrl(key);
-    return fetchOllamaModels(key === 'ollama' ? { ...config, apiKey: '' } : config, baseUrl);
-  }
-  if (key === 'openRouter') {
-    return fetchOpenRouterModels(config);
-  }
-  if (key === 'customOpenAI') {
-    if (!config.baseUrl?.trim()) {
-      return { valid: false, models: [], error: 'Custom provider base URL을 입력하세요.' };
-    }
-    return fetchOpenAICompatibleModels(config);
-  }
-  if (key === 'openai') {
-    return fetchOpenAIModels(config, OPENAI_BASE_URL);
-  }
-  return { valid: false, models: [], error: 'Unknown provider' };
-}
-
-export async function testProviderConnection(
-  key: ProviderValidationKey,
-  config: ProviderConfig | CustomOpenAIProviderConfig,
-  modelId: string,
-): Promise<ValidationResult> {
-  if (key === 'ollama' || key === 'ollamaCloud') {
-    return testOllamaChat(
-      key === 'ollama' ? { ...config, apiKey: '' } : config,
-      getFixedProviderBaseUrl(key),
-      modelId,
-    );
-  }
-  if (key === 'claude') {
-    return testClaudeChat(config, modelId);
-  }
-  if (key === 'openRouter') {
-    return testOpenAICompatibleChat(config, OPENROUTER_BASE_URL, modelId);
-  }
-  if (key === 'customOpenAI') {
-    if (!config.baseUrl?.trim()) {
-      return { valid: false, models: [], error: 'Custom provider base URL을 입력하세요.' };
-    }
-    return testOpenAICompatibleChat(
-      config,
-      normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? ''),
-      modelId,
-    );
-  }
-  if (key === 'openai') {
-    return testOpenAICompatibleChat(config, OPENAI_BASE_URL, modelId);
-  }
-  return { valid: false, models: [], error: 'Unknown provider' };
-}
-
-export async function validateProviderApi(
-  key: ProviderKey,
-  config: ProviderConfig,
-): Promise<ValidationResult> {
-  return fetchProviderModels(key, config);
 }
 
 function classifyHttpError(status: number, bodyText: string): string {
   if (status === 401 || status === 403) {
-    return `API 키가 유효하지 않거나 권한이 없습니다 (${status})`;
+    return t('apiKeyUnauthorizedError', { status });
   }
   if (status === 404) {
-    return `엔드포인트 또는 모델을 찾을 수 없습니다 (${status})`;
+    return t('endpointOrModelNotFoundError', { status });
   }
   if (status >= 500) {
-    return `서버 오류가 발생했습니다 (${status})`;
+    return t('serverStatusError', { status });
   }
-  return `API 오류 (${status}): ${bodyText}`;
+  return t('apiStatusError', { status, body: bodyText });
 }
 
 function classifyFetchError(err: unknown): string {
@@ -151,7 +103,7 @@ function classifyFetchError(err: unknown): string {
     msg.includes('NetworkError') ||
     msg.includes('fetch failed')
   ) {
-    return '연결 실패: 서버에 접근할 수 없습니다';
+    return t('connectionFailedNoServer');
   }
   return msg;
 }
@@ -160,43 +112,25 @@ function buildBearerHeaders(apiKey: string): Record<string, string> {
   return apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {};
 }
 
-async function fetchOpenAIModels(
-  config: ProviderConfig,
-  baseUrl: string,
-): Promise<ValidationResult> {
-  return fetchOpenAICompatibleModels({ ...config, baseUrl });
+function getResponseText(text: unknown): string {
+  return typeof text === 'string' ? text : String(text);
 }
 
-async function fetchOpenRouterModels(config: ProviderConfig): Promise<ValidationResult> {
-  try {
-    const res = await requestUrl({
-      url: `${OPENROUTER_BASE_URL}/models`,
-      method: 'GET',
-      headers: buildBearerHeaders(config.apiKey),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    const data = (res.json as { data?: OpenRouterModelRecord[] }) ?? {};
-    const modelDetails =
-      data.data
-        ?.filter(isOpenRouterChatModel)
-        .map((model) => ({
-          id: model.id,
-          name: model.name,
-          contextLength: model.context_length,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
-    return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
+function withCustomProviderHint(error: string): string {
+  return t('customProviderBaseUrlHint', { error });
 }
 
-interface OpenRouterModelRecord {
+interface OpenAIModelRecord {
   id: string;
   name?: string;
+}
+
+interface AnthropicModelRecord {
+  id: string;
+  display_name?: string;
+}
+
+interface OpenRouterModelRecord extends OpenAIModelRecord {
   context_length?: number;
   architecture?: {
     modality?: string;
@@ -205,248 +139,573 @@ interface OpenRouterModelRecord {
   };
 }
 
-function isOpenRouterChatModel(model: OpenRouterModelRecord): boolean {
-  const output = model.architecture?.output_modalities ?? [];
-  const modality = model.architecture?.modality ?? '';
-  if (output.length > 0) return output.includes('text');
-  if (modality) return modality.includes('text');
-  return true;
-}
+class OpenAICompatibleValidator implements ProviderConnectionValidator {
+  constructor(
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
+    private readonly baseUrl: string,
+    private readonly isOpenRouter = false,
+    private readonly isCustom = false,
+  ) {}
 
-async function fetchOpenAICompatibleModels(
-  config: ProviderConfig | CustomOpenAIProviderConfig,
-): Promise<ValidationResult> {
-  const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? OPENAI_BASE_URL);
-  try {
-    const res = await requestUrl({
-      url: `${baseUrl}/models`,
-      method: 'GET',
-      headers: buildBearerHeaders(config.apiKey),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    const data = (res.json as { data?: Array<{ id: string; name?: string }> }) ?? { data: [] };
-    const modelDetails =
-      data.data
-        ?.filter((model) => isChatModelId(model.id))
-        .map((model) => ({ id: model.id, name: model.name }))
-        .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
-    return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-function isChatModelId(id: string): boolean {
-  const normalized = id.toLowerCase();
-  return (
-    !normalized.includes('embedding') &&
-    !normalized.includes('embed') &&
-    !normalized.includes('tts') &&
-    !normalized.includes('dall-e') &&
-    !normalized.includes('whisper')
-  );
-}
-
-async function fetchClaudeModelsWithoutStoredKey(): Promise<ValidationResult> {
-  try {
-    const res = await requestUrl({
-      url: `${ANTHROPIC_BASE_URL}/models`,
-      method: 'GET',
-      headers: { 'anthropic-version': '2023-06-01' },
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return {
-        valid: false,
-        models: [],
-        error: `Anthropic 모델 검색은 저장된 API 키 자동 사용 대상에서 제외되어 있습니다. ${classifyHttpError(res.status, text)}`,
-      };
-    }
-    const data = (res.json as { data?: Array<{ id: string; display_name?: string }> }) ?? {};
-    const modelDetails =
-      data.data
-        ?.map((model) => ({ id: model.id, name: model.display_name }))
-        .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
-    return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-async function fetchOllamaModels(
-  config: ProviderConfig,
-  baseUrl: string,
-): Promise<ValidationResult> {
-  const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-  try {
-    const res = await requestUrl({
-      url: `${normalizedBaseUrl}/api/tags`,
-      method: 'GET',
-      headers: buildBearerHeaders(config.apiKey),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    const data = (res.json as { models?: Array<{ name: string }> }) ?? { models: [] };
-    const models = (data.models?.map((model) => model.name) ?? []).sort((a, b) =>
-      a.localeCompare(b),
-    );
-    return { valid: true, models, modelDetails: models.map((id) => ({ id })) };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-async function testOpenAICompatibleChat(
-  config: ProviderConfig | CustomOpenAIProviderConfig,
-  baseUrl: string,
-  modelId: string,
-): Promise<ValidationResult> {
-  try {
-    const res = await requestUrl({
-      url: `${baseUrl}/chat/completions`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...buildBearerHeaders(config.apiKey),
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-        stream: false,
-      }),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    return { valid: true, models: [modelId] };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-async function testClaudeChat(config: ProviderConfig, modelId: string): Promise<ValidationResult> {
-  try {
-    const res = await requestUrl({
-      url: `${ANTHROPIC_BASE_URL}/messages`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: modelId,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    return { valid: true, models: [modelId] };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-async function testOllamaChat(
-  config: ProviderConfig,
-  baseUrl: string,
-  modelId: string,
-): Promise<ValidationResult> {
-  const normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
-  try {
-    const res = await requestUrl({
-      url: `${normalizedBaseUrl}/api/chat`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...buildBearerHeaders(config.apiKey),
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'ping' }],
-        stream: false,
-        options: { num_predict: 1 },
-      }),
-    });
-    if (res.status >= 400) {
-      const text = typeof res.text === 'string' ? res.text : String(res.text);
-      return { valid: false, models: [], error: classifyHttpError(res.status, text) };
-    }
-    return { valid: true, models: [modelId] };
-  } catch (err) {
-    return { valid: false, models: [], error: classifyFetchError(err) };
-  }
-}
-
-export async function validateEmbeddingConnection(
-  providerKey: EmbeddingProviderKey,
-  modelId: string,
-  config: ProviderConfig,
-): Promise<ValidationResult> {
-  if (providerKey === 'other') {
-    return { valid: true, models: [modelId], error: 'Custom endpoint — manual validation only' };
-  }
-
-  if (providerKey === 'ollama') {
-    const baseUrl = normalizeOllamaBaseUrl(OLLAMA_LOCAL_BASE_URL);
+  async fetchModels(): Promise<ValidationResult> {
     try {
       const res = await requestUrl({
-        url: `${baseUrl}/api/embed`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ model: modelId, input: ['test'] }),
+        url: `${this.baseUrl}/models`,
+        method: 'GET',
+        headers: buildBearerHeaders(this.config.apiKey),
+        throw: false,
       });
       if (res.status >= 400) {
-        const text = typeof res.text === 'string' ? res.text : String(res.text);
-        return { valid: false, models: [], error: classifyHttpError(res.status, text) };
+        const error = classifyHttpError(res.status, getResponseText(res.text));
+        return {
+          valid: false,
+          models: [],
+          error: this.isCustom ? withCustomProviderHint(error) : error,
+        };
       }
-      const data = (res.json as { embeddings?: unknown[] }) ?? {};
-      if (Array.isArray(data.embeddings) && data.embeddings.length > 0) {
-        return { valid: true, models: [modelId] };
+
+      if (this.isOpenRouter) {
+        const data = (res.json as { data?: OpenRouterModelRecord[] }) ?? {};
+        const modelDetails =
+          data.data
+            ?.map((model) => ({
+              id: model.id,
+              name: model.name,
+              contextLength: model.context_length,
+            }))
+            .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+        return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
       }
-      return { valid: false, models: [], error: 'Invalid embedding response' };
+
+      const data = (res.json as { data?: OpenAIModelRecord[] }) ?? { data: [] };
+      const modelDetails =
+        data.data
+          ?.map((model) => ({ id: model.id, name: model.name }))
+          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+      return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
     }
   }
 
-  if (providerKey === 'openai' || providerKey === 'openRouter') {
-    const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
+  async validateConnection(): Promise<ValidationResult> {
+    return this.fetchModels();
+  }
+
+  async testGeneration(modelId: string): Promise<ValidationResult> {
     try {
       const res = await requestUrl({
-        url: `${baseUrl}/embeddings`,
+        url: `${this.baseUrl}/chat/completions`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...buildBearerHeaders(config.apiKey),
+          ...buildBearerHeaders(this.config.apiKey),
         },
-        body: JSON.stringify({ input: 'test', model: modelId }),
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        throw: false,
       });
       if (res.status >= 400) {
-        const text = typeof res.text === 'string' ? res.text : String(res.text);
-        return { valid: false, models: [], error: classifyHttpError(res.status, text) };
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      return { valid: true, models: [modelId] };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+}
+
+class AnthropicValidator implements ProviderConnectionValidator {
+  constructor(private readonly config: ProviderConfig | CustomOpenAIProviderConfig) {}
+
+  async fetchModels(): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${ANTHROPIC_BASE_URL}/models`,
+        method: 'GET',
+        headers: {
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      const data = (res.json as { data?: AnthropicModelRecord[] }) ?? {};
+      const modelDetails =
+        data.data
+          ?.map((model) => ({ id: model.id, name: model.display_name }))
+          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+      return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  async validateConnection(): Promise<ValidationResult> {
+    return this.fetchModels();
+  }
+
+  async testGeneration(modelId: string): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${ANTHROPIC_BASE_URL}/messages`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      return { valid: true, models: [modelId] };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+}
+
+class OllamaValidator implements ProviderConnectionValidator {
+  private readonly normalizedBaseUrl: string;
+
+  constructor(
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
+    baseUrl: string,
+    private readonly usesApiKey: boolean,
+  ) {
+    this.normalizedBaseUrl = normalizeOllamaBaseUrl(baseUrl);
+  }
+
+  async fetchModels(): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${this.normalizedBaseUrl}/api/tags`,
+        method: 'GET',
+        headers: this.usesApiKey ? buildBearerHeaders(this.config.apiKey) : {},
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      const data = (res.json as { models?: Array<{ name: string }> }) ?? { models: [] };
+      const models = (data.models?.map((model) => model.name) ?? []).sort((a, b) =>
+        a.localeCompare(b),
+      );
+      return { valid: true, models, modelDetails: models.map((id) => ({ id })) };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  async validateConnection(): Promise<ValidationResult> {
+    return this.fetchModels();
+  }
+
+  async testGeneration(modelId: string): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${this.normalizedBaseUrl}/api/chat`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.usesApiKey ? buildBearerHeaders(this.config.apiKey) : {}),
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'ping' }],
+          stream: false,
+          options: { num_predict: 1 },
+        }),
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      return { valid: true, models: [modelId] };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+}
+
+class OpenAICompatibleEmbeddingValidator implements EmbeddingConnectionValidator {
+  constructor(
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
+    private readonly baseUrl: string,
+  ) {}
+
+  async validateConnection(modelId: string): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${this.baseUrl}/models`,
+        method: 'GET',
+        headers: buildBearerHeaders(this.config.apiKey),
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      const data = (res.json as { data?: OpenAIModelRecord[] }) ?? { data: [] };
+      const modelDetails =
+        data.data
+          ?.map((model) => ({ id: model.id, name: model.name }))
+          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+      return {
+        valid: true,
+        models: modelDetails.length > 0 ? modelDetails.map((model) => model.id) : [modelId],
+        modelDetails,
+      };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  async testEmbedding(modelId: string): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${this.baseUrl}/embeddings`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildBearerHeaders(this.config.apiKey),
+        },
+        body: JSON.stringify({ input: 'test', model: modelId }),
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
       }
       const data = (res.json as { data?: Array<{ embedding: unknown }> }) ?? {};
       if (data.data?.[0]?.embedding) {
         return { valid: true, models: [modelId] };
       }
-      return { valid: false, models: [], error: 'Invalid embedding response' };
+      return { valid: false, models: [], error: t('validationInvalidEmbeddingResponse') };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
     }
   }
+}
 
-  return { valid: false, models: [], error: 'Unknown embedding provider' };
+class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
+  private readonly providerValidator: OllamaValidator;
+  private readonly baseUrl: string;
+
+  constructor(config: ProviderConfig) {
+    this.baseUrl = normalizeOllamaBaseUrl(config.baseUrl?.trim() || OLLAMA_LOCAL_BASE_URL);
+    this.providerValidator = new OllamaValidator(config, this.baseUrl, false);
+  }
+
+  async validateConnection(): Promise<ValidationResult> {
+    return this.providerValidator.validateConnection();
+  }
+
+  async testEmbedding(modelId: string): Promise<ValidationResult> {
+    try {
+      const res = await requestUrl({
+        url: `${this.baseUrl}/api/embed`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: modelId, input: ['test'] }),
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return {
+          valid: false,
+          models: [],
+          error: classifyHttpError(res.status, getResponseText(res.text)),
+        };
+      }
+      const data = (res.json as { embeddings?: unknown[] }) ?? {};
+      if (Array.isArray(data.embeddings) && data.embeddings.length > 0) {
+        return { valid: true, models: [modelId] };
+      }
+      return { valid: false, models: [], error: t('validationInvalidEmbeddingResponse') };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+}
+
+class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
+  constructor(private readonly runtime: TernlightRuntimeOptions | undefined) {}
+
+  async validateConnection(modelId: string): Promise<ValidationResult> {
+    if (modelId !== 'ternlight-base') {
+      return {
+        valid: false,
+        models: [],
+        error: t('validationTernlightUnknownModel', { model: modelId }),
+      };
+    }
+    const result = await this.testEmbedding(modelId);
+    return result.valid
+      ? {
+          valid: true,
+          models: ['ternlight-base'],
+          modelDetails: [{ id: 'ternlight-base' }],
+        }
+      : result;
+  }
+
+  async testEmbedding(modelId: string): Promise<ValidationResult> {
+    if (!this.runtime) {
+      return { valid: false, models: [], error: t('validationTernlightUnavailable') };
+    }
+    try {
+      const provider = new TernlightEmbeddingProvider(modelId, this.runtime);
+      const vector = await provider.embed('test');
+      return vector.length === 384
+        ? { valid: true, models: [modelId] }
+        : {
+            valid: false,
+            models: [],
+            error: t('validationEmbeddingVectorInvalid', { size: vector.length }),
+          };
+    } catch (err) {
+      return { valid: false, models: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
+function createProviderValidator(
+  key: ProviderValidationKey | ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): ProviderConnectionValidator | null {
+  if (key === 'claude') {
+    return new AnthropicValidator(config);
+  }
+  if (key === 'ollama' || key === 'ollamaCloud') {
+    return new OllamaValidator(config, getFixedProviderBaseUrl(key), key === 'ollamaCloud');
+  }
+  if (key === 'openRouter') {
+    return new OpenAICompatibleValidator(config, OPENROUTER_BASE_URL, true);
+  }
+  if (key === 'customOpenAI' || key === 'openAICompatible') {
+    if (!config.baseUrl?.trim()) {
+      return null;
+    }
+    return new OpenAICompatibleValidator(
+      config,
+      normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? ''),
+      false,
+      true,
+    );
+  }
+  if (key === 'openai') {
+    return new OpenAICompatibleValidator(config, OPENAI_BASE_URL);
+  }
+  return null;
+}
+
+function createEmbeddingValidator(
+  providerKey: EmbeddingProviderKey | ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
+): EmbeddingConnectionValidator | null {
+  if (providerKey === 'ollama') {
+    return new OllamaEmbeddingValidator(config);
+  }
+  if (providerKey === 'ternlight') {
+    return new TernlightEmbeddingValidator(ternlightRuntime);
+  }
+  if (providerKey === 'openai' || providerKey === 'openRouter') {
+    const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
+    return new OpenAICompatibleEmbeddingValidator(config, baseUrl);
+  }
+  if (providerKey === 'openAICompatible') {
+    if (!config.baseUrl?.trim()) {
+      return null;
+    }
+    return new OpenAICompatibleEmbeddingValidator(
+      config,
+      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+    );
+  }
+  if (providerKey.startsWith('customOpenAI:')) {
+    if (!config.baseUrl?.trim()) {
+      return null;
+    }
+    return new OpenAICompatibleEmbeddingValidator(
+      config,
+      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+    );
+  }
+  return null;
+}
+
+export async function fetchProviderModels(
+  key: ProviderValidationKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): Promise<ValidationResult> {
+  const validator = createProviderValidator(key, config);
+  if (!validator) {
+    return {
+      valid: false,
+      models: [],
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
+    };
+  }
+  return validator.fetchModels();
+}
+
+export async function fetchProviderModelsForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): Promise<ValidationResult> {
+  if (key === 'ternlight') {
+    return {
+      valid: false,
+      models: [],
+      error: t('validationTernlightEmbeddingOnly'),
+    };
+  }
+  return fetchProviderModels(key === 'openAICompatible' ? 'customOpenAI' : key, config);
+}
+
+export async function validateProviderConnection(
+  key: ProviderValidationKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+): Promise<ValidationResult> {
+  const validator = createProviderValidator(key, config);
+  if (!validator) {
+    return {
+      valid: false,
+      models: [],
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
+    };
+  }
+  return validator.validateConnection();
+}
+
+export async function testProviderGeneration(
+  key: ProviderValidationKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  modelId: string,
+): Promise<ValidationResult> {
+  const validator = createProviderValidator(key, config);
+  if (!validator) {
+    return {
+      valid: false,
+      models: [],
+      error:
+        key === 'customOpenAI'
+          ? t('customProviderBaseUrlRequired')
+          : t('validationUnknownProvider'),
+    };
+  }
+  return validator.testGeneration(modelId);
+}
+
+export async function testProviderGenerationForStrategy(
+  key: ProviderStrategyKey,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  modelId: string,
+): Promise<ValidationResult> {
+  if (key === 'ternlight') {
+    return {
+      valid: false,
+      models: [],
+      error: t('validationTernlightEmbeddingOnly'),
+    };
+  }
+  return testProviderGeneration(key === 'openAICompatible' ? 'customOpenAI' : key, config, modelId);
+}
+
+export async function validateProviderApi(
+  key: ProviderKey,
+  config: ProviderConfig,
+): Promise<ValidationResult> {
+  return validateProviderConnection(key, config);
+}
+
+export async function validateEmbeddingConnection(
+  providerKey: EmbeddingProviderKey,
+  modelId: string,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
+): Promise<ValidationResult> {
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
+  if (!validator) {
+    return { valid: false, models: [], error: t('validationUnknownProvider') };
+  }
+  return validator.validateConnection(modelId);
+}
+
+export async function testEmbeddingGeneration(
+  providerKey: EmbeddingProviderKey,
+  modelId: string,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
+): Promise<ValidationResult> {
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
+  if (!validator) {
+    return { valid: false, models: [], error: t('validationUnknownProvider') };
+  }
+  return validator.testEmbedding(modelId);
+}
+
+export async function testEmbeddingGenerationForStrategy(
+  providerKey: ProviderStrategyKey,
+  modelId: string,
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  ternlightRuntime?: TernlightRuntimeOptions,
+): Promise<ValidationResult> {
+  const validator = createEmbeddingValidator(providerKey, config, ternlightRuntime);
+  if (!validator) {
+    return {
+      valid: false,
+      models: [],
+      error: t('validationEmbeddingUnsupported'),
+    };
+  }
+  return validator.testEmbedding(modelId);
 }

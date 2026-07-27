@@ -1,7 +1,11 @@
-import { ItemView, WorkspaceLeaf, Notice, TFile, type Events } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
 import {
+  buildChatModelOptions,
   CHAT_PROVIDER_KEYS,
+  getCustomOpenAIProviderDisplayName,
+  getProviderProfileDisplayName,
   PROVIDER_LABELS,
+  resolveProviderModelRef,
   type PluginLike,
   type ProviderKey,
 } from '../settings';
@@ -13,7 +17,14 @@ import type {
   ToolCallDelta,
   ToolDefinition,
 } from '../llm/providers';
-import type { ChatMessageWithMeta, SessionState, ToolCallRecord } from './types';
+import { normalizeReasoningChunk } from '../llm/reasoning';
+import type {
+  AssistantQuestion,
+  ChatMessageWithMeta,
+  SessionState,
+  SourceValidationWarning,
+  ToolCallRecord,
+} from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
 import { openSessionHistoryModal } from './session-modal';
@@ -21,20 +32,147 @@ import {
   buildChatContext,
   createAppMentionResolver,
   parseMentions as parseContextMentions,
+  resolveChatRagEngine,
   type ContextBuildResult,
   type ParsedMention,
   type RagQueryLike,
 } from './context';
-import { normalizeToolResult } from './mcp-tools';
-import { executeMcpToolCalls, prepareToolCallsForExecution } from './mcp-tool-execution';
+import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
+import {
+  appendAssistantToolRound,
+  collectCompletedMcpServerNames,
+  collectToolCitations,
+  enforceNativeToolAnswerContract,
+  executeAssistantToolCalls as executeToolCalls,
+  joinAssistantToolRoundText,
+  markRepeatedToolCalls,
+  prepareAssistantToolCalls,
+  resolveAssistantToolLoopText,
+  resolveToolLoopTerminalText,
+  selectProviderReinjectableToolCalls,
+} from './tool-execution';
+import {
+  NativeVaultToolRuntime,
+  createNativeVaultToolDefinition,
+  type NativeVaultToolRuntimeLike,
+} from '../agent/native-vault-tool';
+import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
+import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
+import { selectDisplayedAnswerCitations } from '../agent/citation-selection';
+import {
+  VaultResearchAgent,
+  getVaultResearchPhaseLabel,
+  isWholeVaultResearchRequest,
+} from '../agent/research-agent';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
-import { enhanceCodeBlocks, escapeHtml, renderMarkdownToElement } from './markdown';
+import { getPluginAwareServerNames } from './plugin-aware-context7';
+import { validateAnswerSources } from './source-validation';
+import {
+  classifyAssistantResponse,
+  shouldRenderAssistantQuestion,
+} from './assistant-response-classifier';
+import { formatAssistantQuestionAnswer } from './assistant-question';
+import {
+  classifyChatFailure,
+  createChatErrorPresentation,
+  createChatRecoveryActions,
+  getChatHttpStatus,
+  getChatRetryAfterMs,
+  redactDebugDetail,
+  type ChatRecoveryAction,
+} from './chat-error-actions';
+import {
+  createContextPreviewChips,
+  createComposerDraftSnapshot,
+  createComposerLoadingState,
+  resolveComposerKeyAction,
+  type ComposerDraftSnapshot,
+} from './chat-composer';
+import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
+import { createChatMessageMetaItems } from './chat-message-renderer';
+import {
+  CHAT_MESSAGE_ACTION_ATTRIBUTE,
+  createChatMessageActionId,
+  createChatMessageActionRenderState,
+  createRecoveryMessageActionId,
+} from './chat-message-actions';
+import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
+import { expandVaultSearchQueryLocally } from './vault-query-expansion';
+import {
+  createDataBoundarySnapshot,
+  createResearchDataBoundarySnapshot,
+  withDataBoundaryProviderUsage,
+} from './context-composer';
+import {
+  createRegenerationDraft,
+  createVariantComparisonRows,
+  markMessageRegenerated,
+  selectPreviousUserQuestions,
+  type RegenerationDraft,
+} from './conversation-variants';
+import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
+import { createProviderWaitStatus } from './provider-wait';
+import { SourcePanel } from './source-panel';
+import { ToolCallPanel } from './tool-call-panel';
+import {
+  createCompatibilityToolPrompt,
+  createNativeVaultEvidencePrompt,
+  parseCompatibilityToolResponse,
+} from './tool-protocol';
+import {
+  createToolApprovalResumePlan,
+  resolveToolApprovalQuestionContext,
+} from './tool-approval-resume';
+import {
+  createChatTurnState,
+  getChatTurnStageStatus,
+  transitionChatTurn,
+  type ChatTurnEvent,
+  type ChatTurnStage,
+  type ChatTurnState,
+} from './turn-state';
 import { t } from '../i18n';
+import { RefreshAction } from '../utils/refresh-action';
+import { isDomInstance } from '../utils/dom';
+import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
+import { prepareLoadedSessionMessages } from './session-recovery';
+import {
+  isChatRunActive,
+  isChatRunOwner,
+  planChatRunFinalization,
+  type ChatRunHandle,
+} from './run-ownership';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
+const HIDDEN_CLASS = 'superpower-inside-hidden';
+const MENTION_TOP_VAR = '--superpower-inside-mention-top';
+const MENTION_BOTTOM_VAR = '--superpower-inside-mention-bottom';
+const CHAT_INPUT_HEIGHT_VAR = '--superpower-inside-chat-input-height';
+
+function getProviderReferenceIdentity(reference: string): string {
+  const [kind = '', id = ''] = reference.split(':');
+  return kind === 'profile' || kind === 'customOpenAI' ? `${kind}:${id}` : kind;
+}
+
+function setHidden(el: HTMLElement | null, hidden: boolean): void {
+  if (!el) return;
+  el.toggleClass(HIDDEN_CLASS, hidden);
+}
+
+function renderPlainTextWithBreaks(container: HTMLElement, text: string): void {
+  container.empty();
+  const doc = container.ownerDocument;
+  const lines = text.split('\n');
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      container.createEl('br');
+    }
+    container.appendChild(doc.createTextNode(line));
+  });
+}
 
 interface MessageMetaInput {
   providerKey?: ChatMessageWithMeta['providerKey'];
@@ -43,9 +181,22 @@ interface MessageMetaInput {
   status?: ChatMessageWithMeta['status'];
   errorMessage?: string;
   citations?: SourceCitation[];
+  sourceWarnings?: SourceValidationWarning[];
   contextAttachments?: ContextAttachment[];
+  assistantQuestion?: AssistantQuestion;
   branchOf?: string;
+  branchRoot?: string;
+  variantOf?: string;
   stopReason?: ChatMessageWithMeta['stopReason'];
+  originalContent?: string;
+  providerCapability?: ChatMessageWithMeta['providerCapability'];
+  turnStage?: ChatTurnStage;
+  toolRound?: number;
+  contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
+  dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
+  errorKind?: ChatMessageWithMeta['errorKind'];
+  errorRetryAt?: string;
+  actionHistory?: ChatMessageWithMeta['actionHistory'];
 }
 
 export class ChatView extends ItemView {
@@ -55,7 +206,7 @@ export class ChatView extends ItemView {
   private isStreaming: boolean;
   private autoScroll: boolean;
   private session: SessionState;
-  private autoSaveTimer: ReturnType<typeof setTimeout> | null;
+  private autoSaveTimer: number | null;
 
   private container: HTMLElement | null;
   private headerEl: HTMLElement | null;
@@ -66,8 +217,12 @@ export class ChatView extends ItemView {
   private sendBtn: HTMLButtonElement | null;
   private mcpBtn: HTMLButtonElement | null;
   private typingIndicator: HTMLElement | null;
+  private emptyStateEl: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
   private mcpStatusBar: HTMLElement | null;
+  private readinessEl: HTMLElement | null;
+  private runControlEl: HTMLElement | null;
+  private stopAllBtn: HTMLButtonElement | null;
   private modelSelectEl: HTMLSelectElement | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
@@ -75,9 +230,24 @@ export class ChatView extends ItemView {
   private mentionSelectedIndex: number;
   private mentionItems: { label: string; value: string; type: 'server' | 'file' | 'folder' }[];
   private mentionStartIndex: number;
+  private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
+  private activeRun: ChatRunHandle<AbortController> | null;
+  private runTokenSequence: number;
   private lastUserPrompt: string | null;
-  private previousUserQueries: string[];
+  private skipAutoRagOnce = false;
+  private pendingSubmittedDraft: ComposerDraftSnapshot | null;
+  private pendingRegeneration: RegenerationDraft | null;
+  private readonly sourcePanel: SourcePanel;
+  private readonly toolCallPanel: ToolCallPanel;
+  private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private lastStreamingMarkdownAt: number;
+  private localToolCallSequence: number;
+
+  // RefreshAction 인스턴스
+  private mcpRefreshAction: RefreshAction | null = null;
+  // RefreshBus 구독 해제 함수들
+  private refreshBusUnsubscribers: (() => void)[] = [];
 
   private messageEls: Map<string, HTMLElement>;
 
@@ -100,8 +270,12 @@ export class ChatView extends ItemView {
     this.sendBtn = null;
     this.mcpBtn = null;
     this.typingIndicator = null;
+    this.emptyStateEl = null;
     this.scrollBtn = null;
     this.mcpStatusBar = null;
+    this.readinessEl = null;
+    this.runControlEl = null;
+    this.stopAllBtn = null;
     this.modelSelectEl = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
@@ -109,9 +283,39 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
     this.mentionStartIndex = -1;
+    this.mentionDropdownId = `superpower-inside-mention-dropdown-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
     this.abortController = null;
+    this.activeRun = null;
+    this.runTokenSequence = 0;
     this.lastUserPrompt = null;
-    this.previousUserQueries = [];
+    this.pendingSubmittedDraft = null;
+    this.pendingRegeneration = null;
+    this.lastStreamingMarkdownAt = 0;
+    this.localToolCallSequence = 0;
+    this.nativeVaultTool = new NativeVaultToolRuntime(
+      new ObsidianNativeVaultToolPort(
+        this.app,
+        new RagNativeVaultFileScope(
+          this.app,
+          () => this.plugin.settings.rag,
+          () => this.plugin.settings.chat,
+        ),
+        () => this.plugin.ragEngine,
+      ),
+    );
+    this.sourcePanel = new SourcePanel({
+      setIcon: (element, icon) => setIcon(element, icon),
+      openCitation: (citation) => this.openCitation(citation),
+      copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
+      insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
+      repairSourceWarning: (warning) => this.repairSourceWarning(warning),
+    });
+    this.toolCallPanel = new ToolCallPanel({
+      approveToolCall: (messageId, toolCallId) => this.approveToolCall(messageId, toolCallId),
+      renderMarkdown: (container, content) => this.renderMarkdownBubble(container, content),
+    });
   }
 
   getViewType(): string {
@@ -132,23 +336,63 @@ export class ChatView extends ItemView {
     this.buildHeader(root);
     this.buildMcpStatusBar(root);
 
-    this.messagesArea = root.createDiv({ cls: 'superpower-inside-chat-messages' });
+    const messagesShell = root.createDiv({ cls: 'superpower-inside-chat-messages-shell' });
+    this.messagesArea = messagesShell.createDiv({
+      cls: 'superpower-inside-chat-messages',
+      attr: { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions text' },
+    });
     this.messagesArea.addEventListener('scroll', () => this.handleScroll());
+    this.renderEmptyState();
 
-    this.scrollBtn = root.createDiv({ cls: 'superpower-inside-scroll-to-bottom' });
-    this.scrollBtn.style.display = 'none';
-    this.scrollBtn.setText(t('chatScrollToBottom'));
+    this.scrollBtn = messagesShell.createEl('button', {
+      cls: 'superpower-inside-scroll-to-bottom',
+      attr: { type: 'button', 'aria-label': t('chatScrollToBottom') },
+    });
+    setHidden(this.scrollBtn, true);
+    setIcon(this.scrollBtn, 'arrow-down');
+    this.scrollBtn.createSpan({ text: t('chatScrollToBottom') });
     this.scrollBtn.addEventListener('click', () => this.scrollToBottom());
 
     this.typingIndicator = this.messagesArea.createDiv({
       cls: 'superpower-inside-typing-indicator',
     });
-    this.typingIndicator.style.display = 'none';
-    this.typingIndicator.innerHTML = `<span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-dot"></span><span class="superpower-inside-typing-text">${t('chatTyping')}</span>`;
+    setHidden(this.typingIndicator, true);
+    for (let i = 0; i < 3; i++) {
+      this.typingIndicator.createSpan({ cls: 'superpower-inside-typing-dot' });
+    }
+    this.typingIndicator.createSpan({
+      cls: 'superpower-inside-typing-text',
+      text: t('chatTyping'),
+    });
 
     this.buildInputArea(root);
     this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
+    this.registerRefreshBusEvents();
+    void this.plugin
+      .prepareRagForChat()
+      .then(() => this.renderChatReadiness())
+      .catch(() => this.renderChatReadiness());
+  }
+
+  private registerRefreshBusEvents(): void {
+    this.refreshBusUnsubscribers.push(
+      this.plugin.refreshBus.on('mcp', () => {
+        this.renderMcpStatusBar();
+        this.renderChatReadiness();
+      }),
+    );
+    this.refreshBusUnsubscribers.push(
+      this.plugin.refreshBus.on('models', () => {
+        this.populateModelSelect();
+        this.renderChatReadiness();
+      }),
+    );
+    this.refreshBusUnsubscribers.push(
+      this.plugin.refreshBus.on('rag', () => {
+        this.renderChatReadiness();
+      }),
+    );
   }
 
   private registerMcpStatusEvents(): void {
@@ -161,10 +405,47 @@ export class ChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
+    this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
+    // RefreshAction 정리
+    this.mcpRefreshAction?.detach();
+    this.mcpRefreshAction = null;
+    // RefreshBus 구독 해제
+    for (const unsub of this.refreshBusUnsubscribers) {
+      unsub();
+    }
+    this.refreshBusUnsubscribers = [];
     await this.saveCurrentSession();
+  }
+
+  private renderEmptyState(): void {
+    if (!this.messagesArea || this.messages.length > 0 || this.emptyStateEl) return;
+    const emptyState = this.messagesArea.createDiv({
+      cls: 'superpower-inside-chat-empty-state',
+      attr: { role: 'note' },
+    });
+    this.emptyStateEl = emptyState;
+    const icon = emptyState.createDiv({ cls: 'superpower-inside-chat-empty-state-icon' });
+    setIcon(icon, 'book-open-text');
+    emptyState.createDiv({
+      cls: 'superpower-inside-chat-empty-state-title',
+      text: t('chatEmptyStateTitle'),
+    });
+    emptyState.createDiv({
+      cls: 'superpower-inside-chat-empty-state-detail',
+      text: t('chatEmptyStateDetail'),
+    });
+    const prompts = emptyState.createDiv({ cls: 'superpower-inside-chat-empty-state-prompts' });
+    for (const prompt of [t('chatEmptyStatePromptSummary'), t('chatEmptyStatePromptConnections')]) {
+      const button = prompts.createEl('button', { text: prompt, attr: { type: 'button' } });
+      button.addEventListener('click', () => {
+        if (!this.inputArea) return;
+        this.inputArea.value = prompt;
+        this.autoResizeInput();
+        this.renderContextPreview(prompt);
+        this.inputArea.focus();
+      });
+    }
   }
 
   private registerSessionFileEvents(): void {
@@ -221,9 +502,9 @@ export class ChatView extends ItemView {
 
     const sysToggle = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: '⚙️',
       attr: { 'aria-label': t('systemPrompt') },
     });
+    setIcon(sysToggle, 'settings-2');
     sysToggle.addEventListener('click', () => {
       openPromptLibraryModal({
         containerEl: container,
@@ -249,6 +530,7 @@ export class ChatView extends ItemView {
   private renderMcpStatusBar(): void {
     if (!this.mcpStatusBar) return;
     this.mcpStatusBar.empty();
+    setHidden(this.mcpStatusBar, false);
 
     const registry = this.plugin.mcpRegistry;
     const state = this.plugin.mcpConnectionState ?? 'idle';
@@ -257,78 +539,83 @@ export class ChatView extends ItemView {
         cls: 'superpower-inside-chat-mcp-status-label',
       });
       connectingLabel.setText(t('mcpConnecting'));
-      const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'superpower-inside-chat-mcp-refresh-btn',
-        text: t('mcpRefresh'),
-      });
-      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      this.attachMcpRefreshButton();
+      this.renderChatReadiness();
       return;
     }
 
     if (!registry || registry.getConnectedCount() === 0) {
-      const emptyLabel = this.mcpStatusBar.createSpan({
-        cls: 'superpower-inside-chat-mcp-status-label',
-      });
-      emptyLabel.setText(state === 'error' ? t('mcpConnectionFailed') : t('mcpNoActiveServers'));
-      const refreshBtn = this.mcpStatusBar.createEl('button', {
-        cls: 'superpower-inside-chat-mcp-refresh-btn',
-        text: t('mcpRefresh'),
-      });
-      refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
+      setHidden(this.mcpStatusBar, true);
+      this.renderChatReadiness();
       return;
     }
 
-    const servers = registry.getEnabledServers();
-    const connectedCount = registry.getConnectedCount();
-    const totalCount = servers.length;
+    setHidden(this.mcpStatusBar, true);
+    this.renderChatReadiness();
+  }
 
-    const summary = this.mcpStatusBar.createSpan({ cls: 'superpower-inside-chat-mcp-status-label' });
-    summary.setText(
-      state === 'partial-error'
-        ? `${t('mcpPartialError')} · ${t('mcpActiveServers', { count: connectedCount, total: totalCount })}`
-        : t('mcpActiveServers', { count: connectedCount, total: totalCount }),
-    );
-
-    for (const server of servers) {
-      const status = registry.getConnectionStatus(server.name);
-      if (status !== 'connected') continue;
-      const chip = this.mcpStatusBar.createSpan({
-        cls: `superpower-inside-chat-mcp-server-chip ${status}`,
-      });
-      chip.setText(server.name);
-    }
+  private attachMcpRefreshButton(): void {
+    if (!this.mcpStatusBar) return;
+    // 이전 버튼 정리
+    const existing = this.mcpStatusBar.querySelector('.superpower-inside-chat-mcp-refresh-btn');
+    if (existing) existing.remove();
 
     const refreshBtn = this.mcpStatusBar.createEl('button', {
       cls: 'superpower-inside-chat-mcp-refresh-btn',
-      text: t('mcpRefresh'),
+      text: t('mcpReconnect'),
     });
-    refreshBtn.addEventListener('click', () => void this.refreshMcpServers(refreshBtn));
-  }
 
-  private async refreshMcpServers(btn: HTMLButtonElement): Promise<void> {
-    if (btn.disabled) return;
-    const originalText = btn.textContent || '';
-    btn.setText(t('mcpRefreshing'));
-    btn.disabled = true;
-    try {
-      const errors = await this.plugin.reconnectMCP();
-      if (errors.length > 0) {
-        new Notice(`MCP 재연결 중 ${errors.length}개 서버 실패`, 5000);
-      } else {
-        new Notice('MCP 서버 재연결 완료');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`MCP 재연결 실패: ${msg}`, 5000);
-    } finally {
-      this.renderMcpStatusBar();
-      btn.setText(originalText);
-      btn.disabled = false;
-    }
+    this.mcpRefreshAction?.detach();
+    this.mcpRefreshAction = new RefreshAction({
+      action: async (_signal) => {
+        const errors = await this.plugin.reconnectMCP();
+        if (errors.length > 0) {
+          new Notice(t('chatMcpReconnectFailedNotice', { count: errors.length }), 5000);
+          return {
+            status: 'partial',
+            detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
+          };
+        }
+        this.plugin.refreshBus.emit('mcp', { status: 'success' });
+        new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
+        return { status: 'success' };
+      },
+      loadingText: t('mcpRefreshing'),
+      spinnerClass: 'spinning',
+      errorNotice: false,
+      successNotice: false,
+    });
+    this.mcpRefreshAction.attach(refreshBtn);
   }
 
   private buildInputArea(container: HTMLElement): void {
     const wrapper = container.createDiv({ cls: 'superpower-inside-chat-input-wrapper' });
+
+    this.readinessEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-readiness',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+
+    this.runControlEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-run-control',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+    setHidden(this.runControlEl, true);
+    const runStatus = this.runControlEl.createSpan({
+      cls: 'superpower-inside-chat-run-control-status',
+    });
+    const runStatusIcon = runStatus.createSpan({
+      cls: 'superpower-inside-chat-run-control-status-icon',
+    });
+    setIcon(runStatusIcon, 'sparkles');
+    runStatus.createSpan({ text: t('chatRunActive') });
+    this.stopAllBtn = this.runControlEl.createEl('button', {
+      cls: 'superpower-inside-chat-stop-all',
+      attr: { type: 'button' },
+    });
+    setIcon(this.stopAllBtn, 'square');
+    this.stopAllBtn.createSpan({ text: t('stopAllButton') });
+    this.stopAllBtn.addEventListener('click', () => this.stopStreaming());
 
     const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
 
@@ -338,30 +625,22 @@ export class ChatView extends ItemView {
     });
     this.populateModelSelect();
 
-    const modelRefreshBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-model-refresh-btn',
-      attr: { 'aria-label': t('refresh') },
-    });
-    modelRefreshBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="23 4 23 10 17 10"></polyline>
-      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-    </svg>`;
-    modelRefreshBtn.addEventListener('click', () => {
-      this.populateModelSelect();
-    });
-
     this.mcpBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',
-      text: t('toolbarTools'),
+      attr: { 'aria-label': t('toolbarTools') },
     });
+    setIcon(this.mcpBtn, 'wrench');
+    this.mcpBtn.createSpan({ text: t('toolbarTools') });
     this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
 
     const searchBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-toolbar-btn',
-      text: '검색',
-      attr: { 'aria-label': '메시지 검색' },
+      text: t('chatSearchButton'),
+      attr: { 'aria-label': t('chatMessageSearchAria') },
     });
-    searchBtn.addEventListener('click', () => this.focusMessageSearch());
+    searchBtn.addEventListener('click', () => {
+      void this.focusMessageSearch();
+    });
 
     this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
     this.renderContextPreview('');
@@ -369,7 +648,12 @@ export class ChatView extends ItemView {
     const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
     this.inputArea = inputRow.createEl('textarea', {
       cls: 'superpower-inside-chat-input',
-      attr: { placeholder: '메시지를 입력하세요...', rows: '2' },
+      attr: {
+        placeholder: t('chatInputPlaceholder'),
+        rows: '2',
+        'aria-label': t('chatInputPlaceholder'),
+        'aria-controls': this.mentionDropdownId,
+      },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
     this.inputArea.addEventListener('input', () => {
@@ -378,12 +662,13 @@ export class ChatView extends ItemView {
       this.renderContextPreview(this.inputArea?.value ?? '');
     });
     this.inputArea.addEventListener('blur', () => {
-      setTimeout(() => this.hideMentionDropdown(), 200);
+      window.setTimeout(() => this.hideMentionDropdown(), 200);
     });
 
     this.sendBtn = inputRow.createEl('button', {
       cls: 'superpower-inside-chat-send-btn',
       text: t('sendButton'),
+      attr: { type: 'button' },
     });
     this.sendBtn.addEventListener('click', () => {
       if (this.isStreaming) {
@@ -392,15 +677,19 @@ export class ChatView extends ItemView {
       }
       void this.handleSend();
     });
+
+    this.renderChatReadiness();
   }
 
-  private focusMessageSearch(): void {
-    const query = window.prompt('검색할 메시지 내용을 입력하세요.');
+  private async focusMessageSearch(): Promise<void> {
+    const query = await promptWithModal(this.app, t('chatMessageSearchPrompt'), {
+      confirmText: t('chatSearchButton'),
+    });
     if (!query) return;
     const lowered = query.toLowerCase();
     const match = this.messages.find((message) => message.content.toLowerCase().includes(lowered));
     if (!match) {
-      new Notice('검색 결과가 없습니다.');
+      new Notice(t('chatNoSearchResults'));
       return;
     }
     const el = this.messageEls.get(match.id);
@@ -414,18 +703,7 @@ export class ChatView extends ItemView {
     if (!this.contextPreviewEl) return;
     this.contextPreviewEl.empty();
     const mentions = text.trim() ? this.parseMentions(text) : [];
-    const chips = [
-      { label: '자동 RAG', cls: 'rag' },
-      ...mentions.map((mention) => ({
-        label:
-          mention.type === 'server'
-            ? `MCP ${mention.name}`
-            : mention.type === 'folder'
-              ? `폴더 ${mention.name}`
-              : `파일 ${mention.name}`,
-        cls: mention.type,
-      })),
-    ];
+    const chips = createContextPreviewChips(mentions);
     for (const chip of chips.slice(0, 8)) {
       this.contextPreviewEl.createSpan({
         cls: `superpower-inside-chat-context-chip ${chip.cls}`,
@@ -434,47 +712,63 @@ export class ChatView extends ItemView {
     }
   }
 
-  private stopStreaming(): void {
-    this.abortController?.abort();
-    this.abortController = null;
+  private invalidateActiveChatRun(restoreDraft: boolean): void {
+    const run = this.activeRun;
+    if (run) {
+      run.controller.abort();
+      if (isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        if (this.abortController === run.controller) {
+          this.abortController = null;
+        }
+      }
+    } else {
+      this.abortController?.abort();
+      this.abortController = null;
+    }
     this.isStreaming = false;
-    if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+    setHidden(this.typingIndicator, true);
+    if (restoreDraft) {
+      this.restoreSubmittedDraft();
+    } else {
+      this.pendingSubmittedDraft = null;
+      this.pendingRegeneration = null;
+    }
+    this.setLoading(false);
+  }
+
+  private stopStreaming(): void {
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
+    this.invalidateActiveChatRun(true);
     if (current) {
+      const cancelledToolCalls = current.toolCalls?.map((toolCall) =>
+        toolCall.status === 'running'
+          ? {
+              ...toolCall,
+              status: 'error' as const,
+              result: t('cancelledLabel'),
+              resultSummary: t('cancelledLabel'),
+            }
+          : { ...toolCall },
+      );
       this.updateMessage(
         current.id,
-        current.content || '응답 생성이 중단되었습니다.',
+        current.content || t('chatGenerationStopped'),
         true,
         current.reasoning,
-        current.toolCalls,
+        cancelledToolCalls,
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
-    this.setLoading(false);
   }
 
   private populateModelSelect(): void {
     if (!this.modelSelectEl) return;
     this.modelSelectEl.empty();
 
-    const allModels: { value: string; label: string }[] = [];
-    for (const key of CHAT_PROVIDER_KEYS) {
-      const conf = this.plugin.settings[key];
-      if (!conf.enabled) continue;
-      for (const model of conf.models) {
-        allModels.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
-      }
-    }
-    for (const provider of this.plugin.settings.customOpenAIProviders) {
-      if (!provider.enabled) continue;
-      const label = provider.name.trim() || 'Custom OpenAI-Compatible';
-      for (const model of provider.models) {
-        allModels.push({
-          value: `customOpenAI:${provider.id}:${model}`,
-          label: `${label} — ${model}`,
-        });
-      }
-    }
+    const allModels = buildChatModelOptions(this.plugin.settings, {
+      currentModel: this.plugin.settings.chat.defaultModel,
+    });
 
     if (allModels.length === 0) {
       const opt = this.modelSelectEl.createEl('option');
@@ -498,32 +792,164 @@ export class ChatView extends ItemView {
         ? defaultModel
         : allModels[0].value;
     this.modelSelectEl.disabled = false;
+    this.renderChatReadiness();
+  }
+
+  private renderChatReadiness(): void {
+    if (!this.readinessEl) return;
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: this.getEnabledProviderCount(),
+      availableModelCount: this.getAvailableModelCount(),
+      selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+      ragEnabled: Boolean(this.plugin.settings.rag.autoUpdateEnabled || this.plugin.vectorStore),
+      ragReady: Boolean(this.plugin.eventDrivenRagStats || this.plugin.vectorStore),
+      ragIndexing: this.plugin.isRagIndexing(),
+      configuredMcpServerCount: this.plugin.settings.mcpServers.length,
+      connectedMcpServerCount: this.plugin.mcpRegistry?.getConnectedCount() ?? 0,
+      saveFolderConfigured: Boolean(this.plugin.settings.chat.saveFolder.trim()),
+    });
+    this.readinessEl.empty();
+    this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
+    setHidden(this.readinessEl, snapshot.status === 'ready');
+    if (this.sendBtn && !this.isStreaming) {
+      this.sendBtn.disabled = snapshot.blocksSend;
+    }
+    if (snapshot.items.length !== 1) {
+      this.readinessEl.createSpan({
+        cls: 'superpower-inside-chat-readiness-primary',
+        text: snapshot.primaryText,
+      });
+    }
+    if (snapshot.items.length === 0) return;
+    const list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
+    for (const item of snapshot.items.slice(0, 3)) {
+      const row = list.createDiv({
+        cls: `superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity}`,
+      });
+      row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
+      row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
+      if (item.action) {
+        const action = row.createEl('button', {
+          cls: 'superpower-inside-chat-readiness-action',
+          text: this.getReadinessActionText(item),
+        });
+        action.addEventListener('click', () => this.handleReadinessAction(item));
+      }
+    }
+  }
+
+  private getReadinessActionText(item: ChatReadinessItem): string {
+    if (item.action === 'index-rag') return t('chatReadinessPrepareDocuments');
+    if (item.action === 'reconnect-mcp') return t('mcpReconnect');
+    if (item.action === 'select-model') return t('chatReadinessSelectModelAction');
+    if (item.action === 'configure-provider') return t('chatReadinessConfigureProviderAction');
+    return item.label;
+  }
+
+  private getEnabledProviderCount(): number {
+    if (this.plugin.settings.providerProfiles.length > 0) {
+      return this.plugin.settings.providerProfiles.filter((profile) => profile.enabled).length;
+    }
+    const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
+    const custom = this.plugin.settings.customOpenAIProviders.filter(
+      (provider) => provider.enabled,
+    ).length;
+    return builtIn + custom;
+  }
+
+  private getAvailableModelCount(): number {
+    if (this.plugin.settings.providerProfiles.length > 0) {
+      return this.plugin.settings.providerProfiles.reduce(
+        (count, profile) =>
+          profile.enabled
+            ? count + profile.models.filter((model) => model.kind === 'general').length
+            : count,
+        0,
+      );
+    }
+    const builtIn = CHAT_PROVIDER_KEYS.reduce(
+      (count, key) =>
+        this.plugin.settings[key].enabled ? count + this.plugin.settings[key].models.length : count,
+      0,
+    );
+    const custom = this.plugin.settings.customOpenAIProviders.reduce(
+      (count, provider) => (provider.enabled ? count + provider.models.length : count),
+      0,
+    );
+    return builtIn + custom;
+  }
+
+  private handleReadinessAction(item: ChatReadinessItem): void {
+    if (item.action === 'reconnect-mcp') {
+      void this.plugin.reconnectMCP().then(() => this.renderMcpStatusBar());
+      return;
+    }
+    if (item.action === 'index-rag') {
+      void this.plugin
+        .prepareRagForChat()
+        .then((initialized) => {
+          if (!initialized) {
+            new Notice(t('ragIndexerNotInitializedBase'), 5000);
+          }
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          new Notice(t('indexingFailedWithMessage', { message: msg }), 10000);
+        })
+        .finally(() => {
+          this.renderChatReadiness();
+        });
+      return;
+    }
+    if (item.action === 'select-model') {
+      this.modelSelectEl?.focus();
+      return;
+    }
+    new Notice(item.detail, 5000);
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
-    if (this.mentionDropdown && this.mentionDropdown.style.display !== 'none') {
-      if (e.key === 'ArrowDown') {
+    const mentionOpen = Boolean(
+      this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS),
+    );
+    const action = resolveComposerKeyAction({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+      mentionOpen,
+      isStreaming: this.isStreaming,
+    });
+
+    if (mentionOpen) {
+      if (action === 'select-next') {
         e.preventDefault();
         this.selectMentionItem(this.mentionSelectedIndex + 1);
         return;
       }
-      if (e.key === 'ArrowUp') {
+      if (action === 'select-previous') {
         e.preventDefault();
         this.selectMentionItem(this.mentionSelectedIndex - 1);
         return;
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
+      if (action === 'confirm-mention') {
         e.preventDefault();
         this.confirmMentionSelection();
         return;
       }
-      if (e.key === 'Escape') {
+      if (action === 'close-dropdown') {
+        e.preventDefault();
         this.hideMentionDropdown();
         return;
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (action === 'cancel') {
+      e.preventDefault();
+      this.stopStreaming();
+      return;
+    }
+    if (action === 'send' || action === 'force-send') {
       e.preventDefault();
       void this.handleSend();
     }
@@ -613,15 +1039,18 @@ export class ChatView extends ItemView {
 
   private showMentionDropdown(): void {
     if (!this.inputArea || !this.container || this.mentionItems.length === 0) {
-      if (this.mentionDropdown) this.mentionDropdown.style.display = 'none';
+      setHidden(this.mentionDropdown, true);
       return;
     }
 
     if (!this.mentionDropdown) {
-      this.mentionDropdown = this.container.createDiv({ cls: 'superpower-inside-mention-dropdown' });
+      this.mentionDropdown = this.container.createDiv({
+        cls: 'superpower-inside-mention-dropdown',
+        attr: { id: this.mentionDropdownId, role: 'listbox' },
+      });
     }
     this.mentionDropdown.empty();
-    this.mentionDropdown.style.display = 'block';
+    setHidden(this.mentionDropdown, false);
 
     const serverItems = this.mentionItems.filter((i) => i.type === 'server');
     const fileItems = this.mentionItems.filter((i) => i.type === 'file');
@@ -635,6 +1064,8 @@ export class ChatView extends ItemView {
       });
       for (const item of serverItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '🔌' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -649,6 +1080,8 @@ export class ChatView extends ItemView {
       });
       for (const item of folderItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon folder', text: '📁' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -663,6 +1096,8 @@ export class ChatView extends ItemView {
       });
       for (const item of fileItems) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-selected', 'false');
         el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '📄' });
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
         el.addEventListener('click', () => this.insertMention(item));
@@ -680,17 +1115,17 @@ export class ChatView extends ItemView {
     const spaceBelow = containerRect.height - (inputRect.bottom - containerRect.top);
     const spaceAbove = inputRect.top - containerRect.top;
 
-    this.mentionDropdown.style.position = 'absolute';
-    this.mentionDropdown.style.left = '12px';
-    this.mentionDropdown.style.right = '12px';
-
     if (spaceBelow < 200 && spaceAbove > 200) {
-      this.mentionDropdown.style.bottom = `${containerRect.height - (inputRect.top - containerRect.top) + 4}px`;
-      this.mentionDropdown.style.top = 'auto';
+      this.mentionDropdown.setCssProps({
+        [MENTION_BOTTOM_VAR]: `${containerRect.height - (inputRect.top - containerRect.top) + 4}px`,
+        [MENTION_TOP_VAR]: 'auto',
+      });
       this.mentionDropdown.addClass('above');
     } else {
-      this.mentionDropdown.style.top = `${inputRect.bottom - containerRect.top + 4}px`;
-      this.mentionDropdown.style.bottom = 'auto';
+      this.mentionDropdown.setCssProps({
+        [MENTION_TOP_VAR]: `${inputRect.bottom - containerRect.top + 4}px`,
+        [MENTION_BOTTOM_VAR]: 'auto',
+      });
       this.mentionDropdown.removeClass('above');
     }
   }
@@ -707,6 +1142,9 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = targetIndex;
     for (let i = 0; i < items.length; i++) {
       items[i].toggleClass('selected', i === targetIndex);
+      if (isDomInstance(items[i], HTMLElement)) {
+        items[i].setAttribute('aria-selected', i === targetIndex ? 'true' : 'false');
+      }
     }
   }
 
@@ -739,22 +1177,24 @@ export class ChatView extends ItemView {
 
   private hideMentionDropdown(): void {
     if (this.mentionDropdown) {
-      this.mentionDropdown.style.display = 'none';
+      setHidden(this.mentionDropdown, true);
     }
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
     this.mentionStartIndex = -1;
   }
 
-  private markdownRenderTimer: ReturnType<typeof setTimeout> | null = null;
+  private markdownRenderTimer: number | null = null;
   private static readonly MARKDOWN_RENDER_INTERVAL = 300;
   private pendingMarkdownEl: HTMLElement | null = null;
   private pendingMarkdownContent: string = '';
 
   private autoResizeInput(): void {
     if (!this.inputArea) return;
-    this.inputArea.style.height = 'auto';
-    this.inputArea.style.height = `${Math.min(this.inputArea.scrollHeight, 200)}px`;
+    this.inputArea.setCssProps({ [CHAT_INPUT_HEIGHT_VAR]: 'auto' });
+    this.inputArea.setCssProps({
+      [CHAT_INPUT_HEIGHT_VAR]: `${Math.min(this.inputArea.scrollHeight, 200)}px`,
+    });
   }
 
   private handleScroll(): void {
@@ -763,7 +1203,7 @@ export class ChatView extends ItemView {
     const nearBottom = scrollHeight - scrollTop - clientHeight < 60;
     this.autoScroll = nearBottom;
     if (this.scrollBtn) {
-      this.scrollBtn.style.display = nearBottom ? 'none' : 'flex';
+      setHidden(this.scrollBtn, nearBottom);
     }
   }
 
@@ -771,7 +1211,7 @@ export class ChatView extends ItemView {
     if (!this.messagesArea) return;
     this.messagesArea.scrollTo({ top: this.messagesArea.scrollHeight, behavior: 'auto' });
     this.autoScroll = true;
-    if (this.scrollBtn) this.scrollBtn.style.display = 'none';
+    setHidden(this.scrollBtn, true);
   }
 
   addMessage(
@@ -794,6 +1234,9 @@ export class ChatView extends ItemView {
       providerKey: metaInput?.providerKey,
       providerLabel: metaInput?.providerLabel,
       model: metaInput?.model,
+      providerCapability: metaInput?.providerCapability,
+      turnStage: metaInput?.turnStage,
+      toolRound: metaInput?.toolRound,
       status:
         metaInput?.status ??
         (role === 'assistant' && this.isStreaming
@@ -805,11 +1248,22 @@ export class ChatView extends ItemView {
       reasoning,
       toolCalls,
       citations: metaInput?.citations,
+      sourceWarnings: metaInput?.sourceWarnings,
       contextAttachments: metaInput?.contextAttachments,
+      assistantQuestion: metaInput?.assistantQuestion,
       branchOf: metaInput?.branchOf,
+      branchRoot: metaInput?.branchRoot,
+      variantOf: metaInput?.variantOf,
       stopReason: metaInput?.stopReason,
+      contextBudgetSnapshot: metaInput?.contextBudgetSnapshot,
+      dataBoundarySnapshot: metaInput?.dataBoundarySnapshot,
+      errorKind: metaInput?.errorKind,
+      errorRetryAt: metaInput?.errorRetryAt,
+      actionHistory: metaInput?.actionHistory,
     };
     this.messages.push(msg);
+    this.emptyStateEl?.remove();
+    this.emptyStateEl = null;
     this.markDirtyAndAutoSave();
 
     const wrapper = this.messagesArea!.createDiv({
@@ -827,7 +1281,15 @@ export class ChatView extends ItemView {
     this.renderMessageMeta(meta, msg);
 
     if (role === 'assistant') {
-      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls);
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        msg.citations,
+        msg.sourceWarnings,
+        msg.assistantQuestion,
+      );
     } else if (role === 'tool') {
       const bubble = bubbleContainer.createDiv({
         cls: 'superpower-inside-chat-bubble tool',
@@ -839,7 +1301,7 @@ export class ChatView extends ItemView {
       });
       void this.renderMarkdownBubble(bubble, content);
     }
-    this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.renderMessageContextSections(bubbleContainer, msg);
     this.renderMessageActions(bubbleContainer, msg);
 
     if (this.autoScroll) {
@@ -863,16 +1325,33 @@ export class ChatView extends ItemView {
     if (message) {
       message.content = content;
       message.reasoning = reasoning;
+      if (metaInput?.originalContent !== undefined) {
+        message.originalContent = metaInput.originalContent;
+      }
       message.updatedAt = new Date().toISOString();
       message.providerKey = metaInput?.providerKey ?? message.providerKey;
       message.providerLabel = metaInput?.providerLabel ?? message.providerLabel;
       message.model = metaInput?.model ?? message.model;
+      message.providerCapability = metaInput?.providerCapability ?? message.providerCapability;
+      message.turnStage = metaInput?.turnStage ?? message.turnStage;
+      message.toolRound = metaInput?.toolRound ?? message.toolRound;
       message.status = metaInput?.status ?? (isDone ? 'complete' : 'streaming');
       message.errorMessage = metaInput?.errorMessage;
       message.citations = metaInput?.citations ?? message.citations;
+      message.sourceWarnings = metaInput?.sourceWarnings ?? message.sourceWarnings;
       message.contextAttachments = metaInput?.contextAttachments ?? message.contextAttachments;
+      message.assistantQuestion = metaInput?.assistantQuestion;
       message.branchOf = metaInput?.branchOf ?? message.branchOf;
+      message.branchRoot = metaInput?.branchRoot ?? message.branchRoot;
+      message.variantOf = metaInput?.variantOf ?? message.variantOf;
       message.stopReason = metaInput?.stopReason ?? (isDone ? 'complete' : message.stopReason);
+      message.contextBudgetSnapshot =
+        metaInput?.contextBudgetSnapshot ?? message.contextBudgetSnapshot;
+      message.dataBoundarySnapshot =
+        metaInput?.dataBoundarySnapshot ?? message.dataBoundarySnapshot;
+      message.errorKind = metaInput?.errorKind ?? message.errorKind;
+      message.errorRetryAt = metaInput?.errorRetryAt ?? message.errorRetryAt;
+      message.actionHistory = metaInput?.actionHistory ?? message.actionHistory;
       if (toolCalls) {
         message.toolCalls = toolCalls.map((toolCall) => ({ ...toolCall }));
       }
@@ -891,7 +1370,16 @@ export class ChatView extends ItemView {
         reasoning,
         toolCalls,
         message?.citations,
+        message?.sourceWarnings,
+        message?.assistantQuestion,
       );
+      if (message) {
+        const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
+        if (isDomInstance(bubbleContainer, HTMLElement)) {
+          this.renderMessageContextSections(bubbleContainer, message);
+          if (isDone) this.renderMessageActions(bubbleContainer, message);
+        }
+      }
       if (this.autoScroll) {
         this.scrollToBottom();
       }
@@ -900,18 +1388,25 @@ export class ChatView extends ItemView {
 
     if (isTool) {
       const bubble = wrapper.querySelector('.superpower-inside-chat-bubble.tool');
-      if (bubble instanceof HTMLElement) {
+      if (isDomInstance(bubble, HTMLElement)) {
         const status = isDone ? 'success' : 'running';
         this.renderToolBubble(bubble, content, status);
       }
     } else {
       const bubble = wrapper.querySelector('.superpower-inside-chat-bubble');
-      if (bubble instanceof HTMLElement) {
+      if (isDomInstance(bubble, HTMLElement)) {
         if (!isDone) {
-          bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+          renderPlainTextWithBreaks(bubble, content);
         } else {
           void this.renderMarkdownBubble(bubble, content);
         }
+      }
+    }
+
+    if (message) {
+      const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
+      if (isDomInstance(bubbleContainer, HTMLElement)) {
+        this.renderMessageContextSections(bubbleContainer, message);
       }
     }
 
@@ -926,21 +1421,27 @@ export class ChatView extends ItemView {
     reasoning?: string,
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
+    sourceWarnings?: SourceValidationWarning[],
+    assistantQuestion?: AssistantQuestion,
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
 
     const thinking = bubbleContainer.createEl('details', {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
-    thinking.style.display = reasoning || shouldShowStreamingPlaceholders ? '' : 'none';
-    if (shouldShowStreamingPlaceholders || (reasoning && reasoning.length > 0)) {
+    setHidden(thinking, !(reasoning || shouldShowStreamingPlaceholders));
+    if (shouldShowStreamingPlaceholders) {
       thinking.open = true;
     }
     thinking.addEventListener('toggle', () => {
       if (this.autoScroll) this.scrollToBottom();
     });
     const thinkingSummary = thinking.createEl('summary');
-    thinkingSummary.setText(`💭 ${t('reasoningLabel')}`);
+    const thinkingIcon = thinkingSummary.createSpan({
+      cls: 'superpower-inside-chat-layer-icon',
+    });
+    setIcon(thinkingIcon, 'brain');
+    thinkingSummary.createSpan({ text: t('reasoningLabel') });
     const thinkingContent = thinking.createDiv({
       cls: 'superpower-inside-chat-thinking-content superpower-inside-chat-reasoning-content',
     });
@@ -950,27 +1451,30 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-tool-calls',
     });
     const hasToolCalls = toolCalls && toolCalls.length > 0;
-    toolCallsSection.style.display = hasToolCalls || shouldShowStreamingPlaceholders ? '' : 'none';
-    this.renderToolCallsSection(
-      toolCallsSection,
-      toolCalls ?? [],
-      shouldShowStreamingPlaceholders && !hasToolCalls,
-    );
+    setHidden(toolCallsSection, !hasToolCalls);
+    this.toolCallPanel.renderToolCallsSection(toolCallsSection, toolCalls ?? [], false);
 
     const answerLayer = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-answer' });
-    answerLayer.createDiv({
+    const answerLabel = answerLayer.createDiv({
       cls: 'superpower-inside-chat-answer-label',
-      text: `💬 ${t('answerLabel')}`,
     });
+    const answerIcon = answerLabel.createSpan({ cls: 'superpower-inside-chat-layer-icon' });
+    setIcon(answerIcon, 'message-square-text');
+    answerLabel.createSpan({ text: t('answerLabel') });
     const bubble = answerLayer.createDiv({
       cls: 'superpower-inside-chat-bubble assistant',
     });
-    if (content.trim()) {
-      void this.renderMarkdownBubble(bubble, content);
+    if (assistantQuestion) {
+      this.renderAssistantQuestionCard(bubble, assistantQuestion);
+    } else if (content.trim()) {
+      void this.renderMarkdownBubble(bubble, content).then(() =>
+        this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, citations ?? []),
+      );
     } else {
       bubble.setText(content);
     }
-    this.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
   }
 
   private updateAssistantLayers(
@@ -980,28 +1484,38 @@ export class ChatView extends ItemView {
     reasoning?: string,
     toolCalls?: ToolCallRecord[],
     citations?: SourceCitation[],
+    sourceWarnings?: SourceValidationWarning[],
+    assistantQuestion?: AssistantQuestion,
   ): void {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
-    if (!(bubbleContainer instanceof HTMLElement)) return;
+    if (!isDomInstance(bubbleContainer, HTMLElement)) return;
 
     let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
-    if (!(thinking instanceof HTMLDetailsElement)) {
-      this.createAssistantLayers(bubbleContainer, content, reasoning, toolCalls, citations);
+    if (!isDomInstance(thinking, HTMLDetailsElement)) {
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        citations,
+        sourceWarnings,
+        assistantQuestion,
+      );
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
 
-    if (thinking instanceof HTMLDetailsElement) {
+    if (isDomInstance(thinking, HTMLDetailsElement)) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
-      thinking.style.display = hasReasoning || !isDone ? '' : 'none';
+      setHidden(thinking, !(hasReasoning || !isDone));
       const thinkingContent = thinking.querySelector('.superpower-inside-chat-thinking-content');
-      if (thinkingContent instanceof HTMLElement) {
+      if (isDomInstance(thinkingContent, HTMLElement)) {
         if (!isDone) {
           const text = hasReasoning ? reasoning : t('thinkingPlaceholder');
-          thinkingContent.innerHTML = escapeHtml(text ?? '').replace(/\n/g, '<br>');
+          renderPlainTextWithBreaks(thinkingContent, text ?? '');
           thinking.open = true;
         } else if (hasReasoning) {
           void this.renderMarkdownBubble(thinkingContent, reasoning ?? '');
-          thinking.open = true;
+          thinking.open = false;
         } else {
           thinkingContent.setText('');
           thinking.open = false;
@@ -1012,14 +1526,14 @@ export class ChatView extends ItemView {
     }
 
     const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
-    if (toolCallsSection instanceof HTMLElement) {
+    if (isDomInstance(toolCallsSection, HTMLElement)) {
       const calls = toolCalls ?? [];
-      toolCallsSection.style.display = calls.length > 0 || !isDone ? '' : 'none';
-      this.renderToolCallsSection(toolCallsSection, calls, !isDone);
+      setHidden(toolCallsSection, calls.length === 0);
+      this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, false);
     }
 
     const bubble = bubbleContainer.querySelector('.superpower-inside-chat-bubble.assistant');
-    if (bubble instanceof HTMLElement) {
+    if (isDomInstance(bubble, HTMLElement)) {
       const meta = bubbleContainer.querySelector('.superpower-inside-chat-meta');
       const generatingLabel = meta?.querySelector('.superpower-inside-chat-generating-label');
       if (!isDone) {
@@ -1031,47 +1545,144 @@ export class ChatView extends ItemView {
             ?.textContent?.trim() &&
           !(toolCalls && toolCalls.length > 0)
         ) {
-          const label = document.createElement('span');
+          const label = bubbleContainer.ownerDocument.createElement('span');
           label.className = 'superpower-inside-chat-generating-label';
-          label.textContent = '응답 생성 중...';
-          if (meta instanceof HTMLElement) {
+          label.textContent = t('chatGeneratingResponse');
+          if (isDomInstance(meta, HTMLElement)) {
             meta.appendChild(label);
           }
         }
         this.scheduleStreamingMarkdownRender(bubble, content);
       } else {
         this.cancelStreamingMarkdownRender();
-        void this.renderMarkdownBubble(bubble, content);
-        if (generatingLabel instanceof HTMLElement) {
+        if (assistantQuestion) {
+          this.renderAssistantQuestionCard(bubble, assistantQuestion);
+        } else {
+          void this.renderMarkdownBubble(bubble, content).then(() =>
+            this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, citations ?? []),
+          );
+        }
+        if (isDomInstance(generatingLabel, HTMLElement)) {
           generatingLabel.remove();
         }
         wrapper.classList.remove('generating');
       }
     }
-    this.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
+    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+  }
+
+  private renderAssistantQuestionCard(container: HTMLElement, question: AssistantQuestion): void {
+    container.empty();
+    container.addClass('superpower-inside-chat-question-card');
+    const prompt = container.createDiv({
+      cls: 'superpower-inside-chat-question-prompt',
+      text: question.prompt,
+    });
+    prompt.setAttribute(
+      'title',
+      question.source === 'reasoning-leak'
+        ? t('assistantQuestionReasoningTitle')
+        : t('assistantQuestionSelectionTitle'),
+    );
+
+    const selected = new Set<string>();
+    const choiceControls: HTMLInputElement[] = [];
+
+    if (question.choices.length > 0) {
+      const choices = container.createDiv({ cls: 'superpower-inside-chat-question-choices' });
+      for (const choice of question.choices) {
+        const label = choices.createEl('label', {
+          cls: 'superpower-inside-chat-question-choice',
+        });
+        const input = label.createEl('input');
+        input.type = question.selectionMode === 'multiple' ? 'checkbox' : 'radio';
+        input.name = `assistant-question-${question.prompt}`;
+        input.value = choice.id;
+        choiceControls.push(input);
+        label.createSpan({ text: choice.label });
+        input.addEventListener('change', () => {
+          if (question.selectionMode === 'single') selected.clear();
+          if (input.checked) {
+            selected.add(choice.id);
+          } else {
+            selected.delete(choice.id);
+          }
+        });
+      }
+    }
+
+    let freeTextInput: HTMLTextAreaElement | null = null;
+    if (question.allowFreeText) {
+      freeTextInput = container.createEl('textarea', {
+        cls: 'superpower-inside-chat-question-free-text',
+        attr: { placeholder: t('assistantQuestionFreeTextPlaceholder') },
+      });
+    }
+
+    const submit = container.createEl('button', {
+      cls: 'superpower-inside-chat-question-submit',
+      text:
+        question.selectionMode === 'multiple'
+          ? t('assistantQuestionCompleteSelection')
+          : t('assistantQuestionSendAnswer'),
+    });
+    submit.addEventListener('click', () => {
+      const selectedLabels = question.choices
+        .filter((choice) => selected.has(choice.id))
+        .map((choice) => choice.label);
+      const freeText = freeTextInput?.value.trim() ?? '';
+      if (selectedLabels.length === 0 && !freeText) {
+        new Notice(t('assistantQuestionRequiredNotice'));
+        return;
+      }
+      const answer = formatAssistantQuestionAnswer(question, selectedLabels, freeText);
+      if (!answer) {
+        new Notice(t('assistantQuestionRequiredNotice'));
+        return;
+      }
+      if (this.inputArea) {
+        this.inputArea.value = answer;
+        this.autoResizeInput();
+      }
+      for (const control of choiceControls) {
+        control.disabled = true;
+      }
+      if (freeTextInput) freeTextInput.disabled = true;
+      submit.disabled = true;
+      void this.handleSend();
+    });
   }
 
   private scheduleStreamingMarkdownRender(bubble: HTMLElement, content: string): void {
-    bubble.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+    const plan = createStreamingRenderPlan({
+      content,
+      isFinal: false,
+      now: Date.now(),
+      lastMarkdownAt: this.lastStreamingMarkdownAt,
+      minIntervalMs: ChatView.MARKDOWN_RENDER_INTERVAL,
+    });
+    renderPlainTextWithBreaks(bubble, content);
 
-    const existingCursor = bubble.querySelector('.superpower-inside-chat-streaming-cursor');
+    const existingCursor = bubble.querySelector(`.${STREAMING_CURSOR_CLASS}`);
     if (!existingCursor) {
-      const cursor = bubble.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
+      const cursor = bubble.createSpan({ cls: plan.cursorClassName });
       bubble.appendChild(cursor);
     }
 
     this.pendingMarkdownEl = bubble;
     this.pendingMarkdownContent = content;
 
-    if (!this.markdownRenderTimer) {
-      this.markdownRenderTimer = setTimeout(() => {
+    if (plan.renderMarkdown && !this.markdownRenderTimer) {
+      this.markdownRenderTimer = window.setTimeout(() => {
         this.markdownRenderTimer = null;
         if (this.pendingMarkdownEl && this.pendingMarkdownEl.isConnected) {
           const el = this.pendingMarkdownEl;
           const txt = this.pendingMarkdownContent;
           if (txt.trim()) {
             void this.renderMarkdownBubble(el, txt);
-            const cursor = el.createSpan({ cls: 'superpower-inside-chat-streaming-cursor' });
+            this.lastStreamingMarkdownAt = Date.now();
+            const cursor = el.createSpan({ cls: STREAMING_CURSOR_CLASS });
             el.appendChild(cursor);
           }
         }
@@ -1081,277 +1692,85 @@ export class ChatView extends ItemView {
 
   private cancelStreamingMarkdownRender(): void {
     if (this.markdownRenderTimer) {
-      clearTimeout(this.markdownRenderTimer);
+      window.clearTimeout(this.markdownRenderTimer);
       this.markdownRenderTimer = null;
     }
     this.pendingMarkdownEl = null;
     this.pendingMarkdownContent = '';
-  }
-
-  private renderToolCallsSection(
-    section: HTMLElement,
-    toolCalls: ToolCallRecord[],
-    showPlaceholder: boolean,
-  ): void {
-    const existingLabel = section.querySelector('.superpower-inside-chat-tool-calls-label');
-    if (!existingLabel) {
-      section.createDiv({
-        cls: 'superpower-inside-chat-tool-calls-label',
-        text: `🔧 ${t('toolCallLabel')}`,
-      });
-    }
-
-    if (toolCalls.length === 0 && showPlaceholder) {
-      const existingPlaceholder = section.querySelector('.superpower-inside-tool-call.placeholder');
-      if (!existingPlaceholder) {
-        const row = section.createDiv({ cls: 'superpower-inside-tool-call placeholder' });
-        row.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
-        row.createSpan({ cls: 'superpower-inside-tool-call-name', text: t('mcpToolRunning') });
-        const statusBadge = row.createSpan({ cls: 'superpower-inside-tool-call-status running' });
-        this.renderRunningDots(statusBadge);
-      }
-      return;
-    }
-
-    section.querySelectorAll('.superpower-inside-tool-call.placeholder').forEach((el) => el.remove());
-
-    for (const toolCall of toolCalls) {
-      const rowId = `tool-call-${toolCall.id || toolCall.name}`;
-      let callRow = Array.from(section.querySelectorAll('.superpower-inside-tool-call')).find(
-        (el): el is HTMLElement =>
-          el instanceof HTMLElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-
-      if (!callRow) {
-        callRow = section.createDiv({ cls: 'superpower-inside-tool-call' });
-        callRow.setAttribute('data-tool-call-id', rowId);
-        callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
-        callRow.createSpan({
-          cls: 'superpower-inside-tool-call-name',
-          text: toolCall.name || t('toolCallLabel'),
-        });
-        const statusBadge = callRow.createSpan({
-          cls: `superpower-inside-tool-call-status ${toolCall.status}`,
-        });
-        this.renderToolCallStatus(statusBadge, toolCall.status);
-      } else {
-        const statusBadge = callRow.querySelector('.superpower-inside-tool-call-status');
-        if (statusBadge instanceof HTMLElement) {
-          statusBadge.className = `superpower-inside-tool-call-status ${toolCall.status}`;
-          this.renderToolCallStatus(statusBadge, toolCall.status);
-        }
-      }
-
-      const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');
-      if (
-        staleApproveBtn instanceof HTMLElement &&
-        (toolCall.status !== 'running' || toolCall.approved !== false)
-      ) {
-        staleApproveBtn.remove();
-      }
-      if (
-        toolCall.status === 'running' &&
-        toolCall.approved === false &&
-        !callRow.querySelector('.superpower-inside-tool-call-approve')
-      ) {
-        const approveBtn = callRow.createEl('button', {
-          cls: 'superpower-inside-tool-call-approve',
-          text: '실행 승인',
-        });
-        approveBtn.addEventListener('click', () => {
-          const messageId = section
-            .closest('.superpower-inside-chat-bubble-container')
-            ?.getAttribute('data-message-id');
-          if (messageId) void this.approveToolCall(messageId, toolCall.id || toolCall.name);
-        });
-      }
-
-      const existingArgs = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-arguments'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-      const existingResult = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-result-details'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          el instanceof HTMLDetailsElement && el.getAttribute('data-tool-call-id') === rowId,
-      );
-      const argsOpen = existingArgs?.open ?? false;
-      const resultOpen = existingResult?.open ?? false;
-      existingArgs?.remove();
-      existingResult?.remove();
-
-      const argumentPreview = toolCall.arguments.trim();
-      if (argumentPreview) {
-        const args = section.createEl('details', { cls: 'superpower-inside-tool-arguments' });
-        args.setAttribute('data-tool-call-id', rowId);
-        args.open = argsOpen;
-        args.createEl('summary', { text: t('toolArgs') });
-        args.createEl('pre', { text: argumentPreview });
-      }
-
-      if (toolCall.result) {
-        const resultDetails = section.createEl('details', {
-          cls: 'superpower-inside-tool-result-details',
-        });
-        resultDetails.setAttribute('data-tool-call-id', rowId);
-        resultDetails.open = resultOpen;
-        resultDetails.createEl('summary', { text: t('toolResult') });
-        const resultArea = resultDetails.createDiv({ cls: 'superpower-inside-tool-result' });
-        void this.renderMarkdownBubble(resultArea, toolCall.result);
-      }
-    }
-
-    const currentIds = new Set(
-      toolCalls.map((toolCall) => `tool-call-${toolCall.id || toolCall.name}`),
-    );
-    section.querySelectorAll('.superpower-inside-tool-call:not(.placeholder)').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-arguments').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-result-details').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-  }
-
-  private renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
-    let section = container.querySelector('.superpower-inside-chat-citations');
-    if (citations.length === 0) {
-      section?.remove();
-      return;
-    }
-    if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-citations' });
-    }
-    section.empty();
-    section.createDiv({
-      cls: 'superpower-inside-chat-citations-label',
-      text: `출처 ${citations.length}개`,
-    });
-
-    for (const citation of citations) {
-      const card = section.createDiv({ cls: 'superpower-inside-chat-citation-card' });
-      const title = card.createDiv({ cls: 'superpower-inside-chat-citation-title' });
-      title.createSpan({ text: citation.filePath });
-      if (citation.heading) {
-        title.createSpan({
-          cls: 'superpower-inside-chat-citation-heading',
-          text: ` # ${citation.heading}`,
-        });
-      }
-      const metaParts = [
-        citation.line !== undefined ? `line ${citation.line}` : '',
-        citation.score !== undefined ? `score ${citation.score.toFixed(3)}` : '',
-      ].filter(Boolean);
-      if (metaParts.length > 0) {
-        card.createDiv({ cls: 'superpower-inside-chat-citation-meta', text: metaParts.join(' · ') });
-      }
-      card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: citation.preview });
-      const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
-      const openBtn = actions.createEl('button', { text: '열기' });
-      openBtn.addEventListener('click', () => void this.openCitation(citation));
-      const copyBtn = actions.createEl('button', { text: '링크 복사' });
-      copyBtn.addEventListener('click', () => void this.copyCitationLink(citation, copyBtn));
-      const insertBtn = actions.createEl('button', { text: '노트에 삽입' });
-      insertBtn.addEventListener('click', () => void this.insertCitationIntoActiveNote(citation));
-    }
-  }
-
-  private renderContextAttachmentsSection(
-    container: HTMLElement,
-    attachments: ContextAttachment[],
-  ): void {
-    let section = container.querySelector('.superpower-inside-chat-context-attachments');
-    if (attachments.length === 0) {
-      section?.remove();
-      return;
-    }
-    if (!(section instanceof HTMLElement)) {
-      section = container.createDiv({ cls: 'superpower-inside-chat-context-attachments' });
-    }
-    section.empty();
-    for (const attachment of attachments) {
-      const chip = section.createSpan({
-        cls: `superpower-inside-chat-context-chip ${attachment.type} ${attachment.status}`,
-        text: attachment.label,
-      });
-      if (attachment.detail) {
-        chip.setAttribute('title', attachment.detail);
-      }
-    }
+    this.lastStreamingMarkdownAt = 0;
   }
 
   private async openCitation(citation: SourceCitation): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(citation.filePath);
     if (!(file instanceof TFile)) {
-      new Notice(`파일을 찾을 수 없습니다: ${citation.filePath}`);
+      new Notice(t('sourceFileNotFound', { path: citation.filePath }));
       return;
     }
-    await this.app.workspace.getLeaf(false).openFile(file);
+    try {
+      await this.app.workspace.getLeaf(false).openFile(file);
+      new Notice(t('sourceOpenedNotice', { path: citation.filePath }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceOpenFailedNotice', { message }), 5000);
+    }
   }
 
   private async copyCitationLink(
     citation: SourceCitation,
     button: HTMLButtonElement,
   ): Promise<void> {
+    if (citation.status && citation.status !== 'verified') {
+      new Notice(
+        t('sourceUnverifiedCandidate', { detail: citation.detail ?? citation.status ?? '' }),
+      );
+    }
     const heading = citation.heading ? `#${citation.heading}` : '';
-    await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
-    button.setText(t('copied'));
-    window.setTimeout(() => button.setText('링크 복사'), 1500);
+    try {
+      await navigator.clipboard.writeText(`[[${citation.filePath}${heading}]]`);
+      button.setText(t('copied'));
+      window.setTimeout(() => button.setText(t('sourceCopyLinkAction')), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceCopyLinkFailedNotice', { message }), 5000);
+    }
   }
 
   private async insertCitationIntoActiveNote(citation: SourceCitation): Promise<void> {
+    if (citation.status && citation.status !== 'verified') {
+      new Notice(
+        t('sourceUnverifiedCandidate', { detail: citation.detail ?? citation.status ?? '' }),
+      );
+      return;
+    }
     const active = this.app.workspace.getActiveFile();
     if (!active) {
-      new Notice('활성 노트가 없습니다.');
+      new Notice(t('activeNoteMissingNotice'));
       return;
     }
     const link = citation.heading
       ? `[[${citation.filePath}#${citation.heading}]]`
       : `[[${citation.filePath}]]`;
-    await this.app.vault.append(active, `\n> 출처: ${link}\n> ${citation.preview}\n`);
-    new Notice('활성 노트에 출처를 삽입했습니다.');
-  }
-
-  private renderToolCallStatus(statusBadge: HTMLElement, status: ToolCallRecord['status']): void {
-    if (status === 'running') {
-      this.renderRunningDots(statusBadge);
-    } else if (status === 'success') {
-      statusBadge.setText('✓');
-    } else {
-      statusBadge.setText('✗');
+    try {
+      await this.app.vault.append(
+        active,
+        t('sourceInsertBlock', { link, preview: citation.preview }),
+      );
+      new Notice(t('sourceInsertedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('sourceInsertFailedNotice', { message }), 5000);
     }
   }
 
-  private renderRunningDots(container: HTMLElement): void {
-    container.empty();
-    const dots = container.createSpan({ cls: 'superpower-inside-tool-running-dots' });
-    dots.createSpan({});
-    dots.createSpan({});
-    dots.createSpan({});
-  }
-
   private async renderMarkdownBubble(bubble: HTMLElement, content: string): Promise<void> {
-    await renderMarkdownToElement(bubble, content, '', this);
+    await renderMarkdownToElement(this.app, bubble, content, '', this);
     enhanceCodeBlocks(bubble);
     this.stylizeMentions(bubble);
   }
 
   private stylizeMentions(container: HTMLElement): void {
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const doc = container.ownerDocument;
+    const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) {
@@ -1368,16 +1787,16 @@ export class ChatView extends ItemView {
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text)) !== null) {
         if (match.index > lastIndex) {
-          fragments.push(document.createTextNode(text.slice(lastIndex, match.index)));
+          fragments.push(doc.createTextNode(text.slice(lastIndex, match.index)));
         }
-        const span = document.createElement('span');
+        const span = doc.createElement('span');
         span.addClass('superpower-inside-mention-inline');
         span.setText(match[1]);
         fragments.push(span);
         lastIndex = regex.lastIndex;
       }
       if (lastIndex < text.length) {
-        fragments.push(document.createTextNode(text.slice(lastIndex)));
+        fragments.push(doc.createTextNode(text.slice(lastIndex)));
       }
       if (fragments.length === 0) continue;
       const parent = textNode.parentNode;
@@ -1404,99 +1823,333 @@ export class ChatView extends ItemView {
     }
   }
 
-  private getRoleLabel(role: string): string {
-    switch (role) {
-      case 'user':
-        return t('messageUser');
-      case 'assistant':
-        return t('messageAssistant');
-      case 'system':
-        return t('messageSystem');
-      case 'tool':
-        return t('messageTool');
-      default:
-        return role;
-    }
-  }
-
   private renderMessageMeta(meta: HTMLElement, msg: ChatMessageWithMeta): void {
     meta.empty();
-    meta.createSpan({ cls: 'superpower-inside-chat-role', text: this.getRoleLabel(msg.role) });
-    meta.createSpan({
-      cls: 'superpower-inside-chat-timestamp',
-      text: this.formatExactTimestamp(msg.createdAt),
-    });
-    if (msg.providerLabel || msg.model) {
-      meta.createSpan({
-        cls: 'superpower-inside-chat-model-meta',
-        text: [msg.providerLabel, msg.model].filter(Boolean).join(' / '),
-      });
-    }
-    const status = meta.createSpan({
-      cls: `superpower-inside-chat-message-status ${msg.status}`,
-      text: this.getMessageStatusLabel(msg.status),
-    });
-    if (msg.errorMessage) {
-      status.setAttribute('title', msg.errorMessage);
+    for (const item of createChatMessageMetaItems(msg)) {
+      const el = meta.createSpan({ cls: item.className, text: item.text });
+      if (item.title) {
+        el.setAttribute('title', item.title);
+      }
     }
   }
 
   private updateMessageMeta(wrapper: HTMLElement, msg: ChatMessageWithMeta): void {
     const meta = wrapper.querySelector('.superpower-inside-chat-meta');
-    if (meta instanceof HTMLElement) {
+    if (isDomInstance(meta, HTMLElement)) {
       this.renderMessageMeta(meta, msg);
+    }
+  }
+
+  private renderMessageContextSections(
+    bubbleContainer: HTMLElement,
+    msg: ChatMessageWithMeta,
+  ): void {
+    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextBudgetSection(bubbleContainer, msg.contextBudgetSnapshot);
+    this.sourcePanel.renderDataBoundarySection(bubbleContainer, msg.dataBoundarySnapshot);
+    this.renderVariantComparisonSection(bubbleContainer, msg);
+    if (msg.role === 'assistant') {
+      this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
+    }
+  }
+
+  private renderVariantComparisonSection(
+    bubbleContainer: HTMLElement,
+    msg: ChatMessageWithMeta,
+  ): void {
+    let section = bubbleContainer.querySelector('.superpower-inside-chat-variant-compare');
+    const rows = createVariantComparisonRows(this.messages, msg.id);
+    if (rows.length < 2) {
+      section?.remove();
+      return;
+    }
+    if (!isDomInstance(section, HTMLElement)) {
+      section = bubbleContainer.createEl('details', {
+        cls: 'superpower-inside-chat-variant-compare',
+      });
+    }
+    section.empty();
+    if (isDomInstance(section, HTMLDetailsElement)) {
+      section.open = rows.some((row) => row.active && row.id === msg.id);
+    }
+    section.createEl('summary', { text: t('variantCompareTitle') });
+    for (const row of rows) {
+      const item = section.createDiv({
+        cls: `superpower-inside-chat-variant-row ${row.active ? 'active' : ''}`,
+      });
+      item.createSpan({
+        cls: 'superpower-inside-chat-variant-provider',
+        text: t('variantCompareRow', {
+          provider: row.providerText,
+          citations: row.citationCount,
+          warnings: row.sourceWarningCount,
+          tools: row.toolCallCount,
+          contexts: row.contextAttachmentCount,
+        }),
+      });
+      if (row.active) {
+        item.createSpan({
+          cls: 'superpower-inside-chat-variant-active',
+          text: t('variantCompareActive'),
+        });
+      }
     }
   }
 
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
     const existing = container.querySelector('.superpower-inside-chat-message-actions');
+    const existingActions = isDomInstance(existing, HTMLElement) ? existing : null;
+    const existingDiagnostics = existingActions?.querySelector(
+      '.superpower-inside-chat-error-diagnostics',
+    );
+    const existingDiagnosticsToggle = existingDiagnostics?.querySelector(
+      '.superpower-inside-chat-error-diagnostics-toggle',
+    );
+    const activeElement = container.ownerDocument.activeElement;
+    const focusedActionId =
+      existingActions &&
+      isDomInstance(activeElement, HTMLElement) &&
+      existingActions.contains(activeElement)
+        ? activeElement.getAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE)
+        : undefined;
+    const renderState = createChatMessageActionRenderState({
+      messageId: msg.id,
+      focusedActionId,
+      diagnosticsExpanded: existingDiagnosticsToggle?.getAttribute('aria-expanded'),
+      legacyDiagnosticsOpen: isDomInstance(existingDiagnostics, HTMLDetailsElement)
+        ? existingDiagnostics.open
+        : undefined,
+      diagnosticsContentId: existingDiagnosticsToggle?.getAttribute('aria-controls'),
+    });
     existing?.remove();
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
+    const actionButtons = new Map<string, HTMLButtonElement>();
+    const registerActionButton = (
+      button: HTMLButtonElement,
+      actionId: string,
+    ): HTMLButtonElement => {
+      button.setAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE, actionId);
+      actionButtons.set(actionId, button);
+      return button;
+    };
+    const restoreActionFocus = (): void => {
+      if (!renderState.focusedActionId) return;
+      actionButtons.get(renderState.focusedActionId)?.focus({ preventScroll: true });
+    };
 
-    const copyBtn = actions.createEl('button', { text: '복사' });
+    if (msg.role === 'assistant' && msg.errorKind) {
+      for (const [index, recoveryAction] of createChatRecoveryActions(msg.errorKind).entries()) {
+        const button = registerActionButton(
+          actions.createEl('button', {
+            text: recoveryAction.label,
+            cls: index === 0 ? 'mod-cta' : undefined,
+          }),
+          createRecoveryMessageActionId(recoveryAction.id),
+        );
+        if (
+          recoveryAction.id === 'retry-same-context' &&
+          msg.errorRetryAt &&
+          Date.parse(msg.errorRetryAt) > Date.now()
+        ) {
+          button.disabled = true;
+          const waitMs = Date.parse(msg.errorRetryAt) - Date.now();
+          window.setTimeout(
+            () => {
+              if (button.isConnected) button.disabled = false;
+            },
+            Math.min(waitMs, 2_147_483_647),
+          );
+        }
+        button.addEventListener('click', () => {
+          void this.handleChatRecoveryAction(recoveryAction, msg, button);
+        });
+      }
+      if (msg.errorMessage) {
+        const diagnostics = actions.createDiv({
+          cls: 'superpower-inside-chat-error-diagnostics',
+        });
+        const diagnosticsToggle = registerActionButton(
+          diagnostics.createEl('button', {
+            cls: 'superpower-inside-chat-error-diagnostics-toggle',
+            attr: {
+              type: 'button',
+              'aria-controls': renderState.diagnosticsContentId,
+            },
+          }),
+          createChatMessageActionId('error-diagnostics'),
+        );
+        const diagnosticsIcon = diagnosticsToggle.createSpan({
+          cls: 'superpower-inside-chat-error-diagnostics-toggle-icon',
+        });
+        diagnosticsToggle.createSpan({ text: t('chatErrorDiagnostics') });
+        const diagnosticsContent = diagnostics.createEl('pre', {
+          text: msg.errorMessage,
+        });
+        diagnosticsContent.id = renderState.diagnosticsContentId;
+        const setDiagnosticsExpanded = (expanded: boolean): void => {
+          diagnosticsToggle.setAttribute('aria-expanded', String(expanded));
+          diagnosticsContent.hidden = !expanded;
+          setIcon(diagnosticsIcon, expanded ? 'chevron-down' : 'chevron-right');
+        };
+        setDiagnosticsExpanded(renderState.diagnosticsExpanded);
+        diagnosticsToggle.addEventListener('click', () => {
+          setDiagnosticsExpanded(diagnosticsToggle.getAttribute('aria-expanded') !== 'true');
+        });
+      }
+      restoreActionFocus();
+      return;
+    }
+
+    const copyBtn = registerActionButton(
+      actions.createEl('button', { text: t('messageCopyAction') }),
+      createChatMessageActionId('copy'),
+    );
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const retryBtn = actions.createEl('button', { text: '재생성' });
+      const retryBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageRetryAction') }),
+        createChatMessageActionId('regenerate'),
+      );
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
-      const insertBtn = actions.createEl('button', { text: '노트에 삽입' });
+      const insertBtn = registerActionButton(
+        actions.createEl('button', { text: t('sourceInsertIntoNoteAction') }),
+        createChatMessageActionId('insert-into-note'),
+      );
       insertBtn.addEventListener('click', () => void this.insertMessageIntoActiveNote(msg));
-      const saveBtn = actions.createEl('button', { text: '새 노트' });
+      const saveBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageNewNoteAction') }),
+        createChatMessageActionId('save-as-note'),
+      );
       saveBtn.addEventListener('click', () => void this.saveMessageAsNote(msg));
-      const branchBtn = actions.createEl('button', { text: '브랜치' });
+      const branchBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageBranchAction') }),
+        createChatMessageActionId('branch'),
+      );
       branchBtn.addEventListener('click', () => void this.branchFromMessage(msg.id));
     } else if (msg.role === 'user') {
-      const editBtn = actions.createEl('button', { text: '수정 후 전송' });
+      const editBtn = registerActionButton(
+        actions.createEl('button', { text: t('messageEditAndSendAction') }),
+        createChatMessageActionId('edit-and-send'),
+      );
       editBtn.addEventListener('click', () => void this.editAndResendUserMessage(msg));
     }
+    restoreActionFocus();
+  }
+
+  private async handleChatRecoveryAction(
+    action: ChatRecoveryAction,
+    msg: ChatMessageWithMeta,
+    button: HTMLButtonElement,
+  ): Promise<void> {
+    switch (action.id) {
+      case 'retry-same-context':
+        if (msg.errorRetryAt && Date.parse(msg.errorRetryAt) > Date.now()) return;
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'switch-provider':
+        await this.switchProviderAndRetry(msg);
+        return;
+      case 'reconnect-mcp':
+        await this.plugin.reconnectMCP();
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'send-without-rag':
+        this.skipAutoRagOnce = true;
+        await this.regenerateFromAssistant(msg.id);
+        return;
+      case 'copy-debug':
+        try {
+          await navigator.clipboard.writeText(msg.errorMessage ?? msg.content);
+          button.setText(t('copied'));
+          window.setTimeout(() => button.setText(action.label), 1500);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          new Notice(t('messageCopyFailedNotice', { message }), 5000);
+        }
+        return;
+    }
+  }
+
+  private async switchProviderAndRetry(msg: ChatMessageWithMeta): Promise<void> {
+    if (!this.modelSelectEl) return;
+    const currentModel = this.modelSelectEl.value || this.plugin.settings.chat.defaultModel;
+    const currentProvider = getProviderReferenceIdentity(currentModel);
+    const options = buildChatModelOptions(this.plugin.settings, {
+      currentModel: '',
+    }).sort((left, right) => left.label.localeCompare(right.label, 'en'));
+    const alternative =
+      options.find(
+        (option) =>
+          option.value !== currentModel &&
+          getProviderReferenceIdentity(option.value) !== currentProvider,
+      ) ?? options.find((option) => option.value !== currentModel);
+    if (!alternative) {
+      this.modelSelectEl.focus();
+      new Notice(t('chatRecoveryNoAlternativeProvider'));
+      return;
+    }
+    this.modelSelectEl.value = alternative.value;
+    new Notice(t('chatRecoveryContinuingWithProvider', { provider: alternative.label }), 3000);
+    await this.regenerateFromAssistant(msg.id);
   }
 
   private async copyMessage(msg: ChatMessageWithMeta, button: HTMLButtonElement): Promise<void> {
-    await navigator.clipboard.writeText(msg.content);
-    button.setText(t('copied'));
-    window.setTimeout(() => button.setText('복사'), 1500);
+    this.noticeSourceWarnings(msg);
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      button.setText(t('copied'));
+      window.setTimeout(() => button.setText(t('messageCopyAction')), 1500);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('messageCopyFailedNotice', { message }), 5000);
+    }
   }
 
   private async insertMessageIntoActiveNote(msg: ChatMessageWithMeta): Promise<void> {
+    this.noticeSourceWarnings(msg);
     const active = this.app.workspace.getActiveFile();
     if (!active) {
-      new Notice('활성 노트가 없습니다.');
+      new Notice(t('activeNoteMissingNotice'));
       return;
     }
-    await this.app.vault.append(active, `\n\n${msg.content}\n`);
-    new Notice('활성 노트에 삽입했습니다.');
+    try {
+      await this.app.vault.append(active, `\n\n${msg.content}\n`);
+      new Notice(t('messageInsertedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('messageInsertFailedNotice', { message }), 5000);
+    }
+  }
+
+  private noticeSourceWarnings(msg: ChatMessageWithMeta): void {
+    if (!msg.sourceWarnings || msg.sourceWarnings.length === 0) return;
+    new Notice(t('sourceWarningIncluded', { count: msg.sourceWarnings.length }), 5000);
+  }
+
+  private repairSourceWarning(warning: SourceValidationWarning): void {
+    if (!this.inputArea) return;
+    this.inputArea.value = t('sourceRepairPrompt', { label: warning.label });
+    this.inputArea.focus();
+    this.autoResizeInput();
+    this.renderContextPreview(this.inputArea.value);
   }
 
   private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
     const folder = this.plugin.settings.chat.saveFolder || 'SuperpowerInsideChats';
-    const title = this.session.title || 'AI 답변';
+    const title = this.session.title || t('aiAnswerTitle');
     const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
     const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
-    if (!(await this.app.vault.adapter.exists(folder))) {
-      await this.app.vault.createFolder(folder);
+    try {
+      if (!(await this.app.vault.adapter.exists(folder))) {
+        await this.app.vault.createFolder(folder);
+      }
+      await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
+      new Notice(t('savedAsNewNoteNotice', { path }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('savedAsNewNoteFailedNotice', { message }), 5000);
     }
-    await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
-    new Notice(`새 노트로 저장했습니다: ${path}`);
   }
 
   private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
@@ -1513,72 +2166,57 @@ export class ChatView extends ItemView {
   }
 
   private async regenerateFromAssistant(messageId: string): Promise<void> {
-    const index = this.messages.findIndex((message) => message.id === messageId);
-    if (index <= 0) return;
-    const previousUser = [...this.messages.slice(0, index)]
-      .reverse()
-      .find((message) => message.role === 'user');
-    if (!previousUser) return;
-    this.messages = this.messages.slice(0, index);
+    const draft = createRegenerationDraft(this.messages, messageId);
+    if (!draft) {
+      new Notice(t('regenerationTargetMissingNotice'));
+      return;
+    }
+    const originalIndex = this.messages.findIndex((message) => message.id === messageId);
+    if (originalIndex >= 0) {
+      this.messages[originalIndex] = markMessageRegenerated(this.messages[originalIndex]);
+    }
+    this.pendingRegeneration = draft;
     this.markDirtyAndAutoSave();
     this.rebuildMessagesDOM();
-    this.inputArea!.value = previousUser.content;
+    this.inputArea!.value = draft.text;
     this.autoResizeInput();
-    this.renderContextPreview(previousUser.content);
+    this.renderContextPreview(draft.text);
     await this.handleSend();
   }
 
   private async branchFromMessage(messageId: string): Promise<void> {
     const index = this.messages.findIndex((message) => message.id === messageId);
-    if (index < 0) return;
-    await this.saveCurrentSession(true);
-    const branchMessages = this.messages.slice(0, index + 1).map((message) => ({
-      ...message,
-      branchOf: message.branchOf ?? this.session.filePath ?? messageId,
-    }));
-    this.messages = branchMessages;
-    this.session = {
-      filePath: null,
-      title: `${this.session.title || t('chatSessionTitle')} branch`,
-      isDirty: true,
-    };
-    this.rebuildMessagesDOM();
-    await this.saveCurrentSession(true);
-    new Notice('브랜치 세션을 만들었습니다.');
-  }
-
-  private formatExactTimestamp(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('ko-KR', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
-  private getMessageStatusLabel(status: ChatMessageWithMeta['status']): string {
-    switch (status) {
-      case 'pending':
-        return '대기';
-      case 'streaming':
-        return '생성 중';
-      case 'complete':
-        return '완료';
-      case 'error':
-        return '오류';
+    if (index < 0) {
+      new Notice(t('branchSessionMissingNotice'));
+      return;
+    }
+    try {
+      await this.saveCurrentSession(true);
+      const branchMessages = this.messages.slice(0, index + 1).map((message) => ({
+        ...message,
+        branchOf: message.branchOf ?? this.session.filePath ?? messageId,
+      }));
+      this.messages = branchMessages;
+      this.session = {
+        filePath: null,
+        title: `${this.session.title || t('chatSessionTitle')} branch`,
+        isDirty: true,
+      };
+      this.rebuildMessagesDOM();
+      await this.saveCurrentSession(true);
+      new Notice(t('branchSessionCreatedNotice'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(t('branchSessionFailedNotice', { message }), 5000);
     }
   }
 
   clearMessages(): void {
+    this.invalidateActiveChatRun(false);
     this.messages = [];
     this.sessionSystemPrompt = null;
     this.session = { filePath: null, title: '', isDirty: false };
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     this.updateSessionTitle();
     this.messageEls.clear();
     if (this.messagesArea) {
@@ -1589,6 +2227,7 @@ export class ChatView extends ItemView {
         }
       }
     }
+    this.renderEmptyState();
     this.updateHeaderTitle();
   }
 
@@ -1606,16 +2245,15 @@ export class ChatView extends ItemView {
     const hadMessages = this.messages.length > 0;
     this.clearMessages();
     this.setLoading(false);
-    if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+    setHidden(this.typingIndicator, true);
     if (hadMessages) {
-      new Notice(`채팅 세션 파일이 삭제되어 채팅창을 초기화했습니다: ${missingPath}`);
+      new Notice(t('deletedSessionResetNotice', { path: missingPath }));
     }
   }
 
   async startNewSession(): Promise<void> {
+    this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     await this.saveCurrentSession(true);
     this.messages = [];
     this.sessionSystemPrompt = null;
@@ -1629,6 +2267,7 @@ export class ChatView extends ItemView {
         }
       }
     }
+    this.renderEmptyState();
     this.updateHeaderTitle();
   }
 
@@ -1673,7 +2312,7 @@ export class ChatView extends ItemView {
     this.clearAutoSaveTimer();
     this.isStreaming = false;
     this.setLoading(false);
-    this.autoSaveTimer = setTimeout(() => {
+    this.autoSaveTimer = window.setTimeout(() => {
       this.autoSaveTimer = null;
       void this.saveCurrentSession();
     }, this.plugin.settings.chat.autoSaveDebounceMs);
@@ -1681,7 +2320,7 @@ export class ChatView extends ItemView {
 
   private clearAutoSaveTimer(): void {
     if (!this.autoSaveTimer) return;
-    clearTimeout(this.autoSaveTimer);
+    window.clearTimeout(this.autoSaveTimer);
     this.autoSaveTimer = null;
   }
 
@@ -1703,50 +2342,29 @@ export class ChatView extends ItemView {
       );
       this.session.filePath = file.path;
       this.session.isDirty = false;
+      this.plugin.refreshBus.emit('sessions', { status: 'success' });
       this.clearAutoSaveTimer();
       this.updateHeaderTitle();
     } catch (err) {
-      console.error('[Superpower Inside] 채팅 자동 저장 실패:', err);
+      this.plugin.logger.error(t('chatAutoSaveFailedLog'), {
+        source: 'chat',
+        error: err,
+      });
     }
   }
 
   async loadSession(filePath: string): Promise<void> {
+    this.invalidateActiveChatRun(false);
     try {
       this.clearAutoSaveTimer();
       await this.saveCurrentSession(true);
       const session = await loadChat(this.app.vault, filePath);
       const now = new Date().toISOString();
-      this.messages = session.messages.map((m) => ({
-        id: m.id ?? `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp ?? Date.now(),
-        createdAt: m.createdAt ?? now,
-        updatedAt: m.updatedAt ?? m.createdAt ?? now,
-        providerKey: m.providerKey,
-        providerLabel: m.providerLabel,
-        model: m.model,
-        status: m.status ?? 'complete',
-        errorMessage: m.errorMessage,
-        reasoning: m.reasoning,
-        toolCalls: m.toolCalls
-          ? m.toolCalls.map((tc) => ({
-              id: tc.id,
-              name: tc.name,
-              arguments: tc.arguments,
-              result: tc.result,
-              resultSummary: tc.resultSummary,
-              normalizedResult: tc.normalizedResult,
-              status: tc.status,
-              serverName: tc.serverName,
-              approved: tc.approved,
-            }))
-          : undefined,
-        citations: m.citations,
-        contextAttachments: m.contextAttachments,
-        branchOf: m.branchOf,
-        stopReason: m.stopReason,
-      }));
+      this.messages = prepareLoadedSessionMessages(session.messages, {
+        cancelledText: t('chatGenerationStopped'),
+        now,
+        createId: () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      });
       this.sessionSystemPrompt = session.systemPrompt ?? null;
       this.session = {
         filePath,
@@ -1756,7 +2374,9 @@ export class ChatView extends ItemView {
       this.rebuildMessagesDOM();
       this.updateHeaderTitle();
     } catch (err) {
-      new Notice(`채팅 불러오기 실패: ${err instanceof Error ? err.message : String(err)}`);
+      new Notice(
+        t('chatLoadFailedNotice', { message: err instanceof Error ? err.message : String(err) }),
+      );
     }
   }
 
@@ -1808,17 +2428,23 @@ export class ChatView extends ItemView {
           status: tc.status,
           serverName: tc.serverName,
           approved: tc.approved,
+          executionKind: tc.executionKind,
+          citations: tc.citations,
         })),
         msg.citations,
+        msg.sourceWarnings,
+        msg.assistantQuestion,
       );
     } else if (msg.role === 'tool') {
       const bubble = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-bubble tool' });
       this.renderToolBubble(bubble, msg.content, 'success');
     } else {
-      const bubble = bubbleContainer.createDiv({ cls: `superpower-inside-chat-bubble ${msg.role}` });
+      const bubble = bubbleContainer.createDiv({
+        cls: `superpower-inside-chat-bubble ${msg.role}`,
+      });
       void this.renderMarkdownBubble(bubble, msg.content);
     }
-    this.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
+    this.renderMessageContextSections(bubbleContainer, msg);
     this.renderMessageActions(bubbleContainer, msg);
   }
 
@@ -1829,7 +2455,7 @@ export class ChatView extends ItemView {
     }
 
     const currentTitle = this.session.title || t('chatSessionTitle');
-    const input = document.createElement('input');
+    const input = (this.sessionTitleEl?.ownerDocument ?? activeDocument).createElement('input');
     input.type = 'text';
     input.value = currentTitle;
     input.className = 'superpower-inside-session-rename-input';
@@ -1867,12 +2493,11 @@ export class ChatView extends ItemView {
 
   private async openSessionHistoryModal(): Promise<void> {
     if (!this.plugin.settings.chat.saveFolder) {
-      new Notice(t('chatSaveFolder') + ' 경로를 먼저 설정하세요.');
+      new Notice(t('chatSaveFolder') + t('providerPathRequiredSuffix'));
       return;
     }
+    this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    this.isStreaming = false;
-    this.setLoading(false);
     await this.saveCurrentSession(true);
     openSessionHistoryModal(
       this.container!,
@@ -1881,27 +2506,58 @@ export class ChatView extends ItemView {
       this.plugin.settings.chat.saveFolder,
       (filePath: string) => void this.loadSession(filePath),
       this.session.filePath,
+      this.plugin.refreshBus,
     );
   }
 
   private async handleSend(): Promise<void> {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
+    const regeneration = this.pendingRegeneration;
+    const previousUserQuestions = selectPreviousUserQuestions(
+      this.messages,
+      regeneration?.previousUserId,
+    );
+    this.pendingSubmittedDraft = createComposerDraftSnapshot({
+      text,
+      attachmentIds: this.getDraftAttachmentIds(text),
+    });
     this.lastUserPrompt = text;
-    this.previousUserQueries.push(text);
-    if (this.previousUserQueries.length > 5) this.previousUserQueries.shift();
 
-    const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
+    const abortController = new AbortController();
+    const run: ChatRunHandle<AbortController> = {
+      token: ++this.runTokenSequence,
+      controller: abortController,
+    };
+    this.activeRun = run;
+    this.abortController = abortController;
+    this.setLoading(true);
+    const releaseSetupRun = (): void => {
+      if (!isChatRunOwner(this.activeRun, run)) return;
+      this.activeRun = null;
+      this.abortController = null;
+      this.pendingSubmittedDraft = null;
+      this.setLoading(false);
+    };
+
+    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
+      await import('../llm/providers').catch((error: unknown) => {
+        releaseSetupRun();
+        throw error;
+      });
+    if (!isChatRunActive(this.activeRun, run)) return;
 
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
-      new Notice('기본 모델이 설정되지 않았습니다. 설정 탭에서 모델을 선택하세요.');
+      new Notice(t('defaultModelMissingNotice'));
+      releaseSetupRun();
       return;
     }
 
     const parts = selectedModel.split(':');
     if (parts.length < 2) {
-      new Notice('모델 설정 형식이 잘못되었습니다.');
+      new Notice(t('modelSettingInvalid'));
+      releaseSetupRun();
       return;
     }
 
@@ -1910,9 +2566,31 @@ export class ChatView extends ItemView {
     let providerLabel: string;
     let provider: LLMProvider;
 
-    if (parts[0] === 'customOpenAI') {
+    const resolvedProfileModel = resolveProviderModelRef(
+      this.plugin.settings,
+      selectedModel,
+      'general',
+    );
+    if (resolvedProfileModel) {
+      const { profile, modelId } = resolvedProfileModel;
+      if (!profile.enabled) {
+        new Notice(t('noActiveProviderNotice'));
+        releaseSetupRun();
+        return;
+      }
+      key = `profile:${profile.id}`;
+      modelName = modelId;
+      providerLabel = getProviderProfileDisplayName(profile);
+      provider = createProviderForStrategy(
+        profile.strategy,
+        { ...profile, models: profile.models.map((model) => model.id) },
+        modelName,
+        profile.id,
+      );
+    } else if (parts[0] === 'customOpenAI') {
       if (parts.length < 3) {
-        new Notice('커스텀 모델 설정 형식이 잘못되었습니다.');
+        new Notice(t('customModelSettingInvalid'));
+        releaseSetupRun();
         return;
       }
       const providerId = parts[1];
@@ -1921,11 +2599,12 @@ export class ChatView extends ItemView {
         (item) => item.id === providerId,
       );
       if (!customProvider?.enabled) {
-        new Notice('커스텀 Provider가 활성화되지 않았습니다.');
+        new Notice(t('customProviderDisabled'));
+        releaseSetupRun();
         return;
       }
       key = `customOpenAI:${providerId}`;
-      providerLabel = customProvider.name.trim() || 'Custom OpenAI-Compatible';
+      providerLabel = getCustomOpenAIProviderDisplayName(customProvider);
       provider = createCustomOpenAIProvider(customProvider, modelName);
     } else {
       const fixedKey = parts[0] as ProviderKey;
@@ -1935,54 +2614,207 @@ export class ChatView extends ItemView {
       providerLabel = PROVIDER_LABELS[fixedKey];
 
       if (!config?.enabled) {
-        new Notice('활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.');
+        new Notice(t('noActiveProviderNotice'));
+        releaseSetupRun();
         return;
       }
 
       provider = createProvider(fixedKey, config, modelName);
     }
+    setHidden(this.typingIndicator, false);
+
+    const providerCapability = provider.capability;
+    let turnState: ChatTurnState = transitionChatTurn(createChatTurnState(), { type: 'submit' });
+    const toTurnMeta = (): Pick<
+      MessageMetaInput,
+      'turnStage' | 'toolRound' | 'status' | 'stopReason' | 'errorMessage'
+    > => ({
+      turnStage: turnState.stage,
+      toolRound: turnState.toolRound,
+      status: getChatTurnStageStatus(turnState.stage),
+      stopReason: turnState.stopReason,
+      errorMessage: turnState.errorMessage,
+    });
+    const applyTurnEvent = (event: ChatTurnEvent): ReturnType<typeof toTurnMeta> => {
+      turnState = transitionChatTurn(turnState, event);
+      return toTurnMeta();
+    };
 
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const promptContext = await this.buildPromptContext(text, this.previousUserQueries);
+    const wholeVaultResearch = isWholeVaultResearchRequest(text);
+    const mentionedServers = wholeVaultResearch ? [] : this.getEffectiveMcpServerNames(text);
+    let promptContext: ContextBuildResult;
+    try {
+      promptContext = wholeVaultResearch
+        ? { systemPrompt: null, attachments: [], citations: [], warnings: [] }
+        : await this.buildPromptContext(text, previousUserQuestions);
+    } catch (error) {
+      if (isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        this.abortController = null;
+        this.restoreSubmittedDraft();
+        this.setLoading(false);
+        const detail = error instanceof Error ? error.message : String(error);
+        new Notice(t('contextRagLoadFailed', { error: redactDebugDetail(detail) }), 5000);
+      }
+      return;
+    }
+    if (!isChatRunActive(this.activeRun, run)) return;
+    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
+    const dataBoundarySnapshot = wholeVaultResearch
+      ? createResearchDataBoundarySnapshot({
+          providerLabel,
+          model: modelName,
+          previousUserQuestionCount: previousUserQuestions.length,
+        })
+      : createDataBoundarySnapshot({
+          providerLabel,
+          model: modelName,
+          hasUserQuestion: true,
+          recentConversationMessageCount: Math.min(9, this.messages.length),
+          hasSystemPrompt: true,
+          attachments: promptContext.attachments,
+          citations: promptContext.citations,
+          mcpServerNames: [],
+        });
+    const branchOf = regeneration ? (this.session.filePath ?? undefined) : undefined;
+    const userVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
+      regeneration
+        ? {
+            branchOf,
+            branchRoot: regeneration.branchRoot,
+            variantOf: regeneration.previousUserId,
+          }
+        : {};
+    const assistantVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
+      regeneration
+        ? {
+            branchOf,
+            branchRoot: regeneration.branchRoot,
+            variantOf: regeneration.variantOf,
+          }
+        : {};
+    const contextMeta: Pick<
+      MessageMetaInput,
+      'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot'
+    > = {
+      contextAttachments: promptContext.attachments,
+      contextBudgetSnapshot,
+      dataBoundarySnapshot,
+    };
+    applyTurnEvent({ type: 'context-built' });
     this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
       model: modelName,
+      providerCapability,
       status: 'complete',
       contextAttachments: promptContext.attachments,
+      contextBudgetSnapshot,
+      dataBoundarySnapshot,
+      ...userVariantMeta,
     });
-    await this.saveCurrentSession(true);
-    this.setLoading(true);
-
-    if (this.typingIndicator) this.typingIndicator.style.display = 'flex';
-
-    let assistantId = '';
-    let assistantWrapper: HTMLElement | undefined;
-    const abortController = new AbortController();
-    this.abortController = abortController;
-
-    try {
-      const systemPrompt = promptContext.systemPrompt;
-      const mentionedServers = this.getMentionedServerNames(text);
-      const toolDefinitions = await this.collectToolDefinitions(mentionedServers);
-      const messages: ChatMessage[] = [
-        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
-      ];
-
-      assistantId = this.addMessage('assistant', '', undefined, undefined, {
+    const providerConversationMessages = this.messages
+      .slice(-10)
+      .map((message) => this.toProviderMessage(message));
+    const waitStatus = createProviderWaitStatus({
+      providerLabel,
+      model: modelName,
+      elapsedMs: 0,
+      capability: providerCapability,
+    });
+    const assistantId = this.addMessage(
+      'assistant',
+      providerCapability.streaming ? '' : waitStatus.headline,
+      undefined,
+      undefined,
+      {
         providerKey: key,
         providerLabel,
         model: modelName,
-        status: 'streaming',
-        citations: promptContext.citations,
-        contextAttachments: promptContext.attachments,
-      });
-      assistantWrapper = this.messageEls.get(assistantId);
-      if (assistantWrapper) {
-        assistantWrapper.classList.add('generating');
+        providerCapability,
+        ...toTurnMeta(),
+        ...contextMeta,
+        ...assistantVariantMeta,
+      },
+    );
+    const assistantWrapper = this.messageEls.get(assistantId);
+    if (assistantWrapper) {
+      assistantWrapper.classList.add('generating');
+    }
+    await this.saveCurrentSession(true);
+    if (!isChatRunActive(this.activeRun, run)) return;
+    let restoreDraft = false;
+
+    try {
+      const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+      if (!isChatRunActive(this.activeRun, run)) return;
+      const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
+      const toolPrompt = providerCapability.toolCalling
+        ? createNativeVaultEvidencePrompt(toolDefinitions)
+        : createCompatibilityToolPrompt(toolDefinitions);
+      const systemPrompt = [promptContext.systemPrompt, toolPrompt]
+        .filter((part): part is string => Boolean(part))
+        .join('\n\n');
+      if (!providerCapability.toolCalling && mentionedServers.length > 0) {
+        new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
+      }
+      const messages: ChatMessage[] = [
+        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+        ...providerConversationMessages,
+      ];
+
+      if (wholeVaultResearch) {
+        const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
+          question: text,
+          previousUserQuestions,
+          signal: abortController.signal,
+          onProgress: (progress) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
+            const progressText = t('vaultResearchProgress', {
+              phase: getVaultResearchPhaseLabel(progress.phase),
+              completed: String(progress.completedFiles),
+              total: String(progress.totalFiles),
+            });
+            this.updateMessage(assistantId, progressText, false, undefined, undefined, {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...toTurnMeta(),
+              ...contextMeta,
+              ...assistantVariantMeta,
+            });
+          },
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const researchCitations = selectDisplayedAnswerCitations(
+          researchResult.content,
+          researchResult.citations,
+        );
+        const sourceWarnings = this.validateAssistantSources(
+          researchResult.content,
+          researchCitations,
+        );
+        this.updateMessage(assistantId, researchResult.content, true, undefined, undefined, {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...applyTurnEvent({ type: 'complete' }),
+          ...contextMeta,
+          dataBoundarySnapshot: withDataBoundaryProviderUsage(dataBoundarySnapshot, {
+            researchDocumentCount: researchResult.providerTransfer.sentFiles,
+          }),
+          ...assistantVariantMeta,
+          citations: researchCitations,
+          sourceWarnings,
+        });
+        setHidden(this.typingIndicator, true);
+        assistantWrapper?.classList.remove('generating');
+        return;
       }
 
       let fullText = '';
@@ -1992,6 +2824,7 @@ export class ChatView extends ItemView {
       await provider.streamChat(
         messages,
         (chunk: StreamChunk) => {
+          if (!isChatRunActive(this.activeRun, run)) return;
           if (chunk.content) {
             fullText += chunk.content;
           }
@@ -2001,10 +2834,21 @@ export class ChatView extends ItemView {
           if (chunk.toolCalls) {
             this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
           }
+          const turnMeta =
+            chunk.toolCalls && chunk.toolCalls.length > 0
+              ? applyTurnEvent({
+                  type: 'tool-call-delta',
+                  activeToolCalls: toolCallMap.size,
+                })
+              : chunk.reasoning && !chunk.content
+                ? applyTurnEvent({ type: 'reasoning-delta' })
+                : chunk.content
+                  ? applyTurnEvent({ type: 'answer-delta' })
+                  : toTurnMeta();
 
           if (!hasReceivedContent && (fullText || fullReasoning)) {
             hasReceivedContent = true;
-            if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+            setHidden(this.typingIndicator, true);
           }
 
           this.updateMessage(
@@ -2017,18 +2861,75 @@ export class ChatView extends ItemView {
               providerKey: key,
               providerLabel,
               model: modelName,
-              status: chunk.done ? 'complete' : 'streaming',
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
+              providerCapability,
+              ...turnMeta,
+              ...contextMeta,
+              ...assistantVariantMeta,
             },
           );
         },
         0.7,
-        toolDefinitions,
+        providerToolDefinitions,
         { signal: abortController.signal },
       );
-      if (this.typingIndicator) this.typingIndicator.style.display = 'none';
-      const parsedToolCalls = this.parseInlineToolRequests(fullText);
+      if (!isChatRunActive(this.activeRun, run)) return;
+      setHidden(this.typingIndicator, true);
+      let normalized = normalizeReasoningChunk({
+        content: fullText,
+        reasoning: fullReasoning || undefined,
+      });
+      fullText = normalized.content;
+      fullReasoning = normalized.reasoning ?? '';
+
+      const firstClassification = classifyAssistantResponse({
+        content: fullText,
+        reasoning: fullReasoning,
+      });
+      if (shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)) {
+        const questionContract = enforceNativeToolAnswerContract(
+          firstClassification.content,
+          Array.from(toolCallMap.values()),
+        );
+        const questionBlocked = questionContract.content !== firstClassification.content;
+        const questionCitations = selectDisplayedAnswerCitations(
+          questionContract.content,
+          promptContext.citations,
+        );
+        this.updateMessage(
+          assistantId,
+          questionContract.content,
+          true,
+          firstClassification.reasoning || undefined,
+          Array.from(toolCallMap.values()),
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...applyTurnEvent({ type: 'complete' }),
+            ...contextMeta,
+            ...assistantVariantMeta,
+            citations: questionCitations,
+            ...(questionBlocked
+              ? {}
+              : {
+                  assistantQuestion: firstClassification.question,
+                  originalContent: firstClassification.originalContent,
+                }),
+          },
+        );
+        return;
+      }
+
+      const compatibility = parseCompatibilityToolResponse(
+        fullText,
+        (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
+      );
+      fullText = compatibility.visibleContent;
+      const parsedToolCalls = [
+        ...this.parseInlineToolRequests(fullText),
+        ...compatibility.toolCalls,
+      ];
       if (parsedToolCalls.length > 0) {
         fullText = this.stripInlineToolRequests(fullText);
         const baseToolCallIndex = toolCallMap.size;
@@ -2044,12 +2945,13 @@ export class ChatView extends ItemView {
       const hasSubstantiveAnswer = fullText.trim().length > 50;
       if (
         hasMentionedServers &&
+        providerCapability.toolCalling &&
         !hasToolCalls &&
         hasSubstantiveAnswer &&
         this.plugin.settings.chat.enforceMcpTools
       ) {
         const serverNames = mentionedServers.join(', ');
-        new Notice(`🔄 @${serverNames} 도구를 호출하지 않아 재시도합니다...`, 3000);
+        new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
 
         const retrySystemPrompt = `${systemPrompt}\n\n[IMPORTANT] You have access to the following MCP server(s): ${serverNames}. You MUST use the available tools to answer the question. Do NOT generate an answer without calling tools. If you need to read files or directories, use the appropriate tools first.`;
 
@@ -2066,17 +2968,30 @@ export class ChatView extends ItemView {
           providerKey: key,
           providerLabel,
           model: modelName,
-          status: 'streaming',
-          citations: promptContext.citations,
-          contextAttachments: promptContext.attachments,
+          providerCapability,
+          ...applyTurnEvent({ type: 'context-built' }),
+          ...contextMeta,
+          ...assistantVariantMeta,
         });
 
         await provider.streamChat(
           retryMessages,
           (chunk: StreamChunk) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
             if (chunk.content) fullText += chunk.content;
             if (chunk.reasoning) fullReasoning += chunk.reasoning;
             if (chunk.toolCalls) this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+            const turnMeta =
+              chunk.toolCalls && chunk.toolCalls.length > 0
+                ? applyTurnEvent({
+                    type: 'tool-call-delta',
+                    activeToolCalls: toolCallMap.size,
+                  })
+                : chunk.reasoning && !chunk.content
+                  ? applyTurnEvent({ type: 'reasoning-delta' })
+                  : chunk.content
+                    ? applyTurnEvent({ type: 'answer-delta' })
+                    : toTurnMeta();
             this.updateMessage(
               assistantId,
               fullText,
@@ -2087,42 +3002,103 @@ export class ChatView extends ItemView {
                 providerKey: key,
                 providerLabel,
                 model: modelName,
-                status: chunk.done ? 'complete' : 'streaming',
-                citations: promptContext.citations,
-                contextAttachments: promptContext.attachments,
+                providerCapability,
+                ...turnMeta,
+                ...contextMeta,
+                ...assistantVariantMeta,
               },
             );
           },
           0.7,
-          toolDefinitions,
+          providerToolDefinitions,
           { signal: abortController.signal },
         );
+        if (!isChatRunActive(this.activeRun, run)) return;
+
+        normalized = normalizeReasoningChunk({
+          content: fullText,
+          reasoning: fullReasoning || undefined,
+        });
+        fullText = normalized.content;
+        fullReasoning = normalized.reasoning ?? '';
+
+        const retryClassification = classifyAssistantResponse({
+          content: fullText,
+          reasoning: fullReasoning,
+        });
+        if (shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)) {
+          const questionContract = enforceNativeToolAnswerContract(
+            retryClassification.content,
+            Array.from(toolCallMap.values()),
+          );
+          const questionBlocked = questionContract.content !== retryClassification.content;
+          const questionCitations = selectDisplayedAnswerCitations(
+            questionContract.content,
+            promptContext.citations,
+          );
+          this.updateMessage(
+            assistantId,
+            questionContract.content,
+            true,
+            retryClassification.reasoning || undefined,
+            Array.from(toolCallMap.values()),
+            {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...applyTurnEvent({ type: 'complete' }),
+              ...contextMeta,
+              ...assistantVariantMeta,
+              citations: questionCitations,
+              ...(questionBlocked
+                ? {}
+                : {
+                    assistantQuestion: retryClassification.question,
+                    originalContent: retryClassification.originalContent,
+                  }),
+            },
+          );
+          return;
+        }
 
         toolCalls = Array.from(toolCallMap.values());
 
         if (toolCalls.length === 0 && fullText.trim().length > 50) {
-          new Notice(`⚠️ @${serverNames} — 재시도했지만 도구를 호출하지 않았습니다.`, 5000);
+          new Notice(t('mcpRetryNoToolUseNotice', { servers: serverNames }), 5000);
         }
       }
 
+      fullText = enforceNativeToolAnswerContract(fullText, toolCalls).content;
+      const displayedCitations = selectDisplayedAnswerCitations(fullText, promptContext.citations);
+      const sourceWarnings = this.validateAssistantSources(fullText, displayedCitations);
+      const postProviderTurnMeta =
+        toolCalls.length > 0
+          ? applyTurnEvent({ type: 'tool-call-delta', activeToolCalls: toolCalls.length })
+          : applyTurnEvent({ type: 'complete' });
       this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
         providerKey: key,
         providerLabel,
         model: modelName,
-        status: 'complete',
-        citations: promptContext.citations,
-        contextAttachments: promptContext.attachments,
-        stopReason: abortController.signal.aborted ? 'cancelled' : 'complete',
+        providerCapability,
+        ...postProviderTurnMeta,
+        ...contextMeta,
+        ...assistantVariantMeta,
+        citations: displayedCitations,
+        sourceWarnings,
       });
 
       const runnableToolCalls = toolCalls.filter((toolCall) => toolCall.status === 'running');
       if (runnableToolCalls.length > 0) {
-        toolCalls = await prepareToolCallsForExecution(
+        const preparedToolCalls = await prepareAssistantToolCalls({
           toolCalls,
-          this.plugin.mcpRegistry,
-          mentionedServers,
-          this.plugin.settings.chat.mcpToolExecutionPolicy,
-        );
+          nativeTool: this.nativeVaultTool,
+          registry: this.plugin.mcpRegistry,
+          preferredServerNames: mentionedServers,
+          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+        toolCalls = markRepeatedToolCalls([], preparedToolCalls);
         const pendingApproval = toolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
         );
@@ -2131,54 +3107,97 @@ export class ChatView extends ItemView {
             providerKey: key,
             providerLabel,
             model: modelName,
-            status: 'complete',
-            citations: promptContext.citations,
-            contextAttachments: promptContext.attachments,
+            providerCapability,
+            ...applyTurnEvent({ type: 'await-tool-approval' }),
+            ...contextMeta,
+            ...assistantVariantMeta,
+            citations: displayedCitations,
+            sourceWarnings,
           });
-          new Notice('일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.');
+          new Notice(t('mcpApprovalRequiredNotice'));
+        }
+        if (!pendingApproval) {
+          this.updateMessage(assistantId, fullText, false, fullReasoning || undefined, toolCalls, {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...applyTurnEvent({
+              type: 'tools-running',
+              activeToolCalls: runnableToolCalls.length,
+            }),
+            ...contextMeta,
+            ...assistantVariantMeta,
+            citations: displayedCitations,
+            sourceWarnings,
+          });
         }
         toolCalls = await this.executeAssistantToolCalls(
           assistantId,
           toolCalls,
           mentionedServers,
           fullReasoning || undefined,
+          run,
         );
-        await this.runToolResponseLoop({
-          provider,
-          messageId: assistantId,
-          baseMessages: messages,
-          toolDefinitions,
-          toolCalls,
-          abortController,
-          meta: {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        if (pendingApproval) {
+          this.updateMessage(assistantId, fullText, true, fullReasoning || undefined, toolCalls, {
             providerKey: key,
             providerLabel,
             model: modelName,
-            citations: promptContext.citations,
-            contextAttachments: promptContext.attachments,
-          },
-          mentionedServers,
-          initialText: fullText,
-          initialReasoning: fullReasoning,
-        });
+            providerCapability,
+            ...applyTurnEvent({ type: 'await-tool-approval' }),
+            ...contextMeta,
+            ...assistantVariantMeta,
+            citations: displayedCitations,
+            sourceWarnings,
+          });
+        } else {
+          await this.runToolResponseLoop({
+            provider,
+            messageId: assistantId,
+            baseMessages: messages,
+            toolDefinitions: providerToolDefinitions ?? [],
+            maxToolRounds: providerCapability.maxToolRounds,
+            toolCalls,
+            run,
+            meta: {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...applyTurnEvent({ type: 'tools-complete' }),
+              ...contextMeta,
+              ...assistantVariantMeta,
+              citations: promptContext.citations,
+            },
+            mentionedServers,
+            initialText: fullText,
+            initialReasoning: fullReasoning,
+          });
+          if (!isChatRunActive(this.activeRun, run)) return;
+        }
       }
       if (assistantWrapper) {
         assistantWrapper.classList.remove('generating');
         const generatingLabel = assistantWrapper.querySelector(
           '.superpower-inside-chat-generating-label',
         );
-        if (generatingLabel instanceof HTMLElement) {
+        if (isDomInstance(generatingLabel, HTMLElement)) {
           generatingLabel.remove();
         }
       }
     } catch (err) {
-      if (this.typingIndicator) this.typingIndicator.style.display = 'none';
+      const ownsRun = isChatRunOwner(this.activeRun, run);
+      if (ownsRun) {
+        setHidden(this.typingIndicator, true);
+      }
       if (err instanceof DOMException && err.name === 'AbortError') {
-        if (assistantId) {
+        if (ownsRun && assistantId) {
           const assistantMsg = this.messages.find((message) => message.id === assistantId);
           this.updateMessage(
             assistantId,
-            assistantMsg?.content || '응답 생성이 중단되었습니다.',
+            assistantMsg?.content || t('chatGenerationStopped'),
             true,
             assistantMsg?.reasoning,
             assistantMsg?.toolCalls,
@@ -2186,71 +3205,139 @@ export class ChatView extends ItemView {
               providerKey: key,
               providerLabel,
               model: modelName,
-              status: 'complete',
-              citations: promptContext.citations,
-              contextAttachments: promptContext.attachments,
-              stopReason: 'cancelled',
+              providerCapability,
+              ...applyTurnEvent({ type: 'cancel' }),
+              ...contextMeta,
+              ...assistantVariantMeta,
             },
           );
         }
+        restoreDraft = true;
+        return;
+      }
+      if (!ownsRun) {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorKind = classifyChatFailure(err);
+      const retryAfterMs = getChatRetryAfterMs(err);
+      const presentation = createChatErrorPresentation(errorKind, retryAfterMs);
+      const errDetail = this.formatErrorDetail(
+        key,
+        modelName,
+        redactDebugDetail(errorMsg),
+        getChatHttpStatus(err),
+      );
       if (assistantId) {
-        const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
-        this.updateMessage(assistantId, `LLM API 오류: ${errDetail}`, true, undefined, undefined, {
+        const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
+        this.updateMessage(assistantId, presentation.content, true, undefined, undefined, {
           providerKey: key,
           providerLabel,
           model: modelName,
-          status: 'error',
+          providerCapability,
+          ...errorTurnMeta,
           errorMessage: errDetail,
-          citations: promptContext.citations,
-          contextAttachments: promptContext.attachments,
-          stopReason: 'error',
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+          ...contextMeta,
+          ...assistantVariantMeta,
         });
         if (assistantWrapper) {
           assistantWrapper.classList.remove('generating');
           const generatingLabel = assistantWrapper.querySelector(
             '.superpower-inside-chat-generating-label',
           );
-          if (generatingLabel instanceof HTMLElement) {
+          if (isDomInstance(generatingLabel, HTMLElement)) {
             generatingLabel.remove();
           }
         }
       } else {
-        const errDetail = this.formatErrorDetail(key, modelName, errorMsg);
-        this.addMessage('assistant', `LLM API 오류: ${errDetail}`, undefined, undefined, {
+        const errorTurnMeta = applyTurnEvent({ type: 'error', errorMessage: errDetail });
+        this.addMessage('assistant', presentation.content, undefined, undefined, {
           providerKey: key,
           providerLabel,
           model: modelName,
-          status: 'error',
+          providerCapability,
+          ...errorTurnMeta,
           errorMessage: errDetail,
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+          ...contextMeta,
+          ...assistantVariantMeta,
         });
       }
+      restoreDraft = true;
     } finally {
-      if (this.abortController === abortController) {
-        this.abortController = null;
+      const finalization = planChatRunFinalization(this.activeRun, run, restoreDraft);
+      if (finalization.restoreSubmittedDraft) {
+        this.restoreSubmittedDraft();
+      } else if (finalization.clearPendingState) {
+        this.pendingSubmittedDraft = null;
+        this.pendingRegeneration = null;
       }
-      await this.saveCurrentSession(true);
-      this.setLoading(false);
+      if (finalization.saveSession) {
+        await this.saveCurrentSession(true);
+      }
+      if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
+        this.activeRun = null;
+        if (this.abortController === abortController) {
+          this.abortController = null;
+        }
+        this.setLoading(false);
+      }
     }
   }
 
   private setLoading(loading: boolean): void {
-    this.isStreaming = loading;
+    const state = createComposerLoadingState(loading);
+    this.isStreaming = state.isStreaming;
     if (this.sendBtn) {
-      this.sendBtn.disabled = false;
-      this.sendBtn.setText(loading ? '중단' : t('sendButton'));
+      this.sendBtn.disabled = state.sendButton.disabled;
+      this.sendBtn.setText(state.sendButton.text);
     }
-    if (this.inputArea) this.inputArea.disabled = loading;
-    if (this.mcpBtn) this.mcpBtn.disabled = loading;
-    if (this.modelSelectEl) this.modelSelectEl.disabled = loading;
+    if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
+    if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
+    if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
+    setHidden(this.runControlEl, state.runControl.hidden);
+    if (this.stopAllBtn) {
+      this.stopAllBtn.setAttribute('aria-label', state.runControl.stopText);
+    }
+    if (!loading) this.renderChatReadiness();
+  }
+
+  private getDraftAttachmentIds(text: string): string[] {
+    return this.parseMentions(text).map((mention) =>
+      mention.type === 'server' ? `mcp:${mention.name}` : `${mention.type}:${mention.name}`,
+    );
+  }
+
+  private restoreSubmittedDraft(): void {
+    const draft = this.pendingSubmittedDraft;
+    if (!draft || !this.inputArea) return;
+    if (this.inputArea.value.trim()) {
+      this.pendingSubmittedDraft = null;
+      return;
+    }
+    this.inputArea.value = draft.text;
+    this.autoResizeInput();
+    this.renderContextPreview(draft.text);
+    this.pendingSubmittedDraft = null;
+    new Notice(t('composerDraftRestoredNotice'), 3000);
   }
 
   private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
     const providerMessage: ChatMessage = {
       role: message.role,
-      content: message.content,
+      content:
+        message.content ||
+        (message.assistantQuestion
+          ? t('assistantQuestionProviderContent', {
+              prompt: message.assistantQuestion.prompt,
+              choices: message.assistantQuestion.choices
+                .map((choice) => `- ${choice.label}`)
+                .join('\n'),
+            })
+          : ''),
       ...(message.reasoning ? { reasoning: message.reasoning } : {}),
     };
     if (message.toolCalls && message.toolCalls.length > 0) {
@@ -2287,7 +3374,7 @@ export class ChatView extends ItemView {
           existing.arguments += toolCallDelta.function.arguments;
       } else {
         toolCallMap.set(toolCallDelta.index, {
-          id: toolCallDelta.id ?? '',
+          id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
           arguments: toolCallDelta.function?.arguments ?? '',
           status: 'running',
@@ -2368,14 +3455,24 @@ export class ChatView extends ItemView {
       .trim();
   }
 
-  private async collectToolDefinitions(serverNames: string[]): Promise<ToolDefinition[]> {
-    const toolDefinitions: ToolDefinition[] = [];
+  private async collectToolDefinitions(
+    serverNames: string[],
+    run: ChatRunHandle<AbortController>,
+  ): Promise<ToolDefinition[]> {
+    if (!isChatRunActive(this.activeRun, run)) return [];
+    const nativeDefinition = createNativeVaultToolDefinition();
+    const toolDefinitions: ToolDefinition[] = [nativeDefinition];
+    const registeredNames = new Set([nativeDefinition.function.name]);
     for (const serverName of serverNames) {
+      if (!isChatRunActive(this.activeRun, run)) return [];
       const client = this.plugin.mcpRegistry?.getClient(serverName);
       if (!client) continue;
       try {
         const tools = await client.listTools();
+        if (!isChatRunActive(this.activeRun, run)) return [];
         for (const tool of tools) {
+          if (registeredNames.has(tool.name)) continue;
+          registeredNames.add(tool.name);
           toolDefinitions.push({
             type: 'function',
             function: {
@@ -2398,50 +3495,50 @@ export class ChatView extends ItemView {
   private async streamFinalAnswerAfterTools(args: {
     provider: LLMProvider;
     messageId: string;
-    baseMessages: ChatMessage[];
+    conversationMessages: ChatMessage[];
+    assistantContent: string;
     toolDefinitions: ToolDefinition[];
     toolCalls: ToolCallRecord[];
-    abortController: AbortController;
+    run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
-  }): Promise<{ finalText: string; finalReasoning: string; newToolCalls: ToolCallRecord[] }> {
-    const successfulToolCalls = args.toolCalls.filter(
-      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
-    );
-    if (successfulToolCalls.length === 0) {
-      return { finalText: '', finalReasoning: '', newToolCalls: [] };
+  }): Promise<{
+    finalText: string;
+    finalReasoning: string;
+    newToolCalls: ToolCallRecord[];
+    conversationMessages: ChatMessage[];
+  }> {
+    if (!isChatRunActive(this.activeRun, args.run)) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
+    }
+    const completedToolCalls = selectProviderReinjectableToolCalls(args.toolCalls);
+    if (completedToolCalls.length === 0) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
     }
 
     let finalText = '';
     let finalReasoning = '';
     const newToolCallMap = new Map<number, ToolCallRecord>();
-    const assistantMsg = this.messages.find((message) => message.id === args.messageId);
-    const toolCallsPayload = successfulToolCalls.map((toolCall) => ({
-      id: toolCall.id,
-      type: 'function' as const,
-      function: {
-        name: toolCall.name,
-        arguments: toolCall.arguments,
-      },
-    }));
-    const secondMessages: ChatMessage[] = [
-      ...args.baseMessages,
-      {
-        role: 'assistant',
-        content: assistantMsg?.content ?? '',
-        toolCalls: toolCallsPayload,
-      },
-      ...successfulToolCalls.map((toolCall) => ({
-        role: 'tool' as const,
-        content: toolCall.normalizedResult ?? toolCall.result ?? '',
-        tool_call_id: toolCall.id,
-        name: toolCall.name,
-      })),
-    ];
+    const secondMessages = appendAssistantToolRound(
+      args.conversationMessages,
+      args.assistantContent,
+      completedToolCalls,
+    );
 
     const visibleToolCalls = [...args.toolCalls];
     await args.provider.streamChat(
       secondMessages,
       (chunk: StreamChunk) => {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
         if (chunk.content) finalText += chunk.content;
         if (chunk.reasoning) finalReasoning += chunk.reasoning;
         if (chunk.toolCalls) {
@@ -2453,18 +3550,40 @@ export class ChatView extends ItemView {
           false,
           finalReasoning || undefined,
           [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
-          { ...args.meta, status: 'streaming' },
+          {
+            ...args.meta,
+            citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
+            status: 'streaming',
+          },
         );
       },
       0.7,
       args.toolDefinitions,
-      { signal: args.abortController.signal },
+      { signal: args.run.controller.signal },
     );
+    if (!isChatRunActive(this.activeRun, args.run)) {
+      return {
+        finalText: '',
+        finalReasoning: '',
+        newToolCalls: [],
+        conversationMessages: args.conversationMessages,
+      };
+    }
+
+    const compatibility = parseCompatibilityToolResponse(
+      finalText,
+      (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
+    );
+    const compatibilityBaseIndex = newToolCallMap.size;
+    compatibility.toolCalls.forEach((toolCall, index) => {
+      newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
+    });
 
     return {
-      finalText,
+      finalText: compatibility.visibleContent,
       finalReasoning,
       newToolCalls: Array.from(newToolCallMap.values()),
+      conversationMessages: secondMessages,
     };
   }
 
@@ -2473,53 +3592,119 @@ export class ChatView extends ItemView {
     messageId: string;
     baseMessages: ChatMessage[];
     toolDefinitions: ToolDefinition[];
+    maxToolRounds?: number;
     toolCalls: ToolCallRecord[];
-    abortController: AbortController;
+    run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
     mentionedServers: string[];
     initialText?: string;
     initialReasoning?: string;
   }): Promise<void> {
-    const MAX_ROUNDS = 10;
+    const maxRounds = Math.max(0, Math.trunc(args.maxToolRounds ?? 10));
     let round = 0;
     let currentToolCalls = args.toolCalls;
+    let conversationMessages = [...args.baseMessages];
+    let currentAssistantContent = args.initialText ?? '';
     let accumulatedText = args.initialText ?? '';
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
+    let turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
+    const withCurrentProviderUsage = (): MessageMetaInput => {
+      const toolResultCount = selectProviderReinjectableToolCalls(allToolCalls).length;
+      const mcpServerNames = collectCompletedMcpServerNames(allToolCalls);
+      return {
+        ...args.meta,
+        dataBoundarySnapshot: args.meta.dataBoundarySnapshot
+          ? withDataBoundaryProviderUsage(args.meta.dataBoundarySnapshot, {
+              toolResultCount,
+              mcpServerNames,
+            })
+          : undefined,
+      };
+    };
 
-    while (round < MAX_ROUNDS) {
-      if (args.abortController.signal.aborted) break;
+    while (round < maxRounds) {
+      if (!isChatRunActive(this.activeRun, args.run)) return;
       round++;
 
       const result = await this.streamFinalAnswerAfterTools({
         provider: args.provider,
         messageId: args.messageId,
-        baseMessages: args.baseMessages,
+        conversationMessages,
+        assistantContent: currentAssistantContent,
         toolDefinitions: args.toolDefinitions,
         toolCalls: currentToolCalls,
-        abortController: args.abortController,
-        meta: args.meta,
+        run: args.run,
+        meta: { ...withCurrentProviderUsage(), citations: turnCitations },
       });
+      if (!isChatRunActive(this.activeRun, args.run)) return;
 
-      accumulatedText += result.finalText;
-      if (result.finalReasoning) accumulatedReasoning += result.finalReasoning;
+      const roundText = resolveAssistantToolLoopText(
+        accumulatedText,
+        result.finalText,
+        result.newToolCalls.length > 0,
+      );
+      accumulatedText = roundText.finalAnswer ?? roundText.displayText;
+      if (result.finalReasoning) {
+        accumulatedReasoning = joinAssistantToolRoundText(
+          accumulatedReasoning,
+          result.finalReasoning,
+        );
+      }
+      conversationMessages = result.conversationMessages;
 
       if (result.newToolCalls.length > 0) {
-        allToolCalls.push(...result.newToolCalls);
+        const preparedCandidates = await prepareAssistantToolCalls({
+          toolCalls: result.newToolCalls,
+          nativeTool: this.nativeVaultTool,
+          registry: this.plugin.mcpRegistry,
+          preferredServerNames: args.mentionedServers,
+          mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+        });
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        const preparedToolCalls = markRepeatedToolCalls(allToolCalls, preparedCandidates);
+        if (
+          preparedToolCalls.some(
+            (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+          )
+        ) {
+          allToolCalls.push(...preparedToolCalls);
+          const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
+          this.updateMessage(
+            args.messageId,
+            accumulatedText,
+            true,
+            accumulatedReasoning || undefined,
+            allToolCalls,
+            {
+              ...withCurrentProviderUsage(),
+              citations: displayedCitations,
+              status: 'complete',
+              turnStage: 'awaiting-tool-approval',
+            },
+          );
+          new Notice(t('mcpApprovalRequiredNotice'));
+          return;
+        }
         currentToolCalls = await this.executeAssistantToolCalls(
           args.messageId,
-          result.newToolCalls,
+          preparedToolCalls,
           args.mentionedServers,
           accumulatedReasoning || undefined,
+          args.run,
         );
+        if (!isChatRunActive(this.activeRun, args.run)) return;
         allToolCalls.push(...currentToolCalls);
+        currentAssistantContent = result.finalText;
+        turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
+        const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         this.updateMessage(
           args.messageId,
           accumulatedText,
           false,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'streaming' },
+          { ...withCurrentProviderUsage(), citations: displayedCitations, status: 'streaming' },
         );
         continue;
       }
@@ -2527,44 +3712,93 @@ export class ChatView extends ItemView {
       if (!accumulatedText.trim()) {
         this.updateMessage(
           args.messageId,
-          'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.',
+          t('mcpToolFinalAnswerMissing'),
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'error', errorMessage: 'MCP 도구 결과는 받았지만, 모델이 최종 답변을 생성하지 못했습니다. 아래 툴 결과를 확인한 뒤 다시 시도해 주세요.', stopReason: 'tool-failed' },
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: t('mcpToolFinalAnswerMissing'),
+            stopReason: 'tool-failed',
+          },
         );
       } else {
+        const normalized = normalizeReasoningChunk({
+          content: accumulatedText,
+          reasoning: accumulatedReasoning || undefined,
+        });
+        accumulatedText = normalized.content;
+        accumulatedReasoning = normalized.reasoning ?? '';
+        accumulatedText = enforceNativeToolAnswerContract(accumulatedText, allToolCalls).content;
+        const classification = classifyAssistantResponse({
+          content: accumulatedText,
+          reasoning: accumulatedReasoning,
+        });
+        if (classification.type === 'question') {
+          const answerCitations = selectDisplayedAnswerCitations(
+            classification.content,
+            turnCitations,
+          );
+          this.updateMessage(
+            args.messageId,
+            classification.content,
+            true,
+            classification.reasoning || undefined,
+            allToolCalls,
+            {
+              ...withCurrentProviderUsage(),
+              citations: answerCitations,
+              assistantQuestion: classification.question,
+              status: 'complete',
+              turnStage: 'complete',
+              stopReason: 'complete',
+            },
+          );
+          return;
+        }
+        const answerCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
+        const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
         this.updateMessage(
           args.messageId,
           accumulatedText,
           true,
           accumulatedReasoning || undefined,
           allToolCalls,
-          { ...args.meta, status: 'complete', stopReason: 'complete' },
+          {
+            ...withCurrentProviderUsage(),
+            citations: answerCitations,
+            sourceWarnings,
+            status: 'complete',
+            turnStage: 'complete',
+            stopReason: 'complete',
+          },
         );
       }
       return;
     }
 
-    if (args.abortController.signal.aborted) {
-      this.updateMessage(
-        args.messageId,
-        accumulatedText || '취소됨',
-        true,
-        accumulatedReasoning || undefined,
-        allToolCalls,
-        { ...args.meta, status: 'complete', stopReason: 'cancelled' },
-      );
-    } else {
-      this.updateMessage(
-        args.messageId,
-        accumulatedText || '툴 호출이 너무 많이 반복되었습니다.',
-        true,
-        accumulatedReasoning || undefined,
-        allToolCalls,
-        { ...args.meta, status: 'error', stopReason: 'error' },
-      );
-    }
+    if (!isChatRunActive(this.activeRun, args.run)) return;
+    const content = resolveToolLoopTerminalText(accumulatedText, 'limit');
+    const answerCitations = selectDisplayedAnswerCitations(content, turnCitations);
+    const sourceWarnings = this.validateAssistantSources(content, answerCitations);
+    this.updateMessage(
+      args.messageId,
+      content,
+      true,
+      accumulatedReasoning || undefined,
+      allToolCalls,
+      {
+        ...withCurrentProviderUsage(),
+        citations: answerCitations,
+        sourceWarnings,
+        status: 'error',
+        turnStage: 'error',
+        stopReason: 'error',
+      },
+    );
   }
 
   private getMentionedServerNames(text: string): string[] {
@@ -2573,24 +3807,59 @@ export class ChatView extends ItemView {
       .map((mention) => mention.name);
   }
 
+  private getEffectiveMcpServerNames(text: string): string[] {
+    return getPluginAwareServerNames({
+      mentionedServerNames: this.getMentionedServerNames(text),
+      pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
+      userText: text,
+      registry: this.plugin.mcpRegistry,
+    });
+  }
+
+  private validateAssistantSources(
+    content: string,
+    citations: SourceCitation[],
+  ): SourceValidationWarning[] {
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    return validateAnswerSources(content, citations, {
+      exists: (path: string) => {
+        if (this.app.vault.getAbstractFileByPath(path) instanceof TFile) return true;
+        if (
+          !path.endsWith('.md') &&
+          this.app.vault.getAbstractFileByPath(`${path}.md`) instanceof TFile
+        ) {
+          return true;
+        }
+        return markdownFiles.some((file) => file.basename === path || file.name === path);
+      },
+    });
+  }
+
   private async executeAssistantToolCalls(
     messageId: string,
     toolCalls: ToolCallRecord[],
     preferredServerNames: string[],
-    reasoning?: string,
+    reasoning: string | undefined,
+    run: ChatRunHandle<AbortController>,
   ): Promise<ToolCallRecord[]> {
+    if (!isChatRunActive(this.activeRun, run)) {
+      return toolCalls.map((toolCall) => ({ ...toolCall }));
+    }
     const message = this.messages.find((m) => m.id === messageId);
     if (!message) {
-      throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
+      throw new Error(t('mcpResultMessageMissing', { messageId }));
     }
-    return executeMcpToolCalls({
+    return executeToolCalls({
+      nativeTool: this.nativeVaultTool,
       registry: this.plugin.mcpRegistry,
       toolCalls,
       preferredServerNames,
+      signal: run.controller.signal,
       onUpdate: (updatedToolCalls) => {
+        if (!isChatRunActive(this.activeRun, run)) return;
         const current = this.messages.find((m) => m.id === messageId);
         if (!current) {
-          throw new Error(`MCP 결과를 반영할 채팅 메시지를 찾을 수 없습니다: ${messageId}`);
+          throw new Error(t('mcpResultMessageMissing', { messageId }));
         }
         const isDone = !updatedToolCalls.some(
           (toolCall) => toolCall.status === 'running' && toolCall.approved !== false,
@@ -2601,88 +3870,224 @@ export class ChatView extends ItemView {
   }
 
   private async approveToolCall(messageId: string, toolCallId: string): Promise<void> {
+    if (this.isStreaming) return;
     const message = this.messages.find((m) => m.id === messageId);
     if (!message?.toolCalls) return;
-    const toolCalls = message.toolCalls.map((toolCall) =>
-      toolCall.id === toolCallId || toolCall.name === toolCallId
-        ? { ...toolCall, approved: true }
-        : { ...toolCall },
-    );
-    this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls);
-    const updated = await this.executeAssistantToolCalls(
-      messageId,
-      toolCalls,
-      this.getMentionedServerNames(this.lastUserPrompt ?? ''),
-      message.reasoning,
-    );
-    const stopReason = updated.some((toolCall) => toolCall.status === 'error')
-      ? 'tool-failed'
-      : 'complete';
-    const latestMessage = this.messages.find((m) => m.id === messageId);
-    const successfulToolCalls = updated.filter(
-      (toolCall) => toolCall.status === 'success' && (toolCall.normalizedResult || toolCall.result),
-    );
-    if (successfulToolCalls.length > 0 && message.providerKey && message.model) {
-      const { createCustomOpenAIProvider, createProvider } = await import('../llm/providers');
-      const provider = message.providerKey.startsWith('customOpenAI:')
-        ? (() => {
-            const providerId = message.providerKey?.split(':')[1] ?? '';
-            const customProvider = this.plugin.settings.customOpenAIProviders.find(
-              (item) => item.id === providerId,
-            );
-            if (!customProvider) {
-              throw new Error('커스텀 Provider를 찾을 수 없습니다.');
-            }
-            return createCustomOpenAIProvider(customProvider, message.model);
-          })()
-        : createProvider(
-            message.providerKey as ProviderKey,
-            this.plugin.settings[message.providerKey as ProviderKey],
-            message.model,
-          );
-      const mentionedServers = this.getMentionedServerNames(this.lastUserPrompt ?? '');
-      const promptContext = await this.buildPromptContext(this.lastUserPrompt ?? '');
-      const systemPrompt = promptContext.systemPrompt;
+    const abortController = new AbortController();
+    const run: ChatRunHandle<AbortController> = {
+      token: ++this.runTokenSequence,
+      controller: abortController,
+    };
+    this.activeRun = run;
+    this.abortController = abortController;
+    this.setLoading(true);
+    setHidden(this.typingIndicator, false);
+
+    try {
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
-      const previousMessages = this.messages
-        .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
-        .map((item) => this.toProviderMessage(item));
-      const baseMessages: ChatMessage[] = [
-        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...previousMessages,
-      ];
-      await this.runToolResponseLoop({
-        provider,
+      const { currentQuestion, previousUserQuestions } = resolveToolApprovalQuestionContext(
+        this.messages,
         messageId,
-        baseMessages,
-        toolDefinitions: await this.collectToolDefinitions(mentionedServers),
-        toolCalls: updated,
-        abortController: this.abortController ?? new AbortController(),
-        meta: {
-          providerKey: message.providerKey,
-          providerLabel: message.providerLabel,
-          model: message.model,
-          citations: latestMessage?.citations,
-          contextAttachments: latestMessage?.contextAttachments,
-        },
-        mentionedServers,
+        this.lastUserPrompt ?? '',
+      );
+      const toolCalls = message.toolCalls.map((toolCall) =>
+        toolCall.id === toolCallId || toolCall.name === toolCallId
+          ? { ...toolCall, approved: true }
+          : { ...toolCall },
+      );
+      this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls, {
+        status: 'streaming',
+        turnStage: 'running-tools',
       });
-    } else {
+      await this.saveCurrentSession(true);
+      if (!isChatRunActive(this.activeRun, run)) return;
+      const updated = await this.executeAssistantToolCalls(
+        messageId,
+        toolCalls,
+        this.getEffectiveMcpServerNames(currentQuestion),
+        message.reasoning,
+        run,
+      );
+      if (!isChatRunActive(this.activeRun, run)) return;
+
+      const pendingApproval = updated.some(
+        (toolCall) => toolCall.status === 'running' && toolCall.approved === false,
+      );
+      if (pendingApproval) {
+        const current = this.messages.find((item) => item.id === messageId);
+        this.updateMessage(
+          messageId,
+          current?.content ?? message.content,
+          true,
+          current?.reasoning ?? message.reasoning,
+          updated,
+          { turnStage: 'awaiting-tool-approval' },
+        );
+        return;
+      }
+      const stopReason = updated.some((toolCall) => toolCall.status === 'error')
+        ? 'tool-failed'
+        : 'complete';
+      const latestMessage = this.messages.find((m) => m.id === messageId);
+      const providerReinjectableToolCalls = selectProviderReinjectableToolCalls(updated);
+      if (providerReinjectableToolCalls.length > 0 && message.providerKey && message.model) {
+        const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
+          await import('../llm/providers');
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const profileRef = message.providerKey.startsWith('profile:')
+          ? `${message.providerKey}:${message.model}`
+          : '';
+        const resolvedProfileModel = profileRef
+          ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
+          : null;
+        const provider = resolvedProfileModel
+          ? createProviderForStrategy(
+              resolvedProfileModel.profile.strategy,
+              {
+                ...resolvedProfileModel.profile,
+                models: resolvedProfileModel.profile.models.map((model) => model.id),
+              },
+              resolvedProfileModel.modelId,
+              resolvedProfileModel.profile.id,
+            )
+          : message.providerKey.startsWith('customOpenAI:')
+            ? (() => {
+                const providerId = message.providerKey?.split(':')[1] ?? '';
+                const customProvider = this.plugin.settings.customOpenAIProviders.find(
+                  (item) => item.id === providerId,
+                );
+                if (!customProvider) {
+                  throw new Error(t('customProviderNotFound'));
+                }
+                return createCustomOpenAIProvider(customProvider, message.model);
+              })()
+            : createProvider(
+                message.providerKey as ProviderKey,
+                this.plugin.settings[message.providerKey as ProviderKey],
+                message.model,
+              );
+        const mentionedServers = this.getEffectiveMcpServerNames(currentQuestion);
+        const promptContext = await this.buildPromptContext(currentQuestion, previousUserQuestions);
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const resumeDataBoundarySnapshot = createDataBoundarySnapshot({
+          providerLabel: message.providerLabel ?? message.providerKey,
+          model: message.model,
+          hasUserQuestion: true,
+          recentConversationMessageCount: Math.min(10, Math.max(0, messageIndex)),
+          hasSystemPrompt: true,
+          attachments: promptContext.attachments,
+          citations: promptContext.citations,
+          mcpServerNames: [],
+        });
+        const resumePlan = createToolApprovalResumePlan({
+          promptSystemPrompt: promptContext.systemPrompt,
+          toolDefinitions,
+          providerSupportsToolCalling: provider.capability.toolCalling,
+          toolCalls: updated,
+          dataBoundarySnapshot: resumeDataBoundarySnapshot,
+        });
+        const previousMessages = this.messages
+          .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
+          .map((item) => this.toProviderMessage(item));
+        const baseMessages: ChatMessage[] = [
+          ...(resumePlan.systemPrompt
+            ? [{ role: 'system' as const, content: resumePlan.systemPrompt }]
+            : []),
+          ...previousMessages,
+        ];
+        await this.runToolResponseLoop({
+          provider,
+          messageId,
+          baseMessages,
+          toolDefinitions: resumePlan.providerToolDefinitions,
+          maxToolRounds: provider.capability.maxToolRounds,
+          toolCalls: updated,
+          run,
+          meta: {
+            providerKey: message.providerKey,
+            providerLabel: message.providerLabel,
+            model: message.model,
+            providerCapability: message.providerCapability,
+            citations: promptContext.citations,
+            contextAttachments: promptContext.attachments,
+            dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
+          },
+          mentionedServers,
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+      } else {
+        this.updateMessage(
+          messageId,
+          latestMessage?.content ?? message.content,
+          true,
+          latestMessage?.reasoning ?? message.reasoning,
+          updated,
+          { stopReason },
+        );
+      }
+    } catch (err) {
+      if (!isChatRunOwner(this.activeRun, run)) return;
+      setHidden(this.typingIndicator, true);
+      const latestMessage = this.messages.find((item) => item.id === messageId);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        this.updateMessage(
+          messageId,
+          latestMessage?.content || t('chatGenerationStopped'),
+          true,
+          latestMessage?.reasoning,
+          latestMessage?.toolCalls,
+          { status: 'complete', stopReason: 'cancelled' },
+        );
+        return;
+      }
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorKind = classifyChatFailure(err);
+      const presentation = createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
+      const errorDetail = this.formatErrorDetail(
+        message.providerKey ?? 'unknown',
+        message.model ?? 'unknown',
+        redactDebugDetail(errorMsg),
+        getChatHttpStatus(err),
+      );
       this.updateMessage(
         messageId,
-        latestMessage?.content ?? message.content,
+        presentation.content,
         true,
-        latestMessage?.reasoning ?? message.reasoning,
-        updated,
-        { stopReason },
+        latestMessage?.reasoning,
+        latestMessage?.toolCalls,
+        {
+          status: 'error',
+          stopReason: 'error',
+          errorMessage: errorDetail,
+          errorKind,
+          errorRetryAt: presentation.retryAvailableAt,
+        },
       );
+    } finally {
+      const finalization = planChatRunFinalization(this.activeRun, run, false);
+      if (finalization.clearPendingState) {
+        this.pendingSubmittedDraft = null;
+        this.pendingRegeneration = null;
+      }
+      if (finalization.saveSession) {
+        await this.saveCurrentSession(true);
+      }
+      if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
+        setHidden(this.typingIndicator, true);
+        this.activeRun = null;
+        if (this.abortController === abortController) {
+          this.abortController = null;
+        }
+        this.setLoading(false);
+      }
     }
-    await this.saveCurrentSession(true);
   }
 
   private async buildPromptContext(
     lastUserText: string,
-    previousQueries?: string[],
+    previousUserQuestions: readonly string[] = [],
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -2694,27 +4099,21 @@ export class ChatView extends ItemView {
       if (pluginInfo) parts.push(pluginInfo);
     }
 
-    let ragQuery = lastUserText;
-    if (previousQueries && previousQueries.length >= 2) {
-      const prev = previousQueries[previousQueries.length - 2];
-      const isFollowUp =
-        lastUserText.length < 15 ||
-        /^(어|아|왜|근데|그래서|하여튼|아니|잠시|계속|다시).{0,30}$/.test(lastUserText);
-      if (isFollowUp && prev) {
-        ragQuery = prev;
-      }
-    }
-
-    const ragEngine = (
-      this.plugin as unknown as {
-        ragEngine?: RagQueryLike | null;
-      }
-    ).ragEngine;
-    const context = await buildChatContext(ragQuery, {
+    const skipAutoRag = this.skipAutoRagOnce;
+    this.skipAutoRagOnce = false;
+    const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
+      skipAutoRag,
+      () => this.plugin.prepareRagForChat(),
+      () => this.plugin.ragEngine,
+    );
+    const context = await buildChatContext(lastUserText, {
       app: this.app,
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
+      knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
+      queryExpander: (question) =>
+        Promise.resolve(expandVaultSearchQueryLocally(question, previousUserQuestions)),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 
@@ -2746,6 +4145,7 @@ export class ChatView extends ItemView {
     const closeBtn = title.createEl('button', {
       cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
+      attr: { type: 'button', 'aria-label': t('closeLabel') },
     });
     const close = () => overlay.remove();
     closeBtn.addEventListener('click', close);
@@ -2766,7 +4166,10 @@ export class ChatView extends ItemView {
           text: server.name,
         });
         for (const tool of tools) {
-          const item = list.createDiv({ cls: 'superpower-inside-mcp-tool-item' });
+          const item = list.createEl('button', {
+            cls: 'superpower-inside-mcp-tool-item',
+            attr: { type: 'button' },
+          });
           item.createDiv({ cls: 'superpower-inside-mcp-tool-name', text: tool.name });
           if (tool.description) {
             item.createDiv({
@@ -2809,6 +4212,7 @@ export class ChatView extends ItemView {
     const closeBtn = title.createEl('button', {
       cls: 'superpower-inside-mcp-tool-picker-close',
       text: '×',
+      attr: { type: 'button', 'aria-label': t('closeLabel') },
     });
     const close = () => overlay.remove();
     closeBtn.addEventListener('click', close);
@@ -2912,7 +4316,7 @@ export class ChatView extends ItemView {
           if (Number.isNaN(numVal)) {
             if (required) {
               validationErrors.push(
-                t('mcpToolInvalidField', { field: key, detail: '숫자 값이 필요합니다.' }),
+                t('mcpToolInvalidField', { field: key, detail: t('validationNeedsNumber') }),
               );
               continue;
             }
@@ -2922,7 +4326,7 @@ export class ChatView extends ItemView {
             validationErrors.push(
               t('mcpToolInvalidField', {
                 field: key,
-                detail: `최소값 ${def.minimum} 이상이어야 합니다.`,
+                detail: t('validationMinValue', { minimum: def.minimum }),
               }),
             );
             continue;
@@ -2931,7 +4335,7 @@ export class ChatView extends ItemView {
             validationErrors.push(
               t('mcpToolInvalidField', {
                 field: key,
-                detail: `최대값 ${def.maximum} 이하여야 합니다.`,
+                detail: t('validationMaxValue', { maximum: def.maximum }),
               }),
             );
             continue;
@@ -2941,7 +4345,7 @@ export class ChatView extends ItemView {
           const trimmed = el.value.trim();
           if (required && trimmed === '') {
             validationErrors.push(
-              t('mcpToolInvalidField', { field: key, detail: '필수 입력값입니다.' }),
+              t('mcpToolInvalidField', { field: key, detail: t('validationRequiredValue') }),
             );
             continue;
           }
@@ -2955,7 +4359,7 @@ export class ChatView extends ItemView {
                 validationErrors.push(
                   t('mcpToolInvalidField', {
                     field: key,
-                    detail: `형식이 올바르지 않습니다. (패턴: ${def.pattern})`,
+                    detail: t('validationPatternDetail', { pattern: def.pattern }),
                   }),
                 );
                 continue;
@@ -2993,9 +4397,15 @@ export class ChatView extends ItemView {
     messageId?: string,
   ): Promise<void> {
     const registry = this.plugin.mcpRegistry;
-    if (!registry) return;
+    if (!registry) {
+      new Notice(t('mcpRegistryUnavailableNotice'), 5000);
+      return;
+    }
     const client = registry.getClient(serverName);
-    if (!client) return;
+    if (!client) {
+      new Notice(t('mcpClientUnavailableNotice', { server: serverName }), 5000);
+      return;
+    }
 
     let runId: string | null = null;
     if (messageId) {
@@ -3023,7 +4433,7 @@ export class ChatView extends ItemView {
       }
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : String(err);
-      const friendlyMsg = this.normalizeToolError(rawMsg);
+      const friendlyMsg = classifyMcpToolError(rawMsg, 'view');
       if (messageId) {
         this.updateToolCallInMessage(messageId, toolName, {
           result: friendlyMsg,
@@ -3067,48 +4477,40 @@ export class ChatView extends ItemView {
     );
   }
 
-  private normalizeToolError(rawMsg: string): string {
-    if (rawMsg.includes('Input validation error')) {
-      const match = rawMsg.match(/does not match '(.+?)'/);
-      if (match) {
-        return `입력값의 형식이 올바르지 않습니다. 요구되는 패턴: \`${match[1]}\``;
-      }
-      const fieldMatch = rawMsg.match(/'([^']+)'/);
-      if (fieldMatch) {
-        return `필드 \`${fieldMatch[1]}\`의 입력값이 잘못되었습니다.`;
-      }
-      return '입력값이 스키마 검증을 통과하지 못했습니다. 필수 필드와 값의 형식을 확인해주세요.';
-    }
-    if (rawMsg.includes('required')) {
-      return '필수 입력값이 누락되었습니다. 모든 필수 필드를 채워주세요.';
-    }
-    return rawMsg;
-  }
-
   /** LLM API 에러 발생 시 진단 정보를 포함한 상세 메시지 생성 */
-  private formatErrorDetail(providerKey: string, model: string, rawError: string): string {
+  private formatErrorDetail(
+    providerKey: string,
+    model: string,
+    rawError: string,
+    structuredStatus?: number,
+  ): string {
     const timestamp = new Date().toISOString();
-    const statusMatch = rawError.match(/status\s*(\d{3})/);
-    const statusCode = statusMatch ? statusMatch[1] : '???';
+    const statusMatch = rawError.match(/\b(?:status\s*[:=]?\s*|http\s+|:\s*)(\d{3})\b/i);
+    const statusCode = structuredStatus?.toString() ?? statusMatch?.[1] ?? 'unknown';
 
     const providerHints: Record<number, string> = {
-      400: '요청 형식이 잘못되었습니다. 입력값이나 파라미터를 확인하세요.',
-      401: 'API 키가 유효하지 않거나 만료되었습니다.',
-      402: '잔액이 부족합니다. 결제 수단을 확인하세요.',
-      403: '접근이 거부되었습니다. API 키 권한을 확인하세요.',
-      404: '요청한 모델/엔드포인트를 찾을 수 없습니다.',
-      429: '요청 횟수 제한을 초과했습니다. 잠시 후 다시 시도하세요.',
-      500: '서버 내부 오류입니다. 잠시 후 다시 시도하세요.',
-      502: '게이트웨이 오류입니다. 서버가 일시적으로 불안정합니다.',
-      503: '서비스가 일시적으로 사용 불가능합니다.',
+      400: t('apiHintBadRequest'),
+      401: t('apiHintUnauthorized'),
+      402: t('apiHintPaymentRequired'),
+      403: t('apiHintForbidden'),
+      404: t('apiHintNotFound'),
+      429: t('apiHintRateLimited'),
+      500: t('apiHintServerError'),
+      502: t('apiHintBadGateway'),
+      503: t('apiHintServiceUnavailable'),
     };
 
-    const hint = statusCode !== '???' ? (providerHints[Number(statusCode)] ?? '') : '';
+    const hint =
+      statusCode !== 'unknown'
+        ? (providerHints[Number(statusCode)] ?? '')
+        : rawError.includes('Failed to fetch')
+          ? t('apiHintFetchCors')
+          : '';
     const detail = [
       `[${timestamp}] ${providerKey}/${model}`,
-      `오류 코드: ${statusCode}`,
-      ...(hint ? [`원인 추정: ${hint}`] : []),
-      `원본: ${rawError}`,
+      t('apiErrorCode', { code: statusCode }),
+      ...(hint ? [t('apiErrorLikelyCause', { hint })] : []),
+      t('apiErrorRaw', { error: rawError }),
     ];
     return detail.join('\n');
   }

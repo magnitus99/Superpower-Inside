@@ -1,13 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_OBSIDIAN_PROMPT_ID,
-  DEFAULT_OBSIDIAN_SYSTEM_PROMPT,
   buildVaultPromptGenerationMessages,
+  createDefaultPromptEntry,
+  getDefaultObsidianSystemPrompt,
   getEffectiveSystemPrompt,
   normalizePromptLibrary,
   summarizeVectorEntries,
 } from './prompt-library';
 import type { VectorEntry } from '../rag/store';
+import { setLanguage, t } from '../i18n';
+
+afterEach(() => {
+  setLanguage('ko');
+});
 
 describe('프롬프트 보관함', () => {
   it('빈 설정에는 Obsidian 기본 프롬프트를 보강한다', () => {
@@ -15,7 +21,56 @@ describe('프롬프트 보관함', () => {
 
     expect(result.activePromptId).toBe(DEFAULT_OBSIDIAN_PROMPT_ID);
     expect(result.promptLibrary).toHaveLength(1);
-    expect(result.promptLibrary[0]?.content).toBe(DEFAULT_OBSIDIAN_SYSTEM_PROMPT);
+    expect(result.promptLibrary[0]?.content).toBe(getDefaultObsidianSystemPrompt());
+  });
+
+  it('영어 기본 프롬프트는 레거시 사용자 프롬프트로 오인하지 않는다', () => {
+    setLanguage('en');
+
+    const result = normalizePromptLibrary([], undefined, t('defaultObsidianSystemPrompt'));
+
+    expect(result.activePromptId).toBe(DEFAULT_OBSIDIAN_PROMPT_ID);
+    expect(result.promptLibrary).toHaveLength(1);
+    expect(result.promptLibrary[0]?.content).toBe(t('defaultObsidianSystemPrompt'));
+  });
+
+  it('편집하지 않은 기본 프롬프트는 현재 UI 언어로 다시 현지화한다', () => {
+    setLanguage('ko');
+    const storedDefault = createDefaultPromptEntry('2026-05-16T00:00:00.000Z');
+
+    setLanguage('en');
+    const result = normalizePromptLibrary(
+      [storedDefault],
+      DEFAULT_OBSIDIAN_PROMPT_ID,
+      storedDefault.content,
+    );
+
+    expect(result.promptLibrary[0]).toMatchObject({
+      id: DEFAULT_OBSIDIAN_PROMPT_ID,
+      source: 'default',
+      title: t('promptDefaultTitle'),
+      content: t('defaultObsidianSystemPrompt'),
+      createdAt: storedDefault.createdAt,
+    });
+    expect(/[가-힣]/u.test(result.promptLibrary[0]?.content ?? '')).toBe(false);
+  });
+
+  it('사용자가 편집한 기본 ID 프롬프트는 언어 전환 후에도 보존한다', () => {
+    const editedDefault = {
+      ...createDefaultPromptEntry('2026-05-16T00:00:00.000Z'),
+      title: 'My vault policy',
+      content: 'Always cite my notes.',
+      source: 'user' as const,
+    };
+
+    setLanguage('en');
+    const result = normalizePromptLibrary(
+      [editedDefault],
+      DEFAULT_OBSIDIAN_PROMPT_ID,
+      editedDefault.content,
+    );
+
+    expect(result.promptLibrary[0]).toEqual(editedDefault);
   });
 
   it('기존 systemPrompt를 사용자 프롬프트 항목으로 보존한다', () => {
@@ -77,8 +132,10 @@ describe('프롬프트 보관함', () => {
   });
 });
 
-function createSettings(chat: Record<string, unknown>): Parameters<typeof getEffectiveSystemPrompt>[0] {
-  return ({
+function createSettings(
+  chat: Record<string, unknown>,
+): Parameters<typeof getEffectiveSystemPrompt>[0] {
+  return {
     chat: {
       saveFolder: 'Chats',
       defaultModel: 'ollama:llama3.1',
@@ -90,7 +147,7 @@ function createSettings(chat: Record<string, unknown>): Parameters<typeof getEff
       enforceMcpTools: true,
       ...chat,
     },
-  } as unknown) as Parameters<typeof getEffectiveSystemPrompt>[0];
+  } as unknown as Parameters<typeof getEffectiveSystemPrompt>[0];
 }
 
 function createEntry(filePath: string, heading: string, text: string): VectorEntry {

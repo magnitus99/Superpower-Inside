@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MCPRegistryLike } from './mcp-tool-execution';
 import {
   executeMcpToolCalls,
+  findServerForTool,
   parseToolArguments,
   prepareToolCallsForExecution,
 } from './mcp-tool-execution';
@@ -10,7 +11,9 @@ import type { ToolCallRecord } from './types';
 describe('MCP 툴 실행 결과 반영', () => {
   it('자동승인된 MCP 결과를 ToolCallRecord에 반드시 반영한다', async () => {
     const client = createClient({
-      content: [{ type: 'text', text: '검색 결과: Elite Series 2 대안은 Xbox Wireless Controller입니다.' }],
+      content: [
+        { type: 'text', text: '검색 결과: Elite Series 2 대안은 Xbox Wireless Controller입니다.' },
+      ],
     });
     const registry = createRegistry(client);
     const toolCalls = await prepareToolCallsForExecution(
@@ -39,6 +42,35 @@ describe('MCP 툴 실행 결과 반영', () => {
       normalizedResult: '검색 결과: Elite Series 2 대안은 Xbox Wireless Controller입니다.',
     });
     expect(updates.at(-1)?.[0]?.result).toContain('Elite Series 2');
+  });
+
+  it('채팅 실행의 취소 신호를 진행 중인 MCP 도구 요청까지 전달한다', async () => {
+    const controller = new AbortController();
+    const client = createClient({
+      content: [{ type: 'text', text: '늦은 결과' }],
+    });
+    client.callTool.mockImplementation((_name, _args, signal) => {
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('사용자 중지', 'AbortError')),
+          { once: true },
+        );
+      });
+    });
+    const registry = createRegistry(client);
+
+    const execution = executeMcpToolCalls({
+      registry,
+      toolCalls: [createToolCall({ name: 'search', arguments: '{"query":"slow"}' })],
+      preferredServerNames: ['serper'],
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(client.callTool).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    expect(client.callTool).toHaveBeenCalledWith('search', { query: 'slow' }, controller.signal);
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('수동승인 대기 상태에서는 실행하지 않고 승인 후 결과를 반영한다', async () => {
@@ -78,6 +110,81 @@ describe('MCP 툴 실행 결과 반영', () => {
     });
   });
 
+  it('mentioned-auto는 멘션된 서버의 일반 툴을 사용자 의도로 보고 자동 승인한다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '파일 내용' }] }, ['read_file']),
+      'filesystem',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'read_file', arguments: '{"path":"Notes/test.md"}' })],
+      registry,
+      ['filesystem'],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: true,
+      serverName: 'filesystem',
+    });
+  });
+
+  it('mentioned-auto는 destructive 이름의 툴을 멘션된 서버에서도 승인 대기로 둔다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '삭제됨' }] }, ['delete_file']),
+      'filesystem',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'delete_file', arguments: '{"path":"Notes/test.md"}' })],
+      registry,
+      ['filesystem'],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: false,
+      serverName: 'filesystem',
+    });
+  });
+
+  it('mentioned-auto는 멘션되지 않은 서버의 툴을 자동 승인하지 않는다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '검색 결과' }] }),
+      'serper',
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'search', arguments: '{"query":"obsidian"}' })],
+      registry,
+      [],
+      'mentioned-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: false,
+      serverName: 'serper',
+    });
+  });
+
+  it('always-auto는 멘션 여부와 무관하게 non-destructive 툴을 승인한다', async () => {
+    const registry = createRegistry(
+      createClient({ content: [{ type: 'text', text: '검색 결과' }] }),
+    );
+
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'search', arguments: '{"query":"obsidian"}' })],
+      registry,
+      [],
+      'always-auto',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      approved: true,
+      serverName: 'serper',
+    });
+  });
+
   it('MCP가 빈 결과를 반환하면 성공으로 위장하지 않고 오류로 반영한다', async () => {
     const registry = createRegistry(createClient({ content: [] }));
 
@@ -91,10 +198,54 @@ describe('MCP 툴 실행 결과 반영', () => {
     expect(executed[0]?.result).toContain('빈 결과');
   });
 
+  it('이미 완료된 MCP 호출은 승인 흐름에서 다시 실행하지 않는다', async () => {
+    const client = createClient({ content: [{ type: 'text', text: '새 결과' }] });
+    const registry = createRegistry(client);
+
+    const executed = await executeMcpToolCalls({
+      registry,
+      toolCalls: [
+        createToolCall({
+          name: 'search',
+          status: 'success',
+          approved: true,
+          result: '기존 결과',
+        }),
+      ],
+      preferredServerNames: ['serper'],
+    });
+
+    expect(client.callTool).not.toHaveBeenCalled();
+    expect(executed[0]).toMatchObject({ status: 'success', result: '기존 결과' });
+  });
+
   it('JSON이 아닌 인자는 input 필드로 보존한다', () => {
     expect(parseToolArguments('대추방울토마토 영양성분')).toEqual({
       input: '대추방울토마토 영양성분',
     });
+  });
+
+  it('서버 후보 순서와 tool name matching은 Rust plan을 따른다', async () => {
+    const serperClient = createClient({ content: [{ type: 'text', text: '검색 결과' }] });
+    const filesystemClient = createClient({ content: [{ type: 'text', text: '파일 내용' }] }, [
+      'read_file',
+    ]);
+    const clients = new Map([
+      ['serper', serperClient],
+      ['filesystem', filesystemClient],
+    ]);
+    const registry: MCPRegistryLike = {
+      getConnectionStatus: (name) =>
+        name === 'serper' || name === 'filesystem' ? 'connected' : 'disconnected',
+      getEnabledServers: () => [{ name: 'filesystem' }, { name: 'serper' }, { name: 'context7' }],
+      getClient: (name) => clients.get(name),
+    };
+
+    await expect(
+      findServerForTool(registry, 'read_file', ['context7', 'serper', 'serper']),
+    ).resolves.toBe('filesystem');
+    expect(serperClient.listTools).toHaveBeenCalledTimes(1);
+    expect(filesystemClient.listTools).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -106,22 +257,33 @@ function createToolCall(patch: Partial<ToolCallRecord>): ToolCallRecord {
     status: patch.status ?? 'running',
     serverName: patch.serverName,
     approved: patch.approved,
+    result: patch.result,
   };
 }
 
-function createClient(result: unknown) {
+function createClient(result: unknown, extraToolNames: string[] = []) {
   return {
     listTools: vi.fn(() =>
       Promise.resolve([
         { name: 'search', description: '검색', inputSchema: { type: 'object' } },
         { name: 'lookup_docs', description: '문서 검색', inputSchema: { type: 'object' } },
+        ...extraToolNames.map((name) => ({
+          name,
+          description: '추가 테스트 툴',
+          inputSchema: { type: 'object' },
+        })),
       ]),
     ),
-    callTool: vi.fn(() => Promise.resolve(result)),
+    callTool: vi.fn<
+      (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
+    >(() => Promise.resolve(result)),
   };
 }
 
-function createRegistry(client: ReturnType<typeof createClient>, serverName = 'serper'): MCPRegistryLike {
+function createRegistry(
+  client: ReturnType<typeof createClient>,
+  serverName = 'serper',
+): MCPRegistryLike {
   return {
     getConnectionStatus: (name) => (name === serverName ? 'connected' : 'disconnected'),
     getEnabledServers: () => [{ name: serverName }],

@@ -1,489 +1,349 @@
-# 개발자 가이드 — Superpower Inside
+# 개발자 가이드 - Superpower Inside
 
-> 이 문서는 플러그인을 디버깅하거나 새로운 기능을 추가하려는 개발자를 위한 것입니다.
+> 이 문서는 Superpower Inside에 기능을 추가하거나 버그를 수정할 때 따르는 현재 개발 계약입니다. 로컬 환경 준비는 [DEV_SETUP.md](DEV_SETUP.md)를 먼저 보세요.
 
----
+## 한눈에 보는 작업 흐름
 
-## 목차
-
-1. [아키텍처 개요](#1-아키텍처-개요)
-2. [개발 환경 구축](#2-개발-환경-구축)
-3. [모듈별 디버깅 가이드](#3-모듈별-디버깅-가이드)
-4. [코드 수정 → 테스트 → 릴리스 워크플로우](#4-코드-수정--테스트--릴리스-워크플로우)
-5. [새로운 기능 추가하기](#5-새로운-기능-추가하기)
-6. [트러블슈팅](#6-트러블슈팅)
-7. [릴리스 절차](#7-릴리스-절차)
-
----
-
-## 1. 아키텍처 개요
-
-### 디렉토리 구조
-
-```
-.
-├── main.ts                    # 플러그인 진입점 (onload/onunload)
-├── manifest.json              # 메타데이터
-├── src/
-│   ├── settings.ts           # 설정 인터페이스 + PluginSettingTab
-│   ├── llm/
-│   │   ├── providers.ts      # LLM 공통 인터페이스 (OpenAI, Claude, Ollama, OpenRouter)
-│   │   └── embedding.ts      # 임베딩 생성 + Dexie 캐싱
-│   ├── rag/
-│   │   ├── indexer.ts        # 마크다운 청킹 + 인덱싱
-│   │   ├── store.ts          # 벡터 저장소 (JSON 파일 기반 + 인메모리)
-│   │   ├── status.ts         # 문서별 RAG 인덱스 상태 계산
-│   │   └── query.ts          # 유사도 검색 (코사인)
-│   ├── chat/
-│   │   ├── view.ts           # 사이드바 채팅 뷰 (ItemView)
-│   │   ├── persistence.ts    # 채팅 저장/불러오기 (Markdown)
-│   │   └── commands.ts       # 에디터 지시어 처리
-│   ├── mcp/
-│   │   ├── client.ts         # MCP SDK 클라이언트 (stdio)
-│   │   └── registry.ts       # MCP 서버 목록 관리
-│   └── utils/
-│       ├── vault.ts          # 파일 필터 + JSON 읽기/쓰기
-│       └── obsidian-compat.ts # 활성 플러그인 탐지 (비공식 API)
+```mermaid
+flowchart LR
+    A["제품 철학 확인"] --> B["요구사항과 현재 코드 확인"]
+    B --> C["관련 모듈 찾기"]
+    C --> D["테스트 계약 추가 또는 확장"]
+    D --> E["구현"]
+    E --> F["npm run security:full"]
+    F --> G["npm run build"]
+    G --> H["npm run review -- --tag <version> --built"]
+    H --> I["필요 시 Obsidian 화면 QA"]
 ```
 
-### 데이터 흐름
+## 제품 철학 Gate
 
+기능을 추가하거나 UI를 바꾸기 전에 먼저 이 기준을 통과시킵니다. 하나라도 실패하면 구현을 시작하지 말고 UX, 범위, 자동화 방식을 먼저 바꿉니다.
+
+| 질문 | 통과 기준 |
+| --- | --- |
+| 새 설정이 필요한가 | 자동 감지, 안전한 기본값, 기존 설정 재사용, 점진적 공개로 해결할 수 없을 때만 추가합니다. |
+| 사용자가 계속 관리해야 하는 상태가 늘어나는가 | 자동 처리하고, 수동 조작은 복구용으로 둡니다. |
+| 설정/상태 화면이 전문가용 조작판처럼 커지는가 | 사용자가 해야 할 행동이 있을 때만 한 문장 이유와 하나의 primary action을 보여줍니다. |
+| 실패가 조용히 숨겨지는가 | 사용자가 행동해야 할 때만 짧고 구체적인 이유와 next action을 보여줍니다. |
+| 내부 복잡도가 사용자 언어로 새는가 | Rust/WASM, index, cache, extraction contract 같은 내부어는 사용자가 판단해야 할 때만 노출합니다. |
+| 복구 기능이 기본 workflow가 되는가 | reindex, reset, migrate, rebuild, retry는 문제 해결용으로 두고 첫 사용법이나 주요 CTA로 만들지 않습니다. |
+| UI를 바꿨는가 | 커밋·태그·푸시·릴리스 전에 실제 Obsidian 화면이나 충실한 시뮬레이션을 스크린샷으로 확인합니다. 밀도, 정렬, 대비, overflow, 상태 변화를 코드나 테스트 결과로 대신하지 않습니다. |
+
+### 기능별 적용
+
+| 영역 | 지시 |
+| --- | --- |
+| Provider 설정 | provider/model 선택을 늘리기 전에 기본값, 마지막 성공값, 연결 검증, 오류 next action을 먼저 설계합니다. |
+| RAG/GraphRAG | 인덱스 운영 UI를 늘리지 않습니다. 자동 동기화, stale 판정, 실패 재시도, 진단 로그를 먼저 설계합니다. |
+| MCP | 신뢰와 실행 의사를 명확히 하되 매번 확인을 요구하지 않습니다. 위험하거나 destructive한 동작은 별도 gate를 둡니다. |
+| 채팅 UI | 사용자가 질문하고 답을 검토하는 흐름을 방해하지 않습니다. 출처, 도구 결과, 오류는 답변 흐름 안에서 간결하게 보여줍니다. |
+| 진단/로그 | 일반 사용 화면이 아니라 문제 해결 표면입니다. 사용자에게 필요한 경우에만 요약해 노출하고 상세는 진단으로 보냅니다. |
+| 문서 | 문서는 현재 동작과 현재 계약만 남깁니다. 완료된 계획, migration 일지, 릴리스별 변경 목록은 source of truth로 남기지 않습니다. |
+
+### 완료 조건
+
+- PR/완료 보고에는 제품 철학 관점에서 무엇을 자동화했고, 어떤 수동 action을 왜 남겼는지 설명할 수 있어야 합니다.
+- 새 UI가 생겼다면 "사용자가 무엇을 해야 하는가"가 화면에서 3초 안에 읽혀야 합니다.
+- 새 상태/오류 문구는 원인, 영향, 다음 행동 중 최소 두 가지를 포함해야 합니다.
+- 설정이나 maintenance action을 추가했다면, 그것이 일상 workflow가 아니라 복구/고급 설정인 이유가 명확해야 합니다.
+
+## 공통 작업 중심 UI 디자인 계약
+
+RAG 설정 화면에서 시작한 계약을 General의 범용 설정 helper로 승격하고 Providers, Chat, MCP, Advanced에도 적용했습니다. 모든 설정 화면 변경은 아래 계층을 기본 계약으로 사용합니다.
+
+| 계층 | 역할 | 구현 기준 |
+| --- | --- | --- |
+| Section | 하나의 사용자 목적 | 탭 배경 위의 유일한 카드 표면입니다. 제목, 짧은 설명, body를 가집니다. |
+| Row | 상태, 설정 또는 작업 한 가지 | section 안에서는 배경 카드 대신 공통 padding과 구분선을 사용합니다. |
+| Status | 현재 상태와 근거 | `label + state + supporting detail`로 쓰고 색상과 텍스트를 함께 사용합니다. |
+| Action | 사용자가 지금 할 수 있는 일 | section당 primary action은 최대 하나며, 반복되는 disabled reason은 영역에서 한 번 설명합니다. |
+| Disclosure | 고급 설정과 복구 | button, `aria-expanded`, `aria-controls`, Obsidian icon을 사용합니다. |
+
+구현 순서는 다음과 같습니다.
+
+1. 현재 상태와 사용자의 가장 작은 다음 행동을 먼저 정합니다.
+2. 일상 설정과 진단·복구를 분리합니다.
+3. 최상위 section 외의 카드 컨테이너를 제거하고 row로 평탄화합니다.
+4. Obsidian theme variable에 매핑된 의미 토큰을 재사용합니다.
+5. TS에서는 DOM과 host callback만 연결합니다. 검색·랭킹·상태 판정 정책을 UI 편의를 위해 복제하지 않습니다.
+6. 준비, 진행 중, 빈 상태, 부분 실패, 오류, disabled 상태를 테스트와 실제 화면으로 확인합니다.
+
+`src/settings.ts`에서는 `createSettingsSection`, `createSettingsStatusRow`, `createSettingsActionRow`, `createSettingsNotice`, `createSettingsDisclosure`를 기본으로 사용합니다. RAG 전용 helper도 이 범용 section과 disclosure에 위임하므로 새 탭별 카드·접힘 체계를 만들지 않습니다.
+
+참조 문서:
+
+- [General 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-general-task-centered-ui-design.md)
+- [Providers 작업 중심 설정 UI 설계](superpowers/specs/2026-07-12-providers-task-centered-ui-design.md)
+- [Chat 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-chat-task-centered-ui-design.md)
+- [MCP 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-mcp-task-centered-ui-design.md)
+- [Advanced 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-advanced-task-centered-ui-design.md)
+- [RAG 작업 중심 설정 UI 설계](superpowers/specs/2026-07-11-rag-task-centered-ui-design.md)
+
+## 개발 원칙
+
+| 원칙 | 기준 |
+| --- | --- |
+| TypeScript strict | `as any`, `@ts-ignore`, `@ts-expect-error`, `eslint-disable` 없이 타입을 맞춥니다. |
+| 테스트 우선 | 순수 로직은 Vitest 또는 Rust unit test를 먼저 추가하거나 기존 계약을 확장합니다. |
+| Obsidian API 우선 | 런타임 파일 접근은 `app.vault`, `vault.adapter`, `cachedRead`, `modify`, `create`를 우선합니다. |
+| UI는 DOM API | 사용자/모델 출력에 `innerHTML`을 직접 넣지 않습니다. |
+| 작은 변경 | 큰 기능은 `ChatView`에 계속 누적하지 말고 helper나 전용 모듈로 분리합니다. |
+| 플랫폼 명시 | 로컬 작업 문서는 PowerShell, fish 등 실제 실행 shell을 명시하고 한 플랫폼 전용 절차를 전체 저장소 기준처럼 쓰지 않습니다. |
+
+## 아키텍처 개요
+
+```mermaid
+flowchart TD
+    A["main.ts<br/>Plugin lifecycle"] --> B["settings.ts<br/>Settings schema and UI"]
+    A --> C["llm/providers.ts<br/>Chat providers"]
+    A --> D["llm/embedding.ts<br/>Embedding providers and cache"]
+    A --> E["rag/indexer.ts<br/>Chunking and indexing"]
+    E --> F["rag/store.ts<br/>Vector store"]
+    F --> G["rag/query.ts<br/>Hybrid retrieval"]
+    G --> H["agent/obsidian-native-vault-port.ts<br/>Read-only vault access"]
+    H --> I["agent/native-vault-tool.ts<br/>Model tool protocol"]
+    I --> J["agent/research-agent.ts<br/>Bounded whole-vault research"]
+    C --> K["chat/tool-execution.ts<br/>Native and MCP tool rounds"]
+    I --> K
+    J --> K
+    K --> L["chat/view.ts<br/>Sidebar chat and run controls"]
+    A --> M["mcp/registry.ts<br/>Server registry"]
+    M --> N["mcp/client.ts<br/>stdio client"]
+    N --> K
+    A --> O["graph/*<br/>GraphRAG store, query, status, view"]
+    O --> G
 ```
-사용자 입력 (Chat/Editor)
-    │
-    ├─→ ChatView.handleSend()
-    │     └─→ LLMProvider.streamChat() ←┐
-    │                                     │
-    ├─→ RAGQueryEngine.query() ─→ EmbeddingProvider.embed()
-    │                                     │
-    └─→ MCPClientManager.callTool() ←────┘
-```
 
-### 주요 의존성
+| 영역 | 핵심 파일 | 역할 |
+| --- | --- | --- |
+| 플러그인 생명주기 | `main.ts` | 설정 로드, 명령 등록, provider/RAG/MCP/GraphRAG 초기화 |
+| 설정 | `src/settings.ts`, `src/settings-overview.ts` | 설정 타입, 기본값, 설정 탭 UI, 상태 요약 |
+| LLM | `src/llm/providers.ts` | OpenAI-compatible, Claude, Ollama, OpenRouter 채팅/스트리밍 |
+| 임베딩 | `src/llm/embedding.ts` | OpenAI-compatible/Ollama 임베딩, Dexie 캐시 |
+| 네이티브 리서치 | `src/agent/research-agent.ts`, `src/agent/native-vault-tool.ts`, `src/agent/obsidian-native-vault-port.ts` | 로컬 파일 선별, 제한된 근거 전송, 반복 읽기 전용 도구 호출, 확인 범위 보고 |
+| RAG | `src/rag/indexer.ts`, `src/rag/store.ts`, `src/rag/query.ts`, `src/rag/retrieval-pipeline.ts` | 텍스트·코드 청킹, BM25/vector/structural 후보 조회와 점수화 |
+| GraphRAG | `src/graph/*` | 추출, store, entity resolution, community, query, explorer |
+| 채팅 | `src/chat/view.ts`, `src/chat/tool-execution.ts`, `src/chat/run-ownership.ts`, `src/chat/persistence.ts` | UI, 반복 도구 실행, 전체 run 취소·복구, 세션 저장/로드 |
+| MCP | `src/mcp/client.ts`, `src/mcp/registry.ts` | stdio MCP 연결, 도구 목록, 호출 상태 관리 |
+| Rust/WASM 경계 | `crates/rag-wasm/`, `src/rag/rust-core.ts`, `generated/rag-wasm/` | 결정적 계산과 TS bridge |
 
-| 의존성 | 용도 | Obsidian API 대체 여부 |
-|---|---|---|
-| `obsidian` | Plugin, WorkspaceLeaf, Vault 등 기본 API | 불가 (핵심) |
-| `@modelcontextprotocol/sdk` | MCP Client (stdio transport) | 불가 |
-| `dexie` | IndexedDB 캐싱 (임베딩) | `localStorage` 대체 가능하나 제한적 |
+## 빠른 개발 시작
 
----
+Windows:
 
-## 2. 개발 환경 구축
-
-### 빠른 시작 (3단계)
-
-```bash
-# 1. 1회성 설정
-./scripts/setup-dev.fish
-
-# 2. 빌드 워치 시작
+```powershell
+.\scripts\setup-dev.ps1
 npm run dev
+.\scripts\launch-obsidian-debug.ps1
+```
 
-# 3. Obsidian 디버그 모드 실행
+macOS:
+
+```fish
+./scripts/setup-dev.fish
+npm run dev
 ./scripts/launch-obsidian-debug.fish
 ```
 
-### setup-dev.fish가 하는 일
+기본 검증 순서:
 
-| 단계 | 설명 |
-|---|---|
-| 테스트 볼트 생성 | `repo/.test-vault/` 생성 (`.gitignore`에 포함됨) |
-| 심링크 생성 | `.test-vault/.obsidian/plugins/superpower-inside/` → `repo/` |
-| hot-reload 설치 | `pjeby/hot-reload` 클론 (파일 변경 시 자동 리로드) |
-
-### 필수 조건
-
-- **Node.js 22+** (`node --version`)
-- **npm** (`npm install` 한 번 실행)
-- **macOS** (Windows는 `launch-obsidian-debug.fish` 경로 수정 필요)
-
----
-
-## 3. 모듈별 디버깅 가이드
-
-### 3.1 LLM 통합 (`src/llm/providers.ts`)
-
-**디버깅 포인트:**
-- `OpenAICompatibleProvider.streamChat()` — SSE 파싱 (`TextDecoder` + `getReader()`)
-- `ClaudeProvider.chat()` — Anthropic Messages API 포맷 (`x-api-key` 헤더)
-- `OllamaProvider` — 로컬 `http://localhost:11434` 호출
-
-**DevTools에서 확인:**
-```javascript
-// Console → Network 탭에서 fetch 요청 확인
-// 또는 플러그인 코드에 console.log 삽입:
-console.log('SSE buffer:', buffer);  // providers.ts streamChat 내부
-```
-
-**VS Code 브레이크포인트:**
-- `providers.ts:67` — `fetch()` 반환 직후
-- `providers.ts:89` — SSE 파싱 루프 시작
-
-**새 Provider 추가 시:**
-1. `LLMProvider` 인터페이스 구현
-2. `createProvider()` 팩토리에 case 추가
-3. `DEFAULT_SETTINGS`에 기본 config 추가
-4. `SuperpowerInsideSettingTab.buildProviderSettings()`에 UI 추가
-
----
-
-### 3.2 임베딩 (`src/llm/embedding.ts`)
-
-**디버깅 포인트:**
-- `sha256Hex()` — Web Crypto API, 비동기
-- `CachedEmbeddingProvider.embedBatch()` — 메모리 캐시 + IndexedDB 캐시 미스/히트
-
-**DevTools 확인:**
-```javascript
-// IndexedDB 확인
-(await Dexie.exists('SuperpowerInsideEmbeddingCache'))  // true/false
-(await new Dexie('SuperpowerInsideEmbeddingCache').table('embeddings').count())  // 캐시 개수
-```
-
-**캐시 초기화 (테스트 시):**
-```javascript
-// DevTools Console
-const { CachedEmbeddingProvider } = await import('./src/llm/embedding');
-const p = new CachedEmbeddingProvider({ embed: async (t) => [0.1, 0.2] });
-await p.clearCache();
-```
-
----
-
-### 3.3 RAG 엔진 (`src/rag/`)
-
-**청킹 테스트:**
-```typescript
-// DevTools Console 또는 테스트 파일
-import { chunkMarkdown } from './src/rag/indexer';
-const chunks = chunkMarkdown('# Heading\n\nParagraph...', 500);
-console.log(chunks);  // { text, metadata: { filePath, heading, startLine } }
-```
-
-**인덱싱 진행 상황 확인:**
-```javascript
-// VaultIndexer.indexVault()는 async이므로:
-const plugin = app.plugins.plugins['superpower-inside'];
-const count = await plugin.vaultIndexer?.indexVault();
-console.log(`Indexed ${count} files`);
-```
-
-**문서별 RAG 상태 확인:**
-
-`src/rag/status.ts`의 `calculateRagStatus()`가 설정 탭과 자동 업데이트의 공통 기준입니다. 대상 Markdown 파일을 벡터 저장소와 비교해 `healthy`, `missing`, `stale`, `unknown` 상태로 분류합니다.
-
-- `missing`: 해당 파일의 벡터가 없음
-- `stale`: 파일 `mtime/size` 또는 임베딩 프로바이더/모델이 저장된 벡터 메타데이터와 다름
-- `unknown`: 기존 벡터에 `sourceMtime`, `sourceSize`, `embeddingProvider`, `embeddingModel`이 없어 변경 여부를 판정할 수 없음
-
-새 벡터는 `VectorEntry.metadata`에 파일 `mtime/size`와 임베딩 설정을 함께 기록합니다. 레거시 벡터는 삭제하지 않고 RAG 탭에서 “상태 확인 필요”로 표시합니다.
-
-**벡터 저장소 디버깅:**
-```javascript
-// JsonFileVectorStore의 persist()는 .superpower-inside/vectors.json에 씀
-const adapter = app.vault.adapter;
-const raw = await adapter.read('.superpower-inside/vectors.json');
-const vectors = JSON.parse(raw);
-console.log(`Total vectors: ${vectors.length}`);
-```
-
----
-
-### 3.4 채팅 뷰 (`src/chat/view.ts`)
-
-**DOM 구조:**
-```
-.containerEl.children[1]
-  └── .superpower-inside-chat-container
-      ├── .superpower-inside-chat-messages   ← 메시지 버블 추가됨
-      └── .superpower-inside-chat-input-area
-          ├── textarea.superpower-inside-chat-input
-          └── button.superpower-inside-chat-send-btn
-```
-
-**메시지 추가 확인:**
-```javascript
-// DevTools → Elements → .superpower-inside-chat-messages 하위 div 개수 확인
-// 또는 Console:
-document.querySelectorAll('.superpower-inside-chat-message').length
-```
-
-**스트리밍 확인:**
-```javascript
-// streamChat 콜백이 호출되는지 확인
-// view.ts:141附近의 onChunk 콜백에 breakpoint 설정
-```
-
----
-
-### 3.5 MCP (`src/mcp/client.ts`)
-
-**제약:** `StdioClientTransport`는 Node.js 전용 → `isDesktopOnly: true` 권장
-
-**디버깅:**
-```typescript
-// MCPClientManager.connectStdio() 내부
-// transport 생성 후, client.connect() 에러 확인
-// client.listTools() 반환값 확인
-```
-
-**데스크톱/모바일 분기:**
-```typescript
-// main.ts initMCP()에서:
-if (!require('child_process')) {
-  // 모바일: SSE transport로 fallback
-}
-```
-
----
-
-### 3.6 활성 플러그인 탐지 (`src/utils/obsidian-compat.ts`)
-
-**비공식 API 주의:** `app.plugins.plugins`는 Obsidian 업데이트 시 깨질 수 있음
-
-**테스트:**
-```javascript
-// DevTools Console
-const { getActivePluginIds } = await import('./src/utils/obsidian-compat');
-getActivePluginIds(app);  // ['dataview', 'templater', ...]
-```
-
----
-
-## 4. 코드 수정 → 테스트 → 릴리스 워크플로우
-
-### 일반 수정 (UI/로직)
-
-```bash
-# 1. 코드 수정
-vim src/chat/view.ts
-
-# 2. 저장 → esbuild가 자동 재빌드 (npm run dev 실행 중이어야 함)
-# main.js가 업데이트됨
-
-# 3. hot-reload가 자동 감지 → 플러그인 리로드 (0.75초 내)
-
-# 4. Obsidian에서 즉시 확인
-```
-
-### 타입 수정 (인터페이스 변경)
-
-```bash
-# 1. 코드 수정
-vim src/settings.ts
-
-# 2. 타입체크
-npm run typecheck  # 0 error 확인 필수
-
-# 3. 빌드
+```powershell
+npm run security:full
 npm run build
-
-# 4. 린트
-npm run lint       # 0 error 확인 필수
-
-# 5. Obsidian에서 확인
+npm run review -- --tag <manifest-version> --built
 ```
 
-### 중요 변경 (새 모듈/의존성)
+## 주요 기능을 수정하는 방법
 
-```bash
-# 1. npm 의존성 추가
-npm install some-package
+### 네이티브 볼트 도구와 리서치 에이전트 수정
 
-# 2. esbuild.config.mjs에 external 추가 (필요시)
-# Obsidian이 제공하는 패키지는 external로 지정
+2.0의 기본 모델 인터페이스는 컨텍스트를 한 번 조립해 붙이는 방식이 아니라, 모델이 필요한 근거를 반복해서 요청하는 읽기 전용 `superpower_inside` 볼트 도구입니다. 전체 볼트 리서치는 같은 도구 계약 위에서 대상 파일을 로컬 선별하고, 선택된 근거만 제한적으로 provider에 전송한 뒤 출처와 확인 범위를 함께 반환합니다.
 
-# 3. 타입체크 + 빌드 + 린트
-npm run typecheck && npm run build && npm run lint
+| 파일 | 확인할 내용 |
+| --- | --- |
+| `src/agent/obsidian-native-vault-port.ts` | Obsidian vault I/O, 공통 파일 범위, 검색·읽기·목록·링크·통계 adapter |
+| `src/agent/native-vault-tool.ts` | 모델 도구 인자 검증, 실행, 표시 텍스트·모델 결과·출처 변환 |
+| `src/agent/research-agent.ts` | 전체 파일 inventory, 로컬 screening, provider 예산, reduce/synthesis, coverage |
+| `src/chat/tool-execution.ts` | 네이티브 도구와 MCP 도구의 반복 실행, approval/resume 경계 |
+| `src/chat/run-ownership.ts`, `src/chat/session-recovery.ts` | 전체 run 취소 소유권과 중단 세션 복구 |
+| `crates/rag-wasm/src/research_contract.rs` | 선택, 예산, coverage, wire-format의 결정적 정책 |
 
-# 4. 테스트 후 커밋
-```
+수정 기준:
 
----
+1. 네이티브 볼트 도구는 읽기 전용이어야 하며 생성·수정·이동·삭제 기능을 추가하지 않습니다.
+2. 전체 볼트 주장을 만들기 전에 로컬에서 대상 범위와 후보를 계산하고, provider에는 제한된 선택 근거만 전송합니다.
+3. 답변에는 실제 확인 범위와 제한을 보존하며, 출처가 없는 일반화를 성공으로 처리하지 않습니다.
+4. provider가 native function calling을 지원하지 않아도 호환 프로토콜로 같은 계약을 수행해야 합니다.
+5. 취소 신호는 검색이나 단일 provider 요청이 아니라 inventory부터 최종 합성까지 전체 run을 중단해야 합니다.
 
-## 5. 새로운 기능 추가하기
+### Provider 추가 또는 수정
 
-### 5.1 새 LLM Provider 추가
+수정 전 확인할 파일:
 
-**파일:** `src/llm/providers.ts`
+| 파일 | 확인할 내용 |
+| --- | --- |
+| `src/llm/providers.ts` | `LLMProvider` 구현, 스트리밍 delta, tool call 변환 |
+| `src/llm/validation.ts` | 연결 테스트와 모델 목록 검증 |
+| `src/settings.ts` | provider 타입, 기본 설정, 설정 UI |
+| `main.ts` | `createProvider()` 호출과 기본 모델 해석 |
+| `src/llm/providers.test.ts` | provider별 메시지 변환과 tool call 테스트 |
 
-```typescript
-class NewProvider implements LLMProvider {
-  async chat(messages, temperature) { /* ... */ }
-  async streamChat(messages, onChunk, temperature) { /* ... */ }
-}
-```
+추가 기준:
 
-**연동:**
-1. `createProvider()`에 case 추가
-2. `settings.ts`의 `SuperpowerInsideSettings`에 필드 추가
-3. `DEFAULT_SETTINGS`에 기본값 추가
-4. `SuperpowerInsideSettingTab.display()`에 UI 추가
+1. Provider 선택이 사용자의 첫 설정 부담을 늘리지 않는지 먼저 확인합니다.
+2. 새 provider가 필요하면 `ProviderKey`, label, 기본 설정을 추가합니다.
+3. OpenAI-compatible 계열이면 기존 `OpenAICompatibleProvider` 재사용을 먼저 검토합니다.
+4. 설정 탭에서는 연결 상태, 실패 이유, 다음 행동을 먼저 보이게 하고 내부 transport 세부값은 필요한 경우에만 노출합니다.
+5. 스트리밍, 일반 응답, tool call 메시지 변환 테스트를 추가합니다.
 
-### 5.2 새 RAG 저장소 백엔드 추가
+### RAG, GraphRAG, 임베딩 수정
 
-**파일:** `src/rag/store.ts`
+수정 전 확인할 파일:
 
-```typescript
-export class NewVectorStore implements VectorStore {
-  async add(entries) { /* ... */ }
-  async query(vector, topK) { /* ... */ }
-  async clear() { /* ... */ }
-  async persist() { /* ... */ }
-}
-```
+| 파일 | 확인할 내용 |
+| --- | --- |
+| `src/rag/indexer.ts` | Markdown/file chunking과 인덱싱 흐름 |
+| `src/rag/status.ts`, `src/graph/status.ts` | missing/stale/partial/schema-error 상태 판정 |
+| `src/rag/query.ts`, `src/rag/retrieval-pipeline.ts` | retrieval candidate와 final context score |
+| `src/graph/query-engine.ts` | GraphRAG local/global/hybrid/evidence-first query |
+| `src/rag/settings-display.ts` | 설정 화면 상태와 next action 표시 |
 
-**연동:** `main.ts initRAG()`에서 `JsonFileVectorStore` 대신 사용
+주의할 점:
 
-### 5.3 새 채팅 명령어 추가
+- 단순 `\n\n` 기준 청킹으로 되돌리지 않습니다. 헤딩과 코드블록 경계를 유지해야 합니다.
+- 모델, provider, extraction contract가 바뀌면 stale 판정과 자동/수동 복구 흐름을 함께 확인합니다.
+- `.test-vault/.superpower-inside/`는 실제 런타임 산출물입니다. 일반 코드 변경 diff에 포함하지 않습니다.
+- 사용자가 직접 reindex/reset을 관리하게 만드는 UI보다 자동 동기화와 명확한 next action을 우선합니다.
+- 인덱스 수, cache, extraction contract, vector store 같은 내부 상태를 보여줄 때는 사용자가 취할 행동과 연결합니다. 행동이 없으면 진단 로그나 explorer 안에 둡니다.
 
-**파일:** `src/chat/commands.ts`
+### Chat UI 수정
 
-```typescript
-// executeDirective()의 switch에 case 추가
-case 'translate':
-  prompt = `Translate the following to ${directive.args}:\n\n${content}`;
-  break;
-```
+`src/chat/view.ts`는 큰 파일입니다. 새 기능을 넣을 때는 먼저 분리 가능한지 확인하세요.
 
----
+| 변경 유형 | 권장 위치 |
+| --- | --- |
+| 컨텍스트 조립 | `src/chat/context.ts` |
+| 네이티브/MCP 도구 실행 | `src/chat/tool-execution.ts` |
+| run 취소와 소유권 | `src/chat/run-ownership.ts` |
+| 중단 세션 복구 | `src/chat/session-recovery.ts` |
+| 출처 선택과 표시 | `src/agent/citation-selection.ts`, `src/chat/source-panel.ts` |
+| 저장/로드 포맷 | `src/chat/persistence.ts` |
+| 멘션 파싱 | `src/chat/mention-parser.ts` |
+| 출처 정규화 | `src/chat/source-validation.ts` |
+| 프롬프트 템플릿 | `src/chat/prompt-library.ts` |
+| 실제 DOM 조립 | `src/chat/view.ts` |
 
-## 6. 트러블슈팅
+UI 규칙:
 
-### 빌드 실패
+- Obsidian의 `createEl`, `createDiv`, `createSpan` 계열을 우선 사용합니다.
+- 모델 출력이나 사용자 입력을 `innerHTML`로 직접 렌더링하지 않습니다.
+- 긴 텍스트, 빈 상태, 스트리밍 중단, provider 미설정 상태를 함께 확인합니다.
+- CSS 클래스는 `superpower-inside-` 프리픽스를 유지합니다.
+- UI/DOM/CSS/레이아웃/카피/상태 표시를 바꾸면 커밋·태그·푸시·릴리스 전에 실제 실행 화면을 스크린샷으로 확인합니다.
 
-| 에러 | 원인 | 해결 |
-|---|---|---|
-| `Cannot find module 'obsidian'` | `npm install` 미실행 | `npm install` |
-| `as any is not allowed` | ESLint strict 규칙 | 타입 단언 제거, 대안 타입 정의 |
-| `async method has no await` | `require-await` 규칙 | `await Promise.resolve()` 추가 또는 async 제거 |
+### MCP 도구 연결과 자동 실행 정책
 
-### Obsidian에서 플러그인이 보이지 않음
+핵심 파일:
 
-```bash
-# 1. 심링크 확인
-ls -la .test-vault/.obsidian/plugins/superpower-inside/
-# → repo/로 연결되어야 함 (복사된 디렉토리가 아님!)
+| 파일 | 역할 |
+| --- | --- |
+| `src/mcp/client.ts` | MCP SDK client와 stdio transport 생성 |
+| `src/mcp/registry.ts` | 서버 설정, 연결 상태, tool 목록 관리 |
+| `src/utils/mcp-json.ts` | 표준 `mcpServers` JSON import/validation |
+| `src/chat/context.ts` | `@server` 멘션을 MCP 컨텍스트로 변환 |
+| `src/chat/view.ts` | 모델이 요청한 tool call 실행과 결과 표시 |
 
-# 2. main.js 존재 확인
-ls -la .test-vault/.obsidian/plugins/superpower-inside/main.js
+정책:
 
-# 3. Safe Mode OFF 확인
-# Obsidian → Settings → Community plugins → Safe Mode toggle
+- 이 플러그인은 `manifest.json`의 `isDesktopOnly: true`를 전제로 합니다.
+- MCP stdio는 사용자가 설정한 로컬 명령을 실행합니다. 설정 UI와 README에서는 신뢰한 서버만 추가하라고 안내해야 합니다.
+- `@server` 멘션은 해당 MCP 서버를 사용하겠다는 사용자 의사로 처리됩니다.
+- 현재 기본 정책은 멘션된 신뢰 서버의 non-destructive 모델 요청 도구를 자동 실행할 수 있습니다.
+- tool arguments와 tool results는 최종 답변 생성을 위해 LLM provider로 다시 전달될 수 있습니다.
+- MCP 오류는 raw protocol detail보다 "연결 실패", "도구를 찾을 수 없음", "입력값 확인 필요"처럼 사용자가 이해할 수 있는 상태와 다음 행동으로 표시합니다.
 
-# 4. 수동 리로드
-# Command Palette → "Reload app without saving"
-```
+### Rust/WASM 경계
 
-### hot-reload 작동 안 함
+- JS/TS는 Obsidian UI, DOM, plugin lifecycle, vault I/O, provider transport, MCP stdio transport, IndexedDB/Dexie adapter, WASM bridge 입출력 매핑을 담당합니다.
+- 결정적 계산은 Rust/WASM을 기본 위치로 둡니다. 예: 파싱, 정규화, 검증, 랭킹, scoring, 선택, diff/plan 계산, schema/domain 판정, 검색/그래프 계산.
+- Rust 코어는 deterministic input/output만 다루며 Obsidian API, DOM, API key, process, 파일 I/O를 직접 소유하지 않습니다.
+- generated WASM glue/base64는 손으로 고치지 않습니다. `npm run wasm:build` 또는 `npm run build` 경로로 갱신합니다.
 
-```bash
-# 1. hot-reload 플러그인 활성화 확인
+### 채팅 저장 포맷 수정
 
-# 2. .hotreload 파일 확인
-touch .test-vault/.obsidian/plugins/superpower-inside/.hotreload
+확인할 파일:
 
-# 3. 파일 변경 시간 확인
-stat .test-vault/.obsidian/plugins/superpower-inside/main.js
-```
+| 파일 | 확인할 내용 |
+| --- | --- |
+| `src/chat/persistence.ts` | Markdown 직렬화, HTML comment payload, legacy load |
+| `src/chat/persistence.test.ts` | 이전 포맷과 최신 포맷 호환성 |
+| `.test-vault/SuperpowerInsideChats/` | 실제 저장 세션 샘플 |
 
-### VS Code 디버거 연결 실패
+수정 기준:
 
-```bash
-# 1. 포트 사용 여부 확인
-lsof -i :9222
+- legacy 세션과 최신 메타 세션을 모두 열 수 있어야 합니다.
+- 새 메타데이터를 추가하면 누락된 값에 대한 기본값을 명확히 둡니다.
+- 저장된 Markdown은 사람이 읽을 수 있어야 하며, machine-readable payload는 호환성을 깨지 않게 다룹니다.
 
-# 2. Obsidian이 디버그 모드로 실행 중인지 확인
-ps aux | grep "remote-debugging-port"
+## 테스트 작성 기준
 
-# 3. launch.json 설정 확인 (port 9222, type: chrome)
-cat .vscode/launch.json
-```
+| 변경 | 필요한 테스트 |
+| --- | --- |
+| 순수 함수 | 해당 함수 전용 Vitest 또는 Rust unit test |
+| provider message 변환 | request body, stream delta, tool call round-trip 테스트 |
+| RAG/GraphRAG 상태 | missing, stale, partial, schema-error, failed retry 케이스 |
+| mention parsing | 공백 경로, 중복 제거, 서버 멘션 테스트 |
+| persistence | legacy load, latest load, round-trip 저장 테스트 |
+| Obsidian 런타임 UI | 필요할 때 `.test-vault`에서 실제 화면 QA |
 
-### API 호출 실패 (CORS/Network)
+## 로컬 QA 체크리스트
 
-```javascript
-// DevTools → Network 탭에서 확인
-// 또는 console.log 추가:
-console.log('API response:', res.status, await res.text());
-```
+- [ ] `npm run security:full`
+- [ ] `npm run build`
+- [ ] `npm run review -- --tag <manifest-version> --built`
+- [ ] UI/DOM/CSS/카피/상태 변경이 있으면 Obsidian 또는 충실한 시뮬레이션 스크린샷에서 설정 탭, 채팅 뷰, 실패/빈 상태, 좁은 폭 확인
+- [ ] `git status --short`로 `.test-vault/`, generated, build 산출물 범위 확인
 
-### IndexedDB/Dexie 문제
+릴리스 후보에 UI 변경이 포함되어 있으면 스크린샷 검수를 누락한 채 커밋·태그·푸시하지 않습니다. 릴리스가 끝난 뒤 임시 화면을 만들어 뒤늦게 검수를 보충하지 않습니다.
 
-```javascript
-// DevTools → Application → IndexedDB → SuperpowerInsideEmbeddingCache 확인
-// 또는:
-await Dexie.delete('SuperpowerInsideEmbeddingCache');  // 전체 삭제
-```
-
----
-
-## 7. 릴리스 절차
-
-### 버전 업데이트
-
-```bash
-./scripts/bump-version.fish patch   # 또는 minor / major
-```
-
-**이 스크립트가 하는 일:**
-1. `manifest.json`, `package.json`, `versions.json` 버전 동기화
-2. `npm run lint && npm run typecheck && npm run build` 실행
-3. git commit + tag 생성 + push
-
-### GitHub Actions 자동 릴리스
-
-태그 푸시 시 `.github/workflows/release.yml`이 실행:
-- 버전 일치 검증 (tag == manifest == package)
-- 린트/타입체크/빌드
-- GitHub Release 생성 + `main.js`/`manifest.json`/`styles.css` 첨부
-
-### 수동 릴리스 (비상시)
-
-```bash
-# 1. 버전 업데이트 (수동)
-jq '.version = "0.2.0"' manifest.json > manifest.json.tmp && mv manifest.json.tmp manifest.json
-
-# 2. 빌드
-npm run build
-
-# 3. 태그
-git add manifest.json main.js styles.css
-git commit -m "release 0.2.0"
-git tag -a "0.2.0" -m "0.2.0"
-git push origin main
-git push origin "0.2.0"
-```
-
----
-
-## 유용한 DevTools 스니펫
+## DevTools 스니펫
 
 ```javascript
 // 현재 활성 플러그인 목록
 Object.keys(app.plugins.plugins);
 
-// 현재 볼트의 마크다운 파일 수
-app.vault.getMarkdownFiles().length;
-
-// 설정 직접 접근 (주의: saveSettings() 호출해야 저장됨)
+// Superpower Inside 설정 확인
 app.plugins.plugins['superpower-inside'].settings;
 
-// 채팅 뷰 강제 열기
+// 채팅 뷰 열기
 app.workspace.getRightLeaf(false).setViewState({ type: 'superpower-inside-chat' });
 
-// RAG 강제 재인덱싱
-const plugin = app.plugins.plugins['superpower-inside'];
-await plugin.vaultIndexer?.reindexAll();
+// 현재 볼트의 Markdown 파일 수
+app.vault.getMarkdownFiles().length;
 
-// 자동 업데이트는 업데이트 필요 문서가 0건이면 Notice 없이 종료됨
-// 수동 `필요 문서 업데이트` 버튼은 0건일 때 비활성화됨
-
-// IndexedDB 초기화
-await Dexie.delete('SuperpowerInsideEmbeddingCache');
+// 런타임 연결 확인
+Boolean(app.plugins.plugins['superpower-inside']);
+Object.keys(app.commands.commands).filter((id) => id.startsWith('superpower-inside:'));
 ```
 
----
+## 릴리스 기준
 
-*이 문서는 `docs/DEV_SETUP.md`와 함께 읽으세요. `DEV_SETUP.md`는 환경 설정에, 이 문서는 코드 디버깅과 유지보수에 초점을 맞춥니다.*
+릴리스 전에는 다음 파일의 버전을 함께 맞춥니다.
+
+| 파일 | 기준 |
+| --- | --- |
+| `manifest.json` | Obsidian이 읽는 플러그인 버전 |
+| `package.json` | npm package version |
+| `versions.json` | 플러그인 버전별 최소 Obsidian 버전 |
+
+태그 이름은 `manifest.json.version`과 완전히 같아야 합니다. 예를 들어 버전이 `1.0.0`이면 GitHub Release 태그도 `1.0.0`이어야 하며, `v1.0.0`만 만들면 Obsidian 커뮤니티 제출 화면에서 릴리스를 찾지 못할 수 있습니다.
+
+릴리스 준비 중 사용자에게 의미 있는 새 기능이 있으면 `README.md`의 현재 기능 설명에 자연스럽게 통합합니다. 커밋 로그 기반 업데이트 문서나 릴리스별 변경 목록 파일은 만들지 않습니다.
+
+## 관련 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [DEV_SETUP.md](DEV_SETUP.md) | 테스트 볼트, hot-reload, OS별 디버깅 환경 |
+| [../README.md](../README.md) | 사용자용 소개, 설치, 첫 설정, 보안 안내 |

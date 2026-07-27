@@ -1,9 +1,12 @@
 import type { App, Vault } from 'obsidian';
 import { t } from '../i18n';
+import type { RefreshBus } from '../utils/refresh-bus';
+import { runActionWithFeedback } from '../utils/action-feedback';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
 
 const SESSION_MODAL_STYLE_ID = 'superpower-inside-session-modal-styles';
+const HIDDEN_CLASS = 'superpower-inside-hidden';
 
 /** 날짜를 기준으로 세션을 그룹핑하기 위한 키 */
 type DateGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older';
@@ -45,6 +48,7 @@ export function openSessionHistoryModal(
   saveFolder: string,
   onLoadSession: (filePath: string) => void,
   currentSessionPath?: string | null,
+  sessionsEventBus?: Pick<RefreshBus, 'emit' | 'on'>,
 ): void {
   const activeVault = app.vault;
   void vault;
@@ -55,14 +59,9 @@ export function openSessionHistoryModal(
 
   // 제목 표시줄
   const titleBar = modal.createDiv({ cls: 'superpower-inside-session-modal-title' });
-  titleBar.createEl('h2', { text: t('chatHistory') });
+  titleBar.createDiv({ cls: 'superpower-inside-session-modal-heading', text: t('chatHistory') });
 
   const titleActions = titleBar.createDiv({ cls: 'superpower-inside-session-title-actions' });
-  const refreshBtn = titleActions.createEl('button', {
-    cls: 'superpower-inside-session-refresh-btn',
-    text: t('refresh'),
-    attr: { type: 'button' },
-  });
   const closeBtn = titleActions.createEl('button', {
     cls: 'superpower-inside-session-close-btn',
     text: '×',
@@ -84,7 +83,7 @@ export function openSessionHistoryModal(
     text: '×',
     attr: { type: 'button', 'aria-label': t('cancel') },
   });
-  searchClear.style.display = 'none';
+  searchClear.addClass(HIDDEN_CLASS);
 
   // 목록
   const listEl = modal.createDiv({ cls: 'superpower-inside-session-modal-list' });
@@ -242,10 +241,26 @@ export function openSessionHistoryModal(
             return;
           }
 
-          deleteBtn.disabled = true;
-          void deleteChat(activeVault, meta.filePath).then(loadMetas, () => {
-            deleteBtn.disabled = false;
-            deleteConfirmPath = null;
+          void runActionWithFeedback({
+            button: deleteBtn,
+            loadingText: t('mcpRefreshing'),
+            refreshBus: sessionsEventBus,
+            refreshDomains: ['sessions'],
+            action: async () => {
+              try {
+                await deleteChat(app.fileManager, activeVault, meta.filePath);
+                await loadMetas();
+                return { status: 'success', detail: t('chatSessionDeletedNotice') };
+              } catch (err) {
+                deleteConfirmPath = null;
+                const message = err instanceof Error ? err.message : String(err);
+                return {
+                  status: 'error',
+                  detail: message,
+                  notice: t('chatSessionDeleteFailedNotice', { message }),
+                };
+              }
+            },
           });
         });
       }
@@ -270,15 +285,37 @@ export function openSessionHistoryModal(
     });
 
     const save = async (): Promise<void> => {
-      const nextTitle = inputEl.value.trim();
-      if (!nextTitle || nextTitle === meta.title) {
-        const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
-        if (!isClosed) renderMetas(freshMetas);
-        return;
-      }
-      saveBtn.disabled = true;
-      await renameChat(activeVault, meta.filePath, nextTitle);
-      await loadMetas();
+      await runActionWithFeedback({
+        button: saveBtn,
+        loadingText: t('mcpRefreshing'),
+        refreshBus: sessionsEventBus,
+        refreshDomains: ['sessions'],
+        action: async () => {
+          const nextTitle = inputEl.value.trim();
+          if (!nextTitle) {
+            const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
+            if (!isClosed) renderMetas(freshMetas);
+            return { status: 'noop', detail: t('chatSessionRenameEmptyNotice') };
+          }
+          if (nextTitle === meta.title) {
+            const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
+            if (!isClosed) renderMetas(freshMetas);
+            return { status: 'noop', detail: t('chatSessionRenameNoChangeNotice') };
+          }
+          try {
+            await renameChat(activeVault, meta.filePath, nextTitle);
+            await loadMetas();
+            return { status: 'success', detail: t('chatSessionRenamedNotice') };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              status: 'error',
+              detail: message,
+              notice: t('chatSessionRenameFailedNotice', { message }),
+            };
+          }
+        },
+      });
     };
 
     saveBtn.addEventListener('click', () => void save());
@@ -310,29 +347,25 @@ export function openSessionHistoryModal(
   const loadMetas = async (): Promise<void> => {
     deleteConfirmPath = null;
     renderLoading();
-    refreshBtn.disabled = true;
-
     try {
       allMetas = await listChatMetasAsync(activeVault, saveFolder);
       if (isClosed) return;
       filterAndRender();
     } catch {
       if (!isClosed) renderError();
-    } finally {
-      if (!isClosed) refreshBtn.disabled = false;
     }
   };
 
   searchInput.addEventListener('input', () => {
     searchQuery = searchInput.value;
-    searchClear.style.display = searchQuery ? 'flex' : 'none';
+    searchClear.toggleClass(HIDDEN_CLASS, !searchQuery);
     filterAndRender();
   });
 
   searchClear.addEventListener('click', () => {
     searchInput.value = '';
     searchQuery = '';
-    searchClear.style.display = 'none';
+    searchClear.addClass(HIDDEN_CLASS);
     searchInput.focus();
     filterAndRender();
   });
@@ -344,7 +377,17 @@ export function openSessionHistoryModal(
   });
 
   closeBtn.addEventListener('click', close);
-  refreshBtn.addEventListener('click', () => void loadMetas());
+  // 초기 로드
+  void loadMetas();
+
+  // sessions 이벤트 수신 시 자동 갱신
+  if (sessionsEventBus?.on) {
+    const unsub = sessionsEventBus.on('sessions', () => {
+      if (!isClosed) void loadMetas();
+    });
+    overlay.addEventListener('remove', unsub);
+  }
+
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });
@@ -362,8 +405,6 @@ export function openSessionHistoryModal(
     containerEl.ownerDocument.removeEventListener('keydown', handleKeyDown);
   };
   overlay.addEventListener('remove', cleanup);
-
-  void loadMetas();
 }
 
 function ensureSessionModalStyles(documentRef: Document): void {
@@ -405,7 +446,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-session-modal-title h2 {
+.superpower-inside-session-modal-heading {
   margin: 0;
   font-size: var(--font-ui-large);
 }
@@ -418,7 +459,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   gap: var(--size-2-2);
 }
 
-/* 검색 바 */
+/* Search bar */
 .superpower-inside-session-search-container {
   display: flex;
   align-items: center;
@@ -450,7 +491,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
 }
 
 .superpower-inside-session-search-clear {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;
@@ -471,14 +512,14 @@ function ensureSessionModalStyles(documentRef: Document): void {
   color: var(--text-on-accent);
 }
 
-/* 목록 */
+/* List */
 .superpower-inside-session-modal-list {
   overflow-y: auto;
   padding: 0;
   flex: 1;
 }
 
-/* 날짜 그룹 헤더 */
+/* Date group header */
 .superpower-inside-session-group-header {
   display: flex;
   align-items: center;
@@ -506,7 +547,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   font-size: var(--font-ui-smaller);
 }
 
-/* 세션 항목 */
+/* Session item */
 .superpower-inside-session-item {
   display: flex;
   align-items: center;
@@ -600,7 +641,7 @@ function ensureSessionModalStyles(documentRef: Document): void {
   margin-bottom: var(--size-2-2);
 }
 
-/* 하단 카운트 */
+/* Footer count */
 .superpower-inside-session-footer {
   display: flex;
   align-items: center;
