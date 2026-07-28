@@ -74,6 +74,8 @@ interface BuildContextOptions {
   ragTopK?: number;
   ragMinScore?: number;
   queryExpander?: (question: string) => Promise<string>;
+  /** 활성 도구 루프가 후보 검색·읽기를 맡을 때 비싼 암시적 폴더 전체 선별을 건너뜁니다. */
+  deferImplicitFolderEvidenceToTools?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
@@ -169,11 +171,12 @@ export async function buildChatContext(
     shouldUseAutoRag && options.queryExpander
       ? await options.queryExpander(question).catch(() => question)
       : question;
-  const implicitFolderPaths = shouldUseAutoRag
-    ? (
-        planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []
-      ).filter((path) => !explicitFolderPaths.has(path))
-    : [];
+  const implicitFolderPaths =
+    shouldUseAutoRag && options.deferImplicitFolderEvidenceToTools !== true
+      ? (
+          planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []
+        ).filter((path) => !explicitFolderPaths.has(path))
+      : [];
   if (implicitFolderPaths.length > 0) {
     for (const folderPath of implicitFolderPaths) {
       await appendImplicitFolderEvidence(

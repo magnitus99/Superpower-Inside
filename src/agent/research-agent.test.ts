@@ -77,35 +77,33 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     );
   });
 
-  it('이전 질문의 인물과 현재 질문의 주제를 결합하고 1,406개 중 51개만 provider에 보낸다', async () => {
+  it('이전 질문의 맥락과 현재 주제를 도메인 중립적으로 결합하고 1,406개 중 51개만 provider에 보낸다', async () => {
     const files = new Map<string, string>();
     for (let index = 0; index < 1_406; index++) {
       files.set(
         index < 51
-          ? `Bible/Genesis/${String(index).padStart(2, '0')}.md`
+          ? `Projects/Migration/${String(index).padStart(2, '0')}.md`
           : `Archive/${String(index).padStart(4, '0')}.md`,
-        index < 51 ? '창세기 본문' : '관련 없는 기록',
+        index < 51 ? 'Migration decision record' : '관련 없는 기록',
       );
     }
     const runtime = createRuntime(files);
     const chat = vi.fn((messages: ChatMessage[]) =>
       Promise.resolve(
         lastPrompt(messages).includes('Write the final answer')
-          ? '현재 검색 범위에서 직접 일치하는 네빌의 창세기 언급을 찾지 못했습니다.'
+          ? '현재 검색 범위에서 Aurora의 migration 근거를 정리했습니다.'
           : '선택 근거를 확인했습니다.',
       ),
     );
 
     const result = await new VaultResearchAgent({ chat }, runtime).run({
-      question: 'Genesis와 관련된 모든 자료를 조사해줘',
-      previousUserQuestions: ['네빌은 창세기를 어떻게 해석했어?'],
+      question: 'Migration과 관련된 모든 자료를 조사해줘',
+      previousUserQuestions: ['Aurora는 migration을 어떻게 설명했어?'],
     });
 
     expect(result.processedFiles).toBe(1_406);
     expect(result.selection.selectedIndices).toHaveLength(51);
-    expect(result.selection.terms).toEqual(
-      expect.arrayContaining(['네빌', 'Neville', 'Goddard', 'Genesis', '창세기']),
-    );
+    expect(result.selection.terms).toEqual(expect.arrayContaining(['migration', 'aurora']));
     expect(result.providerTransfer.sentFiles).toBe(51);
     expect(result.coverage.exactNegativeAllowed).toBe(true);
     expect(chat).toHaveBeenCalledTimes(8);

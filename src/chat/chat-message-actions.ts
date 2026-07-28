@@ -3,6 +3,7 @@ export const CHAT_MESSAGE_ACTION_ATTRIBUTE = 'data-chat-action-id';
 export type ChatMessageActionId =
   | 'copy'
   | 'regenerate'
+  | 'more'
   | 'insert-into-note'
   | 'save-as-note'
   | 'branch'

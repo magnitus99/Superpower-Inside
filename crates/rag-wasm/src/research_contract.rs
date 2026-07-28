@@ -25,14 +25,6 @@ const MAX_PROVIDER_RETRY_WAIT_MS: usize = 30_000;
 const FINGERPRINT_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// Stable fingerprint multiplier.
 const FINGERPRINT_PRIME: u32 = 0x0100_0193;
-/// Known aliases for the Neville entity facet.
-const NEVILLE_TERMS: [&str; 4] = ["네빌", "Neville", "Goddard", "고다드"];
-/// Lowercase markers used to detect the Neville entity facet.
-const NEVILLE_MARKERS: [&str; 4] = ["네빌", "neville", "goddard", "고다드"];
-/// Known aliases for the Genesis topic facet.
-const GENESIS_TERMS: [&str; 2] = ["Genesis", "창세기"];
-/// Lowercase markers used to detect the Genesis topic facet.
-const GENESIS_MARKERS: [&str; 2] = ["genesis", "창세기"];
 /// Scope and conversational words that are not useful lexical evidence facets.
 const RESEARCH_STOP_TERMS: [&str; 41] = [
     "all",
@@ -111,9 +103,9 @@ struct CandidateMatch {
     index: usize,
     /// Whether this item matched each serialized facet.
     facet_matches: Vec<bool>,
-    /// Number of matched entity/topic facets.
+    /// Number of matched current-question or conversation-context facets.
     primary_facet_match_count: usize,
-    /// Number of matched facets including conversational context.
+    /// Number of matched facets.
     facet_match_count: usize,
     /// Number of distinct lexical terms present in the path or sample.
     term_match_count: usize,
@@ -782,44 +774,20 @@ fn parse_provider_budget(value: Option<&JsonValue>) -> Option<ProviderBudget> {
     })
 }
 
-/// Collects recognized aliases and residual meaningful terms into stable facets.
+/// Collects meaningful current and previous question terms into stable facets.
 fn collect_research_terms_and_facets(
     input: &CandidateSelectionInput,
 ) -> (Vec<String>, Vec<JsonValue>) {
-    let all_questions = input
-        .previous_user_questions
-        .iter()
-        .chain(std::iter::once(&input.current_question))
-        .map(|question| question.to_lowercase())
-        .collect::<Vec<_>>();
-    let mut entity_terms = Vec::<String>::new();
     let mut topic_terms = Vec::<String>::new();
     let mut context_terms = Vec::<String>::new();
-
-    if all_questions
-        .iter()
-        .any(|question| contains_any_marker(question, &NEVILLE_MARKERS))
-    {
-        append_unique_terms(&mut entity_terms, &NEVILLE_TERMS);
-    }
-    if all_questions
-        .iter()
-        .any(|question| contains_any_marker(question, &GENESIS_MARKERS))
-    {
-        append_unique_terms(&mut topic_terms, &GENESIS_TERMS);
-    }
 
     append_meaningful_tokens(&mut topic_terms, &input.current_question);
     for previous_question in &input.previous_user_questions {
         append_meaningful_tokens(&mut context_terms, previous_question);
     }
-    remove_terms_present_in(&mut context_terms, &entity_terms);
     remove_terms_present_in(&mut context_terms, &topic_terms);
 
     let mut facets = Vec::<JsonValue>::new();
-    if !entity_terms.is_empty() {
-        facets.push(json!({ "kind": "entity", "terms": entity_terms }));
-    }
     if !topic_terms.is_empty() {
         facets.push(json!({ "kind": "topic", "terms": topic_terms }));
     }
@@ -835,13 +803,6 @@ fn collect_research_terms_and_facets(
         .map(str::to_owned)
         .collect::<Vec<_>>();
     (terms, facets)
-}
-
-/// Appends one known alias family without case-insensitive duplicates.
-fn append_unique_terms<const N: usize>(target: &mut Vec<String>, terms: &[&str; N]) {
-    for term in terms {
-        push_unique_term(target, term);
-    }
 }
 
 /// Appends lexical terms that remain after removing conversational research boilerplate.
@@ -878,8 +839,6 @@ fn is_meaningful_token(token: &str) -> bool {
     token.chars().count() >= 2
         && !token.chars().all(char::is_numeric)
         && !RESEARCH_STOP_TERMS.contains(&token)
-        && !contains_any_marker(token, &NEVILLE_MARKERS)
-        && !contains_any_marker(token, &GENESIS_MARKERS)
 }
 
 /// Pushes a case-insensitively unique term while preserving first-seen order.
@@ -901,11 +860,6 @@ fn remove_terms_present_in(target: &mut Vec<String>, earlier_terms: &[String]) {
             .iter()
             .all(|earlier| earlier.to_lowercase() != normalized)
     });
-}
-
-/// Returns whether text contains any marker from a known alias family.
-fn contains_any_marker<const N: usize>(text: &str, markers: &[&str; N]) -> bool {
-    markers.iter().any(|marker| text.contains(marker))
 }
 
 /// Collects and ranks inventory items whose path or local sample contains any term.
@@ -988,12 +942,12 @@ fn collect_matching_candidates(
     candidates
 }
 
-/// Returns whether one serialized research facet is an entity or topic facet.
+/// Returns whether one serialized facet represents current or prior user intent.
 fn is_primary_research_facet(facet: &JsonValue) -> bool {
     facet
         .get("kind")
         .and_then(JsonValue::as_str)
-        .is_some_and(|kind| matches!(kind, "entity" | "topic"))
+        .is_some_and(|kind| matches!(kind, "entity" | "topic" | "context"))
 }
 
 /// Selects combined-facet evidence first, then fills each facet fairly within the transfer limit.
@@ -1513,58 +1467,60 @@ fn parse_native_search_scopes(
 
 /// Detects claims that every file or the entire corpus was read or fully analyzed.
 fn contains_whole_read_claim(normalized: &str) -> bool {
-    let korean_scope = ["전체", "모든", "전부", "전수"]
+    answer_fragments(normalized).any(|fragment| {
+        let korean_scope = ["전체", "모든", "전부", "전수"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_file_scope = ["파일", "노트", "문서"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_action = ["읽", "검토", "분석", "조사", "살펴", "확인", "훑"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_direct_claim = [
+            "전수 조사",
+            "전수 분석",
+            "전수 검토",
+            "전수 읽",
+            "볼트 전체를 읽",
+            "볼트 전체를 분석",
+            "볼트 전체를 검토",
+            "볼트 전체를 조사",
+            "볼트 전체를 살펴",
+            "볼트 전체를 확인",
+            "볼트 전체를 훑",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_file_scope = ["파일", "노트", "문서"]
+        .any(|marker| fragment.contains(marker));
+        let english_scope = [
+            "all files",
+            "all notes",
+            "every file",
+            "every note",
+            "entire vault",
+            "whole vault",
+            "across the vault",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_action = ["읽", "검토", "분석", "조사", "살펴", "확인", "훑"]
+        .any(|marker| fragment.contains(marker));
+        let english_action = [
+            "read",
+            "reviewed",
+            "analyzed",
+            "inspected",
+            "examined",
+            "examining",
+            "scanned",
+            "scanning",
+            "checked",
+            "checking",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_direct_claim = [
-        "전수 조사",
-        "전수 분석",
-        "전수 검토",
-        "전수 읽",
-        "볼트 전체를 읽",
-        "볼트 전체를 분석",
-        "볼트 전체를 검토",
-        "볼트 전체를 조사",
-        "볼트 전체를 살펴",
-        "볼트 전체를 확인",
-        "볼트 전체를 훑",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    let english_scope = [
-        "all files",
-        "all notes",
-        "every file",
-        "every note",
-        "entire vault",
-        "whole vault",
-        "across the vault",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    let english_action = [
-        "read",
-        "reviewed",
-        "analyzed",
-        "inspected",
-        "examined",
-        "examining",
-        "scanned",
-        "scanning",
-        "checked",
-        "checking",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    korean_direct_claim
-        || (korean_scope && korean_file_scope && korean_action)
-        || (english_scope && english_action)
+        .any(|marker| fragment.contains(marker));
+        korean_direct_claim
+            || (korean_scope && korean_file_scope && korean_action)
+            || (english_scope && english_action)
+    })
 }
 
 /// Detects an unqualified broad absence assertion.
@@ -2005,19 +1961,19 @@ mod tests {
     }
 
     #[test]
-    fn candidate_selection_combines_previous_entity_with_current_topic() {
+    fn candidate_selection_uses_only_question_terms_without_builtin_aliases() {
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "볼트 내에서 genesis와 관련된 모든 것들을 조사하면 되지 않아?",
-                "previousUserQuestions": ["네빌은 창세기에 대해서 뭐라고 말했어?"],
+                "currentQuestion": "Genesis 관련 자료를 조사해줘",
+                "previousUserQuestions": ["Neville은 어떻게 말했어?"],
                 "paths": [
                     "Bible/Genesis/Introduction.md",
                     "People/Neville.md",
                     "Archive/Unrelated.md"
                 ],
                 "samples": [
-                    "창세기의 핵심 구조",
-                    "Neville Goddard lecture notes",
+                    "Genesis structure",
+                    "Neville lecture notes",
                     "회의 기록"
                 ],
             })
@@ -2040,15 +1996,15 @@ mod tests {
                     "maxBatches": 8,
                     "maxTransferItems": 64,
                 },
-                "terms": ["네빌", "Neville", "Goddard", "고다드", "Genesis", "창세기"],
+                "terms": ["genesis", "neville"],
                 "facets": [
                     {
-                        "kind": "entity",
-                        "terms": ["네빌", "Neville", "Goddard", "고다드"],
+                        "kind": "topic",
+                        "terms": ["genesis"],
                     },
                     {
-                        "kind": "topic",
-                        "terms": ["Genesis", "창세기"],
+                        "kind": "context",
+                        "terms": ["neville"],
                     }
                 ],
                 "planFingerprint": output.get("planFingerprint"),
@@ -2093,16 +2049,16 @@ mod tests {
     }
 
     #[test]
-    fn candidate_selection_scans_1406_paths_and_keeps_51_stable_matches() {
+    fn candidate_selection_scans_1406_paths_and_keeps_51_domain_neutral_matches() {
         let mut paths = numbered_paths(1_406);
         let samples = vec![String::new(); paths.len()];
         for (index, path) in paths.iter_mut().take(51).enumerate() {
-            *path = format!("Bible/Genesis/{index:02}.md");
+            *path = format!("Projects/Migration/{index:02}.md");
         }
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "Genesis와 관련된 모든 자료를 조사해줘",
-                "previousUserQuestions": ["네빌은 창세기를 어떻게 해석했어?"],
+                "currentQuestion": "Migration 관련 모든 자료를 조사해줘",
+                "previousUserQuestions": [],
                 "paths": paths,
                 "samples": samples,
             })
@@ -2119,15 +2075,15 @@ mod tests {
     #[test]
     fn candidate_selection_prioritizes_combined_facets_and_preserves_facet_diversity() {
         let mut paths = (0..100)
-            .map(|index| format!("Bible/Genesis/{index:03}.md"))
+            .map(|index| format!("Projects/Migration/{index:03}.md"))
             .collect::<Vec<_>>();
-        paths.push("People/Neville-Genesis.md".to_owned());
-        paths.push("People/Neville.md".to_owned());
+        paths.push("Projects/Aurora-Migration.md".to_owned());
+        paths.push("Projects/Aurora.md".to_owned());
         let samples = vec![String::new(); paths.len()];
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "Genesis 자료를 조사해줘",
-                "previousUserQuestions": ["네빌은 어떻게 해석했어?"],
+                "currentQuestion": "Migration 자료를 조사해줘",
+                "previousUserQuestions": ["Aurora는 어떻게 말했어?"],
                 "paths": paths,
                 "samples": samples,
             })
@@ -2508,6 +2464,27 @@ mod tests {
                 "safeCoverageText": "볼트 전체를 로컬로 선별했고 선택된 근거를 모두 분석했습니다.",
             })
         );
+    }
+
+    #[test]
+    fn answer_contract_does_not_combine_unrelated_scope_and_action_across_sentences() {
+        let paths = numbered_paths(20);
+        let selected = (0..4).collect::<Vec<_>>();
+        let receipt = parse_output(&derive_research_coverage_receipt_json(
+            &coverage_input(&paths, &selected, &[], &[], &[]).to_string(),
+        ));
+        let raw = plan_research_answer_contract_json(
+            &json!({
+                "answer": "이 파일은 구약 성경 전체 소개입니다. 볼트에 저장된 성경 소개 파일에서 해당 책을 확인했습니다.",
+                "language": "ko",
+                "receipt": receipt,
+            })
+            .to_string(),
+        );
+        let output = parse_output(&raw);
+
+        assert_eq!(output.get("allowed"), Some(&json!(true)));
+        assert_eq!(output.get("violationCodes"), Some(&json!([])));
     }
 
     #[test]

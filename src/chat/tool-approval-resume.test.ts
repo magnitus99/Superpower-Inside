@@ -44,7 +44,9 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     ).length;
 
     expect(plan.systemPrompt).toContain('기본 시스템 지침');
-    expect(plan.systemPrompt).toContain('[Superpower Inside vault evidence contract]');
+    expect(plan.systemPrompt).toContain(
+      '[Superpower Inside proactive research and evidence contract]',
+    );
     expect(plan.systemPrompt).not.toContain('[Superpower Inside tool protocol]');
     expect(plan.providerToolDefinitions).toEqual(definitions);
     expect(plan.reinjectedToolResultCount).toBe(actualReinjectedCount);
@@ -62,7 +64,9 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     });
 
     expect(plan.systemPrompt).toContain('[Superpower Inside tool protocol]');
-    expect(plan.systemPrompt).toContain('[Superpower Inside vault evidence contract]');
+    expect(plan.systemPrompt).toContain(
+      '[Superpower Inside proactive research and evidence contract]',
+    );
     expect(plan.systemPrompt).toContain(
       '<tool_call>{"name":"tool_name","arguments":{}}</tool_call>',
     );

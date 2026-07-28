@@ -126,6 +126,7 @@ describe('chat UX fixture gate', () => {
         'cancel-with-stop-all',
         'scroll-to-latest-answer',
         'mention-select-with-keyboard',
+        'assistant-response-tab-keyboard',
         'tool-approve',
         'continue-with-other-provider',
       ]),
@@ -139,10 +140,14 @@ describe('chat UX fixture gate', () => {
         '.superpower-inside-chat-stop-all',
         '.superpower-inside-scroll-to-bottom',
         '.superpower-inside-chat-message-status',
+        '.superpower-inside-chat-assistant-response-tabs',
+        '.superpower-inside-chat-assistant-response-panel',
         '.superpower-inside-chat-citation-card',
         '.superpower-inside-chat-context-budget',
         '.superpower-inside-chat-data-boundary',
         '.superpower-inside-chat-error-diagnostics',
+        '.superpower-inside-tool-call-group',
+        '.superpower-inside-tool-call-details',
       ]),
     );
     expect(fixture.motionTokens).toEqual(

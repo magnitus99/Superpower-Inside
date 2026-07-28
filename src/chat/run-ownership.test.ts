@@ -90,9 +90,9 @@ describe('chat run ownership', () => {
     const streamStart = viewSource.indexOf('private async streamFinalAnswerAfterTools(');
     const streamEnd = viewSource.indexOf('private async runToolResponseLoop(', streamStart);
     const streamSource = viewSource.slice(streamStart, streamEnd);
-    const providerAwaitIndex = handleSource.indexOf('await provider.streamChat(');
+    const providerAwaitIndex = handleSource.indexOf('await streamInitialPass()');
     const providerResolveGateIndex = handleSource.indexOf(
-      '      );\n      if (!isChatRunActive(this.activeRun, run)) return;',
+      'if (!isChatRunActive(this.activeRun, run)) return;',
       providerAwaitIndex,
     );
     const toolExecutionIndex = handleSource.indexOf(
@@ -111,6 +111,30 @@ describe('chat run ownership', () => {
     expect(providerResolveGateIndex).toBeGreaterThan(providerAwaitIndex);
     expect(toolExecutionIndex).toBeGreaterThan(providerResolveGateIndex);
     expect(streamSource).toContain('if (!isChatRunActive(this.activeRun, args.run)) return;');
+  });
+
+  it('도구 호환 폴백과 비활성 설정도 active run 및 명시적 예산을 지킨다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
+    const handleSource = viewSource.slice(handleStart, handleEnd);
+    const loopStart = viewSource.indexOf('private async runToolResponseLoop(');
+    const loopEnd = viewSource.indexOf('private getMentionedServerNames(', loopStart);
+    const loopSource = viewSource.slice(loopStart, loopEnd);
+
+    expect(handleSource).toContain(
+      'const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));',
+    );
+    expect(handleSource).toContain('const toolsEnabled = maxToolRounds > 0;');
+    expect(handleSource).toContain(
+      'initialAgentPlan?.shouldRetryWithoutTools !== true &&',
+    );
+    expect(handleSource).toContain(
+      'if (!isChatRunActive(this.activeRun, run)) return;\n        const fallbackPlan',
+    );
+    expect(loopSource).toContain("toolProtocol = 'compatibility';");
+    expect(loopSource).toContain('const synthesisOnly = round === maxRounds;');
+    expect(loopSource).toContain("const roundToolChoice: ToolChoice = synthesisOnly\n        ? 'none'");
   });
 
   it('제출 user 다음 assistant placeholder는 첫 비동기 저장·도구 정의 gap보다 먼저 생긴다', () => {

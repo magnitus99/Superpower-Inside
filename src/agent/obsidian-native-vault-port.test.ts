@@ -46,6 +46,23 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.content.split('\n')).toHaveLength(400);
   });
 
+  it('read는 한 줄이 매우 커도 model-facing 결과를 64KiB 안으로 제한한다', async () => {
+    const port = createNativeVaultPort(
+      createApp([createFile('Projects/Large.md', '한글🙂'.repeat(100_000))]),
+    );
+
+    const result = await port.read({
+      action: 'read',
+      path: 'Projects/Large.md',
+      startLine: 1,
+      endLine: 1,
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.content).toContain('output truncated');
+    expect(new TextEncoder().encode(result.content).byteLength).toBeLessThanOrEqual(64 * 1024);
+  });
+
   it('list는 폴더 경로 안의 문서를 안정된 순서로 페이지 처리한다', async () => {
     const app = createApp([
       createFile('Projects/Beta.md', 'beta'),
@@ -145,9 +162,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result).toMatchObject({ query: '고객 문제', path: '', match: 'all' });
     expect(result.hits[0]?.path).toBe('Projects/Alpha.md');
     expect(result.hits[0]?.preview).toContain('고객 문제');
+    expect(result.hits[0]?.requiresRead).toBe(true);
     expect(result.citations[0]).toMatchObject({
       filePath: 'Projects/Alpha.md',
-      status: 'verified',
+      status: 'candidate',
     });
   });
 
@@ -176,8 +194,9 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.citations[0]).toMatchObject({
       filePath: 'Projects/Retention.md',
       line: 32,
-      status: 'verified',
+      status: 'candidate',
     });
+    expect(result.hits[0]?.requiresRead).toBe(true);
     expect(result.citations[0]?.preview).not.toContain('무관한 기록 1');
   });
 
@@ -195,6 +214,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
 
     expect(result.hits[0]?.preview).toContain('고객');
+    expect(result.hits[0]?.requiresRead).toBe(true);
     expect(result.citations[0]).toMatchObject({
       filePath: 'Projects/Spread.md',
       line: 1,
@@ -218,6 +238,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits[0]).toMatchObject({
       path: 'Projects/Aurora.md',
       citationStatus: 'candidate',
+      requiresRead: true,
     });
     expect(result.citations[0]).toMatchObject({
       filePath: 'Projects/Aurora.md',
@@ -225,12 +246,32 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
   });
 
-  it('네이티브 lexical 근거가 충분하면 RAG/GraphRAG 검색을 호출하지 않는다', async () => {
-    const query = vi.fn(() => Promise.resolve([]));
-    const app = createApp([
-      createFile('Projects/Alpha.md', '고객 문제와 고객 문제의 근거'),
-      createFile('Projects/Beta.md', '다른 고객 문제'),
-    ]);
+  it('정상 인덱스가 있으면 상위 후보만 사용하고 Vault 본문을 읽지 않는다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '현재 본문');
+    const indexedResults = [
+      {
+        sourcePath: alpha.path,
+        score: 0.9,
+        vectorScore: 0.9,
+        bm25Score: 0,
+        combinedScore: 0.9,
+        keywordMatches: 2,
+        chunkRange: { startLine: 4, endLine: 5 },
+        entry: {
+          id: 'alpha',
+          vector: [],
+          metadata: {
+            filePath: alpha.path,
+            text: '인덱스의 고객 문제 후보',
+            startLine: 4,
+            endLine: 5,
+          },
+        },
+      },
+    ] satisfies QueryResult[];
+    const query = vi.fn(() => Promise.resolve(indexedResults));
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const app = createApp([alpha], {}, cachedRead);
     const port = createNativeVaultPort(app, undefined, () => ({ query }));
 
     const result = await port.search({
@@ -241,11 +282,72 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       match: 'all',
     });
 
-    expect(result.hits).toHaveLength(2);
-    expect(query).not.toHaveBeenCalled();
+    expect(result.hits).toEqual([
+      expect.objectContaining({
+        path: alpha.path,
+        citationStatus: 'candidate',
+        requiresRead: true,
+      }),
+    ]);
+    expect(result).toMatchObject({
+      scannedFiles: 0,
+      unreadableFiles: 0,
+      totalHits: 1,
+      truncated: true,
+    });
+    expect(query).toHaveBeenCalledWith('고객 문제', 2, undefined, undefined);
+    expect(cachedRead).not.toHaveBeenCalled();
   });
 
-  it('indexed 후보도 요청한 모든 검색어 일치 조건을 통과해야 한다', async () => {
+  it('인덱스 검색은 전체 후보 목록 대신 반환된 상위 경로만 검증한다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '현재 본문');
+    const indexedResults = [
+      {
+        sourcePath: alpha.path,
+        score: 0.9,
+        vectorScore: 0.9,
+        bm25Score: 0,
+        combinedScore: 0.9,
+        keywordMatches: 1,
+        chunkRange: { startLine: 1, endLine: 1 },
+        entry: {
+          id: 'alpha',
+          vector: [],
+          metadata: {
+            filePath: alpha.path,
+            text: '후보',
+            startLine: 1,
+            endLine: 1,
+          },
+        },
+      },
+    ] satisfies QueryResult[];
+    const listCandidateFiles = vi.fn(() => Promise.resolve([alpha]));
+    const isCandidateFile = vi.fn(() => Promise.resolve(true));
+    const port = new ObsidianNativeVaultToolPort(
+      createApp([alpha]),
+      {
+        listCandidateFiles,
+        isCandidateFile,
+        isPathVisible: () => true,
+      },
+      () => ({ query: vi.fn(() => Promise.resolve(indexedResults)) }),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: '후보',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits).toHaveLength(1);
+    expect(listCandidateFiles).not.toHaveBeenCalled();
+    expect(isCandidateFile).toHaveBeenCalledOnce();
+  });
+
+  it('정상 인덱스의 의미 기반 후보는 어휘가 모두 겹치지 않아도 read 후보로 보존한다', async () => {
     const indexedResults = [
       {
         sourcePath: 'Bible/Genesis.md',
@@ -268,7 +370,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       },
     ] satisfies QueryResult[];
     const query = vi.fn(() => Promise.resolve(indexedResults));
-    const app = createApp([createFile('Bible/Genesis.md', '창세기 본문')]);
+    const file = createFile('Bible/Genesis.md', '창세기 본문');
+    const cachedRead = vi.fn((candidate: TFile & { content: string }) =>
+      Promise.resolve(candidate.content),
+    );
+    const app = createApp([file], {}, cachedRead);
     const port = createNativeVaultPort(app, undefined, () => ({ query }));
 
     const result = await port.search({
@@ -279,7 +385,118 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       match: 'all',
     });
 
+    expect(result.hits).toEqual([
+      expect.objectContaining({
+        path: 'Bible/Genesis.md',
+        citationStatus: 'candidate',
+        requiresRead: true,
+      }),
+    ]);
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('정상 인덱스가 빈 결과를 반환해도 전체 lexical 스캔으로 되돌아가지 않는다', async () => {
+    const files = [
+      createFile('Projects/Alpha.md', '고객 문제'),
+      createFile('Projects/Beta.md', '고객 문제'),
+    ];
+    const query = vi.fn(() => Promise.resolve([]));
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead), undefined, () => ({
+      query,
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
     expect(result.hits).toEqual([]);
+    expect(result).toMatchObject({
+      scannedFiles: 0,
+      unreadableFiles: 0,
+      totalHits: 0,
+      truncated: true,
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('정상 인덱스가 비어도 질문과 일치하는 파일 경로는 본문 I/O 없이 read 후보로 돌려준다', async () => {
+    const files = [
+      createFile('neville/A Lesson in Scripture.txt', '본문에는 이름이 없다.'),
+      createFile('neville/A Prophecy.txt', '예언에 관한 본문'),
+      createFile('bible/Genesis.md', '창세기 본문'),
+    ];
+    const query = vi.fn(() => Promise.resolve([]));
+    const listCandidateFiles = vi.fn(() => Promise.resolve(files));
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const port = createNativeVaultPort(
+      createApp(files, {}, cachedRead),
+      listCandidateFiles,
+      () => ({ query }),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: 'Neville',
+      path: '',
+      limit: 8,
+      match: 'all',
+    });
+
+    expect(result.hits).toEqual([
+      expect.objectContaining({
+        path: 'neville/A Lesson in Scripture.txt',
+        citationStatus: 'candidate',
+        requiresRead: true,
+      }),
+      expect.objectContaining({
+        path: 'neville/A Prophecy.txt',
+        citationStatus: 'candidate',
+        requiresRead: true,
+      }),
+    ]);
+    expect(result).toMatchObject({
+      scannedFiles: 3,
+      unreadableFiles: 0,
+      totalHits: 2,
+      truncated: false,
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(listCandidateFiles).toHaveBeenCalledOnce();
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('인덱스 질의가 실패할 때만 lexical fallback으로 후보 파일을 읽는다', async () => {
+    const files = [
+      createFile('Projects/Alpha.md', '핵심 고객 문제'),
+      createFile('Projects/Beta.md', '무관한 문서'),
+    ];
+    const query = vi.fn(() => Promise.reject(new Error('index unavailable')));
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead), undefined, () => ({
+      query,
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]).toMatchObject({
+      path: 'Projects/Alpha.md',
+      citationStatus: 'candidate',
+      requiresRead: true,
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(cachedRead).toHaveBeenCalledTimes(2);
   });
 
   it('indexed 후보는 일치 행을 계산하되 live read 전에는 후보 상태를 유지한다', async () => {
@@ -320,6 +537,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       path: 'Archive/Record.md',
       startLine: 41,
       citationStatus: 'candidate',
+      requiresRead: true,
     });
     expect(result.hits[0]?.preview).toContain('고객 이탈');
     expect(result.citations[0]).toMatchObject({
@@ -382,11 +600,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
   it('비상 lexical 검색은 큰 Vault를 제한된 I/O 배치로 읽는다', async () => {
     let activeReads = 0;
     let maxActiveReads = 0;
+    let totalReads = 0;
     const files = Array.from({ length: 25 }, (_, index) =>
       createFile(`Notes/${index}.md`, index === 24 ? '마지막 고객 근거' : `문서 ${index}`),
     );
     const app = createApp(files, {}, async (file) => {
       activeReads++;
+      totalReads++;
       maxActiveReads = Math.max(maxActiveReads, activeReads);
       await Promise.resolve();
       activeReads--;
@@ -403,6 +623,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits[0]?.path).toBe('Notes/24.md');
     expect(maxActiveReads).toBeLessThanOrEqual(8);
+    expect(totalReads).toBe(25);
   });
 
   it('검색 결과가 제한되면 전체 스캔 수와 잘림 여부를 함께 반환한다', async () => {

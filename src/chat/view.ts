@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
+import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
 import {
   buildChatModelOptions,
   CHAT_PROVIDER_KEYS,
@@ -13,9 +13,9 @@ import type {
   ChatMessage,
   LLMProvider,
   StreamChunk,
-  ToolCallInfo,
   ToolCallDelta,
   ToolDefinition,
+  ToolChoice,
 } from '../llm/providers';
 import { normalizeReasoningChunk } from '../llm/reasoning';
 import type {
@@ -37,11 +37,16 @@ import {
   type ParsedMention,
   type RagQueryLike,
 } from './context';
+import {
+  ExplicitMcpToolDiscoveryError,
+  collectExternalMcpToolDefinitions,
+} from './mcp-tool-catalog';
 import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
 import {
   appendAssistantToolRound,
   collectCompletedMcpServerNames,
   collectToolCitations,
+  createNativeToolAnswerRepairPrompt,
   enforceNativeToolAnswerContract,
   executeAssistantToolCalls as executeToolCalls,
   joinAssistantToolRoundText,
@@ -50,15 +55,19 @@ import {
   resolveAssistantToolLoopText,
   resolveToolLoopTerminalText,
   selectProviderReinjectableToolCalls,
+  type ToolTranscriptProtocol,
 } from './tool-execution';
 import {
   NativeVaultToolRuntime,
-  createNativeVaultToolDefinition,
+  createNativeVaultToolDefinitions,
   type NativeVaultToolRuntimeLike,
 } from '../agent/native-vault-tool';
 import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
 import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
-import { selectDisplayedAnswerCitations } from '../agent/citation-selection';
+import {
+  selectDisplayedAnswerCitations,
+  selectGroundedRepairCitations,
+} from '../agent/citation-selection';
 import {
   VaultResearchAgent,
   getVaultResearchPhaseLabel,
@@ -90,7 +99,15 @@ import {
   type ComposerDraftSnapshot,
 } from './chat-composer';
 import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
-import { createChatMessageMetaItems } from './chat-message-renderer';
+import {
+  createChatMessageMetaItems,
+  createChatMessageTechnicalSummary,
+} from './chat-message-renderer';
+import {
+  createAssistantResponseLayout,
+  type AssistantResponseLayoutController,
+  type AssistantResponseLayoutState,
+} from './assistant-response-layout';
 import {
   CHAT_MESSAGE_ACTION_ATTRIBUTE,
   createChatMessageActionId,
@@ -118,7 +135,8 @@ import { ToolCallPanel } from './tool-call-panel';
 import {
   createCompatibilityToolPrompt,
   createNativeVaultEvidencePrompt,
-  parseCompatibilityToolResponse,
+  parseCompatibilityToolTurn,
+  sanitizeNonExecutingToolTurn,
 } from './tool-protocol';
 import {
   createToolApprovalResumePlan,
@@ -138,7 +156,11 @@ import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
+import { planNativeToolCompatibilityFallbackRust } from '../rag/rust-core';
 import { prepareLoadedSessionMessages } from './session-recovery';
+import { buildProviderConversation } from './provider-conversation';
+import { appendAgenticCheckpoint, planAgenticToolTurn } from './tool-orchestration';
+import { selectBoundedToolDefinitions } from './tool-catalog-budget';
 import {
   isChatRunActive,
   isChatRunOwner,
@@ -148,6 +170,8 @@ import {
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
+const MAX_TOOL_CALLS_PER_ROUND = 8;
+const MAX_TOOL_CALLS_PER_TURN = 64;
 const MENTION_TOP_VAR = '--superpower-inside-mention-top';
 const MENTION_BOTTOM_VAR = '--superpower-inside-mention-bottom';
 const CHAT_INPUT_HEIGHT_VAR = '--superpower-inside-chat-input-height';
@@ -240,7 +264,12 @@ export class ChatView extends ItemView {
   private pendingRegeneration: RegenerationDraft | null;
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
+  private readonly assistantResponseLayouts = new WeakMap<
+    HTMLElement,
+    AssistantResponseLayoutController
+  >();
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private readonly compatibilityToolModels: Set<string>;
   private lastStreamingMarkdownAt: number;
   private localToolCallSequence: number;
 
@@ -294,6 +323,7 @@ export class ChatView extends ItemView {
     this.pendingRegeneration = null;
     this.lastStreamingMarkdownAt = 0;
     this.localToolCallSequence = 0;
+    this.compatibilityToolModels = new Set();
     this.nativeVaultTool = new NativeVaultToolRuntime(
       new ObsidianNativeVaultToolPort(
         this.app,
@@ -313,6 +343,7 @@ export class ChatView extends ItemView {
       repairSourceWarning: (warning) => this.repairSourceWarning(warning),
     });
     this.toolCallPanel = new ToolCallPanel({
+      setIcon: (element, icon) => setIcon(element, icon),
       approveToolCall: (messageId, toolCallId) => this.approveToolCall(messageId, toolCallId),
       renderMarkdown: (container, content) => this.renderMarkdownBubble(container, content),
     });
@@ -419,6 +450,9 @@ export class ChatView extends ItemView {
   }
 
   private renderEmptyState(): void {
+    if (this.emptyStateEl && !this.emptyStateEl.isConnected) {
+      this.emptyStateEl = null;
+    }
     if (!this.messagesArea || this.messages.length > 0 || this.emptyStateEl) return;
     const emptyState = this.messagesArea.createDiv({
       cls: 'superpower-inside-chat-empty-state',
@@ -1272,7 +1306,7 @@ export class ChatView extends ItemView {
     this.messageEls.set(id, wrapper);
 
     const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
-    avatar.setText(this.getAvatarText(role));
+    this.renderMessageAvatar(avatar, role);
 
     const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', id);
@@ -1415,6 +1449,28 @@ export class ChatView extends ItemView {
     }
   }
 
+  private getAssistantResponseSourceCount(input: {
+    citations?: readonly SourceCitation[];
+    sourceWarnings?: readonly SourceValidationWarning[];
+    contextAttachments?: readonly ContextAttachment[];
+  }): number {
+    if ((input.citations?.length ?? 0) > 0) return input.citations?.length ?? 0;
+    if ((input.sourceWarnings?.length ?? 0) > 0) return input.sourceWarnings?.length ?? 0;
+    return input.contextAttachments?.length ?? 0;
+  }
+
+  private createAssistantResponseLayoutState(
+    msg: ChatMessageWithMeta,
+  ): AssistantResponseLayoutState {
+    return {
+      hasAnswer: Boolean(msg.content.trim() || msg.assistantQuestion),
+      hasWork: Boolean(msg.reasoning?.trim() || msg.toolCalls?.length),
+      sourceCount: this.getAssistantResponseSourceCount(msg),
+      isComplete:
+        msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete'),
+    };
+  }
+
   private createAssistantLayers(
     bubbleContainer: HTMLElement,
     content: string,
@@ -1425,8 +1481,35 @@ export class ChatView extends ItemView {
     assistantQuestion?: AssistantQuestion,
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
+    const calls = toolCalls ?? [];
+    const sourceCount = this.getAssistantResponseSourceCount({
+      citations,
+      sourceWarnings,
+    });
+    bubbleContainer.querySelector('.superpower-inside-chat-assistant-response')?.remove();
+    const messageId = bubbleContainer.getAttribute('data-message-id') ?? 'message';
+    const layout = createAssistantResponseLayout(bubbleContainer, {
+      idPrefix: `superpower-inside-assistant-response-${encodeURIComponent(messageId)}`,
+      ariaLabel: t('assistantResponseTabsAria'),
+      labels: {
+        answer: t('answerLabel'),
+        work: t('assistantResponseWorkTab'),
+        sources: (count) =>
+          count > 0
+            ? t('assistantResponseSourcesTabCount', { count })
+            : t('assistantResponseSourcesTab'),
+      },
+      state: {
+        hasAnswer: Boolean(content.trim() || assistantQuestion),
+        hasWork: Boolean(reasoning?.trim() || calls.length || shouldShowStreamingPlaceholders),
+        sourceCount,
+        isComplete: !this.isStreaming && Boolean(content.trim() || assistantQuestion),
+      },
+    });
+    this.assistantResponseLayouts.set(bubbleContainer, layout);
+    this.renderAssistantResponseCollapseControl(bubbleContainer, layout.root);
 
-    const thinking = bubbleContainer.createEl('details', {
+    const thinking = layout.panels.work.createEl('details', {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
     setHidden(thinking, !(reasoning || shouldShowStreamingPlaceholders));
@@ -1447,14 +1530,16 @@ export class ChatView extends ItemView {
     });
     thinkingContent.setText(reasoning ?? t('thinkingPlaceholder'));
 
-    const toolCallsSection = bubbleContainer.createDiv({
+    const toolCallsSection = layout.panels.work.createDiv({
       cls: 'superpower-inside-chat-tool-calls',
     });
-    const hasToolCalls = toolCalls && toolCalls.length > 0;
+    const hasToolCalls = calls.length > 0;
     setHidden(toolCallsSection, !hasToolCalls);
-    this.toolCallPanel.renderToolCallsSection(toolCallsSection, toolCalls ?? [], false);
+    this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, false);
 
-    const answerLayer = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-answer' });
+    const answerLayer = layout.panels.answer.createDiv({
+      cls: 'superpower-inside-chat-answer',
+    });
     const answerLabel = answerLayer.createDiv({
       cls: 'superpower-inside-chat-answer-label',
     });
@@ -1473,8 +1558,10 @@ export class ChatView extends ItemView {
     } else {
       bubble.setText(content);
     }
-    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
+      mode: 'embedded',
+    });
+    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
   }
 
   private updateAssistantLayers(
@@ -1490,6 +1577,21 @@ export class ChatView extends ItemView {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!isDomInstance(bubbleContainer, HTMLElement)) return;
 
+    let layout = this.assistantResponseLayouts.get(bubbleContainer);
+    if (!layout) {
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        citations,
+        sourceWarnings,
+        assistantQuestion,
+      );
+      layout = this.assistantResponseLayouts.get(bubbleContainer);
+      if (!layout) return;
+    }
+
     let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     if (!isDomInstance(thinking, HTMLDetailsElement)) {
       this.createAssistantLayers(
@@ -1501,8 +1603,11 @@ export class ChatView extends ItemView {
         sourceWarnings,
         assistantQuestion,
       );
+      layout = this.assistantResponseLayouts.get(bubbleContainer);
+      if (!layout) return;
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
+    this.renderAssistantResponseCollapseControl(bubbleContainer, layout.root);
 
     if (isDomInstance(thinking, HTMLDetailsElement)) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
@@ -1568,8 +1673,19 @@ export class ChatView extends ItemView {
         wrapper.classList.remove('generating');
       }
     }
-    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
+      mode: 'embedded',
+    });
+    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
+    layout.update({
+      hasAnswer: Boolean(content.trim() || assistantQuestion),
+      hasWork: Boolean(reasoning?.trim() || toolCalls?.length),
+      sourceCount: this.getAssistantResponseSourceCount({
+        citations,
+        sourceWarnings,
+      }),
+      isComplete: isDone,
+    });
   }
 
   private renderAssistantQuestionCard(container: HTMLElement, question: AssistantQuestion): void {
@@ -1808,29 +1924,90 @@ export class ChatView extends ItemView {
     }
   }
 
-  private getAvatarText(role: string): string {
+  private renderMessageAvatar(avatar: HTMLElement, role: string): void {
+    avatar.empty();
+    avatar.setAttribute('aria-hidden', 'true');
     switch (role) {
       case 'user':
-        return '👤';
+        setIcon(avatar, 'user-round');
+        return;
       case 'assistant':
-        return '🤖';
+        setIcon(avatar, 'sparkles');
+        return;
       case 'system':
-        return '⚙️';
+        setIcon(avatar, 'settings-2');
+        return;
       case 'tool':
-        return '🔧';
+        setIcon(avatar, 'wrench');
+        return;
       default:
-        return '•';
+        setIcon(avatar, 'circle');
     }
   }
 
   private renderMessageMeta(meta: HTMLElement, msg: ChatMessageWithMeta): void {
     meta.empty();
+    const technicalSummary = createChatMessageTechnicalSummary(msg);
+    if (technicalSummary) {
+      meta.setAttribute('title', technicalSummary);
+    } else {
+      meta.removeAttribute('title');
+    }
     for (const item of createChatMessageMetaItems(msg)) {
-      const el = meta.createSpan({ cls: item.className, text: item.text });
+      const el = meta.createSpan({ cls: item.className });
+      if (item.kind === 'status') {
+        const icon = el.createSpan({
+          cls: 'superpower-inside-chat-message-status-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        setIcon(
+          icon,
+          msg.status === 'complete'
+            ? 'check'
+            : msg.status === 'error'
+              ? 'circle-alert'
+              : 'loader-circle',
+        );
+        el.createSpan({ text: item.text });
+      } else {
+        el.setText(item.text);
+      }
       if (item.title) {
         el.setAttribute('title', item.title);
       }
     }
+  }
+
+  private renderAssistantResponseCollapseControl(
+    bubbleContainer: HTMLElement,
+    response: HTMLElement,
+  ): void {
+    const meta = bubbleContainer.querySelector('.superpower-inside-chat-meta');
+    if (!isDomInstance(meta, HTMLElement)) return;
+    meta.querySelector('.superpower-inside-chat-response-collapse')?.remove();
+    const button = meta.createEl('button', {
+      cls: 'superpower-inside-chat-response-collapse',
+      attr: {
+        type: 'button',
+        'aria-controls': response.id,
+      },
+    });
+    const setExpanded = (expanded: boolean): void => {
+      const label = expanded ? t('assistantResponseCollapse') : t('assistantResponseExpand');
+      button.setAttribute('aria-expanded', String(expanded));
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+      response.hidden = !expanded;
+      const actions = bubbleContainer.querySelector('.superpower-inside-chat-message-actions');
+      if (isDomInstance(actions, HTMLElement)) {
+        actions.hidden = !expanded;
+      }
+      setIcon(button, expanded ? 'chevron-down' : 'chevron-right');
+    };
+    setExpanded(!response.hidden);
+    button.addEventListener('click', () => {
+      setExpanded(button.getAttribute('aria-expanded') !== 'true');
+    });
   }
 
   private updateMessageMeta(wrapper: HTMLElement, msg: ChatMessageWithMeta): void {
@@ -1844,13 +2021,15 @@ export class ChatView extends ItemView {
     bubbleContainer: HTMLElement,
     msg: ChatMessageWithMeta,
   ): void {
-    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
-    this.sourcePanel.renderContextBudgetSection(bubbleContainer, msg.contextBudgetSnapshot);
-    this.sourcePanel.renderDataBoundarySection(bubbleContainer, msg.dataBoundarySnapshot);
-    this.renderVariantComparisonSection(bubbleContainer, msg);
-    if (msg.role === 'assistant') {
-      this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
-    }
+    if (msg.role !== 'assistant') return;
+    const layout = this.assistantResponseLayouts.get(bubbleContainer);
+    const sourcesPanel = layout?.panels.sources ?? bubbleContainer;
+    this.sourcePanel.renderContextAttachmentsSection(sourcesPanel, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextBudgetSection(sourcesPanel, msg.contextBudgetSnapshot);
+    this.sourcePanel.renderDataBoundarySection(sourcesPanel, msg.dataBoundarySnapshot);
+    this.renderVariantComparisonSection(sourcesPanel, msg);
+    this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
+    layout?.update(this.createAssistantResponseLayoutState(msg));
   }
 
   private renderVariantComparisonSection(
@@ -1922,22 +2101,28 @@ export class ChatView extends ItemView {
       diagnosticsContentId: existingDiagnosticsToggle?.getAttribute('aria-controls'),
     });
     existing?.remove();
+    const isComplete =
+      msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete');
+    if (msg.role === 'assistant' && !msg.errorKind && !isComplete) return;
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
-    const actionButtons = new Map<string, HTMLButtonElement>();
+    const response = this.assistantResponseLayouts.get(container)?.root;
+    actions.hidden = Boolean(response?.hidden);
+    const actionButtonRegistry = new Map<string, HTMLButtonElement>();
     const registerActionButton = (
       button: HTMLButtonElement,
       actionId: string,
     ): HTMLButtonElement => {
       button.setAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE, actionId);
-      actionButtons.set(actionId, button);
+      actionButtonRegistry.set(actionId, button);
       return button;
     };
     const restoreActionFocus = (): void => {
       if (!renderState.focusedActionId) return;
-      actionButtons.get(renderState.focusedActionId)?.focus({ preventScroll: true });
+      actionButtonRegistry.get(renderState.focusedActionId)?.focus({ preventScroll: true });
     };
 
     if (msg.role === 'assistant' && msg.errorKind) {
+      actions.addClass('has-error');
       for (const [index, recoveryAction] of createChatRecoveryActions(msg.errorKind).entries()) {
         const button = registerActionButton(
           actions.createEl('button', {
@@ -2000,36 +2185,101 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const copyBtn = registerActionButton(
-      actions.createEl('button', { text: t('messageCopyAction') }),
+    const actionButtons = actions.createDiv({
+      cls: 'superpower-inside-chat-message-action-buttons',
+    });
+    const createVisibleAction = (
+      label: string,
+      icon: string,
+      actionId: string,
+    ): HTMLButtonElement => {
+      const button = registerActionButton(
+        actionButtons.createEl('button', {
+          attr: { type: 'button', 'aria-label': label, title: label },
+        }),
+        actionId,
+      );
+      const iconEl = button.createSpan({
+        cls: 'superpower-inside-chat-message-action-icon',
+        attr: { 'aria-hidden': 'true' },
+      });
+      setIcon(iconEl, icon);
+      button.createSpan({ text: label });
+      return button;
+    };
+    const copyBtn = createVisibleAction(
+      t('messageCopyAction'),
+      'copy',
       createChatMessageActionId('copy'),
     );
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const retryBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageRetryAction') }),
+      const sourceCount = msg.citations?.length ?? 0;
+      if (sourceCount > 0) {
+        const evidence = actions.createDiv({
+          cls: 'superpower-inside-chat-message-evidence',
+          attr: { role: 'status' },
+        });
+        const evidenceIcon = evidence.createSpan({
+          cls: 'superpower-inside-chat-message-evidence-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        setIcon(evidenceIcon, 'shield-check');
+        evidence.createSpan({
+          text: t('assistantResponseEvidenceSummary', { count: sourceCount }),
+        });
+      }
+
+      const retryBtn = createVisibleAction(
+        t('messageRetryAction'),
+        'refresh-cw',
         createChatMessageActionId('regenerate'),
       );
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
-      const insertBtn = registerActionButton(
-        actions.createEl('button', { text: t('sourceInsertIntoNoteAction') }),
-        createChatMessageActionId('insert-into-note'),
+
+      const moreLabel = t('assistantResponseMoreActions');
+      const moreBtn = registerActionButton(
+        actionButtons.createEl('button', {
+          cls: 'superpower-inside-chat-message-more-actions',
+          attr: {
+            type: 'button',
+            'aria-label': moreLabel,
+            title: moreLabel,
+            'aria-haspopup': 'menu',
+          },
+        }),
+        createChatMessageActionId('more'),
       );
-      insertBtn.addEventListener('click', () => void this.insertMessageIntoActiveNote(msg));
-      const saveBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageNewNoteAction') }),
-        createChatMessageActionId('save-as-note'),
-      );
-      saveBtn.addEventListener('click', () => void this.saveMessageAsNote(msg));
-      const branchBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageBranchAction') }),
-        createChatMessageActionId('branch'),
-      );
-      branchBtn.addEventListener('click', () => void this.branchFromMessage(msg.id));
+      setIcon(moreBtn, 'ellipsis');
+      moreBtn.addEventListener('click', () => {
+        const menu = new Menu();
+        menu.setUseNativeMenu(false);
+        menu.addItem((item) =>
+          item
+            .setTitle(t('sourceInsertIntoNoteAction'))
+            .setIcon('text-cursor-input')
+            .onClick(() => void this.insertMessageIntoActiveNote(msg)),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(t('messageNewNoteAction'))
+            .setIcon('file-plus-2')
+            .onClick(() => void this.saveMessageAsNote(msg)),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(t('messageBranchAction'))
+            .setIcon('git-branch')
+            .onClick(() => void this.branchFromMessage(msg.id)),
+        );
+        const rect = moreBtn.getBoundingClientRect();
+        menu.showAtPosition({ x: rect.right, y: rect.bottom });
+      });
     } else if (msg.role === 'user') {
-      const editBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageEditAndSendAction') }),
+      const editBtn = createVisibleAction(
+        t('messageEditAndSendAction'),
+        'pencil',
         createChatMessageActionId('edit-and-send'),
       );
       editBtn.addEventListener('click', () => void this.editAndResendUserMessage(msg));
@@ -2406,7 +2656,7 @@ export class ChatView extends ItemView {
     this.messageEls.set(msg.id, wrapper);
 
     const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
-    avatar.setText(this.getAvatarText(msg.role));
+    this.renderMessageAvatar(avatar, msg.role);
 
     const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', msg.id);
@@ -2623,7 +2873,7 @@ export class ChatView extends ItemView {
     }
     setHidden(this.typingIndicator, false);
 
-    const providerCapability = provider.capability;
+    let providerCapability = provider.capability;
     let turnState: ChatTurnState = transitionChatTurn(createChatTurnState(), { type: 'submit' });
     const toTurnMeta = (): Pick<
       MessageMetaInput,
@@ -2644,12 +2894,19 @@ export class ChatView extends ItemView {
     this.autoResizeInput();
     this.renderContextPreview('');
     const wholeVaultResearch = isWholeVaultResearchRequest(text);
-    const mentionedServers = wholeVaultResearch ? [] : this.getEffectiveMcpServerNames(text);
+    const explicitlyMentionedServers = wholeVaultResearch ? [] : this.getMentionedServerNames(text);
+    const mentionedServers = wholeVaultResearch
+      ? []
+      : this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
     let promptContext: ContextBuildResult;
     try {
       promptContext = wholeVaultResearch
         ? { systemPrompt: null, attachments: [], citations: [], warnings: [] }
-        : await this.buildPromptContext(text, previousUserQuestions);
+        : await this.buildPromptContext(
+            text,
+            previousUserQuestions,
+            providerCapability.maxToolRounds > 0,
+          );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
@@ -2716,9 +2973,19 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
       ...userVariantMeta,
     });
-    const providerConversationMessages = this.messages
-      .slice(-10)
-      .map((message) => this.toProviderMessage(message));
+    const toolModelKey = `${key}\u0000${modelName}`;
+    let toolProtocol: ToolTranscriptProtocol =
+      providerCapability.toolCalling && !this.compatibilityToolModels.has(toolModelKey)
+        ? 'native'
+        : 'compatibility';
+    if (toolProtocol === 'compatibility' && providerCapability.toolCalling) {
+      providerCapability = { ...providerCapability, toolCalling: false };
+    }
+    const providerConversationSource = this.messages.slice(-10);
+    const providerConversationMessages = buildProviderConversation(
+      providerConversationSource,
+      toolProtocol,
+    );
     const waitStatus = createProviderWaitStatus({
       providerLabel,
       model: modelName,
@@ -2749,19 +3016,38 @@ export class ChatView extends ItemView {
     let restoreDraft = false;
 
     try {
-      const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+      const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));
+      const toolsEnabled = maxToolRounds > 0;
+      const toolDefinitions = toolsEnabled
+        ? await this.collectToolDefinitions(mentionedServers, explicitlyMentionedServers, run)
+        : [];
       if (!isChatRunActive(this.activeRun, run)) return;
-      const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
-      const toolPrompt = providerCapability.toolCalling
-        ? createNativeVaultEvidencePrompt(toolDefinitions)
-        : createCompatibilityToolPrompt(toolDefinitions);
-      const systemPrompt = [promptContext.systemPrompt, toolPrompt]
+      let providerToolDefinitions =
+        toolsEnabled && toolProtocol === 'native' ? toolDefinitions : undefined;
+      const initialAgentPlan = toolsEnabled
+        ? planAgenticToolTurn({
+            question: text,
+            contextAttachments: promptContext.attachments,
+            explicitToolServerCount: explicitlyMentionedServers.length,
+            toolDefinitions,
+            toolCalls: [],
+            phase: 'initial',
+            round: 0,
+            maxRounds: maxToolRounds,
+          })
+        : null;
+      const toolPrompt = toolsEnabled
+        ? toolProtocol === 'native'
+          ? createNativeVaultEvidencePrompt(toolDefinitions)
+          : createCompatibilityToolPrompt(toolDefinitions)
+        : '';
+      let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
         .filter((part): part is string => Boolean(part))
         .join('\n\n');
-      if (!providerCapability.toolCalling && mentionedServers.length > 0) {
+      if (toolsEnabled && !providerCapability.toolCalling && mentionedServers.length > 0) {
         new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
       }
-      const messages: ChatMessage[] = [
+      let messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...providerConversationMessages,
       ];
@@ -2821,57 +3107,100 @@ export class ChatView extends ItemView {
       let fullReasoning = '';
       let hasReceivedContent = false;
       const toolCallMap = new Map<number, ToolCallRecord>();
-      await provider.streamChat(
-        messages,
-        (chunk: StreamChunk) => {
-          if (!isChatRunActive(this.activeRun, run)) return;
-          if (chunk.content) {
-            fullText += chunk.content;
-          }
-          if (chunk.reasoning) {
-            fullReasoning += chunk.reasoning;
-          }
-          if (chunk.toolCalls) {
-            this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
-          }
-          const turnMeta =
-            chunk.toolCalls && chunk.toolCalls.length > 0
-              ? applyTurnEvent({
-                  type: 'tool-call-delta',
-                  activeToolCalls: toolCallMap.size,
-                })
-              : chunk.reasoning && !chunk.content
-                ? applyTurnEvent({ type: 'reasoning-delta' })
-                : chunk.content
-                  ? applyTurnEvent({ type: 'answer-delta' })
-                  : toTurnMeta();
+      const consumeInitialChunk = (chunk: StreamChunk): void => {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        if (chunk.content) {
+          fullText += chunk.content;
+        }
+        if (chunk.reasoning) {
+          fullReasoning += chunk.reasoning;
+        }
+        if (chunk.toolCalls) {
+          this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+        }
+        const turnMeta =
+          chunk.toolCalls && chunk.toolCalls.length > 0
+            ? applyTurnEvent({
+                type: 'tool-call-delta',
+                activeToolCalls: toolCallMap.size,
+              })
+            : chunk.reasoning && !chunk.content
+              ? applyTurnEvent({ type: 'reasoning-delta' })
+              : chunk.content
+                ? applyTurnEvent({ type: 'answer-delta' })
+                : toTurnMeta();
 
-          if (!hasReceivedContent && (fullText || fullReasoning)) {
-            hasReceivedContent = true;
-            setHidden(this.typingIndicator, true);
-          }
+        if (!hasReceivedContent && (fullText || fullReasoning)) {
+          hasReceivedContent = true;
+          setHidden(this.typingIndicator, true);
+        }
 
-          this.updateMessage(
-            assistantId,
-            fullText,
-            chunk.done,
-            fullReasoning || undefined,
-            Array.from(toolCallMap.values()),
-            {
-              providerKey: key,
-              providerLabel,
-              model: modelName,
-              providerCapability,
-              ...turnMeta,
-              ...contextMeta,
-              ...assistantVariantMeta,
-            },
-          );
-        },
-        0.7,
-        providerToolDefinitions,
-        { signal: abortController.signal },
-      );
+        this.updateMessage(
+          assistantId,
+          fullText,
+          chunk.done,
+          fullReasoning || undefined,
+          Array.from(toolCallMap.values()),
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...turnMeta,
+            ...contextMeta,
+            ...assistantVariantMeta,
+          },
+        );
+      };
+      const streamInitialPass = (): Promise<void> =>
+        provider.streamChat(messages, consumeInitialChunk, 0.7, providerToolDefinitions, {
+          signal: abortController.signal,
+          toolChoice: providerToolDefinitions ? initialAgentPlan?.toolChoice : undefined,
+        });
+
+      try {
+        await streamInitialPass();
+      } catch (error) {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const fallbackPlan = planNativeToolCompatibilityFallbackRust({
+          status: getChatHttpStatus(error) ?? null,
+          message: error instanceof Error ? error.message : String(error),
+          nativeAttempted: providerToolDefinitions !== undefined,
+          compatibilityFallbackAttempted: false,
+        });
+        if (fallbackPlan?.retryWithCompatibility !== true) throw error;
+
+        toolProtocol = 'compatibility';
+        providerCapability = { ...providerCapability, toolCalling: false };
+        this.compatibilityToolModels.add(toolModelKey);
+        providerToolDefinitions = undefined;
+        const compatibilityPrompt = createCompatibilityToolPrompt(toolDefinitions);
+        systemPrompt = [
+          promptContext.systemPrompt,
+          compatibilityPrompt,
+          initialAgentPlan?.checkpoint,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join('\n\n');
+        messages = [
+          ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+          ...buildProviderConversation(providerConversationSource, toolProtocol),
+        ];
+        fullText = '';
+        fullReasoning = '';
+        hasReceivedContent = false;
+        toolCallMap.clear();
+        this.updateMessage(assistantId, '', false, undefined, [], {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...applyTurnEvent({ type: 'context-built' }),
+          ...contextMeta,
+          ...assistantVariantMeta,
+        });
+        await streamInitialPass();
+      }
       if (!isChatRunActive(this.activeRun, run)) return;
       setHidden(this.typingIndicator, true);
       let normalized = normalizeReasoningChunk({
@@ -2881,11 +3210,39 @@ export class ChatView extends ItemView {
       fullText = normalized.content;
       fullReasoning = normalized.reasoning ?? '';
 
+      if (toolsEnabled) {
+        const compatibility = parseCompatibilityToolTurn(
+          fullText,
+          fullReasoning,
+          (channel, index) => `compat-tool-${++this.localToolCallSequence}-${channel}-${index}`,
+        );
+        fullText = compatibility.visibleContent;
+        fullReasoning = compatibility.visibleReasoning;
+        const parsedToolCalls = [
+          ...this.parseInlineToolRequests(fullText),
+          ...this.parseInlineToolRequests(fullReasoning),
+          ...compatibility.toolCalls,
+        ];
+        if (parsedToolCalls.length > 0) {
+          fullText = this.stripInlineToolRequests(fullText);
+          fullReasoning = this.stripInlineToolRequests(fullReasoning);
+          const baseToolCallIndex = toolCallMap.size;
+          parsedToolCalls
+            .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - toolCallMap.size))
+            .forEach((toolCall, index) => toolCallMap.set(baseToolCallIndex + index, toolCall));
+        }
+      } else {
+        toolCallMap.clear();
+      }
+
       const firstClassification = classifyAssistantResponse({
         content: fullText,
         reasoning: fullReasoning,
       });
-      if (shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)) {
+      if (
+        initialAgentPlan?.shouldRetryWithoutTools !== true &&
+        shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)
+      ) {
         const questionContract = enforceNativeToolAnswerContract(
           firstClassification.content,
           Array.from(toolCallMap.values()),
@@ -2921,43 +3278,25 @@ export class ChatView extends ItemView {
         return;
       }
 
-      const compatibility = parseCompatibilityToolResponse(
-        fullText,
-        (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
-      );
-      fullText = compatibility.visibleContent;
-      const parsedToolCalls = [
-        ...this.parseInlineToolRequests(fullText),
-        ...compatibility.toolCalls,
-      ];
-      if (parsedToolCalls.length > 0) {
-        fullText = this.stripInlineToolRequests(fullText);
-        const baseToolCallIndex = toolCallMap.size;
-        parsedToolCalls.forEach((toolCall, index) =>
-          toolCallMap.set(baseToolCallIndex + index, toolCall),
-        );
-      }
-
       let toolCalls = Array.from(toolCallMap.values());
 
-      const hasMentionedServers = mentionedServers.length > 0;
       const hasToolCalls = toolCalls.length > 0;
-      const hasSubstantiveAnswer = fullText.trim().length > 50;
-      if (
-        hasMentionedServers &&
-        providerCapability.toolCalling &&
-        !hasToolCalls &&
-        hasSubstantiveAnswer &&
-        this.plugin.settings.chat.enforceMcpTools
-      ) {
+      if (initialAgentPlan?.shouldRetryWithoutTools === true && !hasToolCalls) {
         const serverNames = mentionedServers.join(', ');
-        new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
-
-        const retrySystemPrompt = `${systemPrompt}\n\n[IMPORTANT] You have access to the following MCP server(s): ${serverNames}. You MUST use the available tools to answer the question. Do NOT generate an answer without calling tools. If you need to read files or directories, use the appropriate tools first.`;
-
+        if (serverNames) {
+          new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
+        }
+        const previousAttempt = fullText.trim();
         const retryMessages: ChatMessage[] = [
-          { role: 'system', content: retrySystemPrompt },
-          ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
+          ...messages,
+          ...(previousAttempt ? [{ role: 'assistant' as const, content: previousAttempt }] : []),
+          {
+            role: 'user',
+            content: [
+              initialAgentPlan.checkpoint,
+              'Your previous response did not use the required connected tool. Do not answer yet. Make the required tool call now.',
+            ].join('\n'),
+          },
         ];
 
         fullText = '';
@@ -3011,7 +3350,10 @@ export class ChatView extends ItemView {
           },
           0.7,
           providerToolDefinitions,
-          { signal: abortController.signal },
+          {
+            signal: abortController.signal,
+            toolChoice: providerToolDefinitions ? 'required' : undefined,
+          },
         );
         if (!isChatRunActive(this.activeRun, run)) return;
 
@@ -3022,11 +3364,35 @@ export class ChatView extends ItemView {
         fullText = normalized.content;
         fullReasoning = normalized.reasoning ?? '';
 
+        const retryCompatibility = parseCompatibilityToolTurn(
+          fullText,
+          fullReasoning,
+          (channel, index) => `compat-retry-${++this.localToolCallSequence}-${channel}-${index}`,
+        );
+        fullText = retryCompatibility.visibleContent;
+        fullReasoning = retryCompatibility.visibleReasoning;
+        const retryParsedToolCalls = [
+          ...this.parseInlineToolRequests(fullText),
+          ...this.parseInlineToolRequests(fullReasoning),
+          ...retryCompatibility.toolCalls,
+        ];
+        if (retryParsedToolCalls.length > 0) {
+          fullText = this.stripInlineToolRequests(fullText);
+          fullReasoning = this.stripInlineToolRequests(fullReasoning);
+          const baseToolCallIndex = toolCallMap.size;
+          retryParsedToolCalls
+            .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - toolCallMap.size))
+            .forEach((toolCall, index) => toolCallMap.set(baseToolCallIndex + index, toolCall));
+        }
+
         const retryClassification = classifyAssistantResponse({
           content: fullText,
           reasoning: fullReasoning,
         });
-        if (shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)) {
+        if (
+          initialAgentPlan?.shouldRetryWithoutTools !== true &&
+          shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)
+        ) {
           const questionContract = enforceNativeToolAnswerContract(
             retryClassification.content,
             Array.from(toolCallMap.values()),
@@ -3064,9 +3430,27 @@ export class ChatView extends ItemView {
 
         toolCalls = Array.from(toolCallMap.values());
 
-        if (toolCalls.length === 0 && fullText.trim().length > 50) {
+        if (toolCalls.length === 0 && serverNames) {
           new Notice(t('mcpRetryNoToolUseNotice', { servers: serverNames }), 5000);
         }
+      }
+
+      if (initialAgentPlan?.shouldRetryWithoutTools === true && toolCalls.length === 0) {
+        const missingToolMessage = t('agentRequiredToolMissing');
+        this.updateMessage(assistantId, missingToolMessage, true, fullReasoning || undefined, [], {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...contextMeta,
+          ...assistantVariantMeta,
+          citations: [],
+          status: 'error',
+          turnStage: 'error',
+          errorMessage: missingToolMessage,
+          stopReason: 'tool-failed',
+        });
+        return;
       }
 
       fullText = enforceNativeToolAnswerContract(fullText, toolCalls).content;
@@ -3157,8 +3541,11 @@ export class ChatView extends ItemView {
             provider,
             messageId: assistantId,
             baseMessages: messages,
-            toolDefinitions: providerToolDefinitions ?? [],
-            maxToolRounds: providerCapability.maxToolRounds,
+            toolDefinitions,
+            toolProtocol,
+            question: text,
+            contextAttachments: promptContext.attachments,
+            maxToolRounds,
             toolCalls,
             run,
             meta: {
@@ -3219,9 +3606,16 @@ export class ChatView extends ItemView {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorKind = classifyChatFailure(err);
+      const errorKind =
+        err instanceof ExplicitMcpToolDiscoveryError ? 'tool-failed' : classifyChatFailure(err);
       const retryAfterMs = getChatRetryAfterMs(err);
-      const presentation = createChatErrorPresentation(errorKind, retryAfterMs);
+      const presentation =
+        err instanceof ExplicitMcpToolDiscoveryError
+          ? {
+              content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
+              retryAvailableAt: undefined,
+            }
+          : createChatErrorPresentation(errorKind, retryAfterMs);
       const errDetail = this.formatErrorDetail(
         key,
         modelName,
@@ -3325,42 +3719,6 @@ export class ChatView extends ItemView {
     new Notice(t('composerDraftRestoredNotice'), 3000);
   }
 
-  private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
-    const providerMessage: ChatMessage = {
-      role: message.role,
-      content:
-        message.content ||
-        (message.assistantQuestion
-          ? t('assistantQuestionProviderContent', {
-              prompt: message.assistantQuestion.prompt,
-              choices: message.assistantQuestion.choices
-                .map((choice) => `- ${choice.label}`)
-                .join('\n'),
-            })
-          : ''),
-      ...(message.reasoning ? { reasoning: message.reasoning } : {}),
-    };
-    if (message.toolCalls && message.toolCalls.length > 0) {
-      providerMessage.toolCalls = message.toolCalls.map((toolCall): ToolCallInfo => {
-        return {
-          id: toolCall.id,
-          type: 'function',
-          function: {
-            name: toolCall.name,
-            arguments: toolCall.arguments,
-          },
-        };
-      });
-    }
-    if (message.role === 'tool' && message.toolCalls && message.toolCalls.length > 0) {
-      providerMessage.tool_call_id = message.toolCalls[0].id;
-    }
-    if (message.role === 'tool') {
-      providerMessage.name = message.toolCalls?.[0]?.name;
-    }
-    return providerMessage;
-  }
-
   private mergeToolCallDeltas(
     toolCallMap: Map<number, ToolCallRecord>,
     deltas: ToolCallDelta[],
@@ -3372,7 +3730,7 @@ export class ChatView extends ItemView {
         if (toolCallDelta.function?.name) existing.name = toolCallDelta.function.name;
         if (toolCallDelta.function?.arguments)
           existing.arguments += toolCallDelta.function.arguments;
-      } else {
+      } else if (toolCallMap.size < MAX_TOOL_CALLS_PER_ROUND) {
         toolCallMap.set(toolCallDelta.index, {
           id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
@@ -3400,22 +3758,24 @@ export class ChatView extends ItemView {
         const parameters = request.querySelector('parameters');
         const args = parameters ? this.readXmlParameters(parameters) : {};
         toolCalls.push({
-          id: `xml-tool-${Date.now()}-${toolCalls.length}`,
+          id: `xml-tool-${++this.localToolCallSequence}`,
           name,
           arguments: JSON.stringify(args),
           status: 'running',
         });
+        if (toolCalls.length >= MAX_TOOL_CALLS_PER_ROUND) return toolCalls;
       }
 
       for (const invoke of Array.from(doc.querySelectorAll('invoke'))) {
         const name = invoke.getAttribute('name')?.trim();
         if (!name) continue;
         toolCalls.push({
-          id: `xml-tool-${Date.now()}-${toolCalls.length}`,
+          id: `xml-tool-${++this.localToolCallSequence}`,
           name,
           arguments: JSON.stringify(this.readXmlParameters(invoke)),
           status: 'running',
         });
+        if (toolCalls.length >= MAX_TOOL_CALLS_PER_ROUND) return toolCalls;
       }
     }
 
@@ -3456,40 +3816,21 @@ export class ChatView extends ItemView {
   }
 
   private async collectToolDefinitions(
-    serverNames: string[],
+    serverNames: readonly string[],
+    explicitlyMentionedServerNames: readonly string[],
     run: ChatRunHandle<AbortController>,
   ): Promise<ToolDefinition[]> {
     if (!isChatRunActive(this.activeRun, run)) return [];
-    const nativeDefinition = createNativeVaultToolDefinition();
-    const toolDefinitions: ToolDefinition[] = [nativeDefinition];
-    const registeredNames = new Set([nativeDefinition.function.name]);
-    for (const serverName of serverNames) {
-      if (!isChatRunActive(this.activeRun, run)) return [];
-      const client = this.plugin.mcpRegistry?.getClient(serverName);
-      if (!client) continue;
-      try {
-        const tools = await client.listTools();
-        if (!isChatRunActive(this.activeRun, run)) return [];
-        for (const tool of tools) {
-          if (registeredNames.has(tool.name)) continue;
-          registeredNames.add(tool.name);
-          toolDefinitions.push({
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description ?? '',
-              parameters: (tool.inputSchema as Record<string, unknown>) ?? {
-                type: 'object',
-                properties: {},
-              },
-            },
-          });
-        }
-      } catch {
-        // 연결이 불안정한 서버는 이번 요청에서 제외합니다.
-      }
-    }
-    return toolDefinitions;
+    const nativeDefinitions = createNativeVaultToolDefinitions();
+    const externalDefinitions = await collectExternalMcpToolDefinitions({
+      serverNames,
+      explicitlyMentionedServerNames,
+      reservedToolNames: new Set(nativeDefinitions.map((definition) => definition.function.name)),
+      signal: run.controller.signal,
+      getClient: (serverName) => this.plugin.mcpRegistry?.getClient(serverName),
+      isActive: () => isChatRunActive(this.activeRun, run),
+    });
+    return selectBoundedToolDefinitions(nativeDefinitions, externalDefinitions);
   }
 
   private async streamFinalAnswerAfterTools(args: {
@@ -3498,6 +3839,9 @@ export class ChatView extends ItemView {
     conversationMessages: ChatMessage[];
     assistantContent: string;
     toolDefinitions: ToolDefinition[];
+    toolProtocol: ToolTranscriptProtocol;
+    checkpoint: string;
+    toolChoice: ToolChoice;
     toolCalls: ToolCallRecord[];
     run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
@@ -3532,35 +3876,71 @@ export class ChatView extends ItemView {
       args.conversationMessages,
       args.assistantContent,
       completedToolCalls,
+      args.toolProtocol,
     );
+    const checkpointMessages = appendAgenticCheckpoint(secondMessages, args.checkpoint);
 
     const visibleToolCalls = [...args.toolCalls];
-    await args.provider.streamChat(
-      secondMessages,
-      (chunk: StreamChunk) => {
-        if (!isChatRunActive(this.activeRun, args.run)) return;
-        if (chunk.content) finalText += chunk.content;
-        if (chunk.reasoning) finalReasoning += chunk.reasoning;
-        if (chunk.toolCalls) {
-          this.mergeToolCallDeltas(newToolCallMap, chunk.toolCalls);
-        }
-        this.updateMessage(
-          args.messageId,
-          finalText,
-          false,
-          finalReasoning || undefined,
-          [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
-          {
-            ...args.meta,
-            citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
-            status: 'streaming',
-          },
-        );
-      },
-      0.7,
-      args.toolDefinitions,
-      { signal: args.run.controller.signal },
-    );
+    const streamProviderPass = async (
+      providerMessages: ChatMessage[],
+      toolChoice: ToolChoice,
+    ): Promise<void> => {
+      await args.provider.streamChat(
+        providerMessages,
+        (chunk: StreamChunk) => {
+          if (!isChatRunActive(this.activeRun, args.run)) return;
+          if (chunk.content) finalText += chunk.content;
+          if (chunk.reasoning) finalReasoning += chunk.reasoning;
+          if (chunk.toolCalls) {
+            this.mergeToolCallDeltas(newToolCallMap, chunk.toolCalls);
+          }
+          this.updateMessage(
+            args.messageId,
+            finalText,
+            false,
+            finalReasoning || undefined,
+            [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
+            {
+              ...args.meta,
+              citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
+              status: 'streaming',
+            },
+          );
+        },
+        0.7,
+        args.toolProtocol === 'native' ? args.toolDefinitions : undefined,
+        {
+          signal: args.run.controller.signal,
+          toolChoice: args.toolProtocol === 'native' ? toolChoice : undefined,
+        },
+      );
+    };
+    const parseStreamedToolRequests = (): void => {
+      const compatibility = parseCompatibilityToolTurn(
+        finalText,
+        finalReasoning,
+        (channel, index) => `compat-tool-${++this.localToolCallSequence}-${channel}-${index}`,
+      );
+      finalText = compatibility.visibleContent;
+      finalReasoning = compatibility.visibleReasoning;
+      const legacyToolCalls = [
+        ...this.parseInlineToolRequests(finalText),
+        ...this.parseInlineToolRequests(finalReasoning),
+      ];
+      if (legacyToolCalls.length > 0) {
+        finalText = this.stripInlineToolRequests(finalText);
+        finalReasoning = this.stripInlineToolRequests(finalReasoning);
+      }
+      const compatibilityBaseIndex = newToolCallMap.size;
+      [...legacyToolCalls, ...compatibility.toolCalls]
+        .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - newToolCallMap.size))
+        .forEach((toolCall, index) => {
+          newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
+        });
+    };
+
+    let providerMessages = checkpointMessages;
+    await streamProviderPass(providerMessages, args.toolChoice);
     if (!isChatRunActive(this.activeRun, args.run)) {
       return {
         finalText: '',
@@ -3569,21 +3949,100 @@ export class ChatView extends ItemView {
         conversationMessages: args.conversationMessages,
       };
     }
+    parseStreamedToolRequests();
 
-    const compatibility = parseCompatibilityToolResponse(
-      finalText,
-      (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
-    );
-    const compatibilityBaseIndex = newToolCallMap.size;
-    compatibility.toolCalls.forEach((toolCall, index) => {
-      newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
-    });
+    if (args.toolChoice === 'required' && newToolCallMap.size === 0) {
+      const ignoredAnswer = finalText.trim();
+      providerMessages = [
+        ...checkpointMessages,
+        ...(ignoredAnswer
+          ? [
+              {
+                role: 'assistant' as const,
+                content: ignoredAnswer,
+                ...(finalReasoning ? { reasoning: finalReasoning } : {}),
+              },
+            ]
+          : []),
+        {
+          role: 'user',
+          content: [
+            args.checkpoint,
+            'The required next tool call was missing. Do not answer yet. Perform that tool action now. This is the only automatic correction for this step.',
+          ].join('\n'),
+        },
+      ];
+      finalText = '';
+      finalReasoning = '';
+      newToolCallMap.clear();
+      await streamProviderPass(providerMessages, 'required');
+      if (!isChatRunActive(this.activeRun, args.run)) {
+        return {
+          finalText: '',
+          finalReasoning: '',
+          newToolCalls: [],
+          conversationMessages: args.conversationMessages,
+        };
+      }
+      parseStreamedToolRequests();
+    }
 
     return {
-      finalText: compatibility.visibleContent,
+      finalText,
       finalReasoning,
       newToolCalls: Array.from(newToolCallMap.values()),
-      conversationMessages: secondMessages,
+      conversationMessages: providerMessages,
+    };
+  }
+
+  private async streamGroundedAnswerRepair(args: {
+    provider: LLMProvider;
+    messageId: string;
+    conversationMessages: ChatMessage[];
+    originalText: string;
+    originalReasoning: string;
+    violationCodes: Parameters<typeof createNativeToolAnswerRepairPrompt>[0];
+    safeCoverageText?: string;
+    toolCalls: ToolCallRecord[];
+    run: ChatRunHandle<AbortController>;
+    meta: MessageMetaInput;
+  }): Promise<{ text: string; reasoning: string }> {
+    let text = '';
+    let reasoning = '';
+    const repairMessages: ChatMessage[] = [
+      ...args.conversationMessages,
+      {
+        role: 'assistant',
+        content: args.originalText,
+        ...(args.originalReasoning ? { reasoning: args.originalReasoning } : {}),
+      },
+      {
+        role: 'user',
+        content: createNativeToolAnswerRepairPrompt(args.violationCodes, args.safeCoverageText),
+      },
+    ];
+    await args.provider.streamChat(
+      repairMessages,
+      (chunk: StreamChunk) => {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        if (chunk.content) text += chunk.content;
+        if (chunk.reasoning) reasoning += chunk.reasoning;
+      },
+      0.2,
+      undefined,
+      {
+        signal: args.run.controller.signal,
+        toolChoice: 'none',
+      },
+    );
+    const normalized = normalizeReasoningChunk({
+      content: text,
+      reasoning: reasoning || undefined,
+    });
+    const sanitized = sanitizeNonExecutingToolTurn(normalized.content, normalized.reasoning ?? '');
+    return {
+      text: sanitized.visibleContent,
+      reasoning: sanitized.visibleReasoning,
     };
   }
 
@@ -3592,6 +4051,9 @@ export class ChatView extends ItemView {
     messageId: string;
     baseMessages: ChatMessage[];
     toolDefinitions: ToolDefinition[];
+    toolProtocol: ToolTranscriptProtocol;
+    question: string;
+    contextAttachments: ContextAttachment[];
     maxToolRounds?: number;
     toolCalls: ToolCallRecord[];
     run: ChatRunHandle<AbortController>;
@@ -3602,6 +4064,7 @@ export class ChatView extends ItemView {
   }): Promise<void> {
     const maxRounds = Math.max(0, Math.trunc(args.maxToolRounds ?? 10));
     let round = 0;
+    let toolProtocol = args.toolProtocol;
     let currentToolCalls = args.toolCalls;
     let conversationMessages = [...args.baseMessages];
     let currentAssistantContent = args.initialText ?? '';
@@ -3623,26 +4086,128 @@ export class ChatView extends ItemView {
       };
     };
 
-    while (round < maxRounds) {
+    while (round <= maxRounds) {
       if (!isChatRunActive(this.activeRun, args.run)) return;
+      const synthesisOnly = round === maxRounds;
       round++;
+      const agentPlan = synthesisOnly
+        ? null
+        : planAgenticToolTurn({
+            question: args.question,
+            contextAttachments: args.contextAttachments,
+            explicitToolServerCount: args.mentionedServers.length,
+            toolDefinitions: args.toolDefinitions,
+            toolCalls: allToolCalls,
+            phase: 'after-tools',
+            round,
+            maxRounds,
+          });
+      const checkpoint = synthesisOnly
+        ? [
+            '[Superpower Inside final synthesis checkpoint]',
+            `Current user objective (highest priority): <user_objective>${args.question}</user_objective>`,
+            'The bounded tool budget is now closed. Do not call another tool. Answer the current objective directly and completely from the verified results already provided.',
+          ].join('\n')
+        : (agentPlan?.checkpoint ?? '');
+      const roundToolDefinitions = synthesisOnly ? [] : args.toolDefinitions;
+      const roundToolChoice: ToolChoice = synthesisOnly
+        ? 'none'
+        : (agentPlan?.toolChoice ?? 'auto');
 
-      const result = await this.streamFinalAnswerAfterTools({
-        provider: args.provider,
-        messageId: args.messageId,
-        conversationMessages,
-        assistantContent: currentAssistantContent,
-        toolDefinitions: args.toolDefinitions,
-        toolCalls: currentToolCalls,
-        run: args.run,
-        meta: { ...withCurrentProviderUsage(), citations: turnCitations },
-      });
+      const streamRound = (): ReturnType<ChatView['streamFinalAnswerAfterTools']> =>
+        this.streamFinalAnswerAfterTools({
+          provider: args.provider,
+          messageId: args.messageId,
+          conversationMessages,
+          assistantContent: currentAssistantContent,
+          toolDefinitions: roundToolDefinitions,
+          toolProtocol,
+          checkpoint,
+          toolChoice: roundToolChoice,
+          toolCalls: currentToolCalls,
+          run: args.run,
+          meta: { ...withCurrentProviderUsage(), citations: turnCitations },
+        });
+      let result: Awaited<ReturnType<ChatView['streamFinalAnswerAfterTools']>>;
+      try {
+        result = await streamRound();
+      } catch (error) {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        const fallbackPlan = planNativeToolCompatibilityFallbackRust({
+          status: getChatHttpStatus(error) ?? null,
+          message: error instanceof Error ? error.message : String(error),
+          nativeAttempted: toolProtocol === 'native',
+          compatibilityFallbackAttempted: toolProtocol === 'compatibility',
+        });
+        if (fallbackPlan?.retryWithCompatibility !== true) throw error;
+
+        toolProtocol = 'compatibility';
+        if (args.meta.providerCapability) {
+          args.meta.providerCapability = {
+            ...args.meta.providerCapability,
+            toolCalling: false,
+          };
+        }
+        const providerKey = args.meta.providerKey?.trim();
+        const model = args.meta.model?.trim();
+        if (providerKey && model) {
+          this.compatibilityToolModels.add(`${providerKey}\u0000${model}`);
+        }
+        if (!synthesisOnly) {
+          conversationMessages = appendAgenticCheckpoint(
+            conversationMessages,
+            createCompatibilityToolPrompt(args.toolDefinitions),
+          );
+        }
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        result = await streamRound();
+      }
       if (!isChatRunActive(this.activeRun, args.run)) return;
+      if (synthesisOnly && result.newToolCalls.length > 0) {
+        const limitMessage = t('tooManyToolCalls');
+        this.updateMessage(
+          args.messageId,
+          limitMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: limitMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
+      const remainingToolCalls = Math.max(0, MAX_TOOL_CALLS_PER_TURN - allToolCalls.length);
+      const newToolCalls = result.newToolCalls.slice(0, remainingToolCalls);
+      if (result.newToolCalls.length > 0 && newToolCalls.length === 0) {
+        const limitMessage = t('tooManyToolCalls');
+        this.updateMessage(
+          args.messageId,
+          limitMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: limitMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
 
       const roundText = resolveAssistantToolLoopText(
         accumulatedText,
         result.finalText,
-        result.newToolCalls.length > 0,
+        newToolCalls.length > 0,
       );
       accumulatedText = roundText.finalAnswer ?? roundText.displayText;
       if (result.finalReasoning) {
@@ -3653,9 +4218,29 @@ export class ChatView extends ItemView {
       }
       conversationMessages = result.conversationMessages;
 
-      if (result.newToolCalls.length > 0) {
+      if (newToolCalls.length === 0 && agentPlan?.shouldRetryWithoutTools === true) {
+        const missingToolMessage = t('agentRequiredToolMissing');
+        this.updateMessage(
+          args.messageId,
+          missingToolMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: missingToolMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
+
+      if (newToolCalls.length > 0) {
         const preparedCandidates = await prepareAssistantToolCalls({
-          toolCalls: result.newToolCalls,
+          toolCalls: newToolCalls,
           nativeTool: this.nativeVaultTool,
           registry: this.plugin.mcpRegistry,
           preferredServerNames: args.mentionedServers,
@@ -3732,16 +4317,54 @@ export class ChatView extends ItemView {
         });
         accumulatedText = normalized.content;
         accumulatedReasoning = normalized.reasoning ?? '';
-        accumulatedText = enforceNativeToolAnswerContract(accumulatedText, allToolCalls).content;
+        let groundedRepairCitations: SourceCitation[] = [];
+        let answerContract = enforceNativeToolAnswerContract(accumulatedText, allToolCalls);
+        if (answerContract.violationCodes.length > 0) {
+          try {
+            const originalAnswer = accumulatedText;
+            const repaired = await this.streamGroundedAnswerRepair({
+              provider: args.provider,
+              messageId: args.messageId,
+              conversationMessages,
+              originalText: accumulatedText,
+              originalReasoning: accumulatedReasoning,
+              violationCodes: answerContract.violationCodes,
+              safeCoverageText: answerContract.safeCoverageText,
+              toolCalls: allToolCalls,
+              run: args.run,
+              meta: {
+                ...withCurrentProviderUsage(),
+                citations: turnCitations,
+              },
+            });
+            if (!isChatRunActive(this.activeRun, args.run)) return;
+            if (repaired.text.trim()) {
+              accumulatedText = repaired.text;
+              accumulatedReasoning = repaired.reasoning || accumulatedReasoning;
+              answerContract = enforceNativeToolAnswerContract(accumulatedText, allToolCalls);
+              if (answerContract.violationCodes.length === 0) {
+                groundedRepairCitations = selectGroundedRepairCitations(
+                  originalAnswer,
+                  accumulatedText,
+                  turnCitations,
+                );
+              }
+            }
+          } catch {
+            if (!isChatRunActive(this.activeRun, args.run)) return;
+            // 교정 요청 자체가 실패해도 검증되지 않은 원문은 노출하지 않고 기존 안전 문구를 사용합니다.
+          }
+        }
+        accumulatedText = answerContract.content;
         const classification = classifyAssistantResponse({
           content: accumulatedText,
           reasoning: accumulatedReasoning,
         });
         if (classification.type === 'question') {
-          const answerCitations = selectDisplayedAnswerCitations(
-            classification.content,
-            turnCitations,
-          );
+          const answerCitations =
+            groundedRepairCitations.length > 0
+              ? groundedRepairCitations
+              : selectDisplayedAnswerCitations(classification.content, turnCitations);
           this.updateMessage(
             args.messageId,
             classification.content,
@@ -3759,7 +4382,10 @@ export class ChatView extends ItemView {
           );
           return;
         }
-        const answerCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
+        const answerCitations =
+          groundedRepairCitations.length > 0
+            ? groundedRepairCitations
+            : selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
         this.updateMessage(
           args.messageId,
@@ -3807,9 +4433,12 @@ export class ChatView extends ItemView {
       .map((mention) => mention.name);
   }
 
-  private getEffectiveMcpServerNames(text: string): string[] {
+  private getEffectiveMcpServerNames(
+    text: string,
+    mentionedServerNames = this.getMentionedServerNames(text),
+  ): string[] {
     return getPluginAwareServerNames({
-      mentionedServerNames: this.getMentionedServerNames(text),
+      mentionedServerNames,
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       userText: text,
       registry: this.plugin.mcpRegistry,
@@ -3890,6 +4519,11 @@ export class ChatView extends ItemView {
         messageId,
         this.lastUserPrompt ?? '',
       );
+      const explicitlyMentionedServers = this.getMentionedServerNames(currentQuestion);
+      const mentionedServers = this.getEffectiveMcpServerNames(
+        currentQuestion,
+        explicitlyMentionedServers,
+      );
       const toolCalls = message.toolCalls.map((toolCall) =>
         toolCall.id === toolCallId || toolCall.name === toolCallId
           ? { ...toolCall, approved: true }
@@ -3904,7 +4538,7 @@ export class ChatView extends ItemView {
       const updated = await this.executeAssistantToolCalls(
         messageId,
         toolCalls,
-        this.getEffectiveMcpServerNames(currentQuestion),
+        mentionedServers,
         message.reasoning,
         run,
       );
@@ -3966,10 +4600,17 @@ export class ChatView extends ItemView {
                 this.plugin.settings[message.providerKey as ProviderKey],
                 message.model,
               );
-        const mentionedServers = this.getEffectiveMcpServerNames(currentQuestion);
-        const promptContext = await this.buildPromptContext(currentQuestion, previousUserQuestions);
+        const promptContext = await this.buildPromptContext(
+          currentQuestion,
+          previousUserQuestions,
+          provider.capability.maxToolRounds > 0,
+        );
         if (!isChatRunActive(this.activeRun, run)) return;
-        const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+        const toolDefinitions = await this.collectToolDefinitions(
+          mentionedServers,
+          explicitlyMentionedServers,
+          run,
+        );
         if (!isChatRunActive(this.activeRun, run)) return;
         const resumeDataBoundarySnapshot = createDataBoundarySnapshot({
           providerLabel: message.providerLabel ?? message.providerKey,
@@ -3981,16 +4622,24 @@ export class ChatView extends ItemView {
           citations: promptContext.citations,
           mcpServerNames: [],
         });
+        const resumeToolModelKey = `${message.providerKey}\u0000${message.model}`;
+        const resumeToolProtocol: ToolTranscriptProtocol =
+          provider.capability.toolCalling &&
+          message.providerCapability?.toolCalling !== false &&
+          !this.compatibilityToolModels.has(resumeToolModelKey)
+            ? 'native'
+            : 'compatibility';
         const resumePlan = createToolApprovalResumePlan({
           promptSystemPrompt: promptContext.systemPrompt,
           toolDefinitions,
-          providerSupportsToolCalling: provider.capability.toolCalling,
+          providerSupportsToolCalling: resumeToolProtocol === 'native',
           toolCalls: updated,
           dataBoundarySnapshot: resumeDataBoundarySnapshot,
         });
-        const previousMessages = this.messages
-          .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
-          .map((item) => this.toProviderMessage(item));
+        const previousMessages = buildProviderConversation(
+          this.messages.slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex)),
+          resumeToolProtocol,
+        );
         const baseMessages: ChatMessage[] = [
           ...(resumePlan.systemPrompt
             ? [{ role: 'system' as const, content: resumePlan.systemPrompt }]
@@ -4001,7 +4650,10 @@ export class ChatView extends ItemView {
           provider,
           messageId,
           baseMessages,
-          toolDefinitions: resumePlan.providerToolDefinitions,
+          toolDefinitions,
+          toolProtocol: resumeToolProtocol,
+          question: currentQuestion,
+          contextAttachments: promptContext.attachments,
           maxToolRounds: provider.capability.maxToolRounds,
           toolCalls: updated,
           run,
@@ -4043,8 +4695,15 @@ export class ChatView extends ItemView {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorKind = classifyChatFailure(err);
-      const presentation = createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
+      const errorKind =
+        err instanceof ExplicitMcpToolDiscoveryError ? 'tool-failed' : classifyChatFailure(err);
+      const presentation =
+        err instanceof ExplicitMcpToolDiscoveryError
+          ? {
+              content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
+              retryAvailableAt: undefined,
+            }
+          : createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
       const errorDetail = this.formatErrorDetail(
         message.providerKey ?? 'unknown',
         message.model ?? 'unknown',
@@ -4088,6 +4747,7 @@ export class ChatView extends ItemView {
   private async buildPromptContext(
     lastUserText: string,
     previousUserQuestions: readonly string[] = [],
+    deferImplicitFolderEvidenceToTools = false,
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -4112,6 +4772,7 @@ export class ChatView extends ItemView {
       mcpRegistry: this.plugin.mcpRegistry,
       knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
+      deferImplicitFolderEvidenceToTools,
       queryExpander: (question) =>
         Promise.resolve(expandVaultSearchQueryLocally(question, previousUserQuestions)),
     });
@@ -4554,7 +5215,11 @@ export class ChatView extends ItemView {
     }
 
     const callRow = bubble.createDiv({ cls: 'superpower-inside-tool-call' });
-    callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
+    const toolIcon = callRow.createSpan({
+      cls: 'superpower-inside-tool-call-icon',
+      attr: { 'aria-hidden': 'true' },
+    });
+    setIcon(toolIcon, 'wrench');
     callRow.createSpan({
       cls: 'superpower-inside-tool-call-name',
       text: toolName || t('messageTool'),
@@ -4562,17 +5227,22 @@ export class ChatView extends ItemView {
     const statusBadge = callRow.createSpan({
       cls: `superpower-inside-tool-call-status ${status}`,
     });
-    if (status === 'running') {
-      statusBadge.setText('');
-      const dots = statusBadge.createSpan({ cls: 'superpower-inside-tool-running-dots' });
-      dots.createSpan({});
-      dots.createSpan({});
-      dots.createSpan({});
-    } else if (status === 'success') {
-      statusBadge.setText('✓');
-    } else if (status === 'error') {
-      statusBadge.setText('✗');
-    }
+    const statusIcon = statusBadge.createSpan({
+      cls: 'superpower-inside-tool-call-status-icon',
+      attr: { 'aria-hidden': 'true' },
+    });
+    setIcon(
+      statusIcon,
+      status === 'running' ? 'loader-circle' : status === 'success' ? 'check' : 'circle-alert',
+    );
+    statusBadge.createSpan({
+      text:
+        status === 'running'
+          ? t('chatStatusRunning')
+          : status === 'success'
+            ? t('chatStatusDone')
+            : t('chatStatusError'),
+    });
 
     const resultArea = bubble.createDiv({ cls: 'superpower-inside-tool-result' });
     if (resultText && status !== 'running') {
@@ -4580,17 +5250,34 @@ export class ChatView extends ItemView {
     }
 
     if (resultText && status !== 'running') {
-      const toggle = bubble.createDiv({ cls: 'superpower-inside-tool-result-toggle collapsed' });
-      toggle.createSpan({ cls: 'superpower-inside-tool-result-toggle-chevron', text: '▾' });
+      const resultId = `superpower-inside-tool-result-${this.localToolCallSequence++}`;
+      resultArea.id = resultId;
+      const toggle = bubble.createEl('button', {
+        cls: 'superpower-inside-tool-result-toggle collapsed',
+        attr: {
+          type: 'button',
+          'aria-expanded': 'false',
+          'aria-controls': resultId,
+        },
+      });
+      const toggleIcon = toggle.createSpan({
+        cls: 'superpower-inside-tool-result-toggle-chevron',
+        attr: { 'aria-hidden': 'true' },
+      });
+      setIcon(toggleIcon, 'chevron-right');
       toggle.createSpan({ text: t('toolResult') });
       toggle.addEventListener('click', () => {
         const isCollapsed = resultArea.classList.contains('collapsed');
         if (isCollapsed) {
           resultArea.classList.remove('collapsed');
           toggle.classList.remove('collapsed');
+          toggle.setAttribute('aria-expanded', 'true');
+          setIcon(toggleIcon, 'chevron-down');
         } else {
           resultArea.classList.add('collapsed');
           toggle.classList.add('collapsed');
+          toggle.setAttribute('aria-expanded', 'false');
+          setIcon(toggleIcon, 'chevron-right');
         }
       });
       resultArea.classList.add('collapsed');

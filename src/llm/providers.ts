@@ -63,8 +63,11 @@ export interface ToolDefinition {
   };
 }
 
+export type ToolChoice = 'auto' | 'required' | 'none';
+
 export interface ChatOptions {
   signal?: AbortSignal;
+  toolChoice?: ToolChoice;
 }
 
 export type StreamChatOptions = ChatOptions;
@@ -267,7 +270,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: ChatOptions,
   ): Promise<string> {
     throwIfChatAborted(options?.signal);
-    const body = this.buildChatBody(messages, temperature, false, tools);
+    const body = this.buildChatBody(messages, temperature, false, tools, options?.toolChoice);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -292,6 +295,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     temperature: number,
     stream: boolean,
     tools?: ToolDefinition[],
+    toolChoice?: ToolChoice,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
@@ -301,6 +305,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
+      if (toolChoice) body.tool_choice = toolChoice;
     }
     return body;
   }
@@ -312,7 +317,8 @@ class OpenAICompatibleProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
-    const body = this.buildChatBody(messages, temperature, true, tools);
+    throwIfChatAborted(options?.signal);
+    const body = this.buildChatBody(messages, temperature, true, tools, options?.toolChoice);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -447,6 +453,9 @@ class ClaudeProvider implements LLMProvider {
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
+      if (options?.toolChoice) {
+        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
+      }
     }
     const res = await requestUrl({
       url: ANTHROPIC_MESSAGES_URL,
@@ -478,6 +487,7 @@ class ClaudeProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
+    throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       max_tokens: 4096,
@@ -492,6 +502,9 @@ class ClaudeProvider implements LLMProvider {
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
+      if (options?.toolChoice) {
+        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
+      }
     }
     const res = await requestUrl({
       url: ANTHROPIC_MESSAGES_URL,
@@ -562,6 +575,12 @@ class ClaudeProvider implements LLMProvider {
     }
     onChunk({ content: '', done: true });
   }
+}
+
+function mapClaudeToolChoice(toolChoice: ToolChoice): { type: 'auto' | 'any' | 'none' } {
+  return {
+    type: toolChoice === 'required' ? 'any' : toolChoice,
+  };
 }
 
 /* ---------- Ollama (Local) ---------- */
@@ -650,10 +669,7 @@ class OllamaProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
-    if (options?.signal?.aborted) {
-      onChunk({ content: '', done: true });
-      return;
-    }
+    throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
     const body: Record<string, unknown> = {

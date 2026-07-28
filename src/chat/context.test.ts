@@ -228,6 +228,46 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
+  it('도구 루프가 조사할 때는 암시적 폴더 전체를 선별하지 않고 RAG 후보만 먼저 붙인다', async () => {
+    const archive = createFile('archive/overview.md', '지난 프로젝트 개요', 1000);
+    const aurora = createFile('aurora/migration.txt', 'Aurora migration plan', 1000, 'txt');
+    const app = createApp(
+      new Map([
+        [archive.path, archive],
+        [aurora.path, aurora],
+      ]),
+    );
+    const query = vi.fn(() =>
+      Promise.resolve([
+        createResult(aurora.path, aurora.content, createContentHash(aurora.content)),
+      ]),
+    );
+
+    const context = await buildChatContext('오로라 프로젝트의 마이그레이션 계획은?', {
+      app,
+      ragEngine: { query },
+      queryExpander: () => Promise.resolve('Aurora migration plan'),
+      deferImplicitFolderEvidenceToTools: true,
+    });
+
+    expect(query).toHaveBeenCalledWith('Aurora migration plan', 5, undefined);
+    expect(context.attachments.some((attachment) => attachment.id.startsWith('folder:auto:'))).toBe(
+      false,
+    );
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'rag:auto',
+          type: 'rag',
+          status: 'attached',
+        }),
+      ]),
+    );
+    expect(context.citations.map((citation) => citation.filePath)).toEqual([
+      'aurora/migration.txt',
+    ]);
+  });
+
   it('검증된 local Graph 근거만 연결 근거 attachment로 표시한다', async () => {
     const file = createFile('note.md', '현재 내용', 1000);
     const app = createApp(new Map([['note.md', file]]));

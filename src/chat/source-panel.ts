@@ -138,6 +138,10 @@ export function createContextBudgetView(snapshot: ContextBudgetSnapshot): Contex
   };
 }
 
+export function shouldRenderContextBudget(snapshot: ContextBudgetSnapshot): boolean {
+  return snapshot.truncated || (snapshot.excludedAttachmentIds?.length ?? 0) > 0;
+}
+
 export interface DataBoundaryView {
   title: string;
   providerLabel: string;
@@ -303,31 +307,46 @@ export class SourcePanel {
 
   constructor(private readonly handlers: SourcePanelHandlers) {}
 
-  renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
+  renderCitationsSection(
+    container: HTMLElement,
+    citations: SourceCitation[],
+    options: { mode?: 'disclosure' | 'embedded' } = {},
+  ): void {
     const existingSection = container.querySelector('.superpower-inside-chat-citations');
     if (citations.length === 0) {
       existingSection?.remove();
       return;
     }
     const view = createCitationSectionView(citations);
-    const disclosure = readDisclosureSnapshot(
-      existingSection,
-      '.superpower-inside-chat-citations-label',
-      !view.collapsedByDefault,
-    );
+    const mode = options.mode ?? 'disclosure';
+    const disclosure =
+      mode === 'embedded'
+        ? { expanded: true }
+        : readDisclosureSnapshot(
+            existingSection,
+            '.superpower-inside-chat-citations-label',
+            !view.collapsedByDefault,
+          );
     const section = isDomInstance(existingSection, HTMLElement)
       ? existingSection
       : container.createDiv({ cls: 'superpower-inside-chat-citations' });
     section.empty();
-    const content = this.renderDisclosure(section, {
-      buttonClassName: 'superpower-inside-chat-citations-label',
-      iconClassName: 'superpower-inside-chat-citations-toggle-icon',
-      contentClassName: 'superpower-inside-chat-citations-content',
-      contentId:
-        disclosure.contentId ?? `superpower-inside-chat-citations-${++this.sectionSequence}`,
-      label: view.labelText,
-      expanded: disclosure.expanded,
-    });
+    section.className =
+      mode === 'embedded'
+        ? 'superpower-inside-chat-citations embedded'
+        : 'superpower-inside-chat-citations';
+    const content =
+      mode === 'embedded'
+        ? section.createDiv({ cls: 'superpower-inside-chat-citations-content' })
+        : this.renderDisclosure(section, {
+            buttonClassName: 'superpower-inside-chat-citations-label',
+            iconClassName: 'superpower-inside-chat-citations-toggle-icon',
+            contentClassName: 'superpower-inside-chat-citations-content',
+            contentId:
+              disclosure.contentId ?? `superpower-inside-chat-citations-${++this.sectionSequence}`,
+            label: view.labelText,
+            expanded: disclosure.expanded,
+          });
 
     for (const [index, citation] of citations.entries()) {
       const cardView = view.cards[index];
@@ -448,7 +467,7 @@ export class SourcePanel {
     snapshot: ContextBudgetSnapshot | undefined,
   ): void {
     let section = container.querySelector('.superpower-inside-chat-context-budget');
-    if (!snapshot) {
+    if (!snapshot || !shouldRenderContextBudget(snapshot)) {
       section?.remove();
       return;
     }

@@ -65,8 +65,8 @@ function createTool(): ToolDefinition {
   };
 }
 
-function parseRequestUrlBody(): Record<string, unknown> {
-  const call = requestUrlMock.mock.calls[0]?.[0];
+function parseRequestUrlBody(callIndex = 0): Record<string, unknown> {
+  const call = requestUrlMock.mock.calls[callIndex]?.[0];
   if (typeof call === 'string' || call === undefined) {
     throw new Error('requestUrl should be called with RequestUrlParam');
   }
@@ -250,6 +250,33 @@ describe('OpenAI-compatible chat request body', () => {
     expect(body.think).toBeUndefined();
   });
 
+  it.each(['auto', 'required', 'none'] as const)(
+    'OpenAI toolChoice=%s를 Chat Completions 문자열로 전달한다',
+    async (toolChoice) => {
+      requestUrlMock.mockResolvedValueOnce({
+        status: 200,
+        text: 'ok',
+        json: { choices: [{ message: { content: 'ok' } }] },
+        headers: {},
+        arrayBuffer: new ArrayBuffer(0),
+      });
+      const provider = createProvider(
+        'openai',
+        { apiKey: 'test-key', enabled: true, models: ['gpt-test'] },
+        'gpt-test',
+      );
+
+      await provider.chat([{ role: 'user', content: 'Hello' }], 0.4, [createTool()], {
+        toolChoice,
+      });
+
+      expect(parseRequestUrlBody()).toMatchObject({
+        tools: [createTool()],
+        tool_choice: toolChoice,
+      });
+    },
+  );
+
   it('OpenRouter 비스트리밍 chat 요청도 OpenAI 호환 필드만 보낸다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
@@ -264,16 +291,19 @@ describe('OpenAI-compatible chat request body', () => {
       'openrouter-override',
     );
 
-    await provider.chat([{ role: 'user', content: 'Hello' }], 0.2);
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.2, [createTool()], {
+      toolChoice: 'required',
+    });
 
     const body = parseRequestUrlBody();
     expect(body.temperature).toBe(0.2);
     expect(body.stream).toBe(false);
+    expect(body.tool_choice).toBe('required');
     expect(body.options).toBeUndefined();
     expect(body.think).toBeUndefined();
   });
 
-  it('Custom OpenAI requestUrl 경로도 options/think 없이 JSON body를 보낸다', async () => {
+  it('Custom OpenAI requestUrl 경로도 native tools 활성화 시 문자열 toolChoice를 보낸다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: 'ok',
@@ -290,11 +320,16 @@ describe('OpenAI-compatible chat request body', () => {
         enabled: true,
         models: ['custom-test'],
         useRequestUrl: true,
+        capabilityOverrides: {
+          toolCalling: true,
+        },
       },
       'custom-override',
     );
 
-    await provider.chat([{ role: 'user', content: 'Hello' }], 0.1);
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.1, [createTool()], {
+      toolChoice: 'auto',
+    });
 
     const call = requestUrlMock.mock.calls[0]?.[0];
     if (typeof call === 'string' || call === undefined) {
@@ -306,6 +341,7 @@ describe('OpenAI-compatible chat request body', () => {
     const body = JSON.parse(call.body) as Record<string, unknown>;
     expect(body.temperature).toBe(0.1);
     expect(body.stream).toBe(false);
+    expect(body.tool_choice).toBe('auto');
     expect(body.options).toBeUndefined();
     expect(body.think).toBeUndefined();
   });
@@ -381,7 +417,7 @@ describe('provider capability matrix', () => {
       reasoning: false,
       abort: 'best-effort',
       fileReference: true,
-      maxToolRounds: 0,
+      maxToolRounds: 10,
     });
     const body = parseRequestUrlBody();
     expect(body.tools).toBeUndefined();
@@ -433,6 +469,107 @@ describe('provider capability matrix', () => {
     const body = parseRequestUrlBody();
     expect(body.tools).toEqual([createTool()]);
   });
+});
+
+describe('provider별 toolChoice request mapping', () => {
+  it.each([
+    ['auto', { type: 'auto' }],
+    ['required', { type: 'any' }],
+    ['none', { type: 'none' }],
+  ] as const)(
+    'Claude toolChoice=%s를 Messages API 형식으로 변환한다',
+    async (toolChoice, expected) => {
+      requestUrlMock.mockResolvedValueOnce({
+        status: 200,
+        text: 'ok',
+        json: { content: [{ type: 'text', text: 'ok' }] },
+        headers: {},
+        arrayBuffer: new ArrayBuffer(0),
+      });
+      const provider = createProvider(
+        'claude',
+        { apiKey: 'test-key', enabled: true, models: ['claude-test'] },
+        'claude-test',
+      );
+
+      await provider.chat([{ role: 'user', content: 'Hello' }], 0.2, [createTool()], {
+        toolChoice,
+      });
+
+      expect(parseRequestUrlBody()).toMatchObject({
+        tool_choice: expected,
+      });
+    },
+  );
+
+  it('Claude streamChat도 같은 required→any 매핑을 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'data: {"type":"message_stop"}',
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      'claude',
+      { apiKey: 'test-key', enabled: true, models: ['claude-test'] },
+      'claude-test',
+    );
+
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], vi.fn(), 0.2, [createTool()], {
+      toolChoice: 'required',
+    });
+
+    expect(parseRequestUrlBody()).toMatchObject({
+      tool_choice: { type: 'any' },
+    });
+  });
+
+  it('Ollama에는 provider-neutral toolChoice를 전송하지 않는다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: 'ok',
+      json: { message: { content: 'ok' } },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      'ollama',
+      { apiKey: '', enabled: true, models: ['llama3.1'] },
+      'llama3.1',
+    );
+
+    await provider.chat([{ role: 'user', content: 'Hello' }], 0.2, [createTool()], {
+      toolChoice: 'required',
+    });
+
+    expect(parseRequestUrlBody().tool_choice).toBeUndefined();
+  });
+});
+
+describe('provider 요청 취소 경계', () => {
+  it.each(['openai', 'claude', 'ollama'] as const)(
+    '%s streamChat은 이미 취소된 run에서 네트워크 요청을 시작하지 않는다',
+    async (providerKey) => {
+      const provider = createProvider(
+        providerKey,
+        providerKey === 'ollama'
+          ? { apiKey: '', enabled: true, models: ['test-model'] }
+          : { apiKey: 'test-key', enabled: true, models: ['test-model'] },
+        'test-model',
+      );
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        provider.streamChat([{ role: 'user', content: 'Hello' }], vi.fn(), 0.2, [createTool()], {
+          signal: controller.signal,
+          toolChoice: 'required',
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(requestUrlMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('provider reasoning stream normalization', () => {
@@ -543,7 +680,9 @@ describe('Ollama streamChat transport', () => {
     );
     const onChunk = vi.fn();
 
-    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.3, [createTool()]);
+    await provider.streamChat([{ role: 'user', content: 'Hello' }], onChunk, 0.3, [createTool()], {
+      toolChoice: 'required',
+    });
 
     expect(requestUrlMock).toHaveBeenCalledOnce();
     const call = requestUrlMock.mock.calls[0]?.[0];
@@ -563,6 +702,7 @@ describe('Ollama streamChat transport', () => {
       think: true,
       tools: [createTool()],
     });
+    expect(body.tool_choice).toBeUndefined();
     expect(onChunk).toHaveBeenNthCalledWith(1, { content: 'cloud answer', done: false });
     expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
   });

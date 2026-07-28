@@ -7,6 +7,7 @@ import {
   createContextBudgetView,
   createDataBoundaryView,
   createSourceWarningViews,
+  shouldRenderContextBudget,
 } from './source-panel';
 import type {
   ContextAttachment,
@@ -346,6 +347,31 @@ describe('SourcePanel view model contract', () => {
       },
     ]);
   });
+
+  it('정상적으로 모두 포함된 컨텍스트 예산은 숨기고 축약이나 제외가 있을 때만 표시한다', () => {
+    expect(
+      shouldRenderContextBudget({
+        maxChars: 10_000,
+        usedChars: 2_000,
+        attachmentCount: 2,
+        citationCount: 0,
+        includedAttachmentIds: ['a', 'b'],
+        excludedAttachmentIds: [],
+        truncated: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderContextBudget({
+        maxChars: 10_000,
+        usedChars: 9_500,
+        attachmentCount: 2,
+        citationCount: 0,
+        includedAttachmentIds: ['a'],
+        excludedAttachmentIds: ['b'],
+        truncated: true,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe('SourcePanel disclosure DOM contract', () => {
@@ -420,6 +446,35 @@ describe('SourcePanel disclosure DOM contract', () => {
     expect(
       container.querySelector<HTMLElement>('.superpower-inside-chat-citations-content')?.hidden,
     ).toBe(true);
+  });
+
+  it('sources tab 안에서는 중복 disclosure 없이 출처 목록을 바로 표시한다', () => {
+    const panel = new SourcePanel({
+      setIcon: vi.fn(),
+      openCitation: vi.fn(),
+      copyCitationLink: vi.fn(),
+      insertCitation: vi.fn(),
+    });
+    const container = new TestHTMLElement() as unknown as HTMLElement;
+
+    panel.renderCitationsSection(
+      container,
+      [
+        {
+          id: 'rag-1',
+          filePath: 'Notes/A.md',
+          status: 'verified',
+          preview: 'First source',
+        },
+      ],
+      { mode: 'embedded' },
+    );
+
+    expect(container.querySelector('.superpower-inside-chat-citations-label') === null).toBe(true);
+    expect(
+      container.querySelector<HTMLElement>('.superpower-inside-chat-citations-content')?.hidden,
+    ).toBe(false);
+    expect(container.querySelector('.superpower-inside-chat-citation-card') !== null).toBe(true);
   });
 
   it('renders the data boundary as an accessible state-preserving disclosure', () => {

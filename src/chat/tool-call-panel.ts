@@ -2,22 +2,25 @@ import { t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import type { ToolCallRecord } from './types';
 import { planNativeVaultToolRequestRust } from '../rag/rust-core';
+import { resolveNamedNativeVaultAction } from '../agent/native-vault-tool';
 
 export interface ToolCallPlaceholderView {
   className: string;
-  iconText: string;
+  iconName: string;
   nameText: string;
   statusClassName: string;
+  statusIconName: string;
+  statusText: string;
 }
 
 export interface ToolCallRowView {
   rowId: string;
   className: string;
-  iconText: string;
+  iconName: string;
   nameText: string;
   status: ToolCallRecord['status'];
   statusClassName: string;
-  showRunningDots: boolean;
+  statusIconName: string;
   statusText: string;
   approvalRequired: boolean;
   safetyDecision: 'approval-required' | 'auto-approved' | 'blocked' | 'completed';
@@ -26,10 +29,12 @@ export interface ToolCallRowView {
   result?: string;
   resultSummary?: string;
   resultApplied: boolean;
+  detailsLabel: string;
 }
 
 export interface ToolCallPanelView {
   labelText: string;
+  iconName: string;
   placeholder?: ToolCallPlaceholderView;
   rows: ToolCallRowView[];
 }
@@ -37,21 +42,26 @@ export interface ToolCallPanelView {
 export interface ToolCallPanelHandlers {
   approveToolCall(messageId: string, toolCallId: string): void | Promise<void>;
   renderMarkdown(container: HTMLElement, content: string): void | Promise<void>;
+  setIcon(element: HTMLElement, icon: string): void;
 }
 
 export function createToolCallPanelView(
   toolCalls: readonly ToolCallRecord[],
   showPlaceholder: boolean,
 ): ToolCallPanelView {
+  const runningStatus = getToolCallStatusView('running');
   return {
-    labelText: `🔧 ${t('toolCallLabel')}`,
+    labelText: t('toolCallLabel'),
+    iconName: 'wrench',
     placeholder:
       toolCalls.length === 0 && showPlaceholder
         ? {
-            className: 'superpower-inside-tool-call placeholder',
-            iconText: '🔧',
+            className: 'superpower-inside-tool-call-group placeholder',
+            iconName: runningStatus.iconName,
             nameText: t('mcpToolRunning'),
             statusClassName: 'superpower-inside-tool-call-status running',
+            statusIconName: runningStatus.iconName,
+            statusText: runningStatus.text,
           }
         : undefined,
     rows: toolCalls.map(createToolCallRowView),
@@ -60,33 +70,43 @@ export function createToolCallPanelView(
 
 export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView {
   const status = getToolCallStatusView(toolCall.status);
+  const argumentsPreview = toolCall.arguments.trim();
   return {
     rowId: `tool-call-${toolCall.id || toolCall.name}`,
-    className: 'superpower-inside-tool-call',
-    iconText: '🔧',
+    className: 'superpower-inside-tool-call-group',
+    iconName: 'wrench',
     nameText: getToolCallName(toolCall),
     status: toolCall.status,
     statusClassName: `superpower-inside-tool-call-status ${toolCall.status}`,
-    showRunningDots: status.showRunningDots,
+    statusIconName: status.iconName,
     statusText: status.text,
     approvalRequired: toolCall.status === 'running' && toolCall.approved === false,
     safetyDecision: getSafetyDecision(toolCall),
     availableActions: getAvailableActions(toolCall),
-    argumentsPreview: toolCall.arguments.trim(),
+    argumentsPreview,
     result: toolCall.result,
     resultSummary: summarizeToolResult(
       toolCall.resultSummary ?? toolCall.normalizedResult ?? toolCall.result,
     ),
     resultApplied:
       toolCall.status === 'success' && Boolean(toolCall.normalizedResult || toolCall.resultSummary),
+    detailsLabel:
+      argumentsPreview && toolCall.result
+        ? `${t('toolArgs')} · ${t('toolResult')}`
+        : argumentsPreview
+          ? t('toolArgs')
+          : t('toolResult'),
   };
 }
 
 function getToolCallName(toolCall: ToolCallRecord): string {
   if (toolCall.executionKind !== 'native') return toolCall.name || t('toolCallLabel');
-  const plan = planNativeVaultToolRequestRust(toolCall.arguments);
-  if (!plan?.ok) return toolCall.serverName ?? toolCall.name ?? t('toolCallLabel');
-  const actionLabel = getNativeVaultActionLabel(plan.request.action);
+  const namedAction = resolveNamedNativeVaultAction(toolCall.name);
+  const legacyPlan =
+    namedAction === null ? planNativeVaultToolRequestRust(toolCall.arguments) : null;
+  const action = namedAction ?? (legacyPlan?.ok === true ? legacyPlan.request.action : null);
+  if (action === null) return toolCall.serverName ?? toolCall.name ?? t('toolCallLabel');
+  const actionLabel = getNativeVaultActionLabel(action);
   return `${toolCall.serverName ?? 'Superpower Inside'} · ${actionLabel}`;
 }
 
@@ -126,16 +146,16 @@ function summarizeToolResult(result: string | undefined): string | undefined {
 }
 
 function getToolCallStatusView(status: ToolCallRecord['status']): {
-  showRunningDots: boolean;
+  iconName: string;
   text: string;
 } {
   if (status === 'running') {
-    return { showRunningDots: true, text: '' };
+    return { iconName: 'loader-circle', text: t('overviewRunning') };
   }
   if (status === 'success') {
-    return { showRunningDots: false, text: '✓' };
+    return { iconName: 'check', text: t('chatStatusDone') };
   }
-  return { showRunningDots: false, text: '✗' };
+  return { iconName: 'circle-alert', text: t('chatStatusError') };
 }
 
 export class ToolCallPanel {
@@ -147,86 +167,124 @@ export class ToolCallPanel {
     showPlaceholder: boolean,
   ): void {
     const view = createToolCallPanelView(toolCalls, showPlaceholder);
-    const existingLabel = section.querySelector('.superpower-inside-chat-tool-calls-label');
-    if (!existingLabel) {
-      section.createDiv({
-        cls: 'superpower-inside-chat-tool-calls-label',
+    let label = section.querySelector('.superpower-inside-chat-tool-calls-label');
+    if (!isDomInstance(label, HTMLElement)) {
+      label = section.createDiv({ cls: 'superpower-inside-chat-tool-calls-label' });
+      const icon = label.createSpan({
+        cls: 'superpower-inside-chat-tool-calls-label-icon',
+        attr: { 'aria-hidden': 'true' },
+      });
+      this.handlers.setIcon(icon, view.iconName);
+      label.createSpan({
+        cls: 'superpower-inside-chat-tool-calls-label-text',
         text: view.labelText,
       });
     }
 
     if (view.placeholder) {
-      const existingPlaceholder = section.querySelector('.superpower-inside-tool-call.placeholder');
-      if (!existingPlaceholder) {
-        const row = section.createDiv({ cls: view.placeholder.className });
-        row.createSpan({
-          cls: 'superpower-inside-tool-call-icon',
-          text: view.placeholder.iconText,
+      section
+        .querySelectorAll('.superpower-inside-tool-call-group:not(.placeholder)')
+        .forEach((element) => element.remove());
+      const existingPlaceholder = section.querySelector(
+        '.superpower-inside-tool-call-group.placeholder',
+      );
+      if (!isDomInstance(existingPlaceholder, HTMLElement)) {
+        const group = section.createDiv({
+          cls: view.placeholder.className,
+          attr: {
+            role: 'status',
+            'aria-label': view.placeholder.nameText,
+          },
         });
-        row.createSpan({
+        const header = group.createDiv({ cls: 'superpower-inside-tool-call-header' });
+        const icon = header.createSpan({
+          cls: 'superpower-inside-tool-call-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        this.handlers.setIcon(icon, view.placeholder.iconName);
+        header.createSpan({
           cls: 'superpower-inside-tool-call-name',
           text: view.placeholder.nameText,
         });
-        const statusBadge = row.createSpan({ cls: view.placeholder.statusClassName });
-        this.renderRunningDots(statusBadge);
+        const statusBadge = header.createSpan({ cls: view.placeholder.statusClassName });
+        this.renderToolCallStatus(
+          statusBadge,
+          view.placeholder.statusIconName,
+          view.placeholder.statusText,
+        );
       }
       return;
     }
 
     section
-      .querySelectorAll('.superpower-inside-tool-call.placeholder')
-      .forEach((el) => el.remove());
+      .querySelectorAll('.superpower-inside-tool-call-group.placeholder')
+      .forEach((element) => element.remove());
 
     for (const [index, toolCall] of toolCalls.entries()) {
       const rowView = view.rows[index];
       if (!rowView) continue;
-      let callRow = Array.from(section.querySelectorAll('.superpower-inside-tool-call')).find(
-        (el): el is HTMLElement =>
-          isDomInstance(el, HTMLElement) && el.getAttribute('data-tool-call-id') === rowView.rowId,
+      let callGroup = Array.from(
+        section.querySelectorAll('.superpower-inside-tool-call-group:not(.placeholder)'),
+      ).find(
+        (element): element is HTMLElement =>
+          isDomInstance(element, HTMLElement) &&
+          element.getAttribute('data-tool-call-id') === rowView.rowId,
       );
 
-      if (!callRow) {
-        callRow = section.createDiv({ cls: rowView.className });
-        callRow.setAttribute('data-tool-call-id', rowView.rowId);
-        callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: rowView.iconText });
-        callRow.createSpan({
+      if (!callGroup) {
+        callGroup = section.createDiv({ cls: rowView.className });
+        callGroup.setAttribute('data-tool-call-id', rowView.rowId);
+        callGroup.setAttribute('role', 'group');
+        callGroup.setAttribute('aria-label', rowView.nameText);
+        const header = callGroup.createDiv({ cls: 'superpower-inside-tool-call-header' });
+        const icon = header.createSpan({
+          cls: 'superpower-inside-tool-call-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        this.handlers.setIcon(icon, rowView.iconName);
+        header.createSpan({
           cls: 'superpower-inside-tool-call-name',
           text: rowView.nameText,
         });
-        const statusBadge = callRow.createSpan({ cls: rowView.statusClassName });
-        this.renderToolCallStatus(statusBadge, rowView);
+        header.createSpan({ cls: rowView.statusClassName });
+        const summary = callGroup.createSpan({ cls: 'superpower-inside-tool-call-summary' });
+        summary.hidden = true;
       } else {
-        const statusBadge = callRow.querySelector('.superpower-inside-tool-call-status');
-        if (isDomInstance(statusBadge, HTMLElement)) {
-          statusBadge.className = rowView.statusClassName;
-          this.renderToolCallStatus(statusBadge, rowView);
+        callGroup.setAttribute('aria-label', rowView.nameText);
+        const name = callGroup.querySelector('.superpower-inside-tool-call-name');
+        if (isDomInstance(name, HTMLElement)) {
+          name.setText(rowView.nameText);
         }
       }
 
-      let resultSummary = callRow.querySelector('.superpower-inside-tool-call-summary');
-      if (rowView.resultSummary) {
-        if (!isDomInstance(resultSummary, HTMLElement)) {
-          resultSummary = callRow.createSpan({
-            cls: 'superpower-inside-tool-call-summary',
-          });
-        }
-        resultSummary.setText(rowView.resultSummary);
-      } else if (isDomInstance(resultSummary, HTMLElement)) {
-        resultSummary.remove();
+      const statusBadge = callGroup.querySelector('.superpower-inside-tool-call-status');
+      if (isDomInstance(statusBadge, HTMLElement)) {
+        statusBadge.className = rowView.statusClassName;
+        this.renderToolCallStatus(statusBadge, rowView.statusIconName, rowView.statusText);
       }
 
-      const staleApproveBtn = callRow.querySelector('.superpower-inside-tool-call-approve');
+      const resultSummary = callGroup.querySelector('.superpower-inside-tool-call-summary');
+      if (isDomInstance(resultSummary, HTMLElement)) {
+        resultSummary.hidden = !rowView.resultSummary;
+        resultSummary.setText(rowView.resultSummary ?? '');
+      }
+
+      const staleApproveBtn = callGroup.querySelector('.superpower-inside-tool-call-approve');
       if (isDomInstance(staleApproveBtn, HTMLElement) && !rowView.approvalRequired) {
         staleApproveBtn.remove();
       }
       if (
         rowView.approvalRequired &&
-        !callRow.querySelector('.superpower-inside-tool-call-approve')
+        !callGroup.querySelector('.superpower-inside-tool-call-approve')
       ) {
-        const approveBtn = callRow.createEl('button', {
+        const approveBtn = callGroup.createEl('button', {
           cls: 'superpower-inside-tool-call-approve',
           text: t('toolApproveExecution'),
         });
+        approveBtn.setAttribute('type', 'button');
+        approveBtn.setAttribute('aria-label', t('toolApproveExecution'));
+        const details = callGroup.querySelector('.superpower-inside-tool-call-details');
+        if (details) callGroup.insertBefore(approveBtn, details);
         approveBtn.addEventListener('click', () => {
           const messageId = section
             .closest('.superpower-inside-chat-bubble-container')
@@ -236,79 +294,101 @@ export class ToolCallPanel {
         });
       }
 
-      const existingArgs = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-arguments'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          isDomInstance(el, HTMLDetailsElement) &&
-          el.getAttribute('data-tool-call-id') === rowView.rowId,
-      );
-      const existingResult = Array.from(
-        section.querySelectorAll('.superpower-inside-tool-result-details'),
-      ).find(
-        (el): el is HTMLDetailsElement =>
-          isDomInstance(el, HTMLDetailsElement) &&
-          el.getAttribute('data-tool-call-id') === rowView.rowId,
-      );
-      const argsOpen = existingArgs?.open ?? false;
-      const resultOpen = existingResult?.open ?? false;
-      existingArgs?.remove();
-      existingResult?.remove();
+      const existingDetails = callGroup.querySelector('.superpower-inside-tool-call-details');
+      const detailsOpen =
+        isDomInstance(existingDetails, HTMLDetailsElement) && existingDetails.open;
+      existingDetails?.remove();
 
-      if (rowView.argumentsPreview) {
-        const args = section.createEl('details', { cls: 'superpower-inside-tool-arguments' });
-        args.setAttribute('data-tool-call-id', rowView.rowId);
-        args.open = argsOpen;
-        args.createEl('summary', { text: t('toolArgs') });
-        args.createEl('pre', { text: rowView.argumentsPreview });
-      }
-
-      if (rowView.result) {
-        const resultDetails = section.createEl('details', {
-          cls: 'superpower-inside-tool-result-details',
+      if (rowView.argumentsPreview || rowView.result) {
+        const details = callGroup.createEl('details', {
+          cls: 'superpower-inside-tool-call-details',
         });
-        resultDetails.setAttribute('data-tool-call-id', rowView.rowId);
-        resultDetails.open = resultOpen;
-        resultDetails.createEl('summary', { text: t('toolResult') });
-        const resultArea = resultDetails.createDiv({ cls: 'superpower-inside-tool-result' });
-        void this.handlers.renderMarkdown(resultArea, rowView.result);
+        details.open = detailsOpen;
+        const detailsContentId = createToolCallDetailsContentId(rowView.rowId);
+        const detailsSummary = details.createEl('summary', {
+          cls: 'superpower-inside-tool-call-details-summary',
+        });
+        detailsSummary.setAttribute('aria-label', rowView.detailsLabel);
+        detailsSummary.setAttribute('aria-expanded', String(details.open));
+        detailsSummary.setAttribute('aria-controls', detailsContentId);
+        const detailsIcon = detailsSummary.createSpan({
+          cls: 'superpower-inside-tool-call-details-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        this.handlers.setIcon(detailsIcon, details.open ? 'chevron-down' : 'chevron-right');
+        detailsSummary.createSpan({
+          cls: 'superpower-inside-tool-call-details-label',
+          text: rowView.detailsLabel,
+        });
+        const detailsContent = details.createDiv({
+          cls: 'superpower-inside-tool-call-details-content',
+          attr: { id: detailsContentId },
+        });
+        details.addEventListener('toggle', () => {
+          detailsSummary.setAttribute('aria-expanded', String(details.open));
+          this.handlers.setIcon(detailsIcon, details.open ? 'chevron-down' : 'chevron-right');
+        });
+
+        if (rowView.argumentsPreview) {
+          const argumentsSection = detailsContent.createDiv({
+            cls: 'superpower-inside-tool-arguments',
+          });
+          argumentsSection.createSpan({
+            cls: 'superpower-inside-tool-call-detail-label',
+            text: t('toolArgs'),
+          });
+          argumentsSection.createEl('pre', { text: rowView.argumentsPreview });
+        }
+
+        if (rowView.result) {
+          const resultSection = detailsContent.createDiv({
+            cls: 'superpower-inside-tool-result-details',
+          });
+          resultSection.createSpan({
+            cls: 'superpower-inside-tool-call-detail-label',
+            text: t('toolResult'),
+          });
+          const resultArea = resultSection.createDiv({
+            cls: 'superpower-inside-tool-result',
+          });
+          void this.handlers.renderMarkdown(resultArea, rowView.result);
+        }
       }
     }
 
     const currentIds = new Set(view.rows.map((row) => row.rowId));
-    section.querySelectorAll('.superpower-inside-tool-call:not(.placeholder)').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-arguments').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
-    section.querySelectorAll('.superpower-inside-tool-result-details').forEach((el) => {
-      const elId = el.getAttribute('data-tool-call-id');
-      if (elId && !currentIds.has(elId)) {
-        el.remove();
-      }
-    });
+    section
+      .querySelectorAll('.superpower-inside-tool-call-group:not(.placeholder)')
+      .forEach((element) => {
+        const elementId = element.getAttribute('data-tool-call-id');
+        if (elementId && !currentIds.has(elementId)) {
+          element.remove();
+        }
+      });
   }
 
-  private renderToolCallStatus(statusBadge: HTMLElement, rowView: ToolCallRowView): void {
-    if (rowView.showRunningDots) {
-      this.renderRunningDots(statusBadge);
-    } else {
-      statusBadge.setText(rowView.statusText);
-    }
+  private renderToolCallStatus(
+    statusBadge: HTMLElement,
+    iconName: string,
+    statusText: string,
+  ): void {
+    statusBadge.empty();
+    statusBadge.setAttribute('role', 'status');
+    statusBadge.setAttribute('aria-live', 'polite');
+    statusBadge.setAttribute('aria-label', statusText);
+    const icon = statusBadge.createSpan({
+      cls: 'superpower-inside-tool-call-status-icon',
+      attr: { 'aria-hidden': 'true' },
+    });
+    this.handlers.setIcon(icon, iconName);
+    statusBadge.createSpan({
+      cls: 'superpower-inside-tool-call-status-text',
+      text: statusText,
+    });
   }
+}
 
-  private renderRunningDots(container: HTMLElement): void {
-    container.empty();
-    const dots = container.createSpan({ cls: 'superpower-inside-tool-running-dots' });
-    dots.createSpan({});
-    dots.createSpan({});
-    dots.createSpan({});
-  }
+function createToolCallDetailsContentId(rowId: string): string {
+  const safeRowId = rowId.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `${safeRowId}-details`;
 }

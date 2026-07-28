@@ -407,6 +407,7 @@ export interface I18nKeys {
   noToolsAvailable: string;
   messageUser: string;
   messageAssistant: string;
+  assistantDisplayName: string;
   messageSystem: string;
   messageTool: string;
   timestampJustNow: string;
@@ -425,6 +426,14 @@ export interface I18nKeys {
   reasoningLabel: string;
   toolCallLabel: string;
   answerLabel: string;
+  assistantResponseTabsAria: string;
+  assistantResponseWorkTab: string;
+  assistantResponseSourcesTab: string;
+  assistantResponseSourcesTabCount: string;
+  assistantResponseEvidenceSummary: string;
+  assistantResponseMoreActions: string;
+  assistantResponseCollapse: string;
+  assistantResponseExpand: string;
   thinkingPlaceholder: string;
   enforceMcpTools: string;
   enforceMcpToolsDesc: string;
@@ -655,6 +664,7 @@ export interface I18nKeys {
   noActiveProviderNotice: string;
   mcpRetryToolUseNotice: string;
   mcpRetryNoToolUseNotice: string;
+  agentRequiredToolMissing: string;
   mcpApprovalRequiredNotice: string;
   llmApiError: string;
   stopButton: string;
@@ -1358,6 +1368,7 @@ export interface I18nKeys {
   mcpServerNotConnected: string;
   mcpRegistryUnavailableNotice: string;
   mcpClientUnavailableNotice: string;
+  mcpMentionedServerUnavailable: string;
   mcpToolErrorPrefix: string;
   mcpToolEmptyResult: string;
   mcpValidationPattern: string;
@@ -1827,8 +1838,7 @@ const ko: I18nKeys = {
     '프로바이더 "{provider}"({model}) 연결에 실패했습니다. Base URL이나 API Key를 확인하세요.',
   validationUnknownProvider: '지원하지 않는 프로바이더입니다.',
   validationEmbeddingUnsupported: '이 프로바이더 연결은 임베딩을 지원하지 않습니다.',
-  validationInvalidEmbeddingResponse:
-    '프로바이더가 올바르지 않은 임베딩 응답을 반환했습니다.',
+  validationInvalidEmbeddingResponse: '프로바이더가 올바르지 않은 임베딩 응답을 반환했습니다.',
   validationTernlightEmbeddingOnly: 'Ternlight는 임베딩만 지원합니다.',
   validationTernlightUnknownModel: '알 수 없는 Ternlight 모델입니다: {model}',
   validationTernlightUnavailable: 'Ternlight 임베딩 엔진을 사용할 수 없습니다.',
@@ -1862,11 +1872,9 @@ const ko: I18nKeys = {
   autoUpdateIntervalDesc: '자동 인덱싱 간격 (1~99분, 자연수)',
   intervalMinutes: '분',
   excludePaths: '제외할 경로',
-  excludePathsDesc:
-    '임베딩·BM25·내장 볼트 도구에서 함께 제외할 폴더나 경로 패턴을 관리합니다.',
+  excludePathsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 폴더나 경로 패턴을 관리합니다.',
   excludeExts: '제외할 확장자',
-  excludeExtsDesc:
-    '임베딩·BM25·내장 볼트 도구에서 함께 제외할 파일 확장자를 관리합니다.',
+  excludeExtsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 파일 확장자를 관리합니다.',
   excludeListAdd: '추가',
   excludeListRemove: '삭제',
   excludeListEmpty: '등록된 항목이 없습니다.',
@@ -2026,6 +2034,7 @@ const ko: I18nKeys = {
   noToolsAvailable: '사용 가능한 MCP 툴이 없습니다.',
   messageUser: '사용자',
   messageAssistant: 'AI',
+  assistantDisplayName: 'Superpower Inside',
   messageSystem: '시스템',
   messageTool: '툴',
   timestampJustNow: '방금',
@@ -2044,6 +2053,14 @@ const ko: I18nKeys = {
   reasoningLabel: '생각 과정',
   toolCallLabel: '툴 호출',
   answerLabel: '답변',
+  assistantResponseTabsAria: 'AI 응답 보기',
+  assistantResponseWorkTab: '작업 기록',
+  assistantResponseSourcesTab: '출처',
+  assistantResponseSourcesTabCount: '출처 {count}',
+  assistantResponseEvidenceSummary: '자료 {count}개로 확인했어요',
+  assistantResponseMoreActions: '더 보기',
+  assistantResponseCollapse: '응답 접기',
+  assistantResponseExpand: '응답 펼치기',
   thinkingPlaceholder: '생각 중...',
   enforceMcpTools: 'MCP 도구 미사용 감지 및 재시도',
   enforceMcpToolsDesc:
@@ -2287,6 +2304,8 @@ const ko: I18nKeys = {
   noActiveProviderNotice: '활성화된 LLM Provider가 없습니다. 설정에서 Provider를 활성화하세요.',
   mcpRetryToolUseNotice: '🔄 @{servers} 도구를 호출하지 않아 재시도합니다...',
   mcpRetryNoToolUseNotice: '⚠️ @{servers} — 재시도했지만 도구를 호출하지 않았습니다.',
+  agentRequiredToolMissing:
+    '필요한 근거 도구를 두 차례 호출하지 않아 확인되지 않은 답변을 표시하지 않았습니다. 다시 시도해 주세요.',
   mcpApprovalRequiredNotice: '일부 MCP 툴은 메시지의 “실행 승인” 버튼을 눌러 진행하세요.',
   llmApiError: 'LLM API 오류: {detail}',
   stopButton: '중단',
@@ -2946,8 +2965,7 @@ const ko: I18nKeys = {
   graphRagPhaseBuildingCommunities: '커뮤니티 정리 중',
   graphRagPhaseCompleted: '추출 완료',
   graphRagPhaseCancelled: '취소됨',
-  graphRagStartScopeLimited:
-    '대상 .md 노트 {total}개 중 최대 {limit}개를 새로 추출합니다.',
+  graphRagStartScopeLimited: '대상 .md 노트 {total}개 중 최대 {limit}개를 새로 추출합니다.',
   graphRagStartScopeAll: 'GraphRAG 대상 .md 노트를 새로 추출합니다.',
   graphRagActionExtract: '추출 실행',
   graphRagStartAll: '전체 추출 실행',
@@ -3059,6 +3077,8 @@ const ko: I18nKeys = {
   mcpServerNotConnected: 'MCP 서버 `{server}`에 연결되어 있지 않습니다.',
   mcpRegistryUnavailableNotice: 'MCP 레지스트리가 초기화되지 않았습니다.',
   mcpClientUnavailableNotice: 'MCP 서버 `{server}` 클라이언트를 찾을 수 없습니다.',
+  mcpMentionedServerUnavailable:
+    '요청한 도구 서버 `{server}`를 사용할 수 없습니다. 연결을 확인한 뒤 다시 시도해 주세요.',
   mcpToolErrorPrefix: '[MCP 도구 오류] {message}',
   mcpToolEmptyResult: 'MCP 도구 `{tool}`가 빈 결과를 반환했습니다.',
   mcpValidationPattern: '입력값의 형식이 올바르지 않습니다. 요구되는 패턴: `{pattern}`',
@@ -3569,8 +3589,7 @@ const en: I18nKeys = {
     'Failed to connect to provider "{provider}" ({model}). Please check Base URL or API Key.',
   validationUnknownProvider: 'This provider is not supported.',
   validationEmbeddingUnsupported: 'This provider connection does not support embeddings.',
-  validationInvalidEmbeddingResponse:
-    'The provider returned an invalid embedding response.',
+  validationInvalidEmbeddingResponse: 'The provider returned an invalid embedding response.',
   validationTernlightEmbeddingOnly: 'Ternlight supports embeddings only.',
   validationTernlightUnknownModel: 'Unknown Ternlight model: {model}',
   validationTernlightUnavailable: 'The Ternlight embedding engine is unavailable.',
@@ -3767,6 +3786,7 @@ const en: I18nKeys = {
   noToolsAvailable: 'No MCP tools available.',
   messageUser: 'You',
   messageAssistant: 'AI',
+  assistantDisplayName: 'Superpower Inside',
   messageSystem: 'System',
   messageTool: 'Tool',
   timestampJustNow: 'just now',
@@ -3785,6 +3805,14 @@ const en: I18nKeys = {
   reasoningLabel: 'Thinking',
   toolCallLabel: 'Tool Call',
   answerLabel: 'Answer',
+  assistantResponseTabsAria: 'AI response views',
+  assistantResponseWorkTab: 'Work log',
+  assistantResponseSourcesTab: 'Sources',
+  assistantResponseSourcesTabCount: 'Sources {count}',
+  assistantResponseEvidenceSummary: 'Checked against {count} sources',
+  assistantResponseMoreActions: 'More actions',
+  assistantResponseCollapse: 'Collapse response',
+  assistantResponseExpand: 'Expand response',
   thinkingPlaceholder: 'Thinking...',
   enforceMcpTools: 'Detect & Retry on Missing MCP Tool Calls',
   enforceMcpToolsDesc:
@@ -4030,6 +4058,8 @@ const en: I18nKeys = {
   noActiveProviderNotice: 'No LLM provider is enabled. Enable a provider in settings.',
   mcpRetryToolUseNotice: '🔄 @{servers} did not call tools, retrying...',
   mcpRetryNoToolUseNotice: '⚠️ @{servers} — retried, but no tool was called.',
+  agentRequiredToolMissing:
+    'The required evidence tool was not called after two attempts, so an unverified answer was not shown. Please try again.',
   mcpApprovalRequiredNotice: 'Some MCP tools require the “Approve run” button in the message.',
   llmApiError: 'LLM API error: {detail}',
   stopButton: 'Stop',
@@ -4681,8 +4711,7 @@ const en: I18nKeys = {
     'Enable the selected GraphRAG model provider and add the model to its model list.',
   graphRagModelMissingReason: 'Select a GraphRAG extraction model.',
   graphRagAlreadyRunningReason: 'GraphRAG indexing is already running.',
-  graphRagNoFilesReason:
-    'The shared file scope has no .md notes that GraphRAG can process.',
+  graphRagNoFilesReason: 'The shared file scope has no .md notes that GraphRAG can process.',
   graphRagNoRunningReason: 'No GraphRAG indexing job is running.',
   graphRagNoFailedReason: 'There are no failed files to resume.',
   graphRagLiveStatusRunningTitle: 'GraphRAG is indexing now',
@@ -4703,8 +4732,7 @@ const en: I18nKeys = {
   graphRagPhaseBuildingCommunities: 'Organizing communities',
   graphRagPhaseCompleted: 'Extraction complete',
   graphRagPhaseCancelled: 'Cancelled',
-  graphRagStartScopeLimited:
-    'Extract up to {limit} new .md notes out of {total} eligible notes.',
+  graphRagStartScopeLimited: 'Extract up to {limit} new .md notes out of {total} eligible notes.',
   graphRagStartScopeAll: 'Extract eligible .md notes for GraphRAG.',
   graphRagActionExtract: 'Extraction',
   graphRagStartAll: 'Run full extraction',
@@ -4821,6 +4849,8 @@ const en: I18nKeys = {
   mcpServerNotConnected: 'MCP server `{server}` is not connected.',
   mcpRegistryUnavailableNotice: 'MCP registry is not initialized.',
   mcpClientUnavailableNotice: 'Could not find the MCP client for `{server}`.',
+  mcpMentionedServerUnavailable:
+    'The requested tool server `{server}` is unavailable. Check its connection and try again.',
   mcpToolErrorPrefix: '[MCP tool error] {message}',
   mcpToolEmptyResult: 'MCP tool `{tool}` returned an empty result.',
   mcpValidationPattern: 'The input format is invalid. Required pattern: `{pattern}`',

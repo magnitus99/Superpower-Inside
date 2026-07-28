@@ -5,6 +5,27 @@ import { t } from '../i18n';
 
 export const NATIVE_VAULT_TOOL_NAME = 'superpower_inside';
 export const NATIVE_VAULT_TOOL_LABEL = 'Superpower Inside';
+export const NATIVE_VAULT_NAMED_TOOL_NAMES = {
+  search: 'superpower_inside_search',
+  read: 'superpower_inside_read',
+  list: 'superpower_inside_list',
+  links: 'superpower_inside_links',
+  stats: 'superpower_inside_stats',
+} as const;
+
+type NativeVaultToolAction = RustNativeVaultToolRequest['action'];
+export type NativeVaultNamedToolName =
+  (typeof NATIVE_VAULT_NAMED_TOOL_NAMES)[keyof typeof NATIVE_VAULT_NAMED_TOOL_NAMES];
+
+const NATIVE_VAULT_ACTION_BY_TOOL_NAME: Readonly<
+  Record<NativeVaultNamedToolName, NativeVaultToolAction>
+> = {
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.search]: 'search',
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.read]: 'read',
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.list]: 'list',
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.links]: 'links',
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.stats]: 'stats',
+};
 
 export interface NativeVaultSearchHit {
   path: string;
@@ -14,6 +35,7 @@ export interface NativeVaultSearchHit {
   preview: string;
   score?: number;
   citationStatus?: 'candidate' | 'verified';
+  requiresRead?: true;
 }
 
 export interface NativeVaultFileSummary {
@@ -104,22 +126,31 @@ export interface NativeVaultToolPort {
 
 export interface NativeVaultToolRuntimeLike {
   isNativeTool(name: string): boolean;
-  execute(argumentsText: string, signal?: AbortSignal): Promise<NativeVaultToolExecutionResult>;
+  execute(
+    argumentsText: string,
+    signal?: AbortSignal,
+    toolName?: string,
+  ): Promise<NativeVaultToolExecutionResult>;
 }
 
 export class NativeVaultToolRuntime implements NativeVaultToolRuntimeLike {
   constructor(private readonly port: NativeVaultToolPort) {}
 
   isNativeTool(name: string): boolean {
-    return name === NATIVE_VAULT_TOOL_NAME;
+    return name === NATIVE_VAULT_TOOL_NAME || resolveNamedNativeVaultAction(name) !== null;
   }
 
   async execute(
     argumentsText: string,
     signal?: AbortSignal,
+    toolName: string = NATIVE_VAULT_TOOL_NAME,
   ): Promise<NativeVaultToolExecutionResult> {
     throwIfAborted(signal);
-    const plan = planNativeVaultToolRequestRust(argumentsText);
+    const plannedArguments = prepareNativeVaultArguments(toolName, argumentsText);
+    if (plannedArguments === null) {
+      throw new Error(t('nativeVaultInvalidArguments'));
+    }
+    const plan = planNativeVaultToolRequestRust(plannedArguments);
     if (!plan) {
       throw new Error(t('nativeVaultPlanUnavailable'));
     }
@@ -198,6 +229,168 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
       },
     },
   };
+}
+
+export function createNativeVaultToolDefinitions(): ToolDefinition[] {
+  return [
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.search,
+      'Find up to 20 ranked candidate passages in files allowed by the current vault indexing policy. Search hits are locators, not verified evidence: every hit requires a follow-up superpower_inside_read call with its path and line range before it supports an answer. Use focused terms; match defaults to all for the emergency lexical fallback, any accepts alternatives, and phrase requests an exact phrase.',
+      {
+        required: ['query'],
+        properties: {
+          query: {
+            type: 'string',
+            maxLength: 512,
+            description: 'Focused search query containing at most 32 lexical terms',
+          },
+          match: {
+            type: 'string',
+            enum: ['all', 'any', 'phrase'],
+            description: 'Fallback lexical matching policy; defaults to all',
+          },
+          path: {
+            type: 'string',
+            description: 'Optional vault-relative folder prefix that narrows the search',
+          },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 20,
+            description: 'Maximum candidate count; defaults to 8',
+          },
+        },
+      },
+    ),
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.read,
+      'Read current vault text from one allowed file. This is the verification step for search or link candidates. At most 400 inclusive lines are returned per call; when truncated is true, continue from endLine + 1 if more text is needed.',
+      {
+        required: ['path'],
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Vault-relative file path returned by search, list, or links',
+          },
+          start_line: {
+            type: 'integer',
+            minimum: 1,
+            description: 'First one-based line to read; defaults to 1',
+          },
+          end_line: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Optional last one-based line to read; the runtime still caps each call at 400 lines',
+          },
+        },
+      },
+    ),
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.list,
+      'List one stable page of up to 100 allowed vault files under a folder. Returned paths are inventory metadata, not content evidence. Follow nextCursor pages until it is null before making an exhaustive inventory claim, and use superpower_inside_read for file contents.',
+      {
+        required: [],
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Optional vault-relative folder path; omit for the vault root',
+          },
+          cursor: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Page cursor returned as nextCursor by the previous call; defaults to 0',
+          },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 100,
+            description: 'Maximum paths in this page; defaults to 50',
+          },
+        },
+      },
+    ),
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.links,
+      'Find up to 100 visible incoming or outgoing vault links for one allowed file. Link paths are structural candidates, not content evidence; call superpower_inside_read on the relevant files before using their contents in an answer.',
+      {
+        required: ['path'],
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Vault-relative source file path',
+          },
+          direction: {
+            type: 'string',
+            enum: ['incoming', 'outgoing', 'both'],
+            description: 'Link direction; defaults to both',
+          },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 100,
+            description: 'Maximum paths returned per direction; defaults to 50',
+          },
+        },
+      },
+    ),
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.stats,
+      'Return the file count and total bytes visible to the current vault indexing policy. This aggregate describes scope only and does not verify any file content.',
+      {
+        required: [],
+        properties: {},
+      },
+    ),
+  ];
+}
+
+function createActionToolDefinition(
+  name: NativeVaultNamedToolName,
+  description: string,
+  schema: {
+    required: readonly string[];
+    properties: Record<string, unknown>;
+  },
+): ToolDefinition {
+  return {
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: [...schema.required],
+        properties: schema.properties,
+      },
+    },
+  };
+}
+
+export function resolveNamedNativeVaultAction(name: string): NativeVaultToolAction | null {
+  return Object.hasOwn(NATIVE_VAULT_ACTION_BY_TOOL_NAME, name)
+    ? NATIVE_VAULT_ACTION_BY_TOOL_NAME[name as NativeVaultNamedToolName]
+    : null;
+}
+
+function prepareNativeVaultArguments(toolName: string, argumentsText: string): string | null {
+  if (toolName === NATIVE_VAULT_TOOL_NAME) return argumentsText;
+  const action = resolveNamedNativeVaultAction(toolName);
+  if (action === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsText);
+  } catch {
+    return argumentsText;
+  }
+  if (!isUnknownRecord(parsed)) return argumentsText;
+  return JSON.stringify({ ...parsed, action });
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function getRequestErrorMessage(code: string): string {

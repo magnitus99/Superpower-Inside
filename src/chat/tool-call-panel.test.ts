@@ -5,12 +5,15 @@ import type { ToolCallRecord } from './types';
 describe('ToolCallPanel view model contract', () => {
   it('실행 중 placeholder를 계산한다', () => {
     expect(createToolCallPanelView([], true)).toEqual({
-      labelText: '🔧 툴 호출',
+      labelText: '툴 호출',
+      iconName: 'wrench',
       placeholder: {
-        className: 'superpower-inside-tool-call placeholder',
-        iconText: '🔧',
+        className: 'superpower-inside-tool-call-group placeholder',
+        iconName: 'loader-circle',
         nameText: '툴 실행 중...',
         statusClassName: 'superpower-inside-tool-call-status running',
+        statusIconName: 'loader-circle',
+        statusText: '실행 중',
       },
       rows: [],
     });
@@ -37,13 +40,13 @@ describe('ToolCallPanel view model contract', () => {
     expect(createToolCallPanelView(calls, false).rows).toEqual([
       {
         rowId: 'tool-call-call-1',
-        className: 'superpower-inside-tool-call',
-        iconText: '🔧',
+        className: 'superpower-inside-tool-call-group',
+        iconName: 'wrench',
         nameText: 'search_notes',
         status: 'running',
         statusClassName: 'superpower-inside-tool-call-status running',
-        showRunningDots: true,
-        statusText: '',
+        statusIconName: 'loader-circle',
+        statusText: '실행 중',
         approvalRequired: true,
         safetyDecision: 'approval-required',
         availableActions: ['approve-tool', 'copy-args'],
@@ -51,16 +54,17 @@ describe('ToolCallPanel view model contract', () => {
         result: '검색 결과',
         resultSummary: '검색 결과',
         resultApplied: false,
+        detailsLabel: '인자 · 툴 결과',
       },
       {
         rowId: 'tool-call-call-2',
-        className: 'superpower-inside-tool-call',
-        iconText: '🔧',
+        className: 'superpower-inside-tool-call-group',
+        iconName: 'wrench',
         nameText: 'open_note',
         status: 'success',
         statusClassName: 'superpower-inside-tool-call-status success',
-        showRunningDots: false,
-        statusText: '✓',
+        statusIconName: 'check',
+        statusText: '완료',
         approvalRequired: false,
         safetyDecision: 'completed',
         availableActions: ['copy-result', 'regenerate-answer'],
@@ -68,8 +72,32 @@ describe('ToolCallPanel view model contract', () => {
         result: undefined,
         resultSummary: undefined,
         resultApplied: false,
+        detailsLabel: '툴 결과',
       },
     ]);
+  });
+
+  it('오류 상태를 아이콘 이름과 눈에 보이는 텍스트로 계산한다', () => {
+    const [row] = createToolCallPanelView(
+      [
+        {
+          id: 'call-error',
+          name: 'broken_tool',
+          arguments: '{}',
+          status: 'error',
+          result: '실패 원인',
+        },
+      ],
+      false,
+    ).rows;
+
+    expect(row).toEqual(
+      expect.objectContaining({
+        statusIconName: 'circle-alert',
+        statusText: '오류',
+      }),
+    );
+    expect(JSON.stringify(row)).not.toContain('✗');
   });
 
   it('네이티브 Vault 호출은 내부 함수명 대신 작업과 결과를 표시한다', () => {
@@ -90,5 +118,24 @@ describe('ToolCallPanel view model contract', () => {
 
     expect(row?.nameText).toBe('Superpower Inside · 검색');
     expect(row?.resultSummary).toBe('볼트 검색 결과 4개');
+    expect(row?.detailsLabel).toBe('인자');
+  });
+
+  it('분리된 네이티브 도구도 action 인자가 없어도 작업명을 표시한다', () => {
+    const [row] = createToolCallPanelView(
+      [
+        {
+          id: 'native-read',
+          name: 'superpower_inside_read',
+          serverName: 'Superpower Inside',
+          executionKind: 'native',
+          arguments: '{"path":"Decision.md"}',
+          status: 'success',
+        },
+      ],
+      false,
+    ).rows;
+
+    expect(row?.nameText).toBe('Superpower Inside · 문서 읽기');
   });
 });

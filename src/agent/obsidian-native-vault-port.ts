@@ -12,6 +12,7 @@ import {
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
 import { t } from '../i18n';
+import { truncateUtf8Text } from '../utils/text-budget';
 import type {
   NativeVaultLinksResult,
   NativeVaultListResult,
@@ -23,6 +24,7 @@ import type {
 } from './native-vault-tool';
 
 const MAX_READ_LINES = 400;
+const MAX_READ_CONTENT_BYTES = 64 * 1024;
 const LEXICAL_READ_BATCH_SIZE = 8;
 
 export interface NativeVaultQueryEngineLike {
@@ -58,56 +60,77 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   async search(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
   ): Promise<NativeVaultSearchResult> {
-    const files = await this.fileScope.listCandidateFiles();
-    const candidatePaths = new Set(files.map((file) => file.path));
-    const lexical = await this.searchLexically(request, files);
-    if (lexical.hits.length >= request.limit) return lexical;
+    const indexed = await this.tryIndexedSearch(request);
+    if (indexed !== null) {
+      const visible = (
+        await Promise.all(
+          indexed.map(async (result) => {
+            const file = this.app.vault.getAbstractFileByPath(result.sourcePath);
+            if (
+              !(file instanceof TFile) ||
+              !this.fileScope.isPathVisible(file.path) ||
+              !(await this.fileScope.isCandidateFile(file))
+            ) {
+              return null;
+            }
+            return result;
+          }),
+        )
+      ).filter((result): result is QueryResult => result !== null);
+      if (visible.length === 0) {
+        const files = await this.fileScope.listCandidateFiles();
+        const pathResult = this.searchCandidatePaths(request, files);
+        if (pathResult !== null) return pathResult;
+      }
+      return buildSearchResult(request.query, request.path, request.match, visible, {
+        totalHits: visible.length,
+        // topK 인덱스 후보는 결과 수와 무관하게 전체 검색 완료를 증명하지 않습니다.
+        truncated: true,
+      });
+    }
 
-    const indexed = (await this.tryIndexedSearch(request)).filter((result) =>
-      candidatePaths.has(result.sourcePath),
+    const files = await this.fileScope.listCandidateFiles();
+    return this.searchLexically(request, files);
+  }
+
+  private searchCandidatePaths(
+    request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
+    files: readonly TFile[],
+  ): NativeVaultSearchResult | null {
+    const scope = planNativeVaultListRust(
+      files.map((file) => file.path),
+      request.path,
+      0,
+      files.length,
     );
-    const semanticMatchIndices =
+    if (!scope) return null;
+    const matchingIndices =
       planFolderLexicalEvidenceIndicesRust(
         request.query,
-        indexed.map(
-          (result) =>
-            `${result.sourcePath}\n${result.entry.metadata.heading ?? ''}\n${result.entry.metadata.text}`,
-        ),
-        indexed.length,
+        scope.paths,
+        scope.paths.length,
         request.match,
       ) ?? [];
-    const semantic = buildSearchResult(
-      request.query,
-      request.path,
-      request.match,
-      semanticMatchIndices.flatMap((index) => {
-        const result = indexed[index];
-        return result ? [result] : [];
-      }),
-      {
-        scannedFiles: lexical.scannedFiles,
-        unreadableFiles: lexical.unreadableFiles,
-      },
-    );
-    const hits = [...lexical.hits];
-    const seen = new Set(hits.map(searchHitKey));
-    const semanticUniqueHitCount = semantic.hits.filter(
-      (hit) => !seen.has(searchHitKey(hit)),
-    ).length;
-    for (const hit of semantic.hits) {
-      if (hits.length >= request.limit) break;
-      const key = searchHitKey(hit);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      hits.push(hit);
-    }
-    const totalHits = lexical.totalHits + semanticUniqueHitCount;
+    if (matchingIndices.length === 0) return null;
+    const hits = matchingIndices.slice(0, request.limit).flatMap((index) => {
+      const path = scope.paths[index];
+      return path
+        ? [
+            {
+              path,
+              startLine: 1,
+              preview: path,
+              citationStatus: 'candidate' as const,
+              requiresRead: true as const,
+            },
+          ]
+        : [];
+    });
     return buildSearchResult(request.query, request.path, request.match, hits, {
-      scannedFiles: lexical.scannedFiles,
-      unreadableFiles: lexical.unreadableFiles,
-      totalHits,
-      truncated:
-        lexical.truncated || semantic.hits.length >= request.limit || totalHits > hits.length,
+      scannedFiles: scope.paths.length,
+      unreadableFiles: 0,
+      totalHits: matchingIndices.length,
+      truncated: matchingIndices.length > hits.length,
     });
   }
 
@@ -127,12 +150,15 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       MAX_READ_LINES,
     );
     if (!range) throw new Error(t('nativeVaultReadRangeFailed', { path: request.path }));
-    const selectedContent = lines.slice(range.startLine - 1, range.endLine).join('\n');
+    const selectedContent = truncateUtf8Text(
+      lines.slice(range.startLine - 1, range.endLine).join('\n'),
+      MAX_READ_CONTENT_BYTES,
+    );
     const citation = createCitation(
       file.path,
       range.startLine,
       range.endLine,
-      createContextPreviewRust(selectedContent) ?? '',
+      createContextPreviewRust(selectedContent.text) ?? '',
     );
     return {
       action: 'read',
@@ -140,8 +166,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       startLine: range.startLine,
       endLine: range.endLine,
       totalLines: lines.length,
-      truncated: range.truncated,
-      content: selectedContent,
+      truncated: range.truncated || selectedContent.truncated,
+      content: selectedContent.text,
       citations: [citation],
     };
   }
@@ -229,10 +255,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
 
   private async tryIndexedSearch(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
-  ): Promise<QueryResult[]> {
-    const engine = this.getQueryEngine();
-    if (!engine) return [];
+  ): Promise<QueryResult[] | null> {
     try {
+      const engine = this.getQueryEngine();
+      if (!engine) return null;
       return await engine.query(
         request.query,
         request.limit,
@@ -240,7 +266,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         request.path ? [request.path] : undefined,
       );
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -291,7 +317,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
           startLine: evidence?.startLine ?? 1,
           endLine: evidence?.endLine,
           preview: evidence?.preview ?? createContextPreviewRust(entry.content) ?? '',
-          citationStatus: evidence?.status ?? 'candidate',
+          citationStatus: 'candidate' as const,
+          requiresRead: true as const,
         },
       ];
     });
@@ -329,10 +356,6 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   }
 }
 
-function searchHitKey(hit: NativeVaultSearchHit): string {
-  return `${hit.path}:${hit.startLine}:${hit.endLine ?? hit.startLine}`;
-}
-
 function buildSearchResult(
   query: string,
   path: string,
@@ -365,9 +388,14 @@ function buildSearchResult(
         score: rawHit.score,
         // 인덱스 내용은 현재 Vault 본문과 다를 수 있으므로 live read 전에는 검증하지 않습니다.
         citationStatus: 'candidate',
+        requiresRead: true,
       };
     }
-    return rawHit;
+    return {
+      ...rawHit,
+      citationStatus: 'candidate',
+      requiresRead: true,
+    };
   });
   const citations = hits.map((hit) =>
     createCitation(

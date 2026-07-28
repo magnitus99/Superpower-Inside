@@ -1397,6 +1397,26 @@ export function parse_mention_candidates_json(content) {
 }
 
 /**
+ * Plans the next provider turn without relying on provider- or model-specific behavior.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_agentic_tool_turn_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_agentic_tool_turn_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * assistant 응답을 일반 답변 또는 사용자 질문 plan으로 분류한다.
  * @param {string} content
  * @param {string} reasoning
@@ -2788,6 +2808,26 @@ export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json, sou
     var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v5;
+}
+
+/**
+ * Plans whether one failed native-tool request may retry with the text compatibility protocol.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_native_tool_compatibility_fallback_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_tool_compatibility_fallback_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**

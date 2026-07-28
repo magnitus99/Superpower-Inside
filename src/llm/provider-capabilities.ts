@@ -3,6 +3,7 @@ export type ProviderTransport = 'request-url-buffered';
 export type ProviderAbortCapability = 'native' | 'best-effort';
 
 export const MAX_PROVIDER_TOOL_ROUNDS = 20;
+export const DEFAULT_PROVIDER_TOOL_ROUNDS = 10;
 
 export interface ProviderCapabilitySnapshot {
   providerKey: string;
@@ -86,9 +87,9 @@ function getDefaultProviderCapability(
       reasoning: false,
       abort: 'best-effort',
       fileReference: true,
-      maxToolRounds: 0,
+      maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
       knownLimitations: [
-        'Custom OpenAI-compatible capabilities are conservative until explicitly enabled.',
+        'Custom OpenAI-compatible native function calling is conservative until explicitly enabled.',
         'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
       ],
     };
@@ -105,7 +106,7 @@ function getDefaultProviderCapability(
         reasoning: true,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 10,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: [
           'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
         ],
@@ -120,7 +121,7 @@ function getDefaultProviderCapability(
         reasoning: true,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 10,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: [
           'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
         ],
@@ -135,7 +136,7 @@ function getDefaultProviderCapability(
         reasoning: true,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 10,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: [
           'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
         ],
@@ -150,7 +151,7 @@ function getDefaultProviderCapability(
         reasoning: true,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 10,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: [
           'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
         ],
@@ -165,7 +166,7 @@ function getDefaultProviderCapability(
         reasoning: true,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 10,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: [
           'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
         ],
@@ -180,7 +181,7 @@ function getDefaultProviderCapability(
         reasoning: false,
         abort: 'best-effort',
         fileReference: true,
-        maxToolRounds: 0,
+        maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
         knownLimitations: ['Unknown provider capabilities are disabled until configured.'],
       };
   }
@@ -195,14 +196,13 @@ function applyProviderCapabilityOverrides(
     overrides.maxToolRounds !== undefined
       ? Math.min(MAX_PROVIDER_TOOL_ROUNDS, Math.max(0, Math.trunc(overrides.maxToolRounds)))
       : capability.maxToolRounds;
-  const toolCalling = overrides.toolCalling ?? capability.toolCalling;
   return {
     ...capability,
     streaming: overrides.streaming ?? capability.streaming,
-    toolCalling,
+    toolCalling: overrides.toolCalling ?? capability.toolCalling,
     reasoning: overrides.reasoning ?? capability.reasoning,
     abort: overrides.abort ?? capability.abort,
-    maxToolRounds: toolCalling ? maxToolRounds : 0,
+    maxToolRounds,
     knownLimitations: [
       ...capability.knownLimitations,
       ...(overrides.knownLimitations ?? []),

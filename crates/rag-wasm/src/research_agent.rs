@@ -323,13 +323,14 @@ fn parse_tool_call_signatures(raw: &str) -> Option<Vec<ToolCallSignature>> {
                 return None;
             }
             let parsed_arguments = serde_json::from_str::<JsonValue>(arguments).ok();
-            let is_native_search = name == "superpower_inside"
+            let is_legacy_native_search = name == "superpower_inside"
                 && parsed_arguments
                     .as_ref()
                     .and_then(JsonValue::as_object)
                     .and_then(|object| object.get("action"))
                     .and_then(JsonValue::as_str)
                     == Some("search");
+            let is_native_search = name == "superpower_inside_search" || is_legacy_native_search;
             let canonical_arguments = parsed_arguments
                 .map_or_else(|| arguments.to_owned(), |value| canonical_json(&value));
             Some(ToolCallSignature {
@@ -572,6 +573,23 @@ mod tests {
             {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"four\"}"},
             {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"five\"}"},
             {"name":"superpower_inside","arguments":"{\"action\":\"read\",\"path\":\"Alpha.md\"}"}
+        ]"#;
+
+        assert_eq!(
+            plan_repeated_tool_call_indices_json("[]", candidates, 2, 4),
+            r#"[{"candidateIndex":4,"reason":"native-search-budget-exceeded"}]"#,
+        );
+    }
+
+    #[test]
+    fn named_native_search_calls_share_the_per_turn_budget() {
+        let candidates = r#"[
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"one\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"two\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"three\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"four\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"five\"}"},
+            {"name":"superpower_inside_read","arguments":"{\"path\":\"Alpha.md\"}"}
         ]"#;
 
         assert_eq!(

@@ -53,6 +53,7 @@ import {
   normalize_graph_name,
   parse_extracted_graph_payload_json,
   parse_mention_candidates_json,
+  plan_agentic_tool_turn_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
   plan_assistant_response_classification_json,
@@ -66,6 +67,7 @@ import {
   plan_native_vault_list_json,
   plan_native_vault_read_range_json,
   plan_native_vault_stats_json,
+  plan_native_tool_compatibility_fallback_json,
   plan_native_vault_tool_request_json,
   plan_bm25_candidate_resolution_json,
   plan_bm25_hit_lookup_json,
@@ -5619,7 +5621,9 @@ export function planResearchAnswerContractRust(
   }
 }
 
-function isResearchAnswerLanguage(value: unknown): value is RustResearchAnswerContractInput['language'] {
+function isResearchAnswerLanguage(
+  value: unknown,
+): value is RustResearchAnswerContractInput['language'] {
   return value === 'ko' || value === 'en';
 }
 
@@ -6049,6 +6053,88 @@ export interface RustCompatibilityToolCall {
   arguments: string;
 }
 
+export type RustAgenticToolChoice = 'auto' | 'required' | 'none';
+
+export type RustAgenticNextAction =
+  | 'use-tool'
+  | 'verify-source'
+  | 'broaden-search'
+  | 'repair-tool'
+  | 'answer';
+
+export interface RustAgenticToolCallSnapshot {
+  name: string;
+  status: 'success' | 'error';
+  arguments: string;
+  result?: string;
+}
+
+export interface RustAgenticToolTurnInput {
+  question: string;
+  hasAttachedEvidence: boolean;
+  explicitToolServerCount: number;
+  availableToolNames: readonly string[];
+  toolCalls: readonly RustAgenticToolCallSnapshot[];
+  phase: 'initial' | 'after-tools';
+  round: number;
+  maxRounds: number;
+}
+
+export interface RustAgenticEvidenceLedger {
+  successfulCalls: number;
+  failedCalls: number;
+  candidateSearches: number;
+  emptySearches: number;
+  verifiedReads: number;
+  verifiedSources: number;
+}
+
+export interface RustAgenticToolTurnPlan {
+  requiresEvidence: boolean;
+  toolChoice: RustAgenticToolChoice;
+  shouldRetryWithoutTools: boolean;
+  nextAction: RustAgenticNextAction;
+  checkpoint: string;
+  ledger: RustAgenticEvidenceLedger;
+}
+
+export interface RustNativeToolCompatibilityFallbackInput {
+  status: number | null;
+  message: string;
+  nativeAttempted: boolean;
+  compatibilityFallbackAttempted: boolean;
+}
+
+export interface RustNativeToolCompatibilityFallbackPlan {
+  retryWithCompatibility: boolean;
+}
+
+export function planAgenticToolTurnRust(
+  input: RustAgenticToolTurnInput,
+): RustAgenticToolTurnPlan | null {
+  if (!isAgenticToolTurnInput(input) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_agentic_tool_turn_json(JSON.stringify(input)));
+    return isAgenticToolTurnPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeToolCompatibilityFallbackRust(
+  input: RustNativeToolCompatibilityFallbackInput,
+): RustNativeToolCompatibilityFallbackPlan | null {
+  if (!isNativeToolCompatibilityFallbackInput(input) || !ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_native_tool_compatibility_fallback_json(JSON.stringify(input)),
+    );
+    return isNativeToolCompatibilityFallbackPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function planCompatibilityToolCallsRust(
   content: string,
 ): RustCompatibilityToolCall[] | null {
@@ -6068,6 +6154,70 @@ export function stripCompatibilityToolCallsRust(content: string): string | null 
   } catch {
     return null;
   }
+}
+
+function isAgenticToolTurnInput(input: RustAgenticToolTurnInput): boolean {
+  return (
+    isStringValue(input.question) &&
+    typeof input.hasAttachedEvidence === 'boolean' &&
+    isNonNegativeSafeInteger(input.explicitToolServerCount) &&
+    input.availableToolNames.every((name) => isStringValue(name) && name.trim().length > 0) &&
+    input.toolCalls.every(
+      (call) =>
+        isStringValue(call.name) &&
+        call.name.trim().length > 0 &&
+        (call.status === 'success' || call.status === 'error') &&
+        isStringValue(call.arguments) &&
+        (call.result === undefined || isStringValue(call.result)),
+    ) &&
+    (input.phase === 'initial' || input.phase === 'after-tools') &&
+    isNonNegativeSafeInteger(input.round) &&
+    isPositiveSafeInteger(input.maxRounds) &&
+    input.round <= input.maxRounds
+  );
+}
+
+function isNativeToolCompatibilityFallbackInput(
+  input: RustNativeToolCompatibilityFallbackInput,
+): boolean {
+  return (
+    (input.status === null ||
+      (isNonNegativeSafeInteger(input.status) && input.status >= 100 && input.status <= 599)) &&
+    isStringValue(input.message) &&
+    typeof input.nativeAttempted === 'boolean' &&
+    typeof input.compatibilityFallbackAttempted === 'boolean'
+  );
+}
+
+function isNativeToolCompatibilityFallbackPlan(
+  value: unknown,
+): value is RustNativeToolCompatibilityFallbackPlan {
+  return isStringRecordValueMap(value) && typeof value.retryWithCompatibility === 'boolean';
+}
+
+function isAgenticToolTurnPlan(value: unknown): value is RustAgenticToolTurnPlan {
+  if (!isStringRecordValueMap(value)) return false;
+  const ledger = value.ledger;
+  return (
+    typeof value.requiresEvidence === 'boolean' &&
+    (value.toolChoice === 'auto' ||
+      value.toolChoice === 'required' ||
+      value.toolChoice === 'none') &&
+    typeof value.shouldRetryWithoutTools === 'boolean' &&
+    (value.nextAction === 'use-tool' ||
+      value.nextAction === 'verify-source' ||
+      value.nextAction === 'broaden-search' ||
+      value.nextAction === 'repair-tool' ||
+      value.nextAction === 'answer') &&
+    isStringValue(value.checkpoint) &&
+    isStringRecordValueMap(ledger) &&
+    isNonNegativeSafeInteger(ledger.successfulCalls) &&
+    isNonNegativeSafeInteger(ledger.failedCalls) &&
+    isNonNegativeSafeInteger(ledger.candidateSearches) &&
+    isNonNegativeSafeInteger(ledger.emptySearches) &&
+    isNonNegativeSafeInteger(ledger.verifiedReads) &&
+    isNonNegativeSafeInteger(ledger.verifiedSources)
+  );
 }
 
 function isRustToolCallSignatureInput(value: unknown): value is RustToolCallSignatureInput {

@@ -68,6 +68,14 @@ pub use research_contract::{
 mod tool_protocol;
 pub use tool_protocol::{plan_compatibility_tool_calls_json, strip_compatibility_tool_calls};
 
+/// Provider-neutral proactive chat tool orchestration policy.
+mod agentic_tool_policy;
+pub use agentic_tool_policy::plan_agentic_tool_turn_json;
+
+/// Provider-neutral native-tool compatibility downgrade policy.
+mod native_tool_fallback;
+pub use native_tool_fallback::plan_native_tool_compatibility_fallback_json;
+
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 오프셋 기준값.
 const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.
@@ -2986,17 +2994,24 @@ pub fn normalize_mcp_tool_result_json(result_json: &str) -> String {
     let result = serde_json::from_str::<JsonValue>(result_json)
         .unwrap_or_else(|_| JsonValue::String(result_json.to_owned()));
 
-    let extracted = collect_mcp_tool_result_text_from_json(&result).unwrap_or_else(|| {
-        if result
-            .get("content")
-            .and_then(JsonValue::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            "[]".to_owned()
-        } else {
-            stringify_json_compact(&result).unwrap_or_else(|| "{}".to_owned())
-        }
-    });
+    let extracted = collect_mcp_tool_result_text_from_json(&result)
+        .or_else(|| {
+            result
+                .get("structuredContent")
+                .filter(|value| mcp_structured_content_is_meaningful(value))
+                .and_then(stringify_json_compact)
+        })
+        .unwrap_or_else(|| {
+            if result
+                .get("content")
+                .and_then(JsonValue::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                "[]".to_owned()
+            } else {
+                stringify_json_compact(&result).unwrap_or_else(|| "{}".to_owned())
+            }
+        });
 
     let mut output = JsonMap::new();
     output.insert(
@@ -3027,11 +3042,25 @@ pub fn is_mcp_tool_result_empty_json(
         .get("content")
         .and_then(JsonValue::as_array)
         .is_some_and(|content| !mcp_tool_has_meaningful_content(content))
+        && !result
+            .get("structuredContent")
+            .is_some_and(mcp_structured_content_is_meaningful)
     {
         return true;
     }
 
     false
+}
+
+/// MCP의 구조화 결과가 모델에 전달할 실제 값을 포함하는지 판정한다.
+fn mcp_structured_content_is_meaningful(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => false,
+        JsonValue::String(text) => !text.trim().is_empty(),
+        JsonValue::Array(items) => !items.is_empty(),
+        JsonValue::Object(object) => !object.is_empty(),
+        JsonValue::Bool(_) | JsonValue::Number(_) => true,
+    }
 }
 
 /// MCP 에러 메시지를 분류해 TS i18n 렌더링에 필요한 키 계약을 만든다.
@@ -14279,15 +14308,23 @@ fn has_assistant_question_signal(prompt: &str) -> bool {
                 "필요해요",
                 "확인해 주세요",
                 "선택해 주세요",
+                "선택하세요",
+                "확인하세요",
+                "please confirm",
+                "please select",
+                "please choose",
+                "let me know",
             ],
         )
-        || has_assistant_question_word_signal(trimmed)
 }
 
-/// assistant 질문 단어/표현이 있는지 확인한다.
+/// 선택지가 있는 assistant prompt에서 입력 요청 표현이 있는지 확인한다.
 fn has_assistant_question_word_signal(text: &str) -> bool {
     let lower = text.to_lowercase();
     let compact = lower.split_whitespace().collect::<String>();
+    let has_english_request_word = lower
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| matches!(word, "select" | "choose" | "which" | "what" | "confirm"));
     contains_any(
         &lower,
         &[
@@ -14295,24 +14332,15 @@ fn has_assistant_question_word_signal(text: &str) -> bool {
             "어떤",
             "어느",
             "어떻게",
-            "선택",
+            "선택해",
+            "선택하세요",
             "골라",
-            "확인",
+            "확인해",
+            "확인하세요",
             "진행할까요",
-            "필요",
-            "범위",
-            "방식",
-            "항목",
-            "옵션",
-            "select",
-            "choose",
-            "which",
-            "what",
-            "confirm",
-            "option",
-            "apply",
         ],
     ) || compact.contains("알려주")
+        || has_english_request_word
 }
 
 /// assistant 다중 선택 표현이 있는지 확인한다.
@@ -19925,6 +19953,27 @@ mod tests {
         );
     }
 
+    /// 선택이라는 명사가 포함된 설명문은 사용자 입력을 요구하는 질문이 아니다.
+    #[test]
+    fn assistant_response_classification_keeps_declarative_selection_explanation_as_answer() {
+        assert_eq!(
+            plan_assistant_response_classification_json(
+                "아담과 이브는 하나님의 뜻에 어긋나는 선택을 했기 때문입니다.",
+                "",
+            ),
+            "{\"type\":\"answer\",\"content\":\"아담과 이브는 하나님의 뜻에 어긋나는 선택을 했기 때문입니다.\",\"reasoning\":\"\"}",
+        );
+    }
+
+    /// 명시적인 자유입력 질문은 선택지가 없어도 질문으로 유지한다.
+    #[test]
+    fn assistant_response_classification_keeps_explicit_free_text_question() {
+        assert_eq!(
+            plan_assistant_response_classification_json("어떤 문서를 기준으로 정리할까요?", "",),
+            "{\"type\":\"question\",\"content\":\"\",\"reasoning\":\"\",\"question\":{\"prompt\":\"어떤 문서를 기준으로 정리할까요?\",\"choices\":[],\"selectionMode\":\"single\",\"allowFreeText\":true,\"source\":\"answer\"},\"originalContent\":\"어떤 문서를 기준으로 정리할까요?\"}",
+        );
+    }
+
     /// 저장된 chat message block 파싱은 meta 기본값, base64 decode, content fallback을 Rust에서 계산해야 한다.
     #[test]
     fn chat_message_blocks_are_planned_in_rust() {
@@ -20164,6 +20213,12 @@ mod tests {
             ),
             r#"{"displayText":"alpha\n\n{\"notes\":1}","modelText":"alpha\n\n{\"notes\":1}"}"#,
         );
+        assert_eq!(
+            normalize_mcp_tool_result_json(
+                r#"{"content":[],"structuredContent":{"matches":["Alpha.md"]}}"#,
+            ),
+            r#"{"displayText":"{\"matches\":[\"Alpha.md\"]}","modelText":"{\"matches\":[\"Alpha.md\"]}"}"#,
+        );
 
         assert!(is_mcp_tool_result_empty_json(
             r#"{"content":[{"type":"text","text":""}] }"#,
@@ -20174,6 +20229,11 @@ mod tests {
             r#"{"content":[{"type":"text","text":"ok"}] }"#,
             "ok",
             "ok",
+        ));
+        assert!(!is_mcp_tool_result_empty_json(
+            r#"{"content":[],"structuredContent":{"matches":["Alpha.md"]}}"#,
+            r#"{"matches":["Alpha.md"]}"#,
+            r#"{"matches":["Alpha.md"]}"#,
         ));
 
         let classify = |msg: &str| {

@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  NATIVE_VAULT_NAMED_TOOL_NAMES,
   NATIVE_VAULT_TOOL_NAME,
   NativeVaultToolRuntime,
   createNativeVaultToolDefinition,
+  createNativeVaultToolDefinitions,
   type NativeVaultToolPort,
 } from './native-vault-tool';
 
 describe('Superpower Inside 네이티브 Vault 도구', () => {
-  it('쓰기 동작 없이 단일 function tool 계약만 노출한다', () => {
+  it('저장된 호출 호환성을 위한 legacy function tool 계약을 보존한다', () => {
     const definition = createNativeVaultToolDefinition();
 
     expect(definition).toMatchObject({
@@ -25,6 +27,96 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     expect(JSON.stringify(definition)).not.toMatch(/write|create|delete|modify/iu);
     expect(definition.function.description).toContain('current RAG indexing policy');
     expect(definition.function.description).toContain('excluded paths and extensions');
+  });
+
+  it('모델에는 action별 필수 인자와 상한이 분리된 5개 도구 정의를 제공한다', () => {
+    const definitions = createNativeVaultToolDefinitions();
+    const byName = new Map(
+      definitions.map((definition) => [definition.function.name, definition.function]),
+    );
+
+    expect(definitions.map((definition) => definition.function.name)).toEqual(
+      Object.values(NATIVE_VAULT_NAMED_TOOL_NAMES),
+    );
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.search)?.parameters).toMatchObject({
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        query: { maxLength: 512 },
+        limit: { minimum: 1, maximum: 20 },
+      },
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.read)?.parameters).toMatchObject({
+      required: ['path'],
+      properties: {
+        start_line: { minimum: 1 },
+        end_line: { minimum: 1 },
+      },
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.list)?.parameters).toMatchObject({
+      required: [],
+      properties: {
+        cursor: { minimum: 0 },
+        limit: { minimum: 1, maximum: 100 },
+      },
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.links)?.parameters).toMatchObject({
+      required: ['path'],
+      properties: {
+        direction: { enum: ['incoming', 'outgoing', 'both'] },
+        limit: { minimum: 1, maximum: 100 },
+      },
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.stats)?.parameters).toMatchObject({
+      required: [],
+      properties: {},
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.search)?.description).toContain(
+      'requires a follow-up superpower_inside_read',
+    );
+    expect(
+      definitions.every(
+        (definition) =>
+          !Object.hasOwn(
+            definition.function.parameters.properties as Record<string, unknown>,
+            'action',
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it('legacy alias와 5개 named tool을 모두 네이티브 도구로 식별한다', () => {
+    const runtime = new NativeVaultToolRuntime(createPort().port);
+
+    expect(runtime.isNativeTool(NATIVE_VAULT_TOOL_NAME)).toBe(true);
+    for (const name of Object.values(NATIVE_VAULT_NAMED_TOOL_NAMES)) {
+      expect(runtime.isNativeTool(name)).toBe(true);
+    }
+    expect(runtime.isNativeTool('untrusted_tool')).toBe(false);
+  });
+
+  it('named tool 이름이 인자 안의 action보다 우선하며 Rust 정규화를 거친다', async () => {
+    const { port, read, list } = createPort();
+    const runtime = new NativeVaultToolRuntime(port);
+
+    await runtime.execute(
+      JSON.stringify({
+        action: 'list',
+        path: 'Projects/Alpha.md',
+        start_line: 2,
+        end_line: 3,
+      }),
+      undefined,
+      NATIVE_VAULT_NAMED_TOOL_NAMES.read,
+    );
+
+    expect(read).toHaveBeenCalledWith({
+      action: 'read',
+      path: 'Projects/Alpha.md',
+      startLine: 2,
+      endLine: 3,
+    });
+    expect(list).not.toHaveBeenCalled();
   });
 
   it('read 결과를 모델용 구조화 텍스트와 검증 가능한 출처로 반환한다', async () => {
@@ -219,6 +311,7 @@ function createPort(): {
           endLine: 3,
           preview: '둘째 줄 셋째 줄',
           score: 0.91,
+          requiresRead: true as const,
         },
       ],
       citations: [citation],
