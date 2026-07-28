@@ -1,6 +1,6 @@
 {
   "name": "superpower-inside",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Native vault research agent with source-grounded tools, hybrid retrieval, and MCP.",
   "main": "main.js",
   "scripts": {
