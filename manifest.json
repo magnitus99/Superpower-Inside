@@ -1,7 +1,7 @@
 {
   "id": "superpower-inside",
   "name": "Superpower Inside",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "minAppVersion": "1.8.7",
   "description": "Native vault research agent with source-grounded tools, hybrid retrieval, and MCP.",
   "author": "Superpower Inside Team",
