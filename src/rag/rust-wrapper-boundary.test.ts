@@ -64,6 +64,26 @@ describe('Rust wrapper boundary', () => {
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);
   });
 
+  it('Rust/WASM release payload를 번들에 넣기 전에 크기 최적화한다', () => {
+    const buildScript = readFileSync(
+      resolve(repositoryRoot, 'scripts/build-rag-wasm.fish'),
+      'utf8',
+    );
+
+    expect(buildScript).toContain('node_modules/.bin/wasm-opt');
+    expect(buildScript).toContain('"$WASM_OPT_BIN" -Oz');
+  });
+
+  it('릴리즈 검증에서도 main.js 5 MB 예산을 강제한다', () => {
+    const reviewScript = readFileSync(
+      resolve(repositoryRoot, 'scripts/validate-obsidian-review.mjs'),
+      'utf8',
+    );
+
+    expect(reviewScript).toContain('MAIN_JS_SIZE_LIMIT_BYTES');
+    expect(reviewScript).toContain('statSync(mainJsPath).size');
+  });
+
   it('런타임 RAG/GraphRAG 소스에 TypeScript 계산 fallback helper를 두지 않는다', () => {
     const runtimeFiles = runtimeRoots
       .flatMap(listTypeScriptFiles)

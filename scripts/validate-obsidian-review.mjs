@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+
+import { MAIN_JS_SIZE_LIMIT_BYTES } from './bundle-size-policy.mjs';
 
 const args = new Set(process.argv.slice(2));
 const tagArg = readOption('--tag');
@@ -128,6 +130,15 @@ function validateBuiltAssets() {
   ]) {
     if (!existsSync(path.join(root, asset))) {
       errors.push(`release asset is missing: ${asset}`);
+    }
+  }
+  const mainJsPath = path.join(root, 'main.js');
+  if (existsSync(mainJsPath)) {
+    const mainJsBytes = statSync(mainJsPath).size;
+    if (mainJsBytes > MAIN_JS_SIZE_LIMIT_BYTES) {
+      errors.push(
+        `main.js is ${mainJsBytes} bytes and exceeds the ${MAIN_JS_SIZE_LIMIT_BYTES}-byte release limit`,
+      );
     }
   }
   const ternlightPath = path.join(root, 'tern_engine_bg.wasm');

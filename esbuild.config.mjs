@@ -1,6 +1,11 @@
-import esbuild from "esbuild";
-import process from "process";
-import { builtinModules } from "node:module";
+import esbuild from 'esbuild';
+import process from 'process';
+import { builtinModules } from 'node:module';
+import {
+  MAIN_JS_SIZE_LIMIT_BYTES,
+  assertMainJsSize,
+  needsStrongBundleOptimization,
+} from './scripts/bundle-size-policy.mjs';
 
 const banner =
   `/*\n` +
@@ -8,43 +13,86 @@ const banner =
   `if you want to view the source, please visit the github repository of this plugin\n` +
   `*/`;
 
-const prod = process.argv[2] === "production";
+const prod = process.argv[2] === 'production';
 
-const context = await esbuild.context({
+const buildOptions = {
   banner: { js: banner },
-  entryPoints: ["main.ts"],
+  entryPoints: ['main.ts'],
   bundle: true,
   external: [
-    "obsidian",
-    "electron",
-    "@codemirror/autocomplete",
-    "@codemirror/collab",
-    "@codemirror/commands",
-    "@codemirror/language",
-    "@codemirror/lint",
-    "@codemirror/search",
-    "@codemirror/state",
-    "@codemirror/view",
-    "@lezer/common",
-    "@lezer/highlight",
-    "@lezer/lr",
+    'obsidian',
+    'electron',
+    '@codemirror/autocomplete',
+    '@codemirror/collab',
+    '@codemirror/commands',
+    '@codemirror/language',
+    '@codemirror/lint',
+    '@codemirror/search',
+    '@codemirror/state',
+    '@codemirror/view',
+    '@lezer/common',
+    '@lezer/highlight',
+    '@lezer/lr',
     ...builtinModules,
     ...builtinModules.map((moduleName) => `node:${moduleName}`),
   ],
-  format: "cjs",
-  target: "es2022",
-  logLevel: "info",
-  sourcemap: prod ? false : "inline",
+  format: 'cjs',
+  target: 'es2022',
+  logLevel: 'info',
   treeShaking: true,
-  outfile: "main.js",
-  minify: prod,
-  drop: prod ? ["debugger"] : [],
-});
+  outfile: 'main.js',
+};
 
 if (prod) {
-  await context.rebuild();
-  console.log("Build complete.");
+  const buildProduction = (strongOptimization) =>
+    esbuild.build({
+      ...buildOptions,
+      sourcemap: false,
+      minify: true,
+      drop: ['debugger'],
+      metafile: true,
+      charset: strongOptimization ? 'utf8' : 'ascii',
+      legalComments: strongOptimization ? 'none' : 'eof',
+    });
+
+  let result = await buildProduction(false);
+  let output = result.metafile.outputs['main.js'];
+  if (!output) throw new Error('esbuild did not report main.js output metadata.');
+
+  if (needsStrongBundleOptimization(output.bytes)) {
+    console.warn(
+      `main.js is ${output.bytes.toLocaleString('en-US')} bytes, above the ${MAIN_JS_SIZE_LIMIT_BYTES.toLocaleString('en-US')}-byte budget. Rebuilding with the strong optimization profile.`,
+    );
+    result = await buildProduction(true);
+    output = result.metafile.outputs['main.js'];
+    if (!output) throw new Error('esbuild did not report optimized main.js output metadata.');
+  }
+
+  try {
+    assertMainJsSize(output.bytes);
+  } catch (error) {
+    const contributors = Object.entries(output.inputs)
+      .sort((left, right) => right[1].bytesInOutput - left[1].bytesInOutput)
+      .slice(0, 10)
+      .map(
+        ([file, metadata]) =>
+          `${metadata.bytesInOutput.toLocaleString('en-US').padStart(12)}  ${file}`,
+      )
+      .join('\n');
+    console.error(`Largest main.js contributors:\n${contributors}`);
+    throw error;
+  }
+
+  console.log(
+    `Build complete. main.js: ${output.bytes.toLocaleString('en-US')} / ${MAIN_JS_SIZE_LIMIT_BYTES.toLocaleString('en-US')} bytes.`,
+  );
   process.exit(0);
-} else {
-  await context.watch();
 }
+
+const context = await esbuild.context({
+  ...buildOptions,
+  sourcemap: 'inline',
+  minify: false,
+  drop: [],
+});
+await context.watch();
