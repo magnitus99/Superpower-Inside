@@ -34,6 +34,7 @@ describe('MCP 툴 실행 결과 반영', () => {
     });
 
     expect(client.callTool).toHaveBeenCalledWith('search', { query: 'xbox elite series 2' });
+    expect(client.listTools).toHaveBeenCalledTimes(1);
     expect(executed[0]).toMatchObject({
       status: 'success',
       serverName: 'serper',
@@ -108,6 +109,7 @@ describe('MCP 툴 실행 결과 반영', () => {
       status: 'success',
       result: 'Context7 문서 결과: Supabase RLS 정책을 확인하세요.',
     });
+    expect(client.listTools).toHaveBeenCalledTimes(1);
   });
 
   it('mentioned-auto는 멘션된 서버의 일반 툴을 사용자 의도로 보고 자동 승인한다', async () => {
@@ -246,6 +248,43 @@ describe('MCP 툴 실행 결과 반영', () => {
     ).resolves.toBe('filesystem');
     expect(serperClient.listTools).toHaveBeenCalledTimes(1);
     expect(filesystemClient.listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('prepare가 확정한 같은 이름의 서버가 사라져도 다른 서버로 조용히 전환하지 않는다', async () => {
+    const primaryClient = createClient({ content: [{ type: 'text', text: '주 서버 결과' }] });
+    const secondaryClient = createClient({ content: [{ type: 'text', text: '보조 서버 결과' }] });
+    let primaryAvailable = true;
+    const registry: MCPRegistryLike = {
+      getConnectionStatus: (name) =>
+        name === 'primary' || name === 'secondary' ? 'connected' : 'disconnected',
+      getEnabledServers: () => [{ name: 'primary' }, { name: 'secondary' }],
+      getClient: (name) => {
+        if (name === 'primary') return primaryAvailable ? primaryClient : undefined;
+        return name === 'secondary' ? secondaryClient : undefined;
+      },
+    };
+    const prepared = await prepareToolCallsForExecution(
+      [createToolCall({ name: 'search', arguments: '{"query":"same name"}' })],
+      registry,
+      ['primary'],
+      'always-auto',
+    );
+    primaryAvailable = false;
+
+    const executed = await executeMcpToolCalls({
+      registry,
+      toolCalls: prepared,
+      preferredServerNames: ['primary', 'secondary'],
+    });
+
+    expect(prepared[0]?.serverName).toBe('primary');
+    expect(executed[0]).toMatchObject({
+      status: 'error',
+      serverName: 'primary',
+    });
+    expect(primaryClient.listTools).toHaveBeenCalledTimes(1);
+    expect(secondaryClient.listTools).not.toHaveBeenCalled();
+    expect(secondaryClient.callTool).not.toHaveBeenCalled();
   });
 });
 

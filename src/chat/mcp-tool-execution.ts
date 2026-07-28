@@ -69,11 +69,9 @@ export async function executeMcpToolCalls(
       continue;
     }
 
-    const serverName = await findServerForTool(
-      options.registry,
-      toolCall.name,
-      options.preferredServerNames,
-    );
+    const serverName =
+      toolCall.serverName ??
+      (await findServerForTool(options.registry, toolCall.name, options.preferredServerNames));
     if (!serverName) {
       toolCall.status = 'error';
       toolCall.result = t('mcpToolNotFoundInConnectedServers', { tool: toolCall.name });

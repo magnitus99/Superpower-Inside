@@ -7,27 +7,61 @@ import {
 } from '../rag/rust-core';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 import { t } from '../i18n';
+import { truncateUtf8Text } from '../utils/text-budget';
 
-const DEFAULT_DANGEROUS_TOOL_PATTERNS = [
-  /delete/i,
-  /remove/i,
-  /write/i,
-  /modify/i,
-  /move/i,
-  /rename/i,
-  /exec/i,
-  /shell/i,
-  /command/i,
-];
+const DEFAULT_DANGEROUS_TOOL_ACTIONS = [
+  'create',
+  'update',
+  'insert',
+  'upsert',
+  'add',
+  'set',
+  'edit',
+  'patch',
+  'apply',
+  'write',
+  'modify',
+  'replace',
+  'delete',
+  'remove',
+  'move',
+  'rename',
+  'copy',
+  'send',
+  'publish',
+  'upload',
+  'submit',
+  'import',
+  'deploy',
+  'commit',
+  'merge',
+  'approve',
+  'reject',
+  'assign',
+  'invite',
+  'grant',
+  'revoke',
+  'trigger',
+  'exec',
+  'execute',
+  'shell',
+  'command',
+] as const;
+const DEFAULT_DANGEROUS_TOOL_PATTERNS = DEFAULT_DANGEROUS_TOOL_ACTIONS.map(
+  (action) => new RegExp(`(?:^|[^a-z0-9])${action}(?:$|[^a-z0-9])`, 'i'),
+);
+const DEFAULT_DANGEROUS_TOOL_PATTERN_SOURCES = new Set(
+  DEFAULT_DANGEROUS_TOOL_PATTERNS.map((pattern) => pattern.source),
+);
+const MCP_DISPLAY_TEXT_MAX_BYTES = 32 * 1024;
+const MCP_MODEL_TEXT_MAX_BYTES = 64 * 1024;
 
 export interface NormalizedToolResult {
   displayText: string;
   modelText: string;
 }
 
-export function createToolExecutionPolicy(
-  mode: ToolExecutionPolicy['mode'],
-): ToolExecutionPolicy {
+export function createToolExecutionPolicy(mode: ToolExecutionPolicy['mode']): ToolExecutionPolicy {
   return {
     mode,
     manualApproval: mode === 'always-manual',
@@ -82,22 +116,22 @@ export function shouldAutoExecuteToolCall(
 export function normalizeToolResult(result: unknown): NormalizedToolResult {
   const normalized = normalizeMcpToolResultRust(result);
   if (normalized !== null) {
-    return normalized;
+    return boundNormalizedToolResult(normalized);
   }
 
   const text = extractMcpTextContent(result);
   if (text) {
-    return {
+    return boundNormalizedToolResult({
       displayText: text,
       modelText: text,
-    };
+    });
   }
 
   const fallback = stringifyUnknown(result);
-  return {
+  return boundNormalizedToolResult({
     displayText: fallback,
     modelText: fallback,
-  };
+  });
 }
 
 export function isMcpToolResultEmpty(
@@ -148,11 +182,29 @@ function isDangerousToolName(toolName: string, policy: ToolExecutionPolicy): boo
   const patterns = policy.dangerousToolNamePatterns ?? [];
   return patterns.some((pattern) => {
     try {
-      return new RegExp(pattern, 'i').test(toolName);
+      const matcher = new RegExp(pattern, 'i');
+      if (matcher.test(toolName)) {
+        return true;
+      }
+      if (!DEFAULT_DANGEROUS_TOOL_PATTERN_SOURCES.has(pattern)) {
+        return false;
+      }
+      return matcher.test(segmentCamelCaseToolName(toolName));
     } catch {
       return false;
     }
   });
+}
+
+function segmentCamelCaseToolName(toolName: string): string {
+  return toolName.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+}
+
+function boundNormalizedToolResult(result: NormalizedToolResult): NormalizedToolResult {
+  return {
+    displayText: truncateUtf8Text(result.displayText, MCP_DISPLAY_TEXT_MAX_BYTES).text,
+    modelText: truncateUtf8Text(result.modelText, MCP_MODEL_TEXT_MAX_BYTES).text,
+  };
 }
 
 function extractMcpTextContent(result: unknown): string | null {
