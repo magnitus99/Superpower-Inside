@@ -40,7 +40,7 @@ flowchart LR
 | Feature | Description |
 | --- | --- |
 | Chat sidebar | Ask questions without leaving Obsidian. |
-| Native vault tool | Lets the model iteratively search, read, list, inspect links, and check vault scope through one first-class read-only tool. |
+| Native vault tools | Gives the model focused read-only search, read, list, link, and scope tools inside a bounded research loop. Native function calls are used when supported, with a compatibility protocol for other models. |
 | Whole-vault research | Screens eligible files on this device, sends bounded evidence only from locally selected files, and states coverage limits in the cited answer. |
 | Vault retrieval | Uses BM25 as the always-available lexical baseline, with vector and structural retrieval as optional accelerators. |
 | GraphRAG | Extracts local graph evidence from eligible `.md` notes for entity, relation, theme, and source-backed questions. |
@@ -80,7 +80,7 @@ After that, open the chat sidebar and ask a question. When RAG or GraphRAG needs
 
 ### Chat With Your Vault
 
-Ask natural questions in the sidebar. The model can call Superpower Inside's native read-only vault tool repeatedly to search, open the relevant ranges, follow links, and verify scope before answering. Keyword retrieval remains available without embeddings; compatible vector, structural, and GraphRAG evidence improves ranking and relationship questions when ready.
+Ask natural questions in the sidebar. For questions that depend on vault or connected-tool evidence, Superpower Inside directs the model to investigate before answering: search or list candidates, read the relevant ranges, preserve the current objective across tool rounds, then produce a source-grounded final answer. Providers that support native function calling use it directly; models without reliable native support use the same bounded loop through a compatibility protocol. Keyword retrieval remains available without embeddings, while compatible vector, structural, and GraphRAG evidence improves ranking and relationship questions when ready.
 
 ```text
 Summarize this entire vault and cite the major themes.
@@ -128,7 +128,7 @@ The Agent Diagnostics view writes a local JSON snapshot and append-only event lo
 - Settings and API keys are stored in this device's Obsidian local storage and are not newly saved to the synced plugin `data.json` file.
 - Chat messages, selected notes, retrieved RAG chunks, tool arguments, and tool results may be sent to the configured LLM, embedding provider, or MCP server.
 - Whole-vault research inventories and screens eligible files on this device. Of the vault content, only bounded evidence from locally selected files is sent to the configured chat provider; coverage or transfer limits are stated in the answer.
-- The built-in `superpower_inside` model tool is read-only. It can search, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics; it cannot create, modify, move, or delete files.
+- The built-in `superpower_inside_*` model tools, including the legacy `superpower_inside` compatibility entry point, are read-only. They can search, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics; they cannot create, modify, move, or delete files.
 - RAG indexes eligible text and code files in the shared file scope. GraphRAG extracts connected evidence only from eligible `.md` notes in that scope.
 - Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
 - Citation actions and copy buttons write text to the system clipboard.
@@ -169,7 +169,7 @@ Superpower Inside는 Obsidian을 실제 지식 작업 공간으로 쓰는 사람
 | 기능 | 설명 |
 | --- | --- |
 | 사이드바 채팅 | Obsidian을 떠나지 않고 AI와 대화합니다. |
-| 네이티브 볼트 도구 | 모델이 하나의 읽기 전용 도구로 검색, 범위 읽기, 파일 목록, 링크, 볼트 범위를 반복 확인합니다. |
+| 네이티브 볼트 도구 | 검색, 범위 읽기, 파일 목록, 링크, 볼트 범위를 각각 명확한 읽기 전용 도구로 제공하고 제한된 조사 루프 안에서 반복 확인합니다. 네이티브 툴 콜링이 불안정한 모델에는 호환 프로토콜을 사용합니다. |
 | 볼트 전체 리서치 | 대상 파일을 이 기기에서 확인하고 로컬에서 선별한 파일의 근거만 제한적으로 전송하며, 확인 범위를 밝힌 출처 기반 답변을 만듭니다. |
 | 볼트 검색 | BM25를 항상 사용 가능한 기반으로 두고 벡터와 구조 검색을 선택적 가속 계층으로 결합합니다. |
 | GraphRAG | 공통 파일 범위의 `.md` 노트에서 만든 로컬 지식 그래프로 entity, relation, evidence, community 기반 컨텍스트를 제공합니다. |
@@ -192,7 +192,7 @@ Ternlight는 항상 표시되는 내장 임베딩 선택지이며 신규 설치�
 
 ### 볼트와 대화하기
 
-사이드바에서 자연어로 질문하세요. 모델은 Superpower Inside의 네이티브 읽기 전용 볼트 도구를 반복 호출해 검색하고, 필요한 줄을 읽고, 링크와 범위를 확인한 뒤 답할 수 있습니다. 임베딩이 없어도 키워드 검색은 유지되며, 준비된 벡터·구조·GraphRAG evidence는 랭킹과 관계형 질문을 강화합니다.
+사이드바에서 자연어로 질문하세요. 볼트나 연결된 도구의 근거가 필요한 질문이면 Superpower Inside가 모델에게 먼저 조사하도록 요구합니다. 후보를 검색하거나 나열하고, 필요한 줄을 읽고, 도구 라운드 사이에도 현재 목표를 유지한 뒤 출처 기반 최종 답변을 만듭니다. 네이티브 툴 콜링을 지원하는 provider는 그대로 사용하고, 안정적인 네이티브 지원이 없는 모델은 같은 제한된 루프를 호환 프로토콜로 수행합니다. 임베딩이 없어도 키워드 검색은 유지되며, 준비된 벡터·구조·GraphRAG evidence는 랭킹과 관계형 질문을 강화합니다.
 
 ```text
 이 볼트 전체를 요약하고 주요 주제마다 출처를 달아줘.
@@ -230,7 +230,7 @@ GraphRAG 추출은 기본적으로 모델 요청을 하나씩 처리합니다. p
 - 설정과 API 키는 이 기기의 Obsidian 로컬 저장소에 저장되며, 동기화되는 플러그인 `data.json` 파일에는 새로 저장하지 않습니다.
 - 채팅 메시지, 선택된 노트, RAG 청크, 도구 호출 인자와 결과는 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
 - 볼트 전체 리서치는 대상 파일을 이 기기에서 먼저 확인합니다. 볼트 내용 중에는 로컬에서 선별한 파일의 근거만 설정한 채팅 provider로 제한적으로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
-- 내장 `superpower_inside` 모델 도구는 읽기 전용입니다. 대상 텍스트·코드 파일 검색, 제한된 줄 범위 읽기, 파일 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
+- 내장 `superpower_inside_*` 모델 도구와 레거시 호환 진입점 `superpower_inside`는 모두 읽기 전용입니다. 대상 텍스트·코드 파일 검색, 제한된 줄 범위 읽기, 파일 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
 - RAG는 공통 파일 범위의 대상 텍스트·코드 파일을 인덱싱하고, GraphRAG는 그 범위의 `.md` 노트에서만 연결 근거를 추출합니다.
 - 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 저장됩니다.
 - 출처 복사와 메시지 복사 기능은 시스템 클립보드에 텍스트를 씁니다.
