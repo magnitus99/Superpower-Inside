@@ -339,6 +339,49 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(cachedRead).not.toHaveBeenCalled();
   });
 
+  it('related는 지정한 문서 본문을 임베딩 검색 시드로 삼고 자기 자신은 제외한다', async () => {
+    const seed = createFile('Notes/Seed.md', '고객 온보딩 마찰과 이탈 원인\n실험 결과');
+    const neighbor = createFile('Notes/Neighbor.md', '첫 세션 이탈 감소 실험');
+    const query = vi.fn(() =>
+      Promise.resolve([
+        createQueryResult(seed.path, 'seed-entry', 1, ['vector'], 'vector'),
+        createQueryResult(neighbor.path, 'neighbor-entry', 7, ['vector', 'bm25'], 'keyword-vector'),
+      ]),
+    );
+    const port = createNativeVaultPort(createApp([seed, neighbor]), undefined, () =>
+      createReadyQueryEngineDouble(query),
+    );
+
+    const result = await port.related({
+      action: 'related',
+      path: seed.path,
+      startLine: 1,
+      endLine: null,
+      limit: 3,
+    });
+
+    expect(query).toHaveBeenCalledWith(seed.content, 7, 0, undefined, {
+      fileBackedOnly: true,
+    });
+    expect(result).toMatchObject({
+      action: 'related',
+      path: seed.path,
+      startLine: 1,
+      endLine: 2,
+      truncated: false,
+    });
+    expect(result.hits).toEqual([
+      expect.objectContaining({
+        path: neighbor.path,
+        retrievalSources: ['vector', 'bm25'],
+        requiresRead: true,
+      }),
+    ]);
+    expect(result.citations).toEqual([
+      expect.objectContaining({ filePath: neighbor.path, status: 'candidate' }),
+    ]);
+  });
+
   it('인덱스 검색은 전체 후보 목록 대신 반환된 상위 경로만 검증한다', async () => {
     const alpha = createFile('Projects/Alpha.md', '현재 본문');
     const indexedResults = [

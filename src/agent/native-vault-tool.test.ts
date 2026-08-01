@@ -20,7 +20,7 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
         name: NATIVE_VAULT_TOOL_NAME,
         parameters: {
           properties: {
-            action: { enum: ['search', 'read', 'list', 'links', 'stats'] },
+            action: { enum: ['search', 'related', 'read', 'list', 'links', 'stats'] },
             queries: { maxItems: 3 },
             match: { enum: ['all', 'any', 'phrase'] },
           },
@@ -32,7 +32,7 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     expect(definition.function.description).toContain('excluded paths and extensions');
   });
 
-  it('모델에는 action별 필수 인자와 상한이 분리된 5개 도구 정의를 제공한다', () => {
+  it('모델에는 action별 필수 인자와 상한이 분리된 6개 도구 정의를 제공한다', () => {
     const definitions = createNativeVaultToolDefinitions();
     const byName = new Map(
       definitions.map((definition) => [definition.function.name, definition.function]),
@@ -60,6 +60,10 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
         start_line: { minimum: 1 },
         end_line: { minimum: 1 },
       },
+    });
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.related)?.parameters).toMatchObject({
+      required: ['path'],
+      properties: { limit: { minimum: 1, maximum: 20 } },
     });
     expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.list)?.parameters).toMatchObject({
       required: [],
@@ -93,7 +97,7 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     ).toBe(true);
   });
 
-  it('legacy alias와 5개 named tool을 모두 네이티브 도구로 식별한다', () => {
+  it('legacy alias와 6개 named tool을 모두 네이티브 도구로 식별한다', () => {
     const runtime = new NativeVaultToolRuntime(createPort().port);
 
     expect(runtime.isNativeTool(NATIVE_VAULT_TOOL_NAME)).toBe(true);
@@ -307,6 +311,12 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
   });
 
   it.each([
+    {
+      label: 'related',
+      toolName: NATIVE_VAULT_NAMED_TOOL_NAMES.related,
+      argumentsText: JSON.stringify({ path: 'Projects/Alpha.md' }),
+      spyName: 'related',
+    },
     {
       label: 'search',
       toolName: NATIVE_VAULT_NAMED_TOOL_NAMES.search,
@@ -554,6 +564,7 @@ function createPort(): {
   read: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
   search: ReturnType<typeof vi.fn>;
+  related: ReturnType<typeof vi.fn>;
   links: ReturnType<typeof vi.fn>;
   stats: ReturnType<typeof vi.fn>;
 } {
@@ -611,6 +622,17 @@ function createPort(): {
       citations: [citation],
     }),
   );
+  const related = vi.fn(() =>
+    Promise.resolve({
+      action: 'related' as const,
+      path: 'Projects/Alpha.md',
+      startLine: 1,
+      endLine: 4,
+      hits: [],
+      truncated: false,
+      citations: [],
+    }),
+  );
   const links = vi.fn(() =>
     Promise.resolve({
       action: 'links' as const,
@@ -631,10 +653,11 @@ function createPort(): {
   );
   const port: NativeVaultToolPort = {
     search,
+    related,
     read,
     list,
     links,
     stats,
   };
-  return { port, read, list, search, links, stats };
+  return { port, read, list, search, related, links, stats };
 }

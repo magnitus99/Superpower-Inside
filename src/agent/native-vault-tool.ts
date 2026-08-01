@@ -9,6 +9,7 @@ export const NATIVE_VAULT_TOOL_LABEL = 'Superpower Inside';
 const MAX_NATIVE_MODEL_RESULT_BYTES = 64 * 1024;
 export const NATIVE_VAULT_NAMED_TOOL_NAMES = {
   search: 'superpower_inside_search',
+  related: 'superpower_inside_related',
   read: 'superpower_inside_read',
   list: 'superpower_inside_list',
   links: 'superpower_inside_links',
@@ -23,6 +24,7 @@ const NATIVE_VAULT_ACTION_BY_TOOL_NAME: Readonly<
   Record<NativeVaultNamedToolName, NativeVaultToolAction>
 > = {
   [NATIVE_VAULT_NAMED_TOOL_NAMES.search]: 'search',
+  [NATIVE_VAULT_NAMED_TOOL_NAMES.related]: 'related',
   [NATIVE_VAULT_NAMED_TOOL_NAMES.read]: 'read',
   [NATIVE_VAULT_NAMED_TOOL_NAMES.list]: 'list',
   [NATIVE_VAULT_NAMED_TOOL_NAMES.links]: 'links',
@@ -83,6 +85,15 @@ export interface NativeVaultReadResult extends NativeVaultResultBase {
   content: string;
 }
 
+export interface NativeVaultRelatedResult extends NativeVaultResultBase {
+  action: 'related';
+  path: string;
+  startLine: number;
+  endLine: number;
+  hits: NativeVaultSearchHit[];
+  truncated: boolean;
+}
+
 export interface NativeVaultListResult extends NativeVaultResultBase {
   action: 'list';
   path: string;
@@ -111,6 +122,7 @@ export interface NativeVaultStatsResult extends NativeVaultResultBase {
 
 export type NativeVaultToolResult =
   | NativeVaultSearchResult
+  | NativeVaultRelatedResult
   | NativeVaultReadResult
   | NativeVaultListResult
   | NativeVaultLinksResult
@@ -127,6 +139,10 @@ export interface NativeVaultToolPort {
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
     signal?: AbortSignal,
   ): Promise<NativeVaultSearchResult>;
+  related(
+    request: Extract<RustNativeVaultToolRequest, { action: 'related' }>,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultRelatedResult>;
   read(
     request: Extract<RustNativeVaultToolRequest, { action: 'read' }>,
     signal?: AbortSignal,
@@ -196,6 +212,8 @@ export class NativeVaultToolRuntime implements NativeVaultToolRuntimeLike {
     switch (request.action) {
       case 'search':
         return signal ? this.port.search(request, signal) : this.port.search(request);
+      case 'related':
+        return signal ? this.port.related(request, signal) : this.port.related(request);
       case 'read':
         return signal ? this.port.read(request, signal) : this.port.read(request);
       case 'list':
@@ -217,6 +235,8 @@ function boundNativeVaultModelResult(result: NativeVaultToolResult): {
       return boundReadModelResult(result);
     case 'search':
       return boundSearchModelResult(result);
+    case 'related':
+      return boundRelatedModelResult(result);
     case 'list':
       return boundListModelResult(result);
     case 'links':
@@ -224,6 +244,32 @@ function boundNativeVaultModelResult(result: NativeVaultToolResult): {
     case 'stats':
       return serializeBoundedNativeResult(result);
   }
+}
+
+function boundRelatedModelResult(
+  result: NativeVaultRelatedResult,
+): NativeVaultToolExecutionResultShape {
+  const boundedSearch = boundSearchModelResult({
+    action: 'search',
+    query: result.path,
+    queries: [result.path],
+    path: '',
+    match: 'phrase',
+    hits: result.hits,
+    scannedFiles: 0,
+    unreadableFiles: 0,
+    totalHits: result.hits.length,
+    truncated: result.truncated,
+    citations: result.citations,
+  });
+  const search = boundedSearch.result as NativeVaultSearchResult;
+  const related: NativeVaultRelatedResult = {
+    ...result,
+    hits: search.hits,
+    citations: search.citations,
+    truncated: search.truncated,
+  };
+  return ensureBoundedNativeResult(related, serializeNativeResult(related));
 }
 
 function boundReadModelResult(result: NativeVaultReadResult): NativeVaultToolExecutionResultShape {
@@ -418,7 +464,7 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
         properties: {
           action: {
             type: 'string',
-            enum: ['search', 'read', 'list', 'links', 'stats'],
+            enum: ['search', 'related', 'read', 'list', 'links', 'stats'],
             description: 'Read-only action to perform',
           },
           query: {
@@ -495,6 +541,19 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
             maximum: 20,
             description: 'Maximum candidate count; defaults to 8',
           },
+        },
+      },
+    ),
+    createActionToolDefinition(
+      NATIVE_VAULT_NAMED_TOOL_NAMES.related,
+      'Find semantically related file-backed passages using the current text of one allowed vault file as the retrieval seed. Results may combine embeddings, BM25, graph, and structural evidence. Every candidate still requires superpower_inside_read before it supports an answer.',
+      {
+        required: ['path'],
+        properties: {
+          path: { type: 'string', description: 'Vault-relative seed file path' },
+          start_line: { type: 'integer', minimum: 1, description: 'Optional seed start line' },
+          end_line: { type: 'integer', minimum: 1, description: 'Optional seed end line' },
+          limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum candidates; defaults to 8' },
         },
       },
     ),
@@ -667,6 +726,8 @@ function getRequestErrorMessage(code: string): string {
 function formatDisplayText(result: NativeVaultToolResult): string {
   switch (result.action) {
     case 'search':
+      return t('nativeVaultSearchDisplay', { count: String(result.hits.length) });
+    case 'related':
       return t('nativeVaultSearchDisplay', { count: String(result.hits.length) });
     case 'read':
       return t('nativeVaultReadDisplay', {

@@ -116,10 +116,14 @@ function getToolCallName(toolCall: ToolCallRecord): string {
   return `${toolCall.serverName ?? 'Superpower Inside'} · ${actionLabel}`;
 }
 
-function getNativeVaultActionLabel(action: 'search' | 'read' | 'list' | 'links' | 'stats'): string {
+function getNativeVaultActionLabel(
+  action: 'search' | 'related' | 'read' | 'list' | 'links' | 'stats',
+): string {
   switch (action) {
     case 'search':
       return t('nativeVaultActionSearch');
+    case 'related':
+      return t('nativeVaultActionRelated');
     case 'read':
       return t('nativeVaultActionRead');
     case 'list':

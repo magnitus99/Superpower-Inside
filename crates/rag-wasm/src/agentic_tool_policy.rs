@@ -34,6 +34,8 @@ const MAX_TOOL_SERVER_NAME_BYTES: usize = 512;
 
 /// provider에 노출하는 좁은 범위의 native 검색 툴.
 const NATIVE_SEARCH_TOOL_NAME: &str = "superpower_inside_search";
+/// provider에 노출하는 문서 시드 기반 하이브리드 이웃 탐색 툴.
+const NATIVE_RELATED_TOOL_NAME: &str = "superpower_inside_related";
 /// provider에 노출하는 좁은 범위의 native 원문 읽기 툴.
 const NATIVE_READ_TOOL_NAME: &str = "superpower_inside_read";
 /// provider에 노출하는 좁은 범위의 native 파일 목록 툴.
@@ -106,6 +108,8 @@ enum ToolCallStatus {
 enum NativeAction {
     /// Find candidate source paths.
     Search,
+    /// Find hybrid retrieval neighbors from a source file seed.
+    Related,
     /// Read source content.
     Read,
     /// List one page of vault files.
@@ -121,6 +125,7 @@ impl NativeAction {
     const fn tool_name(self) -> &'static str {
         match self {
             Self::Search => NATIVE_SEARCH_TOOL_NAME,
+            Self::Related => NATIVE_RELATED_TOOL_NAME,
             Self::Read => NATIVE_READ_TOOL_NAME,
             Self::List => NATIVE_LIST_TOOL_NAME,
             Self::Links => NATIVE_LINKS_TOOL_NAME,
@@ -132,6 +137,7 @@ impl NativeAction {
     const fn result_action(self) -> &'static str {
         match self {
             Self::Search => "search",
+            Self::Related => "related",
             Self::Read => "read",
             Self::List => "list",
             Self::Links => "links",
@@ -265,6 +271,7 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
         &input,
         next_action,
         &requirements,
+        has_related_document_intent(&input.question),
         relation_requires_content,
         requires_full_content_coverage,
         &ledger,
@@ -516,6 +523,39 @@ fn has_relation_intent(question: &str) -> bool {
             "reference",
         ],
     )
+}
+
+/// 특정 문서를 시드로 의미적 이웃을 찾으려는 의도를 감지함.
+fn has_related_document_intent(question: &str) -> bool {
+    let normalized = question.to_lowercase();
+    let has_document_anchor = contains_any(
+        &normalized,
+        &[
+            "이 문서",
+            "이 파일",
+            "이 노트",
+            "this document",
+            "this file",
+            "this note",
+            ".md",
+        ],
+    );
+    let has_similarity_intent = contains_any(
+        &normalized,
+        &[
+            "비슷",
+            "유사",
+            "닮은",
+            "관련 문서",
+            "관련된 문서",
+            "관련 노트",
+            "관련된 노트",
+            "similar",
+            "related document",
+            "related note",
+        ],
+    );
+    has_document_anchor && has_similarity_intent
 }
 
 /// 경로 단위 목록 범위를 요구하는 표현을 감지함.
@@ -1216,7 +1256,9 @@ fn record_successful_call(
         return;
     };
     match action {
-        NativeAction::Search => record_successful_search(ledger, call, &result),
+        NativeAction::Search | NativeAction::Related => {
+            record_successful_search(ledger, call, &result);
+        }
         NativeAction::Read => record_successful_read(ledger, &result),
         NativeAction::List => record_successful_list(ledger, call, &result),
         NativeAction::Links => {
@@ -1443,6 +1485,7 @@ fn record_successful_list(
 fn native_action(call: &ToolCallSnapshot) -> Option<NativeAction> {
     match call.name.trim() {
         NATIVE_SEARCH_TOOL_NAME => return Some(NativeAction::Search),
+        NATIVE_RELATED_TOOL_NAME => return Some(NativeAction::Related),
         NATIVE_READ_TOOL_NAME => return Some(NativeAction::Read),
         NATIVE_LIST_TOOL_NAME => return Some(NativeAction::List),
         NATIVE_LINKS_TOOL_NAME => return Some(NativeAction::Links),
@@ -1453,6 +1496,7 @@ fn native_action(call: &ToolCallSnapshot) -> Option<NativeAction> {
     let parsed = serde_json::from_str::<JsonValue>(&call.arguments).ok()?;
     match parsed.as_object()?.get("action")?.as_str()? {
         "search" => Some(NativeAction::Search),
+        "related" => Some(NativeAction::Related),
         "read" => Some(NativeAction::Read),
         "list" => Some(NativeAction::List),
         "links" => Some(NativeAction::Links),
@@ -1466,6 +1510,7 @@ fn is_native_tool_name(name: &str) -> bool {
     matches!(
         name.trim(),
         NATIVE_SEARCH_TOOL_NAME
+            | NATIVE_RELATED_TOOL_NAME
             | NATIVE_READ_TOOL_NAME
             | NATIVE_LIST_TOOL_NAME
             | NATIVE_LINKS_TOOL_NAME
@@ -1539,6 +1584,7 @@ fn parse_normalized_native_result(
 fn native_result_has_required_shape(action: NativeAction, result: &JsonValue) -> bool {
     match action {
         NativeAction::Search => search_result_has_required_shape(result),
+        NativeAction::Related => related_result_has_required_shape(result),
         NativeAction::Read => read_result_has_required_shape(result),
         NativeAction::List => list_result_has_required_shape(result),
         NativeAction::Links => links_result_has_required_shape(result),
@@ -1569,6 +1615,25 @@ fn search_result_has_required_shape(result: &JsonValue) -> bool {
         && has_non_negative_safe_integer(object.get("scannedFiles"))
         && has_non_negative_safe_integer(object.get("unreadableFiles"))
         && has_non_negative_safe_integer(object.get("totalHits"))
+        && object.get("truncated").is_some_and(JsonValue::is_boolean)
+}
+
+/// 정규화된 관련 문서 결과의 씨앗 범위와 후보 필드를 검증함.
+fn related_result_has_required_shape(result: &JsonValue) -> bool {
+    let Some(object) = result.as_object() else {
+        return false;
+    };
+    let (Some(start_line), Some(end_line), Some(hits)) = (
+        safe_integer(object.get("startLine")),
+        safe_integer(object.get("endLine")),
+        object.get("hits").and_then(JsonValue::as_array),
+    ) else {
+        return false;
+    };
+    object.get("path").is_some_and(is_non_empty_string)
+        && start_line > 0
+        && end_line >= start_line
+        && hits.iter().all(search_hit_has_required_shape)
         && object.get("truncated").is_some_and(JsonValue::is_boolean)
 }
 
@@ -1978,6 +2043,7 @@ fn required_tool_names(
     input: &AgenticToolTurnInput,
     next_action: NextAction,
     requirements: &[NativeEvidenceRequirement],
+    prefers_related_search: bool,
     relation_requires_content: bool,
     requires_full_content_coverage: bool,
     ledger: &EvidenceLedger,
@@ -1999,6 +2065,7 @@ fn required_tool_names(
             .map_or_else(Vec::new, |action| vec![action]),
         NextAction::UseTool => required_actions_for_requirements(
             requirements,
+            prefers_related_search,
             relation_requires_content,
             requires_full_content_coverage,
             ledger,
@@ -2015,6 +2082,7 @@ fn required_tool_names(
 /// 충족되지 않은 모든 근거 형태를 가장 작은 유용한 native 행동 집합으로 변환함.
 fn required_actions_for_requirements(
     requirements: &[NativeEvidenceRequirement],
+    prefers_related_search: bool,
     relation_requires_content: bool,
     requires_full_content_coverage: bool,
     ledger: &EvidenceLedger,
@@ -2030,7 +2098,14 @@ fn required_actions_for_requirements(
         }
         match requirement {
             NativeEvidenceRequirement::Content => {
-                push_native_action(&mut actions, NativeAction::Search);
+                push_native_action(
+                    &mut actions,
+                    if prefers_related_search {
+                        NativeAction::Related
+                    } else {
+                        NativeAction::Search
+                    },
+                );
                 push_native_action(&mut actions, NativeAction::Read);
             }
             NativeEvidenceRequirement::Inventory => {
@@ -3378,6 +3453,58 @@ mod tests {
         assert_eq!(
             stats.get("requiredToolNames"),
             Some(&json!(["superpower_inside_stats"]))
+        );
+    }
+
+    #[test]
+    fn a_document_similarity_request_prefers_related_retrieval() {
+        let result = plan(&json!({
+            "question": "Seed.md와 비슷한 관련 문서를 내 볼트에서 찾아줘",
+            "hasAttachedEvidence": false,
+            "explicitToolServerCount": 0,
+            "availableToolNames": [
+                "superpower_inside_search",
+                "superpower_inside_related",
+                "superpower_inside_read"
+            ],
+            "toolCalls": [],
+            "phase": "initial",
+            "round": 0,
+            "maxRounds": 10
+        }));
+
+        assert_eq!(
+            result.get("requiredToolNames"),
+            Some(&json!([
+                "superpower_inside_related",
+                "superpower_inside_read"
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_general_relevant_evidence_request_keeps_query_search() {
+        let result = plan(&json!({
+            "question": "내 볼트에서 관련 근거를 찾아줘",
+            "hasAttachedEvidence": false,
+            "explicitToolServerCount": 0,
+            "availableToolNames": [
+                "superpower_inside_search",
+                "superpower_inside_related",
+                "superpower_inside_read"
+            ],
+            "toolCalls": [],
+            "phase": "initial",
+            "round": 0,
+            "maxRounds": 10
+        }));
+
+        assert_eq!(
+            result.get("requiredToolNames"),
+            Some(&json!([
+                "superpower_inside_search",
+                "superpower_inside_read"
+            ]))
         );
     }
 

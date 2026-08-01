@@ -28,6 +28,10 @@ const DEFAULT_LINK_LIMIT: usize = 50;
 const MAX_LINK_LIMIT: usize = 100;
 /// 검색 결합 후보의 식별자에 허용하는 최대 byte 수.
 const MAX_SEARCH_ENTRY_ID_BYTES: usize = 4_096;
+/// 관련 문서 탐색이 반환하는 기본 후보 수.
+const DEFAULT_RELATED_LIMIT: usize = 8;
+/// 관련 문서 탐색 한 번이 반환할 수 있는 최대 후보 수.
+const MAX_RELATED_LIMIT: usize = 20;
 
 /// 내장 읽기 전용 볼트 도구에 대한 모델 생성 요청 하나를 검증한다.
 #[must_use]
@@ -344,12 +348,36 @@ fn normalize_request(
 ) -> Result<JsonValue, &'static str> {
     match action {
         "search" => normalize_search_request(object),
+        "related" => normalize_related_request(object),
         "read" => normalize_read_request(object),
         "list" => normalize_list_request(object),
         "links" => normalize_links_request(object),
         "stats" => Ok(json!({ "action": "stats" })),
         _ => Err("unsupported_action"),
     }
+}
+
+/// 관련 문서 탐색의 씨앗 경로와 선택 범위를 검증한다.
+fn normalize_related_request(
+    object: &JsonMap<String, JsonValue>,
+) -> Result<JsonValue, &'static str> {
+    let raw_path = required_string(object, "path", "path_required")?;
+    let path = normalize_required_path(&raw_path)?;
+    let start_line = optional_usize(object, "start_line")?.unwrap_or(1);
+    let end_line = optional_usize(object, "end_line")?;
+    if start_line == 0 || end_line.is_some_and(|end| end < start_line) {
+        return Err("invalid_line_range");
+    }
+    let limit = optional_usize(object, "limit")?
+        .unwrap_or(DEFAULT_RELATED_LIMIT)
+        .clamp(1, MAX_RELATED_LIMIT);
+    Ok(json!({
+        "action": "related",
+        "path": path,
+        "startLine": start_line,
+        "endLine": end_line,
+        "limit": limit
+    }))
 }
 
 /// 검색 필드를 검증하고 제한된 기본값을 적용한다.
@@ -710,6 +738,25 @@ mod tests {
         assert_eq!(
             any_parsed.pointer("/request/match"),
             Some(&JsonValue::from("any")),
+        );
+    }
+
+    #[test]
+    fn related_request_normalizes_a_bounded_seed_range() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{"action":"related","path":"Notes/Seed.md","start_line":3,"end_line":9,"limit":99}"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/request"),
+            Some(&serde_json::json!({
+                "action": "related",
+                "path": "Notes/Seed.md",
+                "startLine": 3,
+                "endLine": 9,
+                "limit": 20
+            })),
         );
     }
 

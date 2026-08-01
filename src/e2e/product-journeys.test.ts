@@ -269,6 +269,16 @@ function createVaultPort(): NativeVaultToolPort {
         })),
       });
     },
+    related: (request) =>
+      Promise.resolve({
+        action: 'related',
+        path: request.path,
+        startLine: request.startLine,
+        endLine: request.endLine ?? request.startLine,
+        hits: [],
+        truncated: false,
+        citations: [],
+      }),
     links: (request) =>
       Promise.resolve({
         action: 'links',

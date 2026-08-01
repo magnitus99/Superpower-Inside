@@ -562,6 +562,7 @@ export interface I18nKeys {
   vaultResearchPhaseReduce: string;
   vaultResearchPhaseComplete: string;
   nativeVaultActionSearch: string;
+  nativeVaultActionRelated: string;
   nativeVaultActionRead: string;
   nativeVaultActionList: string;
   nativeVaultActionLinks: string;
@@ -2196,6 +2197,7 @@ const ko: I18nKeys = {
   vaultResearchPhaseReduce: '내용 종합',
   vaultResearchPhaseComplete: '완료',
   nativeVaultActionSearch: '검색',
+  nativeVaultActionRelated: '관련 문서 찾기',
   nativeVaultActionRead: '문서 읽기',
   nativeVaultActionList: '문서 목록',
   nativeVaultActionLinks: '링크 확인',
@@ -3950,6 +3952,7 @@ const en: I18nKeys = {
   vaultResearchPhaseReduce: 'Synthesizing',
   vaultResearchPhaseComplete: 'Complete',
   nativeVaultActionSearch: 'Search',
+  nativeVaultActionRelated: 'Find related documents',
   nativeVaultActionRead: 'Read document',
   nativeVaultActionList: 'List documents',
   nativeVaultActionLinks: 'Inspect links',

@@ -139,6 +139,24 @@ describe('ToolCallPanel view model contract', () => {
     expect(row?.nameText).toBe('Superpower Inside · 문서 읽기');
   });
 
+  it('관련 문서 탐색은 일반 검색과 구분된 작업명을 표시한다', () => {
+    const [row] = createToolCallPanelView(
+      [
+        {
+          id: 'native-related',
+          name: 'superpower_inside_related',
+          serverName: 'Superpower Inside',
+          executionKind: 'native',
+          arguments: '{"path":"Decision.md"}',
+          status: 'success',
+        },
+      ],
+      false,
+    ).rows;
+
+    expect(row?.nameText).toBe('Superpower Inside · 관련 문서 찾기');
+  });
+
   it('MCP alias 대신 승인 대상 서버와 실제 도구 이름을 표시한다', () => {
     const [row] = createToolCallPanelView(
       [

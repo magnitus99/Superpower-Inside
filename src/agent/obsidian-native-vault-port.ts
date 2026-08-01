@@ -21,15 +21,19 @@ import type {
   NativeVaultLinksResult,
   NativeVaultListResult,
   NativeVaultReadResult,
+  NativeVaultRelatedResult,
   NativeVaultSearchHit,
   NativeVaultSearchResult,
   NativeVaultStatsResult,
   NativeVaultToolPort,
 } from './native-vault-tool';
+import { truncateUtf8Text } from '../utils/text-budget';
 
 const MAX_READ_LINES = 400;
 const LEXICAL_READ_BATCH_SIZE = 8;
 const MAX_RETRIEVAL_SOURCES = 8;
+const MAX_RELATED_SEED_LINES = 80;
+const MAX_RELATED_SEED_BYTES = 12 * 1024;
 
 export interface NativeVaultQueryEngineLike {
   query(
@@ -172,6 +176,71 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       truncated: range.truncated,
       content: selectedContent,
       citations: [citation],
+    };
+  }
+
+  async related(
+    request: Extract<RustNativeVaultToolRequest, { action: 'related' }>,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultRelatedResult> {
+    throwIfAborted(signal);
+    const engine = this.getQueryEngine();
+    if (!engine) throw new Error(t('nativeVaultPlanUnavailable'));
+    const file = this.resolveVaultFile(request.path);
+    if (!file || !(await this.fileScope.isCandidateFile(file))) {
+      throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    }
+    const content = await awaitWithAbort(this.app.vault.cachedRead(file), signal);
+    const lines = content.split('\n');
+    const range = planNativeVaultReadRangeRust(
+      lines.length,
+      request.startLine,
+      request.endLine,
+      MAX_RELATED_SEED_LINES,
+    );
+    if (!range) throw new Error(t('nativeVaultInvalidLineRange'));
+    const seed = truncateUtf8Text(
+      lines.slice(range.startLine - 1, range.endLine).join('\n'),
+      MAX_RELATED_SEED_BYTES,
+      '',
+    ).text;
+    if (!seed.trim()) throw new Error(t('nativeVaultPlanUnavailable'));
+    const results = await awaitWithAbort(
+      engine.query(seed, Math.min(20, request.limit + 4), 0, undefined, {
+        fileBackedOnly: true,
+        ...(signal ? { signal } : {}),
+      }),
+      signal,
+    );
+    const relatedResults = results.filter((result) => result.sourcePath !== file.path);
+    const candidates = relatedResults
+      .slice(0, request.limit)
+      .map((result, index) => ({
+        query: seed,
+        queryIndex: 0,
+        rank: index + 1,
+        result,
+      }));
+    const search = buildIndexedSearchResult(
+      {
+        action: 'search',
+        query: seed,
+        queries: [seed],
+        path: '',
+        limit: request.limit,
+        match: 'any',
+      },
+      [seed],
+      candidates,
+    );
+    return {
+      action: 'related',
+      path: file.path,
+      startLine: range.startLine,
+      endLine: range.endLine,
+      hits: search.hits,
+      truncated: relatedResults.length > candidates.length,
+      citations: search.citations,
     };
   }
 

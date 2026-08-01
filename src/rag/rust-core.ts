@@ -229,6 +229,13 @@ export type RustNativeVaultToolRequest =
       startOffset?: number;
       endLine: number | null;
     }
+  | {
+      action: 'related';
+      path: string;
+      startLine: number;
+      endLine: number | null;
+      limit: number;
+    }
   | { action: 'list'; path: string; cursor: number; limit: number }
   | {
       action: 'links';
@@ -8225,6 +8232,14 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
       isNonNegativeSafeInteger(value.startLine) &&
       (value.startOffset === undefined || isNonNegativeSafeInteger(value.startOffset)) &&
       (value.endLine === null || isNonNegativeSafeInteger(value.endLine))
+    );
+  }
+  if (value.action === 'related') {
+    return (
+      typeof value.path === 'string' &&
+      isNonNegativeSafeInteger(value.startLine) &&
+      (value.endLine === null || isNonNegativeSafeInteger(value.endLine)) &&
+      isNonNegativeSafeInteger(value.limit)
     );
   }
   if (value.action === 'list') {
