@@ -84,7 +84,10 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
       properties: {},
     });
     expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.search)?.description).toContain(
-      'requires a follow-up superpower_inside_read',
+      'citationStatus="verified" is answer-ready current text',
+    );
+    expect(byName.get(NATIVE_VAULT_NAMED_TOOL_NAMES.search)?.description).toContain(
+      'requiresRead=true marks a locator that still needs superpower_inside_read',
     );
     expect(
       definitions.every(

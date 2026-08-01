@@ -34,6 +34,7 @@ const LEXICAL_READ_BATCH_SIZE = 8;
 const MAX_RETRIEVAL_SOURCES = 8;
 const MAX_RELATED_SEED_LINES = 80;
 const MAX_RELATED_SEED_BYTES = 12 * 1024;
+const MAX_INDEXED_EVIDENCE_LINES = 80;
 
 export interface NativeVaultQueryEngineLike {
   query(
@@ -103,18 +104,16 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       const visible = await this.filterVisibleIndexedCandidates(indexedAttempt.candidates);
       const needsLiveLexicalFallback = shouldUseLiveLexicalFallback(indexedAttempt);
       if (visible.length > 0) {
-        const indexedResult = buildIndexedSearchResult(request, queries, visible);
+        const indexedResult = await this.verifyCurrentSearchEvidence(
+          buildIndexedSearchResult(request, queries, visible),
+          signal,
+        );
         if (!needsLiveLexicalFallback) return indexedResult;
         const files =
           indexedAttempt.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
         const lexicalResult = await this.searchLexically(request, queries, files, signal);
         return lexicalResult.hits.length > 0
-          ? mergeIndexedAndLexicalSearchResults(
-              request,
-              queries,
-              indexedResult,
-              lexicalResult,
-            )
+          ? mergeIndexedAndLexicalSearchResults(request, queries, indexedResult, lexicalResult)
           : indexedResult;
       }
       if (!needsLiveLexicalFallback) {
@@ -213,25 +212,30 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       signal,
     );
     const relatedResults = results.filter((result) => result.sourcePath !== file.path);
-    const candidates = relatedResults
+    const candidates = await this.filterVisibleIndexedCandidates(
+      relatedResults
       .slice(0, request.limit)
       .map((result, index) => ({
         query: seed,
         queryIndex: 0,
         rank: index + 1,
         result,
-      }));
-    const search = buildIndexedSearchResult(
-      {
-        action: 'search',
-        query: seed,
-        queries: [seed],
-        path: '',
-        limit: request.limit,
-        match: 'any',
-      },
-      [seed],
-      candidates,
+      })),
+    );
+    const search = await this.verifyCurrentSearchEvidence(
+      buildIndexedSearchResult(
+        {
+          action: 'search',
+          query: seed,
+          queries: [seed],
+          path: '',
+          limit: request.limit,
+          match: 'any',
+        },
+        [seed],
+        candidates,
+      ),
+      signal,
     );
     return {
       action: 'related',
@@ -418,6 +422,72 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       }),
     );
     return visible.filter((candidate): candidate is IndexedSearchCandidate => candidate !== null);
+  }
+
+  private async verifyCurrentSearchEvidence(
+    result: NativeVaultSearchResult,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultSearchResult> {
+    const hits: NativeVaultSearchHit[] = [];
+    for (let offset = 0; offset < result.hits.length; offset += LEXICAL_READ_BATCH_SIZE) {
+      throwIfAborted(signal);
+      const batch = result.hits.slice(offset, offset + LEXICAL_READ_BATCH_SIZE);
+      hits.push(
+        ...(await Promise.all(batch.map((hit) => this.verifyCurrentSearchHit(hit, signal)))),
+      );
+    }
+    return buildSearchResult(
+      result.query,
+      result.queries ?? [result.query],
+      result.path,
+      result.match,
+      hits,
+      {
+        scannedFiles: result.scannedFiles,
+        unreadableFiles: result.unreadableFiles,
+        totalHits: result.totalHits,
+        truncated: result.truncated,
+      },
+    );
+  }
+
+  private async verifyCurrentSearchHit(
+    hit: NativeVaultSearchHit,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultSearchHit> {
+    throwIfAborted(signal);
+    const file = this.resolveVaultFile(hit.path);
+    if (!file) return hit;
+    try {
+      const content = await awaitWithAbort(this.app.vault.cachedRead(file), signal);
+      throwIfAborted(signal);
+      const lines = content.split('\n');
+      const range = planNativeVaultReadRangeRust(
+        lines.length,
+        hit.startLine,
+        hit.endLine ?? null,
+        MAX_INDEXED_EVIDENCE_LINES,
+      );
+      if (!range) return hit;
+      const preview = lines.slice(range.startLine - 1, range.endLine).join('\n');
+      if (!preview.trim()) return hit;
+      const verified = { ...hit };
+      delete verified.requiresRead;
+      return {
+        ...verified,
+        startLine: range.startLine,
+        endLine: range.endLine,
+        preview,
+        recommendedReadRange: {
+          startLine: range.startLine,
+          endLine: range.endLine,
+        },
+        citationStatus: 'verified',
+      };
+    } catch (error) {
+      if (isAbortError(error) || signal?.aborted) throw error;
+      return hit;
+    }
   }
 
   private async isIndexedPathVisible(path: string): Promise<boolean> {
@@ -747,9 +817,11 @@ function mergeIndexedAndLexicalSearchResults(
     const groupedHits = hitPlan.candidateIndexes.flatMap((index) =>
       candidates[index] ? [candidates[index].hit] : [],
     );
+    const evidenceHit = groupedHits.find((hit) => hit.citationStatus === 'verified');
     return [
       {
         ...representative.hit,
+        ...evidenceHit,
         score: hitPlan.rrfScore,
         retrievalSources: collectSearchHitRetrievalSources(groupedHits),
         matchedQueries: collectSearchHitMatchedQueries(groupedHits, queries),
@@ -858,11 +930,14 @@ function buildSearchResult(
     truncated?: boolean;
   } = {},
 ): NativeVaultSearchResult {
-  const hits = rawHits.map((rawHit): NativeVaultSearchHit => ({
-    ...rawHit,
-    citationStatus: 'candidate',
-    requiresRead: true,
-  }));
+  const hits = rawHits.map((rawHit): NativeVaultSearchHit => {
+    const hit = { ...rawHit };
+    const status = hit.citationStatus === 'verified' ? 'verified' : 'candidate';
+    hit.citationStatus = status;
+    if (status === 'verified') delete hit.requiresRead;
+    else hit.requiresRead = true;
+    return hit;
+  });
   const citations = hits.map((hit) =>
     createCitation(
       hit.path,

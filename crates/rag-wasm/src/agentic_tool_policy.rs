@@ -1309,20 +1309,33 @@ fn record_successful_search(
         ledger.candidate_searches = ledger.candidate_searches.saturating_add(1);
         ledger.pending_candidate = match search_result_candidate_locators(result) {
             Some(locators) if !locators.is_empty() => {
+                let verified_locators = search_result_verified_locators(result).unwrap_or_default();
+                let has_verified_locators = !verified_locators.is_empty();
                 let unverified_locators = locators
                     .iter()
                     .filter(|locator| {
-                        !ledger
-                            .verified_read_ranges
-                            .iter()
-                            .any(|verified| evidence_ranges_overlap(locator, verified))
+                        !verified_locators.contains(*locator)
+                            && !ledger
+                                .verified_read_ranges
+                                .iter()
+                                .any(|verified| evidence_ranges_overlap(locator, verified))
                     })
                     .cloned()
                     .collect::<BTreeSet<_>>();
                 ledger
                     .candidate_source_paths
                     .extend(locators.iter().map(|locator| locator.path.clone()));
-                if unverified_locators.is_empty() {
+                ledger.verified_reads = ledger
+                    .verified_reads
+                    .saturating_add(verified_locators.len());
+                ledger.complete_reads = ledger
+                    .complete_reads
+                    .saturating_add(verified_locators.len());
+                ledger
+                    .verified_source_paths
+                    .extend(verified_locators.iter().map(|locator| locator.path.clone()));
+                ledger.verified_read_ranges.extend(verified_locators);
+                if has_verified_locators || unverified_locators.is_empty() {
                     PendingCandidate::None
                 } else {
                     PendingCandidate::Known(unverified_locators)
@@ -1766,6 +1779,29 @@ fn search_result_has_candidates(result: &JsonValue) -> bool {
 fn search_result_candidate_locators(result: &JsonValue) -> Option<BTreeSet<EvidenceLocator>> {
     let hits = result.get("hits")?.as_array()?;
     hits.iter()
+        .map(|hit| {
+            let start_line = safe_integer(hit.get("startLine"))?;
+            let end_line = match hit.get("endLine") {
+                Some(value) => safe_integer(Some(value))?,
+                None => start_line,
+            };
+            Some(EvidenceLocator {
+                path: hit.get("path")?.as_str()?.to_owned(),
+                start_line: Some(start_line),
+                end_line: Some(end_line),
+            })
+        })
+        .collect()
+}
+
+/// 현재 Vault 본문이 결과에 포함되어 별도 read가 필요 없는 검색 구간만 추출함.
+fn search_result_verified_locators(result: &JsonValue) -> Option<BTreeSet<EvidenceLocator>> {
+    let hits = result.get("hits")?.as_array()?;
+    hits.iter()
+        .filter(|hit| {
+            hit.get("citationStatus").and_then(JsonValue::as_str) == Some("verified")
+                && hit.get("requiresRead").and_then(JsonValue::as_bool) != Some(true)
+        })
         .map(|hit| {
             let start_line = safe_integer(hit.get("startLine"))?;
             let end_line = match hit.get("endLine") {
@@ -2419,6 +2455,65 @@ mod tests {
         .to_string()
     }
 
+    fn normalized_verified_search_result(paths: &[&str]) -> String {
+        let hits = paths
+            .iter()
+            .map(|path| {
+                json!({
+                    "path": path,
+                    "startLine": 1,
+                    "endLine": 2,
+                    "preview": "verified current vault text",
+                    "citationStatus": "verified"
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "action": "search",
+            "query": "query",
+            "queries": ["query"],
+            "path": "",
+            "match": "all",
+            "hits": hits,
+            "scannedFiles": 0,
+            "unreadableFiles": 0,
+            "totalHits": paths.len(),
+            "truncated": true,
+            "citations": []
+        })
+        .to_string()
+    }
+
+    fn normalized_mixed_search_result(candidate_path: &str) -> String {
+        json!({
+            "action": "search",
+            "query": "query",
+            "queries": ["query"],
+            "path": "",
+            "match": "all",
+            "hits": [{
+                "path": "Decision.md",
+                "startLine": 1,
+                "endLine": 2,
+                "preview": "verified current vault text",
+                "citationStatus": "verified"
+            }, {
+                "path": candidate_path,
+                "startLine": 4,
+                "endLine": 6,
+                "preview": "unverified locator",
+                "citationStatus": "candidate",
+                "requiresRead": true
+            }],
+            "scannedFiles": 0,
+            "unreadableFiles": 0,
+            "totalHits": 2,
+            "truncated": true,
+            "citations": []
+        })
+        .to_string()
+    }
+
     fn normalized_read_result(path: &str, truncated: bool) -> String {
         json!({
             "action": "read",
@@ -2568,6 +2663,78 @@ mod tests {
                 .get("checkpoint")
                 .and_then(JsonValue::as_str)
                 .is_some_and(|checkpoint| checkpoint.contains("Read the most relevant source"))
+        );
+    }
+
+    #[test]
+    fn current_text_embedded_in_search_satisfies_content_evidence() {
+        let result = plan(&json!({
+            "question": "내 노트에서 배포 결정의 근거를 찾아줘",
+            "hasAttachedEvidence": false,
+            "explicitToolServerCount": 0,
+            "availableToolNames": ["superpower_inside_search", "superpower_inside_read"],
+            "toolCalls": [{
+                "name": "superpower_inside_search",
+                "status": "success",
+                "arguments": "{\"query\":\"배포\"}",
+                "result": normalized_verified_search_result(&["Decision.md"])
+            }],
+            "phase": "after-tools",
+            "round": 1,
+            "maxRounds": 10
+        }));
+
+        assert_eq!(result.get("toolChoice"), Some(&json!("none")));
+        assert_eq!(result.get("nextAction"), Some(&json!("answer")));
+        assert_eq!(result.pointer("/ledger/verifiedReads"), Some(&json!(1)));
+        assert_eq!(result.pointer("/ledger/completeReads"), Some(&json!(1)));
+        assert_eq!(result.pointer("/ledger/verifiedSources"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn one_verified_search_excerpt_avoids_reading_every_lower_ranked_candidate() {
+        let result = plan(&json!({
+            "question": "내 노트에서 배포 결정의 근거를 찾아줘",
+            "hasAttachedEvidence": false,
+            "explicitToolServerCount": 0,
+            "availableToolNames": ["superpower_inside_search", "superpower_inside_read"],
+            "toolCalls": [{
+                "name": "superpower_inside_search",
+                "status": "success",
+                "arguments": "{\"query\":\"배포\"}",
+                "result": normalized_mixed_search_result("Appendix.md")
+            }],
+            "phase": "after-tools",
+            "round": 1,
+            "maxRounds": 10
+        }));
+
+        assert_eq!(result.get("nextAction"), Some(&json!("answer")));
+        assert_eq!(result.pointer("/ledger/verifiedSources"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn comparison_still_verifies_a_second_source_after_one_embedded_excerpt() {
+        let result = plan(&json!({
+            "question": "내 노트에서 두 배포 결정의 장단점을 비교해줘",
+            "hasAttachedEvidence": false,
+            "explicitToolServerCount": 0,
+            "availableToolNames": ["superpower_inside_search", "superpower_inside_read"],
+            "toolCalls": [{
+                "name": "superpower_inside_search",
+                "status": "success",
+                "arguments": "{\"query\":\"배포 결정\"}",
+                "result": normalized_mixed_search_result("Alternative.md")
+            }],
+            "phase": "after-tools",
+            "round": 1,
+            "maxRounds": 10
+        }));
+
+        assert_eq!(result.get("nextAction"), Some(&json!("verify-source")));
+        assert_eq!(
+            result.get("requiredToolNames"),
+            Some(&json!(["superpower_inside_read"]))
         );
     }
 

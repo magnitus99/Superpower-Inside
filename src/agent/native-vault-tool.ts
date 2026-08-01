@@ -456,7 +456,7 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
     function: {
       name: NATIVE_VAULT_TOOL_NAME,
       description:
-        'Explore read-only files selected by the current RAG indexing policy. Search and list results are bounded candidates, not proof of exhaustive coverage. Search defaults to matching all meaningful terms; use match="any" for alternatives instead of writing OR in the query. Follow list nextCursor pages and bounded reads before claiming complete coverage. Configured excluded paths and extensions, the chat save folder when enabled, and files rejected as sensitive, binary, empty, or unreadable are omitted.',
+        'Explore read-only files selected by the current RAG indexing policy. Search may combine embeddings, BM25, graph, structural, and live lexical retrieval. A search hit with citationStatus="verified" contains current Vault text and can support an answer directly; only hits with requiresRead=true need a follow-up read. Search and list remain bounded and do not prove exhaustive coverage. Search defaults to matching all meaningful terms; use match="any" for alternatives instead of writing OR in the query. Follow list nextCursor pages and bounded reads before claiming complete coverage. Configured excluded paths and extensions, the chat save folder when enabled, and files rejected as sensitive, binary, empty, or unreadable are omitted.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -510,7 +510,7 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
   return [
     createActionToolDefinition(
       NATIVE_VAULT_NAMED_TOOL_NAMES.search,
-      'Find up to 20 ranked candidate passages in files allowed by the current vault indexing policy. Search hits are locators, not verified evidence: every hit requires a follow-up superpower_inside_read call with its path and line range before it supports an answer. Use focused terms; match defaults to all for the emergency lexical fallback, any accepts alternatives, and phrase requests an exact phrase.',
+      'Find up to 20 ranked passages in files allowed by the current vault indexing policy, using embeddings, BM25, graph, structural, and live lexical retrieval when available. The runtime re-reads indexed ranges from the current Vault: citationStatus="verified" is answer-ready current text, while requiresRead=true marks a locator that still needs superpower_inside_read. Results are bounded and never prove exhaustive coverage. Use focused terms; match defaults to all for the emergency lexical fallback, any accepts alternatives, and phrase requests an exact phrase.',
       {
         required: ['query'],
         properties: {
@@ -546,7 +546,7 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
     ),
     createActionToolDefinition(
       NATIVE_VAULT_NAMED_TOOL_NAMES.related,
-      'Find semantically related file-backed passages using the current text of one allowed vault file as the retrieval seed. Results may combine embeddings, BM25, graph, and structural evidence. Every candidate still requires superpower_inside_read before it supports an answer.',
+      'Find semantically related file-backed passages using the current text of one allowed vault file as the retrieval seed. Results may combine embeddings, BM25, graph, and structural evidence. citationStatus="verified" contains current answer-ready Vault text; only requiresRead=true locators need superpower_inside_read.',
       {
         required: ['path'],
         properties: {
