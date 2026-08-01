@@ -325,6 +325,24 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('private resetRagDomReferences(): void');
   });
 
+  it('RAG 인덱싱 진행 이벤트는 IndexedDB 통계를 다시 읽지 않고 상태 텍스트만 갱신한다', () => {
+    const subscriptionStart = settingsSource.indexOf("bus.on('rag', (result) => {");
+    const subscriptionEnd = settingsSource.indexOf('\n        }),', subscriptionStart);
+    const subscriptionSource = settingsSource.slice(subscriptionStart, subscriptionEnd);
+    const methodStart = settingsSource.indexOf('private updateRagIndexingProgress(');
+    const methodEnd = settingsSource.indexOf('\n  updateRagStats(', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(subscriptionStart).toBeGreaterThanOrEqual(0);
+    expect(subscriptionSource).toContain('this.plugin.isRagIndexing()');
+    expect(subscriptionSource).toContain('this.updateRagIndexingProgress(result.detail)');
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('.superpower-inside-rag-overview-status');
+    expect(methodSource).not.toContain('this.getRagStatus()');
+    expect(methodSource).not.toContain('this.updateRagStatsSection()');
+    expect(methodSource).not.toContain('this.updateRagUpdateList()');
+  });
+
   it('Providers 탭은 현재 상태와 연결 목록 순서로 공통 workspace를 사용한다', () => {
     const methodStart = settingsSource.indexOf('private buildProvidersTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildRAGTab', methodStart);

@@ -863,6 +863,37 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(debouncedRefreshStats).toHaveBeenCalledOnce();
   });
 
+  it('적응형 속도 조절 중에도 정적인 경고 대신 현재 인덱싱 진행률을 표시한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      ragPerformanceGuard: { getState(): { mode: 'throttled' } };
+    };
+    plugin.ragPerformanceGuard = { getState: () => ({ mode: 'throttled' }) };
+
+    const detail = (
+      plugin as unknown as {
+        formatRagIndexingStatus(status: unknown): string;
+      }
+    ).formatRagIndexingStatus({
+      running: true,
+      phase: 'pending',
+      queuedFiles: 0,
+      lastResult: null,
+      progress: {
+        totalFiles: 3,
+        completedFiles: 1,
+        currentFileTotalChunks: 8000,
+        currentFileEmbeddedChunks: 384,
+        eta: null,
+      },
+    });
+
+    expect(detail).toContain('1');
+    expect(detail).toContain('3');
+    expect(detail).toContain('384');
+    expect(detail).toContain('8000');
+  });
+
   it('GraphRAG 변경분 동기화는 실행 상태 재계산 전에 stale 파일 목록을 보존한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const initialStatus = createGraphRagStatus({

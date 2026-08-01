@@ -1206,7 +1206,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 3/10 files, ETA about 18s (calibrated speed from completed files)',
+      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files, ETA about 18s (calibrated speed from completed files)',
     );
   });
 
@@ -1269,7 +1269,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 0/4 files, calculating ETA (recent batch speed only)',
+      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files, calculating ETA (recent batch speed only)',
     );
   });
 });

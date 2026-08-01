@@ -22,16 +22,14 @@ describe('PerformanceGuard', () => {
     expect(guard.getState()).toEqual(
       expect.objectContaining({
         mode: 'throttled',
-        currentBatchSize: 20,
+        currentBatchSize: 24,
         currentYieldMs: 0,
         pauseUntilMs: null,
       }),
     );
   });
 
-  it('이벤트 루프 압력에만 요청 사이 대기를 자동 추가하고 심각할 때만 잠시 멈춘다', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+  it('이벤트 루프 압력은 짧은 협력적 양보만 추가하고 인덱싱을 중단하지 않는다', () => {
     const guard = new PerformanceGuard(OPTIONS);
 
     for (let index = 0; index < 3; index++) {
@@ -40,11 +38,11 @@ describe('PerformanceGuard', () => {
 
     expect(guard.getState()).toEqual(
       expect.objectContaining({
-        mode: 'paused',
-        currentBatchSize: 1,
-        currentYieldMs: 250,
-        pauseUntilMs: Date.now() + 15_000,
-        remainingPauseMs: 15_000,
+        mode: 'throttled',
+        currentBatchSize: 32,
+        currentYieldMs: 150,
+        pauseUntilMs: null,
+        remainingPauseMs: null,
         lastSlowReason: '이벤트 루프 지연 300ms',
       }),
     );
@@ -69,39 +67,20 @@ describe('PerformanceGuard', () => {
     );
   });
 
-  it('resumes after cooldown in the safest throttled state', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
+  it('건강한 이벤트 루프 샘플이 협력적 양보를 빠르게 제거한다', () => {
     const guard = new PerformanceGuard(OPTIONS);
     for (let index = 0; index < 3; index++) {
       guard.recordEventLoopLag(300);
     }
-    vi.advanceTimersByTime(15_000);
-
-    expect(guard.resume()).toEqual(
-      expect.objectContaining({
-        mode: 'throttled',
-        currentBatchSize: 1,
-        currentYieldMs: 250,
-        pauseUntilMs: null,
-        remainingPauseMs: null,
-      }),
-    );
-  });
-
-  it('force-resumes before cooldown without resetting to full speed', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-14T00:00:00.000Z'));
-    const guard = new PerformanceGuard(OPTIONS);
-    for (let index = 0; index < 3; index++) {
-      guard.recordEventLoopLag(300);
+    for (let index = 0; index < 8; index++) {
+      guard.recordEventLoopLag(5);
     }
 
-    expect(guard.forceResume()).toEqual(
+    expect(guard.getState()).toEqual(
       expect.objectContaining({
-        mode: 'throttled',
-        currentBatchSize: 1,
-        currentYieldMs: 250,
+        mode: 'normal',
+        currentBatchSize: 32,
+        currentYieldMs: 0,
         pauseUntilMs: null,
       }),
     );
@@ -133,9 +112,8 @@ describe('PerformanceGuard', () => {
     );
 
     for (let index = 0; index < 3; index++) guard.recordEventLoopLag(500);
-    guard.forceResume();
     expect(guard.getState()).toEqual(
-      expect.objectContaining({ mode: 'throttled', currentYieldMs: 250 }),
+      expect.objectContaining({ mode: 'throttled', currentYieldMs: 250, pauseUntilMs: null }),
     );
   });
 });

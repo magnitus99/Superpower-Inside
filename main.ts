@@ -2873,14 +2873,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (guardState?.mode === 'paused') {
       return t('ragPerformancePaused');
     }
-    if (guardState?.mode === 'throttled') {
-      return t('ragPerformanceThrottled');
-    }
     if (status.running) {
       const progress = status.progress;
       if (progress && progress.totalFiles > 0) {
         const completed = Math.min(progress.completedFiles, progress.totalFiles);
-        const phase = this.formatRagIndexingPhase(status.phase);
+        const phase = this.formatRagIndexingPhase(status.phase, progress);
         const etaReason = this.formatRagEtaConfidenceReason(
           progress.eta?.etaConfidenceReason ?? progress.eta?.confidenceReason,
         );
@@ -2906,6 +2903,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
       }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
+    }
+    if (guardState?.mode === 'throttled') {
+      return t('ragPerformanceThrottled');
     }
     if (status.lastResult) {
       return t('ragIndexingResult', {
@@ -2952,12 +2952,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+  private formatRagIndexingPhase(
+    phase: RagIndexingSchedulerStatus['phase'],
+    progress?: RagIndexingSchedulerStatus['progress'],
+  ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
-    if (phase === 'file') return t('ragPhaseFile');
-    if (phase === 'pending') return t('ragPhasePending');
-    if (phase === 'all') return t('ragPhaseAll');
-    return t('ragPhaseIdle');
+    const phaseLabel =
+      phase === 'file'
+        ? t('ragPhaseFile')
+        : phase === 'pending'
+          ? t('ragPhasePending')
+          : phase === 'all'
+            ? t('ragPhaseAll')
+            : t('ragPhaseIdle');
+    if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
+    return t('ragIndexingPhaseWithChunks', {
+      phase: phaseLabel,
+      completed: String(
+        Math.min(progress.currentFileEmbeddedChunks, progress.currentFileTotalChunks),
+      ),
+      total: String(progress.currentFileTotalChunks),
+    });
   }
 
   private formatRagEtaDuration(durationMs: number): string {

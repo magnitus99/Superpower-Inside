@@ -1197,6 +1197,7 @@ export interface I18nKeys {
   ragIndexingRunningWithEta: string;
   ragIndexingRunningWithApproxEta: string;
   ragIndexingRunningEtaCalculating: string;
+  ragIndexingPhaseWithChunks: string;
   ragIndexingRunningWithEtaReason: string;
   ragIndexingRunningWithApproxEtaReason: string;
   ragIndexingRunningEtaCalculatingReason: string;
@@ -2885,6 +2886,7 @@ const ko: I18nKeys = {
   ragIndexingRunningWithEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta}',
   ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
+  ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
   ragIndexingRunningWithEtaReason:
     '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta} ({reason})',
   ragIndexingRunningWithApproxEtaReason:
@@ -4654,6 +4656,7 @@ const en: I18nKeys = {
   ragIndexingRunningWithApproxEta: 'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
   ragIndexingRunningEtaCalculating:
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
+  ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
   ragIndexingRunningWithEtaReason:
     'Indexing: {phase} - {completed}/{total} files, ETA {eta} ({reason})',
   ragIndexingRunningWithApproxEtaReason:

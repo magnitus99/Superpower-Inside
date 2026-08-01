@@ -1375,6 +1375,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (bus) {
       this.refreshBusUnsubscribers.push(
         bus.on('rag', (result) => {
+          if (this.plugin.isRagIndexing()) {
+            this.updateRagIndexingProgress(result.detail);
+            return;
+          }
           this.updateRagStats(result.detail);
           this.updateGraphRagStats();
           this.refreshStatsGrid();
@@ -3199,7 +3203,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private formatRunningRagIndexingStatus(status: RagIndexingSchedulerStatus): string {
     const progress = status.progress;
-    const phase = this.formatRagIndexingPhase(status.phase);
+    const phase = this.formatRagIndexingPhase(status.phase, progress);
     if (!progress || progress.totalFiles <= 0) {
       return t('settingsAuto079', { v0: phase, v1: String(status.queuedFiles) });
     }
@@ -3238,12 +3242,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       reason: etaReason,
     });
   }
-  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+  private formatRagIndexingPhase(
+    phase: RagIndexingSchedulerStatus['phase'],
+    progress?: RagIndexingSchedulerStatus['progress'],
+  ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
-    if (phase === 'file') return t('ragPhaseFile');
-    if (phase === 'pending') return t('ragPhasePending');
-    if (phase === 'all') return t('ragPhaseAll');
-    return t('ragPhaseIdle');
+    const phaseLabel =
+      phase === 'file'
+        ? t('ragPhaseFile')
+        : phase === 'pending'
+          ? t('ragPhasePending')
+          : phase === 'all'
+            ? t('ragPhaseAll')
+            : t('ragPhaseIdle');
+    if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
+    return t('ragIndexingPhaseWithChunks', {
+      phase: phaseLabel,
+      completed: String(
+        Math.min(progress.currentFileEmbeddedChunks, progress.currentFileTotalChunks),
+      ),
+      total: String(progress.currentFileTotalChunks),
+    });
   }
   private formatEtaDuration(durationMs: number): string {
     const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
@@ -3941,6 +3960,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    * RefreshBus에서 rag 이벤트 수신 시 RAG 상태 패널 일부만 업데이트합니다.
    * (전체 rebuild 대신 statusGrid, timestamp, updateList 등만 갱신)
    */
+  private updateRagIndexingProgress(indexingDetail?: string): void {
+    const statusEl = this.ragStatusGrid?.querySelector<HTMLElement>(
+      '.superpower-inside-rag-overview-status',
+    );
+    if (statusEl && indexingDetail) {
+      statusEl.setText(indexingDetail);
+      statusEl.setAttribute('role', 'status');
+    }
+    if (this.ragStatusTimestamp && indexingDetail) {
+      this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: String(indexingDetail) }));
+    }
+    this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus);
+  }
+
   updateRagStats(indexingDetail?: string): void {
     const statusGrid = this.ragStatusGrid;
     const timestampEl = this.ragStatusTimestamp;
