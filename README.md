@@ -1,6 +1,6 @@
 # Superpower Inside
 
-[![version](https://img.shields.io/badge/version-2.1.1-2563eb)](https://github.com/magnitus99/Superpower-Inside/releases/latest)
+[![version](https://img.shields.io/badge/version-2.1.2-2563eb)](https://github.com/magnitus99/Superpower-Inside/releases/latest)
 [![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)](https://obsidian.md/plugins?id=superpower-inside)
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![price](https://img.shields.io/badge/price-free%20%26%20open%20source-0f766e)](LICENSE)
@@ -27,7 +27,7 @@ Superpower Inside는 Obsidian을 **출처가 보이는 AI 리서치 공간**으�
 
 | You ask | Superpower Inside investigates | You get |
 | --- | --- | --- |
-| “Find the contradictions between my roadmap and meeting notes.”<br>“로드맵과 회의 노트 사이의 모순을 찾아줘.” | Searches candidates → reads the relevant ranges → follows note links → checks the evidence<br>후보 검색 → 필요한 범위 읽기 → 노트 연결 확인 → 근거 검증 | A focused answer, a visible work log, and source cards you can open or insert back into a note<br>핵심 답변, 작업 기록, 다시 노트에 넣을 수 있는 출처 카드 |
+| “Find the contradictions between my roadmap and meeting notes.”<br>“로드맵과 회의 노트 사이의 모순을 찾아줘.” | Searches hybrid evidence → verifies top ranges against current files → follows note links when needed<br>하이브리드 근거 검색 → 현재 파일의 상위 범위 검증 → 필요한 경우 노트 연결 확인 | A focused answer, a visible work log, and source cards you can open or insert back into a note<br>핵심 답변, 작업 기록, 다시 노트에 넣을 수 있는 출처 카드 |
 
 ```mermaid
 flowchart LR
@@ -60,11 +60,11 @@ The result is not “chat beside your notes.” It is a research loop that lives
 | **Whole-vault research** | Ask for themes, changes, conflicts, or summaries across eligible files. The agent screens locally, reads in bounded batches, and states what it did or did not cover. |
 | **Sources you can inspect** | Answers can include checked source cards with file paths, line ranges, relevance signals, and one-click actions to open, copy, or insert the evidence. |
 | **A calmer response canvas** | Final answer, work log, and sources stay organized instead of becoming one endless tool transcript. Errors show the next useful action rather than a wall of diagnostics. |
-| **Search that still works without embeddings** | BM25 keyword retrieval remains available even before an embedding provider is configured. Vector, structural, and graph signals strengthen results when ready. |
+| **Search that verifies what it finds** | BM25 works even before embeddings are configured. When vector, structural, or graph retrieval finds a passage, the tool checks the matching range against the current vault file before the model relies on it. |
 | **GraphRAG for relationship questions** | Local graph evidence helps with entities, relationships, recurring themes, and connections spread across Markdown notes. |
 | **Built-in private embeddings** | Ternlight runs on-device with no API key, Ollama server, or per-request network call. It is the default embedding option for new installs. |
 | **Bring your own models and tools** | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint. Mention a trusted MCP stdio server with `@server` when the task needs an external tool. |
-| **Model-neutral research tools** | Models with native function calling use it directly. Other models can use the same bounded read-only vault workflow through a compatibility protocol. |
+| **Model-neutral research tools** | Models with native function calling use focused search, related-evidence, read, link, list, and stats tools directly. Other models can use the same bounded read-only workflow through a compatibility protocol. |
 | **Quiet background maintenance** | Indexes reuse compatible local data, resume interrupted work, and adapt indexing pressure to Obsidian responsiveness. Recovery tools stay out of the way until they are actually needed. |
 
 ### Try these as your first questions
@@ -117,7 +117,7 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 - Settings and API keys are stored in this device's Obsidian local plugin storage and are not newly written to the synced plugin `data.json`.
 - Chat messages, selected notes, retrieved chunks, tool arguments, and tool results may be sent to the LLM, embedding provider, or MCP server you configure.
 - Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to the configured chat provider, and coverage or transfer limits are stated in the answer.
-- The built-in `superpower_inside_*` vault tools are read-only. They can search, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics. They cannot create, modify, move, or delete files.
+- The built-in `superpower_inside_*` vault tools are read-only. They can search hybrid indexes, verify retrieved ranges against current files, find related indexed evidence, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics. They cannot create, modify, move, or delete files.
 - RAG indexes eligible text and code files in the shared file scope. GraphRAG extracts connected evidence only from eligible `.md` notes in that scope.
 - Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
 - MCP stdio launches local commands that you configure. Mentioned servers can run normal, non-destructive tools automatically; risky or unmentioned tools remain behind approval. Only add servers you trust.
@@ -149,11 +149,11 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 | **볼트 전체 리서치** | 파일 전체의 주제, 변화, 충돌, 요약을 질문하세요. 대상은 로컬에서 선별하고 제한된 배치로 읽으며, 확인한 범위와 확인하지 못한 범위를 답변에 밝힙니다. |
 | **직접 확인할 수 있는 출처** | 파일 경로, 줄 범위, 일치 근거가 담긴 출처 카드를 보여줍니다. 근거 노트 열기, 링크 복사, 활성 노트 삽입까지 한 번에 이어집니다. |
 | **정돈된 응답 화면** | 최종 답변, 작업 기록, 출처가 하나의 긴 도구 로그에 뒤섞이지 않습니다. 오류가 나도 진단문을 쏟아내기보다 다음 행동을 먼저 보여줍니다. |
-| **임베딩 없이도 작동하는 검색** | 임베딩 provider를 연결하기 전에도 BM25 키워드 검색은 작동합니다. 준비된 벡터·구조·그래프 신호가 결과를 더 정교하게 만듭니다. |
+| **찾은 근거를 현재 원문으로 검증하는 검색** | 임베딩 provider를 연결하기 전에도 BM25가 작동합니다. 벡터·구조·그래프 검색이 구간을 찾으면, 모델이 사용하기 전에 현재 볼트 파일의 같은 범위를 다시 확인합니다. |
 | **관계를 읽는 GraphRAG** | Markdown 노트 곳곳에 흩어진 인물, 개념, 관계, 반복 주제를 로컬 그래프 근거로 연결합니다. |
 | **내장 비공개 임베딩** | Ternlight가 API 키, Ollama 서버, 호출별 네트워크 요청 없이 기기 안에서 실행됩니다. 신규 설치의 기본 임베딩 선택지입니다. |
 | **원하는 모델과 도구** | OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, 커스텀 OpenAI-compatible endpoint를 사용할 수 있습니다. 외부 도구가 필요할 때는 신뢰한 MCP stdio 서버를 `@server`로 멘션하세요. |
-| **모델에 덜 의존하는 조사 도구** | 네이티브 function calling을 지원하면 그대로 사용하고, 그렇지 않은 모델도 호환 프로토콜을 통해 같은 읽기 전용 조사 흐름을 수행합니다. |
+| **모델에 덜 의존하는 조사 도구** | 네이티브 function calling을 지원하면 검색, 관련 근거, 범위 읽기, 링크, 목록, 통계 도구를 직접 사용합니다. 그렇지 않은 모델도 호환 프로토콜을 통해 같은 제한된 읽기 전용 조사 흐름을 수행합니다. |
 | **신경 쓰지 않아도 되는 유지관리** | 호환되는 로컬 인덱스를 재사용하고, 중단된 작업을 이어가며, Obsidian 반응성에 맞춰 인덱싱 압력을 자동 조절합니다. 복구 도구는 정말 필요할 때만 드러납니다. |
 
 ### 설치 후 가장 먼저 던져볼 질문
@@ -206,7 +206,7 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 - 설정과 API 키는 이 기기의 Obsidian 로컬 플러그인 저장소에 보관하며, 동기화되는 플러그인 `data.json`에는 새로 기록하지 않습니다.
 - 채팅 메시지, 선택한 노트, 검색된 청크, 도구 인자와 결과는 사용자가 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
 - 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 채팅 provider로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
-- 내장 `superpower_inside_*` 볼트 도구는 읽기 전용입니다. 대상 텍스트·코드 파일 검색, 제한된 줄 범위 읽기, 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
+- 내장 `superpower_inside_*` 볼트 도구는 읽기 전용입니다. 하이브리드 인덱스 검색, 현재 파일에 대한 검색 구간 검증, 관련 인덱스 근거 탐색, 제한된 줄 범위 읽기, 대상 텍스트·코드 파일 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
 - RAG는 공통 파일 범위의 대상 텍스트·코드 파일을 인덱싱하고, GraphRAG는 그 범위의 `.md` 노트에서만 연결 근거를 추출합니다.
 - 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 보관됩니다.
 - MCP stdio는 사용자가 설정한 로컬 명령을 실행합니다. 멘션한 서버의 일반적인 비파괴 도구는 자동 실행될 수 있고, 위험하거나 멘션하지 않은 도구는 승인 뒤에 실행됩니다. 신뢰하는 서버만 추가하세요.
