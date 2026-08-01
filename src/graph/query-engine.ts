@@ -38,6 +38,11 @@ import { getEntitySearchAliases } from './entity-labels';
 import { createGraphProviderEpochId } from './extraction';
 import { getLanguage } from '../i18n';
 
+const GRAPH_FAST_RETRIEVAL_DEADLINE_MS = 450;
+const GRAPH_DEEP_RETRIEVAL_DEADLINE_MS = 20_000;
+const MAX_DEEP_GLOBAL_COMMUNITIES = 8;
+const DEEP_GLOBAL_MAP_CONCURRENCY = 2;
+
 export type GraphQueryType =
   | 'factual'
   | 'relational'
@@ -116,6 +121,13 @@ export class GraphRagQueryEngine {
     return this.executeQueryAction(resolvedAction, request, autoPlan, signal);
   }
 
+  requiresDeepRetrieval(request: RagRetrievalRequest): boolean {
+    if (!this.provider || this.queryMode !== 'auto' || request.fileBackedOnly === true) {
+      return false;
+    }
+    return planGraphQuery(request.question)?.globalSearchDepth === 'deep';
+  }
+
   private async executeQueryAction(
     action: RustGraphQueryExecutionAction,
     request: RagRetrievalRequest,
@@ -172,6 +184,7 @@ export class GraphRagQueryEngine {
       'local-entity-neighborhood',
       request.candidateLimit,
       request.isEntryCompatible,
+      request.isEntryInScope,
     );
   }
 
@@ -204,6 +217,7 @@ export class GraphRagQueryEngine {
       'evidence-first',
       request.candidateLimit,
       request.isEntryCompatible,
+      request.isEntryInScope,
     );
   }
 
@@ -220,32 +234,156 @@ export class GraphRagQueryEngine {
       request.queryVector,
       request.candidateLimit,
     );
+    const evidenceCandidates = await this.projectCommunityEvidenceCandidates(
+      communities,
+      request,
+      signal,
+    );
 
-    const fastCandidates = communities.map(({ community, score }) => ({
-      entry: communityToVectorEntry(community),
-      source: 'graph-global' as const,
-      sourceScore: score,
-      reason: 'community-summary',
-    }));
+    const fastCandidates = communities
+      .map(({ community, score }) => ({
+        entry: communityToVectorEntry(community),
+        source: 'graph-global' as const,
+        sourceScore: score,
+        reason: 'community-summary',
+      }))
+      .filter(
+        (candidate) =>
+          request.fileBackedOnly !== true &&
+          (request.isEntryInScope?.(candidate.entry) ?? true) &&
+          (request.isEntryCompatible?.(candidate.entry) ?? true),
+      );
+    const fallbackCandidates = mergeGraphCandidatesWithRust(
+      evidenceCandidates,
+      fastCandidates,
+      request.candidateLimit,
+    );
+    if (request.fileBackedOnly === true) {
+      return fallbackCandidates;
+    }
+    if (evidenceCandidates.length > 0 && fastCandidates.length === 0) {
+      return fallbackCandidates;
+    }
     if (
       !this.provider ||
       this.queryMode !== 'auto' ||
       plan?.globalSearchDepth !== 'deep'
     ) {
-      return fastCandidates;
+      return fallbackCandidates;
     }
     try {
       const deepCandidate = await this.queryGlobalDeep(
         request,
-        schemaCommunities,
+        communities.length > 0
+          ? communities.map(({ community }) => community)
+          : schemaCommunities,
         this.provider,
         signal,
       );
-      return deepCandidate ? [deepCandidate] : fastCandidates;
+      const compatibleDeepCandidates =
+        deepCandidate &&
+        (request.isEntryInScope?.(deepCandidate.entry) ?? true) &&
+        (request.isEntryCompatible?.(deepCandidate.entry) ?? true)
+          ? [deepCandidate]
+          : [];
+      return compatibleDeepCandidates.length > 0
+        ? mergeGraphCandidatesWithRust(
+            compatibleDeepCandidates,
+            evidenceCandidates,
+            request.candidateLimit,
+          )
+        : fallbackCandidates;
     } catch (error) {
       if (isAbortError(error)) throw error;
-      return fastCandidates;
+      return fallbackCandidates;
     }
+  }
+
+  private async projectCommunityEvidenceCandidates(
+    rankedCommunities: readonly {
+      community: GraphCommunityRecord;
+      score: number;
+    }[],
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RetrievalCandidate[]> {
+    if (request.candidateLimit <= 0 || rankedCommunities.length === 0) return [];
+
+    throwIfGraphQueryAborted(signal);
+    const selectedEntityIds = new Set(
+      rankedCommunities.flatMap(({ community }) => community.entityIds),
+    );
+    const selectedRelationIds = new Set(
+      rankedCommunities.flatMap(({ community }) => community.relationIds),
+    );
+    const selectedClaimIds = new Set(
+      rankedCommunities.flatMap(({ community }) => community.claimIds),
+    );
+    const [entities, relations, claims] = await Promise.all([
+      this.graphStore.getEntities(),
+      selectedEntityIds.size > 0
+        ? this.graphStore.getRelationsForEntityIds(
+            [...selectedEntityIds],
+            this.knowledgeContract.id,
+          )
+        : Promise.resolve([]),
+      selectedEntityIds.size > 0
+        ? this.graphStore.getClaimsForEntityIds([...selectedEntityIds])
+        : Promise.resolve([]),
+    ]);
+    throwIfGraphQueryAborted(signal);
+
+    const entitiesById = new Map(entities.map((entity) => [entity.id, entity]));
+    const relationsById = new Map(
+      relations
+        .filter((relation) => selectedRelationIds.has(relation.id))
+        .map((relation) => [relation.id, relation]),
+    );
+    const claimsById = new Map(
+      claims
+        .filter((claim) => selectedClaimIds.has(claim.id))
+        .map((claim) => [claim.id, claim]),
+    );
+    const evidenceScores: EvidenceScore[] = [];
+
+    for (const { community, score } of rankedCommunities) {
+      const communityMatches: EntityMatch[] = [];
+      for (const entityId of community.entityIds) {
+        const entity = entitiesById.get(entityId);
+        if (entity) communityMatches.push({ entity, score });
+      }
+
+      const communityRelations: GraphRelationRecord[] = [];
+      for (const relationId of community.relationIds) {
+        const relation = relationsById.get(relationId);
+        if (relation) communityRelations.push(relation);
+      }
+
+      const communityClaims: GraphClaimRecord[] = [];
+      for (const claimId of community.claimIds) {
+        const claim = claimsById.get(claimId);
+        if (claim) communityClaims.push(claim);
+      }
+
+      evidenceScores.push(
+        ...collectLocalEvidenceScores(
+          communityMatches,
+          communityRelations,
+          communityClaims,
+          1,
+        ),
+        ...collectClaimEvidenceScores(communityClaims),
+      );
+    }
+
+    return this.evidenceScoresToCandidates(
+      evidenceScores,
+      'graph-global',
+      'community-evidence',
+      request.candidateLimit,
+      request.isEntryCompatible,
+      request.isEntryInScope,
+    );
   }
 
   private async queryGlobalDeep(
@@ -266,28 +404,45 @@ export class GraphRagQueryEngine {
       1,
     );
     const mapReports: string[] = [];
-    for (const community of [...leafCommunities].sort((left, right) => left.id.localeCompare(right.id))) {
+    const selectedCommunities = leafCommunities
+      .slice(0, MAX_DEEP_GLOBAL_COMMUNITIES)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    for (
+      let offset = 0;
+      offset < selectedCommunities.length;
+      offset += DEEP_GLOBAL_MAP_CONCURRENCY
+    ) {
       throwIfGraphQueryAborted(signal);
-      const messages: ChatMessage[] = [
-        {
-          role: 'system',
-          content: `Extract only findings from this community report that directly help answer the question. Return concise ${responseLanguage} prose. If irrelevant, return IRRELEVANT.`,
-        },
-        {
-          role: 'user',
-          content: `Question: ${request.question}\n\nCommunity report:\n${community.summary}`,
-        },
-      ];
-      const report = await this.runDurableGlobalPhase({
-        queryHash,
-        phase: 'map',
-        communityId: community.id,
-        providerEpochId,
-        messages,
-        provider,
-        signal,
-      });
-      if (report.trim() !== '' && report.trim() !== 'IRRELEVANT') mapReports.push(report.trim());
+      const reports = await Promise.all(
+        selectedCommunities
+          .slice(offset, offset + DEEP_GLOBAL_MAP_CONCURRENCY)
+          .map(async (community) => {
+            const messages: ChatMessage[] = [
+              {
+                role: 'system',
+                content: `Extract only findings from this community report that directly help answer the question. Return concise ${responseLanguage} prose. If irrelevant, return IRRELEVANT.`,
+              },
+              {
+                role: 'user',
+                content: `Question: ${request.question}\n\nCommunity report:\n${community.summary}`,
+              },
+            ];
+            return this.runDurableGlobalPhase({
+              queryHash,
+              phase: 'map',
+              communityId: community.id,
+              providerEpochId,
+              messages,
+              provider,
+              signal,
+            });
+          }),
+      );
+      mapReports.push(
+        ...reports
+          .map((report) => report.trim())
+          .filter((report) => report !== '' && report !== 'IRRELEVANT'),
+      );
     }
     if (mapReports.length === 0) return null;
     const reduced = await this.runDurableGlobalPhase({
@@ -391,6 +546,7 @@ export class GraphRagQueryEngine {
     reason: string,
     candidateLimit: number,
     isEntryCompatible?: (entry: VectorEntry) => boolean,
+    isEntryInScope?: (entry: VectorEntry) => boolean,
   ): Promise<RetrievalCandidate[]> {
     if (candidateLimit <= 0) return [];
     const orderedEvidenceScores = planEvidenceCandidateOrderRust(
@@ -445,7 +601,9 @@ export class GraphRagQueryEngine {
       evidenceRecords.map((record) => record.evidence.entryId),
       entries.map((entry) => ({
         id: entry.id,
-        compatible: isEntryCompatible?.(entry) ?? true,
+        compatible:
+          (isEntryInScope?.(entry) ?? true) &&
+          (isEntryCompatible?.(entry) ?? true),
       })),
       candidateLimit,
     );
@@ -652,11 +810,18 @@ export class GraphRagCandidateProvider implements CandidateProvider {
   constructor(
     private readonly engine: GraphRagQueryEngine,
     private readonly readiness: () => RetrievalProviderReadiness,
-    readonly deadlineMs = 450,
+    readonly deadlineMs = GRAPH_FAST_RETRIEVAL_DEADLINE_MS,
+    private readonly deepDeadlineMs = GRAPH_DEEP_RETRIEVAL_DEADLINE_MS,
   ) {}
 
   getReadiness(): RetrievalProviderReadiness {
     return this.readiness();
+  }
+
+  getDeadlineMs(request: RagRetrievalRequest): number {
+    return this.engine.requiresDeepRetrieval(request)
+      ? this.deepDeadlineMs
+      : this.deadlineMs;
   }
 
   getCandidates(

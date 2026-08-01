@@ -33,6 +33,7 @@ export interface RagRetrievalRequest {
   question: string;
   queryVector: number[];
   candidateLimit: number;
+  fileBackedOnly?: boolean;
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
   isEntryInScope?: (entry: VectorEntry) => boolean;
@@ -71,6 +72,7 @@ export interface CandidateProvider {
   getReadiness?(
     request: RagRetrievalRequest,
   ): RetrievalProviderReadiness | Promise<RetrievalProviderReadiness>;
+  getDeadlineMs?(request: RagRetrievalRequest): number | Promise<number>;
   getCandidates(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]>;
 }
 
@@ -482,10 +484,15 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
 export class RetrievalOrchestrator {
   constructor(private readonly providers: readonly CandidateProvider[]) {}
 
-  async retrieve(request: RagRetrievalRequest): Promise<RagRetrievalResult> {
+  async retrieve(
+    request: RagRetrievalRequest,
+    signal?: AbortSignal,
+  ): Promise<RagRetrievalResult> {
+    throwIfAborted(signal);
     const providerResults = await Promise.all(
-      this.providers.map((provider) => this.runProvider(provider, request)),
+      this.providers.map((provider) => this.runProvider(provider, request, signal)),
     );
+    throwIfAborted(signal);
     return {
       candidates: mergeCandidates(providerResults.flatMap((result) => result.candidates)),
       diagnostics: providerResults.map((result) => result.diagnostic),
@@ -495,12 +502,16 @@ export class RetrievalOrchestrator {
   private async runProvider(
     provider: CandidateProvider,
     request: RagRetrievalRequest,
+    signal?: AbortSignal,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
     let readiness: RetrievalProviderReadiness;
     try {
-      readiness = await resolveProviderReadiness(provider, request);
+      throwIfAborted(signal);
+      readiness = await withAbortSignal(resolveProviderReadiness(provider, request), signal);
+      throwIfAborted(signal);
     } catch (error) {
+      if (signal?.aborted) throw error;
       return {
         candidates: [],
         diagnostic: {
@@ -533,11 +544,24 @@ export class RetrievalOrchestrator {
 
     try {
       const abortController = new AbortController();
-      const candidates = await withProviderDeadline(
-        provider.getCandidates(request, abortController.signal),
-        provider.deadlineMs,
-        abortController,
-      );
+      const detachAbort = forwardAbortSignal(signal, abortController);
+      let candidates: RetrievalCandidate[];
+      try {
+        const deadlineMs = await withAbortSignal(
+          resolveProviderDeadlineMs(provider, request),
+          signal,
+        );
+        throwIfAborted(signal);
+        candidates = await withProviderDeadline(
+          provider.getCandidates(request, abortController.signal),
+          deadlineMs,
+          abortController,
+          signal,
+        );
+        throwIfAborted(signal);
+      } finally {
+        detachAbort();
+      }
       const rankedCandidates = candidates.map((candidate, index) => ({
         ...candidate,
         rank: candidate.rank ?? index + 1,
@@ -555,6 +579,7 @@ export class RetrievalOrchestrator {
         },
       };
     } catch (error) {
+      if (signal?.aborted) throw error;
       const isTimeout = error instanceof ProviderTimeoutError;
       return {
         candidates: [],
@@ -571,6 +596,16 @@ export class RetrievalOrchestrator {
       };
     }
   }
+}
+
+async function resolveProviderDeadlineMs(
+  provider: CandidateProvider,
+  request: RagRetrievalRequest,
+): Promise<number> {
+  const deadlineMs = await provider.getDeadlineMs?.(request);
+  return typeof deadlineMs === 'number' && Number.isFinite(deadlineMs)
+    ? Math.max(0, deadlineMs)
+    : provider.deadlineMs;
 }
 
 export class RagRetrievalPipeline extends RetrievalOrchestrator {}
@@ -713,19 +748,42 @@ function withProviderDeadline<T>(
   operation: Promise<T>,
   deadlineMs: number,
   abortController: AbortController,
+  signal?: AbortSignal,
 ): Promise<T> {
-  if (deadlineMs <= 0) return operation;
-
   let timeoutId: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => {
-      abortController.abort();
-      reject(new ProviderTimeoutError());
-    }, deadlineMs);
-  });
+  const operations: Promise<T>[] = [withAbortSignal(operation, signal)];
+  if (deadlineMs > 0) {
+    operations.push(
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          abortController.abort();
+          reject(new ProviderTimeoutError());
+        }, deadlineMs);
+      }),
+    );
+  }
 
-  return Promise.race([operation, timeout]).finally(() => {
+  return Promise.race(operations).finally(() => {
     if (timeoutId) window.clearTimeout(timeoutId);
+  });
+}
+
+function withAbortSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
   });
 }
 
@@ -775,6 +833,20 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('Aborted', 'AbortError');
   }
+}
+
+function forwardAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (!signal) return () => undefined;
+  const abort = (): void => controller.abort();
+  if (signal.aborted) {
+    abort();
+    return () => undefined;
+  }
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
 }
 
 function stringifyError(error: unknown): string {

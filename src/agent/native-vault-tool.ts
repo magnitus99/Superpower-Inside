@@ -1,10 +1,12 @@
 import type { ToolDefinition } from '../llm/providers';
 import { planNativeVaultToolRequestRust, type RustNativeVaultToolRequest } from '../rag/rust-core';
-import type { SourceCitation } from '../chat/types';
+import type { SourceCitation, SourceSelectionReason } from '../chat/types';
 import { t } from '../i18n';
+import { truncateUtf8Text } from '../utils/text-budget';
 
 export const NATIVE_VAULT_TOOL_NAME = 'superpower_inside';
 export const NATIVE_VAULT_TOOL_LABEL = 'Superpower Inside';
+const MAX_NATIVE_MODEL_RESULT_BYTES = 64 * 1024;
 export const NATIVE_VAULT_NAMED_TOOL_NAMES = {
   search: 'superpower_inside_search',
   read: 'superpower_inside_read',
@@ -34,6 +36,13 @@ export interface NativeVaultSearchHit {
   endLine?: number;
   preview: string;
   score?: number;
+  retrievalSources?: string[];
+  selectionReason?: SourceSelectionReason;
+  matchedQueries?: string[];
+  recommendedReadRange?: {
+    startLine: number;
+    endLine: number;
+  };
   citationStatus?: 'candidate' | 'verified';
   requiresRead?: true;
 }
@@ -51,6 +60,7 @@ interface NativeVaultResultBase {
 export interface NativeVaultSearchResult extends NativeVaultResultBase {
   action: 'search';
   query: string;
+  queries?: string[];
   path: string;
   match: 'all' | 'any' | 'phrase';
   hits: NativeVaultSearchHit[];
@@ -65,6 +75,9 @@ export interface NativeVaultReadResult extends NativeVaultResultBase {
   path: string;
   startLine: number;
   endLine: number;
+  startOffset?: number;
+  nextStartLine?: number | null;
+  nextStartOffset?: number | null;
   totalLines: number;
   truncated: boolean;
   content: string;
@@ -85,6 +98,9 @@ export interface NativeVaultLinksResult extends NativeVaultResultBase {
   direction: 'incoming' | 'outgoing' | 'both';
   outgoing: string[];
   incoming: string[];
+  totalOutgoing?: number;
+  totalIncoming?: number;
+  truncated?: boolean;
 }
 
 export interface NativeVaultStatsResult extends NativeVaultResultBase {
@@ -109,18 +125,23 @@ export interface NativeVaultToolExecutionResult {
 export interface NativeVaultToolPort {
   search(
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
+    signal?: AbortSignal,
   ): Promise<NativeVaultSearchResult>;
   read(
     request: Extract<RustNativeVaultToolRequest, { action: 'read' }>,
+    signal?: AbortSignal,
   ): Promise<NativeVaultReadResult>;
   list(
     request: Extract<RustNativeVaultToolRequest, { action: 'list' }>,
+    signal?: AbortSignal,
   ): Promise<NativeVaultListResult>;
   links(
     request: Extract<RustNativeVaultToolRequest, { action: 'links' }>,
+    signal?: AbortSignal,
   ): Promise<NativeVaultLinksResult>;
   stats(
     request: Extract<RustNativeVaultToolRequest, { action: 'stats' }>,
+    signal?: AbortSignal,
   ): Promise<NativeVaultStatsResult>;
 }
 
@@ -158,29 +179,225 @@ export class NativeVaultToolRuntime implements NativeVaultToolRuntimeLike {
       throw new Error(getRequestErrorMessage(plan.error.code));
     }
 
-    const result = await this.executeRequest(plan.request);
+    const result = await this.executeRequest(plan.request, signal);
     throwIfAborted(signal);
+    const bounded = boundNativeVaultModelResult(result);
     return {
-      displayText: formatDisplayText(result),
-      modelText: JSON.stringify(result),
-      citations: result.citations,
+      displayText: formatDisplayText(bounded.result),
+      modelText: bounded.modelText,
+      citations: bounded.result.citations,
     };
   }
 
-  private executeRequest(request: RustNativeVaultToolRequest): Promise<NativeVaultToolResult> {
+  private executeRequest(
+    request: RustNativeVaultToolRequest,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultToolResult> {
     switch (request.action) {
       case 'search':
-        return this.port.search(request);
+        return signal ? this.port.search(request, signal) : this.port.search(request);
       case 'read':
-        return this.port.read(request);
+        return signal ? this.port.read(request, signal) : this.port.read(request);
       case 'list':
-        return this.port.list(request);
+        return signal ? this.port.list(request, signal) : this.port.list(request);
       case 'links':
-        return this.port.links(request);
+        return signal ? this.port.links(request, signal) : this.port.links(request);
       case 'stats':
-        return this.port.stats(request);
+        return signal ? this.port.stats(request, signal) : this.port.stats(request);
     }
   }
+}
+
+function boundNativeVaultModelResult(result: NativeVaultToolResult): {
+  result: NativeVaultToolResult;
+  modelText: string;
+} {
+  switch (result.action) {
+    case 'read':
+      return boundReadModelResult(result);
+    case 'search':
+      return boundSearchModelResult(result);
+    case 'list':
+      return boundListModelResult(result);
+    case 'links':
+      return boundLinksModelResult(result);
+    case 'stats':
+      return serializeBoundedNativeResult(result);
+  }
+}
+
+function boundReadModelResult(result: NativeVaultReadResult): NativeVaultToolExecutionResultShape {
+  const sanitized: NativeVaultReadResult = {
+    ...result,
+    citations: result.citations.slice(0, 1).map(boundCitationText),
+  };
+  const serialized = serializeNativeResult(sanitized);
+  if (fitsNativeModelBudget(serialized)) return { result: sanitized, modelText: serialized };
+
+  let low = 0;
+  let high = new TextEncoder().encode(result.content).byteLength;
+  let boundedResult = createReadPrefixResult(sanitized, '');
+  let boundedText = serializeNativeResult(boundedResult);
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const prefix = truncateUtf8Text(result.content, middle, '').text;
+    const candidate = createReadPrefixResult(sanitized, prefix);
+    const candidateText = serializeNativeResult(candidate);
+    if (fitsNativeModelBudget(candidateText)) {
+      boundedResult = candidate;
+      boundedText = candidateText;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return ensureBoundedNativeResult(boundedResult, boundedText);
+}
+
+function createReadPrefixResult(
+  result: NativeVaultReadResult,
+  content: string,
+): NativeVaultReadResult {
+  const startOffset = result.startOffset ?? 0;
+  const newlineCount = countNewlines(content);
+  const lastNewline = content.lastIndexOf('\n');
+  const nextStartLine = result.startLine + newlineCount;
+  const nextStartOffset =
+    newlineCount === 0 ? startOffset + content.length : content.length - lastNewline - 1;
+  const endLine =
+    content.endsWith('\n') && nextStartLine > result.startLine
+      ? nextStartLine - 1
+      : nextStartLine;
+  const boundedEndLine = Math.max(result.startLine, endLine);
+  return {
+    ...result,
+    startOffset,
+    endLine: boundedEndLine,
+    nextStartLine,
+    nextStartOffset,
+    truncated: true,
+    content,
+    citations: result.citations.map((citation) => ({
+      ...citation,
+      id: `vault:${result.path}:${result.startLine}-${boundedEndLine}`,
+      line: result.startLine,
+      endLine: boundedEndLine,
+      preview: truncateUtf8Text(content, 1024, '').text,
+    })),
+  };
+}
+
+function boundSearchModelResult(
+  result: NativeVaultSearchResult,
+): NativeVaultToolExecutionResultShape {
+  const hits = result.hits.map((hit) => ({
+    ...hit,
+    preview: truncateUtf8Text(hit.preview, 4 * 1024, '').text,
+  }));
+  const citations = result.citations.map(boundCitationText);
+  let keep = hits.length;
+  let candidate: NativeVaultSearchResult = { ...result, hits, citations };
+  let candidateText = serializeNativeResult(candidate);
+  while (!fitsNativeModelBudget(candidateText) && keep > 0) {
+    keep -= 1;
+    candidate = {
+      ...result,
+      hits: hits.slice(0, keep),
+      citations: citations.slice(0, keep),
+      truncated: true,
+    };
+    candidateText = serializeNativeResult(candidate);
+  }
+  return ensureBoundedNativeResult(candidate, candidateText);
+}
+
+function boundListModelResult(result: NativeVaultListResult): NativeVaultToolExecutionResultShape {
+  const originalCount = result.files.length;
+  const pageStart =
+    result.nextCursor === null
+      ? Math.max(0, result.total - originalCount)
+      : Math.max(0, result.nextCursor - originalCount);
+  let keep = originalCount;
+  let candidate: NativeVaultListResult = { ...result, citations: [] };
+  let candidateText = serializeNativeResult(candidate);
+  while (!fitsNativeModelBudget(candidateText) && keep > 0) {
+    keep -= 1;
+    candidate = {
+      ...result,
+      files: result.files.slice(0, keep),
+      nextCursor: pageStart + keep,
+      citations: [],
+    };
+    candidateText = serializeNativeResult(candidate);
+  }
+  return ensureBoundedNativeResult(candidate, candidateText);
+}
+
+function boundLinksModelResult(result: NativeVaultLinksResult): NativeVaultToolExecutionResultShape {
+  const outgoing = [...result.outgoing];
+  const incoming = [...result.incoming];
+  let candidate: NativeVaultLinksResult = { ...result, outgoing, incoming, citations: [] };
+  let candidateText = serializeNativeResult(candidate);
+  while (!fitsNativeModelBudget(candidateText) && (outgoing.length > 0 || incoming.length > 0)) {
+    if (outgoing.length >= incoming.length && outgoing.length > 0) outgoing.pop();
+    else incoming.pop();
+    candidate = {
+      ...result,
+      outgoing: [...outgoing],
+      incoming: [...incoming],
+      totalOutgoing: result.totalOutgoing ?? result.outgoing.length,
+      totalIncoming: result.totalIncoming ?? result.incoming.length,
+      truncated: true,
+      citations: [],
+    };
+    candidateText = serializeNativeResult(candidate);
+  }
+  return ensureBoundedNativeResult(candidate, candidateText);
+}
+
+type NativeVaultToolExecutionResultShape = {
+  result: NativeVaultToolResult;
+  modelText: string;
+};
+
+function serializeBoundedNativeResult(
+  result: NativeVaultToolResult,
+): NativeVaultToolExecutionResultShape {
+  return ensureBoundedNativeResult(result, serializeNativeResult(result));
+}
+
+function ensureBoundedNativeResult<T extends NativeVaultToolResult>(
+  result: T,
+  modelText: string,
+): { result: T; modelText: string } {
+  if (!fitsNativeModelBudget(modelText)) throw new Error(t('nativeVaultPlanUnavailable'));
+  return { result, modelText };
+}
+
+function serializeNativeResult(result: NativeVaultToolResult): string {
+  return JSON.stringify(result);
+}
+
+function fitsNativeModelBudget(value: string): boolean {
+  return new TextEncoder().encode(value).byteLength <= MAX_NATIVE_MODEL_RESULT_BYTES;
+}
+
+function boundCitationText(citation: SourceCitation): SourceCitation {
+  return {
+    ...citation,
+    preview: truncateUtf8Text(citation.preview, 1024, '').text,
+    ...(citation.detail
+      ? { detail: truncateUtf8Text(citation.detail, 1024, '').text }
+      : {}),
+  };
+}
+
+function countNewlines(value: string): number {
+  let count = 0;
+  for (const character of value) {
+    if (character === '\n') count += 1;
+  }
+  return count;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -209,6 +426,13 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
             maxLength: 512,
             description: 'Focused search query for the search action (up to 32 lexical terms)',
           },
+          queries: {
+            type: 'array',
+            maxItems: 3,
+            items: { type: 'string', maxLength: 512 },
+            description:
+              'Optional alternate phrasings. After normalization and de-duplication, query plus variants may contain at most 4 queries, each with at most 32 lexical terms.',
+          },
           match: {
             type: 'string',
             enum: ['all', 'any', 'phrase'],
@@ -217,6 +441,11 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
           },
           path: { type: 'string', description: 'Vault-relative file or folder path' },
           start_line: { type: 'integer', minimum: 1, description: 'First line to read' },
+          start_offset: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Opaque continuation offset returned by a previous truncated read',
+          },
           end_line: { type: 'integer', minimum: 1, description: 'Last line to read' },
           cursor: { type: 'integer', minimum: 0, description: 'List page cursor' },
           limit: { type: 'integer', minimum: 1, description: 'Maximum result count' },
@@ -244,6 +473,13 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
             maxLength: 512,
             description: 'Focused search query containing at most 32 lexical terms',
           },
+          queries: {
+            type: 'array',
+            maxItems: 3,
+            items: { type: 'string', maxLength: 512 },
+            description:
+              'Optional alternate phrasings. Query plus de-duplicated variants may contain at most 4 bounded queries.',
+          },
           match: {
             type: 'string',
             enum: ['all', 'any', 'phrase'],
@@ -264,7 +500,7 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
     ),
     createActionToolDefinition(
       NATIVE_VAULT_NAMED_TOOL_NAMES.read,
-      'Read current vault text from one allowed file. This is the verification step for search or link candidates. At most 400 inclusive lines are returned per call; when truncated is true, continue from endLine + 1 if more text is needed.',
+      'Read current vault text from one allowed file. This is the verification step for search or link candidates. At most 400 inclusive lines are returned per call. When truncated is true, copy nextStartLine to start_line and nextStartOffset to start_offset so no content is skipped.',
       {
         required: ['path'],
         properties: {
@@ -276,6 +512,12 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
             type: 'integer',
             minimum: 1,
             description: 'First one-based line to read; defaults to 1',
+          },
+          start_offset: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Opaque continuation offset returned as nextStartOffset; omit on the first read',
           },
           end_line: {
             type: 'integer',
@@ -405,6 +647,8 @@ function getRequestErrorMessage(code: string): string {
       return t('nativeVaultQueryTooLong');
     case 'query_too_many_terms':
       return t('nativeVaultQueryTooManyTerms');
+    case 'query_variants_too_many':
+      return t('nativeVaultQueryVariantsTooMany');
     case 'path_required':
       return t('nativeVaultPathRequired');
     case 'invalid_path':

@@ -94,6 +94,28 @@ describe('RagRetrievalPipeline', () => {
     expect(signals[0]?.aborted).toBe(true);
   });
 
+  it('외부 취소는 응답하지 않는 provider deadline을 기다리지 않고 즉시 전파한다', async () => {
+    const providerSignal = vi.fn();
+    const hangingProvider: CandidateProvider = {
+      id: 'hanging-provider',
+      source: 'vector',
+      deadlineMs: 60_000,
+      getCandidates: (_request, signal) => {
+        if (signal) providerSignal(signal);
+        return new Promise<RetrievalCandidate[]>(() => undefined);
+      },
+    };
+    const controller = new AbortController();
+    const pipeline = new RagRetrievalPipeline([hangingProvider]);
+    const execution = pipeline.retrieve(createRequest([1, 0], 5), controller.signal);
+    await vi.waitFor(() => expect(providerSignal).toHaveBeenCalledOnce());
+
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect((providerSignal.mock.calls[0]?.[0] as AbortSignal | undefined)?.aborted).toBe(true);
+  });
+
   it('orchestrator는 cold provider를 호출하지 않고 readiness diagnostic으로 남긴다', async () => {
     let coldCalls = 0;
     let readyCalls = 0;

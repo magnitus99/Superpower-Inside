@@ -326,6 +326,10 @@ function compactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
     compacted.resumePayloadSource = 'resultSummary';
   }
   if (toolCall.serverName !== undefined) compacted.serverName = toolCall.serverName;
+  if (toolCall.actualToolName !== undefined) compacted.actualToolName = toolCall.actualToolName;
+  if (toolCall.mcpBindingSource !== undefined) {
+    compacted.mcpBindingSource = toolCall.mcpBindingSource;
+  }
   if (toolCall.approved !== undefined) compacted.approved = toolCall.approved;
   if (toolCall.executionKind !== undefined) compacted.executionKind = toolCall.executionKind;
   if (toolCall.citations !== undefined) compacted.citations = toolCall.citations;

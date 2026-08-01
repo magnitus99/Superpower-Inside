@@ -2857,7 +2857,7 @@ export function plan_native_vault_lexical_hit_json(query, content, match_mode) {
 }
 
 /**
- * Sorts, de-duplicates, and bounds one side of the structural link graph.
+ * 구조 링크 그래프 한쪽의 경로를 정렬하고 중복 제거한 뒤 상한을 적용한다.
  * @param {string} paths_json
  * @param {number} limit
  * @returns {string}
@@ -2878,7 +2878,7 @@ export function plan_native_vault_link_paths_json(paths_json, limit) {
 }
 
 /**
- * Selects one stable, bounded page of Markdown paths under a vault folder prefix.
+ * 볼트 폴더 prefix 아래의 Markdown 경로를 안정적이고 제한된 한 페이지로 선택한다.
  * @param {string} file_paths_json
  * @param {string} path_prefix
  * @param {number} cursor
@@ -2903,7 +2903,7 @@ export function plan_native_vault_list_json(file_paths_json, path_prefix, cursor
 }
 
 /**
- * Clamps a one-based inclusive read range to the document and per-call line budget.
+ * 1부터 시작하는 포함 범위 읽기를 문서 길이와 호출별 줄 예산에 맞게 제한한다.
  * @param {number} total_lines
  * @param {number} start_line
  * @param {number | null | undefined} end_line
@@ -2924,7 +2924,29 @@ export function plan_native_vault_read_range_json(total_lines, start_line, end_l
 }
 
 /**
- * Aggregates Markdown file sizes for a read-only vault stats response.
+ * 여러 검색 변형의 후보를 문서별 reciprocal rank fusion 결과로 결합한다.
+ * @param {string} candidates_json
+ * @param {number} query_count
+ * @param {number} limit
+ * @returns {string}
+ */
+export function plan_native_vault_search_rrf_json(candidates_json, query_count, limit) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(candidates_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_search_rrf_json(ptr0, len0, query_count, limit);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 읽기 전용 볼트 통계 응답을 위해 Markdown 파일 크기를 집계한다.
  * @param {string} file_sizes_json
  * @returns {string}
  */
@@ -2944,7 +2966,7 @@ export function plan_native_vault_stats_json(file_sizes_json) {
 }
 
 /**
- * Validates one model-generated request for the built-in read-only vault tool.
+ * 내장 읽기 전용 볼트 도구에 대한 모델 생성 요청 하나를 검증한다.
  * @param {string} arguments_json
  * @returns {string}
  */

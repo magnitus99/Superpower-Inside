@@ -19,6 +19,7 @@ import {
   countKeywordMatchesRust,
   cosineSimilarityRust,
   planDiverseResultIndicesRust,
+  planRagStatusRust,
   planQueryResultScoreRust,
   planRerankMessagesRust,
   selectRelevantResultIndicesRust,
@@ -27,12 +28,19 @@ import {
   tokenizeRust,
   type RustRerankStatus,
   type RustSourceSelectionReason,
+  type RustRagStatusPlan,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
 const DEFAULT_RERANK_TIMEOUT_MS = 2500;
+const INDEX_READINESS_REASONS = {
+  missing: 'missing',
+  legacy: 'legacy',
+  staleFile: 'stale-file',
+  embeddingChanged: 'embedding-changed',
+} as const;
 
 export interface RAGResultReranker {
   rerank(
@@ -76,9 +84,22 @@ export interface RAGQueryEngineOptions {
   reranker?: RAGResultReranker;
   rerankCandidateLimit?: number;
   embeddingModel?: string;
+  embeddingProvider?: string;
+}
+
+export interface RAGQueryOptions {
+  fileBackedOnly?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface RAGIndexFileSnapshot {
+  path: string;
+  mtime: number;
+  size: number;
 }
 
 export class RAGQueryEngine {
+  private vectorStore: VectorStore | null;
   private embeddingProvider: EmbeddingProvider | null;
   private bm25Index: IndexedDbBM25Index | undefined;
   private bm25Weight: number;
@@ -87,6 +108,7 @@ export class RAGQueryEngine {
   private reranker: RAGResultReranker | undefined;
   private rerankCandidateLimit: number;
   private embeddingModel: string | undefined;
+  private embeddingProviderId: string | undefined;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
 
   constructor(
@@ -97,12 +119,14 @@ export class RAGQueryEngine {
     minScore = 0.5,
     options: RAGQueryEngineOptions = {},
   ) {
+    this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
     this.bm25Index = bm25Index;
     this.bm25Weight = bm25Weight;
     this.minScore = minScore;
     this.reranker = options.reranker;
     this.embeddingModel = options.embeddingModel;
+    this.embeddingProviderId = options.embeddingProvider;
     this.rerankCandidateLimit = Math.max(
       1,
       Math.floor(options.rerankCandidateLimit ?? DEFAULT_RERANK_CANDIDATE_LIMIT),
@@ -155,24 +179,35 @@ export class RAGQueryEngine {
     topK = 5,
     minScore?: number,
     filePathPrefixes?: readonly string[],
+    options: RAGQueryOptions = {},
   ): Promise<QueryResult[]> {
+    throwIfQueryAborted(options.signal);
     const threshold = minScore ?? this.minScore;
     const qVector = this.embeddingProvider ? await this.embeddingProvider.embed(question) : [];
-    const retrieval = await this.retrievalPipeline.retrieve({
-      question,
-      queryVector: qVector,
-      candidateLimit: topK * 8,
-      vectorFilter:
-        qVector.length > 0
-          ? {
-              embeddingModel: this.embeddingModel,
-              dimension: qVector.length,
-              filePathPrefixes,
-            }
-          : undefined,
-      isEntryCompatible: (entry) => this.isEntryCompatible(entry, qVector, filePathPrefixes),
-      isEntryInScope: (entry) => this.isEntryInPathScope(entry, filePathPrefixes),
-    });
+    throwIfQueryAborted(options.signal);
+    const retrieval = await this.retrievalPipeline.retrieve(
+      {
+        question,
+        queryVector: qVector,
+        candidateLimit: topK * 8,
+        fileBackedOnly: options.fileBackedOnly === true,
+        vectorFilter:
+          qVector.length > 0
+            ? {
+                embeddingProvider: this.embeddingProviderId,
+                embeddingModel: this.embeddingModel,
+                dimension: qVector.length,
+                filePathPrefixes,
+              }
+            : undefined,
+        isEntryCompatible: (entry) =>
+          this.isEntryCompatible(entry, qVector, filePathPrefixes, options.fileBackedOnly === true),
+        isEntryInScope: (entry) =>
+          this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true),
+      },
+      options.signal,
+    );
+    throwIfQueryAborted(options.signal);
     this.lastRetrievalDiagnostics = retrieval.diagnostics;
     const queryTokens = tokenizeRust(question) ?? [];
 
@@ -180,7 +215,9 @@ export class RAGQueryEngine {
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
-      if (!this.isEntryInPathScope(entry, filePathPrefixes)) continue;
+      if (!this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true)) {
+        continue;
+      }
       const vectorScore =
         qVector.length > 0 && entry.vector.length === qVector.length
           ? cosineSimilarityRust(qVector, entry.vector)
@@ -236,7 +273,8 @@ export class RAGQueryEngine {
         relevantResults,
         Math.min(relevantResults.length, Math.max(topK, this.rerankCandidateLimit)),
       );
-      const rerankedResults = await this.rerankResults(question, diversePool);
+      const rerankedResults = await this.rerankResults(question, diversePool, options.signal);
+      throwIfQueryAborted(options.signal);
       return rerankedResults.slice(0, topK);
     }
     return selectDiverseResults(relevantResults, topK);
@@ -246,12 +284,107 @@ export class RAGQueryEngine {
     return [...this.lastRetrievalDiagnostics];
   }
 
+  async getIndexReadiness(
+    files: readonly RAGIndexFileSnapshot[],
+  ): Promise<RetrievalProviderReadiness | null> {
+    const plans: RustRagStatusPlan[] = [];
+    if (this.vectorStore) {
+      const records = await this.vectorStore.getFileIndexRecords();
+      const contractRecord = records.find(
+        (record) => record.embeddingProvider && record.embeddingModel,
+      );
+      const plan = planRagStatusRust({
+        includedFiles: files,
+        records,
+        totalVaultFiles: files.length,
+        embeddingProvider: this.embeddingProviderId ?? contractRecord?.embeddingProvider ?? '',
+        embeddingModel: this.embeddingModel ?? contractRecord?.embeddingModel ?? '',
+        reasons: INDEX_READINESS_REASONS,
+      });
+      if (plan) plans.push(plan);
+    }
+    if (this.bm25Index?.isReady) {
+      const documents = await this.bm25Index.getCorpusDocumentsBySourcePaths(
+        files.map((file) => file.path),
+      );
+      const recordsByPath = new Map<
+        string,
+        {
+          document: (typeof documents)[number];
+          vectorCount: number;
+        }
+      >();
+      for (const document of documents) {
+        const existing = recordsByPath.get(document.sourcePath);
+        if (existing) {
+          existing.vectorCount++;
+        } else {
+          recordsByPath.set(document.sourcePath, { document, vectorCount: 1 });
+        }
+      }
+      const plan = planRagStatusRust({
+        includedFiles: files,
+        records: [...recordsByPath.values()].map(({ document, vectorCount }) => {
+          const hasCompleteMetadata =
+            document.sourceMtime !== undefined &&
+            document.sourceSize !== undefined &&
+            document.indexedAt !== undefined;
+          return {
+            filePath: document.sourcePath,
+            sourceMtime: document.sourceMtime,
+            sourceSize: document.sourceSize,
+            contentHash:
+              document.contentHash ?? (hasCompleteMetadata ? 'bm25-metadata' : undefined),
+            indexedAt: document.indexedAt,
+            embeddingProvider: hasCompleteMetadata ? 'bm25' : undefined,
+            embeddingModel: hasCompleteMetadata ? 'bm25' : undefined,
+            hasCompleteMetadata,
+            vectorCount,
+          };
+        }),
+        totalVaultFiles: files.length,
+        embeddingProvider: 'bm25',
+        embeddingModel: 'bm25',
+        reasons: INDEX_READINESS_REASONS,
+      });
+      if (plan) plans.push(plan);
+    }
+    if (plans.length === 0) return null;
+    if (plans.some((plan) => plan.staleDocuments > 0 || plan.unknownDocuments > 0)) {
+      return {
+        readiness: 'stale',
+        estimatedCost: 'low',
+        reason: 'Current vault metadata differs from indexed file metadata.',
+      };
+    }
+    if (plans.some((plan) => plan.updateRequiredDocuments.length === 0)) {
+      return { readiness: 'ready', estimatedCost: 'low' };
+    }
+    const healthyDocuments = plans.reduce(
+      (total, plan) => total + plan.healthyDocuments,
+      0,
+    );
+    return {
+      readiness: healthyDocuments > 0 ? 'partial' : 'cold',
+      estimatedCost: 'low',
+      reason: 'The current vault contains files not covered by a healthy index.',
+    };
+  }
+
   private isEntryCompatible(
     entry: VectorEntry,
     queryVector: readonly number[],
     filePathPrefixes?: readonly string[],
+    fileBackedOnly = false,
   ): boolean {
     if (entry.vector.length !== queryVector.length) return false;
+    if (
+      this.embeddingProviderId &&
+      entry.metadata.embeddingProvider &&
+      entry.metadata.embeddingProvider !== this.embeddingProviderId
+    ) {
+      return false;
+    }
     if (
       this.embeddingModel &&
       entry.metadata.embeddingModel &&
@@ -259,6 +392,15 @@ export class RAGQueryEngine {
     ) {
       return false;
     }
+    return this.isEntryInQueryScope(entry, filePathPrefixes, fileBackedOnly);
+  }
+
+  private isEntryInQueryScope(
+    entry: VectorEntry,
+    filePathPrefixes: readonly string[] | undefined,
+    fileBackedOnly: boolean,
+  ): boolean {
+    if (fileBackedOnly && entry.metadata.filePath.startsWith('graph://')) return false;
     return this.isEntryInPathScope(entry, filePathPrefixes);
   }
 
@@ -290,13 +432,15 @@ export class RAGQueryEngine {
   private async rerankResults(
     question: string,
     results: readonly QueryResult[],
+    signal?: AbortSignal,
   ): Promise<QueryResult[]> {
     if (!this.reranker || results.length <= 1) return [...results];
 
     const candidates = results.slice(0, this.rerankCandidateLimit);
     const startedAt = Date.now();
     try {
-      const rankedIds = await this.reranker.rerank(question, candidates);
+      const rankedIds = await this.reranker.rerank(question, candidates, signal);
+      throwIfQueryAborted(signal);
       const rerankStatus =
         this.reranker.getLastRerankStatus?.() ??
         (rankedIds.length > 0 ? 'applied' : 'empty-rank-plan');
@@ -316,6 +460,7 @@ export class RAGQueryEngine {
       this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
       return [...results];
     } catch (error) {
+      if (signal?.aborted) throw error;
       this.recordRerankDiagnostic('error', Date.now() - startedAt, candidates.length, error);
       return [...results];
     }
@@ -490,4 +635,8 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, 0);
   });
+}
+
+function throwIfQueryAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('RAG query cancelled', 'AbortError');
 }

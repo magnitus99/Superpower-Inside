@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import type { ChatMessage, LLMProvider } from '../llm/providers';
@@ -9,6 +9,7 @@ import {
   GraphRagQueryEngine,
   planGraphQuery,
 } from './query-engine';
+import { RagRetrievalPipeline } from '../rag/retrieval-pipeline';
 import {
   InMemoryKnowledgeGraphStore,
   type GraphClaimRecord,
@@ -98,30 +99,235 @@ describe('GraphRagQueryEngine', () => {
     expect(candidates[0]?.sourceScore).toBeCloseTo(0.95 * 0.75);
   });
 
-  it('thematic 질문은 community summary vector 후보를 반환한다', async () => {
-    const { graphStore, vectorStore } = await createGraphFixture();
-    await graphStore.addCommunity({
-      id: 'community::mission',
-      ontologySchemaId: 'knowledge-graph',
-      title: 'Mission conflict',
-      entityIds: ['entity::general::person::paul'],
-      relationIds: [],
-      claimIds: [],
-      summary: 'Paul and Barnabas missionary conflict',
-      summaryVector: [1, 0],
-      level: 0,
-      updatedAt: 1,
-    });
+  it('thematic community는 entity/relation/claim evidence를 실제 원문 후보로 투영한다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
     const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
 
     const candidates = await engine.query({
       question: '반복되는 핵심 주제는?',
       queryVector: [1, 0],
-      candidateLimit: 5,
+      candidateLimit: 2,
     });
 
-    expect(candidates[0]?.source).toBe('graph-global');
-    expect(candidates[0]?.entry.metadata.filePath).toBe('graph://community/community::mission');
+    const filePaths = candidates.map((candidate) => candidate.entry.metadata.filePath);
+    expect(filePaths).toHaveLength(2);
+    expect(filePaths).toEqual(expect.arrayContaining(['A.md', 'B.md']));
+    expect(candidates.map((candidate) => candidate.source)).toEqual([
+      'graph-global',
+      'graph-global',
+    ]);
+    expect(candidates.map((candidate) => candidate.reason)).toEqual([
+      'community-evidence',
+      'community-evidence',
+    ]);
+    expect(
+      candidates.every(
+        (candidate) => !candidate.entry.metadata.filePath.startsWith('graph://'),
+      ),
+    ).toBe(true);
+  });
+
+  it('global evidence 투영은 path scope와 entry compatibility를 함께 지킨다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 1,
+      isEntryInScope: (entry) => entry.metadata.filePath !== 'A.md',
+      isEntryCompatible: (entry) => entry.metadata.filePath === 'B.md',
+    });
+
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(['B.md']);
+  });
+
+  it('global evidence 투영은 relation과 claim 전체 scan 대신 entity index를 사용한다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
+    const getRelations = vi
+      .spyOn(graphStore, 'getRelations')
+      .mockRejectedValue(new Error('전체 relation scan 금지'));
+    const getClaims = vi
+      .spyOn(graphStore, 'getClaims')
+      .mockRejectedValue(new Error('전체 claim scan 금지'));
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 2,
+    });
+
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
+      expect.arrayContaining(['A.md', 'B.md']),
+    );
+    expect(getRelations).not.toHaveBeenCalled();
+    expect(getClaims).not.toHaveBeenCalled();
+  });
+
+  it('deep global 결과는 evidence가 limit을 채워도 한 slot을 우선 보존한다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
+    const provider = createGlobalSearchProvider([
+      '반복 주제에 직접 관련된 map 결과',
+      '반복 주제의 deep 종합 결과',
+    ]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 2,
+    });
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.reason).toBe('community-map-reduce');
+    expect(candidates[1]?.reason).toBe('community-evidence');
+    expect(provider.calls).toBe(2);
+  });
+
+  it('vector ranking 결과가 비면 schema community를 deep 입력으로 사용한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
+    const provider = createGlobalSearchProvider([
+      '차원이 달라도 community report는 관련 있다.',
+      'schema community 기반 deep 종합 결과',
+    ]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1],
+      candidateLimit: 2,
+    });
+
+    expect(candidates[0]).toMatchObject({
+      reason: 'community-map-reduce',
+      entry: {
+        metadata: {
+          text: 'schema community 기반 deep 종합 결과',
+        },
+      },
+    });
+    expect(provider.calls).toBe(2);
+  });
+
+  it('deep community 상한은 ID 정렬보다 relevance 순위를 먼저 보존한다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    for (let index = 0; index < 8; index++) {
+      await graphStore.addCommunity({
+        id: `z-top-${index}`,
+        ontologySchemaId: 'knowledge-graph',
+        title: `Top ${index}`,
+        entityIds: [],
+        relationIds: [],
+        claimIds: [],
+        summary: `TOP_RELEVANCE_${index}`,
+        summaryVector: [1, index * 0.02],
+        level: 0,
+        updatedAt: 1,
+      });
+    }
+    for (let index = 0; index < 2; index++) {
+      await graphStore.addCommunity({
+        id: `a-low-${index}`,
+        ontologySchemaId: 'knowledge-graph',
+        title: `Low ${index}`,
+        entityIds: [],
+        relationIds: [],
+        claimIds: [],
+        summary: `LOW_RELEVANCE_${index}`,
+        summaryVector: [0, 1],
+        level: 0,
+        updatedAt: 1,
+      });
+    }
+    const mapPrompts: string[] = [];
+    const provider: LLMProvider = {
+      capability: resolveProviderCapability({ providerKey: 'openai', model: 'global-ranking' }),
+      chat: (messages) => {
+        mapPrompts.push(messages.map((message) => message.content).join('\n'));
+        return Promise.resolve('IRRELEVANT');
+      },
+      streamChat: () => Promise.resolve(),
+    };
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+
+    await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 10,
+    });
+
+    expect(mapPrompts).toHaveLength(8);
+    expect(mapPrompts.every((prompt) => prompt.includes('TOP_RELEVANCE_'))).toBe(true);
+    expect(mapPrompts.every((prompt) => !prompt.includes('LOW_RELEVANCE_'))).toBe(true);
+  });
+
+  it('file-backed-only callback에서 actual evidence가 있으면 virtual deep 호출을 생략한다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
+    const provider = createGlobalSearchProvider([
+      '호출되면 안 되는 map 결과',
+      '호출되면 안 되는 reduce 결과',
+    ]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+    const isFileBacked = (entry: VectorEntry) =>
+      !entry.metadata.filePath.startsWith('graph://');
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 2,
+      isEntryInScope: isFileBacked,
+      isEntryCompatible: isFileBacked,
+    });
+
+    expect(candidates.map((candidate) => candidate.reason)).toEqual([
+      'community-evidence',
+      'community-evidence',
+    ]);
+    expect(provider.calls).toBe(0);
+  });
+
+  it('file-backed-only 요청은 actual evidence가 없어도 virtual deep provider를 호출하지 않는다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    await graphStore.addCommunity({
+      id: 'community::virtual-only',
+      ontologySchemaId: 'knowledge-graph',
+      title: 'Virtual only',
+      entityIds: [],
+      relationIds: [],
+      claimIds: [],
+      summary: 'Only a virtual community summary exists.',
+      summaryVector: [1, 0],
+      level: 0,
+      updatedAt: 1,
+    });
+    const provider = createGlobalSearchProvider([
+      '호출되면 안 되는 map 결과',
+      '호출되면 안 되는 reduce 결과',
+    ]);
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      provider,
+    });
+
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [1, 0],
+      candidateLimit: 2,
+      fileBackedOnly: true,
+    });
+
+    expect(candidates).toEqual([]);
+    expect(provider.calls).toBe(0);
   });
 
   it('자동 thematic global search는 중단된 map 결과를 재사용해 reduce를 재개한다', async () => {
@@ -143,9 +349,15 @@ describe('GraphRagQueryEngine', () => {
     const fallback = await engine.query(request);
     const resumed = await engine.query(request);
 
-    expect(fallback[0]?.reason).toBe('community-summary');
-    expect(resumed[0]?.reason).toBe('community-map-reduce');
-    expect(resumed[0]?.entry.metadata.text).toContain('협력과 갈등');
+    expect(fallback.map((candidate) => candidate.reason)).toEqual(
+      expect.arrayContaining(['community-evidence', 'community-summary']),
+    );
+    expect(resumed.map((candidate) => candidate.reason)).toEqual(
+      expect.arrayContaining(['community-evidence', 'community-map-reduce']),
+    );
+    expect(
+      resumed.find((candidate) => candidate.reason === 'community-map-reduce')?.entry.metadata.text,
+    ).toContain('협력과 갈등');
     expect(provider.calls).toBe(3);
     expect(await graphStore.getRawResponses()).toHaveLength(2);
   });
@@ -200,7 +412,7 @@ describe('GraphRagQueryEngine', () => {
     expect(candidates.map((candidate) => candidate.source)).not.toContain('graph-global');
   });
 
-  it('query mode가 global이면 relational 질문도 community summary 후보만 반환한다', async () => {
+  it('query mode가 global이면 relational 질문도 community evidence와 summary를 반환한다', async () => {
     const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
     const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       queryMode: 'global',
@@ -214,6 +426,12 @@ describe('GraphRagQueryEngine', () => {
 
     expect(candidates[0]?.source).toBe('graph-global');
     expect(candidates.map((candidate) => candidate.source)).not.toContain('graph-local');
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
+      expect.arrayContaining([
+        'Acts.md',
+        'graph://community/community::mission',
+      ]),
+    );
   });
 
   it('query mode가 hybrid이면 local evidence와 global summary를 함께 반환한다', async () => {
@@ -509,6 +727,70 @@ describe('GraphRagCandidateProvider', () => {
       ),
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
+
+  it('production retrieval wrapper는 실제 deep 요청에만 450ms보다 긴 bounded budget을 적용한다', async () => {
+    vi.useFakeTimers();
+    try {
+      const { graphStore, vectorStore } = await createGraphFixtureWithCommunity();
+      let calls = 0;
+      const delayedProvider: LLMProvider = {
+        capability: resolveProviderCapability({ providerKey: 'openai', model: 'global-delayed' }),
+        chat: (_messages, _temperature, _tools, options) =>
+          new Promise((resolve, reject) => {
+            const timeoutId = window.setTimeout(() => {
+              calls++;
+              resolve(calls === 1 ? '지연된 map 근거' : '지연된 deep 종합');
+            }, 500);
+            options?.signal?.addEventListener(
+              'abort',
+              () => {
+                window.clearTimeout(timeoutId);
+                reject(new DOMException('Aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          }),
+        streamChat: () => Promise.resolve(),
+      };
+      const graphProvider = new GraphRagCandidateProvider(
+        new GraphRagQueryEngine(
+          graphStore,
+          vectorStore,
+          buildKnowledgeGraphContract(),
+          { provider: delayedProvider },
+        ),
+        () => ({ readiness: 'ready', estimatedCost: 'medium' }),
+      );
+      const pipeline = new RagRetrievalPipeline([graphProvider]);
+      const request = {
+        question: '반복되는 핵심 주제는?',
+        queryVector: [1, 0],
+        candidateLimit: 5,
+      };
+
+      expect(graphProvider.getDeadlineMs(request)).toBe(20_000);
+      expect(
+        graphProvider.getDeadlineMs({
+          ...request,
+          question: 'Paul과 Barnabas는 어떤 관계야?',
+        }),
+      ).toBe(450);
+      const resultPromise = pipeline.retrieve(request);
+      await vi.advanceTimersByTimeAsync(1_100);
+      const result = await resultPromise;
+
+      expect(result.diagnostics[0]).toMatchObject({
+        providerId: 'graph-rag',
+        status: 'ok',
+      });
+      expect(result.candidates.flatMap((candidate) => candidate.reasons)).toContain(
+        'community-map-reduce',
+      );
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('planGraphQuery', () => {
@@ -595,6 +877,97 @@ async function createGraphFixtureWithCommunity(): Promise<{
     updatedAt: 1,
   });
   return fixture;
+}
+
+async function createThematicGraphFixture(): Promise<{
+  graphStore: InMemoryKnowledgeGraphStore;
+  vectorStore: MemoryVectorStore;
+}> {
+  const graphStore = new InMemoryKnowledgeGraphStore();
+  const vectorStore = new MemoryVectorStore();
+  const evidenceA: GraphEvidenceRecord = {
+    id: 'evidence::a',
+    filePath: 'A.md',
+    entryId: 'A.md::0',
+    startLine: 0,
+    endLine: 0,
+    quote: 'Alpha starts the recurring theme.',
+    contentHash: 'hash-a',
+    extractionModelKey: 'model',
+    updatedAt: 1,
+  };
+  const evidenceB: GraphEvidenceRecord = {
+    id: 'evidence::b',
+    filePath: 'B.md',
+    entryId: 'B.md::0',
+    startLine: 0,
+    endLine: 0,
+    quote: 'Beta completes the recurring theme.',
+    contentHash: 'hash-b',
+    extractionModelKey: 'model',
+    updatedAt: 1,
+  };
+  await graphStore.addEvidence(evidenceA);
+  await graphStore.addEvidence(evidenceB);
+  await graphStore.upsertEntity(createEntity('Alpha', [], [evidenceA.id]));
+  await graphStore.upsertEntity(createEntity('Beta', [], []));
+  await graphStore.addRelation({
+    id: 'relation::alpha-beta',
+    ontologySchemaId: 'knowledge-graph',
+    ontologyVersion: 1,
+    relationTypeId: 'continues',
+    sourceEntityId: 'entity::general::person::alpha',
+    targetEntityId: 'entity::general::person::beta',
+    description: 'Alpha continues into Beta.',
+    properties: {},
+    confidence: 0.9,
+    evidenceIds: [evidenceB.id],
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  await graphStore.addClaim({
+    id: 'claim::theme',
+    claimTypeId: 'thematic_claim',
+    text: 'Alpha and Beta form a recurring theme.',
+    entityIds: ['entity::general::person::alpha', 'entity::general::person::beta'],
+    relationIds: ['relation::alpha-beta'],
+    stance: 'interprets',
+    confidence: 0.85,
+    evidenceIds: [evidenceB.id],
+    updatedAt: 1,
+  });
+  await graphStore.addCommunity({
+    id: 'community::theme',
+    ontologySchemaId: 'knowledge-graph',
+    title: 'Recurring theme',
+    entityIds: [
+      'entity::general::person::alpha',
+      'entity::general::person::beta',
+    ],
+    relationIds: ['relation::alpha-beta'],
+    claimIds: ['claim::theme'],
+    summary: 'Alpha and Beta form a recurring theme.',
+    summaryVector: [1, 0],
+    level: 0,
+    updatedAt: 1,
+  });
+  await vectorStore.add([
+    {
+      ...createVectorEntry(evidenceA.entryId, evidenceA.filePath),
+      metadata: {
+        ...createVectorEntry(evidenceA.entryId, evidenceA.filePath).metadata,
+        text: evidenceA.quote,
+      },
+    },
+    {
+      ...createVectorEntry(evidenceB.entryId, evidenceB.filePath),
+      metadata: {
+        ...createVectorEntry(evidenceB.entryId, evidenceB.filePath).metadata,
+        text: evidenceB.quote,
+      },
+    },
+  ]);
+  return { graphStore, vectorStore };
 }
 
 function createEntity(

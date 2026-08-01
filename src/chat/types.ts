@@ -19,6 +19,10 @@ export interface ToolCallRecord {
   resumePayloadSource?: 'resultSummary';
   status: 'running' | 'success' | 'error';
   serverName?: string;
+  /** provider alias와 분리해 MCP client에 전달할 실제 서버 도구 이름 */
+  actualToolName?: string;
+  /** modern bounded catalog binding과 레거시 서버 한정 복구를 구분합니다. */
+  mcpBindingSource?: 'catalog' | 'legacy';
   approved?: boolean;
   executionKind?: 'native' | 'mcp';
   citations?: SourceCitation[];

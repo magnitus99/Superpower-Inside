@@ -1,5 +1,11 @@
 import type { MCPListedTool } from '../mcp/client';
 import type { ToolDefinition } from '../llm/providers';
+import {
+  bindMcpToolDefinition,
+  createMcpToolDescription,
+  isProviderSafeToolName,
+  selectAvailableMcpProviderToolAlias,
+} from './mcp-tool-wire';
 
 interface McpToolListingClient {
   listTools(signal?: AbortSignal): Promise<MCPListedTool[]>;
@@ -32,8 +38,7 @@ export async function collectExternalMcpToolDefinitions(
   options: CollectExternalMcpToolDefinitionsOptions,
 ): Promise<ToolDefinition[]> {
   const explicitlyMentioned = new Set(options.explicitlyMentionedServerNames);
-  const registeredNames = new Set(options.reservedToolNames);
-  const definitions: ToolDefinition[] = [];
+  const discoveredServers: DiscoveredMcpServer[] = [];
 
   for (const serverName of options.serverNames) {
     if (!options.isActive()) return [];
@@ -56,23 +61,105 @@ export async function collectExternalMcpToolDefinitions(
       continue;
     }
     if (!options.isActive()) return [];
+    const uniqueTools = uniqueCallableTools(tools);
+    if (explicitlyMentioned.has(serverName) && uniqueTools.length === 0) {
+      throw new ExplicitMcpToolDiscoveryError(serverName);
+    }
+    discoveredServers.push({
+      serverName,
+      explicitlyMentioned: explicitlyMentioned.has(serverName),
+      tools: uniqueTools,
+    });
+  }
 
-    for (const tool of tools) {
-      if (registeredNames.has(tool.name)) continue;
-      registeredNames.add(tool.name);
-      definitions.push({
-        type: 'function',
-        function: {
-          name: tool.name,
-          description: tool.description ?? '',
-          parameters: tool.inputSchema ?? {
-            type: 'object',
-            properties: {},
+  const nameCounts = countActualToolNames(discoveredServers);
+  const unavailableProviderNames = new Set(options.reservedToolNames);
+  for (const server of discoveredServers) {
+    for (const tool of server.tools) {
+      if (
+        nameCounts.get(tool.name) === 1 &&
+        !options.reservedToolNames.has(tool.name) &&
+        isProviderSafeToolName(tool.name)
+      ) {
+        unavailableProviderNames.add(tool.name);
+      }
+    }
+  }
+
+  const definitions: ToolDefinition[] = [];
+  for (const server of discoveredServers) {
+    let emittedCount = 0;
+    for (const tool of server.tools) {
+      const requiresAlias =
+        nameCounts.get(tool.name) !== 1 ||
+        options.reservedToolNames.has(tool.name) ||
+        !isProviderSafeToolName(tool.name);
+      const providerToolName = requiresAlias
+        ? selectAvailableMcpProviderToolAlias(
+            server.serverName,
+            tool.name,
+            unavailableProviderNames,
+          )
+        : tool.name;
+      if (providerToolName === null) continue;
+      unavailableProviderNames.add(providerToolName);
+      const definition = bindMcpToolDefinition(
+        {
+          type: 'function',
+          function: {
+            name: providerToolName,
+            description: createMcpToolDescription(
+              server.serverName,
+              tool.name,
+              tool.description,
+            ),
+            parameters: tool.inputSchema ?? {
+              type: 'object',
+              properties: {},
+            },
           },
         },
-      });
+        {
+          serverName: server.serverName,
+          actualToolName: tool.name,
+          providerToolName,
+          explicitlyMentioned: server.explicitlyMentioned,
+        },
+      );
+      definitions.push(definition);
+      emittedCount += 1;
+    }
+    if (server.explicitlyMentioned && emittedCount === 0) {
+      throw new ExplicitMcpToolDiscoveryError(server.serverName);
     }
   }
 
   return definitions;
+}
+
+interface DiscoveredMcpServer {
+  serverName: string;
+  explicitlyMentioned: boolean;
+  tools: MCPListedTool[];
+}
+
+function uniqueCallableTools(tools: readonly MCPListedTool[]): MCPListedTool[] {
+  const names = new Set<string>();
+  const unique: MCPListedTool[] = [];
+  for (const tool of tools) {
+    if (tool.name.trim().length === 0 || names.has(tool.name)) continue;
+    names.add(tool.name);
+    unique.push(tool);
+  }
+  return unique;
+}
+
+function countActualToolNames(servers: readonly DiscoveredMcpServer[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const server of servers) {
+    for (const tool of server.tools) {
+      counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    }
+  }
+  return counts;
 }

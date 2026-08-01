@@ -572,6 +572,7 @@ export interface I18nKeys {
   nativeVaultQueryRequired: string;
   nativeVaultQueryTooLong: string;
   nativeVaultQueryTooManyTerms: string;
+  nativeVaultQueryVariantsTooMany: string;
   nativeVaultPathRequired: string;
   nativeVaultInvalidPath: string;
   nativeVaultInvalidLineRange: string;
@@ -2205,6 +2206,7 @@ const ko: I18nKeys = {
   nativeVaultQueryRequired: '검색어가 필요합니다.',
   nativeVaultQueryTooLong: '검색어가 너무 깁니다. 더 짧고 구체적인 검색어로 나눠 주세요.',
   nativeVaultQueryTooManyTerms: '검색 항목이 너무 많습니다. 핵심 검색어를 32개 이하로 줄여 주세요.',
+  nativeVaultQueryVariantsTooMany: '보조 검색어는 최대 3개까지 사용할 수 있습니다.',
   nativeVaultPathRequired: '볼트 경로가 필요합니다.',
   nativeVaultInvalidPath: '볼트 내부의 안전한 경로만 사용할 수 있습니다.',
   nativeVaultInvalidLineRange: '읽기 행 범위가 올바르지 않습니다.',
@@ -3959,6 +3961,7 @@ const en: I18nKeys = {
   nativeVaultQueryTooLong: 'The search query is too long. Split it into shorter, focused searches.',
   nativeVaultQueryTooManyTerms:
     'The search query has too many terms. Use 32 or fewer focused terms.',
+  nativeVaultQueryVariantsTooMany: 'Use no more than 3 alternate search queries.',
   nativeVaultPathRequired: 'A vault path is required.',
   nativeVaultInvalidPath: 'Only safe paths inside the vault are allowed.',
   nativeVaultInvalidLineRange: 'The requested line range is invalid.',

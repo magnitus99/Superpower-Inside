@@ -10,6 +10,10 @@ import {
   parseToolArguments as parseMcpToolArguments,
   shouldAutoExecuteToolCall,
 } from './mcp-tools';
+import {
+  matchesMcpProviderToolAlias,
+  type McpToolBindingAllowlist,
+} from './mcp-tool-wire';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 
 export interface MCPToolClientLike {
@@ -38,6 +42,7 @@ export async function prepareToolCallsForExecution(
   registry: MCPRegistryLike | null,
   mentionedServerNames: string[],
   mode: ToolExecutionPolicy['mode'],
+  toolBindings?: McpToolBindingAllowlist,
 ): Promise<ToolCallRecord[]> {
   const policy = createToolExecutionPolicy(mode);
   const prepared: ToolCallRecord[] = [];
@@ -47,11 +52,36 @@ export async function prepareToolCallsForExecution(
       prepared.push(next);
       continue;
     }
-    if (!next.serverName) {
-      const serverName = await findServerForTool(registry, next.name, mentionedServerNames);
-      if (serverName) next.serverName = serverName;
+    if (toolBindings !== undefined) {
+      const binding = toolBindings.get(next.name);
+      next.mcpBindingSource = 'catalog';
+      if (binding) {
+        next.serverName = binding.serverName;
+        next.actualToolName = binding.actualToolName;
+      } else {
+        next.serverName = undefined;
+        next.actualToolName = undefined;
+      }
+    } else if (!next.serverName || !next.actualToolName) {
+      const binding = await resolveLegacyMcpToolBinding(
+        registry,
+        next.name,
+        mentionedServerNames,
+        next.serverName,
+      );
+      if (binding) {
+        next.serverName = binding.serverName;
+        next.actualToolName = binding.actualToolName;
+        next.mcpBindingSource = 'legacy';
+      }
     }
-    next.approved = shouldAutoExecuteToolCall(next, policy, mentionedServerNames);
+    next.approved =
+      Boolean(next.serverName && next.actualToolName) &&
+      shouldAutoExecuteToolCall(
+        { ...next, name: next.actualToolName ?? next.name },
+        policy,
+        mentionedServerNames,
+      );
     prepared.push(next);
   }
   return prepared;
@@ -69,31 +99,44 @@ export async function executeMcpToolCalls(
       continue;
     }
 
-    const serverName =
-      toolCall.serverName ??
-      (await findServerForTool(options.registry, toolCall.name, options.preferredServerNames));
-    if (!serverName) {
+    const binding =
+      toolCall.serverName && toolCall.actualToolName
+        ? {
+            serverName: toolCall.serverName,
+            actualToolName: toolCall.actualToolName,
+          }
+        : toolCall.mcpBindingSource === 'catalog'
+          ? null
+          : await resolveLegacyMcpToolBinding(
+              options.registry,
+              toolCall.name,
+              options.preferredServerNames,
+              toolCall.serverName,
+            );
+    if (!binding) {
       toolCall.status = 'error';
       toolCall.result = t('mcpToolNotFoundInConnectedServers', { tool: toolCall.name });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
 
-    const client = options.registry?.getClient(serverName);
+    const client = options.registry?.getClient(binding.serverName);
     if (!client) {
       toolCall.status = 'error';
-      toolCall.result = t('mcpServerNotConnected', { server: serverName });
+      toolCall.result = t('mcpServerNotConnected', { server: binding.serverName });
       options.onUpdate?.(updatedToolCalls);
       continue;
     }
 
-    toolCall.serverName = serverName;
+    toolCall.serverName = binding.serverName;
+    toolCall.actualToolName = binding.actualToolName;
+    toolCall.mcpBindingSource ??= 'legacy';
 
     try {
       const args = parseToolArguments(toolCall.arguments);
       const result = options.signal
-        ? await client.callTool(toolCall.name, args, options.signal)
-        : await client.callTool(toolCall.name, args);
+        ? await client.callTool(binding.actualToolName, args, options.signal)
+        : await client.callTool(binding.actualToolName, args);
       throwIfAborted(options.signal);
       const isErrorResult =
         typeof result === 'object' &&
@@ -131,6 +174,21 @@ export async function findServerForTool(
   toolName: string,
   preferredServerNames: string[],
 ): Promise<string | null> {
+  const binding = await resolveLegacyMcpToolBinding(registry, toolName, preferredServerNames);
+  return binding?.serverName ?? null;
+}
+
+interface ResolvedMcpToolBinding {
+  serverName: string;
+  actualToolName: string;
+}
+
+async function resolveLegacyMcpToolBinding(
+  registry: MCPRegistryLike | null,
+  providerToolName: string,
+  preferredServerNames: string[],
+  pinnedServerName?: string,
+): Promise<ResolvedMcpToolBinding | null> {
   if (!registry) return null;
 
   const enabledServerNames = registry.getEnabledServers().map((server) => server.name);
@@ -141,8 +199,13 @@ export async function findServerForTool(
   for (const serverName of enabledServerNames) {
     connectionStatuses[serverName] = registry.getConnectionStatus(serverName);
   }
-  const candidateServerNames =
-    planMcpServerCandidatesRust(preferredServerNames, enabledServerNames, connectionStatuses) ?? [];
+  const candidateServerNames = pinnedServerName
+    ? [pinnedServerName]
+    : (planMcpServerCandidatesRust(
+        preferredServerNames,
+        enabledServerNames,
+        connectionStatuses,
+      ) ?? []);
 
   for (const serverName of candidateServerNames) {
     const client = registry.getClient(serverName);
@@ -151,11 +214,19 @@ export async function findServerForTool(
       const tools = await client.listTools();
       if (
         isMcpToolAvailableRust(
-          toolName,
+          providerToolName,
           tools.map((tool) => tool.name),
         ) === true
       ) {
-        return serverName;
+        return { serverName, actualToolName: providerToolName };
+      }
+      if (pinnedServerName) {
+        const aliasMatch = tools.find((tool) =>
+          matchesMcpProviderToolAlias(providerToolName, serverName, tool.name),
+        );
+        if (aliasMatch) {
+          return { serverName, actualToolName: aliasMatch.name };
+        }
       }
     } catch {
       // 연결이 불안정한 서버는 다음 후보로 넘어갑니다.

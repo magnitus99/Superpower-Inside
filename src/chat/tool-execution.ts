@@ -23,6 +23,7 @@ import {
   prepareToolCallsForExecution,
   type MCPRegistryLike,
 } from './mcp-tool-execution';
+import type { McpToolBindingAllowlist } from './mcp-tool-wire';
 
 interface AssistantToolOptions {
   toolCalls: ToolCallRecord[];
@@ -33,6 +34,7 @@ interface AssistantToolOptions {
 
 export interface PrepareAssistantToolCallsOptions extends AssistantToolOptions {
   mcpMode: ToolExecutionPolicy['mode'];
+  mcpToolBindings?: McpToolBindingAllowlist;
 }
 
 export interface ExecuteAssistantToolCallsOptions extends AssistantToolOptions {
@@ -63,6 +65,7 @@ export async function prepareAssistantToolCalls(
     options.registry,
     options.preferredServerNames,
     options.mcpMode,
+    options.mcpToolBindings,
   );
   preparedMcpCalls.forEach((toolCall, index) => {
     const targetIndex = mcpIndices[index];

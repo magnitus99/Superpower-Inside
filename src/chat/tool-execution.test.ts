@@ -205,6 +205,29 @@ describe('LLM 도구 실행 라우터', () => {
     expect(messages.every((message) => message.role !== 'tool')).toBe(true);
   });
 
+  it('native와 compatibility transcript 모두 실제 이름 대신 provider alias를 유지한다', () => {
+    const alias = 'mcp_filesystem_delete_file_deadbeef';
+    const toolCall = createToolCall({
+      id: 'delete-1',
+      name: alias,
+      serverName: 'filesystem',
+      actualToolName: 'delete_file',
+      mcpBindingSource: 'catalog',
+      executionKind: 'mcp',
+      arguments: '{"path":"Draft.md"}',
+      status: 'success',
+      normalizedResult: '{"deleted":true}',
+    });
+
+    const nativeMessages = encodeNativeToolTranscript([], '', [toolCall]);
+    const compatibilityMessages = encodeCompatibilityToolTranscript([], '', [toolCall]);
+
+    expect(nativeMessages[0]?.toolCalls?.[0]?.function.name).toBe(alias);
+    expect(nativeMessages[1]?.name).toBe(alias);
+    expect(compatibilityMessages[0]?.content).toContain(`"name":"${alias}"`);
+    expect(compatibilityMessages[0]?.content).not.toContain('"name":"delete_file"');
+  });
+
   it('compatibility transcript의 도구 인자와 결과가 프로토콜 경계를 닫지 못하게 이스케이프한다', () => {
     const messages = encodeCompatibilityToolTranscript([], '', [
       createToolCall({

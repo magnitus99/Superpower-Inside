@@ -706,27 +706,32 @@ export function plan_native_tool_compatibility_fallback_json(input_json: string)
 export function plan_native_vault_lexical_hit_json(query: string, content: string, match_mode: string): string;
 
 /**
- * Sorts, de-duplicates, and bounds one side of the structural link graph.
+ * 구조 링크 그래프 한쪽의 경로를 정렬하고 중복 제거한 뒤 상한을 적용한다.
  */
 export function plan_native_vault_link_paths_json(paths_json: string, limit: number): string;
 
 /**
- * Selects one stable, bounded page of Markdown paths under a vault folder prefix.
+ * 볼트 폴더 prefix 아래의 Markdown 경로를 안정적이고 제한된 한 페이지로 선택한다.
  */
 export function plan_native_vault_list_json(file_paths_json: string, path_prefix: string, cursor: number, limit: number): string;
 
 /**
- * Clamps a one-based inclusive read range to the document and per-call line budget.
+ * 1부터 시작하는 포함 범위 읽기를 문서 길이와 호출별 줄 예산에 맞게 제한한다.
  */
 export function plan_native_vault_read_range_json(total_lines: number, start_line: number, end_line: number | null | undefined, max_lines: number): string;
 
 /**
- * Aggregates Markdown file sizes for a read-only vault stats response.
+ * 여러 검색 변형의 후보를 문서별 reciprocal rank fusion 결과로 결합한다.
+ */
+export function plan_native_vault_search_rrf_json(candidates_json: string, query_count: number, limit: number): string;
+
+/**
+ * 읽기 전용 볼트 통계 응답을 위해 Markdown 파일 크기를 집계한다.
  */
 export function plan_native_vault_stats_json(file_sizes_json: string): string;
 
 /**
- * Validates one model-generated request for the built-in read-only vault tool.
+ * 내장 읽기 전용 볼트 도구에 대한 모델 생성 요청 하나를 검증한다.
  */
 export function plan_native_vault_tool_request_json(arguments_json: string): string;
 
@@ -1232,23 +1237,6 @@ export interface InitOutput {
     readonly normalize_graph_name: (a: number, b: number) => [number, number];
     readonly graph_extraction_contract_version: () => number;
     readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
-    readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
-    readonly plan_research_answer_contract_json: (a: number, b: number) => [number, number];
-    readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
-    readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
-    readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
-    readonly plan_agentic_tool_turn_json: (a: number, b: number) => [number, number];
-    readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
-    readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
-    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
-    readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
-    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
     readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_storage_maintenance_json: (a: number, b: number) => [number, number];
     readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
@@ -1262,13 +1250,31 @@ export interface InitOutput {
     readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
+    readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
+    readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
+    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
+    readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
     readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
-    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_agentic_tool_turn_json: (a: number, b: number) => [number, number];
+    readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly plan_research_answer_contract_json: (a: number, b: number) => [number, number];
+    readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

@@ -76,7 +76,7 @@ describe('MCP 채팅 도구 카탈로그', () => {
     expect(definitions).toEqual([]);
   });
 
-  it('외부 schema를 provider 도구 정의로 변환하고 예약된 이름은 제외한다', async () => {
+  it('외부 schema를 provider 도구 정의로 변환하고 native 예약 이름 충돌은 안전한 alias로 보존한다', async () => {
     const definitions = await collectExternalMcpToolDefinitions(
       createOptions({
         getClient: () => ({
@@ -99,18 +99,82 @@ describe('MCP 채팅 도구 카탈로그', () => {
       }),
     );
 
-    expect(definitions).toEqual([
+    expect(definitions).toHaveLength(2);
+    expect(definitions[0]?.function).toMatchObject({
+      description: 'MCP server "docs". Actual tool "superpower_inside_search". 충돌',
+      parameters: { type: 'object', properties: {} },
+    });
+    expect(definitions[0]?.function.name).not.toBe('superpower_inside_search');
+    expect(definitions[0]?.function.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(definitions[1]).toEqual(
       {
         type: 'function',
         function: {
           name: 'lookup_docs',
-          description: '문서를 조회합니다.',
+          description: 'MCP server "docs". Actual tool "lookup_docs". 문서를 조회합니다.',
           parameters: {
             type: 'object',
             properties: { query: { type: 'string' } },
           },
         },
       },
+    );
+  });
+
+  it('서로 다른 명시 서버의 같은 실제 이름을 서로 다른 deterministic alias로 모두 노출한다', async () => {
+    const clients = new Map([
+      [
+        'primary',
+        {
+          listTools: vi.fn().mockResolvedValue([
+            { name: 'search', inputSchema: { type: 'object', properties: {} } },
+          ]),
+        },
+      ],
+      [
+        'secondary',
+        {
+          listTools: vi.fn().mockResolvedValue([
+            { name: 'search', inputSchema: { type: 'object', properties: {} } },
+          ]),
+        },
+      ],
+    ]);
+    const options = createOptions({
+      serverNames: ['primary', 'secondary'],
+      explicitlyMentionedServerNames: ['primary', 'secondary'],
+      getClient: (serverName) => clients.get(serverName),
+    });
+
+    const first = await collectExternalMcpToolDefinitions(options);
+    const second = await collectExternalMcpToolDefinitions({
+      ...options,
+      serverNames: ['secondary', 'primary'],
+    });
+    const names = first.map((definition) => definition.function.name);
+
+    expect(first).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    expect(names).not.toContain('search');
+    expect(names.every((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name))).toBe(true);
+    expect(
+      new Map(
+        second.map((definition) => [
+          definition.function.description,
+          definition.function.name,
+        ]),
+      ),
+    ).toEqual(
+      new Map(
+        first.map((definition) => [
+          definition.function.description,
+          definition.function.name,
+        ]),
+      ),
+    );
+    expect(first.map((definition) => definition.function.description)).toEqual([
+      'MCP server "primary". Actual tool "search".',
+      'MCP server "secondary". Actual tool "search".',
     ]);
   });
 
@@ -118,10 +182,13 @@ describe('MCP 채팅 도구 카탈로그', () => {
     const source = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
 
     expect(source).toContain('explicitToolServerCount: explicitlyMentionedServers.length');
+    expect(source).toContain('explicitToolServerNames: explicitlyMentionedServers');
     expect(
       source.match(
         /this\.collectToolDefinitions\(\s*mentionedServers,\s*explicitlyMentionedServers,\s*run,?\s*\)/g,
       ),
     ).toHaveLength(2);
+    expect(source).toContain('toolCall.id === toolCallId');
+    expect(source).not.toContain('toolCall.name === toolCallId');
   });
 });

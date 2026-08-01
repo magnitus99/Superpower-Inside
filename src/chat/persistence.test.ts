@@ -2,6 +2,10 @@ import type { DataAdapter, Vault } from 'obsidian';
 import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
+import {
+  executeMcpToolCalls,
+  type MCPRegistryLike,
+} from './mcp-tool-execution';
 import { listChats, loadChat, saveChat } from './persistence';
 import { appendAssistantToolRound } from './tool-execution';
 
@@ -477,9 +481,12 @@ describe('chat persistence', () => {
           },
           {
             id: 'call-b',
-            name: 'delete_note',
+            name: 'mcp_secondary_delete_note_deadbeef',
             arguments: '{"path":"Draft.md"}',
             status: 'running',
+            serverName: 'secondary',
+            actualToolName: 'delete_note',
+            mcpBindingSource: 'catalog',
             approved: false,
           },
         ],
@@ -505,6 +512,14 @@ describe('chat persistence', () => {
     expect(rawAfterResumeSave).not.toContain('"result":');
     expect(rawAfterResumeSave).not.toContain('secret-token');
     expect(rawAfterResumeSave).not.toContain('비밀 원문');
+    expect(loaded.messages[0].toolCalls?.[1]).toMatchObject({
+      id: 'call-b',
+      name: 'mcp_secondary_delete_note_deadbeef',
+      serverName: 'secondary',
+      actualToolName: 'delete_note',
+      mcpBindingSource: 'catalog',
+      approved: false,
+    });
     expect(resumedMessages.map((message) => message.role)).toEqual(['assistant', 'tool']);
     expect(resumedMessages[1]).toMatchObject({
       tool_call_id: 'call-a',
@@ -514,6 +529,35 @@ describe('chat persistence', () => {
       kind: 'tool-result-summary',
       summary: 'Authorization: Bearer [REDACTED]\n검색 결과 3개',
       originalResultAvailable: false,
+    });
+
+    const callTool = vi.fn(() =>
+      Promise.resolve({ content: [{ type: 'text', text: 'Draft.md 삭제 완료' }] }),
+    );
+    const listTools = vi.fn(() =>
+      Promise.resolve([{ name: 'delete_note', inputSchema: { type: 'object' } }]),
+    );
+    const registry: MCPRegistryLike = {
+      getConnectionStatus: (name) => (name === 'secondary' ? 'connected' : 'disconnected'),
+      getEnabledServers: () => [{ name: 'secondary' }],
+      getClient: (name) => (name === 'secondary' ? { listTools, callTool } : undefined),
+    };
+    const pendingCall = loaded.messages[0].toolCalls?.[1];
+    if (!pendingCall) throw new Error('승인 대기 호출 복원 실패');
+    const [executed] = await executeMcpToolCalls({
+      registry,
+      toolCalls: [{ ...pendingCall, approved: true }],
+      preferredServerNames: ['secondary'],
+    });
+
+    expect(listTools).not.toHaveBeenCalled();
+    expect(callTool).toHaveBeenCalledWith('delete_note', { path: 'Draft.md' });
+    expect(executed).toMatchObject({
+      name: 'mcp_secondary_delete_note_deadbeef',
+      serverName: 'secondary',
+      actualToolName: 'delete_note',
+      mcpBindingSource: 'catalog',
+      status: 'success',
     });
   });
 

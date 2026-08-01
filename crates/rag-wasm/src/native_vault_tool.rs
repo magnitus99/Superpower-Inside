@@ -1,31 +1,35 @@
-//! Native read-only vault tool request contract.
+//! 네이티브 읽기 전용 볼트 도구 요청 계약.
 //!
-//! The host owns Obsidian I/O. This module validates and normalizes model-generated requests so
-//! unsupported operations and unbounded reads never reach the host boundary.
+//! 호스트는 Obsidian I/O를 소유한다. 이 모듈은 모델이 생성한 요청을 검증하고 정규화해
+//! 지원하지 않는 작업과 무제한 읽기가 호스트 경계에 도달하지 않도록 한다.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Default number of evidence candidates returned by a search action.
+/// 검색 작업이 반환하는 기본 근거 후보 수.
 const DEFAULT_SEARCH_LIMIT: usize = 8;
-/// Maximum number of evidence candidates returned by one search action.
+/// 검색 작업 한 번이 반환할 수 있는 최대 근거 후보 수.
 const MAX_SEARCH_LIMIT: usize = 20;
-/// Maximum number of Unicode scalar values accepted in one model-generated search query.
+/// 모델 생성 검색어 하나에 허용하는 최대 Unicode scalar 수.
 const MAX_SEARCH_QUERY_CHARS: usize = 512;
-/// Maximum number of original lexical query items before BM25 expansion.
+/// BM25 확장 전에 허용하는 원본 lexical 질의 항목 수.
 const MAX_SEARCH_QUERY_TERMS: usize = 32;
-/// Default number of Markdown paths returned by a list action.
+/// 검색 작업 한 번에서 평가하는 중복 제거 질의 변형 수.
+const MAX_SEARCH_QUERIES: usize = 4;
+/// 목록 작업이 반환하는 기본 Markdown 경로 수.
 const DEFAULT_LIST_LIMIT: usize = 50;
-/// Maximum number of Markdown paths returned by one list action.
+/// 목록 작업 한 번이 반환할 수 있는 최대 Markdown 경로 수.
 const MAX_LIST_LIMIT: usize = 100;
-/// Default number of paths returned for one link direction.
+/// 링크 방향 하나에서 반환하는 기본 경로 수.
 const DEFAULT_LINK_LIMIT: usize = 50;
-/// Maximum number of paths returned for one link direction.
+/// 링크 방향 하나에서 반환할 수 있는 최대 경로 수.
 const MAX_LINK_LIMIT: usize = 100;
+/// 검색 결합 후보의 식별자에 허용하는 최대 byte 수.
+const MAX_SEARCH_ENTRY_ID_BYTES: usize = 4_096;
 
-/// Validates one model-generated request for the built-in read-only vault tool.
+/// 내장 읽기 전용 볼트 도구에 대한 모델 생성 요청 하나를 검증한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_tool_request_json(arguments_json: &str) -> String {
@@ -45,7 +49,7 @@ pub fn plan_native_vault_tool_request_json(arguments_json: &str) -> String {
     }
 }
 
-/// Selects one stable, bounded page of Markdown paths under a vault folder prefix.
+/// 볼트 폴더 prefix 아래의 Markdown 경로를 안정적이고 제한된 한 페이지로 선택한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_list_json(
@@ -84,7 +88,7 @@ pub fn plan_native_vault_list_json(
     .to_string()
 }
 
-/// Clamps a one-based inclusive read range to the document and per-call line budget.
+/// 1부터 시작하는 포함 범위 읽기를 문서 길이와 호출별 줄 예산에 맞게 제한한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_read_range_json(
@@ -111,7 +115,7 @@ pub fn plan_native_vault_read_range_json(
     .to_string()
 }
 
-/// Sorts, de-duplicates, and bounds one side of the structural link graph.
+/// 구조 링크 그래프 한쪽의 경로를 정렬하고 중복 제거한 뒤 상한을 적용한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_link_paths_json(paths_json: &str, limit: usize) -> String {
@@ -128,7 +132,7 @@ pub fn plan_native_vault_link_paths_json(paths_json: &str, limit: usize) -> Stri
     json!(selected).to_string()
 }
 
-/// Aggregates Markdown file sizes for a read-only vault stats response.
+/// 읽기 전용 볼트 통계 응답을 위해 Markdown 파일 크기를 집계한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_stats_json(file_sizes_json: &str) -> String {
@@ -148,7 +152,192 @@ pub fn plan_native_vault_stats_json(file_sizes_json: &str) -> String {
     json!({ "fileCount": values.len(), "totalBytes": total_bytes }).to_string()
 }
 
-/// Dispatches an already parsed request to the action-specific normalizer.
+/// 여러 검색 변형의 후보를 문서별 reciprocal rank fusion 결과로 결합한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_native_vault_search_rrf_json(
+    candidates_json: &str,
+    query_count: usize,
+    limit: usize,
+) -> String {
+    if !(1..=MAX_SEARCH_QUERIES).contains(&query_count) || !(1..=MAX_SEARCH_LIMIT).contains(&limit)
+    {
+        return String::new();
+    }
+    let Some(candidates) = parse_search_rrf_candidates(candidates_json, query_count) else {
+        return String::new();
+    };
+    let (hits, total_entries) = rank_search_rrf_candidates(&candidates, limit);
+    serialize_search_rrf_plan(hits, total_entries)
+}
+
+/// wire 입력에서 제한된 검색 결합 후보를 파싱한다.
+fn parse_search_rrf_candidates(
+    candidates_json: &str,
+    query_count: usize,
+) -> Option<Vec<SearchRrfCandidate>> {
+    let value = serde_json::from_str::<JsonValue>(candidates_json).ok()?;
+    let values = value.as_array()?;
+    if values.len() > query_count.saturating_mul(MAX_SEARCH_LIMIT) {
+        return None;
+    }
+    let mut candidates = Vec::with_capacity(values.len());
+    for value in values {
+        let object = value.as_object()?;
+        let entry_id = object.get("entryId").and_then(JsonValue::as_str)?;
+        let query_index = object
+            .get("queryIndex")
+            .and_then(JsonValue::as_u64)
+            .and_then(|value| usize::try_from(value).ok())?;
+        let rank = object
+            .get("rank")
+            .and_then(JsonValue::as_u64)
+            .and_then(|value| usize::try_from(value).ok())?;
+        if entry_id.is_empty()
+            || entry_id.len() > MAX_SEARCH_ENTRY_ID_BYTES
+            || query_index >= query_count
+            || !(1..=MAX_SEARCH_LIMIT).contains(&rank)
+        {
+            return None;
+        }
+        candidates.push(SearchRrfCandidate {
+            entry_id: entry_id.to_owned(),
+            query_index,
+            rank,
+        });
+    }
+    Some(candidates)
+}
+
+/// 문서별 최상위 순위를 합쳐 안정적인 검색 결합 순서를 만든다.
+fn rank_search_rrf_candidates(
+    candidates: &[SearchRrfCandidate],
+    limit: usize,
+) -> (Vec<SearchRrfHit>, usize) {
+    let mut groups = BTreeMap::<String, SearchRrfGroup>::new();
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        let group = groups.entry(candidate.entry_id.clone()).or_default();
+        group.candidate_indexes.push(candidate_index);
+        group
+            .best_rank_by_query
+            .entry(candidate.query_index)
+            .and_modify(|rank| *rank = (*rank).min(candidate.rank))
+            .or_insert(candidate.rank);
+    }
+
+    let total_entries = groups.len();
+    let mut hits = groups
+        .into_iter()
+        .filter_map(|(entry_id, group)| {
+            let representative_candidate_index = group
+                .candidate_indexes
+                .iter()
+                .copied()
+                .min_by_key(|index| {
+                    candidates
+                        .get(*index)
+                        .map_or((usize::MAX, usize::MAX, *index), |candidate| {
+                            (candidate.rank, candidate.query_index, *index)
+                        })
+                })?;
+            let representative = candidates.get(representative_candidate_index)?;
+            let matched_query_indices =
+                group.best_rank_by_query.keys().copied().collect::<Vec<_>>();
+            let rrf_score = group
+                .best_rank_by_query
+                .values()
+                .try_fold(0.0_f64, |score, rank| {
+                    search_rrf_component(*rank).map(|component| score + component)
+                })?;
+            Some(SearchRrfHit {
+                entry_id,
+                candidate_indexes: group.candidate_indexes,
+                representative_candidate_index,
+                representative_rank: representative.rank,
+                matched_query_indices,
+                rrf_score,
+            })
+        })
+        .collect::<Vec<_>>();
+    hits.sort_unstable_by(|left, right| {
+        right
+            .rrf_score
+            .total_cmp(&left.rrf_score)
+            .then_with(|| {
+                right
+                    .matched_query_indices
+                    .len()
+                    .cmp(&left.matched_query_indices.len())
+            })
+            .then_with(|| left.representative_rank.cmp(&right.representative_rank))
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+            .then_with(|| {
+                left.representative_candidate_index
+                    .cmp(&right.representative_candidate_index)
+            })
+    });
+    hits.truncate(limit);
+    (hits, total_entries)
+}
+
+/// 단일 query 순위를 기존 정규화 RRF component로 변환한다.
+fn search_rrf_component(rank: usize) -> Option<f64> {
+    let rank = u32::try_from(rank).ok().map(f64::from)?;
+    Some((crate::RRF_K + 1.0) / (crate::RRF_K + rank))
+}
+
+/// 결합 검색 결과를 안정적인 JSON wire 응답으로 직렬화한다.
+fn serialize_search_rrf_plan(hits: Vec<SearchRrfHit>, total_entries: usize) -> String {
+    let serialized_hits = hits
+        .into_iter()
+        .map(|hit| {
+            json!({
+                "candidateIndexes": hit.candidate_indexes,
+                "representativeCandidateIndex": hit.representative_candidate_index,
+                "matchedQueryIndices": hit.matched_query_indices,
+                "rrfScore": hit.rrf_score
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "hits": serialized_hits, "totalEntries": total_entries }).to_string()
+}
+
+/// 검색 변형 하나가 반환한 단일 순위 후보.
+struct SearchRrfCandidate {
+    /// 문서 또는 chunk를 안정적으로 구분하는 식별자.
+    entry_id: String,
+    /// 이 후보를 반환한 질의 변형의 0부터 시작하는 index.
+    query_index: usize,
+    /// 해당 질의 변형 안에서 1부터 시작하는 순위.
+    rank: usize,
+}
+
+/// 동일한 문서 식별자에 속한 검색 변형별 최상위 순위 집계.
+#[derive(Default)]
+struct SearchRrfGroup {
+    /// 이 문서 식별자를 가리키는 원본 후보 index.
+    candidate_indexes: Vec<usize>,
+    /// 질의 변형별 가장 높은 순위.
+    best_rank_by_query: BTreeMap<usize, usize>,
+}
+
+/// 정렬과 wire 직렬화에 필요한 결합 검색 결과.
+struct SearchRrfHit {
+    /// 동점 정렬에 사용하는 문서 또는 chunk 식별자.
+    entry_id: String,
+    /// 이 결과에 병합된 원본 후보 index.
+    candidate_indexes: Vec<usize>,
+    /// 모델 표시 내용을 가져올 최상위 원본 후보 index.
+    representative_candidate_index: usize,
+    /// 동점 정렬에 사용하는 대표 후보의 순위.
+    representative_rank: usize,
+    /// 이 결과와 일치한 질의 변형 index.
+    matched_query_indices: Vec<usize>,
+    /// 질의 변형별 최상위 순위를 결합한 RRF 점수.
+    rrf_score: f64,
+}
+
+/// 이미 파싱된 요청을 작업별 정규화 함수로 전달한다.
 fn normalize_request(
     action: &str,
     object: &JsonMap<String, JsonValue>,
@@ -163,26 +352,24 @@ fn normalize_request(
     }
 }
 
-/// Validates search fields and applies bounded defaults.
+/// 검색 필드를 검증하고 제한된 기본값을 적용한다.
 fn normalize_search_request(
     object: &JsonMap<String, JsonValue>,
 ) -> Result<JsonValue, &'static str> {
-    let query = required_string(object, "query", "query_required")?;
-    if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
-        return Err("query_too_long");
-    }
+    let primary_query = required_string(object, "query", "query_required")?;
     let raw_path = optional_string(object, "path")?;
     let path = normalize_optional_path(raw_path.as_deref())?;
-    let (query, match_mode) = match optional_string(object, "match")? {
-        Some(explicit_match_mode) => (query, explicit_match_mode),
-        None => normalize_implicit_search_query(query)?,
-    };
+    let explicit_match_mode = optional_string(object, "match")?;
+    let (queries, inferred_any_match) =
+        normalize_search_queries(object, primary_query, explicit_match_mode.is_none())?;
+    let match_mode = explicit_match_mode
+        .unwrap_or_else(|| if inferred_any_match { "any" } else { "all" }.to_owned());
     if !matches!(match_mode.as_str(), "all" | "any" | "phrase") {
         return Err("invalid_match");
     }
-    if count_original_query_terms(&query) > MAX_SEARCH_QUERY_TERMS {
-        return Err("query_too_many_terms");
-    }
+    let Some(query) = queries.first() else {
+        return Err("query_required");
+    };
     let limit = normalize_limit(
         optional_usize(object, "limit")?,
         DEFAULT_SEARCH_LIMIT,
@@ -191,13 +378,61 @@ fn normalize_search_request(
     Ok(json!({
         "action": "search",
         "query": query,
+        "queries": queries,
         "path": path,
         "limit": limit,
         "match": match_mode
     }))
 }
 
-/// Counts original query items without multiplying Unicode n-gram or identifier expansions.
+/// 주 질의와 선택적 변형을 정규화·검증하고 중복 제거한다.
+fn normalize_search_queries(
+    object: &JsonMap<String, JsonValue>,
+    primary_query: String,
+    infer_match_mode: bool,
+) -> Result<(Vec<String>, bool), &'static str> {
+    let mut raw_queries = Vec::with_capacity(MAX_SEARCH_QUERIES);
+    raw_queries.push(primary_query);
+    raw_queries.extend(optional_string_array(object, "queries")?.unwrap_or_default());
+
+    let mut normalized_queries = Vec::with_capacity(raw_queries.len().min(MAX_SEARCH_QUERIES));
+    let mut seen = BTreeSet::new();
+    let mut inferred_any_match = false;
+    for raw_query in raw_queries {
+        let canonical_query = normalize_query_whitespace(&raw_query);
+        if canonical_query.is_empty() {
+            return Err("query_required");
+        }
+        if canonical_query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+            return Err("query_too_long");
+        }
+        let normalized_query = if infer_match_mode {
+            let (normalized, inferred_match) = normalize_implicit_search_query(canonical_query)?;
+            inferred_any_match |= inferred_match == "any";
+            normalized
+        } else {
+            canonical_query
+        };
+        if count_original_query_terms(&normalized_query) > MAX_SEARCH_QUERY_TERMS {
+            return Err("query_too_many_terms");
+        }
+        let deduplication_key = normalized_query.to_lowercase();
+        if seen.insert(deduplication_key) {
+            normalized_queries.push(normalized_query);
+        }
+    }
+    if normalized_queries.len() > MAX_SEARCH_QUERIES {
+        return Err("query_variants_too_many");
+    }
+    Ok((normalized_queries, inferred_any_match))
+}
+
+/// 모델 생성 공백을 축약해 중복 질의 변형이 하나의 안정적 key를 갖게 한다.
+fn normalize_query_whitespace(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Unicode n-gram이나 식별자 확장을 곱하지 않고 원본 질의 항목을 센다.
 fn count_original_query_terms(query: &str) -> usize {
     let mut count = 0_usize;
     let mut part = String::new();
@@ -212,7 +447,7 @@ fn count_original_query_terms(query: &str) -> usize {
     count.saturating_add(query_term_contribution(&part))
 }
 
-/// Returns whether one original query fragment contributes a Boolean-independent search term.
+/// 원본 질의 조각 하나가 Boolean과 독립적인 검색어를 만드는지 반환한다.
 fn query_term_contribution(part: &str) -> usize {
     let normalized = part
         .trim_matches(|character: char| !character.is_alphanumeric())
@@ -220,7 +455,7 @@ fn query_term_contribution(part: &str) -> usize {
     usize::from(!normalized.is_empty() && !matches!(normalized.as_str(), "or" | "and"))
 }
 
-/// Converts standalone Boolean OR separators into the native any-term search contract.
+/// 독립된 Boolean OR 구분자를 네이티브 any-term 검색 계약으로 바꾼다.
 fn normalize_implicit_search_query(query: String) -> Result<(String, String), &'static str> {
     if !query
         .split_whitespace()
@@ -239,11 +474,12 @@ fn normalize_implicit_search_query(query: String) -> Result<(String, String), &'
     Ok((compact_query, "any".to_owned()))
 }
 
-/// Validates a bounded partial-read request.
+/// 제한된 부분 읽기 요청을 검증한다.
 fn normalize_read_request(object: &JsonMap<String, JsonValue>) -> Result<JsonValue, &'static str> {
     let raw_path = required_string(object, "path", "path_required")?;
     let path = normalize_required_path(&raw_path)?;
     let start_line = optional_usize(object, "start_line")?.unwrap_or(1).max(1);
+    let start_offset = optional_usize(object, "start_offset")?.unwrap_or(0);
     let end_line = optional_usize(object, "end_line")?;
     if end_line.is_some_and(|line| line < start_line) {
         return Err("invalid_line_range");
@@ -252,11 +488,12 @@ fn normalize_read_request(object: &JsonMap<String, JsonValue>) -> Result<JsonVal
         "action": "read",
         "path": path,
         "startLine": start_line,
+        "startOffset": start_offset,
         "endLine": end_line
     }))
 }
 
-/// Validates a stable paginated list request.
+/// 안정적으로 페이지를 나누는 목록 요청을 검증한다.
 fn normalize_list_request(object: &JsonMap<String, JsonValue>) -> Result<JsonValue, &'static str> {
     let raw_path = optional_string(object, "path")?;
     let path = normalize_optional_path(raw_path.as_deref())?;
@@ -269,7 +506,7 @@ fn normalize_list_request(object: &JsonMap<String, JsonValue>) -> Result<JsonVal
     Ok(json!({ "action": "list", "path": path, "cursor": cursor, "limit": limit }))
 }
 
-/// Validates a bounded structural-link traversal request.
+/// 제한된 구조 링크 순회 요청을 검증한다.
 fn normalize_links_request(object: &JsonMap<String, JsonValue>) -> Result<JsonValue, &'static str> {
     let raw_path = required_string(object, "path", "path_required")?;
     let path = normalize_required_path(&raw_path)?;
@@ -290,7 +527,7 @@ fn normalize_links_request(object: &JsonMap<String, JsonValue>) -> Result<JsonVa
     }))
 }
 
-/// Reads one required non-empty string field.
+/// 필수 비어 있지 않은 문자열 필드 하나를 읽는다.
 fn required_string(
     object: &JsonMap<String, JsonValue>,
     key: &str,
@@ -309,7 +546,7 @@ fn required_string(
     Ok(trimmed.to_owned())
 }
 
-/// Reads one optional string field without inventing a default.
+/// 기본값을 만들지 않고 선택적 문자열 필드 하나를 읽는다.
 fn optional_string(
     object: &JsonMap<String, JsonValue>,
     key: &str,
@@ -323,7 +560,26 @@ fn optional_string(
     Ok(Some(raw.to_owned()))
 }
 
-/// Reads one optional non-negative integer representable as `usize`.
+/// 문자열만 포함하는 선택적 배열 하나를 읽는다.
+fn optional_string_array(
+    object: &JsonMap<String, JsonValue>,
+    key: &str,
+) -> Result<Option<Vec<String>>, &'static str> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    let Some(values) = value.as_array() else {
+        return Err("invalid_request");
+    };
+    values
+        .iter()
+        .map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .map(Some)
+        .ok_or("invalid_request")
+}
+
+/// `usize`로 표현할 수 있는 선택적 음이 아닌 정수 하나를 읽는다.
 fn optional_usize(
     object: &JsonMap<String, JsonValue>,
     key: &str,
@@ -339,12 +595,12 @@ fn optional_usize(
         .map_err(|_| "invalid_request")
 }
 
-/// Applies an action default and clamps one caller-controlled result limit.
+/// 작업 기본값을 적용하고 호출자가 지정한 결과 상한을 제한한다.
 fn normalize_limit(limit: Option<usize>, default: usize, maximum: usize) -> usize {
     limit.unwrap_or(default).clamp(1, maximum)
 }
 
-/// Normalizes an optional vault path, using an empty string for the vault root.
+/// 볼트 root를 빈 문자열로 사용해 선택적 볼트 경로를 정규화한다.
 fn normalize_optional_path(path: Option<&str>) -> Result<String, &'static str> {
     let Some(path) = path else {
         return Ok(String::new());
@@ -356,7 +612,7 @@ fn normalize_optional_path(path: Option<&str>) -> Result<String, &'static str> {
     normalize_required_path(trimmed)
 }
 
-/// Normalizes one vault-relative path and rejects traversal segments.
+/// 볼트 상대 경로 하나를 정규화하고 traversal segment를 거부한다.
 fn normalize_required_path(path: &str) -> Result<String, &'static str> {
     let normalized = path.trim().trim_matches('/');
     if normalized.is_empty() {
@@ -371,12 +627,12 @@ fn normalize_required_path(path: &str) -> Result<String, &'static str> {
     Ok(normalized.to_owned())
 }
 
-/// Serializes a stable validation error wire response.
+/// 안정적인 검증 오류 wire 응답을 직렬화한다.
 fn error_response(code: &str) -> String {
     json!({ "ok": false, "error": { "code": code } }).to_string()
 }
 
-/// Parses an array containing strings only.
+/// 문자열만 포함하는 배열을 파싱한다.
 fn parse_string_array(input: &str) -> Option<Vec<String>> {
     let value = serde_json::from_str::<JsonValue>(input).ok()?;
     value
@@ -393,10 +649,11 @@ mod tests {
     use super::plan_native_vault_tool_request_json;
     use super::{
         plan_native_vault_link_paths_json, plan_native_vault_list_json,
-        plan_native_vault_read_range_json, plan_native_vault_stats_json,
+        plan_native_vault_read_range_json, plan_native_vault_search_rrf_json,
+        plan_native_vault_stats_json,
     };
 
-    /// Parses a test result without hiding invalid JSON behind a panic.
+    /// 잘못된 JSON을 panic 뒤에 숨기지 않고 테스트 결과를 파싱한다.
     fn parse_json(raw: &str) -> JsonValue {
         serde_json::from_str::<JsonValue>(raw)
             .unwrap_or_else(|error| JsonValue::String(format!("invalid JSON: {error}")))
@@ -457,6 +714,130 @@ mod tests {
     }
 
     #[test]
+    fn search_request_normalizes_and_deduplicates_bounded_query_variants() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{
+                "action":"search",
+                "query":"  Customer   Problem  ",
+                "queries":["customer problem","Onboarding friction","이탈 원인","ONBOARDING   FRICTION"]
+            }"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/request/queries"),
+            Some(&serde_json::json!([
+                "Customer Problem",
+                "Onboarding friction",
+                "이탈 원인"
+            ])),
+        );
+    }
+
+    #[test]
+    fn search_request_rejects_more_than_four_unique_queries() {
+        let raw = plan_native_vault_tool_request_json(
+            r#"{
+                "action":"search",
+                "query":"one",
+                "queries":["two","three","four","five"]
+            }"#,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/error/code"),
+            Some(&JsonValue::from("query_variants_too_many")),
+        );
+    }
+
+    #[test]
+    fn search_request_applies_query_bounds_to_every_variant() {
+        let excessive_terms = (0..33)
+            .map(|index| format!("term{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let raw = plan_native_vault_tool_request_json(
+            &serde_json::json!({
+                "action": "search",
+                "query": "bounded",
+                "queries": [excessive_terms]
+            })
+            .to_string(),
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/error/code"),
+            Some(&JsonValue::from("query_too_many_terms")),
+        );
+    }
+
+    #[test]
+    fn search_rrf_rewards_entries_matched_by_multiple_query_variants() {
+        let raw = plan_native_vault_search_rrf_json(
+            r#"[
+                {"entryId":"shared","queryIndex":0,"rank":4},
+                {"entryId":"shared","queryIndex":1,"rank":8},
+                {"entryId":"single","queryIndex":0,"rank":1}
+            ]"#,
+            2,
+            20,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(parsed.pointer("/totalEntries"), Some(&JsonValue::from(2)));
+        assert_eq!(
+            parsed.pointer("/hits/0/matchedQueryIndices"),
+            Some(&serde_json::json!([0, 1])),
+        );
+        assert_eq!(
+            parsed.pointer("/hits/0/representativeCandidateIndex"),
+            Some(&JsonValue::from(0)),
+        );
+    }
+
+    #[test]
+    fn search_rrf_uses_only_the_best_rank_for_duplicate_entry_query_pairs() {
+        let raw = plan_native_vault_search_rrf_json(
+            r#"[
+                {"entryId":"same","queryIndex":0,"rank":5},
+                {"entryId":"same","queryIndex":0,"rank":2},
+                {"entryId":"other","queryIndex":0,"rank":3}
+            ]"#,
+            1,
+            20,
+        );
+        let parsed = parse_json(&raw);
+
+        assert_eq!(
+            parsed.pointer("/hits/0/candidateIndexes"),
+            Some(&serde_json::json!([0, 1])),
+        );
+        assert_eq!(
+            parsed.pointer("/hits/0/representativeCandidateIndex"),
+            Some(&JsonValue::from(1)),
+        );
+    }
+
+    #[test]
+    fn search_rrf_rejects_candidates_outside_the_bounded_query_contract() {
+        let invalid_query = plan_native_vault_search_rrf_json(
+            r#"[{"entryId":"A","queryIndex":2,"rank":1}]"#,
+            2,
+            20,
+        );
+        let invalid_rank = plan_native_vault_search_rrf_json(
+            r#"[{"entryId":"A","queryIndex":0,"rank":21}]"#,
+            1,
+            20,
+        );
+
+        assert!(invalid_query.is_empty());
+        assert!(invalid_rank.is_empty());
+    }
+
+    #[test]
     fn search_request_treats_implicit_or_as_any_term_separator() {
         let raw = plan_native_vault_tool_request_json(
             r#"{"action":"search","query":"네빌 OR Neville or Goddard"}"#,
@@ -468,6 +849,7 @@ mod tests {
             Some(&serde_json::json!({
                 "action": "search",
                 "query": "네빌 Neville Goddard",
+                "queries": ["네빌 Neville Goddard"],
                 "path": "",
                 "limit": 8,
                 "match": "any"

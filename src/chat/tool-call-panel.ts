@@ -100,7 +100,13 @@ export function createToolCallRowView(toolCall: ToolCallRecord): ToolCallRowView
 }
 
 function getToolCallName(toolCall: ToolCallRecord): string {
-  if (toolCall.executionKind !== 'native') return toolCall.name || t('toolCallLabel');
+  if (toolCall.executionKind !== 'native') {
+    const actualToolName = toolCall.actualToolName?.trim();
+    const serverName = toolCall.serverName?.trim();
+    if (actualToolName && serverName) return `${serverName} · ${actualToolName}`;
+    if (actualToolName) return actualToolName;
+    return toolCall.name || t('toolCallLabel');
+  }
   const namedAction = resolveNamedNativeVaultAction(toolCall.name);
   const legacyPlan =
     namedAction === null ? planNativeVaultToolRequestRust(toolCall.arguments) : null;
@@ -289,8 +295,7 @@ export class ToolCallPanel {
           const messageId = section
             .closest('.superpower-inside-chat-bubble-container')
             ?.getAttribute('data-message-id');
-          if (messageId)
-            void this.handlers.approveToolCall(messageId, toolCall.id || toolCall.name);
+          if (messageId) void this.handlers.approveToolCall(messageId, toolCall.id);
         });
       }
 

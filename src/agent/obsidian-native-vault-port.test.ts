@@ -1,6 +1,7 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
-import type { QueryResult } from '../rag/query';
+import { RAGQueryEngine, type QueryResult } from '../rag/query';
+import { MemoryVectorStore } from '../rag/store';
 import {
   ObsidianNativeVaultToolPort,
   type NativeVaultQueryEngineLike,
@@ -46,7 +47,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.content.split('\n')).toHaveLength(400);
   });
 
-  it('read는 한 줄이 매우 커도 model-facing 결과를 64KiB 안으로 제한한다', async () => {
+  it('read는 큰 한 줄을 손실 없이 런타임 경계로 전달한다', async () => {
     const port = createNativeVaultPort(
       createApp([createFile('Projects/Large.md', '한글🙂'.repeat(100_000))]),
     );
@@ -58,9 +59,40 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       endLine: 1,
     });
 
-    expect(result.truncated).toBe(true);
-    expect(result.content).toContain('output truncated');
-    expect(new TextEncoder().encode(result.content).byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(result).toMatchObject({
+      startLine: 1,
+      startOffset: 0,
+      endLine: 1,
+      nextStartLine: null,
+      nextStartOffset: null,
+      truncated: false,
+    });
+    expect(result.content).toBe('한글🙂'.repeat(100_000));
+  });
+
+  it('read continuation offset은 같은 행의 다음 UTF-16 경계부터 정확히 이어 읽는다', async () => {
+    const port = createNativeVaultPort(
+      createApp([createFile('Projects/Offset.md', 'abc🙂def\n둘째 줄')]),
+    );
+
+    const result = await port.read({
+      action: 'read',
+      path: 'Projects/Offset.md',
+      startLine: 1,
+      startOffset: 5,
+      endLine: 1,
+    });
+
+    expect(result).toMatchObject({ startLine: 1, startOffset: 5, content: 'def' });
+    await expect(
+      port.read({
+        action: 'read',
+        path: 'Projects/Offset.md',
+        startLine: 1,
+        startOffset: 4,
+        endLine: 1,
+      }),
+    ).rejects.toThrow();
   });
 
   it('list는 폴더 경로 안의 문서를 안정된 순서로 페이지 처리한다', async () => {
@@ -272,7 +304,9 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const query = vi.fn(() => Promise.resolve(indexedResults));
     const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
     const app = createApp([alpha], {}, cachedRead);
-    const port = createNativeVaultPort(app, undefined, () => ({ query }));
+    const port = createNativeVaultPort(app, undefined, () =>
+      createReadyQueryEngineDouble(query),
+    );
 
     const result = await port.search({
       action: 'search',
@@ -295,7 +329,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       totalHits: 1,
       truncated: true,
     });
-    expect(query).toHaveBeenCalledWith('고객 문제', 2, undefined, undefined);
+    expect(query).toHaveBeenCalledWith(
+      '고객 문제',
+      2,
+      undefined,
+      undefined,
+      { fileBackedOnly: true },
+    );
     expect(cachedRead).not.toHaveBeenCalled();
   });
 
@@ -331,7 +371,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         isCandidateFile,
         isPathVisible: () => true,
       },
-      () => ({ query: vi.fn(() => Promise.resolve(indexedResults)) }),
+      () => createReadyQueryEngineDouble(vi.fn(() => Promise.resolve(indexedResults))),
     );
 
     const result = await port.search({
@@ -375,7 +415,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       Promise.resolve(candidate.content),
     );
     const app = createApp([file], {}, cachedRead);
-    const port = createNativeVaultPort(app, undefined, () => ({ query }));
+    const port = createNativeVaultPort(app, undefined, () => createReadyQueryEngineDouble(query));
 
     const result = await port.search({
       action: 'search',
@@ -402,9 +442,12 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     ];
     const query = vi.fn(() => Promise.resolve([]));
     const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead), undefined, () => ({
-      query,
-    }));
+    const listCandidateFiles = vi.fn(() => Promise.resolve(files));
+    const port = createNativeVaultPort(
+      createApp(files, {}, cachedRead),
+      listCandidateFiles,
+      () => createReadyQueryEngineDouble(query),
+    );
 
     const result = await port.search({
       action: 'search',
@@ -422,10 +465,433 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: true,
     });
     expect(query).toHaveBeenCalledOnce();
+    expect(listCandidateFiles).not.toHaveBeenCalled();
     expect(cachedRead).not.toHaveBeenCalled();
   });
 
-  it('정상 인덱스가 비어도 질문과 일치하는 파일 경로는 본문 I/O 없이 read 후보로 돌려준다', async () => {
+  it('여러 indexed query 결과를 entry 기준 RRF로 융합하고 bounded provenance를 보존한다', async () => {
+    const alpha = createFile('Notes/Alpha.md', 'alpha');
+    const beta = createFile('Notes/Beta.md', 'beta');
+    const gamma = createFile('Notes/Gamma.md', 'gamma');
+    const byQuery: Record<string, QueryResult[]> = {
+      'customer retention': [
+        createQueryResult(alpha.path, 'alpha-entry', 10, ['vector'], 'vector'),
+        createQueryResult(beta.path, 'beta-entry', 20, ['bm25'], 'keyword'),
+      ],
+      'onboarding churn': [
+        createQueryResult(gamma.path, 'gamma-entry', 30, ['graph-local'], 'strong-graph-evidence'),
+        createQueryResult(beta.path, 'beta-entry', 20, ['vector', 'bm25'], 'keyword-vector'),
+      ],
+    };
+    const query = vi.fn((question: string) => Promise.resolve(byQuery[question] ?? []));
+    const port = createNativeVaultPort(createApp([alpha, beta, gamma]), undefined, () =>
+      createReadyQueryEngineDouble(query),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: 'customer retention',
+      queries: ['customer retention', 'onboarding churn'],
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      'customer retention',
+      3,
+      undefined,
+      undefined,
+      { fileBackedOnly: true },
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      'onboarding churn',
+      3,
+      undefined,
+      undefined,
+      { fileBackedOnly: true },
+    );
+    expect(result.hits[0]).toMatchObject({
+      path: beta.path,
+      retrievalSources: ['bm25', 'vector'],
+      selectionReason: 'keyword',
+      matchedQueries: ['customer retention', 'onboarding churn'],
+      recommendedReadRange: { startLine: 21, endLine: 21 },
+      requiresRead: true,
+    });
+    expect(result.hits.map((hit) => hit.path)).toEqual([beta.path, alpha.path, gamma.path]);
+  });
+
+  it('indexed query가 대기 중 취소되면 즉시 중단하고 다음 query를 시작하지 않는다', async () => {
+    const firstQuery = createDeferred<QueryResult[]>();
+    const query = vi
+      .fn<NativeVaultQueryEngineLike['query']>()
+      .mockImplementationOnce(() => firstQuery.promise)
+      .mockResolvedValue([]);
+    const file = createFile('Notes/Alpha.md', 'alpha');
+    const controller = new AbortController();
+    const port = createNativeVaultPort(createApp([file]), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [createRetrievalDiagnostic('ready')],
+    }));
+
+    const execution = port.search(
+      {
+        action: 'search',
+        query: 'first query',
+        queries: ['first query', 'second query'],
+        path: '',
+        limit: 3,
+        match: 'all',
+      },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
+
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect(query).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledWith(
+      'first query',
+      3,
+      undefined,
+      undefined,
+      { fileBackedOnly: true, signal: controller.signal },
+    );
+    firstQuery.resolve([]);
+  });
+
+  it('indexed 결과가 비어 있고 진단이 stale이면 live lexical fallback을 실행한다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const query = vi.fn(() => Promise.resolve([]));
+    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [createRetrievalDiagnostic('stale')],
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]).toMatchObject({
+      path: alpha.path,
+      retrievalSources: ['live-lexical'],
+      selectionReason: 'keyword',
+      recommendedReadRange: { startLine: 1, endLine: 1 },
+    });
+    expect(cachedRead).toHaveBeenCalledOnce();
+  });
+
+  it('여러 검색어 중 하나라도 core retrieval이 timeout이면 live lexical fallback을 실행한다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '두 번째 질문 근거');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    let completedQueries = 0;
+    const query = vi.fn(() => {
+      completedQueries++;
+      return Promise.resolve([]);
+    });
+    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [
+        {
+          ...createRetrievalDiagnostic('ready', 'vector'),
+          status: completedQueries === 1 ? ('ok' as const) : ('timeout' as const),
+        },
+      ],
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '첫 번째 질문',
+      queries: ['첫 번째 질문', '두 번째 질문'],
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(result.hits[0]?.path).toBe(alpha.path);
+    expect(cachedRead).toHaveBeenCalledOnce();
+  });
+
+  it('vector가 stale이고 BM25가 timeout이면 live lexical 근거를 함께 탐색한다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '현재 고객 근거');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const query = vi.fn(() => Promise.resolve([]));
+    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [
+        createRetrievalDiagnostic('stale', 'vector'),
+        { ...createRetrievalDiagnostic('ready', 'bm25'), status: 'timeout' as const },
+      ],
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 근거',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]).toMatchObject({
+      path: alpha.path,
+      retrievalSources: ['live-lexical'],
+    });
+    expect(cachedRead).toHaveBeenCalledOnce();
+  });
+
+  it('선택적 GraphRAG만 partial이고 core vector가 ready이면 live scan을 실행하지 않는다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const query = vi.fn(() => Promise.resolve([]));
+    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [
+        createRetrievalDiagnostic('partial', 'graph-local'),
+        createRetrievalDiagnostic('ready', 'vector'),
+      ],
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits).toEqual([]);
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('선택적 GraphRAG가 ready여도 core vector가 stale이면 live scan을 실행한다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const query = vi.fn(() => Promise.resolve([]));
+    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+      query,
+      getLastRetrievalDiagnostics: () => [
+        createRetrievalDiagnostic('ready', 'graph-local'),
+        createRetrievalDiagnostic('stale', 'vector'),
+      ],
+    }));
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 문제',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]?.path).toBe(alpha.path);
+    expect(cachedRead).toHaveBeenCalledOnce();
+  });
+
+  it('stale indexed semantic 근거와 live lexical 새 노트를 bounded RRF로 함께 보존한다', async () => {
+    const oldNote = createFile('Projects/Old.md', '현재 본문에는 검색어가 없다.');
+    const newNote = createFile('Projects/New.md', '새로운 고객 이탈 근거');
+    const sharedNote = createFile('Projects/Shared.md', '공유 고객 이탈 근거');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const query = vi.fn(() =>
+      Promise.resolve([
+        createQueryResult(oldNote.path, 'old-entry', 7, ['vector'], 'vector'),
+        createQueryResult(sharedNote.path, 'shared-entry', 20, ['bm25'], 'keyword'),
+      ]),
+    );
+    const port = createNativeVaultPort(
+      createApp([oldNote, newNote, sharedNote], {}, cachedRead),
+      undefined,
+      () => ({
+        query,
+        getLastRetrievalDiagnostics: () => [
+          createRetrievalDiagnostic('stale', 'vector'),
+        ],
+      }),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 이탈',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits.map((hit) => hit.path)).toHaveLength(3);
+    expect(result.hits.map((hit) => hit.path)).toEqual(
+      expect.arrayContaining([oldNote.path, newNote.path, sharedNote.path]),
+    );
+    expect(result.hits.find((hit) => hit.path === oldNote.path)).toMatchObject({
+      retrievalSources: ['vector'],
+      matchedQueries: ['고객 이탈'],
+      recommendedReadRange: { startLine: 8, endLine: 8 },
+    });
+    expect(result.hits.find((hit) => hit.path === newNote.path)).toMatchObject({
+      retrievalSources: ['live-lexical'],
+      matchedQueries: ['고객 이탈'],
+      recommendedReadRange: { startLine: 1, endLine: 1 },
+    });
+    expect(result.hits.filter((hit) => hit.path === sharedNote.path)).toEqual([
+      expect.objectContaining({
+        retrievalSources: ['live-lexical', 'bm25'],
+        matchedQueries: ['고객 이탈'],
+        recommendedReadRange: { startLine: 1, endLine: 1 },
+      }),
+    ]);
+    expect(result.citations.map((citation) => citation.filePath)).toHaveLength(3);
+    expect(cachedRead).toHaveBeenCalledTimes(3);
+  });
+
+  it('production vector file record가 stale 또는 missing이면 live lexical을 함께 탐색한다', async () => {
+    const indexedNote = createFile('Projects/Indexed.md', '현재 본문에는 검색어가 없다.');
+    const newNote = createFile('Projects/New-Live.md', '새 고객 이탈 근거');
+    const store = new MemoryVectorStore();
+    await store.add([
+      {
+        id: 'indexed-production-entry',
+        vector: [1, 0],
+        metadata: {
+          filePath: indexedNote.path,
+          startLine: 0,
+          endLine: 0,
+          text: 'semantic retention evidence',
+          sourceMtime: indexedNote.stat.mtime - 1,
+          sourceSize: indexedNote.stat.size,
+          contentHash: 'indexed-content',
+          indexedAt: 1,
+          embeddingProvider: 'test-provider',
+          embeddingModel: 'test-model',
+        },
+      },
+    ]);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      undefined,
+      0.3,
+      0,
+      { embeddingModel: 'test-model' },
+    );
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const port = createNativeVaultPort(
+      createApp([indexedNote, newNote], {}, cachedRead),
+      undefined,
+      () => engine,
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: '고객 이탈',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits.map((hit) => hit.path)).toEqual(
+      expect.arrayContaining([indexedNote.path, newNote.path]),
+    );
+    expect(result.hits.find((hit) => hit.path === newNote.path)?.retrievalSources).toEqual([
+      'live-lexical',
+    ]);
+    expect(cachedRead).toHaveBeenCalledTimes(2);
+  });
+
+  it('production vector file records가 healthy이면 Vault 본문을 다시 읽지 않는다', async () => {
+    const indexedNote = createFile('Projects/Healthy.md', '현재 본문');
+    const store = new MemoryVectorStore();
+    await store.add([
+      {
+        id: 'healthy-production-entry',
+        vector: [1, 0],
+        metadata: {
+          filePath: indexedNote.path,
+          startLine: 0,
+          endLine: 0,
+          text: 'semantic healthy evidence',
+          sourceMtime: indexedNote.stat.mtime,
+          sourceSize: indexedNote.stat.size,
+          contentHash: 'healthy-content',
+          indexedAt: 1,
+          embeddingProvider: 'test-provider',
+          embeddingModel: 'test-model',
+        },
+      },
+    ]);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      undefined,
+      0.3,
+      0,
+      { embeddingModel: 'test-model' },
+    );
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const port = createNativeVaultPort(
+      createApp([indexedNote], {}, cachedRead),
+      undefined,
+      () => engine,
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: 'healthy semantic',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]?.path).toBe(indexedNote.path);
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('indexed 결과가 모두 숨김 대상이어도 ready 진단이면 live scan을 하지 않는다', async () => {
+    const visible = createFile('Notes/Visible.md', '현재 근거');
+    const hidden = createFile('Notes/Hidden.md', '숨긴 근거');
+    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const listCandidateFiles = vi.fn(() => Promise.resolve([visible]));
+    const query = vi.fn(() =>
+      Promise.resolve([createQueryResult(hidden.path, 'hidden-entry', 1, ['vector'], 'vector')]),
+    );
+    const port = new ObsidianNativeVaultToolPort(
+      createApp([visible, hidden], {}, cachedRead),
+      {
+        listCandidateFiles,
+        isCandidateFile: (file) => Promise.resolve(file.path === visible.path),
+        isPathVisible: () => true,
+      },
+      () => createReadyQueryEngineDouble(query),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: '근거',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits).toEqual([]);
+    expect(listCandidateFiles).not.toHaveBeenCalled();
+    expect(cachedRead).not.toHaveBeenCalled();
+  });
+
+  it('stale 인덱스가 비면 파일 경로까지 포함한 live lexical 후보를 돌려준다', async () => {
     const files = [
       createFile('neville/A Lesson in Scripture.txt', '본문에는 이름이 없다.'),
       createFile('neville/A Prophecy.txt', '예언에 관한 본문'),
@@ -437,7 +903,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const port = createNativeVaultPort(
       createApp(files, {}, cachedRead),
       listCandidateFiles,
-      () => ({ query }),
+      () => ({
+        query,
+        getLastRetrievalDiagnostics: () => [createRetrievalDiagnostic('stale')],
+      }),
     );
 
     const result = await port.search({
@@ -468,7 +937,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
     expect(query).toHaveBeenCalledOnce();
     expect(listCandidateFiles).toHaveBeenCalledOnce();
-    expect(cachedRead).not.toHaveBeenCalled();
+    expect(cachedRead).toHaveBeenCalledTimes(3);
   });
 
   it('인덱스 질의가 실패할 때만 lexical fallback으로 후보 파일을 읽는다', async () => {
@@ -499,7 +968,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(cachedRead).toHaveBeenCalledTimes(2);
   });
 
-  it('indexed 후보는 일치 행을 계산하되 live read 전에는 후보 상태를 유지한다', async () => {
+  it('indexed synthetic 일치 행 대신 실제 chunkRange를 400행 상한으로 권장한다', async () => {
     const indexedResults = [
       {
         sourcePath: 'Archive/Record.md',
@@ -508,7 +977,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         bm25Score: 0,
         combinedScore: 0.9,
         keywordMatches: 2,
-        chunkRange: { startLine: 40, endLine: 42 },
+        chunkRange: { startLine: 40, endLine: 640 },
         entry: {
           id: 'record',
           vector: [],
@@ -516,14 +985,14 @@ describe('Obsidian 네이티브 Vault 포트', () => {
             filePath: 'Archive/Record.md',
             text: '무관한 과거 문장\n고객 이탈의 직접 원인\n후속 기록',
             startLine: 40,
-            endLine: 42,
+            endLine: 640,
           },
         },
       },
     ] satisfies QueryResult[];
     const query = vi.fn(() => Promise.resolve(indexedResults));
     const app = createApp([createFile('Archive/Record.md', '현재 본문에는 관련 내용이 없음')]);
-    const port = createNativeVaultPort(app, undefined, () => ({ query }));
+    const port = createNativeVaultPort(app, undefined, () => createReadyQueryEngineDouble(query));
 
     const result = await port.search({
       action: 'search',
@@ -536,6 +1005,8 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits[0]).toMatchObject({
       path: 'Archive/Record.md',
       startLine: 41,
+      endLine: 440,
+      recommendedReadRange: { startLine: 41, endLine: 440 },
       citationStatus: 'candidate',
       requiresRead: true,
     });
@@ -543,8 +1014,36 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.citations[0]).toMatchObject({
       filePath: 'Archive/Record.md',
       line: 41,
+      endLine: 440,
       status: 'candidate',
     });
+  });
+
+  it('0-based 첫 chunk 행을 read와 citation의 1행으로 변환한다', async () => {
+    const first = createFile('Archive/First.md', '첫 행 근거');
+    const query = vi.fn(() =>
+      Promise.resolve([
+        createQueryResult(first.path, 'first-entry', 0, ['vector'], 'vector'),
+      ]),
+    );
+    const port = createNativeVaultPort(createApp([first]), undefined, () =>
+      createReadyQueryEngineDouble(query),
+    );
+
+    const result = await port.search({
+      action: 'search',
+      query: '첫 행',
+      path: '',
+      limit: 3,
+      match: 'all',
+    });
+
+    expect(result.hits[0]).toMatchObject({
+      startLine: 1,
+      endLine: 1,
+      recommendedReadRange: { startLine: 1, endLine: 1 },
+    });
+    expect(result.citations[0]).toMatchObject({ line: 1, endLine: 1 });
   });
 
   it('현재 RAG 후보에서 빠진 오래된 indexed 결과와 직접 read를 함께 차단한다', async () => {
@@ -624,6 +1123,34 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits[0]?.path).toBe('Notes/24.md');
     expect(maxActiveReads).toBeLessThanOrEqual(8);
     expect(totalReads).toBe(25);
+  });
+
+  it('lexical read batch가 대기 중 취소되면 즉시 중단하고 다음 batch를 읽지 않는다', async () => {
+    const readBatch = createDeferred<string>();
+    const files = Array.from({ length: 9 }, (_, index) =>
+      createFile(`Notes/${index}.md`, `문서 ${index}`),
+    );
+    const cachedRead = vi.fn(() => readBatch.promise);
+    const controller = new AbortController();
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+
+    const execution = port.search(
+      {
+        action: 'search',
+        query: '문서',
+        path: '',
+        limit: 3,
+        match: 'all',
+      },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(cachedRead).toHaveBeenCalledTimes(8));
+
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cachedRead).toHaveBeenCalledTimes(8);
+    readBatch.resolve('문서');
   });
 
   it('검색 결과가 제한되면 전체 스캔 수와 잘림 여부를 함께 반환한다', async () => {
@@ -783,6 +1310,60 @@ function createNativeVaultPort(
   );
 }
 
+function createReadyQueryEngineDouble(
+  query: NativeVaultQueryEngineLike['query'],
+): NativeVaultQueryEngineLike {
+  return {
+    query,
+    getLastRetrievalDiagnostics: () => [createRetrievalDiagnostic('ready')],
+  };
+}
+
+function createRetrievalDiagnostic(
+  readiness: 'cold' | 'partial' | 'ready' | 'stale' | 'degraded',
+  source: 'vector' | 'ann' | 'bm25' | 'structural' | 'graph-local' = 'bm25',
+) {
+  return {
+    providerId: 'test-provider',
+    source,
+    status: 'ok' as const,
+    durationMs: 1,
+    candidateCount: 0,
+    readiness,
+    estimatedCost: 'free' as const,
+  };
+}
+
+function createQueryResult(
+  path: string,
+  id: string,
+  startLine: number,
+  retrievalSources: string[],
+  selectionReason: NonNullable<QueryResult['selectionReason']>,
+): QueryResult {
+  return {
+    sourcePath: path,
+    score: 0.9,
+    vectorScore: 0.9,
+    bm25Score: 0,
+    combinedScore: 0.9,
+    keywordMatches: 1,
+    retrievalSources,
+    selectionReason,
+    chunkRange: { startLine, endLine: startLine },
+    entry: {
+      id,
+      vector: [],
+      metadata: {
+        filePath: path,
+        text: `indexed evidence for ${path}`,
+        startLine,
+        endLine: startLine,
+      },
+    },
+  };
+}
+
 function createFile(path: string, content: string): TFile & { content: string } {
   const name = path.split('/').at(-1) ?? path;
   const extension = name.includes('.') ? (name.split('.').at(-1) ?? '') : '';
@@ -825,4 +1406,20 @@ function createApp(
         byPath.get(path) ?? byPath.get(path.endsWith('.md') ? path : `${path}.md`) ?? null,
     },
   } as unknown as App;
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: (value) => {
+      resolvePromise?.(value);
+    },
+  };
 }

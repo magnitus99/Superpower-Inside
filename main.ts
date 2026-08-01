@@ -2585,6 +2585,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
             graphRagEnabled: graphRagEnabledForQuery,
             graphRagQueryEngine,
             graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
+            embeddingProvider: rag.embeddingProvider,
             embeddingModel: rag.embeddingModel,
           },
         );

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolDefinition } from '../llm/providers';
-import { appendAgenticCheckpoint, planAgenticToolTurn } from './tool-orchestration';
+import {
+  appendAgenticCheckpoint,
+  planAgenticToolTurn,
+  selectAgenticToolDefinitions,
+} from './tool-orchestration';
 import type { ContextAttachment, ToolCallRecord } from './types';
 
 const definitions: ToolDefinition[] = [
@@ -21,6 +25,50 @@ const definitions: ToolDefinition[] = [
     },
   },
 ];
+
+const listDefinition: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'superpower_inside_list',
+    description: 'List one bounded vault inventory page.',
+    parameters: { type: 'object', properties: {} },
+  },
+};
+
+function normalizedSearchResult(paths: readonly string[]): string {
+  return JSON.stringify({
+    action: 'search',
+    query: 'query',
+    queries: ['query'],
+    path: '',
+    match: 'all',
+    hits: paths.map((path) => ({
+      path,
+      startLine: 1,
+      preview: 'candidate',
+      citationStatus: 'candidate',
+      requiresRead: true,
+    })),
+    scannedFiles: paths.length,
+    unreadableFiles: 0,
+    totalHits: paths.length,
+    truncated: false,
+    citations: [],
+  });
+}
+
+function normalizedReadResult(path: string): string {
+  return JSON.stringify({
+    action: 'read',
+    path,
+    startLine: 1,
+    endLine: 1,
+    totalLines: 1,
+    truncated: false,
+    content: `${path} evidence`,
+    citations: [],
+  });
+}
 
 describe('적극적 도구 오케스트레이션 경계', () => {
   it('명시적인 볼트 근거 질문은 첫 응답부터 도구 사용을 요구한다', () => {
@@ -50,7 +98,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
         name: 'superpower_inside_search',
         arguments: '{"query":"결정"}',
         status: 'success',
-        normalizedResult: '{"action":"search","hits":[{"path":"Decision.md"}],"totalHits":1}',
+        normalizedResult: normalizedSearchResult(['Decision.md']),
       },
     ];
     const plan = planAgenticToolTurn({
@@ -79,15 +127,14 @@ describe('적극적 도구 오케스트레이션 경계', () => {
         name: 'superpower_inside_search',
         arguments: '{"query":"A B"}',
         status: 'success',
-        normalizedResult:
-          '{"action":"search","hits":[{"path":"A.md"},{"path":"B.md"}],"totalHits":2}',
+        normalizedResult: normalizedSearchResult(['A.md', 'B.md']),
       },
       {
         id: 'read-a',
         name: 'superpower_inside_read',
         arguments: '{"path":"A.md"}',
         status: 'success',
-        normalizedResult: '{"path":"A.md","truncated":false,"content":"A evidence"}',
+        normalizedResult: normalizedReadResult('A.md'),
       },
     ];
 
@@ -117,8 +164,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
         name: 'superpower_inside_search',
         arguments: '{"query":"A B"}',
         status: 'success',
-        normalizedResult:
-          '{"action":"search","hits":[{"path":"A.md"},{"path":"B.md"}],"totalHits":2}',
+        normalizedResult: normalizedSearchResult(['A.md', 'B.md']),
       },
       ...['A.md', 'B.md'].map(
         (path, index): ToolCallRecord => ({
@@ -126,11 +172,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
           name: 'superpower_inside_read',
           arguments: JSON.stringify({ path }),
           status: 'success',
-          normalizedResult: JSON.stringify({
-            path,
-            truncated: false,
-            content: `${path} evidence`,
-          }),
+          normalizedResult: normalizedReadResult(path),
         }),
       ),
     ];
@@ -235,6 +277,48 @@ describe('적극적 도구 오케스트레이션 경계', () => {
     });
   });
 
+  it('문서 목록과 근거를 함께 물으면 inventory와 content를 모두 요구한다', () => {
+    const plan = planAgenticToolTurn({
+      question: '내 볼트의 문서 목록과 배포 결정 근거를 함께 알려줘',
+      contextAttachments: [],
+      explicitToolServerCount: 0,
+      toolDefinitions: [listDefinition, ...definitions],
+      toolCalls: [],
+      phase: 'initial',
+      round: 0,
+      maxRounds: 10,
+    });
+
+    expect(plan).toMatchObject({
+      nativeEvidenceRequirement: 'inventory',
+      nativeEvidenceRequirements: ['inventory', 'content'],
+      requiredToolNames: [
+        'superpower_inside_list',
+        'superpower_inside_search',
+        'superpower_inside_read',
+      ],
+    });
+  });
+
+  it('할 일 목록 검색은 파일 inventory가 아니라 content 근거를 요구한다', () => {
+    const plan = planAgenticToolTurn({
+      question: '내 노트에서 할 일 목록을 찾아줘',
+      contextAttachments: [],
+      explicitToolServerCount: 0,
+      toolDefinitions: [listDefinition, ...definitions],
+      toolCalls: [],
+      phase: 'initial',
+      round: 0,
+      maxRounds: 10,
+    });
+
+    expect(plan).toMatchObject({
+      nativeEvidenceRequirement: 'content',
+      nativeEvidenceRequirements: ['content'],
+      requiredToolNames: ['superpower_inside_search', 'superpower_inside_read'],
+    });
+  });
+
   it('checkpoint를 추가해도 이전의 완전한 tool transcript를 보존한다', () => {
     const messages = [
       { role: 'assistant' as const, content: '', toolCalls: [] },
@@ -255,5 +339,132 @@ describe('적극적 도구 오케스트레이션 경계', () => {
       role: 'user',
       content: '최신 목표를 답하세요.',
     });
+  });
+
+  it('Rust 후속 정책이 read를 요구하면 provider catalog도 read 하나로 좁힌다', () => {
+    const result = selectAgenticToolDefinitions(definitions, ['superpower_inside_read']);
+
+    expect(result.map((definition) => definition.function.name)).toEqual([
+      'superpower_inside_read',
+    ]);
+  });
+
+  it('정책의 도구 이름이 현재 catalog에 없으면 복구를 위해 전체 catalog를 보존한다', () => {
+    const result = selectAgenticToolDefinitions(definitions, ['missing_tool']);
+
+    expect(result).toEqual(definitions);
+  });
+
+  it('요구된 도구 중 하나라도 없으면 부분 catalog로 잘못 좁히지 않는다', () => {
+    const result = selectAgenticToolDefinitions(definitions, [
+      'superpower_inside_search',
+      'missing_tool',
+    ]);
+
+    expect(result).toEqual(definitions);
+  });
+
+  it('여러 명시 MCP 중 아직 확인하지 않은 서버의 도구만 정확히 남긴다', () => {
+    const externalDefinitions: ToolDefinition[] = [
+      {
+        type: 'function',
+        function: {
+          name: 'jira_search',
+          description: 'MCP server "jira". Search Jira issues.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'github_search',
+          description: 'MCP server "github". Search GitHub pull requests.',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+    ];
+
+    const result = selectAgenticToolDefinitions(
+      [...definitions, ...externalDefinitions],
+      ['jira_search', 'github_search'],
+      ['github'],
+    );
+
+    expect(result.map((definition) => definition.function.name)).toEqual([
+      'github_search',
+    ]);
+  });
+
+  it('명시 MCP 서버 매핑이 catalog와 어긋나면 전체 catalog를 보존한다', () => {
+    const externalDefinition: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'github_search',
+        description: 'MCP server "github". Search GitHub pull requests.',
+        parameters: { type: 'object', properties: {} },
+      },
+    };
+    const catalog = [...definitions, externalDefinition];
+
+    const result = selectAgenticToolDefinitions(
+      catalog,
+      ['github_search'],
+      ['jira'],
+    );
+
+    expect(result).toEqual(catalog);
+  });
+
+  it('명시 MCP와 native 요구가 함께 남으면 두 범주의 최소 catalog를 보존한다', () => {
+    const githubDefinition: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'github_search',
+        description: 'MCP server "github". Search GitHub pull requests.',
+        parameters: { type: 'object', properties: {} },
+      },
+    };
+
+    const result = selectAgenticToolDefinitions(
+      [...definitions, githubDefinition],
+      ['superpower_inside_read', 'github_search'],
+      ['github'],
+    );
+
+    expect(result.map((definition) => definition.function.name)).toEqual([
+      'superpower_inside_read',
+      'github_search',
+    ]);
+  });
+
+  it('최종 예산 라운드에도 미확인 명시 MCP 범위를 checkpoint에 보존한다', () => {
+    const githubDefinition: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'github_search',
+        description: 'MCP server "github". Search GitHub pull requests.',
+        parameters: { type: 'object', properties: {} },
+      },
+    };
+
+    const plan = planAgenticToolTurn({
+      question: 'GitHub에서 오늘 상태를 조사해줘',
+      contextAttachments: [],
+      explicitToolServerCount: 1,
+      explicitToolServerNames: ['github'],
+      toolDefinitions: [githubDefinition],
+      toolCalls: [],
+      phase: 'after-tools',
+      round: 2,
+      maxRounds: 2,
+    });
+
+    expect(plan).toMatchObject({
+      toolChoice: 'none',
+      nextAction: 'answer',
+      requiredExternalServerNames: ['github'],
+    });
+    expect(plan?.checkpoint).toContain('did not return verified results');
+    expect(plan?.checkpoint).toContain('missing server coverage');
   });
 });

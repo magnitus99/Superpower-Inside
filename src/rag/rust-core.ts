@@ -66,6 +66,7 @@ import {
   plan_native_vault_link_paths_json,
   plan_native_vault_list_json,
   plan_native_vault_read_range_json,
+  plan_native_vault_search_rrf_json,
   plan_native_vault_stats_json,
   plan_native_tool_compatibility_fallback_json,
   plan_native_vault_tool_request_json,
@@ -216,11 +217,18 @@ export type RustNativeVaultToolRequest =
   | {
       action: 'search';
       query: string;
+      queries?: string[];
       path: string;
       limit: number;
       match: 'all' | 'any' | 'phrase';
     }
-  | { action: 'read'; path: string; startLine: number; endLine: number | null }
+  | {
+      action: 'read';
+      path: string;
+      startLine: number;
+      startOffset?: number;
+      endLine: number | null;
+    }
   | { action: 'list'; path: string; cursor: number; limit: number }
   | {
       action: 'links';
@@ -264,6 +272,24 @@ export interface RustToolResultSourceReference {
 export interface RustNativeVaultStatsPlan {
   fileCount: number;
   totalBytes: number;
+}
+
+export interface RustNativeVaultSearchRrfCandidateInput {
+  entryId: string;
+  queryIndex: number;
+  rank: number;
+}
+
+export interface RustNativeVaultSearchRrfHitPlan {
+  candidateIndexes: number[];
+  representativeCandidateIndex: number;
+  matchedQueryIndices: number[];
+  rrfScore: number;
+}
+
+export interface RustNativeVaultSearchRrfPlan {
+  hits: RustNativeVaultSearchRrfHitPlan[];
+  totalEntries: number;
 }
 
 export interface RustHybridScoreInput {
@@ -5350,6 +5376,50 @@ export function planNativeVaultStatsRust(
   }
 }
 
+export function planNativeVaultSearchRrfRust(
+  candidates: readonly RustNativeVaultSearchRrfCandidateInput[],
+  queryCount: number,
+  limit: number,
+): RustNativeVaultSearchRrfPlan | null {
+  if (
+    !Number.isSafeInteger(queryCount) ||
+    queryCount < 1 ||
+    queryCount > 4 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 20 ||
+    candidates.length > queryCount * 20 ||
+    !candidates.every(
+      (candidate) =>
+        isStringValue(candidate.entryId) &&
+        candidate.entryId.length > 0 &&
+        Number.isSafeInteger(candidate.queryIndex) &&
+        candidate.queryIndex >= 0 &&
+        candidate.queryIndex < queryCount &&
+        Number.isSafeInteger(candidate.rank) &&
+        candidate.rank >= 1 &&
+        candidate.rank <= 20,
+    )
+  ) {
+    return null;
+  }
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_native_vault_search_rrf_json(
+      JSON.stringify(candidates),
+      queryCount,
+      limit,
+    );
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isNativeVaultSearchRrfPlan(parsed, candidates.length, queryCount)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RustResearchProviderBudgetInput {
   maxSelectedItems: number;
   batchSize: number;
@@ -6055,6 +6125,13 @@ export interface RustCompatibilityToolCall {
 
 export type RustAgenticToolChoice = 'auto' | 'required' | 'none';
 
+export type RustNativeEvidenceRequirement =
+  | 'content'
+  | 'inventory'
+  | 'relations'
+  | 'stats'
+  | 'unknown';
+
 export type RustAgenticNextAction =
   | 'use-tool'
   | 'verify-source'
@@ -6067,12 +6144,14 @@ export interface RustAgenticToolCallSnapshot {
   status: 'success' | 'error';
   arguments: string;
   result?: string;
+  serverName?: string;
 }
 
 export interface RustAgenticToolTurnInput {
   question: string;
   hasAttachedEvidence: boolean;
   explicitToolServerCount: number;
+  explicitToolServerNames?: readonly string[];
   availableToolNames: readonly string[];
   toolCalls: readonly RustAgenticToolCallSnapshot[];
   phase: 'initial' | 'after-tools';
@@ -6083,17 +6162,27 @@ export interface RustAgenticToolTurnInput {
 export interface RustAgenticEvidenceLedger {
   successfulCalls: number;
   failedCalls: number;
+  successfulExternalCalls: number;
+  failedExternalCalls: number;
   candidateSearches: number;
   emptySearches: number;
   verifiedReads: number;
+  completeReads: number;
+  successfulLists: number;
+  successfulLinks: number;
+  successfulStats: number;
   verifiedSources: number;
 }
 
 export interface RustAgenticToolTurnPlan {
   requiresEvidence: boolean;
+  nativeEvidenceRequirement: RustNativeEvidenceRequirement;
+  nativeEvidenceRequirements: RustNativeEvidenceRequirement[];
   toolChoice: RustAgenticToolChoice;
   shouldRetryWithoutTools: boolean;
   nextAction: RustAgenticNextAction;
+  requiredToolNames: string[];
+  requiredExternalServerNames: string[];
   checkpoint: string;
   ledger: RustAgenticEvidenceLedger;
 }
@@ -6161,6 +6250,11 @@ function isAgenticToolTurnInput(input: RustAgenticToolTurnInput): boolean {
     isStringValue(input.question) &&
     typeof input.hasAttachedEvidence === 'boolean' &&
     isNonNegativeSafeInteger(input.explicitToolServerCount) &&
+    (input.explicitToolServerNames === undefined ||
+      (input.explicitToolServerNames.length <= 64 &&
+        input.explicitToolServerNames.every(
+          (name) => isStringValue(name) && name.trim().length > 0,
+        ))) &&
     input.availableToolNames.every((name) => isStringValue(name) && name.trim().length > 0) &&
     input.toolCalls.every(
       (call) =>
@@ -6168,7 +6262,9 @@ function isAgenticToolTurnInput(input: RustAgenticToolTurnInput): boolean {
         call.name.trim().length > 0 &&
         (call.status === 'success' || call.status === 'error') &&
         isStringValue(call.arguments) &&
-        (call.result === undefined || isStringValue(call.result)),
+        (call.result === undefined || isStringValue(call.result)) &&
+        (call.serverName === undefined ||
+          (isStringValue(call.serverName) && call.serverName.trim().length > 0)),
     ) &&
     (input.phase === 'initial' || input.phase === 'after-tools') &&
     isNonNegativeSafeInteger(input.round) &&
@@ -6198,8 +6294,18 @@ function isNativeToolCompatibilityFallbackPlan(
 function isAgenticToolTurnPlan(value: unknown): value is RustAgenticToolTurnPlan {
   if (!isStringRecordValueMap(value)) return false;
   const ledger = value.ledger;
+  const primaryRequirement = value.nativeEvidenceRequirement;
+  const requirements = value.nativeEvidenceRequirements;
   return (
     typeof value.requiresEvidence === 'boolean' &&
+    isNativeEvidenceRequirement(primaryRequirement) &&
+    Array.isArray(requirements) &&
+    requirements.length <= 4 &&
+    requirements.every(isNativeEvidenceRequirement) &&
+    !requirements.includes('unknown') &&
+    new Set(requirements).size === requirements.length &&
+    ((requirements.length === 0 && primaryRequirement === 'unknown') ||
+      (requirements.length > 0 && requirements[0] === primaryRequirement)) &&
     (value.toolChoice === 'auto' ||
       value.toolChoice === 'required' ||
       value.toolChoice === 'none') &&
@@ -6209,14 +6315,38 @@ function isAgenticToolTurnPlan(value: unknown): value is RustAgenticToolTurnPlan
       value.nextAction === 'broaden-search' ||
       value.nextAction === 'repair-tool' ||
       value.nextAction === 'answer') &&
+    Array.isArray(value.requiredToolNames) &&
+    value.requiredToolNames.length <= 64 &&
+    value.requiredToolNames.every((name) => isStringValue(name) && name.trim().length > 0) &&
+    Array.isArray(value.requiredExternalServerNames) &&
+    value.requiredExternalServerNames.length <= 64 &&
+    value.requiredExternalServerNames.every(
+      (name) => isStringValue(name) && name.trim().length > 0,
+    ) &&
     isStringValue(value.checkpoint) &&
     isStringRecordValueMap(ledger) &&
     isNonNegativeSafeInteger(ledger.successfulCalls) &&
     isNonNegativeSafeInteger(ledger.failedCalls) &&
+    isNonNegativeSafeInteger(ledger.successfulExternalCalls) &&
+    isNonNegativeSafeInteger(ledger.failedExternalCalls) &&
     isNonNegativeSafeInteger(ledger.candidateSearches) &&
     isNonNegativeSafeInteger(ledger.emptySearches) &&
     isNonNegativeSafeInteger(ledger.verifiedReads) &&
+    isNonNegativeSafeInteger(ledger.completeReads) &&
+    isNonNegativeSafeInteger(ledger.successfulLists) &&
+    isNonNegativeSafeInteger(ledger.successfulLinks) &&
+    isNonNegativeSafeInteger(ledger.successfulStats) &&
     isNonNegativeSafeInteger(ledger.verifiedSources)
+  );
+}
+
+function isNativeEvidenceRequirement(value: unknown): value is RustNativeEvidenceRequirement {
+  return (
+    value === 'content' ||
+    value === 'inventory' ||
+    value === 'relations' ||
+    value === 'stats' ||
+    value === 'unknown'
   );
 }
 
@@ -8076,8 +8206,14 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
   if (!isStringRecordValueMap(value) || typeof value.action !== 'string') return false;
   if (value.action === 'stats') return true;
   if (value.action === 'search') {
+    const queries = value.queries;
     return (
       typeof value.query === 'string' &&
+      (queries === undefined ||
+        (Array.isArray(queries) &&
+          queries.length >= 1 &&
+          queries.length <= 4 &&
+          queries.every((query) => typeof query === 'string' && query.length > 0))) &&
       typeof value.path === 'string' &&
       isNonNegativeSafeInteger(value.limit) &&
       (value.match === 'all' || value.match === 'any' || value.match === 'phrase')
@@ -8087,6 +8223,7 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
     return (
       typeof value.path === 'string' &&
       isNonNegativeSafeInteger(value.startLine) &&
+      (value.startOffset === undefined || isNonNegativeSafeInteger(value.startOffset)) &&
       (value.endLine === null || isNonNegativeSafeInteger(value.endLine))
     );
   }
@@ -8131,6 +8268,35 @@ function isNativeVaultStatsPlan(value: unknown): value is RustNativeVaultStatsPl
     isStringRecordValueMap(value) &&
     isNonNegativeSafeInteger(value.fileCount) &&
     isNonNegativeSafeInteger(value.totalBytes)
+  );
+}
+
+function isNativeVaultSearchRrfPlan(
+  value: unknown,
+  candidateCount: number,
+  queryCount: number,
+): value is RustNativeVaultSearchRrfPlan {
+  if (
+    !isStringRecordValueMap(value) ||
+    !isNonNegativeSafeInteger(value.totalEntries) ||
+    !Array.isArray(value.hits) ||
+    value.hits.length > 20
+  ) {
+    return false;
+  }
+  return value.hits.every(
+    (hit) =>
+      isStringRecordValueMap(hit) &&
+      isBoundedIndexArray(hit.candidateIndexes, candidateCount) &&
+      hit.candidateIndexes.length > 0 &&
+      isNonNegativeSafeInteger(hit.representativeCandidateIndex) &&
+      hit.representativeCandidateIndex < candidateCount &&
+      hit.candidateIndexes.includes(hit.representativeCandidateIndex) &&
+      isBoundedIndexArray(hit.matchedQueryIndices, queryCount) &&
+      hit.matchedQueryIndices.length > 0 &&
+      typeof hit.rrfScore === 'number' &&
+      Number.isFinite(hit.rrfScore) &&
+      hit.rrfScore > 0,
   );
 }
 

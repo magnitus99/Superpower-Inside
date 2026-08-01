@@ -20,6 +20,7 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
 });
 import { IndexedDbBM25Index } from './bm25';
 import { LLMRAGResultReranker, RAGQueryEngine } from './query';
+import type { RagRetrievalRequest, RetrievalCandidate } from './retrieval-pipeline';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 const bm25DbNames = new Set<string>();
@@ -45,6 +46,57 @@ describe('RAGQueryEngine', () => {
     ]);
     expect(results[0]?.bm25Score).toBeGreaterThan(0);
     expect(results[0]?.entry.metadata.text).toContain('고객 문제');
+  });
+
+  it('loaded BM25도 현재 Vault metadata coverage가 빠지면 partial로 판정한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addCorpusDocument({
+      id: 'notes/indexed.md::0',
+      text: '인덱스된 고객 근거',
+      sourcePath: 'notes/indexed.md',
+      startLine: 0,
+      endLine: 0,
+      sourceMtime: 10,
+      sourceSize: 20,
+      indexedAt: 30,
+    });
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+
+    await expect(
+      engine.getIndexReadiness([
+        { path: 'notes/indexed.md', mtime: 10, size: 20 },
+        { path: 'notes/new.md', mtime: 40, size: 50 },
+      ]),
+    ).resolves.toMatchObject({
+      readiness: 'partial',
+    });
+  });
+
+  it('loaded BM25의 현재 Vault metadata가 모두 일치하면 ready로 판정한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addCorpusDocument({
+      id: 'notes/indexed.md::0',
+      text: '인덱스된 고객 근거',
+      sourcePath: 'notes/indexed.md',
+      startLine: 0,
+      endLine: 0,
+      sourceMtime: 10,
+      sourceSize: 20,
+      indexedAt: 30,
+    });
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+
+    await expect(
+      engine.getIndexReadiness([
+        { path: 'notes/indexed.md', mtime: 10, size: 20 },
+      ]),
+    ).resolves.toMatchObject({
+      readiness: 'ready',
+    });
   });
 
   it('folder scope가 있으면 해당 경로의 후보만 검색한다', async () => {
@@ -343,6 +395,26 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
+  it('file-backed-only 검색은 virtual graph 후보를 provider top-k 전에 제외한다', async () => {
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const vectorStore = new MemoryVectorStore();
+    const graphEngine = new VirtualFirstGraphRagQueryEngine(
+      graphStore,
+      vectorStore,
+      buildKnowledgeGraphContract(),
+    );
+    const engine = new RAGQueryEngine(null, createEmbeddingProvider([1, 0]), undefined, 0.3, 0, {
+      graphRagEnabled: true,
+      graphRagQueryEngine: graphEngine,
+    });
+
+    const results = await engine.query('실제 원문 근거', 1, 0, undefined, {
+      fileBackedOnly: true,
+    });
+
+    expect(results.map((result) => result.sourcePath)).toEqual(['Notes/Actual.md']);
+  });
+
   it('GraphRAG provider가 실패해도 기본 vector RAG 결과를 반환한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([createEntry('semantic.md', [1, 0], '기본 벡터 근거')]);
@@ -470,6 +542,31 @@ describe('RAGQueryEngine', () => {
     expect(results[0]?.entry.metadata.filePath).toBe('fresh.md');
   });
 
+  it('같은 model과 dimension이어도 현재 embedding provider와 다른 후보를 제외한다', async () => {
+    const store = new MemoryVectorStore();
+    const stale = createEntry('stale-provider.md', [1, 0], '이전 공급자 벡터');
+    stale.metadata.embeddingProvider = 'legacy-provider';
+    const fresh = createEntry('fresh-provider.md', [0.9, 0.1], '현재 공급자 벡터');
+    fresh.metadata.embeddingProvider = 'current-provider';
+    await store.add([stale, fresh]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      embeddingProvider: 'current-provider',
+      embeddingModel: 'text-embedding-3-small',
+    });
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'fresh-provider.md',
+    ]);
+    await expect(
+      engine.getIndexReadiness([
+        { path: 'stale-provider.md', mtime: 1000, size: '이전 공급자 벡터'.length },
+        { path: 'fresh-provider.md', mtime: 1000, size: '현재 공급자 벡터'.length },
+      ]),
+    ).resolves.toMatchObject({ readiness: 'stale' });
+  });
+
   it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
@@ -536,6 +633,32 @@ function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
 class FailingGraphRagQueryEngine extends GraphRagQueryEngine {
   override query(): Promise<never> {
     return Promise.reject(new Error('simulated graph retrieval failure'));
+  }
+}
+
+class VirtualFirstGraphRagQueryEngine extends GraphRagQueryEngine {
+  override query(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
+    const candidates: RetrievalCandidate[] = [
+      ...Array.from({ length: request.candidateLimit }, (_, index) => ({
+        entry: createEntry(`graph://community/${index}`, [1, 0], `가상 요약 ${index}`),
+        source: 'graph-global' as const,
+        sourceScore: 1,
+      })),
+      {
+        entry: createEntry('Notes/Actual.md', [1, 0], '실제 원문 근거'),
+        source: 'graph-global',
+        sourceScore: 0.9,
+      },
+    ];
+    return Promise.resolve(
+      candidates
+        .filter(
+          (candidate) =>
+            (request.isEntryInScope?.(candidate.entry) ?? true) &&
+            (request.isEntryCompatible?.(candidate.entry) ?? true),
+        )
+        .slice(0, request.candidateLimit),
+    );
   }
 }
 

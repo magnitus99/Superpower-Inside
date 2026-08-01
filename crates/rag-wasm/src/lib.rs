@@ -32,12 +32,12 @@ pub use rag_recovery::{
 mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
-/// Native read-only vault tool request validation and bounded execution policy.
+/// 네이티브 읽기 전용 볼트 도구의 요청 검증과 제한된 실행 정책.
 mod native_vault_tool;
 pub use native_vault_tool::{
     plan_native_vault_link_paths_json, plan_native_vault_list_json,
-    plan_native_vault_read_range_json, plan_native_vault_stats_json,
-    plan_native_vault_tool_request_json,
+    plan_native_vault_read_range_json, plan_native_vault_search_rrf_json,
+    plan_native_vault_stats_json, plan_native_vault_tool_request_json,
 };
 
 /// Native lexical search evidence-location policy.

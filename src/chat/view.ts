@@ -159,8 +159,13 @@ import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 import { planNativeToolCompatibilityFallbackRust } from '../rag/rust-core';
 import { prepareLoadedSessionMessages } from './session-recovery';
 import { buildProviderConversation } from './provider-conversation';
-import { appendAgenticCheckpoint, planAgenticToolTurn } from './tool-orchestration';
+import {
+  appendAgenticCheckpoint,
+  planAgenticToolTurn,
+  selectAgenticToolDefinitions,
+} from './tool-orchestration';
 import { selectBoundedToolDefinitions } from './tool-catalog-budget';
+import { createMcpToolBindingAllowlist } from './mcp-tool-wire';
 import {
   isChatRunActive,
   isChatRunOwner,
@@ -3022,13 +3027,12 @@ export class ChatView extends ItemView {
         ? await this.collectToolDefinitions(mentionedServers, explicitlyMentionedServers, run)
         : [];
       if (!isChatRunActive(this.activeRun, run)) return;
-      let providerToolDefinitions =
-        toolsEnabled && toolProtocol === 'native' ? toolDefinitions : undefined;
       const initialAgentPlan = toolsEnabled
         ? planAgenticToolTurn({
             question: text,
             contextAttachments: promptContext.attachments,
             explicitToolServerCount: explicitlyMentionedServers.length,
+            explicitToolServerNames: explicitlyMentionedServers,
             toolDefinitions,
             toolCalls: [],
             phase: 'initial',
@@ -3036,10 +3040,19 @@ export class ChatView extends ItemView {
             maxRounds: maxToolRounds,
           })
         : null;
+      const initialToolDefinitions = toolsEnabled
+        ? selectAgenticToolDefinitions(
+            toolDefinitions,
+            initialAgentPlan?.requiredToolNames,
+            initialAgentPlan?.requiredExternalServerNames,
+          )
+        : [];
+      let providerToolDefinitions =
+        toolsEnabled && toolProtocol === 'native' ? initialToolDefinitions : undefined;
       const toolPrompt = toolsEnabled
         ? toolProtocol === 'native'
-          ? createNativeVaultEvidencePrompt(toolDefinitions)
-          : createCompatibilityToolPrompt(toolDefinitions)
+          ? createNativeVaultEvidencePrompt(initialToolDefinitions)
+          : createCompatibilityToolPrompt(initialToolDefinitions)
         : '';
       let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
         .filter((part): part is string => Boolean(part))
@@ -3174,7 +3187,7 @@ export class ChatView extends ItemView {
         providerCapability = { ...providerCapability, toolCalling: false };
         this.compatibilityToolModels.add(toolModelKey);
         providerToolDefinitions = undefined;
-        const compatibilityPrompt = createCompatibilityToolPrompt(toolDefinitions);
+        const compatibilityPrompt = createCompatibilityToolPrompt(initialToolDefinitions);
         systemPrompt = [
           promptContext.systemPrompt,
           compatibilityPrompt,
@@ -3480,6 +3493,7 @@ export class ChatView extends ItemView {
           registry: this.plugin.mcpRegistry,
           preferredServerNames: mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          mcpToolBindings: createMcpToolBindingAllowlist(initialToolDefinitions),
         });
         if (!isChatRunActive(this.activeRun, run)) return;
         toolCalls = markRepeatedToolCalls([], preparedToolCalls);
@@ -3559,6 +3573,8 @@ export class ChatView extends ItemView {
               citations: promptContext.citations,
             },
             mentionedServers,
+            explicitToolServerCount: explicitlyMentionedServers.length,
+            explicitToolServerNames: explicitlyMentionedServers,
             initialText: fullText,
             initialReasoning: fullReasoning,
           });
@@ -3878,7 +3894,13 @@ export class ChatView extends ItemView {
       completedToolCalls,
       args.toolProtocol,
     );
-    const checkpointMessages = appendAgenticCheckpoint(secondMessages, args.checkpoint);
+    const roundCheckpoint =
+      args.toolProtocol === 'compatibility' && args.toolDefinitions.length > 0
+        ? [createCompatibilityToolPrompt(args.toolDefinitions), args.checkpoint]
+            .filter(Boolean)
+            .join('\n\n')
+        : args.checkpoint;
+    const checkpointMessages = appendAgenticCheckpoint(secondMessages, roundCheckpoint);
 
     const visibleToolCalls = [...args.toolCalls];
     const streamProviderPass = async (
@@ -3967,7 +3989,7 @@ export class ChatView extends ItemView {
         {
           role: 'user',
           content: [
-            args.checkpoint,
+            roundCheckpoint,
             'The required next tool call was missing. Do not answer yet. Perform that tool action now. This is the only automatic correction for this step.',
           ].join('\n'),
         },
@@ -4059,6 +4081,8 @@ export class ChatView extends ItemView {
     run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
     mentionedServers: string[];
+    explicitToolServerCount: number;
+    explicitToolServerNames: readonly string[];
     initialText?: string;
     initialReasoning?: string;
   }): Promise<void> {
@@ -4089,27 +4113,36 @@ export class ChatView extends ItemView {
     while (round <= maxRounds) {
       if (!isChatRunActive(this.activeRun, args.run)) return;
       const synthesisOnly = round === maxRounds;
+      const policyRound = synthesisOnly ? maxRounds : round + 1;
       round++;
-      const agentPlan = synthesisOnly
-        ? null
-        : planAgenticToolTurn({
-            question: args.question,
-            contextAttachments: args.contextAttachments,
-            explicitToolServerCount: args.mentionedServers.length,
-            toolDefinitions: args.toolDefinitions,
-            toolCalls: allToolCalls,
-            phase: 'after-tools',
-            round,
-            maxRounds,
-          });
+      const agentPlan = planAgenticToolTurn({
+        question: args.question,
+        contextAttachments: args.contextAttachments,
+        explicitToolServerCount: args.explicitToolServerCount,
+        explicitToolServerNames: args.explicitToolServerNames,
+        toolDefinitions: args.toolDefinitions,
+        toolCalls: allToolCalls,
+        phase: 'after-tools',
+        round: policyRound,
+        maxRounds,
+      });
       const checkpoint = synthesisOnly
         ? [
+            agentPlan?.checkpoint,
             '[Superpower Inside final synthesis checkpoint]',
             `Current user objective (highest priority): <user_objective>${args.question}</user_objective>`,
             'The bounded tool budget is now closed. Do not call another tool. Answer the current objective directly and completely from the verified results already provided.',
-          ].join('\n')
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join('\n')
         : (agentPlan?.checkpoint ?? '');
-      const roundToolDefinitions = synthesisOnly ? [] : args.toolDefinitions;
+      const roundToolDefinitions = synthesisOnly
+        ? []
+        : selectAgenticToolDefinitions(
+            args.toolDefinitions,
+            agentPlan?.requiredToolNames,
+            agentPlan?.requiredExternalServerNames,
+          );
       const roundToolChoice: ToolChoice = synthesisOnly
         ? 'none'
         : (agentPlan?.toolChoice ?? 'auto');
@@ -4152,12 +4185,6 @@ export class ChatView extends ItemView {
         const model = args.meta.model?.trim();
         if (providerKey && model) {
           this.compatibilityToolModels.add(`${providerKey}\u0000${model}`);
-        }
-        if (!synthesisOnly) {
-          conversationMessages = appendAgenticCheckpoint(
-            conversationMessages,
-            createCompatibilityToolPrompt(args.toolDefinitions),
-          );
         }
         if (!isChatRunActive(this.activeRun, args.run)) return;
         result = await streamRound();
@@ -4245,6 +4272,7 @@ export class ChatView extends ItemView {
           registry: this.plugin.mcpRegistry,
           preferredServerNames: args.mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          mcpToolBindings: createMcpToolBindingAllowlist(roundToolDefinitions),
         });
         if (!isChatRunActive(this.activeRun, args.run)) return;
         const preparedToolCalls = markRepeatedToolCalls(allToolCalls, preparedCandidates);
@@ -4525,7 +4553,7 @@ export class ChatView extends ItemView {
         explicitlyMentionedServers,
       );
       const toolCalls = message.toolCalls.map((toolCall) =>
-        toolCall.id === toolCallId || toolCall.name === toolCallId
+        toolCall.id === toolCallId
           ? { ...toolCall, approved: true }
           : { ...toolCall },
       );
@@ -4667,6 +4695,8 @@ export class ChatView extends ItemView {
             dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
           },
           mentionedServers,
+          explicitToolServerCount: explicitlyMentionedServers.length,
+          explicitToolServerNames: explicitlyMentionedServers,
         });
         if (!isChatRunActive(this.activeRun, run)) return;
       } else {
