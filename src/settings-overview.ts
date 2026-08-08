@@ -8,15 +8,17 @@ import type {
   MCPServerConfig,
   ProviderConfig,
   ProviderKey,
+  ProviderProfileConfig,
   SuperpowerInsideSettings,
 } from './settings';
 import {
-  buildProviderModelRef,
+  buildChatModelOptions,
   getCustomOpenAIProviderDisplayName,
   getProviderProfileDisplayName,
   parseProviderModelRef,
   PROVIDER_KEYS,
   PROVIDER_LABELS,
+  resolveProviderProfileTone,
 } from './settings';
 
 export type SettingsOverviewTone = 'neutral' | 'success' | 'warning' | 'danger';
@@ -83,6 +85,7 @@ interface ProviderSource {
   label: string;
   key: ProviderKey | 'customOpenAI' | 'ternlight';
   config: ProviderConfig | CustomOpenAIProviderConfig;
+  profile?: ProviderProfileConfig;
 }
 
 export function buildSettingsOverviewSnapshot(input: {
@@ -119,32 +122,60 @@ export function buildSettingsOverviewSnapshot(input: {
 function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverviewStatusRow[] {
   return getProviderSources(settings).map((source) => {
     const modelCount = source.config.models.length;
+    const profileTone = source.profile ? resolveProviderProfileTone(source.profile) : null;
     const requiresKey = shouldRequireProviderApiKey(source.key);
     const missingKey = requiresKey && source.config.enabled && source.config.apiKey.trim() === '';
-    const tone: SettingsOverviewTone = !source.config.enabled
-      ? 'neutral'
-      : missingKey
-        ? 'danger'
-        : modelCount === 0
-          ? 'warning'
-          : 'success';
-    const statusLabel = !source.config.enabled
-      ? t('overviewProviderOff')
-      : missingKey
-        ? t('overviewProviderKeyNeeded')
-        : modelCount === 0
-          ? t('overviewProviderNoModels')
-          : t('overviewReady');
+    const tone: SettingsOverviewTone = profileTone
+      ? profileTone === 'ready'
+        ? 'success'
+        : profileTone === 'configured' || profileTone === 'disabled'
+          ? 'neutral'
+          : profileTone === 'needs-models'
+            ? 'warning'
+            : 'danger'
+      : !source.config.enabled
+        ? 'neutral'
+        : missingKey
+          ? 'danger'
+          : modelCount === 0
+            ? 'warning'
+            : 'success';
+    const statusLabel = profileTone
+      ? profileTone === 'ready'
+        ? t('overviewReady')
+        : profileTone === 'configured'
+          ? t('providerStatusConfigured')
+          : profileTone === 'needs-key'
+            ? t('overviewProviderKeyNeeded')
+            : profileTone === 'needs-url'
+              ? t('providerStatusNeedsBaseUrl')
+              : profileTone === 'needs-models'
+                ? t('overviewProviderNoModels')
+                : profileTone === 'failed'
+                  ? t('providerStatusValidationFailed')
+                  : t('overviewProviderOff')
+      : !source.config.enabled
+        ? t('overviewProviderOff')
+        : missingKey
+          ? t('overviewProviderKeyNeeded')
+          : modelCount === 0
+            ? t('overviewProviderNoModels')
+            : t('overviewReady');
     const value = source.config.enabled
       ? t('overviewModelsCount', { count: modelCount })
       : t('overviewDisabled');
-    const detail = missingKey
-      ? t('overviewProviderMissingKeyDetail')
-      : modelCount === 0 && source.config.enabled
-        ? t('overviewProviderNoModelsDetail')
-        : source.config.enabled
-          ? source.config.models.slice(0, 2).join(', ') || t('overviewProviderModelsSelected')
-          : t('overviewProviderDisabledDetail');
+    const detail =
+      profileTone === 'needs-url'
+        ? t('providerSummaryNeedsBaseUrl')
+        : profileTone === 'failed'
+          ? t('providerSummaryValidationFailed')
+          : missingKey
+            ? t('overviewProviderMissingKeyDetail')
+            : modelCount === 0 && source.config.enabled
+              ? t('overviewProviderNoModelsDetail')
+              : source.config.enabled
+                ? source.config.models.slice(0, 2).join(', ') || t('overviewProviderModelsSelected')
+                : t('overviewProviderDisabledDetail');
 
     return {
       id: `provider-${source.id}`,
@@ -160,15 +191,18 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
 
 function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[] {
   if (settings.providerProfiles.length > 0) {
-    return settings.providerProfiles.map((profile) => ({
-      id: `profile-${profile.id}`,
-      label: getProviderProfileDisplayName(profile),
-      key: profile.strategy === 'openAICompatible' ? ('customOpenAI' as const) : profile.strategy,
-      config: {
-        ...profile,
-        models: profile.models.map((model) => model.id),
-      },
-    }));
+    return settings.providerProfiles
+      .filter((profile) => profile.strategy !== 'ternlight')
+      .map((profile) => ({
+        id: `profile-${profile.id}`,
+        label: getProviderProfileDisplayName(profile),
+        key: profile.strategy === 'openAICompatible' ? ('customOpenAI' as const) : profile.strategy,
+        config: {
+          ...profile,
+          models: profile.models.map((model) => model.id),
+        },
+        profile,
+      }));
   }
   const fixed = PROVIDER_KEYS.map((key) => ({
     id: key,
@@ -188,6 +222,8 @@ function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[
 function buildProviderMetric(rows: readonly SettingsOverviewStatusRow[]): SettingsOverviewMetric {
   const enabledRows = rows.filter((row) => row.statusLabel !== t('overviewProviderOff'));
   const readyRows = rows.filter((row) => row.tone === 'success');
+  const configuredRows = rows.filter((row) => row.statusLabel === t('providerStatusConfigured'));
+  const availableRows = [...readyRows, ...configuredRows];
   const failingRows = rows.filter((row) => row.tone === 'danger');
   const warningRows = rows.filter((row) => row.tone === 'warning');
   const tone: SettingsOverviewTone =
@@ -197,26 +233,30 @@ function buildProviderMetric(rows: readonly SettingsOverviewStatusRow[]): Settin
         ? 'warning'
         : readyRows.length > 0
           ? 'success'
-          : 'neutral';
+          : configuredRows.length > 0
+            ? 'neutral'
+            : 'neutral';
   const statusLabel =
     failingRows.length > 0
-      ? t('overviewProviderKeyNeeded')
+      ? (failingRows[0]?.statusLabel ?? t('overviewProviderKeyNeeded'))
       : warningRows.length > 0
-        ? t('overviewProviderCheckModels')
+        ? (warningRows[0]?.statusLabel ?? t('overviewProviderCheckModels'))
         : readyRows.length > 0
           ? t('overviewReady')
-          : t('overviewDisabled');
+          : configuredRows.length > 0
+            ? t('providerStatusConfigured')
+            : t('overviewDisabled');
 
   return {
     id: 'providers',
     label: t('tabProviders'),
-    value: `${readyRows.length}/${enabledRows.length}`,
+    value: `${availableRows.length}/${enabledRows.length}`,
     statusLabel,
     detail:
       enabledRows.length > 0
         ? t('overviewProviderSummaryDetail', {
             enabled: enabledRows.length,
-            ready: readyRows.length,
+            ready: availableRows.length,
           })
         : t('overviewProviderNoneActive'),
     tone,
@@ -478,8 +518,12 @@ function buildChatMetric(settings: SuperpowerInsideSettings): SettingsOverviewMe
 function getChatModelLabel(settings: SuperpowerInsideSettings): string {
   const parsed = parseProviderModelRef(settings.chat.defaultModel);
   if (parsed.kind === 'profile') {
-    const profile = settings.providerProfiles.find((candidate) => candidate.id === parsed.profileId);
-    return profile ? `${getProviderProfileDisplayName(profile)} / ${parsed.modelId}` : parsed.modelId;
+    const profile = settings.providerProfiles.find(
+      (candidate) => candidate.id === parsed.profileId,
+    );
+    return profile
+      ? `${getProviderProfileDisplayName(profile)} / ${parsed.modelId}`
+      : parsed.modelId;
   }
   if (parsed.kind === 'legacy') {
     return `${PROVIDER_LABELS[parsed.providerKey]} / ${parsed.modelId}`;
@@ -515,7 +559,23 @@ function buildAttentionItems(input: {
         target: 'providers',
         actionLabel: t('overviewOpenProviders'),
       });
+      continue;
     }
+    if (row.tone !== 'danger' && row.tone !== 'warning') continue;
+    const suffix =
+      row.statusLabel === t('providerStatusNeedsBaseUrl')
+        ? 'base-url'
+        : row.statusLabel === t('providerStatusValidationFailed')
+          ? 'validation'
+          : 'models';
+    items.push({
+      id: `${row.id}-${suffix}`,
+      label: t('providerAttentionTitle', { provider: row.label }),
+      detail: row.detail,
+      tone: row.tone,
+      target: 'providers',
+      actionLabel: t('overviewOpenProviders'),
+    });
   }
 
   if (input.chat.tone === 'warning') {
@@ -566,27 +626,7 @@ function buildAttentionItems(input: {
 }
 
 function getAvailableChatModelValues(settings: SuperpowerInsideSettings): string[] {
-  const values: string[] = [];
-  if (settings.providerProfiles.length > 0) {
-    for (const profile of settings.providerProfiles) {
-      if (!profile.enabled) continue;
-      for (const model of profile.models) {
-        if (model.kind !== 'general') continue;
-        values.push(buildProviderModelRef(profile.id, model.id));
-      }
-    }
-    return values;
-  }
-  for (const key of PROVIDER_KEYS) {
-    const config = settings[key];
-    if (!config.enabled) continue;
-    values.push(...config.models.map((model) => `${key}:${model}`));
-  }
-  for (const provider of settings.customOpenAIProviders) {
-    if (!provider.enabled) continue;
-    values.push(...provider.models.map((model) => `customOpenAI:${provider.id}:${model}`));
-  }
-  return values;
+  return buildChatModelOptions(settings, { currentModel: '' }).map((option) => option.value);
 }
 
 function getEmbeddingLabel(settings: SuperpowerInsideSettings): string {

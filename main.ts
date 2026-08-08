@@ -19,7 +19,9 @@ import {
   migrateLegacyProviderProfiles,
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
+  resolveChatModelPlan,
   resolveProviderModelRef,
+  resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
 } from './src/settings';
 import {
@@ -28,13 +30,8 @@ import {
   shouldShowProviderApiKey,
   getGraphRagStatusPresentation,
 } from './src/rag/settings-display';
-import {
-  createCustomOpenAIProvider,
-  createProviderForStrategy,
-  createProvider,
-  type ProviderKey,
-  type LLMProvider,
-} from './src/llm/providers';
+import type { LLMProvider } from './src/llm/providers';
+import { createChatProviderForModel } from './src/llm/provider-resolution';
 import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
 import {
   OpenAIEmbeddingProvider,
@@ -1278,9 +1275,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const id =
             typeof provider.id === 'string' && provider.id ? provider.id : `custom-${index + 1}`;
           const storedName =
-            typeof provider.name === 'string' && provider.name.trim()
-              ? provider.name.trim()
-              : '';
+            typeof provider.name === 'string' && provider.name.trim() ? provider.name.trim() : '';
           const name =
             storedName === 'Custom OpenAI-Compatible' ||
             isLocalizedValue('providerCustomDockTitle', storedName)
@@ -1329,16 +1324,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
         ? { ...(data.chat as Record<string, unknown>) }
         : {};
     data.chat = chat;
-    if (
-      'defaultProvider' in chat &&
-      !('defaultModel' in chat)
-    ) {
+    if ('defaultProvider' in chat && !('defaultModel' in chat)) {
       const rawProvider = chat.defaultProvider;
       const oldProvider = typeof rawProvider === 'string' ? rawProvider : '';
       const oldModel =
         (
           (data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined
-      )?.[0] ?? '';
+        )?.[0] ?? '';
       if (oldProvider && oldModel) {
         chat.defaultModel = `${oldProvider}:${oldModel}`;
       }
@@ -1640,176 +1632,47 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private initProvider(): void {
-    const defaultModel = this.settings.chat.defaultModel;
-    if (!defaultModel) {
+    const modelPlan = resolveChatModelPlan(this.settings);
+    const effectiveModel = modelPlan.selectedModel;
+    if (!effectiveModel) {
       this.provider = null;
-      this.getLogger().warn('Default chat model is empty.', { source: 'provider' });
-      return;
-    }
-    const resolvedProfileModel = resolveProviderModelRef(this.settings, defaultModel, 'general');
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) {
-        this.provider = null;
-        this.getLogger().warn('Configured provider profile is disabled.', {
-          source: 'provider',
-          data: { profileId: profile.id, model: modelId },
-        });
-        return;
-      }
-      try {
-        this.provider = createProviderForStrategy(
-          profile.strategy,
-          { ...profile, models: profile.models.map((model) => model.id) },
-          modelId,
-          profile.id,
-        );
-        this.getLogger().info('Chat provider initialized.', {
-          source: 'provider',
-          data: { provider: `profile:${profile.id}`, strategy: profile.strategy, model: modelId },
-        });
-      } catch (err) {
-        this.provider = null;
-        this.getLogger().error('Profile chat provider initialization failed.', {
-          source: 'provider',
-          data: { profileId: profile.id, model: modelId },
-          error: err,
-        });
-      }
-      return;
-    }
-    const parts = defaultModel.split(':');
-    if (parts.length < 2) {
-      this.provider = null;
-      this.getLogger().warn('Default chat model key is invalid.', {
+      this.getLogger().warn('No usable chat model is configured.', {
         source: 'provider',
-        data: { defaultModel },
-      });
-      return;
-    }
-    const providerKey = parts[0] as ProviderKey;
-    const modelName = parts.slice(1).join(':');
-
-    if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) {
-        this.provider = null;
-        this.getLogger().warn('Custom provider model key is invalid.', {
-          source: 'provider',
-          data: { defaultModel },
-        });
-        return;
-      }
-      const providerId = parts[1];
-      const customModelName = parts.slice(2).join(':');
-      const customProvider = this.settings.customOpenAIProviders.find(
-        (provider) => provider.id === providerId,
-      );
-      if (
-        !customProvider?.enabled ||
-        !customProvider.models.includes(customModelName) ||
-        !customProvider.baseUrl?.trim()
-      ) {
-        this.provider = null;
-        this.getLogger().warn('Custom provider is unavailable for selected model.', {
-          source: 'provider',
-          data: { providerId, model: customModelName },
-        });
-        return;
-      }
-      try {
-        this.provider = createCustomOpenAIProvider(customProvider, customModelName);
-        this.getLogger().info('Chat provider initialized.', {
-          source: 'provider',
-          data: { provider: 'customOpenAI', providerId, model: customModelName },
-        });
-      } catch {
-        this.provider = null;
-        this.getLogger().error('Custom chat provider initialization failed.', {
-          source: 'provider',
-          data: { providerId, model: customModelName },
-        });
-      }
-      return;
-    }
-
-    const config = this.settings[providerKey];
-    if (!config?.enabled || !config.models.includes(modelName)) {
-      this.provider = null;
-      this.getLogger().warn('Configured chat provider is disabled or model is unavailable.', {
-        source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: {
+          configuredModel: this.settings.chat.defaultModel,
+          enabledProviderCount: modelPlan.enabledProviderCount,
+        },
       });
       return;
     }
     try {
-      this.provider = createProvider(providerKey, config, modelName);
+      const resolved = createChatProviderForModel(this.settings, effectiveModel);
+      if (!resolved) {
+        this.provider = null;
+        this.getLogger().warn('Rust model plan rejected the selected chat provider.', {
+          source: 'provider',
+          data: { configuredModel: this.settings.chat.defaultModel, effectiveModel },
+        });
+        return;
+      }
+      this.provider = resolved.provider;
       this.getLogger().info('Chat provider initialized.', {
         source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: { provider: resolved.providerKey, model: resolved.model },
       });
     } catch (err) {
       this.provider = null;
       this.getLogger().error('Chat provider initialization failed.', {
         source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: { effectiveModel },
         error: err,
       });
     }
   }
 
   private createProviderForModel(modelKey: string): LLMProvider | null {
-    const normalizedModelKey = modelKey.trim();
-    if (!normalizedModelKey) return null;
-    const resolvedProfileModel = resolveProviderModelRef(
-      this.settings,
-      normalizedModelKey,
-      'general',
-    );
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) return null;
-      try {
-        return createProviderForStrategy(
-          profile.strategy,
-          { ...profile, models: profile.models.map((model) => model.id) },
-          modelId,
-          profile.id,
-        );
-      } catch {
-        return null;
-      }
-    }
-    const parts = normalizedModelKey.split(':');
-    if (parts.length < 2) return null;
-    if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) return null;
-      const providerId = parts[1];
-      const modelName = parts.slice(2).join(':');
-      const customProvider = this.settings.customOpenAIProviders.find(
-        (provider) => provider.id === providerId,
-      );
-      if (
-        !customProvider?.enabled ||
-        !customProvider.models.includes(modelName) ||
-        !customProvider.baseUrl?.trim()
-      ) {
-        return null;
-      }
-      try {
-        return createCustomOpenAIProvider(customProvider, modelName);
-      } catch {
-        return null;
-      }
-    }
-    const providerKey = parts[0] as ProviderKey;
-    const modelName = parts.slice(1).join(':');
-    if (!['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'].includes(providerKey)) {
-      return null;
-    }
-    const config = this.settings[providerKey];
-    if (!config?.enabled || !config.models.includes(modelName)) return null;
     try {
-      return createProvider(providerKey, config, modelName);
+      return createChatProviderForModel(this.settings, modelKey)?.provider ?? null;
     } catch {
       return null;
     }
@@ -2342,13 +2205,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     try {
       const rag = this.settings.rag;
-      const resolvedEmbeddingModel = resolveProviderModelRef(
+      const configuredEmbeddingModel = resolveProviderModelRef(
         this.settings,
         rag.embeddingModelRef ?? '',
         'embedding',
       );
-      const providerKey = resolvedEmbeddingModel
-        ? `profile:${resolvedEmbeddingModel.profile.id}`
+      const resolvedEmbeddingModel = resolveUsableProviderModelRef(
+        this.settings,
+        rag.embeddingModelRef ?? '',
+        'embedding',
+      );
+      const providerKey = configuredEmbeddingModel
+        ? `profile:${configuredEmbeddingModel.profile.id}`
         : '';
       this.getLogger().info('RAG runtime initialization started.', {
         source: 'rag',
@@ -2398,12 +2266,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
 
       if (!resolvedEmbeddingModel) {
-        this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
+        this.lastRagRuntimeInitSkippedReason = configuredEmbeddingModel
+          ? t('ragIndexerConnectionFailed', {
+              provider:
+                configuredEmbeddingModel.profile.name.trim() ||
+                configuredEmbeddingModel.profile.strategy,
+              model: configuredEmbeddingModel.modelId,
+            })
+          : t('ragIndexerSelectEmbeddingModel');
         this.lastRagRuntimeInitStage = null;
         this.lastRagRuntimeInitFinishedAt = Date.now();
-        this.getLogger().warn('RAG embedding model is not selected.', {
+        this.getLogger().warn('RAG embedding model is unavailable.', {
           source: 'rag',
-          data: { embeddingModelRef: rag.embeddingModelRef },
+          data: {
+            embeddingModelRef: rag.embeddingModelRef,
+            configured: Boolean(configuredEmbeddingModel),
+          },
         });
         this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);

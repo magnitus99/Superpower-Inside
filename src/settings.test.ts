@@ -51,6 +51,9 @@ import {
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
   parseProviderModelRef,
+  resetProviderProfileVerification,
+  resolveProviderProfileTone,
+  resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
   upsertProviderProfileModel,
 } from './settings';
@@ -148,6 +151,244 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual(['profile:local:qwen3-embed']);
   });
 
+  it('프로바이더 프로필 상태는 설정 완료와 연결 확인을 구분한다', () => {
+    const baseProfile = {
+      id: 'custom',
+      name: 'Custom',
+      strategy: 'openAICompatible' as const,
+      apiKey: '',
+      baseUrl: 'https://example.com/v1',
+      enabled: true,
+      models: [
+        {
+          id: 'auto',
+          kind: 'general' as const,
+          verification: {
+            chatStatus: 'unknown' as const,
+            embeddingStatus: 'unknown' as const,
+          },
+        },
+      ],
+    };
+
+    expect(resolveProviderProfileTone(baseProfile)).toBe('configured');
+    expect(resolveProviderProfileTone({ ...baseProfile, baseUrl: '' })).toBe('needs-url');
+    expect(
+      resolveProviderProfileTone({
+        ...baseProfile,
+        models: [
+          {
+            ...baseProfile.models[0],
+            verification: { chatStatus: 'failed', embeddingStatus: 'unknown' },
+          },
+        ],
+      }),
+    ).toBe('failed');
+    expect(
+      resolveProviderProfileTone({
+        ...baseProfile,
+        models: [
+          {
+            ...baseProfile.models[0],
+            verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+          },
+        ],
+      }),
+    ).toBe('ready');
+  });
+
+  it('지원하지 않는 strategy의 embedding-only 모델은 준비된 연결로 집계하지 않는다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'claude-embedding',
+          name: 'Claude embedding',
+          strategy: 'claude' as const,
+          apiKey: 'test-key',
+          enabled: true,
+          models: [
+            {
+              id: 'unsupported-embed',
+              kind: 'embedding' as const,
+              verification: {
+                chatStatus: 'unknown' as const,
+                embeddingStatus: 'success' as const,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(resolveProviderProfileTone(settings.providerProfiles[0])).toBe('needs-models');
+    expect(buildEmbeddingProfileModelOptions(settings, { currentModel: '' })).toEqual([]);
+  });
+
+  it('프로바이더 연결 정보가 바뀌면 저장된 모델 검증 결과를 초기화한다', () => {
+    const profile = {
+      id: 'custom',
+      name: 'Custom',
+      strategy: 'openAICompatible' as const,
+      apiKey: 'old-key',
+      baseUrl: 'https://old.example.com/v1',
+      enabled: true,
+      models: [
+        {
+          id: 'auto',
+          kind: 'general' as const,
+          verification: {
+            chatStatus: 'success' as const,
+            embeddingStatus: 'failed' as const,
+            lastCheckedAt: 123,
+            lastError: 'old failure',
+          },
+        },
+      ],
+    };
+
+    resetProviderProfileVerification(profile);
+
+    expect(profile.models[0]?.verification).toEqual({
+      chatStatus: 'unknown',
+      embeddingStatus: 'unknown',
+    });
+  });
+
+  it('필수 연결 정보가 없는 프로필은 채팅 모델 선택지에서 제외한다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'missing-key',
+          name: 'Missing key',
+          strategy: 'openRouter' as const,
+          apiKey: '',
+          enabled: true,
+          models: [
+            {
+              id: 'remote',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'missing-url',
+          name: 'Missing URL',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: '',
+          enabled: true,
+          models: [
+            {
+              id: 'auto',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'usable',
+          name: 'Usable',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'auto',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(buildChatModelOptions(settings, { currentModel: '' })).toEqual([
+      { value: 'profile:usable:auto', label: 'Usable / auto' },
+    ]);
+  });
+
+  it('RAG 실행용 임베딩 모델도 연결 정보, 검증 실패, strategy 지원을 함께 점검한다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'missing-url',
+          name: 'Missing URL',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: '',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'failed',
+          name: 'Failed',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://failed.example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'failed' as const },
+            },
+          ],
+        },
+        {
+          id: 'unsupported',
+          name: 'Unsupported',
+          strategy: 'claude' as const,
+          apiKey: 'test-key',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'success' as const },
+            },
+          ],
+        },
+        {
+          id: 'usable',
+          name: 'Usable',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://usable.example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:missing-url:embed', 'embedding'),
+    ).toBeNull();
+    expect(resolveUsableProviderModelRef(settings, 'profile:failed:embed', 'embedding')).toBeNull();
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:unsupported:embed', 'embedding'),
+    ).toBeNull();
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:usable:embed', 'embedding'),
+    ).toMatchObject({ modelId: 'embed', profile: { id: 'usable' } });
+  });
+
   it('untouched default RAG settings create the built-in Ternlight embedding profile', () => {
     const migrated = migrateLegacyProviderProfiles({
       ...DEFAULT_SETTINGS,
@@ -169,6 +410,33 @@ describe('RAG 설정 표시 헬퍼', () => {
       verification: { embeddingStatus: 'success' },
     });
     expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:ternlight-base');
+  });
+
+  it('기존 Ternlight 프로필의 채팅 모델은 마이그레이션에서 제거한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'legacy-ternlight',
+          name: 'Ternlight',
+          strategy: 'ternlight',
+          apiKey: '',
+          enabled: true,
+          models: [
+            {
+              id: 'legacy-chat-model',
+              kind: 'general',
+              verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      migrated.providerProfiles.find((profile) => profile.strategy === 'ternlight')?.models,
+    ).toEqual([expect.objectContaining({ id: 'ternlight-base', kind: 'embedding' })]);
+    expect(buildChatModelOptions(migrated, { currentModel: '' })).toEqual([]);
   });
 
   it('저장된 자동 프로바이더 이름은 현재 언어로 표시하고 사용자 이름은 보존한다', () => {
@@ -290,6 +558,40 @@ describe('RAG 설정 표시 헬퍼', () => {
     );
     expect(migrated.chat.defaultModel).toBe('');
     expect(migrated.rag.embeddingModelRef).toBe('profile:openai:text-embedding-3-small');
+  });
+
+  it('built-in과 custom provider ID가 충돌해도 custom 모델을 올바른 프로필로 마이그레이션한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...structuredClone(DEFAULT_SETTINGS),
+      openai: {
+        apiKey: 'built-in-key',
+        baseUrl: 'https://api.openai.com',
+        enabled: true,
+        models: ['shared-model'],
+      },
+      customOpenAIProviders: [
+        {
+          id: 'openai',
+          name: 'Private Gateway',
+          apiKey: '',
+          baseUrl: 'https://private.example.com/v1',
+          enabled: true,
+          models: ['shared-model'],
+        },
+      ],
+      chat: {
+        ...structuredClone(DEFAULT_SETTINGS.chat),
+        defaultModel: 'customOpenAI:openai:shared-model',
+      },
+    });
+
+    expect(migrated.chat.defaultModel).toBe('profile:custom-openai:shared-model');
+    expect(
+      migrated.providerProfiles.find((profile) => profile.id === 'custom-openai'),
+    ).toMatchObject({
+      strategy: 'openAICompatible',
+      baseUrl: 'https://private.example.com/v1',
+    });
   });
 
   it('설정 탭 라벨은 현재 언어로 매번 다시 계산한다', () => {
@@ -728,9 +1030,7 @@ describe('RAG 설정 표시 헬퍼', () => {
       'GraphRAG 데이터 초기화',
       '탐색기 열기',
     ]);
-    expect(groups[0]?.actions[0]?.description).toContain(
-      '대상 .md 노트 50개 중 최대 20개',
-    );
+    expect(groups[0]?.actions[0]?.description).toContain('대상 .md 노트 50개 중 최대 20개');
     expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
     expect(groups[1]?.actions[1]?.description).toContain(
       '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
@@ -980,9 +1280,7 @@ describe('RAG 설정 표시 헬퍼', () => {
       failedFileCount: 0,
     });
 
-    expect(state.start.reason).toBe(
-      '공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.',
-    );
+    expect(state.start.reason).toBe('공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.');
   });
 
   it('일반 설정 자동 저장은 RAG 런타임을 재초기화하지 않는다', async () => {

@@ -32,6 +32,13 @@ pub use rag_recovery::{
 mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
+/// 프로바이더 연결 상태와 채팅 모델 선택 정책.
+mod provider_state;
+pub use provider_state::{
+    plan_chat_model_state_json, plan_provider_profile_state_json,
+    plan_provider_verification_reset_json,
+};
+
 /// 네이티브 읽기 전용 볼트 도구의 요청 검증과 제한된 실행 정책.
 mod native_vault_tool;
 pub use native_vault_tool::{

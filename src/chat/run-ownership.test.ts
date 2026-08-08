@@ -126,15 +126,15 @@ describe('chat run ownership', () => {
       'const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));',
     );
     expect(handleSource).toContain('const toolsEnabled = maxToolRounds > 0;');
-    expect(handleSource).toContain(
-      'initialAgentPlan?.shouldRetryWithoutTools !== true &&',
-    );
+    expect(handleSource).toContain('initialAgentPlan?.shouldRetryWithoutTools !== true &&');
     expect(handleSource).toContain(
       'if (!isChatRunActive(this.activeRun, run)) return;\n        const fallbackPlan',
     );
     expect(loopSource).toContain("toolProtocol = 'compatibility';");
     expect(loopSource).toContain('const synthesisOnly = round === maxRounds;');
-    expect(loopSource).toContain("const roundToolChoice: ToolChoice = synthesisOnly\n        ? 'none'");
+    expect(loopSource).toContain(
+      "const roundToolChoice: ToolChoice = synthesisOnly\n        ? 'none'",
+    );
   });
 
   it('제출 user 다음 assistant placeholder는 첫 비동기 저장·도구 정의 gap보다 먼저 생긴다', () => {
@@ -154,6 +154,20 @@ describe('chat run ownership', () => {
     expect(assistantMessageIndex).toBeGreaterThan(userMessageIndex);
     expect(saveIndex).toBeGreaterThan(assistantMessageIndex);
     expect(collectToolsIndex).toBeGreaterThan(assistantMessageIndex);
+  });
+
+  it('프로바이더 생성 실패는 제출 run과 로딩 상태를 즉시 해제한다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
+    const handleSource = viewSource.slice(handleStart, handleEnd);
+    const failureNoticeIndex = handleSource.indexOf('chatProviderInitializationFailed');
+    const releaseIndex = handleSource.indexOf('releaseSetupRun();', failureNoticeIndex);
+    const returnIndex = handleSource.indexOf('return;', releaseIndex);
+
+    expect(failureNoticeIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseIndex).toBeGreaterThan(failureNoticeIndex);
+    expect(returnIndex).toBeGreaterThan(releaseIndex);
   });
 
   it('세션 전환 진입점은 기존 run을 먼저 취소·무효화한다', () => {

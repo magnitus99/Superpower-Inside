@@ -15,12 +15,8 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toMatch(
       /\.superpower-inside-settings-tab-content\.is-active\s*\{[\s\S]*display:\s*flex/,
     );
-    expect(styles).toMatch(
-      /\.superpower-inside-settings-tabs\s*\{[\s\S]*flex-wrap:\s*wrap/,
-    );
-    expect(styles).toMatch(
-      /\.superpower-inside-settings-tab\s*\{[\s\S]*flex:\s*0\s+0\s+auto/,
-    );
+    expect(styles).toMatch(/\.superpower-inside-settings-tabs\s*\{[\s\S]*flex-wrap:\s*wrap/);
+    expect(styles).toMatch(/\.superpower-inside-settings-tab\s*\{[\s\S]*flex:\s*0\s+0\s+auto/);
     expect(styles).toMatch(
       /\.superpower-inside-settings-status-detail,[\s\S]*white-space:\s*normal/,
     );
@@ -85,7 +81,7 @@ describe('설정 화면 리디자인 구조', () => {
     const methodEnd = settingsSource.indexOf('\n  private handlePluginDataReset', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
-    expect(methodSource).toContain("createSettingsDisclosure(");
+    expect(methodSource).toContain('createSettingsDisclosure(');
     expect(methodSource).toContain("'general-auto-save-details'");
     expect(methodSource).toContain("'general-diagnostics'");
     expect(methodSource).toContain("'general-danger-zone'");
@@ -95,19 +91,25 @@ describe('설정 화면 리디자인 구조', () => {
 
   it('General 상태는 refresh bus 이벤트에서 전체 탭 대신 상태 section만 갱신한다', () => {
     const renderStart = settingsSource.indexOf('private renderSettingsView(): void');
-    const renderEnd = settingsSource.indexOf('\n  private unregisterRefreshBusSubscriptions', renderStart);
+    const renderEnd = settingsSource.indexOf(
+      '\n  private unregisterRefreshBusSubscriptions',
+      renderStart,
+    );
     const renderSource = settingsSource.slice(renderStart, renderEnd);
     const refreshStart = settingsSource.indexOf('private refreshGeneralStatusSection(): void');
-    const refreshEnd = settingsSource.indexOf('\n  private repopulateDefaultModelDropdown', refreshStart);
+    const refreshEnd = settingsSource.indexOf(
+      '\n  private repopulateDefaultModelDropdown',
+      refreshStart,
+    );
     const refreshSource = settingsSource.slice(refreshStart, refreshEnd);
 
     expect(renderSource).toContain("bus.on('rag'");
     expect(renderSource).toContain("bus.on('models'");
     expect(renderSource).toContain("bus.on('mcp'");
     expect(renderSource).toContain("bus.on('graph-data'");
-    expect(renderSource.match(/this\.refreshGeneralStatusSection\(\)/g)?.length).toBeGreaterThanOrEqual(
-      4,
-    );
+    expect(
+      renderSource.match(/this\.refreshGeneralStatusSection\(\)/g)?.length,
+    ).toBeGreaterThanOrEqual(4);
     expect(refreshSource).toContain('this.generalStatusBody');
     expect(refreshSource).toContain('statusBody.isConnected');
     expect(refreshSource).not.toContain('this.buildGeneralTab');
@@ -149,6 +151,20 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('enforceMcpTools');
   });
 
+  it('Chat 현재 동작은 저장된 기본 모델이 실제 사용 가능한지 점검한다', () => {
+    const methodStart = settingsSource.indexOf('private buildChatStatusSection');
+    const methodEnd = settingsSource.indexOf('\n  private buildChatPromptSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('resolveChatModelPlan');
+    expect(methodSource).toContain('modelPlan.selectedModel');
+    expect(methodSource).toContain('this.plugin.settings.chat.defaultModel');
+    expect(methodSource).toContain("t('defaultModel')");
+    expect(methodSource).toContain("t('chatReadinessModelMissingDetail')");
+    expect(methodSource).not.toContain("t('chatStatusModelFallbackDetail')");
+  });
+
   it('MCP 탭은 현재 연결, 서버 설정, 실행 환경 순서의 공통 section을 사용한다', () => {
     const methodStart = settingsSource.indexOf('private buildMCPTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildDetailedMcpError', methodStart);
@@ -183,7 +199,9 @@ describe('설정 화면 리디자인 구조', () => {
   });
 
   it('Advanced 탭은 플러그인 인식 상태와 한계를 공통 status와 notice로 표현한다', () => {
-    const methodStart = settingsSource.indexOf('private buildAdvancedTab(containerEl: HTMLElement)');
+    const methodStart = settingsSource.indexOf(
+      'private buildAdvancedTab(containerEl: HTMLElement)',
+    );
     const methodEnd = settingsSource.indexOf('\n  private buildProviderProfilesTab', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
@@ -344,7 +362,9 @@ describe('설정 화면 리디자인 구조', () => {
   });
 
   it('Providers 탭은 현재 상태와 연결 목록 순서로 공통 workspace를 사용한다', () => {
-    const methodStart = settingsSource.indexOf('private buildProvidersTab(containerEl: HTMLElement)');
+    const methodStart = settingsSource.indexOf(
+      'private buildProvidersTab(containerEl: HTMLElement)',
+    );
     const methodEnd = settingsSource.indexOf('\n  private buildRAGTab', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
@@ -360,7 +380,10 @@ describe('설정 화면 리디자인 구조', () => {
 
   it('Providers 상태는 첫 attention만 primary action으로 표시하고 추가 행동을 유지한다', () => {
     const methodStart = settingsSource.indexOf('private buildProviderStatusSection(');
-    const methodEnd = settingsSource.indexOf('\n  private buildProviderConnectionsSection', methodStart);
+    const methodEnd = settingsSource.indexOf(
+      '\n  private buildProviderConnectionsSection',
+      methodStart,
+    );
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodSource).toContain('createSettingsSection');
@@ -373,11 +396,13 @@ describe('설정 화면 리디자인 구조', () => {
 
   it('Provider 목록은 공통 disclosure로 동시에 하나만 펼친다', () => {
     const cardStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
-    const cardEnd = settingsSource.indexOf('\n  private getProviderProfileTone', cardStart);
+    const cardEnd = settingsSource.indexOf('\n  private getProviderProfileStatusLabel', cardStart);
     const cardSource = settingsSource.slice(cardStart, cardEnd);
 
     expect(cardSource).toContain('createSettingsDisclosure');
-    expect(cardSource).toContain('this.expandedProviderProfileId === profile.id ? null : profile.id');
+    expect(cardSource).toContain(
+      'this.expandedProviderProfileId === profile.id ? null : profile.id',
+    );
     expect(cardSource).toContain('this.refreshProviderProfileDisclosures(containerEl)');
     expect(cardSource).toContain("'aria-expanded'");
     expect(cardSource).not.toContain('superpower-inside-provider-shell');
@@ -400,6 +425,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('superpower-inside-provider-model-add-input');
     expect(methodSource).toContain('superpower-inside-provider-model-add-btn');
     expect(methodSource).toContain('addButton.disabled = !input.value.trim()');
+    expect(methodSource).toContain('getProviderConnectionSetupWarning(profile)');
     expect(methodSource).toContain("input.addEventListener('input'");
     expect(methodSource).toContain("input.addEventListener('keydown'");
 
@@ -414,9 +440,33 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toContain('.superpower-inside-provider-model-add-btn:disabled');
   });
 
+  it('Provider 모델 가져오기는 체크박스 포커스를 유지하고 제목을 접근 가능하게 제공한다', () => {
+    const modalStart = settingsSource.indexOf('class ProviderModelImportModal extends Modal');
+    const modalEnd = settingsSource.indexOf(
+      '\nexport class SuperpowerInsideSettingTab',
+      modalStart,
+    );
+    const modalSource = settingsSource.slice(modalStart, modalEnd);
+    const changeStart = modalSource.indexOf("checkbox.addEventListener('change'");
+    const changeEnd = modalSource.indexOf('\n      const copy =', changeStart);
+    const changeSource = modalSource.slice(changeStart, changeEnd);
+
+    expect(modalStart).toBeGreaterThanOrEqual(0);
+    expect(modalSource).toContain("this.setTitle(t('providerImportModelsTitle'))");
+    expect(modalSource).toContain('private refreshSelectionSummary(');
+    expect(modalSource).toContain("'aria-live': 'polite'");
+    expect(modalSource).toContain("'aria-atomic': 'true'");
+    expect(changeStart).toBeGreaterThanOrEqual(0);
+    expect(changeSource).toContain('this.refreshSelectionSummary(filtered.length)');
+    expect(changeSource).not.toContain('this.renderList()');
+  });
+
   it('Provider disclosure는 연결, 모델, 위험 작업 순서와 API key 마스킹을 유지한다', () => {
     const methodStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
-    const methodEnd = settingsSource.indexOf('\n  private getProviderProfileTone', methodStart);
+    const methodEnd = settingsSource.indexOf(
+      '\n  private getProviderProfileStatusLabel',
+      methodStart,
+    );
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
@@ -431,9 +481,107 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toContain('@container superpower-inside-settings (max-width: 520px)');
   });
 
+  it('Provider 연결 입력은 DOM 전체를 교체하지 않고 상태 표현만 갱신한다', () => {
+    const connectionStart = settingsSource.indexOf('private buildProviderConnectionSettings(');
+    const connectionEnd = settingsSource.indexOf(
+      '\n  private renderProviderProfileAttention',
+      connectionStart,
+    );
+    const connectionSource = settingsSource.slice(connectionStart, connectionEnd);
+    const refreshStart = settingsSource.indexOf('private refreshProviderProfilePresentation(');
+    const refreshEnd = settingsSource.indexOf(
+      '\n  private invalidateProviderProfileVerification',
+      refreshStart,
+    );
+    const refreshSource = settingsSource.slice(refreshStart, refreshEnd);
+
+    expect(connectionStart).toBeGreaterThanOrEqual(0);
+    expect(connectionSource).toContain('refreshProviderProfilePresentation');
+    expect(connectionSource).not.toContain("addEventListener('blur'");
+    expect(refreshStart).toBeGreaterThanOrEqual(0);
+    expect(refreshSource).toContain('superpower-inside-provider-disclosure-status');
+    expect(refreshSource).toContain('superpower-inside-provider-profile-attention');
+    expect(refreshSource).toContain('refreshProviderStatusSection');
+    expect(refreshSource).toContain('status.dataset.providerTone !== tone');
+    expect(refreshSource).toContain('attention.dataset.providerTone !== tone');
+    expect(refreshSource).not.toContain('refreshProvidersTab');
+    expect(refreshSource).not.toContain('renderSettingsView');
+    expect(settingsSource).not.toContain('scheduleProviderTabRefresh');
+  });
+
+  it('Provider 모델 변경 알림은 저장 성공 이후에만 발행한다', () => {
+    const saveStart = settingsSource.indexOf('private async saveSettingsWithFeedback(');
+    const saveEnd = settingsSource.indexOf('\n  hide(): void', saveStart);
+    const saveSource = settingsSource.slice(saveStart, saveEnd);
+    const importStart = settingsSource.indexOf('private openProviderModelImportModal(');
+    const importEnd = settingsSource.indexOf(
+      '\n  private async verifyProviderProfileModel',
+      importStart,
+    );
+    const importSource = settingsSource.slice(importStart, importEnd);
+
+    expect(saveStart).toBeGreaterThanOrEqual(0);
+    expect(saveSource.indexOf('await this.plugin.saveSettings(options)')).toBeLessThan(
+      saveSource.indexOf('this.notifyProviderModelsChanged()'),
+    );
+    expect(saveSource.indexOf('this.notifyProviderModelsChanged()')).toBeLessThan(
+      saveSource.indexOf('} catch (err)'),
+    );
+    expect(saveSource).not.toContain('finally');
+    expect(settingsSource).toContain('private debouncedProviderSave(reinitRag = true)');
+    expect(settingsSource).toContain('this.debouncedSave({ reinitRag })');
+    expect(importStart).toBeGreaterThanOrEqual(0);
+    expect(importSource).toContain('onSubmit: async (modelIds) =>');
+    expect(importSource).toContain(
+      'await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false })',
+    );
+    expect(importSource).toContain('profile.models = previousModels');
+    expect(
+      importSource.indexOf('await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false })'),
+    ).toBeLessThan(importSource.indexOf('this.notifyProviderModelsChanged()'));
+    expect(settingsSource).toContain('onSubmit: (modelIds: string[]) => Promise<boolean>');
+    const verifyStart = settingsSource.indexOf('private async verifyProviderProfileModel(');
+    const verifyEnd = settingsSource.indexOf(
+      '\n  private getProfileApiKeyVisibilityKey',
+      verifyStart,
+    );
+    const verifySource = settingsSource.slice(verifyStart, verifyEnd);
+    expect(verifySource).toContain('const persistVerification = async');
+    expect(verifySource).toContain('getProviderConnectionSetupWarning(profile)');
+    expect(verifySource).toContain('profileState.embeddingSupported');
+    expect(verifySource).toContain(
+      'await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false })',
+    );
+    expect(verifySource).toContain('profile.models = previousModels');
+
+    const subscriptionStart = settingsSource.indexOf("bus.on('models', () => {");
+    const subscriptionEnd = settingsSource.indexOf('\n        }),', subscriptionStart);
+    const subscriptionSource = settingsSource.slice(subscriptionStart, subscriptionEnd);
+    const repopulateStart = settingsSource.indexOf('private repopulateDefaultModelDropdown()');
+    const repopulateEnd = settingsSource.indexOf('\n  private refreshRagTab', repopulateStart);
+    const repopulateSource = settingsSource.slice(repopulateStart, repopulateEnd);
+    expect(subscriptionSource).toContain('this.repopulateDefaultModelDropdown()');
+    expect(repopulateSource).not.toContain("refreshBus.emit('models'");
+  });
+
+  it('RAG 상태 경고도 실제 임베딩 실행과 같은 usable provider 경계를 사용한다', () => {
+    const methodStart = settingsSource.indexOf('private getRagSetupWarning(): string | null');
+    const methodEnd = settingsSource.indexOf('\n  private diagnoseRAGInitFailure', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('resolveProviderProfileState');
+    expect(methodSource).toContain('resolveUsableProviderModelRef');
+    expect(methodSource).toContain("profileState.tone === 'needs-url'");
+    expect(methodSource).toContain("profileState.tone === 'failed'");
+  });
+
   it('펼친 Provider는 선택 헤더와 연결된 상세 문맥을 시각적으로 구분한다', () => {
     const methodStart = settingsSource.indexOf('private buildProviderProfileDisclosure(');
-    const methodEnd = settingsSource.indexOf('\n  private getProviderProfileTone', methodStart);
+    const methodEnd = settingsSource.indexOf(
+      '\n  private getProviderProfileStatusLabel',
+      methodStart,
+    );
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodSource).toContain('superpower-inside-provider-detail-context');
@@ -465,7 +613,6 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain("event.key === 'Home'");
     expect(settingsSource).toContain("event.key === 'End'");
   });
-
 
   it('integrated logs are owned by Agent Diagnostics instead of a standalone Obsidian view', () => {
     expect(settingsSource).not.toContain("| 'logs'");

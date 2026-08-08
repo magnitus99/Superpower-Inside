@@ -136,6 +136,9 @@ import {
   plan_rag_storage_health_json,
   rag_automatic_recovery_delay_ms,
   plan_prompt_library_summary_json,
+  plan_provider_profile_state_json,
+  plan_provider_verification_reset_json,
+  plan_chat_model_state_json,
   plan_rag_status_json,
   plan_reference_file_indices_json,
   plan_rerank_messages_json,
@@ -1320,6 +1323,57 @@ export interface RustPromptLibrarySummaryInput {
   filePath: string;
   heading: string;
   text: string;
+}
+
+export type RustProviderProfileTone =
+  | 'ready'
+  | 'configured'
+  | 'needs-key'
+  | 'needs-url'
+  | 'needs-models'
+  | 'failed'
+  | 'disabled';
+
+export interface RustProviderModelStateInput {
+  value: string;
+  label: string;
+  kind: 'general' | 'embedding';
+  verificationStatus: 'success' | 'failed' | 'unknown';
+}
+
+export interface RustProviderStateInput {
+  strategy: string;
+  enabled: boolean;
+  apiKeyConfigured: boolean;
+  baseUrlConfigured: boolean;
+  models: RustProviderModelStateInput[];
+}
+
+export interface RustProviderProfileStatePlan {
+  tone: RustProviderProfileTone;
+  chatSupported: boolean;
+  embeddingSupported: boolean;
+  chatUsable: boolean;
+  embeddingUsable: boolean;
+  chatModelValues: string[];
+  embeddingModelValues: string[];
+}
+
+export interface RustProviderVerificationState {
+  chatStatus: 'success' | 'failed' | 'unknown';
+  embeddingStatus: 'success' | 'failed' | 'unknown';
+}
+
+export interface RustProviderVerificationReset {
+  chatStatus: 'unknown';
+  embeddingStatus: 'unknown';
+}
+
+export interface RustChatModelStatePlan {
+  options: Array<{ value: string; label: string }>;
+  selectedModel: string;
+  enabledProviderCount: number;
+  availableModelCount: number;
 }
 
 export interface RustRagFileEligibilityInput {
@@ -4890,6 +4944,59 @@ export function planPromptLibrarySummaryRust(
   }
 }
 
+export function planProviderProfileStateRust(
+  input: RustProviderStateInput,
+): RustProviderProfileStatePlan | null {
+  if (!isValidProviderStateInput(input) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_provider_profile_state_json(JSON.stringify(input));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isProviderProfileStatePlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planProviderVerificationResetRust(
+  models: readonly RustProviderVerificationState[],
+): RustProviderVerificationReset[] | null {
+  if (!models.every(isProviderVerificationState) || !ensureRustCore()) return null;
+  try {
+    const raw = plan_provider_verification_reset_json(JSON.stringify(models));
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) &&
+      parsed.length === models.length &&
+      parsed.every(isProviderVerificationReset)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planChatModelStateRust(
+  providers: readonly RustProviderStateInput[],
+  configuredDefault: string,
+): RustChatModelStatePlan | null {
+  if (
+    !providers.every(isValidProviderStateInput) ||
+    !isStringValue(configuredDefault) ||
+    !ensureRustCore()
+  ) {
+    return null;
+  }
+  try {
+    const raw = plan_chat_model_state_json(JSON.stringify(providers), configuredDefault);
+    if (raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isChatModelStatePlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function planRagFileContentProbeIndicesRust(
   files: readonly RustRagFileEligibilityInput[],
   excludePaths: readonly string[],
@@ -5412,16 +5519,10 @@ export function planNativeVaultSearchRrfRust(
   }
   if (!ensureRustCore()) return null;
   try {
-    const raw = plan_native_vault_search_rrf_json(
-      JSON.stringify(candidates),
-      queryCount,
-      limit,
-    );
+    const raw = plan_native_vault_search_rrf_json(JSON.stringify(candidates), queryCount, limit);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isNativeVaultSearchRrfPlan(parsed, candidates.length, queryCount)
-      ? parsed
-      : null;
+    return isNativeVaultSearchRrfPlan(parsed, candidates.length, queryCount) ? parsed : null;
   } catch {
     return null;
   }
@@ -8168,6 +8269,98 @@ function isStringValue(value: unknown): value is string {
 
 function isStringRecordValueMap(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidProviderStateInput(input: RustProviderStateInput): boolean {
+  return (
+    isStringValue(input.strategy) &&
+    input.strategy.trim().length > 0 &&
+    typeof input.enabled === 'boolean' &&
+    typeof input.apiKeyConfigured === 'boolean' &&
+    typeof input.baseUrlConfigured === 'boolean' &&
+    Array.isArray(input.models) &&
+    input.models.every(
+      (model) =>
+        isStringValue(model.value) &&
+        model.value.trim().length > 0 &&
+        isStringValue(model.label) &&
+        model.label.trim().length > 0 &&
+        (model.kind === 'general' || model.kind === 'embedding') &&
+        (model.verificationStatus === 'success' ||
+          model.verificationStatus === 'failed' ||
+          model.verificationStatus === 'unknown'),
+    )
+  );
+}
+
+function isProviderProfileStatePlan(value: unknown): value is RustProviderProfileStatePlan {
+  if (!isStringRecordValueMap(value)) return false;
+  return (
+    (value.tone === 'ready' ||
+      value.tone === 'configured' ||
+      value.tone === 'needs-key' ||
+      value.tone === 'needs-url' ||
+      value.tone === 'needs-models' ||
+      value.tone === 'failed' ||
+      value.tone === 'disabled') &&
+    typeof value.chatSupported === 'boolean' &&
+    typeof value.embeddingSupported === 'boolean' &&
+    typeof value.chatUsable === 'boolean' &&
+    typeof value.embeddingUsable === 'boolean' &&
+    Array.isArray(value.chatModelValues) &&
+    value.chatModelValues.every(isStringValue) &&
+    new Set(value.chatModelValues).size === value.chatModelValues.length &&
+    Array.isArray(value.embeddingModelValues) &&
+    value.embeddingModelValues.every(isStringValue) &&
+    new Set(value.embeddingModelValues).size === value.embeddingModelValues.length
+  );
+}
+
+function isProviderVerificationState(value: unknown): value is RustProviderVerificationState {
+  return (
+    isStringRecordValueMap(value) &&
+    (value.chatStatus === 'success' ||
+      value.chatStatus === 'failed' ||
+      value.chatStatus === 'unknown') &&
+    (value.embeddingStatus === 'success' ||
+      value.embeddingStatus === 'failed' ||
+      value.embeddingStatus === 'unknown')
+  );
+}
+
+function isProviderVerificationReset(value: unknown): value is RustProviderVerificationReset {
+  return (
+    isStringRecordValueMap(value) &&
+    value.chatStatus === 'unknown' &&
+    value.embeddingStatus === 'unknown'
+  );
+}
+
+function isChatModelStatePlan(value: unknown): value is RustChatModelStatePlan {
+  if (!isStringRecordValueMap(value) || !Array.isArray(value.options)) return false;
+  const optionsAreValid = value.options.every(
+    (option) =>
+      isStringRecordValueMap(option) &&
+      isStringValue(option.value) &&
+      option.value.trim().length > 0 &&
+      isStringValue(option.label) &&
+      option.label.trim().length > 0,
+  );
+  if (
+    !optionsAreValid ||
+    !isStringValue(value.selectedModel) ||
+    !isValidNonNegativeInteger(value.enabledProviderCount) ||
+    !isValidNonNegativeInteger(value.availableModelCount) ||
+    value.availableModelCount !== value.options.length
+  ) {
+    return false;
+  }
+  return (
+    value.selectedModel.length === 0 ||
+    value.options.some(
+      (option) => isStringRecordValueMap(option) && option.value === value.selectedModel,
+    )
+  );
 }
 
 function isNativeVaultToolRequestPlan(value: unknown): value is RustNativeVaultToolRequestPlan {

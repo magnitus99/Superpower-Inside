@@ -1,14 +1,7 @@
 import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
-import {
-  buildChatModelOptions,
-  CHAT_PROVIDER_KEYS,
-  getCustomOpenAIProviderDisplayName,
-  getProviderProfileDisplayName,
-  PROVIDER_LABELS,
-  resolveProviderModelRef,
-  type PluginLike,
-  type ProviderKey,
-} from '../settings';
+import type { PluginLike } from '../settings';
+import { resolveChatModelState } from './chat-model-state';
+import { buildStoredChatModelRef, createChatProviderForModel } from '../llm/provider-resolution';
 import type {
   ChatMessage,
   LLMProvider,
@@ -662,6 +655,7 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-model-select',
       attr: { 'aria-label': t('modelSelector') },
     });
+    this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
     this.populateModelSelect();
 
     this.mcpBtn = toolbar.createEl('button', {
@@ -805,9 +799,8 @@ export class ChatView extends ItemView {
     if (!this.modelSelectEl) return;
     this.modelSelectEl.empty();
 
-    const allModels = buildChatModelOptions(this.plugin.settings, {
-      currentModel: this.plugin.settings.chat.defaultModel,
-    });
+    const modelState = resolveChatModelState(this.plugin.settings);
+    const allModels = modelState.options;
 
     if (allModels.length === 0) {
       const opt = this.modelSelectEl.createEl('option');
@@ -817,19 +810,18 @@ export class ChatView extends ItemView {
       return;
     }
 
-    allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
-    const defaultModel = this.plugin.settings.chat.defaultModel;
-
+    if (!modelState.selectedModel) {
+      const opt = this.modelSelectEl.createEl('option');
+      opt.value = '';
+      opt.text = t('chatReadinessSelectModelAction');
+    }
     for (const m of allModels) {
       const opt = this.modelSelectEl.createEl('option');
       opt.value = m.value;
       opt.text = m.label;
     }
 
-    this.modelSelectEl.value =
-      defaultModel && allModels.some((m) => m.value === defaultModel)
-        ? defaultModel
-        : allModels[0].value;
+    this.modelSelectEl.value = modelState.selectedModel;
     this.modelSelectEl.disabled = false;
     this.renderChatReadiness();
   }
@@ -886,36 +878,11 @@ export class ChatView extends ItemView {
   }
 
   private getEnabledProviderCount(): number {
-    if (this.plugin.settings.providerProfiles.length > 0) {
-      return this.plugin.settings.providerProfiles.filter((profile) => profile.enabled).length;
-    }
-    const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
-    const custom = this.plugin.settings.customOpenAIProviders.filter(
-      (provider) => provider.enabled,
-    ).length;
-    return builtIn + custom;
+    return resolveChatModelState(this.plugin.settings).enabledProviderCount;
   }
 
   private getAvailableModelCount(): number {
-    if (this.plugin.settings.providerProfiles.length > 0) {
-      return this.plugin.settings.providerProfiles.reduce(
-        (count, profile) =>
-          profile.enabled
-            ? count + profile.models.filter((model) => model.kind === 'general').length
-            : count,
-        0,
-      );
-    }
-    const builtIn = CHAT_PROVIDER_KEYS.reduce(
-      (count, key) =>
-        this.plugin.settings[key].enabled ? count + this.plugin.settings[key].models.length : count,
-      0,
-    );
-    const custom = this.plugin.settings.customOpenAIProviders.reduce(
-      (count, provider) => (provider.enabled ? count + provider.models.length : count),
-      0,
-    );
-    return builtIn + custom;
+    return resolveChatModelState(this.plugin.settings).availableModelCount;
   }
 
   private handleReadinessAction(item: ChatReadinessItem): void {
@@ -2330,9 +2297,7 @@ export class ChatView extends ItemView {
     if (!this.modelSelectEl) return;
     const currentModel = this.modelSelectEl.value || this.plugin.settings.chat.defaultModel;
     const currentProvider = getProviderReferenceIdentity(currentModel);
-    const options = buildChatModelOptions(this.plugin.settings, {
-      currentModel: '',
-    }).sort((left, right) => left.label.localeCompare(right.label, 'en'));
+    const options = resolveChatModelState(this.plugin.settings).options;
     const alternative =
       options.find(
         (option) =>
@@ -2795,23 +2760,9 @@ export class ChatView extends ItemView {
       this.setLoading(false);
     };
 
-    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-      await import('../llm/providers').catch((error: unknown) => {
-        releaseSetupRun();
-        throw error;
-      });
-    if (!isChatRunActive(this.activeRun, run)) return;
-
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
       new Notice(t('defaultModelMissingNotice'));
-      releaseSetupRun();
-      return;
-    }
-
-    const parts = selectedModel.split(':');
-    if (parts.length < 2) {
-      new Notice(t('modelSettingInvalid'));
       releaseSetupRun();
       return;
     }
@@ -2821,60 +2772,22 @@ export class ChatView extends ItemView {
     let providerLabel: string;
     let provider: LLMProvider;
 
-    const resolvedProfileModel = resolveProviderModelRef(
-      this.plugin.settings,
-      selectedModel,
-      'general',
-    );
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) {
+    try {
+      const resolved = createChatProviderForModel(this.plugin.settings, selectedModel);
+      if (!resolved) {
         new Notice(t('noActiveProviderNotice'));
         releaseSetupRun();
         return;
       }
-      key = `profile:${profile.id}`;
-      modelName = modelId;
-      providerLabel = getProviderProfileDisplayName(profile);
-      provider = createProviderForStrategy(
-        profile.strategy,
-        { ...profile, models: profile.models.map((model) => model.id) },
-        modelName,
-        profile.id,
-      );
-    } else if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) {
-        new Notice(t('customModelSettingInvalid'));
-        releaseSetupRun();
-        return;
-      }
-      const providerId = parts[1];
-      modelName = parts.slice(2).join(':');
-      const customProvider = this.plugin.settings.customOpenAIProviders.find(
-        (item) => item.id === providerId,
-      );
-      if (!customProvider?.enabled) {
-        new Notice(t('customProviderDisabled'));
-        releaseSetupRun();
-        return;
-      }
-      key = `customOpenAI:${providerId}`;
-      providerLabel = getCustomOpenAIProviderDisplayName(customProvider);
-      provider = createCustomOpenAIProvider(customProvider, modelName);
-    } else {
-      const fixedKey = parts[0] as ProviderKey;
-      key = fixedKey;
-      modelName = parts.slice(1).join(':');
-      const config = this.plugin.settings[fixedKey];
-      providerLabel = PROVIDER_LABELS[fixedKey];
-
-      if (!config?.enabled) {
-        new Notice(t('noActiveProviderNotice'));
-        releaseSetupRun();
-        return;
-      }
-
-      provider = createProvider(fixedKey, config, modelName);
+      key = resolved.providerKey;
+      modelName = resolved.model;
+      providerLabel = resolved.providerLabel;
+      provider = resolved.provider;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(t('chatProviderInitializationFailed', { message }), 7000);
+      releaseSetupRun();
+      return;
     }
     setHidden(this.typingIndicator, false);
 
@@ -4553,9 +4466,7 @@ export class ChatView extends ItemView {
         explicitlyMentionedServers,
       );
       const toolCalls = message.toolCalls.map((toolCall) =>
-        toolCall.id === toolCallId
-          ? { ...toolCall, approved: true }
-          : { ...toolCall },
+        toolCall.id === toolCallId ? { ...toolCall, approved: true } : { ...toolCall },
       );
       this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls, {
         status: 'streaming',
@@ -4593,41 +4504,13 @@ export class ChatView extends ItemView {
       const latestMessage = this.messages.find((m) => m.id === messageId);
       const providerReinjectableToolCalls = selectProviderReinjectableToolCalls(updated);
       if (providerReinjectableToolCalls.length > 0 && message.providerKey && message.model) {
-        const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-          await import('../llm/providers');
         if (!isChatRunActive(this.activeRun, run)) return;
-        const profileRef = message.providerKey.startsWith('profile:')
-          ? `${message.providerKey}:${message.model}`
-          : '';
-        const resolvedProfileModel = profileRef
-          ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
-          : null;
-        const provider = resolvedProfileModel
-          ? createProviderForStrategy(
-              resolvedProfileModel.profile.strategy,
-              {
-                ...resolvedProfileModel.profile,
-                models: resolvedProfileModel.profile.models.map((model) => model.id),
-              },
-              resolvedProfileModel.modelId,
-              resolvedProfileModel.profile.id,
-            )
-          : message.providerKey.startsWith('customOpenAI:')
-            ? (() => {
-                const providerId = message.providerKey?.split(':')[1] ?? '';
-                const customProvider = this.plugin.settings.customOpenAIProviders.find(
-                  (item) => item.id === providerId,
-                );
-                if (!customProvider) {
-                  throw new Error(t('customProviderNotFound'));
-                }
-                return createCustomOpenAIProvider(customProvider, message.model);
-              })()
-            : createProvider(
-                message.providerKey as ProviderKey,
-                this.plugin.settings[message.providerKey as ProviderKey],
-                message.model,
-              );
+        const resumedProvider = createChatProviderForModel(
+          this.plugin.settings,
+          buildStoredChatModelRef(message.providerKey, message.model),
+        );
+        if (!resumedProvider) throw new Error(t('noActiveProviderNotice'));
+        const provider = resumedProvider.provider;
         const promptContext = await this.buildPromptContext(
           currentQuestion,
           previousUserQuestions,

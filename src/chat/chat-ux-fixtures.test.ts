@@ -52,6 +52,23 @@ describe('chat UX fixture gate', () => {
     expect(styles).toContain('@container (max-width: 420px)');
   });
 
+  it('기본 모델이 사라진 뒤 사용자가 모델을 고르면 즉시 전송 준비 상태를 갱신한다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const buildStart = viewSource.indexOf('private buildInputArea(container: HTMLElement)');
+    const buildEnd = viewSource.indexOf('\n  private async focusMessageSearch', buildStart);
+    const buildSource = viewSource.slice(buildStart, buildEnd);
+    const populateStart = viewSource.indexOf('private populateModelSelect(): void');
+    const populateEnd = viewSource.indexOf('\n  private renderChatReadiness', populateStart);
+    const populateSource = viewSource.slice(populateStart, populateEnd);
+
+    expect(buildSource).toContain(
+      "this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness())",
+    );
+    expect(populateSource).toContain('if (!modelState.selectedModel)');
+    expect(populateSource).toContain("t('chatReadinessSelectModelAction')");
+    expect(populateSource).toContain('this.modelSelectEl.value = modelState.selectedModel');
+  });
+
   it('chat 실행 소유권은 RAG 컨텍스트 준비보다 먼저 시작되어 준비 단계도 취소할 수 있다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
     const handleSendStart = viewSource.indexOf('private async handleSend(): Promise<void>');

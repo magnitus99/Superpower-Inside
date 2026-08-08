@@ -51,6 +51,8 @@ export interface I18nKeys {
   chatEnabledStatus: string;
   chatDisabledStatus: string;
   chatSelectedStatus: string;
+  chatStatusModelReadyDetail: string;
+  chatStatusModelFallbackDetail: string;
   chatStatusPromptDetail: string;
   chatStatusAutosaveOnDetail: string;
   chatStatusAutosaveOffDetail: string;
@@ -660,6 +662,7 @@ export interface I18nKeys {
   chatLoadFailedNotice: string;
   providerPathRequiredSuffix: string;
   defaultModelMissingNotice: string;
+  chatProviderInitializationFailed: string;
   modelSettingInvalid: string;
   customModelSettingInvalid: string;
   customProviderDisabled: string;
@@ -1113,12 +1116,17 @@ export interface I18nKeys {
   providerSetupValidateTitle: string;
   providerSetupValidateDetail: string;
   providerStatusReady: string;
+  providerStatusConfigured: string;
   providerStatusNeedsKey: string;
+  providerStatusNeedsBaseUrl: string;
   providerStatusNeedsModels: string;
+  providerStatusValidationFailed: string;
   providerStatusOff: string;
   providerSummaryReady: string;
   providerSummaryNeedsKey: string;
+  providerSummaryNeedsBaseUrl: string;
   providerSummaryNeedsModels: string;
+  providerSummaryValidationFailed: string;
   providerSummaryOff: string;
   providerKeyReady: string;
   providerKeyMissing: string;
@@ -1548,6 +1556,8 @@ export interface I18nKeys {
   promptLibraryTitle: string;
   closeLabel: string;
   settingsSaveMcpReconnectFailed: string;
+  promptSettingsSaveFailed: string;
+  promptMutationInProgress: string;
   manualPromptDescription: string;
   promptDeleteConfirm: string;
   promptBodyRequired: string;
@@ -1563,6 +1573,11 @@ export interface I18nKeys {
   customLabel: string;
   generatedPromptDescription: string;
   vaultBasedPromptGeneratedNotice: string;
+  promptGenerationDataBoundary: string;
+  promptGenerationModelLabel: string;
+  promptGenerationNoModelsReason: string;
+  promptGenerationDirectionLabel: string;
+  promptGenerationGuidanceLabel: string;
   promptGenerationFailed: string;
   vaultBasedGeneration: string;
   newPromptButton: string;
@@ -1673,6 +1688,9 @@ const ko: I18nKeys = {
   chatEnabledStatus: '사용 중',
   chatDisabledStatus: '꺼짐',
   chatSelectedStatus: '선택됨',
+  chatStatusModelReadyDetail: '새 대화와 볼트 기반 프롬프트 생성에 사용할 모델입니다.',
+  chatStatusModelFallbackDetail:
+    '저장된 기본 모델을 사용할 수 없어 첫 번째 연결 모델을 임시로 선택했습니다. 일반 탭에서 기본 모델을 다시 선택하세요.',
   chatStatusPromptDetail: '새 대화의 기본 응답 방식입니다.',
   chatStatusAutosaveOnDetail: '대화가 지정한 볼트 폴더에 자동으로 저장됩니다.',
   chatStatusAutosaveOffDetail: '대화는 사용자가 직접 저장할 때만 보관됩니다.',
@@ -2303,6 +2321,7 @@ const ko: I18nKeys = {
   chatLoadFailedNotice: '채팅 불러오기 실패: {message}',
   providerPathRequiredSuffix: ' 경로를 먼저 설정하세요.',
   defaultModelMissingNotice: '기본 모델이 설정되지 않았습니다. 설정 탭에서 모델을 선택하세요.',
+  chatProviderInitializationFailed: '선택한 채팅 모델을 시작할 수 없습니다: {message}',
   modelSettingInvalid: '모델 설정 형식이 잘못되었습니다.',
   customModelSettingInvalid: '커스텀 모델 설정 형식이 잘못되었습니다.',
   customProviderDisabled: '커스텀 Provider가 활성화되지 않았습니다.',
@@ -2758,7 +2777,7 @@ const ko: I18nKeys = {
   providerStatusSectionDesc: '채팅과 검색에 사용할 프로바이더의 준비 상태를 확인합니다.',
   providerStatusNone: '아직 없음',
   providerStatusNeedsSetup: '{count}개 연결 설정 필요',
-  providerStatusSummaryDetail: '전체 {total}개 중 {enabled}개 활성, {ready}개 준비됨',
+  providerStatusSummaryDetail: '전체 {total}개 중 {enabled}개 활성, {ready}개 연결 확인됨',
   providerAttentionTitle: '{provider} 설정을 마무리하세요',
   providerContinueSetup: '설정 계속',
   providerAddTitle: '새 프로바이더 연결',
@@ -2796,12 +2815,17 @@ const ko: I18nKeys = {
   providerSetupValidateTitle: '짧게 검증',
   providerSetupValidateDetail: '연결 테스트와 최소 생성 테스트로 실패 지점을 바로 확인합니다.',
   providerStatusReady: '준비됨',
+  providerStatusConfigured: '설정됨',
   providerStatusNeedsKey: '키 필요',
+  providerStatusNeedsBaseUrl: '주소 필요',
   providerStatusNeedsModels: '모델 필요',
+  providerStatusValidationFailed: '확인 실패',
   providerStatusOff: '꺼짐',
   providerSummaryReady: '{v0}개 모델로 사용 가능',
   providerSummaryNeedsKey: 'API Key를 입력하면 사용 가능',
+  providerSummaryNeedsBaseUrl: '연결할 Endpoint URL을 입력하세요',
   providerSummaryNeedsModels: '모델을 하나 이상 선택하세요',
+  providerSummaryValidationFailed: '마지막 모델 연결 확인에 실패했습니다. 세부 오류를 확인하세요',
   providerSummaryOff: '필요할 때 켜서 사용',
   providerKeyReady: '키 준비됨',
   providerKeyMissing: '키 필요',
@@ -3016,7 +3040,7 @@ const ko: I18nKeys = {
   overviewProviderModelsSelected: '모델 선택됨',
   overviewProviderDisabledDetail: '필요할 때 Providers 탭에서 켤 수 있습니다.',
   overviewProviderCheckModels: '모델 확인',
-  overviewProviderSummaryDetail: '{enabled}개 활성, {ready}개 준비됨',
+  overviewProviderSummaryDetail: '{enabled}개 활성, {ready}개 사용 가능',
   overviewProviderNoneActive: '활성 Provider가 없습니다.',
   overviewRunning: '실행 중',
   overviewBeforeCalculation: '계산 전',
@@ -3297,6 +3321,8 @@ const ko: I18nKeys = {
   promptLibraryTitle: '프롬프트 보관함',
   closeLabel: '닫기',
   settingsSaveMcpReconnectFailed: '설정 저장 후 MCP 재연결 중 {count}개 서버 실패',
+  promptSettingsSaveFailed: '프롬프트 보관함 설정을 저장하지 못했습니다: {message}',
+  promptMutationInProgress: '현재 작업이 끝난 뒤 프롬프트 보관함을 닫을 수 있습니다.',
   manualPromptDescription: '직접 작성한 프롬프트',
   promptDeleteConfirm: '"{title}" 프롬프트를 삭제하시겠습니까?',
   promptBodyRequired: '시스템 프롬프트 본문을 입력하세요.',
@@ -3313,6 +3339,13 @@ const ko: I18nKeys = {
   customLabel: '사용자 지정',
   generatedPromptDescription: '임베딩된 볼트 정보로 생성한 시스템 프롬프트',
   vaultBasedPromptGeneratedNotice: '볼트 기반 시스템 프롬프트를 생성해 보관함에 저장했습니다.',
+  promptGenerationDataBoundary:
+    '볼트의 파일 경로, 헤딩, 대표 내용 일부가 선택한 모델 제공자에게 전송됩니다. 생성 결과를 검토한 뒤 기본값으로 지정하세요.',
+  promptGenerationModelLabel: '생성 모델',
+  promptGenerationNoModelsReason:
+    '프로바이더에서 채팅 모델을 하나 이상 연결하고 활성화한 뒤 다시 열어 주세요.',
+  promptGenerationDirectionLabel: '정리 방향',
+  promptGenerationGuidanceLabel: '추가 지침',
   promptGenerationFailed: '프롬프트 생성 실패: {message}',
   vaultBasedGeneration: '볼트 기반 생성',
   newPromptButton: '새 프롬프트',
@@ -3398,6 +3431,9 @@ const en: I18nKeys = {
   chatEnabledStatus: 'On',
   chatDisabledStatus: 'Off',
   chatSelectedStatus: 'Selected',
+  chatStatusModelReadyDetail: 'Used for new chats and vault-informed prompt generation.',
+  chatStatusModelFallbackDetail:
+    'The saved default is unavailable, so the first connected model is selected temporarily. Choose the default model again in General.',
   chatStatusPromptDetail: 'This is the default response behavior for new chats.',
   chatStatusAutosaveOnDetail: 'Chats are saved automatically in the selected vault folder.',
   chatStatusAutosaveOffDetail: 'Chats are kept only when you save them manually.',
@@ -4060,6 +4096,7 @@ const en: I18nKeys = {
   chatLoadFailedNotice: 'Failed to load chat: {message}',
   providerPathRequiredSuffix: ' path must be set first.',
   defaultModelMissingNotice: 'No default model is configured. Select a model in the settings tab.',
+  chatProviderInitializationFailed: 'Could not start the selected chat model: {message}',
   modelSettingInvalid: 'The model setting format is invalid.',
   customModelSettingInvalid: 'The custom model setting format is invalid.',
   customProviderDisabled: 'The custom provider is not enabled.',
@@ -4523,7 +4560,7 @@ const en: I18nKeys = {
   providerStatusSectionDesc: 'Check whether providers for chat and search are ready.',
   providerStatusNone: 'None yet',
   providerStatusNeedsSetup: 'Setup needed for {count} connections',
-  providerStatusSummaryDetail: '{enabled} of {total} enabled, {ready} ready',
+  providerStatusSummaryDetail: '{enabled} of {total} enabled, {ready} connection-verified',
   providerAttentionTitle: 'Finish setting up {provider}',
   providerContinueSetup: 'Continue setup',
   providerAddTitle: 'Connect a new provider',
@@ -4564,12 +4601,18 @@ const en: I18nKeys = {
   providerSetupValidateDetail:
     'Run connection and minimal generation tests to see the failing step immediately.',
   providerStatusReady: 'Ready',
+  providerStatusConfigured: 'Configured',
   providerStatusNeedsKey: 'Key needed',
+  providerStatusNeedsBaseUrl: 'Endpoint needed',
   providerStatusNeedsModels: 'Models needed',
+  providerStatusValidationFailed: 'Verification failed',
   providerStatusOff: 'Off',
   providerSummaryReady: '{v0} models ready',
   providerSummaryNeedsKey: 'Enter an API Key to use this provider',
+  providerSummaryNeedsBaseUrl: 'Enter the endpoint URL for this provider',
   providerSummaryNeedsModels: 'Select at least one model',
+  providerSummaryValidationFailed:
+    'The last model verification failed. Expand the provider to review the error.',
   providerSummaryOff: 'Enable when needed',
   providerKeyReady: 'Key ready',
   providerKeyMissing: 'Key needed',
@@ -4790,7 +4833,7 @@ const en: I18nKeys = {
   overviewProviderModelsSelected: 'Models selected',
   overviewProviderDisabledDetail: 'You can enable this in the Providers tab when needed.',
   overviewProviderCheckModels: 'Check models',
-  overviewProviderSummaryDetail: '{enabled} enabled, {ready} ready',
+  overviewProviderSummaryDetail: '{enabled} enabled, {ready} available',
   overviewProviderNoneActive: 'No active providers.',
   overviewRunning: 'Running',
   overviewBeforeCalculation: 'Not calculated',
@@ -5082,6 +5125,8 @@ const en: I18nKeys = {
   promptLibraryTitle: 'Prompt library',
   closeLabel: 'Close',
   settingsSaveMcpReconnectFailed: 'Settings saved, but {count} MCP server reconnects failed',
+  promptSettingsSaveFailed: 'Could not save prompt library settings: {message}',
+  promptMutationInProgress: 'You can close the prompt library after the current action finishes.',
   manualPromptDescription: 'Manually written prompt',
   promptDeleteConfirm: 'Delete the "{title}" prompt?',
   promptBodyRequired: 'Enter the system prompt body.',
@@ -5099,6 +5144,13 @@ const en: I18nKeys = {
   generatedPromptDescription: 'System prompt generated from embedded vault information',
   vaultBasedPromptGeneratedNotice:
     'Generated a vault-based system prompt and saved it to the library.',
+  promptGenerationDataBoundary:
+    'Vault file paths, headings, and representative excerpts are sent to the selected model provider. Review the result before setting it as the default.',
+  promptGenerationModelLabel: 'Generation model',
+  promptGenerationNoModelsReason:
+    'Connect and enable at least one chat model in Providers, then reopen this library.',
+  promptGenerationDirectionLabel: 'Organization direction',
+  promptGenerationGuidanceLabel: 'Additional guidance',
   promptGenerationFailed: 'Prompt generation failed: {message}',
   vaultBasedGeneration: 'Vault-based generation',
   newPromptButton: 'New prompt',

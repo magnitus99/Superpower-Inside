@@ -23,9 +23,7 @@ import {
 } from './settings-overview';
 import { DEFAULT_SETTINGS, type SuperpowerInsideSettings } from './settings';
 
-function buildSettings(
-  override: Partial<SuperpowerInsideSettings> = {},
-): SuperpowerInsideSettings {
+function buildSettings(override: Partial<SuperpowerInsideSettings> = {}): SuperpowerInsideSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...override,
@@ -36,8 +34,7 @@ function buildSettings(
     openRouter: { ...DEFAULT_SETTINGS.openRouter, ...override.openRouter },
     rag: { ...DEFAULT_SETTINGS.rag, ...override.rag },
     chat: { ...DEFAULT_SETTINGS.chat, ...override.chat },
-    customOpenAIProviders:
-      override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
+    customOpenAIProviders: override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
     mcpServers: override.mcpServers ?? DEFAULT_SETTINGS.mcpServers,
   };
 }
@@ -57,9 +54,7 @@ function buildRuntime(
   };
 }
 
-function buildRagStatus(
-  override: Partial<RagStatusSummary> = {},
-): RagStatusSummary {
+function buildRagStatus(override: Partial<RagStatusSummary> = {}): RagStatusSummary {
   return {
     totalDocuments: 12,
     healthyDocuments: 12,
@@ -74,9 +69,7 @@ function buildRagStatus(
   };
 }
 
-function buildGraphStatus(
-  override: Partial<GraphRagStatusSummary> = {},
-): GraphRagStatusSummary {
+function buildGraphStatus(override: Partial<GraphRagStatusSummary> = {}): GraphRagStatusSummary {
   return {
     state: 'ready',
     totalCandidateFiles: 12,
@@ -159,6 +152,98 @@ describe('설정 Overview snapshot', () => {
         tone: 'success',
       }),
     );
+  });
+
+  it('임베딩 전용 Ternlight는 일반 프로바이더 집계에서 제외한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        providerProfiles: [
+          {
+            id: 'ternlight',
+            name: 'Ternlight',
+            strategy: 'ternlight',
+            apiKey: '',
+            enabled: true,
+            models: [
+              {
+                id: 'ternlight-base',
+                kind: 'embedding',
+                verification: { chatStatus: 'unknown', embeddingStatus: 'success' },
+              },
+            ],
+          },
+          {
+            id: 'chat',
+            name: 'Chat provider',
+            strategy: 'openAICompatible',
+            apiKey: '',
+            baseUrl: 'https://example.com/v1',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.providerRows.map((row) => row.id)).toEqual(['provider-profile-chat']);
+    expect(snapshot.metrics.find((metric) => metric.id === 'providers')?.value).toBe('1/1');
+  });
+
+  it('OpenAI 호환 프로필의 빈 URL과 마지막 검증 실패를 준비됨으로 표시하지 않는다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        providerProfiles: [
+          {
+            id: 'missing-url',
+            name: 'Missing URL',
+            strategy: 'openAICompatible',
+            apiKey: '',
+            baseUrl: '',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'unknown', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+          {
+            id: 'failed',
+            name: 'Failed provider',
+            strategy: 'openRouter',
+            apiKey: 'test-key',
+            enabled: true,
+            models: [
+              {
+                id: 'model',
+                kind: 'general',
+                verification: { chatStatus: 'failed', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.providerRows).toEqual([
+      expect.objectContaining({ id: 'provider-profile-missing-url', tone: 'danger' }),
+      expect.objectContaining({ id: 'provider-profile-failed', tone: 'danger' }),
+    ]);
+    expect(snapshot.providerRows.map((row) => row.statusLabel)).not.toContain('준비됨');
+    expect(snapshot.attentionItems.map((item) => item.id)).toEqual([
+      'provider-profile-missing-url-base-url',
+      'provider-profile-failed-validation',
+      'chat-default-model-unavailable',
+    ]);
   });
 
   it('Custom OpenAI-compatible provider는 빈 API 키만으로 주의 항목이 되지 않는다', () => {
@@ -275,9 +360,7 @@ describe('설정 Overview snapshot', () => {
       settings: buildSettings({
         openai: { enabled: true, apiKey: '', models: ['gpt-4.1'] },
         chat: { ...DEFAULT_SETTINGS.chat, defaultModel: 'openai:missing-model' },
-        mcpServers: [
-          { name: 'context7', command: 'npx', args: [], env: {} },
-        ],
+        mcpServers: [{ name: 'context7', command: 'npx', args: [], env: {} }],
       }),
       runtime: buildRuntime({
         ragStatus: buildRagStatus({

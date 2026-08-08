@@ -1687,6 +1687,33 @@ export function plan_chat_meta_json(content, fallback_title, fallback_created_is
 }
 
 /**
+ * 모든 연결에서 사용 가능한 채팅 모델을 정렬하고 저장된 기본 모델을 검증한다.
+ *
+ * 저장된 기본 모델이 사라졌거나 사용할 수 없으면 다른 프로바이더로 조용히
+ * 전환하지 않는다. 호스트가 사용자의 명시적 선택을 받도록 빈 선택을 반환한다.
+ * 잘못된 입력은 빈 문자열을 반환한다.
+ * @param {string} providers_json
+ * @param {string} configured_default
+ * @returns {string}
+ */
+export function plan_chat_model_state_json(providers_json, configured_default) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(providers_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(configured_default, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_chat_model_state_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * 저장할 chat session metadata plan을 만든다.
  * @param {string} messages_json
  * @param {string} existing_created
@@ -3017,6 +3044,50 @@ export function plan_prompt_library_summary_json(entries_json) {
         const ptr0 = passStringToWasm0(entries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_prompt_library_summary_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 프로바이더 한 개의 표시 상태와 기능별 사용 가능 여부를 계산한다.
+ *
+ * 잘못된 입력은 빈 문자열을 반환해 호스트가 실패 닫힘으로 처리하도록 한다.
+ * @param {string} provider_json
+ * @returns {string}
+ */
+export function plan_provider_profile_state_json(provider_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(provider_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_provider_profile_state_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 연결 정보 변경 후 저장된 모델 검증 상태를 안전한 미확인 상태로 되돌린다.
+ *
+ * 입력 상태가 wire contract를 벗어나면 빈 문자열을 반환한다.
+ * @param {string} models_json
+ * @returns {string}
+ */
+export function plan_provider_verification_reset_json(models_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(models_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_provider_verification_reset_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);

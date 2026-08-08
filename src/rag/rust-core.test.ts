@@ -36,6 +36,7 @@ import {
   planChatMessagesRust,
   planChatSaveMetadataRust,
   planChatContextMentionsRust,
+  planChatModelStateRust,
   planContextBudgetAppendRust,
   planContextGraphVerificationRust,
   planContextSourcesRust,
@@ -105,6 +106,8 @@ import {
   planRagIndexingEtaRust,
   planRagAutomaticRecoveryBatchRust,
   planRagAutomaticRecoveryRust,
+  planProviderProfileStateRust,
+  planProviderVerificationResetRust,
   planReferenceFileIndicesRust,
   planResearchAnswerContractRust,
   planResearchProviderLedgerTransitionRust,
@@ -144,6 +147,135 @@ import {
 describe('Rust WASM RAG core bridge', () => {
   it('loads embedded WASM bytes synchronously', () => {
     expect(isRustCoreAvailable()).toBe(true);
+  });
+
+  it('프로바이더 필수 설정과 부분 성공 상태를 Rust에서 판정한다', () => {
+    expect(
+      planProviderProfileStateRust({
+        strategy: 'openAICompatible',
+        enabled: true,
+        apiKeyConfigured: false,
+        baseUrlConfigured: false,
+        models: [
+          {
+            value: 'profile:local:auto',
+            label: 'Local / auto',
+            kind: 'general',
+            verificationStatus: 'unknown',
+          },
+        ],
+      }),
+    ).toMatchObject({ tone: 'needs-url', chatUsable: false });
+
+    expect(
+      planProviderProfileStateRust({
+        strategy: 'openRouter',
+        enabled: true,
+        apiKeyConfigured: true,
+        baseUrlConfigured: true,
+        models: [
+          {
+            value: 'profile:remote:working',
+            label: 'Remote / working',
+            kind: 'general',
+            verificationStatus: 'success',
+          },
+          {
+            value: 'profile:remote:broken',
+            label: 'Remote / broken',
+            kind: 'general',
+            verificationStatus: 'failed',
+          },
+        ],
+      }),
+    ).toEqual({
+      tone: 'ready',
+      chatSupported: true,
+      embeddingSupported: true,
+      chatUsable: true,
+      embeddingUsable: false,
+      chatModelValues: ['profile:remote:working'],
+      embeddingModelValues: [],
+    });
+  });
+
+  it('사용 가능한 canonical 채팅 모델을 노출하되 stale 기본값은 선택하지 않는다', () => {
+    expect(
+      planChatModelStateRust(
+        [
+          {
+            strategy: 'ternlight',
+            enabled: true,
+            apiKeyConfigured: false,
+            baseUrlConfigured: false,
+            models: [
+              {
+                value: 'profile:ternlight:legacy',
+                label: 'Ternlight / legacy',
+                kind: 'general',
+                verificationStatus: 'success',
+              },
+            ],
+          },
+          {
+            strategy: 'openRouter',
+            enabled: true,
+            apiKeyConfigured: true,
+            baseUrlConfigured: true,
+            models: [
+              {
+                value: 'profile:openrouter:b',
+                label: 'OpenRouter / B',
+                kind: 'general',
+                verificationStatus: 'success',
+              },
+              {
+                value: 'profile:openrouter:a',
+                label: 'OpenRouter / A',
+                kind: 'general',
+                verificationStatus: 'unknown',
+              },
+            ],
+          },
+          {
+            strategy: 'openAICompatible',
+            enabled: true,
+            apiKeyConfigured: false,
+            baseUrlConfigured: true,
+            models: [
+              {
+                value: 'profile:free:auto',
+                label: 'FreeLLMAPI / auto',
+                kind: 'general',
+                verificationStatus: 'unknown',
+              },
+            ],
+          },
+        ],
+        'profile:missing:auto',
+      ),
+    ).toEqual({
+      options: [
+        { value: 'profile:free:auto', label: 'FreeLLMAPI / auto' },
+        { value: 'profile:openrouter:a', label: 'OpenRouter / A' },
+        { value: 'profile:openrouter:b', label: 'OpenRouter / B' },
+      ],
+      selectedModel: '',
+      enabledProviderCount: 2,
+      availableModelCount: 3,
+    });
+  });
+
+  it('연결 정보 변경 후 검증 상태 초기화를 Rust에서 계획한다', () => {
+    expect(
+      planProviderVerificationResetRust([
+        { chatStatus: 'success', embeddingStatus: 'failed' },
+        { chatStatus: 'unknown', embeddingStatus: 'success' },
+      ]),
+    ).toEqual([
+      { chatStatus: 'unknown', embeddingStatus: 'unknown' },
+      { chatStatus: 'unknown', embeddingStatus: 'unknown' },
+    ]);
   });
 
   it('preserves content hash and tokenizer contracts through WASM', () => {

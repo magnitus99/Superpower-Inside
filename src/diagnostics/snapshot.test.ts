@@ -19,6 +19,7 @@ import type { RagStatusSummary } from '../rag/status';
 import { DEFAULT_SETTINGS, type SuperpowerInsideSettings } from '../settings';
 import { createLogger } from '../utils/logger';
 import {
+  buildAgentDiagnosticsProviderSnapshot,
   buildAgentDiagnosticsSnapshot,
   getAgentDiagnosticsFilePath,
   type AgentDiagnosticsRuntimeState,
@@ -140,6 +141,76 @@ function buildSession(): AgentDiagnosticsSessionState {
 }
 
 describe('agent diagnostics snapshot', () => {
+  it('프로바이더 진단은 Ternlight를 일반 연결 수에서 제외하고 endpoint 비밀값을 제거한다', () => {
+    const providers = buildAgentDiagnosticsProviderSnapshot(
+      buildSettings({
+        providerProfiles: [
+          {
+            id: 'ternlight',
+            name: 'Ternlight',
+            strategy: 'ternlight',
+            apiKey: '',
+            enabled: true,
+            models: [
+              {
+                id: 'ternlight-base',
+                kind: 'embedding',
+                verification: { chatStatus: 'unknown', embeddingStatus: 'success' },
+              },
+            ],
+          },
+          {
+            id: 'primary',
+            name: 'Primary',
+            strategy: 'openAICompatible',
+            apiKey: 'secret',
+            baseUrl: 'https://user:password@example.com/v1?token=secret#private',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(providers.enabledCount).toBe(1);
+    expect(providers.rows).toEqual([
+      expect.objectContaining({
+        id: 'profile:primary',
+        baseUrl: 'https://example.com/v1',
+      }),
+    ]);
+    expect(JSON.stringify(providers)).not.toContain('password');
+    expect(JSON.stringify(providers)).not.toContain('token=secret');
+  });
+
+  it('프로필이 없는 레거시 설정도 프로바이더 진단에 유지한다', () => {
+    const providers = buildAgentDiagnosticsProviderSnapshot(
+      buildSettings({
+        providerProfiles: [],
+        openai: {
+          enabled: true,
+          apiKey: 'secret',
+          baseUrl: 'https://api.openai.com/v1?key=secret',
+          models: ['gpt-4.1-mini'],
+        },
+      }),
+    );
+
+    expect(providers.rows).toContainEqual(
+      expect.objectContaining({
+        id: 'openai',
+        enabled: true,
+        baseUrl: 'https://api.openai.com/v1',
+      }),
+    );
+  });
+
   it('builds a redacted machine-readable snapshot of plugin runtime state', () => {
     const logger = createLogger({ minLevel: 'trace', maxEntries: 10, mirrorToConsole: false });
     logger.error('provider failed', {
@@ -160,12 +231,23 @@ describe('agent diagnostics snapshot', () => {
         adapterBasePath: 'D:/Vault',
       },
       settings: buildSettings({
-        openai: {
-          ...DEFAULT_SETTINGS.openai,
-          enabled: true,
-          apiKey: 'sk-secretsecretsecret',
-          models: ['gpt-4.1-mini'],
-        },
+        providerProfiles: [
+          {
+            id: 'primary',
+            name: 'Primary OpenAI',
+            strategy: 'openAICompatible',
+            enabled: true,
+            apiKey: 'sk-secretsecretsecret',
+            baseUrl: 'https://example.com/v1',
+            models: [
+              {
+                id: 'gpt-4.1-mini',
+                kind: 'general',
+                verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
         agentDiagnostics: { enabled: true },
         mcpServers: [
           {
@@ -267,7 +349,8 @@ describe('agent diagnostics snapshot', () => {
     expect(snapshot.providers.enabledCount).toBe(1);
     expect(snapshot.providers.rows).toContainEqual(
       expect.objectContaining({
-        id: 'openai',
+        id: 'profile:primary',
+        label: 'Primary OpenAI',
         enabled: true,
         apiKeyConfigured: true,
         modelCount: 1,

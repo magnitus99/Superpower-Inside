@@ -1,27 +1,28 @@
-import { Notice } from 'obsidian';
+import { Notice, setIcon } from 'obsidian';
 import { t } from '../i18n';
 import { confirmWithModal } from '../utils/modal-prompts';
-import {
-  CHAT_PROVIDER_KEYS,
-  PROVIDER_LABELS,
-  type PluginLike,
-  type ProviderKey,
-} from '../settings';
-import { createCustomOpenAIProvider, createProvider, type LLMProvider } from '../llm/providers';
+import type { PluginLike } from '../settings';
 import {
   buildVaultPromptGenerationMessages,
   createPromptEntry,
   DEFAULT_OBSIDIAN_PROMPT_ID,
   getPromptDirectionPresets,
+  setActivePromptEntry,
   type PromptLibraryEntry,
 } from './prompt-library';
+import {
+  createPromptGenerationProvider,
+  resolvePromptGenerationModelState,
+} from './prompt-generation-provider';
+import {
+  focusPromptModalTarget,
+  getSharedPromptModalAction,
+  getPromptModalTabTarget,
+  resolvePromptModalSelection,
+  type PromptModalFocusTarget,
+} from './prompt-library-modal-state';
 
-const PROMPT_MODAL_STYLE_ID = 'superpower-inside-prompt-library-modal-styles';
-
-interface ModelOption {
-  value: string;
-  label: string;
-}
+let promptModalSequence = 0;
 
 interface OpenPromptLibraryModalOptions {
   containerEl: HTMLElement;
@@ -33,20 +34,34 @@ interface OpenPromptLibraryModalOptions {
 }
 
 export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): void {
-  ensurePromptLibraryModalStyles(options.containerEl.ownerDocument);
-
+  const doc = options.containerEl.ownerDocument;
+  const activeHTMLElement = doc.defaultView?.HTMLElement;
+  const previousFocus =
+    activeHTMLElement && doc.activeElement instanceof activeHTMLElement ? doc.activeElement : null;
+  const modalId = `superpower-inside-prompt-modal-${++promptModalSequence}`;
   const overlay = options.containerEl.createDiv({ cls: 'superpower-inside-prompt-overlay' });
   const modal = overlay.createDiv({ cls: 'superpower-inside-prompt-modal' });
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', `${modalId}-title`);
+  modal.tabIndex = -1;
   const titleBar = modal.createDiv({ cls: 'superpower-inside-prompt-titlebar' });
-  titleBar.createDiv({
+  const heading = titleBar.createDiv({
     cls: 'superpower-inside-prompt-heading',
     text: t('promptLibraryTitle'),
   });
+  heading.id = `${modalId}-title`;
+  heading.setAttribute('role', 'heading');
+  heading.setAttribute('aria-level', '2');
   const closeBtn = titleBar.createEl('button', {
     cls: 'superpower-inside-prompt-close',
-    text: '×',
-    attr: { type: 'button', 'aria-label': t('closeLabel') },
+    attr: {
+      type: 'button',
+      'aria-label': t('closeLabel'),
+      'data-prompt-focus': 'closeButton',
+    },
   });
+  setIcon(closeBtn, 'x');
 
   const body = modal.createDiv({ cls: 'superpower-inside-prompt-body' });
   const listPane = body.createDiv({ cls: 'superpower-inside-prompt-list-pane' });
@@ -56,70 +71,174 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     options.plugin.settings.chat.activePromptId ??
     options.plugin.settings.chat.promptLibrary[0]?.id ??
     DEFAULT_OBSIDIAN_PROMPT_ID;
+  let isClosed = false;
+  const mutationAction = getSharedPromptModalAction(options.plugin);
+  let mutationFocusTarget: PromptModalFocusTarget = 'selectedPrompt';
+  let localMutationInProgress = false;
   let isGenerating = false;
+  let generationSequence = 0;
+  let unsubscribeMutation = (): void => undefined;
 
   const close = (): void => {
+    if (isClosed) return;
+    if (localMutationInProgress) {
+      new Notice(t('promptMutationInProgress'));
+      return;
+    }
+    isClosed = true;
+    unsubscribeMutation();
     overlay.remove();
+    if (previousFocus?.isConnected) previousFocus.focus();
     options.onClose?.();
   };
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(
+      modal.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      modal.focus();
+      return;
+    }
+    const nextTarget = getPromptModalTabTarget(focusable, doc.activeElement, event.shiftKey);
+    if (nextTarget) {
+      event.preventDefault();
+      nextTarget.focus();
+    }
+  });
 
   const saveSettings = async (): Promise<boolean> => {
-    const result = await options.plugin.saveSettings({ reinitRag: false, reinitMcp: false });
-    if (!result.success && result.mcpErrors && result.mcpErrors.length > 0) {
-      new Notice(t('settingsSaveMcpReconnectFailed', { count: result.mcpErrors.length }), 5000);
+    try {
+      const result = await options.plugin.saveSettings({ reinitRag: false, reinitMcp: false });
+      if (!result.success && result.mcpErrors && result.mcpErrors.length > 0) {
+        new Notice(t('settingsSaveMcpReconnectFailed', { count: result.mcpErrors.length }), 5000);
+      }
+      return result.success;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(t('promptSettingsSaveFailed', { message }), 5000);
+      return false;
     }
-    return result.success;
   };
 
   const getSelectedEntry = (): PromptLibraryEntry | null =>
     options.plugin.settings.chat.promptLibrary.find((entry) => entry.id === selectedId) ?? null;
 
   const selectEntry = (id: string): void => {
+    if (mutationAction.isRunning) return;
     selectedId = id;
-    render();
+    render('selectedPrompt');
+  };
+
+  const setMutationBusy = (): void => {
+    modal.setAttribute('aria-busy', 'true');
+    const controls = Array.from(
+      body.querySelectorAll<HTMLElement>('button, input, select, textarea'),
+    );
+    for (const control of controls) {
+      control.setAttribute('disabled', '');
+    }
+    closeBtn.focus();
+  };
+
+  const runMutation = async (
+    focusTarget: PromptModalFocusTarget,
+    action: () => Promise<void>,
+  ): Promise<void> => {
+    mutationFocusTarget = focusTarget;
+    await mutationAction.tryRun(async () => {
+      localMutationInProgress = true;
+      try {
+        await action();
+      } finally {
+        localMutationInProgress = false;
+      }
+    });
+  };
+
+  const runMutationWhenIdle = async (
+    focusTarget: PromptModalFocusTarget,
+    action: () => Promise<void>,
+  ): Promise<void> => {
+    mutationFocusTarget = focusTarget;
+    await mutationAction.runWhenIdle(async () => {
+      if (isClosed) return;
+      localMutationInProgress = true;
+      try {
+        await action();
+      } finally {
+        localMutationInProgress = false;
+      }
+    });
   };
 
   const createNewPrompt = async (): Promise<void> => {
-    const entry = createPromptEntry({
-      title: t('promptNewSystemPromptTitle'),
-      description: t('manualPromptDescription'),
-      content: options.currentSessionPrompt?.trim() || '',
-      source: 'user',
+    await runMutation('titleInput', async () => {
+      const previousLibrary = options.plugin.settings.chat.promptLibrary;
+      const previousSelectedId = selectedId;
+      const entry = createPromptEntry({
+        title: t('promptNewSystemPromptTitle'),
+        description: t('manualPromptDescription'),
+        content: options.currentSessionPrompt?.trim() || '',
+        source: 'user',
+      });
+      options.plugin.settings.chat.promptLibrary = [
+        entry,
+        ...options.plugin.settings.chat.promptLibrary,
+      ];
+      selectedId = entry.id;
+      if (!(await saveSettings())) {
+        options.plugin.settings.chat.promptLibrary = previousLibrary;
+        selectedId = previousSelectedId;
+      }
     });
-    options.plugin.settings.chat.promptLibrary = [
-      entry,
-      ...options.plugin.settings.chat.promptLibrary,
-    ];
-    selectedId = entry.id;
-    await saveSettings();
-    render();
   };
 
   const deleteSelectedPrompt = async (): Promise<void> => {
-    const entry = getSelectedEntry();
-    if (!entry || entry.id === DEFAULT_OBSIDIAN_PROMPT_ID) return;
-    const confirmed = await confirmWithModal(
-      options.plugin.app,
-      t('promptDeleteConfirm', { title: entry.title }),
-      { confirmText: t('deleteLabel') },
-    );
-    if (!confirmed) return;
-    options.plugin.settings.chat.promptLibrary = options.plugin.settings.chat.promptLibrary.filter(
-      (item) => item.id !== entry.id,
-    );
-    if (options.plugin.settings.chat.activePromptId === entry.id) {
-      options.plugin.settings.chat.activePromptId = DEFAULT_OBSIDIAN_PROMPT_ID;
-    }
-    selectedId =
-      options.plugin.settings.chat.activePromptId ??
-      options.plugin.settings.chat.promptLibrary[0]?.id ??
-      DEFAULT_OBSIDIAN_PROMPT_ID;
-    await saveSettings();
-    render();
+    await runMutation('selectedPrompt', async () => {
+      const entry = getSelectedEntry();
+      if (!entry || entry.id === DEFAULT_OBSIDIAN_PROMPT_ID) return;
+      const confirmed = await confirmWithModal(
+        options.plugin.app,
+        t('promptDeleteConfirm', { title: entry.title }),
+        { confirmText: t('deleteLabel') },
+      );
+      if (!confirmed) return;
+      const previousLibrary = options.plugin.settings.chat.promptLibrary;
+      const previousActivePromptId = options.plugin.settings.chat.activePromptId;
+      const previousSystemPrompt = options.plugin.settings.chat.systemPrompt;
+      const previousSelectedId = selectedId;
+      options.plugin.settings.chat.promptLibrary =
+        options.plugin.settings.chat.promptLibrary.filter((item) => item.id !== entry.id);
+      if (options.plugin.settings.chat.activePromptId === entry.id) {
+        const defaultEntry = options.plugin.settings.chat.promptLibrary.find(
+          (item) => item.id === DEFAULT_OBSIDIAN_PROMPT_ID,
+        );
+        if (defaultEntry) setActivePromptEntry(options.plugin.settings, defaultEntry);
+      }
+      selectedId =
+        options.plugin.settings.chat.activePromptId ??
+        options.plugin.settings.chat.promptLibrary[0]?.id ??
+        DEFAULT_OBSIDIAN_PROMPT_ID;
+      if (!(await saveSettings())) {
+        options.plugin.settings.chat.promptLibrary = previousLibrary;
+        options.plugin.settings.chat.activePromptId = previousActivePromptId;
+        options.plugin.settings.chat.systemPrompt = previousSystemPrompt;
+        selectedId = previousSelectedId;
+      }
+    });
   };
 
   const saveSelectedPrompt = async (
@@ -127,21 +246,35 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     descriptionInput: HTMLInputElement,
     contentInput: HTMLTextAreaElement,
   ): Promise<void> => {
-    const entry = getSelectedEntry();
-    if (!entry) return;
     const content = contentInput.value.trim();
     if (!content) {
       new Notice(t('promptBodyRequired'));
       return;
     }
-    entry.title = titleInput.value.trim() || t('systemPrompt');
-    entry.description = descriptionInput.value.trim() || undefined;
-    entry.content = content;
-    entry.source = entry.source === 'default' ? 'user' : entry.source;
-    entry.updatedAt = new Date().toISOString();
-    await saveSettings();
-    new Notice(t('promptSavedNotice'));
-    render();
+    const title = titleInput.value.trim() || t('systemPrompt');
+    const description = descriptionInput.value.trim() || undefined;
+    await runMutation('titleInput', async () => {
+      const entry = getSelectedEntry();
+      if (!entry) return;
+      const entryIndex = options.plugin.settings.chat.promptLibrary.indexOf(entry);
+      if (entryIndex < 0) return;
+      const previousEntry = { ...entry };
+      const previousSystemPrompt = options.plugin.settings.chat.systemPrompt;
+      entry.title = title;
+      entry.description = description;
+      entry.content = content;
+      entry.source = entry.source === 'default' ? 'user' : entry.source;
+      entry.updatedAt = new Date().toISOString();
+      if (options.plugin.settings.chat.activePromptId === entry.id) {
+        setActivePromptEntry(options.plugin.settings, entry);
+      }
+      if (!(await saveSettings())) {
+        options.plugin.settings.chat.promptLibrary[entryIndex] = previousEntry;
+        options.plugin.settings.chat.systemPrompt = previousSystemPrompt;
+        return;
+      }
+      new Notice(t('promptSavedNotice'));
+    });
   };
 
   const applySelectedToSession = (): void => {
@@ -152,12 +285,19 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   };
 
   const setSelectedAsGlobalDefault = async (): Promise<void> => {
-    const entry = getSelectedEntry();
-    if (!entry) return;
-    options.plugin.settings.chat.activePromptId = entry.id;
-    await saveSettings();
-    new Notice(t('promptSetGlobalDefaultNotice', { title: entry.title }));
-    render();
+    await runMutation('titleInput', async () => {
+      const entry = getSelectedEntry();
+      if (!entry) return;
+      const previousActivePromptId = options.plugin.settings.chat.activePromptId;
+      const previousSystemPrompt = options.plugin.settings.chat.systemPrompt;
+      setActivePromptEntry(options.plugin.settings, entry);
+      if (!(await saveSettings())) {
+        options.plugin.settings.chat.activePromptId = previousActivePromptId;
+        options.plugin.settings.chat.systemPrompt = previousSystemPrompt;
+        return;
+      }
+      new Notice(t('promptSetGlobalDefaultNotice', { title: entry.title }));
+    });
   };
 
   const generateVaultPrompt = async (
@@ -166,23 +306,28 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     directionText: HTMLTextAreaElement,
     generateBtn: HTMLButtonElement,
   ): Promise<void> => {
-    if (isGenerating) return;
-    const providerInfo = createProviderFromModelValue(options.plugin, modelSelect.value);
-    if (!providerInfo) {
-      new Notice(t('promptGenerationModelRequired'));
-      return;
-    }
     const vectorStore = options.plugin.vectorStore;
     if (!vectorStore) {
       new Notice(t('promptRagStoreMissing'), 7000);
       return;
     }
-
+    if (isGenerating) return;
     isGenerating = true;
-    generateBtn.disabled = true;
+    const generationToken = ++generationSequence;
+    let saveMutationStarted = false;
     generateBtn.setText(t('generating'));
+    setMutationBusy();
     try {
+      const providerInfo = createPromptGenerationProvider(
+        options.plugin.settings,
+        modelSelect.value,
+      );
+      if (!providerInfo) {
+        new Notice(t('promptGenerationModelRequired'));
+        return;
+      }
       const entries = await vectorStore.getEntries();
+      if (isClosed || generationToken !== generationSequence) return;
       if (entries.length === 0) {
         new Notice(t('promptNoEmbeddedVaultInfo'), 7000);
         return;
@@ -196,6 +341,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         }),
         0.4,
       );
+      if (isClosed || generationToken !== generationSequence) return;
       const content = generated.trim();
       if (!content) {
         new Notice(t('promptEmptyModelResponse'));
@@ -210,21 +356,32 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         directionText: directionText.value,
         model: providerInfo.model,
       });
-      options.plugin.settings.chat.promptLibrary = [
-        entry,
-        ...options.plugin.settings.chat.promptLibrary,
-      ];
-      selectedId = entry.id;
-      await saveSettings();
-      new Notice(t('vaultBasedPromptGeneratedNotice'));
-      render();
+      saveMutationStarted = true;
+      await runMutationWhenIdle('titleInput', async () => {
+        const previousLibrary = options.plugin.settings.chat.promptLibrary;
+        const previousSelectedId = selectedId;
+        options.plugin.settings.chat.promptLibrary = [
+          entry,
+          ...options.plugin.settings.chat.promptLibrary,
+        ];
+        selectedId = entry.id;
+        if (!(await saveSettings())) {
+          options.plugin.settings.chat.promptLibrary = previousLibrary;
+          selectedId = previousSelectedId;
+          return;
+        }
+        new Notice(t('vaultBasedPromptGeneratedNotice'));
+      });
     } catch (err) {
+      if (isClosed) return;
       const message = err instanceof Error ? err.message : String(err);
       new Notice(t('promptGenerationFailed', { message }), 7000);
     } finally {
-      isGenerating = false;
-      generateBtn.disabled = false;
-      generateBtn.setText(t('vaultBasedGeneration'));
+      if (generationToken === generationSequence) isGenerating = false;
+      if (!isClosed && !saveMutationStarted) {
+        modal.removeAttribute('aria-busy');
+        render('titleInput');
+      }
     }
   };
 
@@ -234,14 +391,20 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     const newBtn = actions.createEl('button', {
       cls: 'superpower-inside-prompt-secondary-btn',
       text: t('newPromptButton'),
-      attr: { type: 'button' },
+      attr: { type: 'button', 'data-prompt-focus': 'newPromptButton' },
     });
     newBtn.addEventListener('click', () => void createNewPrompt());
 
     const list = listPane.createDiv({ cls: 'superpower-inside-prompt-list' });
     for (const entry of options.plugin.settings.chat.promptLibrary) {
-      const item = list.createDiv({
+      const isActive = entry.id === selectedId;
+      const item = list.createEl('button', {
         cls: `superpower-inside-prompt-list-item${entry.id === selectedId ? ' is-active' : ''}`,
+        attr: {
+          type: 'button',
+          ...(isActive ? { 'aria-current': 'true' } : {}),
+          ...(isActive ? { 'data-prompt-focus': 'selectedPrompt' } : {}),
+        },
       });
       item.addEventListener('click', () => selectEntry(entry.id));
       item.createDiv({ cls: 'superpower-inside-prompt-list-title', text: entry.title });
@@ -264,25 +427,35 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     }
 
     const form = detailPane.createDiv({ cls: 'superpower-inside-prompt-form' });
-    form.createEl('label', { text: t('titleLabel') });
+    const titleInputId = `${modalId}-prompt-title`;
+    form.createEl('label', { text: t('titleLabel'), attr: { for: titleInputId } });
     const titleInput = form.createEl('input', {
       cls: 'superpower-inside-prompt-input',
-      attr: { type: 'text' },
+      attr: {
+        id: titleInputId,
+        type: 'text',
+        'data-prompt-focus': 'titleInput',
+      },
     });
     titleInput.value = entry.title;
 
-    form.createEl('label', { text: t('descriptionLabel') });
+    const descriptionInputId = `${modalId}-prompt-description`;
+    form.createEl('label', {
+      text: t('descriptionLabel'),
+      attr: { for: descriptionInputId },
+    });
     const descriptionInput = form.createEl('input', {
       cls: 'superpower-inside-prompt-input',
-      attr: { type: 'text' },
+      attr: { id: descriptionInputId, type: 'text' },
     });
     descriptionInput.value = entry.description ?? '';
 
-    form.createEl('label', { text: t('systemPrompt') });
+    const contentInputId = `${modalId}-prompt-content`;
+    form.createEl('label', { text: t('systemPrompt'), attr: { for: contentInputId } });
     const contentInput = form.createEl('textarea', {
       cls: 'superpower-inside-prompt-textarea',
       text: entry.content,
-      attr: { rows: '12' },
+      attr: { id: contentInputId, rows: '12' },
     });
     contentInput.value = entry.content;
 
@@ -334,104 +507,145 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       cls: 'superpower-inside-prompt-generation-heading',
       text: t('embeddedVaultGenerateTitle'),
     });
+    panel.createDiv({
+      cls: 'superpower-inside-prompt-generation-description',
+      text: t('promptGenerationDataBoundary'),
+    });
 
-    const modelOptions = getModelOptions(options.plugin);
-    const modelSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
-    if (modelOptions.length === 0) {
+    const modelState = resolvePromptGenerationModelState(
+      options.plugin.settings,
+      options.selectedModel,
+    );
+    const modelOptions = modelState.options;
+    const hasModels = modelOptions.length > 0;
+    const hasSelectedModel = modelState.selectedModel.length > 0;
+    const modelSelectId = `${modalId}-generation-model`;
+    panel.createEl('label', {
+      cls: 'superpower-inside-prompt-field-label',
+      text: t('promptGenerationModelLabel'),
+      attr: { for: modelSelectId },
+    });
+    const modelSelect = panel.createEl('select', {
+      cls: 'superpower-inside-prompt-input',
+      attr: { id: modelSelectId },
+    });
+    let unavailableReason: HTMLElement | null = null;
+    if (!hasModels) {
       const opt = modelSelect.createEl('option');
       opt.value = '';
       opt.text = t('noModelsEnabled');
       modelSelect.disabled = true;
+      unavailableReason = panel.createDiv({
+        cls: 'superpower-inside-prompt-generation-unavailable',
+        text: t('promptGenerationNoModelsReason'),
+      });
+      unavailableReason.id = `${modalId}-generation-unavailable`;
+      unavailableReason.setAttribute('role', 'status');
+      modelSelect.setAttribute('aria-describedby', unavailableReason.id);
     } else {
+      if (!hasSelectedModel) {
+        const opt = modelSelect.createEl('option');
+        opt.value = '';
+        opt.text = t('chatReadinessSelectModelAction');
+      }
       for (const model of modelOptions) {
         const opt = modelSelect.createEl('option');
         opt.value = model.value;
         opt.text = model.label;
       }
-      modelSelect.value = modelOptions.some((model) => model.value === options.selectedModel)
-        ? options.selectedModel
-        : modelOptions[0].value;
+      modelSelect.value = modelState.selectedModel;
+      if (!hasSelectedModel) {
+        unavailableReason = panel.createDiv({
+          cls: 'superpower-inside-prompt-generation-unavailable',
+          text: t('promptGenerationModelRequired'),
+        });
+        unavailableReason.id = `${modalId}-generation-selection-required`;
+        unavailableReason.setAttribute('role', 'status');
+        modelSelect.setAttribute('aria-describedby', unavailableReason.id);
+      }
     }
 
-    const directionSelect = panel.createEl('select', { cls: 'superpower-inside-prompt-input' });
+    const directionSelectId = `${modalId}-generation-direction`;
+    panel.createEl('label', {
+      cls: 'superpower-inside-prompt-field-label',
+      text: t('promptGenerationDirectionLabel'),
+      attr: { for: directionSelectId },
+    });
+    const directionSelect = panel.createEl('select', {
+      cls: 'superpower-inside-prompt-input',
+      attr: { id: directionSelectId },
+    });
     for (const preset of getPromptDirectionPresets()) {
       const opt = directionSelect.createEl('option');
       opt.value = preset.id;
       opt.text = preset.label;
     }
+    directionSelect.disabled = !hasSelectedModel;
 
+    const directionTextId = `${modalId}-generation-guidance`;
+    panel.createEl('label', {
+      cls: 'superpower-inside-prompt-field-label',
+      text: t('promptGenerationGuidanceLabel'),
+      attr: { for: directionTextId },
+    });
     const directionText = panel.createEl('textarea', {
       cls: 'superpower-inside-prompt-direction',
       attr: {
+        id: directionTextId,
         rows: '3',
         placeholder: t('promptDirectionPlaceholder'),
       },
     });
+    directionText.disabled = !hasSelectedModel;
 
     const generateBtn = panel.createEl('button', {
       cls: 'superpower-inside-prompt-primary-btn',
       text: t('vaultBasedGeneration'),
       attr: { type: 'button' },
     });
+    generateBtn.disabled = !hasSelectedModel;
+    const updateGenerationAvailability = (): void => {
+      const enabled = hasModels && modelSelect.value.trim().length > 0;
+      directionSelect.disabled = !enabled;
+      directionText.disabled = !enabled;
+      generateBtn.disabled = !enabled;
+      if (unavailableReason && hasModels) unavailableReason.hidden = enabled;
+    };
+    modelSelect.addEventListener('change', updateGenerationAvailability);
+    updateGenerationAvailability();
     generateBtn.addEventListener(
       'click',
       () => void generateVaultPrompt(modelSelect, directionSelect, directionText, generateBtn),
     );
   };
 
-  const render = (): void => {
+  function render(focusTarget?: PromptModalFocusTarget): void {
+    selectedId = resolvePromptModalSelection(
+      selectedId,
+      options.plugin.settings.chat.activePromptId,
+      options.plugin.settings.chat.promptLibrary.map((entry) => entry.id),
+      DEFAULT_OBSIDIAN_PROMPT_ID,
+    );
     renderList();
     renderDetail();
-  };
+    if (focusTarget && !focusPromptModalTarget(modal, focusTarget)) {
+      modal.focus();
+    }
+  }
 
   render();
-}
-
-function getModelOptions(plugin: PluginLike): ModelOption[] {
-  const options: ModelOption[] = [];
-  for (const key of CHAT_PROVIDER_KEYS) {
-    const config = plugin.settings[key];
-    if (!config.enabled) continue;
-    for (const model of config.models) {
-      options.push({ value: `${key}:${model}`, label: `${PROVIDER_LABELS[key]} — ${model}` });
+  let hasObservedMutationState = false;
+  unsubscribeMutation = mutationAction.subscribe((running) => {
+    if (isClosed) return;
+    if (running) {
+      setMutationBusy();
+    } else if (hasObservedMutationState) {
+      modal.removeAttribute('aria-busy');
+      render(mutationFocusTarget);
     }
-  }
-  for (const provider of plugin.settings.customOpenAIProviders) {
-    if (!provider.enabled) continue;
-    const label = provider.name.trim() || 'Custom OpenAI-Compatible';
-    for (const model of provider.models) {
-      options.push({
-        value: `customOpenAI:${provider.id}:${model}`,
-        label: `${label} — ${model}`,
-      });
-    }
-  }
-  return options.sort((a, b) => a.label.localeCompare(b.label, 'en'));
-}
-
-function createProviderFromModelValue(
-  plugin: PluginLike,
-  value: string,
-): { provider: LLMProvider; model: string } | null {
-  const parts = value.split(':');
-  if (parts.length < 2) return null;
-
-  if (parts[0] === 'customOpenAI') {
-    if (parts.length < 3) return null;
-    const providerId = parts[1];
-    const modelName = parts.slice(2).join(':');
-    const customProvider = plugin.settings.customOpenAIProviders.find(
-      (provider) => provider.id === providerId,
-    );
-    if (!customProvider?.enabled || !customProvider.baseUrl?.trim()) return null;
-    return { provider: createCustomOpenAIProvider(customProvider, modelName), model: modelName };
-  }
-
-  const providerKey = parts[0] as ProviderKey;
-  const modelName = parts.slice(1).join(':');
-  const config = plugin.settings[providerKey];
-  if (!config?.enabled) return null;
-  return { provider: createProvider(providerKey, config, modelName), model: modelName };
+    hasObservedMutationState = true;
+  });
+  closeBtn.focus();
 }
 
 function formatPromptSource(entry: PromptLibraryEntry): string {
@@ -443,171 +657,4 @@ function formatPromptSource(entry: PromptLibraryEntry): string {
         : t('promptSourceUser');
   const model = entry.model ? ` · ${entry.model}` : '';
   return `${source}${model}`;
-}
-
-function ensurePromptLibraryModalStyles(doc: Document): void {
-  if (doc.getElementById(PROMPT_MODAL_STYLE_ID)) return;
-  const style = doc.createElement('style');
-  style.id = PROMPT_MODAL_STYLE_ID;
-  style.textContent = `
-    .superpower-inside-prompt-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-      background: rgba(0, 0, 0, 0.45);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 32px;
-    }
-    .superpower-inside-prompt-modal {
-      width: min(1040px, 96vw);
-      max-height: 88vh;
-      display: flex;
-      flex-direction: column;
-      background: var(--background-primary);
-      color: var(--text-normal);
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 8px;
-      box-shadow: var(--shadow-l);
-      overflow: hidden;
-    }
-    .superpower-inside-prompt-titlebar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--background-modifier-border);
-    }
-    .superpower-inside-prompt-heading,
-    .superpower-inside-prompt-generation-heading {
-      margin: 0;
-      font-size: var(--font-ui-medium);
-      line-height: 1.4;
-    }
-    .superpower-inside-prompt-close {
-      border: 0;
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 22px;
-      cursor: pointer;
-    }
-    .superpower-inside-prompt-body {
-      min-height: 0;
-      display: grid;
-      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-    }
-    .superpower-inside-prompt-list-pane {
-      min-height: 0;
-      border-right: 1px solid var(--background-modifier-border);
-      display: flex;
-      flex-direction: column;
-    }
-    .superpower-inside-prompt-list-actions,
-    .superpower-inside-prompt-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      padding: 12px;
-    }
-    .superpower-inside-prompt-list {
-      overflow: auto;
-      padding: 0 8px 12px;
-    }
-    .superpower-inside-prompt-list-item {
-      padding: 10px;
-      border-radius: 8px;
-      cursor: pointer;
-    }
-    .superpower-inside-prompt-list-item:hover,
-    .superpower-inside-prompt-list-item.is-active {
-      background: var(--background-modifier-hover);
-    }
-    .superpower-inside-prompt-list-title {
-      font-weight: 600;
-      line-height: 1.35;
-      overflow-wrap: anywhere;
-    }
-    .superpower-inside-prompt-list-meta,
-    .superpower-inside-prompt-list-desc {
-      margin-top: 4px;
-      color: var(--text-muted);
-      font-size: var(--font-ui-smaller);
-      line-height: 1.35;
-      overflow-wrap: anywhere;
-    }
-    .superpower-inside-prompt-detail-pane {
-      overflow: auto;
-      padding: 16px;
-    }
-    .superpower-inside-prompt-form {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .superpower-inside-prompt-form label {
-      color: var(--text-muted);
-      font-size: var(--font-ui-small);
-      font-weight: 600;
-    }
-    .superpower-inside-prompt-input,
-    .superpower-inside-prompt-textarea,
-    .superpower-inside-prompt-direction {
-      width: 100%;
-      resize: vertical;
-    }
-    .superpower-inside-prompt-textarea {
-      min-height: 260px;
-      font-family: var(--font-monospace);
-      line-height: 1.45;
-    }
-    .superpower-inside-prompt-primary-btn,
-    .superpower-inside-prompt-secondary-btn,
-    .superpower-inside-prompt-danger-btn {
-      border-radius: 6px;
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-    .superpower-inside-prompt-primary-btn {
-      background: var(--interactive-accent);
-      color: var(--text-on-accent);
-      border: 1px solid var(--interactive-accent);
-    }
-    .superpower-inside-prompt-secondary-btn {
-      background: var(--background-secondary);
-      color: var(--text-normal);
-      border: 1px solid var(--background-modifier-border);
-    }
-    .superpower-inside-prompt-danger-btn {
-      background: var(--background-secondary);
-      color: var(--text-error);
-      border: 1px solid var(--background-modifier-border);
-    }
-    .superpower-inside-prompt-generation {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid var(--background-modifier-border);
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .superpower-inside-prompt-empty {
-      color: var(--text-muted);
-      padding: 16px;
-    }
-    @media (max-width: 760px) {
-      .superpower-inside-prompt-overlay {
-        padding: 12px;
-      }
-      .superpower-inside-prompt-body {
-        grid-template-columns: 1fr;
-      }
-      .superpower-inside-prompt-list-pane {
-        max-height: 220px;
-        border-right: 0;
-        border-bottom: 1px solid var(--background-modifier-border);
-      }
-    }
-  `;
-  doc.head.appendChild(style);
 }

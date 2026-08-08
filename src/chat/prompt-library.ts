@@ -110,9 +110,10 @@ export function normalizePromptLibrary(
   const now = new Date().toISOString();
   const normalized: PromptLibraryEntry[] = [];
   const seen = new Set<string>();
+  let hasCanonicalPromptState = false;
 
   const pushEntry = (entry: PromptLibraryEntry): void => {
-    if (!entry.content.trim() || seen.has(entry.id)) return;
+    if (seen.has(entry.id)) return;
     normalized.push(entry);
     seen.add(entry.id);
   };
@@ -121,6 +122,7 @@ export function normalizePromptLibrary(
     for (const item of entries) {
       const entry = normalizePromptEntry(item);
       if (!entry) continue;
+      hasCanonicalPromptState = true;
       if (entry.id === DEFAULT_OBSIDIAN_PROMPT_ID && entry.source === 'default') {
         pushEntry({
           ...createDefaultPromptEntry(now),
@@ -139,6 +141,7 @@ export function normalizePromptLibrary(
   const legacyPrompt = legacySystemPrompt?.trim();
   let legacyEntryId: string | null = null;
   if (
+    !hasCanonicalPromptState &&
     legacyPrompt &&
     legacyPrompt !== getDefaultObsidianSystemPrompt() &&
     !isLocalizedValue('defaultObsidianSystemPrompt', legacyPrompt)
@@ -174,6 +177,51 @@ export function getActivePromptEntry(settings: SuperpowerInsideSettings): Prompt
     normalized.promptLibrary.find((entry) => entry.id === normalized.activePromptId) ??
     normalized.promptLibrary[0];
   return active ?? createDefaultPromptEntry();
+}
+
+export function setActivePromptEntry(
+  settings: SuperpowerInsideSettings,
+  entry: PromptLibraryEntry,
+): void {
+  settings.chat.activePromptId = entry.id;
+  settings.chat.systemPrompt =
+    entry.id === DEFAULT_OBSIDIAN_PROMPT_ID && entry.source === 'default' ? '' : entry.content;
+}
+
+export function updateActivePromptContent(
+  settings: SuperpowerInsideSettings,
+  content: string,
+  now = new Date().toISOString(),
+): void {
+  const storedActive = settings.chat.promptLibrary.find(
+    (entry) => entry.id === settings.chat.activePromptId,
+  );
+  const active = storedActive ?? getActivePromptEntry(settings);
+  const nextEntry: PromptLibraryEntry = {
+    ...active,
+    content,
+    source: active.source === 'default' ? 'user' : active.source,
+    updatedAt: now,
+  };
+  const existingIndex = settings.chat.promptLibrary.findIndex((entry) => entry.id === active.id);
+  if (existingIndex >= 0) {
+    settings.chat.promptLibrary[existingIndex] = nextEntry;
+  } else {
+    settings.chat.promptLibrary = [nextEntry, ...settings.chat.promptLibrary];
+  }
+  setActivePromptEntry(settings, nextEntry);
+}
+
+export function resetActivePromptToDefault(
+  settings: SuperpowerInsideSettings,
+  now = new Date().toISOString(),
+): void {
+  settings.chat.promptLibrary = [
+    createDefaultPromptEntry(now),
+    ...settings.chat.promptLibrary.filter((entry) => entry.id !== DEFAULT_OBSIDIAN_PROMPT_ID),
+  ];
+  const defaultEntry = settings.chat.promptLibrary[0];
+  if (defaultEntry) setActivePromptEntry(settings, defaultEntry);
 }
 
 export function getEffectiveSystemPrompt(
@@ -311,9 +359,10 @@ function normalizePromptEntry(value: unknown): PromptLibraryEntry | null {
   const item = value as Record<string, unknown>;
   const id = typeof item.id === 'string' ? item.id.trim() : '';
   const title = typeof item.title === 'string' ? item.title.trim() : '';
-  const content = typeof item.content === 'string' ? item.content.trim() : '';
+  const rawContent = item.content;
   const source = item.source;
-  if (!id || !title || !content) return null;
+  if (!id || !title || typeof rawContent !== 'string') return null;
+  const content = rawContent.trim();
   return {
     id,
     title,
