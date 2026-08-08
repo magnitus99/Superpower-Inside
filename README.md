@@ -1,6 +1,6 @@
 # Superpower Inside
 
-[![version](https://img.shields.io/badge/version-2.1.2-2563eb)](https://github.com/magnitus99/Superpower-Inside/releases/latest)
+[![version](https://img.shields.io/badge/version-2.1.4-2563eb)](https://github.com/magnitus99/Superpower-Inside/releases/latest)
 [![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)](https://obsidian.md/plugins?id=superpower-inside)
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![price](https://img.shields.io/badge/price-free%20%26%20open%20source-0f766e)](LICENSE)
