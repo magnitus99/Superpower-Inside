@@ -114,7 +114,7 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 <details>
 <summary><strong>Security, privacy, and honest boundaries</strong></summary>
 
-- Settings and API keys are stored in this device's Obsidian local plugin storage and are not newly written to the synced plugin `data.json`.
+- Settings and API keys are stored unencrypted in this device's Obsidian local plugin storage and plugin `data.json`. They can be included in vault sync and local backups.
 - Chat messages, selected notes, retrieved chunks, tool arguments, and tool results may be sent to the LLM, embedding provider, or MCP server you configure.
 - Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to the configured chat provider, and coverage or transfer limits are stated in the answer.
 - The built-in `superpower_inside_*` vault tools are read-only. They can search hybrid indexes, verify retrieved ranges against current files, find related indexed evidence, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics. They cannot create, modify, move, or delete files.
@@ -203,7 +203,7 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 <details>
 <summary><strong>보안, 개인정보, 솔직한 작동 범위</strong></summary>
 
-- 설정과 API 키는 이 기기의 Obsidian 로컬 플러그인 저장소에 보관하며, 동기화되는 플러그인 `data.json`에는 새로 기록하지 않습니다.
+- 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 플러그인 저장소와 플러그인 `data.json`에 보관됩니다. 볼트 동기화와 로컬 백업에 포함될 수 있습니다.
 - 채팅 메시지, 선택한 노트, 검색된 청크, 도구 인자와 결과는 사용자가 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
 - 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 채팅 provider로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
 - 내장 `superpower_inside_*` 볼트 도구는 읽기 전용입니다. 하이브리드 인덱스 검색, 현재 파일에 대한 검색 구간 검증, 관련 인덱스 근거 탐색, 제한된 줄 범위 읽기, 대상 텍스트·코드 파일 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
