@@ -27,5 +27,5 @@
     "lib": ["DOM", "ES2022"]
   },
   "include": ["main.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", ".sisyphus"]
+  "exclude": ["node_modules"]
 }

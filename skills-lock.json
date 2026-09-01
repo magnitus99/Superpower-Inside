@@ -1,71 +1,23 @@
 {
   "version": 1,
   "skills": {
-    "architecture-patterns": {
-      "source": "wshobson/agents",
-      "sourceType": "github",
-      "skillPath": "plugins/backend-development/skills/architecture-patterns/SKILL.md",
-      "computedHash": "a66aaa5aa49b75bec12b6270dcde8794b1f0cc75fbb9ecb999e43f8b723b461f"
-    },
-    "defuddle": {
-      "source": "kepano/obsidian-skills",
-      "sourceType": "github",
-      "skillPath": "skills/defuddle/SKILL.md",
-      "computedHash": "0ed68bc3e818ba0e6b8d192357ea3daaf552a3893f8854e7fd43c06831f91323"
-    },
-    "design-system-patterns": {
-      "source": "wshobson/agents",
-      "sourceType": "github",
-      "skillPath": "plugins/ui-design/skills/design-system-patterns/SKILL.md",
-      "computedHash": "e1d2631eab1a7113fb60e6df3ace05aac0ddce6207bceec87721119a8e1a1c78"
-    },
-    "e2e-testing-patterns": {
-      "source": "wshobson/agents",
-      "sourceType": "github",
-      "skillPath": "plugins/developer-essentials/skills/e2e-testing-patterns/SKILL.md",
-      "computedHash": "6daed3254a84348588532aca327ec82a57cafefd7c97c50e75879788f7c1a18d"
-    },
-    "json-canvas": {
-      "source": "kepano/obsidian-skills",
-      "sourceType": "github",
-      "skillPath": "skills/json-canvas/SKILL.md",
-      "computedHash": "56cbac74a93e4fba97f4d44bccfdeaae89e545b223f47df392c7705e01e6c543"
-    },
-    "obsidian-bases": {
-      "source": "kepano/obsidian-skills",
-      "sourceType": "github",
-      "skillPath": "skills/obsidian-bases/SKILL.md",
-      "computedHash": "ed0a53502693e56c67575a9958daca9a3a1ac7ba483367f400b4cad9488bfb3c"
-    },
     "obsidian-cli": {
       "source": "kepano/obsidian-skills",
       "sourceType": "github",
       "skillPath": "skills/obsidian-cli/SKILL.md",
-      "computedHash": "f46ae626875f7e47c410c2ee93896c4526024ebe127719e8fb430261b5677edc"
+      "computedHash": "89ded0eb1499286d5c95217df0ff7015aa46b7efe4646fafaba38cbac3289392"
     },
     "obsidian-markdown": {
       "source": "kepano/obsidian-skills",
       "sourceType": "github",
       "skillPath": "skills/obsidian-markdown/SKILL.md",
-      "computedHash": "cacc9058a35ad3fd4985b4c31121bff8202f1337c39808c1326ded6a19a7915f"
-    },
-    "rust-async-patterns": {
-      "source": "wshobson/agents",
-      "sourceType": "github",
-      "skillPath": "plugins/systems-programming/skills/rust-async-patterns/SKILL.md",
-      "computedHash": "20d32ef58158c94eb4dfc4aaf19bec7ae2a025ae5d42da7b49ccfbaeda389273"
+      "computedHash": "d65bfcd6012560c61da9c88c79679a9a8218ac6b4928df9b55ae451949a1618a"
     },
     "rust-best-practices": {
       "source": "apollographql/skills",
       "sourceType": "github",
       "skillPath": "skills/rust-best-practices/SKILL.md",
-      "computedHash": "fd336f2f772eb46ddf8658de5f9dd8faa1f35615b316665307fc82eeb4b2e658"
-    },
-    "typescript-advanced-types": {
-      "source": "wshobson/agents",
-      "sourceType": "github",
-      "skillPath": "plugins/javascript-typescript/skills/typescript-advanced-types/SKILL.md",
-      "computedHash": "8cbf2bf600f392d7260e476e3202932a876e2281cda3b15a8b6a5a43f383252d"
+      "computedHash": "5ae68ae0241d65dac8a73f06139457206dde55912aecd4c36cd462fa85570513"
     }
   }
 }
