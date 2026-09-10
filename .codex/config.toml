@@ -1,0 +1,4 @@
+# 이 저장소의 기본 개발 모델입니다. 기존 작업의 명시적 선택은 우선할 수 있습니다.
+model = "gpt-6-astra"
+# Rust/WASM 경계와 회귀 검증을 고려한 기본값입니다. 작업별로 조정할 수 있습니다.
+model_reasoning_effort = "high"
