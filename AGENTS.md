@@ -4,10 +4,10 @@
 > TypeScript strict 모드, esbuild CJS 번들, Obsidian DOM API 기반 UI.
 > JS/TS는 UI와 Obsidian host boundary를 담당하는 프론트엔드/wrapper다. 실질 기능의 결정적 로직은 Rust/WASM 코어가 담당한다.
 
-## 작업 시작과 Codex 기본값
+## 작업 시작과 Codex 사용
 
 - 모든 답변·설명·주석은 한국어, 코드 식별자는 영어로 작성합니다. macOS 터미널은 fish를 명시해 실행합니다.
-- `.codex/config.toml`은 이 저장소의 기본 모델을 `gpt-6-astra`, 추론 강도를 `high`로 지정합니다. 모델의 품질을 가정해 검증을 줄이지 않습니다. 설정·적용 확인은 [docs/codex-development.md](docs/codex-development.md)를 참고합니다.
+- 모델과 추론 강도는 사용자가 선택합니다. 저장소 설정이나 지침으로 특정 모델·강도를 지정하지 않습니다. 모델에 관계없이 같은 검증 기준을 적용하며, 작업 흐름은 [docs/codex-development.md](docs/codex-development.md)를 참고합니다.
 - 먼저 `git status --short --branch`로 기존 변경을 확인하고, 사용자의 목적·완료 조건·관련 코드·테스트를 좁혀 읽습니다. 사용자 변경과 볼트·설정·키를 보존합니다.
 - 파일에 명시된 사실과 현재 코드가 다르면 코드를 확인해 지침을 고칩니다. 줄 수·커밋 번호·거대한 심볼 목록을 시작 지침에 추가하지 않습니다.
 - 복잡한 변경은 짧은 계획과 회귀 테스트부터 시작합니다. 독립적인 읽기는 묶고, 의존하는 변경과 검증은 순서대로 수행합니다.

@@ -2,7 +2,7 @@
 
 > 이 문서는 Superpower Inside에 기능을 추가하거나 버그를 수정할 때 따르는 현재 개발 계약입니다. 로컬 환경 준비는 [DEV_SETUP.md](DEV_SETUP.md)를 먼저 보세요.
 
-Codex로 작업할 때는 [Astra 개발 환경](codex-development.md)을 참고합니다. 기본 모델은 프로젝트의 `.codex/config.toml`에 있으며, [스킬 구성](skill-audit.md)에는 유지하는 4개 스킬과 제거한 7개 스킬의 선정 근거가 있습니다. 릴리스 작업은 [릴리스 계약](agent-release.md)을 함께 확인합니다.
+Codex로 작업할 때는 [개발 환경 안내](codex-development.md)를 참고합니다. 모델과 추론 강도는 사용자가 선택하며 저장소에서 지정하지 않습니다. [스킬 구성](skill-audit.md)에는 유지하는 4개 스킬과 제거한 7개 스킬의 선정 근거가 있습니다. 릴리스 작업은 [릴리스 계약](agent-release.md)을 함께 확인합니다.
 
 ## 한눈에 보는 작업 흐름
 
