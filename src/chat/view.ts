@@ -545,14 +545,11 @@ export class ChatView extends ItemView {
         selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
         onApplyToSession: (prompt) => {
           this.sessionSystemPrompt = prompt.trim() || null;
-          this.updateSystemPromptBadge();
           this.markDirtyAndAutoSave();
         },
       });
     });
   }
-
-  private updateSystemPromptBadge(): void {}
 
   private buildMcpStatusBar(container: HTMLElement): void {
     this.mcpStatusBar = container.createDiv({ cls: 'superpower-inside-chat-mcp-status-bar' });

@@ -20,6 +20,22 @@ afterEach(() => {
 });
 
 describe('프롬프트 보관함', () => {
+  it.each([
+    { language: 'ko' as const, budget: 600, evidence: /출처/, untrusted: /지시.*따르지/ },
+    { language: 'en' as const, budget: 1000, evidence: /source/i, untrusted: /untrusted/i },
+  ])(
+    '$language 기본 지침은 도구가 없어도 출처와 비신뢰 경계를 짧게 보존한다',
+    ({ language, budget, evidence, untrusted }) => {
+      setLanguage(language);
+      const prompt = getEffectiveSystemPrompt(createSettings({}));
+
+      expect(prompt.length).toBeLessThanOrEqual(budget);
+      expect(prompt).toMatch(evidence);
+      expect(prompt).toMatch(untrusted);
+      expect(prompt).toContain('Markdown');
+    },
+  );
+
   it('빈 설정에는 Obsidian 기본 프롬프트를 보강한다', () => {
     const result = normalizePromptLibrary(undefined, undefined, '');
 

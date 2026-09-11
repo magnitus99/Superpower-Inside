@@ -222,7 +222,6 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 | Document | Purpose |
 | --- | --- |
 | [Developer guide](docs/README_FOR_DEV.md) | Architecture, product gate, and change workflow |
-| [Development setup](docs/DEV_SETUP.md) | Test vault, hot reload, and Obsidian debug setup |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | Bundled dependency and license notices |
 
 ## License
