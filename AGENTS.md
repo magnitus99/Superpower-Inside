@@ -9,7 +9,8 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 모델·추론 강도는 사용자가 선택합니다. 전역 도구·설정·승인 정책을 임의로 바꾸지 않습니다. 스킬은 필요한 작업에만 사용하며 범용 교재나 작업 기록을 저장소에 쌓지 않습니다.
 - `rg`로 관련 구현·호출부·테스트를 함께 읽고 테스트 계약부터 고정합니다. 라이브러리 API는 Context7, 없으면 공식 문서나 설치된 타입·소스로 확인합니다.
 - 진입점은 `main.ts`, 설정은 `src/settings.ts`, 계산은 `crates/rag-wasm/`, WASM 연결은 `src/rag/rust-core.ts`입니다. 채팅 변경 전 [src/chat/AGENTS.md](src/chat/AGENTS.md)를 읽습니다.
-- 설치·디버깅은 [개발 가이드](docs/README_FOR_DEV.md), 버전·태그·배포는 [릴리스 계약](docs/agent-release.md)을 필요한 때 읽습니다. 문서와 코드가 다르면 현재 코드를 확인해 문서를 고칩니다.
+- 설치·디버깅 명령은 `package.json`과 `scripts/`, 배포 자산은 `.github/workflows/release.yml`에서 확인합니다. 에이전트 규칙은 AGENTS.md에만 두며, 사용자 요청 없이 `docs/`나 README에 계획·설계 일지·검수 기록·에이전트용 가이드를 작성하지 않습니다.
+- 릴리스는 `main`에서 준비하고 `manifest.json`·`package.json`·`versions.json` 버전을 맞춥니다. 태그는 버전과 정확히 같아야 하며 `v`를 붙이지 않습니다. workflow 실행 중 수동 Release 생성과 경합하지 말고 완료 후 자산을 확인합니다. 같은 버전 재출시의 태그 이동도 사용자 요청 범위에서만 수행합니다.
 
 ## 제품·화면
 

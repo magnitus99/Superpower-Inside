@@ -217,13 +217,8 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 
 ---
 
-## Development
-
-| Document | Purpose |
-| --- | --- |
-| [Developer guide](docs/README_FOR_DEV.md) | Architecture, product gate, and change workflow |
-| [Third-party notices](THIRD_PARTY_NOTICES.md) | Bundled dependency and license notices |
-
 ## License
 
 [MIT](LICENSE)
+
+[Third-party notices](THIRD_PARTY_NOTICES.md)
