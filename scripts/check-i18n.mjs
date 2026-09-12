@@ -4,7 +4,7 @@ import ts from 'typescript';
 
 const root = process.cwd();
 const hangul = /[\u3131-\u318E\uAC00-\uD7A3]/;
-const skipDirs = new Set(['.git', '.sisyphus', '.test-vault', 'dist', 'node_modules']);
+const skipDirs = new Set(['.git', '.test-vault', 'dist', 'node_modules']);
 const allowedKoreanFiles = new Set([path.join(root, 'src/i18n.ts')]);
 const localizedFactoryNames = new Set(['createDefaultPromptEntry']);
 

@@ -13,10 +13,8 @@ agent-diagnostics.ndjson*
 agent-diagnostics-safe-mode.json
 .env.test.local
 
-# 개발용 Obsidian 테스트 볼트와 에이전트 작업 상태
+# 개발용 Obsidian 테스트 볼트
 .test-vault/
-.sisyphus/
-docs/superpowers/
 
 # 시뮬레이션/브라우저 테스트 산출물
 sim-*.png
@@ -25,6 +23,3 @@ simulations/
 
 # 임시 백업 파일
 *.bak
-
-# CodeGraph
-.codegraph/
