@@ -31,6 +31,18 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('BM25 후보도 현재 검색 대상 목록에 속한 파일만 반환한다', async () => {
+    const bm25 = await createBm25([
+      ['visible.md', 'specialterm'],
+      ['excluded.md', 'specialterm'],
+    ]);
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, {
+      getCandidatePaths: () => Promise.resolve(new Set(['visible.md'])),
+    });
+    expect((await engine.query('specialterm', 5)).map((result) => result.sourcePath)).toEqual([
+      'visible.md',
+    ]);
+  });
   it('임베딩과 벡터 저장소 없이 BM25 corpus만으로 결과를 반환한다', async () => {
     const bm25 = await createBm25([['notes/customer.md::0', '핵심 고객 문제와 해결 전략']]);
     await bm25.persist();
@@ -59,6 +71,7 @@ describe('RAGQueryEngine', () => {
       endLine: 0,
       sourceMtime: 10,
       sourceSize: 20,
+      contentHash: 'current-hash',
       indexedAt: 30,
     });
     await bm25.persist();
@@ -74,30 +87,35 @@ describe('RAGQueryEngine', () => {
     });
   });
 
-  it('loaded BM25의 현재 Vault metadata가 모두 일치하면 ready로 판정한다', async () => {
-    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
-    await bm25.load();
-    bm25.addCorpusDocument({
-      id: 'notes/indexed.md::0',
-      text: '인덱스된 고객 근거',
-      sourcePath: 'notes/indexed.md',
-      startLine: 0,
-      endLine: 0,
-      sourceMtime: 10,
-      sourceSize: 20,
-      indexedAt: 30,
-    });
-    await bm25.persist();
-    const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+  it.each([
+    { contentHash: 'current-hash', readiness: 'ready' },
+    { contentHash: undefined, readiness: 'stale' },
+  ])(
+    'BM25 해시 $contentHash의 준비 상태를 $readiness로 판정한다',
+    async ({ contentHash, readiness }) => {
+      const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+      await bm25.load();
+      bm25.addCorpusDocument({
+        id: 'notes/indexed.md::0',
+        text: '인덱스된 고객 근거',
+        sourcePath: 'notes/indexed.md',
+        startLine: 0,
+        endLine: 0,
+        sourceMtime: 10,
+        sourceSize: 20,
+        contentHash,
+        indexedAt: 30,
+      });
+      await bm25.persist();
+      const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
 
-    await expect(
-      engine.getIndexReadiness([
-        { path: 'notes/indexed.md', mtime: 10, size: 20 },
-      ]),
-    ).resolves.toMatchObject({
-      readiness: 'ready',
-    });
-  });
+      await expect(
+        engine.getIndexReadiness([{ path: 'notes/indexed.md', mtime: 10, size: 20 }]),
+      ).resolves.toMatchObject({
+        readiness,
+      });
+    },
+  );
 
   it('folder scope가 있으면 해당 경로의 후보만 검색한다', async () => {
     const store = new MemoryVectorStore();
@@ -556,9 +574,7 @@ describe('RAGQueryEngine', () => {
 
     const results = await engine.query('질문', 2);
 
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'fresh-provider.md',
-    ]);
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['fresh-provider.md']);
     await expect(
       engine.getIndexReadiness([
         { path: 'stale-provider.md', mtime: 1000, size: '이전 공급자 벡터'.length },

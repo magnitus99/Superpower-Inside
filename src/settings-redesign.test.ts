@@ -11,6 +11,15 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('검색 품질은 기본값을 표시하고 세 항목만 초기화한다', () => {
+    const start = settingsSource.indexOf('private buildSearchQualitySection(');
+    const end = settingsSource.indexOf('private buildChatTab(', start);
+    const section = settingsSource.slice(start, end);
+    expect(section.match(/t\('searchQualityDefault'/g)).toHaveLength(3);
+    expect(section).toContain('Object.assign(this.plugin.settings.rag, DEFAULT_SEARCH_QUALITY)');
+    expect(section).toContain('this.debouncedRagSave()');
+    expect(section).toContain('this.refreshRagTab()');
+  });
   it('검색 대상 형식은 제외 설정 바로 다음에 표시하고 규칙 변경 시 갱신한다', () => {
     const start = settingsSource.indexOf('private buildRagFoundationSection(');
     const end = settingsSource.indexOf('private buildGraphRagSection(', start);

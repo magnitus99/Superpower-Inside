@@ -2,6 +2,7 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
 import type { IndexedDbBM25Index } from './bm25';
+import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
 import { BM25DocumentCorpusStore, FallbackRetrievalCorpusStore } from './corpus-store';
 import { GraphRagCandidateProvider, type GraphRagQueryEngine } from '../graph/query-engine';
 import {
@@ -72,6 +73,7 @@ export interface QueryResult {
 }
 
 export interface RAGQueryEngineOptions {
+  getCandidatePaths?: () => Promise<ReadonlySet<string>>;
   annEnabled?: boolean;
   annClusterCount?: number;
   annProbeCount?: number;
@@ -99,6 +101,7 @@ export interface RAGIndexFileSnapshot {
 }
 
 export class RAGQueryEngine {
+  private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
   private vectorStore: VectorStore | null;
   private embeddingProvider: EmbeddingProvider | null;
   private bm25Index: IndexedDbBM25Index | undefined;
@@ -115,10 +118,11 @@ export class RAGQueryEngine {
     vectorStore: VectorStore | null,
     embeddingProvider: EmbeddingProvider | null,
     bm25Index?: IndexedDbBM25Index,
-    bm25Weight = 0.3,
-    minScore = 0.5,
+    bm25Weight: number = DEFAULT_SEARCH_QUALITY.bm25Weight,
+    minScore: number = DEFAULT_SEARCH_QUALITY.minScore,
     options: RAGQueryEngineOptions = {},
   ) {
+    this.getCandidatePaths = options.getCandidatePaths;
     this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
     this.bm25Index = bm25Index;
@@ -147,9 +151,7 @@ export class RAGQueryEngine {
       const bm25Corpus = new BM25DocumentCorpusStore(bm25Index);
       providers.push(
         new BM25CandidateProvider(
-          vectorStore
-            ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus)
-            : bm25Corpus,
+          vectorStore ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus) : bm25Corpus,
           bm25Index,
         ),
       );
@@ -183,6 +185,10 @@ export class RAGQueryEngine {
   ): Promise<QueryResult[]> {
     throwIfQueryAborted(options.signal);
     const threshold = minScore ?? this.minScore;
+    const candidatePaths = await this.getCandidatePaths?.();
+    const isInScope = (entry: VectorEntry): boolean =>
+      (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
+      this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true);
     const qVector = this.embeddingProvider ? await this.embeddingProvider.embed(question) : [];
     throwIfQueryAborted(options.signal);
     const retrieval = await this.retrievalPipeline.retrieve(
@@ -201,9 +207,9 @@ export class RAGQueryEngine {
               }
             : undefined,
         isEntryCompatible: (entry) =>
+          isInScope(entry) &&
           this.isEntryCompatible(entry, qVector, filePathPrefixes, options.fileBackedOnly === true),
-        isEntryInScope: (entry) =>
-          this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true),
+        isEntryInScope: isInScope,
       },
       options.signal,
     );
@@ -215,7 +221,7 @@ export class RAGQueryEngine {
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
-      if (!this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true)) {
+      if (!isInScope(entry)) {
         continue;
       }
       const vectorScore =
@@ -328,13 +334,13 @@ export class RAGQueryEngine {
           const hasCompleteMetadata =
             document.sourceMtime !== undefined &&
             document.sourceSize !== undefined &&
-            document.indexedAt !== undefined;
+            document.indexedAt !== undefined &&
+            document.contentHash !== undefined;
           return {
             filePath: document.sourcePath,
             sourceMtime: document.sourceMtime,
             sourceSize: document.sourceSize,
-            contentHash:
-              document.contentHash ?? (hasCompleteMetadata ? 'bm25-metadata' : undefined),
+            contentHash: document.contentHash,
             indexedAt: document.indexedAt,
             embeddingProvider: hasCompleteMetadata ? 'bm25' : undefined,
             embeddingModel: hasCompleteMetadata ? 'bm25' : undefined,
@@ -360,10 +366,7 @@ export class RAGQueryEngine {
     if (plans.some((plan) => plan.updateRequiredDocuments.length === 0)) {
       return { readiness: 'ready', estimatedCost: 'low' };
     }
-    const healthyDocuments = plans.reduce(
-      (total, plan) => total + plan.healthyDocuments,
-      0,
-    );
+    const healthyDocuments = plans.reduce((total, plan) => total + plan.healthyDocuments, 0);
     return {
       readiness: healthyDocuments > 0 ? 'partial' : 'cold',
       estimatedCost: 'low',
@@ -411,8 +414,10 @@ export class RAGQueryEngine {
     if (!filePathPrefixes || filePathPrefixes.length === 0) return true;
     return filePathPrefixes.some((rawPrefix) => {
       const prefix = rawPrefix.trim().replace(/\/+$/, '');
-      return prefix.length > 0 &&
-        (entry.metadata.filePath === prefix || entry.metadata.filePath.startsWith(`${prefix}/`));
+      return (
+        prefix.length > 0 &&
+        (entry.metadata.filePath === prefix || entry.metadata.filePath.startsWith(`${prefix}/`))
+      );
     });
   }
 

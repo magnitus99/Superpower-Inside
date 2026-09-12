@@ -298,6 +298,8 @@ export interface I18nKeys {
   bm25Weight: string;
   bm25WeightDesc: string;
   bm25Guidance: string;
+  searchQualityDefault: string;
+  searchQualityResetDesc: string;
 
   // RAG 상태 대시보드
   ragStatusTotalDocs: string;
@@ -1925,6 +1927,8 @@ const ko: I18nKeys = {
   ollamaEmbeddingContextError:
     'Ollama 임베딩 모델의 최대 컨텍스트 길이를 초과했습니다. 설정 > RAG > 청크 크기(chunkSize)를 줄이고 다시 인덱싱해보세요.',
   minScore: '최소 관련도 점수',
+  searchQualityDefault: '기본값: {value}',
+  searchQualityResetDesc: '검색 품질 설정 세 가지만 기본값으로 되돌립니다.',
   minScoreDesc:
     '통합 검색 결과 중 이 점수(0~1) 미만은 제외합니다. 낮을수록 더 많은 결과를 포함하지만 품질이 떨어질 수 있습니다.',
   enableBM25: 'BM25 키워드 검색 활성화',
@@ -3694,6 +3698,8 @@ const en: I18nKeys = {
   ollamaEmbeddingContextError:
     'The input exceeds the maximum context length of the Ollama embedding model. Go to Settings > RAG > Chunk size and lower it, then reindex.',
   minScore: 'Minimum Relevance Score',
+  searchQualityDefault: 'Default: {value}',
+  searchQualityResetDesc: 'Restore only these three search quality settings to their defaults.',
   minScoreDesc:
     'Filter out combined search results below this threshold (0–1). Lower values include more results but may reduce quality.',
   enableBM25: 'Enable BM25 Keyword Search',

@@ -19,6 +19,38 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('폴더 멘션과 원문 링크 확장에도 동일한 검색 대상 목록을 적용한다', async () => {
+    const visible = createFile('notes/visible.md', '공개 근거 [[hidden]]', 1000);
+    const hidden = createFile('notes/hidden.md', '제외된 문서의 근거', 1000);
+    const folder = createFolder('notes');
+    const app = createApp(
+      new Map([
+        [visible.path, visible],
+        [hidden.path, hidden],
+      ]),
+      new Map([[folder.path, folder]]),
+    );
+    for (const question of ['@[notes]', '@[notes/visible.md]', '@[notes/hidden.md]']) {
+      const context = await buildChatContext(question, {
+        app,
+        candidatePaths: new Set([visible.path]),
+      });
+      expect(context.systemPrompt ?? '').not.toContain('제외된 문서의 근거');
+      expect(context.citations.some((citation) => citation.filePath === hidden.path)).toBe(false);
+    }
+  });
+  it('검색 범위에서 제외된 파일은 검증된 RAG 결과여도 답변에 넣지 않는다', async () => {
+    const file = createFile('note.md', '현재 내용', 1000);
+    const context = await buildChatContext('질문', {
+      app: createApp(new Map([['note.md', file]])),
+      candidatePaths: new Set(),
+      ragEngine: createRagEngine([
+        createResult('note.md', '현재 내용', createContentHash('현재 내용')),
+      ]),
+    });
+    expect(context.systemPrompt).toBeNull();
+    expect(context.citations).toEqual([]);
+  });
   it('RAG 없이 재전송할 때는 RAG 준비 자체를 건너뛴다', async () => {
     const prepare = vi.fn(() => Promise.reject(new Error('RAG initialization failed')));
 
@@ -287,6 +319,34 @@ describe('buildChatContext RAG 출처 검증', () => {
           sourceIds: ['rag-1'],
         }),
       ]),
+    );
+  });
+
+  it('검색 대상에서 빠진 파일에 근거한 그래프 설명을 답변에 넣지 않는다', async () => {
+    const entity = createEntity('entity::paul', 'Paul', ['Apostle'], '제외된 원문에서 나온 설명');
+    entity.evidenceIds = ['evidence::excluded'];
+    const graphStore = createGraphStore([entity], []);
+    graphStore.getEvidenceByIds = () =>
+      Promise.resolve([
+        {
+          id: 'evidence::excluded',
+          filePath: 'excluded.md',
+          entryId: 'excluded.md::0',
+          startLine: 0,
+          quote: '원문',
+          contentHash: 'hash',
+          extractionModelKey: 'test',
+          updatedAt: 1,
+        },
+      ]);
+    const context = await buildChatContext('@[entity: Apostle] 설명해줘', {
+      app: createApp(new Map()),
+      knowledgeGraphStore: graphStore,
+      candidatePaths: new Set(['visible.md']),
+    });
+    expect(context.systemPrompt ?? '').not.toContain('제외된 원문에서 나온 설명');
+    expect(context.attachments).toContainEqual(
+      expect.objectContaining({ type: 'graph-rag', status: 'missing' }),
     );
   });
 

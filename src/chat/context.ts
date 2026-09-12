@@ -65,6 +65,7 @@ export async function resolveChatRagEngine(
 
 interface BuildContextOptions {
   app: App;
+  candidatePaths?: ReadonlySet<string>;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
   knowledgeGraphStore?: KnowledgeGraphStore | null;
@@ -134,6 +135,7 @@ export async function buildChatContext(
       appendBlock,
       attachments,
       citations,
+      options.candidatePaths,
     );
     if (!fileResult) continue;
 
@@ -142,6 +144,7 @@ export async function buildChatContext(
       fileResult.content,
       options.app,
       maxReferenceFiles,
+      options.candidatePaths,
     );
     warnings.push(...expansion.warnings);
     for (const reference of expansion.references) {
@@ -159,6 +162,7 @@ export async function buildChatContext(
       attachments,
       citations,
       maxFolderFiles,
+      options.candidatePaths,
     );
   }
 
@@ -187,6 +191,7 @@ export async function buildChatContext(
         attachments,
         citations,
         Math.min(3, maxFolderFiles),
+        options.candidatePaths,
       );
     }
   }
@@ -216,7 +221,9 @@ export async function buildChatContext(
       }
       const attachedPaths = new Set(citations.map((citation) => citation.filePath));
       const uniqueResults = dedupeQueryResults(results).filter(
-        (result) => !attachedPaths.has(result.entry.metadata.filePath),
+        (result) =>
+          !attachedPaths.has(result.entry.metadata.filePath) &&
+          (!options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath)),
       );
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
@@ -321,6 +328,7 @@ export async function buildChatContext(
       attachments,
       citations,
       graphEntities,
+      options.candidatePaths,
     );
   }
 
@@ -360,9 +368,14 @@ async function appendImplicitFolderEvidence(
   attachments: ContextAttachment[],
   citations: SourceCitation[],
   topK: number,
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<void> {
   const prefix = `${folderPath}/`;
-  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(prefix));
+  const folderFiles = app.vault
+    .getFiles()
+    .filter(
+      (file) => file.path.startsWith(prefix) && (!candidatePaths || candidatePaths.has(file.path)),
+    );
   const indexableFlags = await Promise.all(
     folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
   );
@@ -612,9 +625,10 @@ async function appendFileMention(
   appendBlock: (block: ContextBlock) => boolean,
   attachments: ContextAttachment[],
   citations: SourceCitation[],
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<{ file: TFile; content: string } | null> {
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof TFile)) {
+  if (!(file instanceof TFile) || (candidatePaths && !candidatePaths.has(file.path))) {
     attachments.push({
       id: `file:${path}`,
       type: 'file',
@@ -708,6 +722,7 @@ async function appendFolderMention(
   attachments: ContextAttachment[],
   citations: SourceCitation[],
   maxFolderFiles: number,
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<void> {
   const folder = app.vault.getAbstractFileByPath(path);
   if (!(folder instanceof TFolder)) {
@@ -723,7 +738,12 @@ async function appendFolderMention(
   }
 
   const folderPrefix = `${path}/`;
-  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(folderPrefix));
+  const folderFiles = app.vault
+    .getFiles()
+    .filter(
+      (file) =>
+        file.path.startsWith(folderPrefix) && (!candidatePaths || candidatePaths.has(file.path)),
+    );
   const indexableFlags = await Promise.all(
     folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
   );
@@ -868,11 +888,28 @@ async function appendGraphEntityContext(
   attachments: ContextAttachment[],
   citations: SourceCitation[],
   graphEntities?: readonly GraphEntityRecord[],
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<void> {
-  const [entities, relations] = await Promise.all([
+  const [storedEntities, storedRelations] = await Promise.all([
     graphEntities ? Promise.resolve([...graphEntities]) : graphStore.getEntities(),
     graphStore.getRelations(),
   ]);
+  const scopedEvidence = candidatePaths
+    ? new Map(
+        (
+          await graphStore.getEvidenceByIds([
+            ...storedEntities.flatMap((entity) => entity.evidenceIds),
+            ...storedRelations.flatMap((relation) => relation.evidenceIds),
+          ])
+        ).map((evidence) => [evidence.id, candidatePaths.has(evidence.filePath)]),
+      )
+    : null;
+  const isScoped = (fact: { evidenceIds: string[] }): boolean =>
+    !scopedEvidence ||
+    (fact.evidenceIds.length > 0 &&
+      fact.evidenceIds.every((id) => scopedEvidence.get(id) === true));
+  const entities = storedEntities.filter(isScoped);
+  const relations = storedRelations.filter(isScoped);
 
   const mentionPlan = planGraphMentionContextRust(
     entityMentions.map((mention) => mention.name),

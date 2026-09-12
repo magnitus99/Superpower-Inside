@@ -166,6 +166,20 @@ describe('IndexedDbVectorStore', () => {
     ]);
   });
 
+  it('큰 저장소에서도 정확한 파일 경로로 검색하면 해당 문서를 찾는다', async () => {
+    const store = createStore(createDbName(), { hydrateAllEntryLimit: 1, pageSize: 1 });
+    await store.add([
+      createEntry('notes/target.md', 0, [1, 0], 'target'),
+      createEntry('notes/other.md', 0, [1, 0], 'other'),
+    ]);
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 5,
+      filter: { filePathPrefixes: ['notes/target.md'] },
+    });
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['notes/target.md']);
+  });
+
   it('large store search는 전체 entries cache를 hydrate하지 않고 page 단위로 점수화한다', async () => {
     const store = createStore(createDbName(), {
       hydrateAllEntryLimit: 2,

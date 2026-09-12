@@ -47,11 +47,9 @@ import {
   type VectorStore,
 } from './src/rag/store';
 import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
+import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
 import {
   VaultIndexer,
-  buildSearchText,
-  chunkMarkdown,
-  chunkPlainText,
   registerModifyEvent,
   registerCreateEvent,
   registerDeleteEvent,
@@ -1397,7 +1395,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         delete migratedRag.autoUpdateIntervalMs;
       }
       if (typeof migratedRag.minScore !== 'number') {
-        migratedRag.minScore = 0.5;
+        migratedRag.minScore = DEFAULT_SETTINGS.rag.minScore;
       }
       if (typeof migratedRag.annEnabled !== 'boolean') {
         migratedRag.annEnabled = true;
@@ -1451,9 +1449,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         migratedRag.enableBM25 = true;
       }
       if (typeof migratedRag.bm25Weight !== 'number') {
-        migratedRag.bm25Weight = 0.15;
-      } else if (migratedRag.bm25Weight === 0.3) {
-        migratedRag.bm25Weight = 0.15;
+        migratedRag.bm25Weight = DEFAULT_SETTINGS.rag.bm25Weight;
       }
       migratedRag.performanceTuningMode = normalizeRagPerformanceTuningMode(
         migratedRag.performanceTuningMode,
@@ -1775,24 +1771,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async rebuildBM25Index(bm25Index: IndexedDbBM25Index): Promise<void> {
-    await bm25Index.rebuildFrom(async () => {
-      const entries = await this.vectorStore?.getEntries();
-      if (entries && entries.length > 0) {
-        return entries.map((entry) => ({
-          id: entry.id,
-          text: entry.metadata.text,
-          sourcePath: entry.metadata.filePath,
-          heading: entry.metadata.heading,
-          startLine: entry.metadata.startLine,
-          endLine: entry.metadata.endLine,
-          sourceMtime: entry.metadata.sourceMtime,
-          sourceSize: entry.metadata.sourceSize,
-          contentHash: entry.metadata.contentHash,
-          indexedAt: entry.metadata.indexedAt,
-        }));
-      }
-      return this.buildBM25IndexDocumentsFromVault();
-    });
+    await bm25Index.rebuildFrom(() => this.buildBM25IndexDocumentsFromVault());
   }
 
   private startBM25BackgroundLoad(
@@ -1839,7 +1818,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     try {
       if (outcome.error) throw outcome.error;
-      if (!bm25Index.isTokenizerCurrent || bm25Index.totalDocs === 0) {
+      const files = await getRagCandidateFiles(
+        this.app.vault,
+        this.settings.rag,
+        this.settings.chat,
+      );
+      const sourcePaths = new Set(await bm25Index.getSourcePaths());
+      const readiness = await new RAGQueryEngine(null, null, bm25Index).getIndexReadiness(
+        files.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
+      );
+      const corpusMatches =
+        sourcePaths.size === files.length && files.every((file) => sourcePaths.has(file.path));
+      if (
+        !bm25Index.isTokenizerCurrent ||
+        bm25Index.totalDocs === 0 ||
+        !corpusMatches ||
+        readiness?.readiness !== 'ready'
+      ) {
         this.getLogger().notice('BM25 corpus is missing or outdated; rebuilding it.', {
           source: 'rag.bm25',
         });
@@ -1934,22 +1929,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private buildBM25CorpusDocuments(file: TFile, content: string): BM25CorpusDocument[] {
-    const chunks =
-      file.extension.toLowerCase() === 'md'
-        ? chunkMarkdown(content, this.settings.rag.chunkSize, this.settings.rag.overlap)
-        : chunkPlainText(content, this.settings.rag.chunkSize, this.settings.rag.overlap);
-    const indexedAt = Date.now();
-    return chunks.map((chunk, index) => ({
-      id: `${file.path}::${chunk.metadata.startLine}::${index}`,
-      text: buildSearchText(file, chunk),
-      sourcePath: file.path,
-      heading: chunk.metadata.heading,
-      startLine: chunk.metadata.startLine,
-      endLine: chunk.metadata.endLine,
-      sourceMtime: file.stat.mtime,
-      sourceSize: file.stat.size,
-      indexedAt,
-    }));
+    return buildBM25CorpusDocuments(file, content, this.settings.rag);
   }
 
   private async indexBM25File(bm25Index: IndexedDbBM25Index, file: TFile): Promise<void> {
@@ -2260,7 +2240,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
         );
         bm25Index = nextBm25Index;
         this.bm25Index = nextBm25Index;
-        this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore);
+        this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore, {
+          getCandidatePaths: async () =>
+            new Set(
+              (
+                await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)
+              ).map((file) => file.path),
+            ),
+        });
         // 큰 로컬 색인은 채팅과 vector/Graph 런타임을 막지 않고 worker에서 준비한다.
         bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index);
       }
@@ -2455,6 +2442,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
           rag.bm25Weight,
           rag.minScore,
           {
+            getCandidatePaths: async () =>
+              new Set(
+                (
+                  await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)
+                ).map((file) => file.path),
+              ),
             annEnabled: rag.annEnabled,
             annClusterCount: rag.annClusterCount,
             annProbeCount: rag.annProbeCount,

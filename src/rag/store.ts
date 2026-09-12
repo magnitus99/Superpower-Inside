@@ -1011,6 +1011,14 @@ export class IndexedDbVectorStore implements VectorStore {
         await scorePages((offset) =>
           this.db.vectors
             .where('filePath')
+            .equals(prefix)
+            .offset(offset)
+            .limit(this.pageSize)
+            .toArray(),
+        );
+        await scorePages((offset) =>
+          this.db.vectors
+            .where('filePath')
             .startsWith(`${prefix}/`)
             .offset(offset)
             .limit(this.pageSize)

@@ -4676,8 +4676,15 @@ export class ChatView extends ItemView {
       () => this.plugin.prepareRagForChat(),
       () => this.plugin.ragEngine,
     );
+    const { getRagCandidateFiles } = await import('../utils/vault');
+    const candidateFiles = await getRagCandidateFiles(
+      this.app.vault,
+      this.plugin.settings.rag,
+      this.plugin.settings.chat,
+    );
     const context = await buildChatContext(lastUserText, {
       app: this.app,
+      candidatePaths: new Set(candidateFiles.map((file) => file.path)),
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
       knowledgeGraphStore: this.plugin.knowledgeGraphStore,

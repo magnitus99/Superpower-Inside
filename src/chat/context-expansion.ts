@@ -31,6 +31,7 @@ export async function expandReferencedVaultFiles(
   sourceContent: string,
   app: App,
   maxReferences = DEFAULT_MAX_REFERENCES,
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<ReferenceExpansionResult> {
   const references: ReferencedVaultFile[] = [];
   const warnings: string[] = [];
@@ -38,7 +39,7 @@ export async function expandReferencedVaultFiles(
 
   for (const requestedPath of extractVaultLinks(sourceContent).slice(0, maxReferences)) {
     const file = resolveVaultLink(app, sourceFile.path, requestedPath);
-    if (!file) {
+    if (!file || (candidatePaths && !candidatePaths.has(file.path))) {
       warnings.push(t('referenceMissingWarning', { path: requestedPath }));
       continue;
     }
@@ -91,7 +92,7 @@ function resolveVaultLink(app: App, sourcePath: string, rawTarget: string): TFil
     plan.fallbackBasename,
     markdownFiles.map((file) => file.basename),
   );
-  return fallbackIndex === null ? null : markdownFiles[fallbackIndex] ?? null;
+  return fallbackIndex === null ? null : (markdownFiles[fallbackIndex] ?? null);
 }
 
 function stringifyError(err: unknown): string {

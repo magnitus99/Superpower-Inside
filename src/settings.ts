@@ -1,3 +1,4 @@
+import { DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import {
   App,
   Modal,
@@ -594,9 +595,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     embeddingModelRef: '',
     autoUpdateEnabled: false,
     autoUpdateIntervalMin: 5,
-    minScore: 0.5,
-    enableBM25: true,
-    bm25Weight: 0.15,
+    ...DEFAULT_SEARCH_QUALITY,
     performanceTuningMode: 'auto',
     performanceGuardEnabled: true,
     maxEmbeddingBatchSize: 32,
@@ -4999,11 +4998,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     new Setting(section)
       .setName(t('minScore'))
-      .setDesc(t('minScoreDesc'))
+      .setDesc(
+        `${t('minScoreDesc')} ${t('searchQualityDefault', { value: String(DEFAULT_SEARCH_QUALITY.minScore) })}`,
+      )
       .addText((text) => {
         text
           .setValue(String(this.plugin.settings.rag.minScore))
-          .setPlaceholder('0.5')
+          .setPlaceholder(String(DEFAULT_SEARCH_QUALITY.minScore))
           .onChange((value) => {
             const num = Number(value);
             if (value.trim() === '') return;
@@ -5018,7 +5019,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     new Setting(section)
       .setName(t('enableBM25'))
-      .setDesc(t('enableBM25Desc'))
+      .setDesc(
+        `${t('enableBM25Desc')} ${t('searchQualityDefault', { value: t('chatEnabledStatus') })}`,
+      )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.enableBM25).onChange((value) => {
           this.plugin.settings.rag.enableBM25 = value;
@@ -5027,11 +5030,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       );
     new Setting(section)
       .setName(t('bm25Weight'))
-      .setDesc(t('bm25WeightDesc'))
+      .setDesc(
+        `${t('bm25WeightDesc')} ${t('searchQualityDefault', { value: String(DEFAULT_SEARCH_QUALITY.bm25Weight) })}`,
+      )
       .addText((text) => {
         text
           .setValue(String(this.plugin.settings.rag.bm25Weight))
-          .setPlaceholder('0.3')
+          .setPlaceholder(String(DEFAULT_SEARCH_QUALITY.bm25Weight))
           .onChange((value) => {
             const num = Number(value);
             if (value.trim() === '') return;
@@ -5044,6 +5049,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '1';
         text.inputEl.step = '0.05';
       });
+    new Setting(section)
+      .setName(t('resetToDefault'))
+      .setDesc(t('searchQualityResetDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('resetToDefault')).onClick(() => {
+          Object.assign(this.plugin.settings.rag, DEFAULT_SEARCH_QUALITY);
+          this.debouncedRagSave();
+          this.refreshRagTab();
+        }),
+      );
   }
   private buildChatTab(containerEl: HTMLElement): void {
     containerEl.empty();

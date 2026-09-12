@@ -102,15 +102,15 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     throwIfAborted(signal);
     if (indexedAttempt !== null) {
       const visible = await this.filterVisibleIndexedCandidates(indexedAttempt.candidates);
-      const needsLiveLexicalFallback = shouldUseLiveLexicalFallback(indexedAttempt);
+      const needsLiveLexicalFallback =
+        visible.length === 0 || shouldUseLiveLexicalFallback(indexedAttempt);
       if (visible.length > 0) {
         const indexedResult = await this.verifyCurrentSearchEvidence(
           buildIndexedSearchResult(request, queries, visible),
           signal,
         );
-        if (!needsLiveLexicalFallback) return indexedResult;
-        const files =
-          indexedAttempt.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
+        if (!needsLiveLexicalFallback && indexedResult.hits.length > 0) return indexedResult;
+        const files = indexedAttempt.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
         const lexicalResult = await this.searchLexically(request, queries, files, signal);
         return lexicalResult.hits.length > 0
           ? mergeIndexedAndLexicalSearchResults(request, queries, indexedResult, lexicalResult)
@@ -124,8 +124,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       }
     }
 
-    const files =
-      indexedAttempt?.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
+    const files = indexedAttempt?.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
     return this.searchLexically(request, queries, files, signal);
   }
 
@@ -213,9 +212,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     );
     const relatedResults = results.filter((result) => result.sourcePath !== file.path);
     const candidates = await this.filterVisibleIndexedCandidates(
-      relatedResults
-      .slice(0, request.limit)
-      .map((result, index) => ({
+      relatedResults.slice(0, request.limit).map((result, index) => ({
         query: seed,
         queryIndex: 0,
         rank: index + 1,
@@ -378,13 +375,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       try {
         throwIfAborted(signal);
         const results = await awaitWithAbort(
-          engine.query(
-            query,
-            request.limit,
-            undefined,
-            request.path ? [request.path] : undefined,
-            { fileBackedOnly: true, signal },
-          ),
+          engine.query(query, request.limit, undefined, request.path ? [request.path] : undefined, {
+            fileBackedOnly: true,
+            signal,
+          }),
           signal,
         );
         throwIfAborted(signal);
@@ -537,9 +531,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         ...entries.filter((entry): entry is { file: TFile; content: string } => entry !== null),
       );
     }
-    const searchableTexts = readable.map(
-      ({ file, content }) => `${file.path}\n${content}`,
-    );
+    const searchableTexts = readable.map(({ file, content }) => `${file.path}\n${content}`);
     const candidates: LexicalSearchCandidate[] = [];
     const matchedPaths = new Set<string>();
     let lexicalWasTruncated = false;
@@ -742,17 +734,12 @@ function buildIndexedSearchResult(
       representative.result.entry.metadata.text,
       request.match,
     );
-    const chunkStartLine = zeroBasedLineToOneBased(
-      representative.result.chunkRange.startLine,
-    );
+    const chunkStartLine = zeroBasedLineToOneBased(representative.result.chunkRange.startLine);
     const chunkEndLine =
       representative.result.chunkRange.endLine === undefined
         ? undefined
         : zeroBasedLineToOneBased(representative.result.chunkRange.endLine);
-    const recommendedReadRange = boundRecommendedReadRange(
-      chunkStartLine,
-      chunkEndLine,
-    );
+    const recommendedReadRange = boundRecommendedReadRange(chunkStartLine, chunkEndLine);
     return [
       {
         path: representative.result.sourcePath,
@@ -832,24 +819,17 @@ function mergeIndexedAndLexicalSearchResults(
     scannedFiles: lexical.scannedFiles,
     unreadableFiles: lexical.unreadableFiles,
     totalHits: Math.max(plan.totalEntries, indexed.totalHits, lexical.totalHits),
-    truncated:
-      indexed.truncated ||
-      lexical.truncated ||
-      plan.totalEntries > hits.length,
+    truncated: indexed.truncated || lexical.truncated || plan.totalEntries > hits.length,
   });
 }
 
 function getIndexedEntryKey(result: QueryResult): string {
   const entryId = result.entry.id.trim();
   const range = `${result.chunkRange.startLine}:${result.chunkRange.endLine ?? ''}`;
-  return entryId
-    ? `${result.sourcePath}\u0000${entryId}`
-    : `${result.sourcePath}\u0000${range}`;
+  return entryId ? `${result.sourcePath}\u0000${entryId}` : `${result.sourcePath}\u0000${range}`;
 }
 
-function collectRetrievalSources(
-  candidates: readonly IndexedSearchCandidate[],
-): string[] {
+function collectRetrievalSources(candidates: readonly IndexedSearchCandidate[]): string[] {
   const sources: string[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
@@ -864,9 +844,7 @@ function collectRetrievalSources(
   return sources;
 }
 
-function collectSearchHitRetrievalSources(
-  hits: readonly NativeVaultSearchHit[],
-): string[] {
+function collectSearchHitRetrievalSources(hits: readonly NativeVaultSearchHit[]): string[] {
   const sources: string[] = [];
   const seen = new Set<string>();
   for (const hit of hits) {
@@ -885,9 +863,7 @@ function collectSearchHitMatchedQueries(
   hits: readonly NativeVaultSearchHit[],
   queries: readonly string[],
 ): string[] {
-  const matched = new Set(
-    hits.flatMap((hit) => hit.matchedQueries ?? []),
-  );
+  const matched = new Set(hits.flatMap((hit) => hit.matchedQueries ?? []));
   return queries.filter((query) => matched.has(query));
 }
 
