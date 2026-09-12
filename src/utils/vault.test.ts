@@ -278,6 +278,10 @@ describe('RAG 후보 파일', () => {
 });
 
 describe('RAG 제외 확장자 판정', () => {
+  it('경로 제외와 겹치는 파일은 확장자 제외 개수에 중복 집계하지 않는다', () => {
+    const vault = createVault([createFile('Code/main.ts'), createFile('notes/main.ts')]);
+    expect(countFilesByExtensions(vault, ['ts'], ['./Code/'])).toEqual({ ts: 1 });
+  });
   it('확장자 키 정규화를 적용해 파일 경로 확장자를 판정한다', () => {
     expect(isExcludedExt('note.MD', ['MD'])).toBe(true);
     expect(isExcludedExt('notes/asset.PNG', [' .png ', 'jpg'])).toBe(true);

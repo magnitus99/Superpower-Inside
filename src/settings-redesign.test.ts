@@ -11,6 +11,16 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('검색 대상 형식은 제외 설정 바로 다음에 표시하고 규칙 변경 시 갱신한다', () => {
+    const start = settingsSource.indexOf('private buildRagFoundationSection(');
+    const end = settingsSource.indexOf('private buildGraphRagSection(', start);
+    const foundation = settingsSource.slice(start, end);
+    expect(foundation).toMatch(/buildExcludeOptionsSection[\s\S]*buildTargetFileTypesSection/);
+    expect(settingsSource).toContain('currentRevision !== revision');
+    expect(settingsSource).toContain('this.fileScopeRenderer?.()');
+    expect(settingsSource).not.toContain("path.includes('*')");
+    expect(settingsSource).toContain('isExcludedPathRust(file.path, [path]) === true');
+  });
   it('활성 탭 패널은 공통 flex 레이아웃을 사용한다', () => {
     expect(styles).toMatch(
       /\.superpower-inside-settings-tab-content\.is-active\s*\{[\s\S]*display:\s*flex/,

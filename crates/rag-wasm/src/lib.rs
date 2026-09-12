@@ -3704,7 +3704,7 @@ fn analyze_exclude_path_issues(
 
     if existing_paths
         .iter()
-        .any(|existing| existing.trim().to_lowercase() == normalized.to_lowercase())
+        .any(|existing| normalize_exclude_path(existing) == normalize_exclude_path(normalized))
     {
         issues.push(ExcludeInputValidationIssue {
             level: ExcludeValidationLevel::Error,
@@ -16584,7 +16584,7 @@ fn is_vault_path_excluded<'a>(
         }
 
         if let Some(segment_pattern) = normalized_pattern.strip_suffix("/**") {
-            if matches_path_segment(&lower_path, segment_pattern) {
+            if is_vault_path_excluded(&lower_path, [segment_pattern]) {
                 return true;
             }
             continue;
@@ -16620,11 +16620,12 @@ fn is_vault_path_excluded<'a>(
 /// `TypeScript` exclude path normalization과 같은 규칙을 적용한다.
 fn normalize_exclude_path(path: &str) -> String {
     let replaced = path.trim().replace('\\', "/");
-    let without_dot_slash = replaced
-        .strip_prefix("./")
-        .or_else(|| replaced.strip_prefix('/'))
-        .unwrap_or(&replaced);
-    without_dot_slash.trim_start_matches('/').to_lowercase()
+    replaced
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+        .to_lowercase()
 }
 
 /// file path가 pattern segment 또는 그 하위 path와 일치하는지 확인한다.
@@ -20404,6 +20405,10 @@ mod tests {
     /// vault exclude path matching은 기존 `TypeScript` pattern 계약을 보존해야 한다.
     #[test]
     fn is_excluded_path_matches_typescript_patterns() {
+        for pattern in ["./Code", "././Code/", "Code//", "Code/./", "**/Code/**"] {
+            assert!(is_excluded_path("Code/note.md", pattern), "{pattern}");
+            assert!(!is_excluded_path("Codebase/note.md", pattern), "{pattern}");
+        }
         assert!(is_excluded_path("Archive/old.txt", "archive"));
         assert!(is_excluded_path("foo/.git/config", "**/.git"));
         assert!(is_excluded_path(".git/config", ".git/**"));

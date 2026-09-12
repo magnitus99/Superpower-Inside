@@ -101,12 +101,11 @@ export async function getRagFileTypeSummary(
     effectiveExcludePaths,
     ragConfig.excludeExts,
   );
-  const summary =
-    planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
-      targetTypes: [],
-      excludeRecommendations: [],
-      totalTargetFiles: 0,
-    };
+  const summary = planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
+    targetTypes: [],
+    excludeRecommendations: [],
+    totalTargetFiles: 0,
+  };
   return {
     ...summary,
     excludeRecommendations: summary.excludeRecommendations.map(localizeRagExcludeRecommendation),
@@ -146,11 +145,15 @@ export function isExcludedExt(filePath: string, excludeExts: string[]): boolean 
 export function countFilesByExtensions(
   vault: Vault,
   extensions: readonly string[],
+  excludePaths: readonly string[] = [],
 ): Record<string, number> {
   const normalizedKeys = extensions
     .map((extension) => extension.trim().toLowerCase().replace(/^\./, ''))
     .filter((extension): extension is string => extension.length > 0);
-  const fileExtensions = vault.getFiles().map((file) => file.extension);
+  const fileExtensions = vault
+    .getFiles()
+    .filter((file) => isExcludedPathRust(file.path, excludePaths) === false)
+    .map((file) => file.extension);
 
   const rustResult = countFilesByExtensionsRust(fileExtensions, normalizedKeys);
   if (rustResult !== null) return rustResult;

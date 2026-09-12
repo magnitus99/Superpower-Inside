@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { validateExcludeExtensionInput, validateExcludePathInput } from './rag-exclude-validation';
+import { isExcludedPathRust } from '../rag/rust-core';
 
 describe('RAG 제외 경로 검증', () => {
+  it('상대 경로와 glob 경고는 검색과 같은 매칭 결과를 사용한다', () => {
+    const paths = ['Code', 'Code/main.ts', 'Notes/today.md'];
+    const exists = (pattern: string): boolean =>
+      paths.some((path) => isExcludedPathRust(path, [pattern]) === true);
+    for (const pattern of ['./Code', '././Code/', '**/Code/**']) {
+      expect(validateExcludePathInput(pattern, [], exists).issues).toEqual([]);
+    }
+    expect(validateExcludePathInput('**/missing/**', [], exists).issues).toContainEqual({
+      level: 'warning',
+      code: 'path-missing',
+    });
+  });
   it('앞뒤 공백을 제거하고 경고를 반환한다', () => {
     const result = validateExcludePathInput('  Archive  ', []);
 

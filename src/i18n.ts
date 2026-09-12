@@ -1842,7 +1842,7 @@ const ko: I18nKeys = {
   totalVectorsDesc: '저장된 임베딩 벡터 개수',
   targetFileTypes: '대상 파일 형식',
   targetFileTypesDesc:
-    '임베딩·BM25·내장 볼트 도구가 함께 사용할 수 있는 파일 형식과 파일 수입니다.',
+    '위의 경로·채팅 폴더·확장자 제외를 모두 적용한 검색 대상입니다. 규칙을 바꾸면 자동으로 다시 계산합니다. GraphRAG는 이 중 Markdown 노트만 사용합니다.',
   targetFileTypesEmpty: '현재 설정 기준으로 RAG 대상 파일이 없습니다.',
   excludeRecommendations: '제외 추천',
   excludeRecommendationEmpty: '추가로 제외할 파일 형식 추천이 없습니다.',
@@ -1900,8 +1900,8 @@ const ko: I18nKeys = {
   excludeListRemove: '삭제',
   excludeListEmpty: '등록된 항목이 없습니다.',
   excludeExtFileCount: '{count}개',
-  excludeExtTotalFileCount: '볼트에서 {count}개 파일과 일치',
-  excludePathPlaceholder: '예: Archive 또는 **/drafts',
+  excludeExtTotalFileCount: '경로 제외 후 확장자로 추가 제외되는 파일 {count}개',
+  excludePathPlaceholder: '예: Code, ./Code/ 또는 **/drafts/**',
   excludeExtPlaceholder: '예: log 또는 .csv',
   excludeInputEmpty: '값을 입력하세요.',
   excludeInputTrimmed: '앞뒤 공백은 저장 시 제거됩니다.',
@@ -1910,7 +1910,7 @@ const ko: I18nKeys = {
   excludePathBackslash: '경로 구분자는 / 를 사용하세요.',
   excludePathLeadingSlash: '볼트 기준 상대 경로로 입력하세요. 앞의 / 는 제외합니다.',
   excludePathMissingWarning:
-    '현재 볼트에서 찾을 수 없습니다. 나중에 생길 경로나 패턴으로 그대로 저장할 수 있습니다.',
+    'Obsidian이 읽은 파일·폴더 중 이 규칙과 일치하는 항목이 없습니다. 숨김 경로는 확인되지 않을 수 있으며, 규칙은 앞으로 생길 파일에도 적용됩니다.',
   excludeExtLeadingDot: '앞의 점은 저장 시 제거됩니다.',
   excludeExtInvalid: '확장자는 영문/숫자/하이픈/밑줄만 입력하세요.',
   excludeExtProtectedDocument:
@@ -3609,7 +3609,7 @@ const en: I18nKeys = {
   totalVectorsDesc: 'Stored embedding vectors',
   targetFileTypes: 'Target File Types',
   targetFileTypesDesc:
-    'File types and counts shared by embeddings, BM25, and the built-in vault tools.',
+    'Search targets after applying path, chat folder, and extension exclusions above. Recalculated when rules change. GraphRAG uses only Markdown notes from this scope.',
   targetFileTypesEmpty: 'No files are currently eligible for RAG.',
   excludeRecommendations: 'Exclude Recommendations',
   excludeRecommendationEmpty: 'No additional file types are recommended for exclusion.',
@@ -3669,7 +3669,7 @@ const en: I18nKeys = {
   excludeListRemove: 'Remove',
   excludeListEmpty: 'No items registered.',
   excludeExtFileCount: '{count} files',
-  excludeExtTotalFileCount: 'Matches {count} vault files',
+  excludeExtTotalFileCount: '{count} additional files excluded by extension after path exclusions',
   excludePathPlaceholder: 'e.g. Archive or **/drafts',
   excludeExtPlaceholder: 'e.g. log or .csv',
   excludeInputEmpty: 'Enter a value.',
@@ -3679,7 +3679,7 @@ const en: I18nKeys = {
   excludePathBackslash: 'Use / as the path separator.',
   excludePathLeadingSlash: 'Enter a vault-relative path without a leading /.',
   excludePathMissingWarning:
-    'This path was not found in the current vault. You can still save it for a future path or pattern.',
+    'No files or folders loaded by Obsidian match this rule. Hidden paths may not be visible. The rule also applies to future files.',
   excludeExtLeadingDot: 'The leading dot will be removed.',
   excludeExtInvalid: 'Use only letters, numbers, hyphens, or underscores.',
   excludeExtProtectedDocument:

@@ -28,6 +28,7 @@ import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import {
   planChatModelStateRust,
+  isExcludedPathRust,
   planProviderProfileStateRust,
   planProviderVerificationResetRust,
   type RustChatModelStatePlan,
@@ -75,7 +76,11 @@ import {
   type ExcludeValidationIssue,
   type ExcludeValidationResult,
 } from './utils/rag-exclude-validation';
-import { countFilesByExtensions, getRagFileTypeSummary } from './utils/vault';
+import {
+  countFilesByExtensions,
+  getEffectiveExcludePaths,
+  getRagFileTypeSummary,
+} from './utils/vault';
 import { isLocalizedValue, type Language, t } from './i18n';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
@@ -1353,6 +1358,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
   private excludeCountRenderer: (() => void) | null = null;
+  private fileScopeRenderer: (() => void) | null = null;
   // RAG 상태 패널의 DOM 참조 (부분 업데이트용)
   private ragStatusGrid: HTMLElement | null = null;
   private ragStatusTimestamp: HTMLElement | null = null;
@@ -1402,6 +1408,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private debouncedRagSave(): void {
     this.debouncedSave({ reinitRag: true });
+    this.fileScopeRenderer?.();
+    this.excludeCountRenderer?.();
   }
   private debouncedProviderSave(reinitRag = true): void {
     this.pendingModelRefresh = true;
@@ -1444,6 +1452,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.mcpStatusRefresh?.detach();
     this.mcpStatusRefresh = null;
     this.excludeCountRenderer = null;
+    this.fileScopeRenderer = null;
     this.unregisterRefreshBusSubscriptions();
     this.resetRagDomReferences();
     if (this.pendingEmbeddingProvider !== null || this.pendingEmbeddingModel !== null) {
@@ -1531,6 +1540,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshBusUnsubscribers.push(
         bus.on('exclude-counts', () => {
           this.excludeCountRenderer?.();
+          this.fileScopeRenderer?.();
         }),
       );
     }
@@ -2285,6 +2295,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     this.buildEmbeddingProviderSection(section.body);
     this.buildExcludeOptionsSection(section.body);
+    this.buildTargetFileTypesSection(section.body);
   }
   private buildGraphRagSection(containerEl: HTMLElement): void {
     const section = this.createRagSection(containerEl, t('graphRagOverviewTitle'), {
@@ -2313,7 +2324,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.buildIndexingOptionsSection(disclosure.content);
     this.buildSearchQualitySection(disclosure.content);
     this.buildStatsSection(disclosure.content);
-    this.buildTargetFileTypesSection(disclosure.content);
     this.buildUpdateRequiredDocumentsSection(disclosure.content);
   }
   private buildRagStatusPanel(containerEl: HTMLElement): void {
@@ -3951,7 +3961,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('targetFileTypesDesc'),
     );
     const contentEl = section.createDiv({ cls: 'superpower-inside-rag-file-types' });
-    void (async () => {
+    let revision = 0;
+    const render = async (): Promise<void> => {
+      const currentRevision = ++revision;
       contentEl.setText(t('settingsAuto075'));
       try {
         const summary = await getRagFileTypeSummary(
@@ -3959,14 +3971,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.plugin.settings.rag,
           this.plugin.settings.chat,
         );
+        if (currentRevision !== revision || this.fileScopeRenderer !== refresh) return;
         contentEl.empty();
         this.renderTargetFileTypeCounts(contentEl, summary.targetTypes);
         this.renderExcludeRecommendations(contentEl, summary.excludeRecommendations);
       } catch (err) {
+        if (currentRevision !== revision || this.fileScopeRenderer !== refresh) return;
         const msg = err instanceof Error ? err.message : String(err);
         contentEl.setText(t('settingsAuto076', { v0: String(msg) }));
       }
-    })();
+    };
+    const refresh = (): void => {
+      void render();
+    };
+    this.fileScopeRenderer = refresh;
+    refresh();
   }
   private renderTargetFileTypeCounts(
     containerEl: HTMLElement,
@@ -4852,6 +4871,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildExcludeOptionsSection(containerEl: HTMLElement): void {
     const section = this.createRagGroup(containerEl, t('settingsAuto181'));
+    const rag = this.plugin.settings.rag;
     this.buildExcludeListSetting({
       containerEl: section,
       name: t('excludePaths'),
@@ -4859,10 +4879,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       placeholder: t('excludePathPlaceholder'),
       values: this.plugin.settings.rag.excludePaths,
       validate: (value, existingValues) =>
-        validateExcludePathInput(
-          value,
-          existingValues,
-          (path) => path.includes('*') || this.app.vault.getAbstractFileByPath(path) !== null,
+        validateExcludePathInput(value, existingValues, (path) =>
+          this.app.vault
+            .getAllLoadedFiles()
+            .some((file) => isExcludedPathRust(file.path, [path]) === true),
         ),
       onChange: (values) => {
         this.plugin.settings.rag.excludePaths = values;
@@ -4883,7 +4903,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       name: t('excludeExts'),
       description: t('excludeExtsDesc'),
       placeholder: t('excludeExtPlaceholder'),
-      values: this.plugin.settings.rag.excludeExts,
+      get values() {
+        return rag.excludeExts;
+      },
       validate: validateExcludeExtensionInput,
       onChange: (values) => {
         this.plugin.settings.rag.excludeExts = values;
@@ -4891,7 +4913,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       },
       countMeta: {
         getCounts: () =>
-          countFilesByExtensions(this.app.vault, this.plugin.settings.rag.excludeExts),
+          countFilesByExtensions(
+            this.app.vault,
+            this.plugin.settings.rag.excludeExts,
+            getEffectiveExcludePaths(
+              this.plugin.settings.rag,
+              this.plugin.settings.chat,
+              this.app.vault.configDir,
+            ),
+          ),
         getItemLabel: (count) => t('excludeExtFileCount', { count }),
         getSummaryLabel: (count) => t('excludeExtTotalFileCount', { count }),
         refreshLabel: t('refresh'),
