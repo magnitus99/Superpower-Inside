@@ -3248,11 +3248,13 @@ export function planIndexedDbStorageLayoutRust(
   vaultIdentity: string,
   legacyVaultName: string,
   embeddingNamespace: string,
+  indexNamespace = '',
 ): RustIndexedDbStorageLayout | null {
   if (
     ![pluginId, vaultIdentity, legacyVaultName, embeddingNamespace].every(
       (value) => isStringValue(value) && value.trim().length > 0,
     ) ||
+    !isStringValue(indexNamespace) ||
     !ensureRustCore()
   ) {
     return null;
@@ -3263,6 +3265,7 @@ export function planIndexedDbStorageLayoutRust(
       vaultIdentity,
       legacyVaultName,
       embeddingNamespace,
+      indexNamespace,
     );
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
@@ -4073,6 +4076,7 @@ export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusP
   let missingDocuments = 0;
   let staleDocuments = 0;
   let unknownDocuments = 0;
+  let totalVectors = 0;
   const updateRequiredDocuments: RustRagDocumentUpdatePlan[] = [];
 
   for (const file of input.includedFiles) {
@@ -4087,6 +4091,7 @@ export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusP
     switch (status) {
       case 'healthy':
         healthyDocuments += 1;
+        totalVectors += record?.vectorCount ?? 0;
         break;
       case 'missing':
         missingDocuments += 1;
@@ -4135,10 +4140,7 @@ export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusP
     staleDocuments,
     unknownDocuments,
     excludedDocuments: input.totalVaultFiles - input.includedFiles.length,
-    totalVectors: input.records.reduce(
-      (sum, record) => sum + (Number.isFinite(record.vectorCount) ? record.vectorCount : 0),
-      0,
-    ),
+    totalVectors,
     updateRequiredDocuments,
   };
 }

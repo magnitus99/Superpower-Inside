@@ -13,6 +13,7 @@ import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
+import { calculateRagStatus } from './status';
 import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
 import { createContentHash } from './hash';
@@ -793,6 +794,136 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(store.clearCount).toBe(0);
     expect(entries.some((entry) => entry.metadata.filePath === 'a.md')).toBe(true);
     expect(entries.find((entry) => entry.metadata.filePath === 'b.md')?.metadata.text).toBe('old');
+  });
+
+  it('문서 삭제 후 증분 인덱싱은 벡터·BM25·통계를 현재 문서 기준으로 수렴시킨다', async () => {
+    const contents = new Map([
+      ['a.md', 'alpha 문서 내용'],
+      ['b.md', 'beta 문서 내용'],
+    ]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const ragConfig: RAGConfig = { ...createRagConfig(), enableBM25: true };
+    const chatConfig = createChatConfig();
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      ragConfig,
+      chatConfig,
+      bm25,
+    );
+
+    await indexer.indexPending();
+    const before = await calculateRagStatus(vault, store, ragConfig, chatConfig);
+    expect(before.healthyDocuments).toBe(2);
+    expect(before.totalVectors).toBeGreaterThan(1);
+
+    contents.delete('b.md');
+    const liveFiles = vault.getFiles();
+    liveFiles.splice(
+      liveFiles.findIndex((file) => file.path === 'b.md'),
+      1,
+    );
+
+    await indexer.indexPending();
+
+    const entries = await store.getEntries();
+    const currentEntries = entries.filter((entry) => entry.metadata.filePath === 'a.md');
+    expect(entries.some((entry) => entry.metadata.filePath === 'b.md')).toBe(false);
+    expect([...bm25.search('beta').keys()]).toEqual([]);
+    const after = await calculateRagStatus(vault, store, ragConfig, chatConfig);
+    expect(after.healthyDocuments).toBe(1);
+    expect(after.totalVectors).toBe(currentEntries.length);
+    expect(after.updateRequiredDocuments).toEqual([]);
+  });
+
+  it('증분 인덱싱도 현재 대상이 아닌 벡터와 BM25 문서를 제거한다', async () => {
+    const file = createFile('current.md', 1000, 80);
+    const vault = createVault(new Map([[file.path, '현재 문서 내용']]));
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('deleted.md')]);
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addDocument('deleted.md::0', 'staleterm 오래된 문서', 'deleted.md');
+    await bm25.persist();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), enableBM25: true },
+      createChatConfig(),
+      bm25,
+    );
+
+    await indexer.indexPending();
+
+    const entries = await store.getEntries();
+    expect(entries.some((entry) => entry.metadata.filePath === 'deleted.md')).toBe(false);
+    expect([...bm25.search('staleterm').keys()]).toEqual([]);
+  });
+
+  it('가드 없는 배치 옵션은 파일 청크를 한 번에 임베딩한다', async () => {
+    const paragraph = 'x'.repeat(80);
+    const file = createFile('bulk.md', 1000, paragraph.length * 12);
+    const vault = createVault(
+      new Map([
+        [file.path, Array.from({ length: 12 }, (_, index) => `${index} ${paragraph}`).join('\n\n')],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const batchSizes: number[] = [];
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        batchSizes.push(texts.length);
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.indexFile(file, { maxEmbeddingBatchSize: undefined, indexingYieldMs: 0 });
+
+    expect(batchSizes).toHaveLength(1);
+    expect(batchSizes[0]).toBeGreaterThan(1);
+  });
+
+  it('메타데이터가 같아도 내용이 바뀐 파일은 전체 재인덱싱에서 다시 색인한다', async () => {
+    const contents = new Map([['same.md', 'alpha 원본 내용']]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      { embed: () => Promise.resolve([1, 0]), embedBatch },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.reindexAll();
+    contents.set('same.md', 'bravo 원본 내용');
+    await indexer.reindexAll();
+
+    expect(embedBatch).toHaveBeenCalledTimes(2);
+    const entries = await store.getEntries();
+    expect(entries.some((entry) => entry.metadata.text.includes('bravo'))).toBe(true);
   });
 });
 

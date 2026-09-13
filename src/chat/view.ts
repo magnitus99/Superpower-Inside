@@ -91,7 +91,12 @@ import {
   resolveComposerKeyAction,
   type ComposerDraftSnapshot,
 } from './chat-composer';
-import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
+import {
+  createChatReadinessSnapshot,
+  resolveChatReadinessActionButtonState,
+  type ChatReadinessAction,
+  type ChatReadinessItem,
+} from './chat-readiness';
 import {
   createChatMessageMetaItems,
   createChatMessageTechnicalSummary,
@@ -145,6 +150,7 @@ import {
 } from './turn-state';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
+import { runActionWithFeedback } from '../utils/action-feedback';
 import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
@@ -246,6 +252,7 @@ export class ChatView extends ItemView {
   private runControlEl: HTMLElement | null;
   private stopAllBtn: HTMLButtonElement | null;
   private modelSelectEl: HTMLSelectElement | null;
+  private pendingReadinessAction: ChatReadinessAction | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
@@ -304,6 +311,7 @@ export class ChatView extends ItemView {
     this.runControlEl = null;
     this.stopAllBtn = null;
     this.modelSelectEl = null;
+    this.pendingReadinessAction = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
     this.mentionQuery = '';
@@ -605,7 +613,6 @@ export class ChatView extends ItemView {
             detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
           };
         }
-        this.plugin.refreshBus.emit('mcp', { status: 'success' });
         new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
         return { status: 'success' };
       },
@@ -613,6 +620,8 @@ export class ChatView extends ItemView {
       spinnerClass: 'spinning',
       errorNotice: false,
       successNotice: false,
+      refreshBus: this.plugin.refreshBus,
+      refreshDomains: ['mcp'],
     });
     this.mcpRefreshAction.attach(refreshBtn);
   }
@@ -857,11 +866,19 @@ export class ChatView extends ItemView {
       row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
       if (item.action) {
+        const state = resolveChatReadinessActionButtonState({
+          action: item.action,
+          pendingAction: this.pendingReadinessAction,
+          label: this.getReadinessActionText(item),
+          loadingLabel: this.getReadinessActionLoadingText(item),
+        });
         const action = row.createEl('button', {
           cls: 'superpower-inside-chat-readiness-action',
-          text: this.getReadinessActionText(item),
+          text: state.text,
         });
-        action.addEventListener('click', () => this.handleReadinessAction(item));
+        action.disabled = state.disabled;
+        if (state.loading) action.addClass('spinning');
+        action.addEventListener('click', () => void this.handleReadinessAction(item, action));
       }
     }
   }
@@ -874,6 +891,12 @@ export class ChatView extends ItemView {
     return item.label;
   }
 
+  private getReadinessActionLoadingText(item: ChatReadinessItem): string {
+    if (item.action === 'index-rag') return t('indexingStarted');
+    if (item.action === 'reconnect-mcp') return t('mcpRefreshing');
+    return this.getReadinessActionText(item);
+  }
+
   private getEnabledProviderCount(): number {
     return resolveChatModelState(this.plugin.settings).enabledProviderCount;
   }
@@ -882,26 +905,50 @@ export class ChatView extends ItemView {
     return resolveChatModelState(this.plugin.settings).availableModelCount;
   }
 
-  private handleReadinessAction(item: ChatReadinessItem): void {
+  private async handleReadinessAction(
+    item: ChatReadinessItem,
+    button: HTMLButtonElement,
+  ): Promise<void> {
     if (item.action === 'reconnect-mcp') {
-      void this.plugin.reconnectMCP().then(() => this.renderMcpStatusBar());
+      this.pendingReadinessAction = 'reconnect-mcp';
+      await runActionWithFeedback({
+        button,
+        loadingText: this.getReadinessActionLoadingText(item),
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['mcp'],
+        action: async () => {
+          const errors = await this.plugin.reconnectMCP();
+          if (errors.length > 0) {
+            return {
+              status: 'partial',
+              detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
+            };
+          }
+          return { status: 'success', notice: false };
+        },
+      });
+      this.pendingReadinessAction = null;
+      this.renderMcpStatusBar();
+      this.renderChatReadiness();
       return;
     }
     if (item.action === 'index-rag') {
-      void this.plugin
-        .prepareRagForChat()
-        .then((initialized) => {
+      this.pendingReadinessAction = 'index-rag';
+      await runActionWithFeedback({
+        button,
+        loadingText: this.getReadinessActionLoadingText(item),
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['rag'],
+        action: async () => {
+          const initialized = await this.plugin.prepareRagForChat();
           if (!initialized) {
-            new Notice(t('ragIndexerNotInitializedBase'), 5000);
+            return { status: 'error', detail: t('ragIndexerNotInitializedBase') };
           }
-        })
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          new Notice(t('indexingFailedWithMessage', { message: msg }), 10000);
-        })
-        .finally(() => {
-          this.renderChatReadiness();
-        });
+          return { status: 'success', notice: false };
+        },
+      });
+      this.pendingReadinessAction = null;
+      this.renderChatReadiness();
       return;
     }
     if (item.action === 'select-model') {

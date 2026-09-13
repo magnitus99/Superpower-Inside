@@ -41,7 +41,7 @@ export interface IndexingOptions {
   signal?: AbortSignal;
   maxEmbeddingBatchSize?: number;
   indexingYieldMs?: number;
-  getMaxEmbeddingBatchSize?: () => number;
+  getMaxEmbeddingBatchSize?: () => number | undefined;
   getIndexingYieldMs?: () => number;
   onBatchComplete?: (durationMs: number, batchSize: number) => void | Promise<void>;
   onProgress?: (progress: RagIndexingProgressSnapshot) => void;
@@ -865,6 +865,27 @@ export class VaultIndexer {
     return finished;
   }
 
+  private async removeOrphanedSources(files: readonly TFile[], signal?: AbortSignal): Promise<void> {
+    const existingSourcePaths = new Set(await this.vectorStore.getIndexedFilePaths());
+    for (const sourcePath of (await this.bm25Index?.getSourcePaths()) ?? []) {
+      existingSourcePaths.add(sourcePath);
+    }
+    throwIfIndexingCancelled(signal);
+    const currentSourcePaths = new Set(files.map((file) => file.path));
+    let bm25Changed = false;
+    await this.withIndexBatch(async () => {
+      for (const sourcePath of existingSourcePaths) {
+        if (currentSourcePaths.has(sourcePath)) continue;
+        throwIfIndexingCancelled(signal);
+        await this.vectorStore.removeByFilePath(sourcePath);
+        this.bm25Index?.removeDocumentsBySource(sourcePath);
+        bm25Changed = true;
+      }
+      if (bm25Changed) await this.bm25Index?.persist();
+    });
+    throwIfIndexingCancelled(signal);
+  }
+
   async removeFile(filePath: string): Promise<number> {
     const removed = await this.vectorStore.removeByFilePath(filePath);
     if (this.bm25Index) {
@@ -881,6 +902,7 @@ export class VaultIndexer {
     emitIndexingProgress(options, progressTracker, 'plan');
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
+    await this.removeOrphanedSources(files, options.signal);
     const status = await calculateRagStatus(
       this.vault,
       this.vectorStore,

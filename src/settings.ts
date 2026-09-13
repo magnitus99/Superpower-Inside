@@ -1,4 +1,4 @@
-import { DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
+import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import {
   App,
   Modal,
@@ -588,8 +588,8 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     excludePaths: ['.git', 'node_modules', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
     excludeChatFolder: true,
-    chunkSize: 1000,
-    overlap: 100,
+    chunkSize: DEFAULT_CHUNK_CONTRACT.chunkSize,
+    overlap: DEFAULT_CHUNK_CONTRACT.overlap,
     embeddingProvider: 'ternlight',
     embeddingModel: 'ternlight-base',
     embeddingModelRef: '',
@@ -4959,11 +4959,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '1';
         text.inputEl.max = '99';
       });
-    const performanceSettings = resolveRagPerformanceSettings(this.plugin.settings.rag);
-    section.createDiv({
-      cls: 'superpower-inside-rag-performance-summary',
-      text: t('settingsAuto188', { v0: String(performanceSettings.maxEmbeddingBatchSize) }),
-    });
+    const embeddingStrategy =
+      resolveProviderModelRef(
+        this.plugin.settings,
+        this.pendingEmbeddingModel ?? this.plugin.settings.rag.embeddingModelRef ?? '',
+        'embedding',
+      )?.profile.strategy ?? null;
+    if (embeddingStrategy) {
+      const performanceSettings = resolveRagPerformanceSettings(embeddingStrategy);
+      section.createDiv({
+        cls: 'superpower-inside-rag-performance-summary',
+        text: performanceSettings.enabled
+          ? t('settingsAuto188', { v0: String(performanceSettings.maxEmbeddingBatchSize) })
+          : t('ragTernlightPerformanceSummary'),
+      });
+    }
     // 청크 크기
     const chunkSizeSetting = new Setting(section)
       .setName(t('chunkSize'))
@@ -4976,7 +4986,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             const num = Number.parseInt(value, 10);
             if (Number.isNaN(num) || num < 100 || num > 5000 || !Number.isInteger(num)) return;
             this.plugin.settings.rag.chunkSize = num;
-            this.debouncedSave();
+            this.debouncedRagSave();
           });
         text.inputEl.type = 'number';
         text.inputEl.min = '100';
@@ -7371,7 +7381,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               detail: t('settingsAuto270', { v0: String(errors.length) }),
             };
           }
-          this.plugin.refreshBus.emit('mcp', { status: 'success' });
           return { status: 'success' };
         }
         return { status: 'error', detail: t('settingsAuto271') };
@@ -7380,6 +7389,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       spinnerClass: 'spinning',
       successNotice: t('settingsAuto273'),
       errorNotice: false,
+      refreshBus: this.plugin.refreshBus,
+      refreshDomains: ['mcp'],
     });
     this.mcpStatusRefresh.attach(refreshBtn);
     if (totalCount > 0) {

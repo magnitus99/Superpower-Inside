@@ -23,6 +23,9 @@ const STORAGE_HASH_RIGHT_OFFSET: u64 = 0x8422_2325_cbf2_9ce4;
 const STORAGE_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Builds database names isolated by vault, storage contract, and embedding generation.
+///
+/// `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
+/// vector와 BM25만 새 세대로 옮기고, 임베딩 캐시와 `GraphRAG` 저장소는 재사용한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_indexed_db_storage_layout_json(
@@ -30,6 +33,7 @@ pub fn plan_indexed_db_storage_layout_json(
     vault_identity: &str,
     legacy_vault_name: &str,
     embedding_namespace: &str,
+    index_namespace: &str,
 ) -> String {
     let plugin = sanitize_database_component(plugin_id);
     let legacy_vault = sanitize_database_component(legacy_vault_name);
@@ -48,10 +52,23 @@ pub fn plan_indexed_db_storage_layout_json(
         current_vault_prefix.clone(),
         format!("{plugin}:rag-v3:{vault_hash}:"),
     ];
+    let index_generation = index_namespace.trim();
+    let (vector_hash, bm25_name) = if index_generation.is_empty() {
+        (
+            embedding_hash.clone(),
+            format!("{current_vault_prefix}bm25"),
+        )
+    } else {
+        let index_hash = storage_key(&["index", index_generation]);
+        (
+            index_hash.clone(),
+            format!("{current_vault_prefix}{index_hash}:bm25"),
+        )
+    };
     let active = json!({
-        "vector": format!("{current_vault_prefix}{embedding_hash}:vectors"),
+        "vector": format!("{current_vault_prefix}{vector_hash}:vectors"),
         "embeddingCache": format!("{current_vault_prefix}{embedding_hash}:embedding-cache"),
-        "bm25": format!("{current_vault_prefix}bm25"),
+        "bm25": bm25_name,
         "graph": format!("{current_vault_prefix}graph"),
     });
     let legacy_names = [
@@ -1208,10 +1225,62 @@ mod tests {
     use super::{
         plan_graph_storage_maintenance_json, plan_inactive_indexed_db_cleanup_json,
         plan_indexed_db_bounded_cleanup_json, plan_indexed_db_bounded_retention_json,
-        plan_plugin_owned_file_maintenance_json, plan_stale_index_source_paths_json,
-        plan_vector_file_index_batch_json, plan_vector_record_batch_json,
+        plan_indexed_db_storage_layout_json, plan_plugin_owned_file_maintenance_json,
+        plan_stale_index_source_paths_json, plan_vector_file_index_batch_json,
+        plan_vector_record_batch_json,
     };
     use serde_json::Value as JsonValue;
+
+    /// 청킹 계약이 바뀌면 vector와 BM25만 새 세대로 옮기고 임베딩 캐시는 재사용해야 한다.
+    #[test]
+    fn generation_scoped_layout_isolates_chunking_contract() {
+        let legacy_layout = plan_indexed_db_storage_layout_json(
+            "plugin",
+            "vault",
+            "Vault",
+            "profile:local::embedding-v2",
+            "",
+        );
+        let generation_layout = plan_indexed_db_storage_layout_json(
+            "plugin",
+            "vault",
+            "Vault",
+            "profile:local::embedding-v2",
+            "idx-v1:500:100",
+        );
+        assert_ne!(
+            &legacy_layout, &generation_layout,
+            "청킹 계약이 다르면 저장 레이아웃도 달라야 합니다"
+        );
+        let legacy_document = serde_json::from_str::<JsonValue>(&legacy_layout).unwrap_or_default();
+        let generation_document =
+            serde_json::from_str::<JsonValue>(&generation_layout).unwrap_or_default();
+        let legacy_active = legacy_document.get("active").cloned().unwrap_or_default();
+        let generation_active = generation_document
+            .get("active")
+            .cloned()
+            .unwrap_or_default();
+        assert_ne!(
+            legacy_active.get("vector"),
+            generation_active.get("vector"),
+            "청킹 계약이 바뀌면 vector 저장소는 새 세대여야 합니다: {generation_layout}"
+        );
+        assert_ne!(
+            legacy_active.get("bm25"),
+            generation_active.get("bm25"),
+            "청킹 계약이 바뀌면 BM25 posting도 새 세대여야 합니다: {generation_layout}"
+        );
+        assert_eq!(
+            legacy_active.get("embeddingCache"),
+            generation_active.get("embeddingCache"),
+            "임베딩 캐시는 청킹 계약과 무관하게 재사용해야 합니다: {generation_layout}"
+        );
+        assert_eq!(
+            legacy_active.get("graph"),
+            generation_active.get("graph"),
+            "GraphRAG 저장소는 청킹 계약과 무관합니다: {generation_layout}"
+        );
+    }
 
     #[test]
     fn bounded_cleanup_deletes_v3_and_foreign_model_only_for_current_vault() {

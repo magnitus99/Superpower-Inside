@@ -2987,7 +2987,7 @@ describe('Rust WASM RAG core bridge', () => {
       staleDocuments: 2,
       unknownDocuments: 1,
       excludedDocuments: 2,
-      totalVectors: 14,
+      totalVectors: 2,
       updateRequiredDocuments: [
         {
           path: 'missing.md',

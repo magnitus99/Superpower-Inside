@@ -20,6 +20,17 @@ describe('설정 화면 리디자인 구조', () => {
     expect(section).toContain('this.debouncedRagSave()');
     expect(section).toContain('this.refreshRagTab()');
   });
+  it('청크 크기 변경은 인덱스 세대를 바꾸므로 RAG 런타임 재초기화로 저장한다', () => {
+    const start = settingsSource.indexOf('private buildIndexingOptionsSection(');
+    const end = settingsSource.indexOf('private buildSearchQualitySection(', start);
+    const section = settingsSource.slice(start, end);
+    const handlerStart = section.indexOf('this.plugin.settings.rag.chunkSize = num');
+    const handler = section.slice(handlerStart, handlerStart + 200);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    expect(handler).toContain('this.debouncedRagSave()');
+  });
   it('검색 대상 형식은 제외 설정 바로 다음에 표시하고 규칙 변경 시 갱신한다', () => {
     const start = settingsSource.indexOf('private buildRagFoundationSection(');
     const end = settingsSource.indexOf('private buildGraphRagSection(', start);

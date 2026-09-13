@@ -325,6 +325,7 @@ export interface I18nKeys {
   ragWorkflowTuneDetail: string;
   ragLocalEmbeddingTitle: string;
   ragLocalEmbeddingDetail: string;
+  ragTernlightPerformanceSummary: string;
   ragStatusSectionDescription: string;
   ragFoundationTitle: string;
   ragFoundationDescription: string;
@@ -1840,8 +1841,8 @@ const ko: I18nKeys = {
   indexedFilesDesc: '임베딩 처리된 파일 수',
   pendingFiles: '대기 중',
   pendingFilesDesc: '아직 인덱싱되지 않은 파일 수',
-  totalVectors: '전체 벡터',
-  totalVectorsDesc: '저장된 임베딩 벡터 개수',
+  totalVectors: '동기화된 벡터',
+  totalVectorsDesc: '파일 수정 시각·크기 기준으로 현재 문서와 동기화된 임베딩 벡터 개수',
   targetFileTypes: '대상 파일 형식',
   targetFileTypesDesc:
     '위의 경로·채팅 폴더·확장자 제외를 모두 적용한 검색 대상입니다. 규칙을 바꾸면 자동으로 다시 계산합니다. GraphRAG는 이 중 Markdown 노트만 사용합니다.',
@@ -1969,6 +1970,8 @@ const ko: I18nKeys = {
   ragLocalEmbeddingTitle: '기본 제공: Ternlight 온디바이스 임베딩',
   ragLocalEmbeddingDetail:
     '노트는 기기를 벗어나지 않으며 API 키나 Ollama 서버가 필요 없습니다. 모델 파일이 없으면 한 번 자동으로 내려받아 무결성을 확인한 뒤 오프라인으로 사용합니다.',
+  ragTernlightPerformanceSummary:
+    'Ternlight는 전용 Web Worker에서 실행되어 인위적인 배치 제한이나 성능 대기를 적용하지 않습니다.',
   ragStatusSectionDescription: '검색 준비 상태와 지금 필요한 행동을 확인합니다.',
   ragFoundationTitle: '검색 기반 설정',
   ragFoundationDescription:
@@ -2511,8 +2514,8 @@ const ko: I18nKeys = {
   settingsAuto109: '현재 벡터가 최신인 문서',
   settingsAuto110: '업데이트 필요',
   settingsAuto111: '미인덱싱/수정됨/확인 필요',
-  settingsAuto112: '전체 벡터',
-  settingsAuto113: '저장된 임베딩 벡터 개수',
+  settingsAuto112: '동기화된 벡터',
+  settingsAuto113: '파일 수정 시각·크기 기준으로 현재 문서와 동기화된 임베딩 벡터 개수',
   settingsAuto114: '{v0} · {v1}개',
   settingsAuto115: '현재 상태: {v0}',
   settingsAuto116: '현재 상태: {v0} · 마지막 상태 계산: {v1}',
@@ -3609,8 +3612,8 @@ const en: I18nKeys = {
   indexedFilesDesc: 'Files with embeddings',
   pendingFiles: 'Pending',
   pendingFilesDesc: 'Files not yet indexed',
-  totalVectors: 'Total Vectors',
-  totalVectorsDesc: 'Stored embedding vectors',
+  totalVectors: 'Synchronized Vectors',
+  totalVectorsDesc: 'Embedding vectors synchronized with documents by file mtime and size',
   targetFileTypes: 'Target File Types',
   targetFileTypesDesc:
     'Search targets after applying path, chat folder, and extension exclusions above. Recalculated when rules change. GraphRAG uses only Markdown notes from this scope.',
@@ -3739,6 +3742,8 @@ const en: I18nKeys = {
   ragLocalEmbeddingTitle: 'Included by default: Ternlight on-device embeddings',
   ragLocalEmbeddingDetail:
     'Notes stay on this device with no API key or Ollama server. If the model file is missing, it is downloaded once, verified, and then used offline.',
+  ragTernlightPerformanceSummary:
+    'Ternlight runs in its dedicated Web Worker without artificial batch limits or performance delays.',
   ragStatusSectionDescription: 'See search readiness and the one action that matters now.',
   ragFoundationTitle: 'Search foundation',
   ragFoundationDescription:
@@ -4286,8 +4291,8 @@ const en: I18nKeys = {
   settingsAuto109: 'Documents whose vectors are currently up to date',
   settingsAuto110: 'Update required',
   settingsAuto111: 'Not indexed/modified/needs checking',
-  settingsAuto112: 'Total vectors',
-  settingsAuto113: 'Number of stored embedding vectors',
+  settingsAuto112: 'Synchronized vectors',
+  settingsAuto113: 'Embedding vectors synchronized with documents by file mtime and size',
   settingsAuto114: '{v0} · {v1} items',
   settingsAuto115: 'Current status: {v0}',
   settingsAuto116: 'Current status: {v0} · last calculated: {v1}',

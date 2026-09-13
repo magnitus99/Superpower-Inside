@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createChatReadinessSnapshot } from './chat-readiness';
+import {
+  createChatReadinessSnapshot,
+  resolveChatReadinessActionButtonState,
+} from './chat-readiness';
 
 describe('chat readiness contract', () => {
   it('provider/model이 없으면 전송 차단 상태를 계산한다', () => {
@@ -42,5 +45,40 @@ describe('chat readiness contract', () => {
     expect(snapshot.status).toBe('degraded');
     expect(snapshot.blocksSend).toBe(false);
     expect(snapshot.items.map((item) => item.kind)).toEqual(['rag', 'mcp', 'save-folder']);
+  });
+});
+
+describe('chat readiness action button state', () => {
+  it('진행 중인 액션은 다시 그려져도 로딩 상태를 유지한다', () => {
+    expect(
+      resolveChatReadinessActionButtonState({
+        action: 'reconnect-mcp',
+        pendingAction: 'reconnect-mcp',
+        label: '재연결',
+        loadingLabel: '재연결 중...',
+      }),
+    ).toEqual({ text: '재연결 중...', disabled: true, loading: true });
+  });
+
+  it('다른 액션이 진행 중이면 해당 버튼은 대기 상태를 유지한다', () => {
+    expect(
+      resolveChatReadinessActionButtonState({
+        action: 'index-rag',
+        pendingAction: 'reconnect-mcp',
+        label: '문서 준비',
+        loadingLabel: '인덱싱 시작',
+      }),
+    ).toEqual({ text: '문서 준비', disabled: false, loading: false });
+  });
+
+  it('진행 중인 액션이 없으면 기본 라벨을 표시한다', () => {
+    expect(
+      resolveChatReadinessActionButtonState({
+        action: 'reconnect-mcp',
+        pendingAction: null,
+        label: '재연결',
+        loadingLabel: '재연결 중...',
+      }),
+    ).toEqual({ text: '재연결', disabled: false, loading: false });
   });
 });

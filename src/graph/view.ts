@@ -1,6 +1,7 @@
 import { ItemView, Notice, setIcon, TFile, WorkspaceLeaf } from 'obsidian';
 import type SuperpowerInsidePlugin from '../../main';
 import { t } from '../i18n';
+import { runActionWithFeedback } from '../utils/action-feedback';
 import type { GraphDataResult, GraphProgressResult } from '../utils/refresh-bus';
 import type {
   GraphEntityRecord,
@@ -246,13 +247,13 @@ export class GraphRagView extends ItemView {
 
     const [entities, relations, evidence, communities, rejectedFacts, pendingMerges] =
       await Promise.all([
-      store.getEntities(),
-      store.getRelations(),
-      store.getEvidence(),
-      store.getCommunities().catch(() => [] as GraphCommunityRecord[]),
-      store.getRejectedFacts().catch(() => [] as GraphRejectedFactRecord[]),
-      store.getPendingEntityMerges().catch(() => [] as PendingEntityMergeRecord[]),
-    ]);
+        store.getEntities(),
+        store.getRelations(),
+        store.getEvidence(),
+        store.getCommunities().catch(() => [] as GraphCommunityRecord[]),
+        store.getRejectedFacts().catch(() => [] as GraphRejectedFactRecord[]),
+        store.getPendingEntityMerges().catch(() => [] as PendingEntityMergeRecord[]),
+      ]);
     this.allEntities = entities;
     this.allRelations = relations;
     this.allEvidence = evidence;
@@ -448,27 +449,34 @@ export class GraphRagView extends ItemView {
       const separateButton = actions.createEl('button', {
         text: t('graphRagViewKeepEntitiesSeparate'),
       });
-      const resolve = async (decision: 'merge' | 'separate'): Promise<void> => {
-        mergeButton.disabled = true;
-        separateButton.disabled = true;
-        try {
-          const resolved = await this.plugin.knowledgeGraphStore?.resolvePendingEntityMerge(
-            pending.id,
-            decision,
-          );
-          if (!resolved) {
-            new Notice(t('graphRagViewPendingMergeUnavailable'));
-          }
-          await this.loadData();
-          this.renderContent();
-        } catch {
-          new Notice(t('graphRagViewPendingMergeUnavailable'));
-          mergeButton.disabled = false;
-          separateButton.disabled = false;
-        }
+      const resolve = async (
+        decision: 'merge' | 'separate',
+        button: HTMLButtonElement,
+      ): Promise<void> => {
+        const otherButton = decision === 'merge' ? separateButton : mergeButton;
+        otherButton.disabled = true;
+        await runActionWithFeedback({
+          button,
+          loadingText: t('graphRagViewProcessing'),
+          refreshBus: this.plugin.refreshBus,
+          refreshDomains: ['graph-data'],
+          action: async () => {
+            const resolved = await this.plugin.knowledgeGraphStore?.resolvePendingEntityMerge(
+              pending.id,
+              decision,
+            );
+            if (!resolved) {
+              return { status: 'error', detail: t('graphRagViewPendingMergeUnavailable') };
+            }
+            await this.loadData();
+            this.renderContent();
+            return { status: 'success', notice: false };
+          },
+        });
+        otherButton.disabled = false;
       };
-      mergeButton.addEventListener('click', () => void resolve('merge'));
-      separateButton.addEventListener('click', () => void resolve('separate'));
+      mergeButton.addEventListener('click', () => void resolve('merge', mergeButton));
+      separateButton.addEventListener('click', () => void resolve('separate', separateButton));
     }
   }
 
@@ -963,10 +971,12 @@ export class GraphRagView extends ItemView {
 
   private setRejectedRetryButtonsDisabled(disabled: boolean): void {
     if (!this.bodyEl) return;
-    this.bodyEl.querySelectorAll<HTMLButtonElement>('button[data-graph-retry-file]').forEach((button) => {
-      button.disabled = disabled;
-      button.setText(disabled ? t('graphRagViewProcessing') : t('graphRagViewRetry'));
-    });
+    this.bodyEl
+      .querySelectorAll<HTMLButtonElement>('button[data-graph-retry-file]')
+      .forEach((button) => {
+        button.disabled = disabled;
+        button.setText(disabled ? t('graphRagViewProcessing') : t('graphRagViewRetry'));
+      });
   }
 
   private refreshGraphData(result: GraphDataResult): void {

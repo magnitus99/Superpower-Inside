@@ -112,6 +112,7 @@ import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/lo
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 import {
   cleanupStaleIndexedDbGenerations,
+  createRagIndexNamespace,
   createRagStorageLayout,
   deleteRagIndexedDbGenerations,
 } from './src/rag/storage-lifecycle';
@@ -1119,6 +1120,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       vaultIdentity: this.getVaultStorageIdentity(),
       legacyVaultName: this.getVaultName(),
       embeddingNamespace: 'plugin-reset',
+      indexNamespace: 'plugin-reset',
     });
     const vectorStoreClear = this.vectorStore
       ? hasDeletableIndexedDbStore(this.vectorStore)
@@ -2217,6 +2219,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         vaultIdentity: this.getVaultStorageIdentity(),
         legacyVaultName: this.getVaultName(),
         embeddingNamespace,
+        indexNamespace: createRagIndexNamespace(rag),
       });
       let bm25Index: IndexedDbBM25Index | undefined;
       let bm25LoadOutcome: Promise<BM25BackgroundLoadOutcome> | null = null;
@@ -2366,25 +2369,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       this.embeddingProvider = embeddingProvider;
 
-      const performanceSettings = resolveRagPerformanceSettings(rag);
-      this.ragPerformanceGuard = new PerformanceGuard({
-        enabled: true,
-        initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
-        initialYieldMs: performanceSettings.indexingYieldMs,
-        slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
-        slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
-        onPolicyError: (message) => {
-          this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
-            source: 'rag.performance-guard',
-            data: { message },
-          });
-          void this.recordAgentDiagnosticsBreadcrumb({
-            phase: 'rag.performance-guard',
-            action: 'error',
-            detail: message,
-          });
-        },
-      });
+      const performanceSettings = resolveRagPerformanceSettings(profile.strategy);
+      this.ragPerformanceGuard = performanceSettings.enabled
+        ? new PerformanceGuard({
+            enabled: true,
+            initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
+            initialYieldMs: performanceSettings.indexingYieldMs,
+            slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
+            slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
+            onPolicyError: (message) => {
+              this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
+                source: 'rag.performance-guard',
+                data: { message },
+              });
+              void this.recordAgentDiagnosticsBreadcrumb({
+                phase: 'rag.performance-guard',
+                action: 'error',
+                detail: message,
+              });
+            },
+          })
+        : null;
+      const adaptiveBatchSize = performanceSettings.enabled
+        ? performanceSettings.maxEmbeddingBatchSize
+        : undefined;
+      const indexingYieldMs = performanceSettings.enabled ? performanceSettings.indexingYieldMs : 0;
 
       // Vector store
       const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
@@ -2540,14 +2549,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
         reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
         createIndexingOptions: (signal) => ({
           signal,
-          maxEmbeddingBatchSize:
-            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
-          indexingYieldMs:
-            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+          maxEmbeddingBatchSize: this.ragPerformanceGuard?.getBatchSize() ?? adaptiveBatchSize,
+          indexingYieldMs: this.ragPerformanceGuard?.getYieldMs() ?? indexingYieldMs,
           getMaxEmbeddingBatchSize: () =>
-            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
-          getIndexingYieldMs: () =>
-            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+            this.ragPerformanceGuard?.getBatchSize() ?? adaptiveBatchSize,
+          getIndexingYieldMs: () => this.ragPerformanceGuard?.getYieldMs() ?? indexingYieldMs,
           onBatchComplete: async (durationMs, batchSize) => {
             this.getLogger().debug('RAG embedding batch completed.', {
               source: 'rag.indexing',

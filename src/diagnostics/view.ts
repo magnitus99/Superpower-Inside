@@ -1,4 +1,4 @@
-import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
+import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type { SuperpowerInsideSettings } from '../settings';
 import { t } from '../i18n';
 import {
@@ -14,6 +14,7 @@ import type {
   AgentDiagnosticsSnapshot,
 } from './snapshot';
 
+import { runActionWithFeedback } from '../utils/action-feedback';
 export const AGENT_DIAGNOSTICS_VIEW_TYPE = 'superpower-inside-agent-diagnostics';
 
 interface AgentDiagnosticsPluginLike {
@@ -114,7 +115,7 @@ export class AgentDiagnosticsView extends ItemView {
       text: t('agentDiagnosticsWriteButton'),
     });
     writeButton.addEventListener('click', () => {
-      void this.writeSnapshot();
+      void this.writeSnapshot(writeButton);
     });
 
     const copyButton = actions.createEl('button', {
@@ -122,7 +123,7 @@ export class AgentDiagnosticsView extends ItemView {
       text: t('agentDiagnosticsCopyButton'),
     });
     copyButton.addEventListener('click', () => {
-      void this.copySnapshot();
+      void this.copySnapshot(copyButton);
     });
 
     const clearButton = actions.createEl('button', {
@@ -130,7 +131,7 @@ export class AgentDiagnosticsView extends ItemView {
       text: t('agentDiagnosticsClearButton'),
     });
     clearButton.addEventListener('click', () => {
-      void this.clearDetailedLogging();
+      void this.clearDetailedLogging(clearButton);
     });
 
     this.statusEl = containerEl.createDiv({ cls: 'superpower-inside-agent-diagnostics-status' });
@@ -156,7 +157,7 @@ export class AgentDiagnosticsView extends ItemView {
       text: t('loggingCopyVisible'),
     });
     copyButton.addEventListener('click', () => {
-      void this.copyVisibleLogs();
+      void this.copyVisibleLogs(copyButton);
     });
     const clearButton = actions.createEl('button', {
       attr: { type: 'button' },
@@ -247,9 +248,7 @@ export class AgentDiagnosticsView extends ItemView {
     const jsonPath = snapshot?.diagnosticFile.path ?? this.plugin.getAgentDiagnosticsFilePath();
     const eventLogPath =
       snapshot?.diagnosticFile.eventLogPath ?? this.plugin.getAgentDiagnosticsEventLogPath();
-    this.statusEl?.setText(
-      `Enabled. JSON: ${jsonPath}; events: ${eventLogPath}`,
-    );
+    this.statusEl?.setText(`Enabled. JSON: ${jsonPath}; events: ${eventLogPath}`);
     this.renderDiagnosis(snapshot);
     this.snapshotEl?.setText(snapshotText);
     this.refreshLogs();
@@ -340,7 +339,7 @@ export class AgentDiagnosticsView extends ItemView {
       text: 'Enable safe mode',
     });
     safeModeButton.addEventListener('click', () => {
-      void this.enableSafeMode();
+      void this.enableSafeMode(safeModeButton);
     });
 
     const actionList = section.createDiv({
@@ -487,7 +486,7 @@ export class AgentDiagnosticsView extends ItemView {
     }
   }
 
-  private async copyVisibleLogs(): Promise<void> {
+  private async copyVisibleLogs(button: HTMLButtonElement): Promise<void> {
     const text = this.getVisibleEntries()
       .map((entry) => {
         const detail = this.formatDetail(entry);
@@ -495,58 +494,66 @@ export class AgentDiagnosticsView extends ItemView {
         return detail ? `${line}\n${detail}` : line;
       })
       .join('\n\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      new Notice(t('loggingCopied'));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(t('loggingCopyFailed', { message }), 5000);
-    }
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        await navigator.clipboard.writeText(text);
+        return { status: 'success', notice: t('loggingCopied') };
+      },
+    });
   }
 
-  private async writeSnapshot(): Promise<void> {
-    await this.plugin.writeAgentDiagnosticsSnapshot('view-write');
-    this.refresh();
-    new Notice(t('agentDiagnosticsWriteDone'));
+  private async writeSnapshot(button: HTMLButtonElement): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        await this.plugin.writeAgentDiagnosticsSnapshot('view-write');
+        this.refresh();
+        return { status: 'success', notice: t('agentDiagnosticsWriteDone') };
+      },
+    });
   }
 
-  private async copySnapshot(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(this.plugin.getAgentDiagnosticsSnapshotText());
-      new Notice(t('agentDiagnosticsCopied'));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(t('agentDiagnosticsCopyFailed', { message }), 5000);
-    }
+  private async copySnapshot(button: HTMLButtonElement): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        await navigator.clipboard.writeText(this.plugin.getAgentDiagnosticsSnapshotText());
+        return { status: 'success', notice: t('agentDiagnosticsCopied') };
+      },
+    });
   }
 
-  private async clearDetailedLogging(): Promise<void> {
-    await this.plugin.clearAgentDiagnosticsDetailedLogging();
-    this.refresh();
-    new Notice(t('agentDiagnosticsClearDone'));
+  private async clearDetailedLogging(button: HTMLButtonElement): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        await this.plugin.clearAgentDiagnosticsDetailedLogging();
+        this.refresh();
+        return { status: 'success', notice: t('agentDiagnosticsClearDone') };
+      },
+    });
   }
 
-  private async enableSafeMode(): Promise<void> {
-    try {
-      await this.plugin.enableAgentDiagnosticsSafeMode();
-      this.refresh();
-      new Notice(
-        'Agent diagnostics safe mode enabled. Restart Obsidian to reopen with heavy indexing disabled.',
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(`Failed to enable Agent diagnostics safe mode: ${message}`, 5000);
-    }
+  private async enableSafeMode(button: HTMLButtonElement): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      action: async () => {
+        await this.plugin.enableAgentDiagnosticsSafeMode();
+        this.refresh();
+        return {
+          status: 'success',
+          notice:
+            'Agent diagnostics safe mode enabled. Restart Obsidian to reopen with heavy indexing disabled.',
+        };
+      },
+    });
   }
 }
 
 function isAgentDiagnosticsSnapshot(value: unknown): value is AgentDiagnosticsSnapshot {
   if (!isRecord(value)) return false;
-  return (
-    value.schemaVersion === 1 &&
-    isRecord(value.diagnosis) &&
-    isRecord(value.diagnosticFile)
-  );
+  return value.schemaVersion === 1 && isRecord(value.diagnosis) && isRecord(value.diagnosticFile);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

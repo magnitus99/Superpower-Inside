@@ -817,8 +817,10 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.graphRagMaxConcurrentRequests).toBe(1);
   });
 
-  it('자동 페이서는 정상 상태에서 고정 대기 없이 프로바이더별 최대 배치만 정한다', () => {
-    expect(resolveRagPerformanceSettings(DEFAULT_SETTINGS.rag)).toEqual({
+  it('내장 Ternlight는 페이싱 없이, 원격 프로바이더는 배치 제한과 함께 인덱싱한다', () => {
+    expect(resolveRagPerformanceSettings('ternlight')).toEqual({ enabled: false });
+
+    expect(resolveRagPerformanceSettings('openai')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 32,
       indexingYieldMs: 0,
@@ -826,34 +828,9 @@ describe('RAG 설정 표시 헬퍼', () => {
       slowBatchThresholdMs: 1500,
     });
 
-    expect(
-      resolveRagPerformanceSettings({
-        ...DEFAULT_SETTINGS.rag,
-        embeddingProvider: 'ollama',
-      }),
-    ).toEqual({
+    expect(resolveRagPerformanceSettings('ollama')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 1,
-      indexingYieldMs: 0,
-      slowEventLoopThresholdMs: 24,
-      slowBatchThresholdMs: 1500,
-    });
-  });
-
-  it('레거시 수동 성능 값은 더 이상 런타임 페이싱을 바꾸지 않는다', () => {
-    expect(
-      resolveRagPerformanceSettings({
-        ...DEFAULT_SETTINGS.rag,
-        performanceTuningMode: 'custom',
-        performanceGuardEnabled: false,
-        maxEmbeddingBatchSize: 7,
-        indexingYieldMs: 80,
-        slowEventLoopThresholdMs: 220,
-        slowBatchThresholdMs: 4200,
-      }),
-    ).toEqual({
-      enabled: true,
-      maxEmbeddingBatchSize: 32,
       indexingYieldMs: 0,
       slowEventLoopThresholdMs: 24,
       slowBatchThresholdMs: 1500,

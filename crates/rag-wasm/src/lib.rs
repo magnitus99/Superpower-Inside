@@ -7602,7 +7602,7 @@ struct RagStatusPlan {
     unknown_documents: usize,
     /// excluded vault file count.
     excluded_documents: usize,
-    /// total vector count from all file records.
+    /// vector count of the healthy, included documents only.
     total_vectors: usize,
     /// update-required rows.
     update_required_documents: Vec<RagDocumentUpdatePlan>,
@@ -8272,7 +8272,6 @@ fn plan_rag_status(input: &RagStatusInput) -> RagStatusPlan {
     let mut total_vectors = 0usize;
     for (index, record) in input.records.iter().enumerate() {
         record_index_by_path.insert(record.file_path.as_str(), index);
-        total_vectors = total_vectors.saturating_add(record.vector_count);
     }
 
     let mut healthy_documents = 0usize;
@@ -8290,6 +8289,9 @@ fn plan_rag_status(input: &RagStatusInput) -> RagStatusPlan {
         match status {
             RagDocumentStatus::Healthy => {
                 healthy_documents = healthy_documents.saturating_add(1);
+                if let Some(record) = record {
+                    total_vectors = total_vectors.saturating_add(record.vector_count);
+                }
             }
             RagDocumentStatus::Missing => {
                 missing_documents = missing_documents.saturating_add(1);
@@ -22339,6 +22341,7 @@ mod tests {
             r"D:\\Vaults\\Research",
             "Research",
             "profile:local::embedding-v2",
+            "",
         );
         assert!(
             raw.contains(r#""contractVersion":2"#),
@@ -22395,7 +22398,7 @@ mod tests {
             plan_rag_status_json(
                 r#"{"includedFiles":[{"path":"healthy.md","mtime":100,"size":10},{"path":"missing.md","mtime":200,"size":20},{"path":"stale.md","mtime":300,"size":30},{"path":"legacy.md","mtime":400,"size":40},{"path":"embedding.md","mtime":500,"size":50}],"records":[{"filePath":"healthy.md","sourceMtime":100,"sourceSize":10,"contentHash":"healthy-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":2},{"filePath":"stale.md","sourceMtime":299,"sourceSize":30,"contentHash":"stale-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":3},{"filePath":"legacy.md","hasCompleteMetadata":false,"vectorCount":4},{"filePath":"embedding.md","sourceMtime":500,"sourceSize":50,"contentHash":"embedding-hash","indexedAt":900,"embeddingProvider":"ollama","embeddingModel":"nomic-embed-text","hasCompleteMetadata":true,"vectorCount":5}],"totalVaultFiles":7,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","reasons":{"missing":"missing reason","legacy":"legacy reason","staleFile":"stale file reason","embeddingChanged":"embedding changed reason"}}"#
             ),
-            r#"{"totalDocuments":5,"healthyDocuments":1,"missingDocuments":1,"staleDocuments":2,"unknownDocuments":1,"excludedDocuments":2,"totalVectors":14,"updateRequiredDocuments":[{"path":"missing.md","status":"missing","reason":"missing reason","mtime":200,"size":20},{"path":"embedding.md","status":"stale","reason":"embedding changed reason","mtime":500,"size":50},{"path":"stale.md","status":"stale","reason":"stale file reason","mtime":300,"size":30},{"path":"legacy.md","status":"unknown","reason":"legacy reason","mtime":400,"size":40}]}"#,
+            r#"{"totalDocuments":5,"healthyDocuments":1,"missingDocuments":1,"staleDocuments":2,"unknownDocuments":1,"excludedDocuments":2,"totalVectors":2,"updateRequiredDocuments":[{"path":"missing.md","status":"missing","reason":"missing reason","mtime":200,"size":20},{"path":"embedding.md","status":"stale","reason":"embedding changed reason","mtime":500,"size":50},{"path":"stale.md","status":"stale","reason":"stale file reason","mtime":300,"size":30},{"path":"legacy.md","status":"unknown","reason":"legacy reason","mtime":400,"size":40}]}"#,
         );
     }
 

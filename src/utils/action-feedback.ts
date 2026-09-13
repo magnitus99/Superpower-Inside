@@ -104,17 +104,24 @@ function emitRefreshDomains(
   options: RunActionWithFeedbackOptions,
   result: ActionFeedbackResult,
 ): void {
-  if (!options.refreshBus || result.status === 'error') return;
+  if (!options.refreshBus) return;
   const domains = result.refreshDomains ?? options.refreshDomains;
   if (!domains || domains.length === 0) return;
-  const refreshStatus = result.status === 'noop' ? 'success' : result.status;
   for (const domain of domains) {
     options.refreshBus.emit(domain, {
-      status: refreshStatus,
+      status: result.status === 'noop' ? 'success' : result.status,
       detail: result.detail,
     });
   }
 }
+
+function toActionError(error: unknown): ActionFeedbackResult {
+  return {
+    status: 'error',
+    detail: error instanceof Error ? error.message : String(error),
+  };
+}
+
 
 export async function runActionWithFeedback(
   options: RunActionWithFeedbackOptions,
@@ -138,10 +145,10 @@ export async function runActionWithFeedback(
     emitRefreshDomains(options, result);
     return result;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const result: ActionFeedbackResult = { status: 'error', detail: message };
+    const result = toActionError(error);
     const notice = getNoticeMessage(result);
     if (notice) new Notice(notice, 5000);
+    emitRefreshDomains(options, result);
     return result;
   } finally {
     if (button) {

@@ -37,6 +37,33 @@ export interface ChatReadinessSnapshot {
   items: ChatReadinessItem[];
 }
 
+export interface ChatReadinessActionButtonState {
+  text: string;
+  disabled: boolean;
+  loading: boolean;
+}
+
+/**
+ * 준비 항목 액션 버튼의 표시 상태를 계산한다.
+ *
+ * 진행 중인 액션은 다시 그려진 뒤에도 로딩 상태를 유지해야 하므로
+ * 뷰는 보류 중인 액션 식별자를 함께 넘긴다.
+ */
+export function resolveChatReadinessActionButtonState(input: {
+  action: ChatReadinessAction;
+  pendingAction: ChatReadinessAction | null;
+  label: string;
+  loadingLabel: string;
+}): ChatReadinessActionButtonState {
+  const loading = input.action === input.pendingAction;
+  return {
+    text: loading ? input.loadingLabel : input.label,
+    disabled: loading,
+    loading,
+  };
+}
+
+/** 현재 입력으로 준비 상태 스냅샷을 만든다. */
 export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatReadinessSnapshot {
   const items: ChatReadinessItem[] = [];
 
@@ -97,7 +124,11 @@ export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatRead
   }
 
   const blocksSend = items.some((item) => item.severity === 'blocking');
-  const status: ChatReadinessStatus = blocksSend ? 'blocked' : items.length > 0 ? 'degraded' : 'ready';
+  const status: ChatReadinessStatus = blocksSend
+    ? 'blocked'
+    : items.length > 0
+      ? 'degraded'
+      : 'ready';
   return {
     status,
     blocksSend,

@@ -65,7 +65,7 @@ The result is not “chat beside your notes.” It is a research loop that lives
 | **Built-in private embeddings** | Ternlight runs on-device with no API key, Ollama server, or per-request network call. It is the default embedding option for new installs. |
 | **Bring your own models and tools** | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint. Mention a trusted MCP stdio server with `@server` when the task needs an external tool. |
 | **Model-neutral research tools** | Models with native function calling use focused search, related-evidence, read, link, list, and stats tools directly. Other models can use the same bounded read-only workflow through a compatibility protocol. |
-| **Quiet background maintenance** | Indexes reuse compatible local data, resume interrupted work, and adapt indexing pressure to Obsidian responsiveness. Recovery tools stay out of the way until they are actually needed. |
+| **Quiet background maintenance** | Indexes reuse compatible local data, resume interrupted work, and pace remote embedding providers to Obsidian responsiveness. Recovery tools stay out of the way until they are actually needed. |
 
 ### Try these as your first questions
 
@@ -154,7 +154,7 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 | **내장 비공개 임베딩** | Ternlight가 API 키, Ollama 서버, 호출별 네트워크 요청 없이 기기 안에서 실행됩니다. 신규 설치의 기본 임베딩 선택지입니다. |
 | **원하는 모델과 도구** | OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, 커스텀 OpenAI-compatible endpoint를 사용할 수 있습니다. 외부 도구가 필요할 때는 신뢰한 MCP stdio 서버를 `@server`로 멘션하세요. |
 | **모델에 덜 의존하는 조사 도구** | 네이티브 function calling을 지원하면 검색, 관련 근거, 범위 읽기, 링크, 목록, 통계 도구를 직접 사용합니다. 그렇지 않은 모델도 호환 프로토콜을 통해 같은 제한된 읽기 전용 조사 흐름을 수행합니다. |
-| **신경 쓰지 않아도 되는 유지관리** | 호환되는 로컬 인덱스를 재사용하고, 중단된 작업을 이어가며, Obsidian 반응성에 맞춰 인덱싱 압력을 자동 조절합니다. 복구 도구는 정말 필요할 때만 드러납니다. |
+| **신경 쓰지 않아도 되는 유지관리** | 호환되는 로컬 인덱스를 재사용하고, 중단된 작업을 이어가며, 원격 임베딩 provider의 요청 속도를 Obsidian 반응성에 맞춰 조절합니다. 복구 도구는 정말 필요할 때만 드러납니다. |
 
 ### 설치 후 가장 먼저 던져볼 질문
 

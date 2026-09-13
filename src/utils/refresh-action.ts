@@ -1,6 +1,7 @@
 import { Notice } from 'obsidian';
 import { t } from '../i18n';
 import { isDomInstance } from './dom';
+import type { RefreshBus, RefreshDomain } from './refresh-bus';
 
 // ── 타입 ────────────────────────────────────────────────────────────
 
@@ -34,11 +35,16 @@ export interface RefreshActionOptions {
   spinnerClass?: string;
   /** idle 상태로 돌아갈 때 버튼 텍스트를 원래대로 복원할지 여부 */
   restoreText?: boolean;
+  /** 완료 결과를 연결된 화면에 전달할 공통 버스 */
+  refreshBus?: Pick<RefreshBus, 'emit'>;
+  /** 결과를 발행할 화면 도메인 */
+  refreshDomains?: readonly RefreshDomain[];
 }
-
 // ── 기본값 ──────────────────────────────────────────────────────────
 
-const DEFAULT_OPTIONS: Required<Omit<RefreshActionOptions, 'action'>> = {
+const DEFAULT_OPTIONS: Required<
+  Omit<RefreshActionOptions, 'action' | 'refreshBus' | 'refreshDomains'>
+> = {
   loadingText: '',
   successNotice: false,
   errorNotice: false,
@@ -58,8 +64,11 @@ const DEFAULT_OPTIONS: Required<Omit<RefreshActionOptions, 'action'>> = {
  * - UI 피드백: 로딩 애니메이션, 버튼 비활성화, Notice 알림
  */
 export class RefreshAction {
-  private readonly opts: Required<Omit<RefreshActionOptions, 'action'>> &
-    Pick<RefreshActionOptions, 'action'>;
+  private readonly opts: Required<
+    Omit<RefreshActionOptions, 'action' | 'refreshBus' | 'refreshDomains'>
+  > &
+    Pick<RefreshActionOptions, 'action' | 'refreshBus' | 'refreshDomains'>;
+
   private state: RefreshState = 'idle';
   private abortController: AbortController | null = null;
   private throttleTimer: number | null = null;
@@ -151,6 +160,7 @@ export class RefreshAction {
     try {
       const result = await this.opts.action(this.abortController.signal);
       this.transition(result.status === 'error' ? 'error' : 'success');
+      this.emitRefresh(result);
 
       if (result.status !== 'error' && this.opts.successNotice !== false) {
         const msg = this.opts.successNotice || this.getDefaultSuccessMessage(result);
@@ -165,24 +175,39 @@ export class RefreshAction {
 
       return result;
     } catch (err) {
-      // AbortError는 정상 취소로 간주 (silent)
-      if (err instanceof DOMException && err.name === 'AbortError') {
+      if (
+        (typeof DOMException !== 'undefined' &&
+          err instanceof DOMException &&
+          err.name === 'AbortError') ||
+        (typeof err === 'object' && err !== null && 'name' in err && err.name === 'AbortError')
+      ) {
         this.transition('idle');
-        return { status: 'error', detail: t('refreshCancelled') };
+        const result = { status: 'error', detail: t('refreshCancelled') } as const;
+        this.emitRefresh(result);
+        return result;
       }
       const msg = err instanceof Error ? err.message : String(err);
       this.transition('error');
+      const result = { status: 'error', detail: msg } as const;
+      this.emitRefresh(result);
       if (this.opts.errorNotice !== false) {
         const notice = this.opts.errorNotice || t('refreshFailedWithMessage', { message: msg });
         new Notice(notice, 5000);
       }
-      return { status: 'error', detail: msg };
+      return result;
     } finally {
       this.clearTimeoutTimer();
       this.abortController = null;
     }
   }
 
+  private emitRefresh(result: RefreshResult): void {
+    const domains = this.opts.refreshDomains;
+    if (!this.opts.refreshBus || !domains || domains.length === 0) return;
+    for (const domain of domains) {
+      this.opts.refreshBus.emit(domain, result);
+    }
+  }
   private abort(): void {
     if (this.abortController) {
       this.abortController.abort();

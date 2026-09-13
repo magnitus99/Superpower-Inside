@@ -2711,15 +2711,19 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json, tota
 
 /**
  * Builds database names isolated by vault, storage contract, and embedding generation.
+ *
+ * `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
+ * vector와 BM25만 새 세대로 옮기고, 임베딩 캐시와 `GraphRAG` 저장소는 재사용한다.
  * @param {string} plugin_id
  * @param {string} vault_identity
  * @param {string} legacy_vault_name
  * @param {string} embedding_namespace
+ * @param {string} index_namespace
  * @returns {string}
  */
-export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, legacy_vault_name, embedding_namespace) {
-    let deferred5_0;
-    let deferred5_1;
+export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, legacy_vault_name, embedding_namespace, index_namespace) {
+    let deferred6_0;
+    let deferred6_1;
     try {
         const ptr0 = passStringToWasm0(plugin_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
@@ -2729,12 +2733,14 @@ export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, l
         const len2 = WASM_VECTOR_LEN;
         const ptr3 = passStringToWasm0(embedding_namespace, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_indexed_db_storage_layout_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
-        deferred5_0 = ret[0];
-        deferred5_1 = ret[1];
+        const ptr4 = passStringToWasm0(index_namespace, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_db_storage_layout_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+        deferred6_0 = ret[0];
+        deferred6_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
     }
 }
 

@@ -1,6 +1,7 @@
 import { t } from '../i18n';
 import type { GraphRagIndexingPhase } from '../graph/indexing-progress';
 import type { PerformanceGuardMode } from './performance-guard';
+import type { ProviderStrategyKey } from '../settings';
 
 export type RagPerformanceTuningMode = 'auto' | 'custom';
 export type ProviderApiKeyVisibilityKey =
@@ -88,23 +89,17 @@ export interface RagIndexingControlState {
   resume: RagIndexingButtonState;
 }
 
-export interface RagPerformanceConfig {
-  embeddingProvider: string;
-  performanceTuningMode?: RagPerformanceTuningMode;
-  performanceGuardEnabled: boolean;
-  maxEmbeddingBatchSize: number;
-  indexingYieldMs: number;
-  slowEventLoopThresholdMs: number;
-  slowBatchThresholdMs: number;
-}
-
-export interface RagPerformanceSettings {
-  enabled: boolean;
-  maxEmbeddingBatchSize: number;
-  indexingYieldMs: number;
-  slowEventLoopThresholdMs: number;
-  slowBatchThresholdMs: number;
-}
+export type RagPerformanceSettings =
+  | {
+      enabled: true;
+      maxEmbeddingBatchSize: number;
+      indexingYieldMs: number;
+      slowEventLoopThresholdMs: number;
+      slowBatchThresholdMs: number;
+    }
+  | {
+      enabled: false;
+    };
 
 export interface GraphRagStatusLabelInput {
   enabled: boolean;
@@ -257,10 +252,16 @@ export interface GraphRagLiveStatusPresentation {
   storageDetail: string | null;
 }
 
-export function resolveRagPerformanceSettings(rag: RagPerformanceConfig): RagPerformanceSettings {
+/** 내장 Ternlight는 전용 Web Worker에서 계산하므로 런타임 페이싱이 필요하지 않습니다. */
+export function resolveRagPerformanceSettings(
+  embeddingStrategy: ProviderStrategyKey,
+): RagPerformanceSettings {
+  if (embeddingStrategy === 'ternlight') {
+    return { enabled: false };
+  }
   return {
     enabled: true,
-    maxEmbeddingBatchSize: rag.embeddingProvider === 'ollama' ? 1 : 32,
+    maxEmbeddingBatchSize: embeddingStrategy === 'ollama' ? 1 : 32,
     indexingYieldMs: 0,
     slowEventLoopThresholdMs: 24,
     slowBatchThresholdMs: 1500,
