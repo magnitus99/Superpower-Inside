@@ -4,125 +4,107 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)](https://obsidian.md/plugins?id=superpower-inside)
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![price](https://img.shields.io/badge/price-free%20%26%20open%20source-0f766e)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-stdio%20tools-f97316)](#what-makes-it-worth-trying)
 
 > **Your vault is full of answers. Stop hunting note by note.**<br>
 > **답은 이미 볼트 안에 있습니다. 이제 노트를 하나씩 뒤지는 대신, 볼트 전체에 질문하세요.**
 
-Superpower Inside turns Obsidian into a source-grounded AI research workspace. Ask one question and let the assistant search, read, connect, and verify the relevant notes before it answers.
+Superpower Inside turns your Obsidian vault into an AI research partner. Ask one question, and it searches across your notes, reads the right parts, connects the dots, and answers with sources you can open and verify.
 
-Superpower Inside는 Obsidian을 **출처가 보이는 AI 리서치 공간**으로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 연결 관계를 확인한 뒤 근거와 함께 답합니다.
+Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
 
 **[Install from Obsidian Community Plugins](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)** · **[한국어로 읽기](#한국어)**
 
-| Ask the vault, not the file tree | Evidence before confidence | Your model. Your tools. Your data. |
+| Ask the vault, not the file tree | Every answer shows its sources | Bring your own AI |
 | --- | --- | --- |
-| Research across eligible notes instead of guessing from one attached file.<br><sub>파일 하나가 아니라 볼트의 관련 노트를 가로질러 조사합니다.</sub> | Every serious answer can carry checked source cards, line ranges, and clear coverage limits.<br><sub>답변마다 확인한 출처, 줄 범위, 조사 한계를 함께 보여줍니다.</sub> | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint.<br><sub>원하는 모델과 로컬 도구를 선택해 그대로 연결합니다.</sub> |
+| One question covers your entire vault—not just the file you happened to open.<br><sub>파일 하나가 아니라 볼트 전체를 한 번의 질문으로 조사합니다.</sub> | See exactly which notes were used, jump to the original, and verify before you trust.<br><sub>어떤 노트가 근거였는지 확인하고, 원문으로 바로 이동하세요.</sub> | OpenAI, Claude, Ollama, or your own local model—it works with what you already use.<br><sub>이미 쓰는 모델을 그대로 연결하세요.</sub> |
 
 > [!IMPORTANT]
-> Superpower Inside is **desktop-only**, completely free, and open source. There is no premium tier or feature paywall.<br>
-> Superpower Inside는 **데스크톱 전용** 완전 무료 오픈소스 플러그인입니다. 유료 등급이나 기능 잠금이 없습니다.
-
-## One question. A complete research trail.
-
-| You ask | Superpower Inside investigates | You get |
-| --- | --- | --- |
-| “Find the contradictions between my roadmap and meeting notes.”<br>“로드맵과 회의 노트 사이의 모순을 찾아줘.” | Searches hybrid evidence → verifies top ranges against current files → follows note links when needed<br>하이브리드 근거 검색 → 현재 파일의 상위 범위 검증 → 필요한 경우 노트 연결 확인 | A focused answer, a visible work log, and source cards you can open or insert back into a note<br>핵심 답변, 작업 기록, 다시 노트에 넣을 수 있는 출처 카드 |
-
-```mermaid
-flowchart LR
-    A["Ask naturally<br>자연어로 질문"] --> B["Search and read<br>검색하고 읽기"]
-    B --> C["Connect evidence<br>근거 연결"]
-    C --> D["Answer with sources<br>출처와 함께 답변"]
-    D --> E["Open, copy, or insert<br>열기·복사·삽입"]
-```
+> Superpower Inside is **desktop-only**, completely free, and open source. No premium tier, no feature paywall, no account required.<br>
+> Superpower Inside는 **데스크톱 전용** 완전 무료 오픈소스 플러그인입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
 
 ---
 
-## English
+## How it works
 
-### Make your second brain answer for its work
-
-Most AI chat plugins wait for you to find the right note and paste the right context. Superpower Inside can do the investigation first.
-
-- Ask broad questions without manually assembling a prompt packet.
-- See the answer, the work log, and the sources as separate, focused views.
-- Open a cited note, copy its Obsidian link, or insert the evidence into your active note.
-- Regenerate, save as a note, or branch a useful answer into a new research direction.
-- Stop the entire run at any time—streaming, vault research, and connected tools included.
-
-The result is not “chat beside your notes.” It is a research loop that lives inside your knowledge base.
-
-### What makes it worth trying
-
-| Capability | What you feel as a user |
-| --- | --- |
-| **Whole-vault research** | Ask for themes, changes, conflicts, or summaries across eligible files. The agent screens locally, reads in bounded batches, and states what it did or did not cover. |
-| **Sources you can inspect** | Answers can include checked source cards with file paths, line ranges, relevance signals, and one-click actions to open, copy, or insert the evidence. |
-| **A calmer response canvas** | Final answer, work log, and sources stay organized instead of becoming one endless tool transcript. Errors show the next useful action rather than a wall of diagnostics. |
-| **Search that verifies what it finds** | BM25 works even before embeddings are configured. When vector, structural, or graph retrieval finds a passage, the tool checks the matching range against the current vault file before the model relies on it. |
-| **GraphRAG for relationship questions** | Local graph evidence helps with entities, relationships, recurring themes, and connections spread across Markdown notes. |
-| **Built-in private embeddings** | Ternlight runs on-device with no API key, Ollama server, or per-request network call. It is the default embedding option for new installs. |
-| **Bring your own models and tools** | Use OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, or a custom OpenAI-compatible endpoint. Mention a trusted MCP stdio server with `@server` when the task needs an external tool. |
-| **Model-neutral research tools** | Models with native function calling use focused search, related-evidence, read, link, list, and stats tools directly. Other models can use the same bounded read-only workflow through a compatibility protocol. |
-| **Quiet background maintenance** | Indexes reuse compatible local data, resume interrupted work, and pace remote embedding providers to Obsidian responsiveness. Recovery tools stay out of the way until they are actually needed. |
-
-### Try these as your first questions
-
-```text
-Summarize the major themes across this vault and cite the strongest evidence.
-
-What decisions changed between my planning notes and the final meeting notes?
-
-Find claims I keep repeating but have never supported with evidence.
-
-Review @[Projects/Launch] and tell me what is blocked, by whom, and why.
+```
+Ask naturally → It searches your vault → It reads and connects the evidence → It answers with sources
 ```
 
-### Precise context when you want it
+One question. A complete research trail you can inspect, copy, or reuse.
 
-| Mention | Meaning |
+## Why you'll love it
+
+**🔍 Ask anything, not just what you remember**
+
+Searching for a keyword finds files that contain that word. Superpower Inside understands what you're *asking*—themes, changes, contradictions, summaries—across your entire vault. You don't need to know where the answer lives. Just ask.
+
+**📎 Every answer comes with receipts**
+
+Source cards show which notes were used, down to the exact lines. Open the original, copy the link, or insert the evidence directly into your active note. You never have to take the AI's word for it.
+
+**🧭 It sees connections you might miss**
+
+Beyond keyword and meaning-based search, it follows the relationships between your notes—the people, concepts, and recurring themes that link scattered thoughts into one picture.
+
+**🏠 Your notes stay on your device**
+
+The built-in search model runs entirely on your machine. No API key, no network call, no data leaving your device for the search itself. Connect any AI model you trust for the conversation—OpenAI, Claude, Ollama, OpenRouter, or your own local endpoint.
+
+**✋ You're always in control**
+
+Stop any research run mid-stream. See what was searched, what was found, and what wasn't covered. When something goes wrong, you get a clear next step—not a wall of technical errors.
+
+**🧹 A calm interface, not a mess of logs**
+
+Final answer, work log, and sources stay separated. You see the conclusion first, the evidence when you want it, and nothing you don't need.
+
+## Try it the moment you install
+
+```
+Summarize the core themes in my vault, with sources for each claim.
+
+Find decisions that changed between my planning notes and final meeting minutes.
+
+What have I been repeating without evidence?
+
+Review @[Projects/Launch] and tell me what's blocked, why, and who owns it.
+```
+
+## Focus your question when it matters
+
+| Type this | What it does |
 | --- | --- |
-| `@note.md` | Attach a specific note by path or name. |
-| `@[folder/path]` | Investigate Markdown notes in a specific folder. |
-| `@server` | Use a trusted MCP stdio server for this request. |
+| `@note.md` | Pin a specific note to the conversation. |
+| `@[folder/path]` | Scope the research to one folder. |
+| `@server` | Bring in a connected external tool for this question. |
 
-You do not need to mention a file for every question. Built-in retrieval and native vault tools can find relevant evidence automatically; mentions are there when you want exact control.
+You don't need to mention files every time. The default search finds relevant evidence on its own—use mentions when you want to lock the scope exactly.
 
-### From install to first answer
+## Get started in three steps
 
-1. Install and enable **Superpower Inside** from Obsidian Community Plugins.
-2. Choose a chat model and add its local or remote provider details.
-3. Open the chat sidebar and ask a real question about your vault.
+1. Open **Settings → Community plugins** in Obsidian and search for **Superpower Inside**.
+2. Install, enable, and connect the AI model you prefer.
+3. Open the sidebar and ask your vault something you've been wondering about.
 
-Keyword retrieval and the read-only native vault tools work without an embedding provider. Ternlight is available as the built-in local embedding option. RAG and GraphRAG show the smallest useful next action only when preparation or recovery is actually needed.
-
-### Install
-
-#### Community Plugin Directory
-
-1. Open **Settings → Community plugins** in Obsidian.
-2. Search for **Superpower Inside**.
-3. Install, enable, and connect your preferred model.
+Smart keyword search and read-only vault tools work immediately—no extra setup required. The built-in private search model is selected by default for meaning-based search. Advanced indexing runs quietly in the background and only surfaces when it needs your attention.
 
 #### Manual install
 
 1. Download the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest).
-2. Copy `manifest.json`, `main.js`, `styles.css`, and `tern_engine_bg.wasm` into `.obsidian/plugins/superpower-inside/`.
+2. Copy the release files into `.obsidian/plugins/superpower-inside/`.
 3. Reload community plugins and enable **Superpower Inside**.
 
 <details>
-<summary><strong>Security, privacy, and honest boundaries</strong></summary>
+<summary><strong>Privacy, security, and honest limits</strong></summary>
 
 - Settings and API keys are stored unencrypted in this device's Obsidian local plugin storage and plugin `data.json`. They can be included in vault sync and local backups.
-- Chat messages, selected notes, retrieved chunks, tool arguments, and tool results may be sent to the LLM, embedding provider, or MCP server you configure.
-- Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to the configured chat provider, and coverage or transfer limits are stated in the answer.
-- The built-in `superpower_inside_*` vault tools are read-only. They can search hybrid indexes, verify retrieved ranges against current files, find related indexed evidence, read bounded line ranges, list eligible text and code files, inspect resolved Markdown links, and report vault statistics. They cannot create, modify, move, or delete files.
-- RAG indexes eligible text and code files in the shared file scope. GraphRAG extracts connected evidence only from eligible `.md` notes in that scope.
-- Vector and graph indexes are stored locally in Obsidian's browser storage for this vault.
-- MCP stdio launches local commands that you configure. Mentioned servers can run normal, non-destructive tools automatically; risky or unmentioned tools remain behind approval. Only add servers you trust.
-- If the built-in Ternlight model file is missing, the plugin downloads the matching `tern_engine_bg.wasm` release asset once, verifies its size and SHA-256 checksum, and then reuses it offline. No note content is included in that download request.
-- Desktop-only features such as local MCP stdio, Ollama, and runtime path handling mean mobile Obsidian is not supported.
+- Chat messages, selected notes, retrieved passages, and tool results may be sent to the AI model or connected tools you configure.
+- Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to your chosen AI model, and coverage or transfer limits are stated in the answer.
+- The built-in vault tools are read-only. They can search, verify retrieved passages against current files, follow note links, read bounded ranges, list files, and report statistics—but they cannot create, modify, move, or delete files.
+- Search indexes are stored locally in Obsidian's browser storage for this vault.
+- Connected external tools launch local commands you configure. Trusted tools run automatically; risky ones stay behind your approval. Only add tools you trust.
+- If the built-in search model file is missing, the plugin downloads the matching release asset once, verifies its integrity, and then reuses it offline. No note content is included in that download request.
+- Desktop-only features mean mobile Obsidian is not supported.
 
 </details>
 
@@ -130,35 +112,46 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 
 ## 한국어
 
-### 당신의 세컨드 브레인에게, 근거까지 말하게 하세요
+### 지식 베이스가 답을 알고 있을 때, 굳이 찾아 다닐 필요 없습니다
 
-대부분의 AI 채팅 플러그인은 사용자가 먼저 알맞은 노트를 찾고 컨텍스트를 붙여주길 기다립니다. Superpower Inside는 **답하기 전에 직접 조사**합니다.
+Superpower Inside는 볼트 전체를 하나의 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
 
-- 넓은 질문도 관련 자료를 일일이 모아 붙이지 않고 시작할 수 있습니다.
-- 답변, 작업 기록, 출처를 분리된 화면에서 빠르게 확인할 수 있습니다.
-- 인용된 노트를 열고, Obsidian 링크를 복사하고, 근거를 활성 노트에 바로 삽입할 수 있습니다.
-- 좋은 답변은 재생성하거나 새 노트로 저장하고, 별도 세션으로 분기해 더 깊게 파고들 수 있습니다.
-- 스트리밍, 볼트 조사, 연결 도구까지 포함한 전체 실행을 언제든 한 번에 중단할 수 있습니다.
+**[커뮤니티 플러그인에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
-단순히 “노트 옆에서 채팅”하는 것이 아닙니다. **내 지식 베이스 안에서 조사하고 검증하고 다시 기록하는 흐름**입니다.
+> [!IMPORTANT]
+> 데스크톱 전용, 완전 무료, 오픈소스입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
 
-### 지금 써볼 만한 이유
+---
 
-| 기능 | 사용자가 체감하는 변화 |
-| --- | --- |
-| **볼트 전체 리서치** | 파일 전체의 주제, 변화, 충돌, 요약을 질문하세요. 대상은 로컬에서 선별하고 제한된 배치로 읽으며, 확인한 범위와 확인하지 못한 범위를 답변에 밝힙니다. |
-| **직접 확인할 수 있는 출처** | 파일 경로, 줄 범위, 일치 근거가 담긴 출처 카드를 보여줍니다. 근거 노트 열기, 링크 복사, 활성 노트 삽입까지 한 번에 이어집니다. |
-| **정돈된 응답 화면** | 최종 답변, 작업 기록, 출처가 하나의 긴 도구 로그에 뒤섞이지 않습니다. 오류가 나도 진단문을 쏟아내기보다 다음 행동을 먼저 보여줍니다. |
-| **찾은 근거를 현재 원문으로 검증하는 검색** | 임베딩 provider를 연결하기 전에도 BM25가 작동합니다. 벡터·구조·그래프 검색이 구간을 찾으면, 모델이 사용하기 전에 현재 볼트 파일의 같은 범위를 다시 확인합니다. |
-| **관계를 읽는 GraphRAG** | Markdown 노트 곳곳에 흩어진 인물, 개념, 관계, 반복 주제를 로컬 그래프 근거로 연결합니다. |
-| **내장 비공개 임베딩** | Ternlight가 API 키, Ollama 서버, 호출별 네트워크 요청 없이 기기 안에서 실행됩니다. 신규 설치의 기본 임베딩 선택지입니다. |
-| **원하는 모델과 도구** | OpenAI, Claude, Ollama, Ollama Cloud, OpenRouter, 커스텀 OpenAI-compatible endpoint를 사용할 수 있습니다. 외부 도구가 필요할 때는 신뢰한 MCP stdio 서버를 `@server`로 멘션하세요. |
-| **모델에 덜 의존하는 조사 도구** | 네이티브 function calling을 지원하면 검색, 관련 근거, 범위 읽기, 링크, 목록, 통계 도구를 직접 사용합니다. 그렇지 않은 모델도 호환 프로토콜을 통해 같은 제한된 읽기 전용 조사 흐름을 수행합니다. |
-| **신경 쓰지 않아도 되는 유지관리** | 호환되는 로컬 인덱스를 재사용하고, 중단된 작업을 이어가며, 원격 임베딩 provider의 요청 속도를 Obsidian 반응성에 맞춰 조절합니다. 복구 도구는 정말 필요할 때만 드러납니다. |
+### 이런 점이 달라집니다
+
+**🔍 기억하고 있어야만 찾을 수 있는 게 아니라, 궁금한 걸 그냥 물어보세요**
+
+키워드 검색은 그 단어가 들어간 파일만 찾아줍니다. Superpower Inside는 주제, 변화, 모순, 요약처럼 *질문 자체*를 이해하고 볼트 전체에서 답을 찾습니다. 어디에 근거가 있는지 미리 알 필요가 없습니다.
+
+**📎 모든 답변에 근거가 따라옵니다**
+
+출처 카드가 어떤 노트의 어느 줄을 근거로 썼는지 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입까지 한 번에 이어집니다. AI가 말한 걸 그냥 믿을 필요가 없습니다.
+
+**🧭 놓치기 쉬운 연결을 보여줍니다**
+
+단어 매칭과 의미 기반 검색을 넘어서, 노트 사이의 관계—인물, 개념, 반복 주제—를 따라 흩어진 생각을 하나의 그림으로 연결합니다.
+
+**🏠 노트는 기기 안에 남습니다**
+
+내장 검색 모델은 전적으로 기기 안에서 실행됩니다. API 키도, 네트워크 요청도, 검색 자체가 기기를 떠나지 않습니다. 대화에는 원하는 AI 모델을 연결하세요—OpenAI, Claude, Ollama, OpenRouter, 또는 로컬 모델.
+
+**✋ 언제든 중단하고, 언제든 확인하세요**
+
+조사 중이라면 실행 중간에 멈출 수 있습니다. 무엇을 검색했고, 무엇을 찾았고, 무엇을 커버하지 못했는지 답변에 명확히 보여줍니다. 문제가 생기면 기술적 오류 대신 다음 행동을 먼저 보여줍니다.
+
+**🧹 로그 더미가 아니라 정돈된 화면**
+
+최종 답변, 작업 기록, 출처가 분리되어 보입니다. 결론을 먼저, 근거는 원할 때, 불필요한 건 보지 않아도 됩니다.
 
 ### 설치 후 가장 먼저 던져볼 질문
 
-```text
+```
 이 볼트의 핵심 주제를 정리하고, 가장 강한 근거마다 출처를 달아줘.
 
 기획 노트와 최종 회의록 사이에서 바뀐 의사결정을 찾아줘.
@@ -170,48 +163,39 @@ Keyword retrieval and the read-only native vault tools work without an embedding
 
 ### 정확한 범위를 지정하고 싶을 때
 
-| 멘션 | 의미 |
+| 이렇게 쓰면 | 이렇게 작동합니다 |
 | --- | --- |
-| `@note.md` | 경로나 이름으로 특정 노트를 첨부합니다. |
-| `@[folder/path]` | 특정 폴더의 Markdown 노트를 조사합니다. |
-| `@server` | 이 요청에서 신뢰한 MCP stdio 서버를 사용합니다. |
+| `@note.md` | 특정 노트를 대화에 고정합니다. |
+| `@[folder/path]` | 조사 범위를 한 폴더로 좁힙니다. |
+| `@server` | 이 질문에 연결된 외부 도구를 가져옵니다. |
 
-질문마다 파일을 직접 멘션할 필요는 없습니다. 기본 검색과 네이티브 볼트 도구가 관련 근거를 자동으로 찾고, 멘션은 범위를 정확히 고정하고 싶을 때 사용합니다.
+매번 파일을 멘션할 필요는 없습니다. 기본 검색이 관련 근거를 자동으로 찾고, 멘션은 범위를 정확히 고정하고 싶을 때 사용합니다.
 
-### 설치에서 첫 답변까지
+### 세 단계면 시작됩니다
 
-1. Obsidian 커뮤니티 플러그인에서 **Superpower Inside**를 설치하고 활성화합니다.
-2. 사용할 채팅 모델을 고르고 로컬 또는 원격 provider 정보를 연결합니다.
-3. 사이드바를 열고 실제 볼트에 대해 궁금했던 질문을 던집니다.
+1. Obsidian **설정 → 커뮤니티 플러그인**에서 **Superpower Inside**를 검색합니다.
+2. 설치하고 활성화한 뒤 원하는 AI 모델을 연결합니다.
+3. 사이드바를 열고 볼트에 대해 궁금했던 질문을 던집니다.
 
-키워드 검색과 읽기 전용 네이티브 볼트 도구는 임베딩 provider 없이도 작동합니다. 내장 로컬 임베딩으로 Ternlight를 바로 선택할 수 있습니다. RAG와 GraphRAG는 준비나 복구가 필요한 순간에만 가장 작은 다음 행동을 보여줍니다.
-
-### 설치
-
-#### 커뮤니티 플러그인
-
-1. Obsidian에서 **설정 → 커뮤니티 플러그인**을 엽니다.
-2. **Superpower Inside**를 검색합니다.
-3. 설치하고 활성화한 뒤 원하는 모델을 연결합니다.
+키워드 검색과 읽기 전용 볼트 도구는 추가 설정 없이 바로 작동합니다. 내장 비공개 검색 모델이 기본으로 선택되어 의미 기반 검색도 즉시 사용할 수 있습니다. 고급 인덱싱은 조용히 백그라운드에서 진행되고, 정말 필요할 때만 알려줍니다.
 
 #### 수동 설치
 
 1. [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)를 내려받습니다.
-2. `manifest.json`, `main.js`, `styles.css`, `tern_engine_bg.wasm`을 `.obsidian/plugins/superpower-inside/`에 복사합니다.
+2. 릴리스 파일을 `.obsidian/plugins/superpower-inside/`에 복사합니다.
 3. 커뮤니티 플러그인을 다시 불러온 뒤 **Superpower Inside**를 활성화합니다.
 
 <details>
-<summary><strong>보안, 개인정보, 솔직한 작동 범위</strong></summary>
+<summary><strong>개인정보, 보안, 솔직한 한계</strong></summary>
 
 - 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 플러그인 저장소와 플러그인 `data.json`에 보관됩니다. 볼트 동기화와 로컬 백업에 포함될 수 있습니다.
-- 채팅 메시지, 선택한 노트, 검색된 청크, 도구 인자와 결과는 사용자가 설정한 LLM, 임베딩 provider, MCP 서버로 전송될 수 있습니다.
-- 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 채팅 provider로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
-- 내장 `superpower_inside_*` 볼트 도구는 읽기 전용입니다. 하이브리드 인덱스 검색, 현재 파일에 대한 검색 구간 검증, 관련 인덱스 근거 탐색, 제한된 줄 범위 읽기, 대상 텍스트·코드 파일 목록, 확인된 Markdown 링크, 볼트 통계를 제공하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
-- RAG는 공통 파일 범위의 대상 텍스트·코드 파일을 인덱싱하고, GraphRAG는 그 범위의 `.md` 노트에서만 연결 근거를 추출합니다.
-- 벡터와 그래프 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 보관됩니다.
-- MCP stdio는 사용자가 설정한 로컬 명령을 실행합니다. 멘션한 서버의 일반적인 비파괴 도구는 자동 실행될 수 있고, 위험하거나 멘션하지 않은 도구는 승인 뒤에 실행됩니다. 신뢰하는 서버만 추가하세요.
-- 내장 Ternlight 모델 파일이 없으면 같은 버전의 `tern_engine_bg.wasm` 릴리즈 자산을 한 번 내려받아 크기와 SHA-256을 검증하고 오프라인으로 재사용합니다. 이 다운로드 요청에는 노트 내용이 포함되지 않습니다.
-- 로컬 MCP stdio, Ollama, 런타임 경로 처리 같은 데스크톱 기능을 사용하므로 모바일 Obsidian은 지원하지 않습니다.
+- 채팅 메시지, 선택한 노트, 검색된 구간, 도구 결과는 사용자가 설정한 AI 모델이나 연결된 도구로 전송될 수 있습니다.
+- 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 AI 모델로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
+- 내장 볼트 도구는 읽기 전용입니다. 검색, 현재 파일에 대한 검증, 노트 연결 확인, 제한된 범위 읽기, 파일 목록, 통계 보고는 하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
+- 검색 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 보관됩니다.
+- 연결된 외부 도구는 사용자가 설정한 로컬 명령을 실행합니다. 신뢰한 도구는 자동 실행되고, 위험한 도구는 승인 뒤에 실행됩니다. 신뢰하는 도구만 추가하세요.
+- 내장 검색 모델 파일이 없으면 같은 버전의 릴리스 자산을 한 번 내려받아 무결성을 검증한 뒤 오프라인으로 재사용합니다. 이 다운로드 요청에는 노트 내용이 포함되지 않습니다.
+- 데스크톱 전용 기능을 사용하므로 모바일 Obsidian은 지원하지 않습니다.
 
 </details>
 
