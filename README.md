@@ -5,22 +5,18 @@
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![price](https://img.shields.io/badge/price-free%20%26%20open%20source-0f766e)](LICENSE)
 
-> **Your vault is full of answers. Stop hunting note by note.**<br>
-> **답은 이미 볼트 안에 있습니다. 이제 노트를 하나씩 뒤지는 대신, 볼트 전체에 질문하세요.**
+> **Your vault is full of answers. Stop hunting note by note.**
 
 Superpower Inside turns your Obsidian vault into an AI research partner. Ask one question, and it searches across your notes, reads the right parts, connects the dots, and answers with sources you can open and verify.
-
-Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
 
 **[Install from Obsidian Community Plugins](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)** · **[한국어로 읽기](#한국어)**
 
 | Ask the vault, not the file tree | Every answer shows its sources | Bring your own AI |
 | --- | --- | --- |
-| One question covers your entire vault—not just the file you happened to open.<br><sub>파일 하나가 아니라 볼트 전체를 한 번의 질문으로 조사합니다.</sub> | See exactly which notes were used, jump to the original, and verify before you trust.<br><sub>어떤 노트가 근거였는지 확인하고, 원문으로 바로 이동하세요.</sub> | OpenAI, Claude, Ollama, or your own local model—it works with what you already use.<br><sub>이미 쓰는 모델을 그대로 연결하세요.</sub> |
+| One question covers your entire vault—not just the file you happened to open. | See exactly which notes were used, jump to the original, and verify before you trust. | OpenAI, Claude, Ollama, or your own local model—it works with what you already use. |
 
 > [!IMPORTANT]
-> Superpower Inside is **desktop-only**, completely free, and open source. No premium tier, no feature paywall, no account required.<br>
-> Superpower Inside는 **데스크톱 전용** 완전 무료 오픈소스 플러그인입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
+> Superpower Inside is **desktop-only**, completely free, and open source. No premium tier, no feature paywall, no account required.
 
 ---
 
@@ -112,16 +108,28 @@ Smart keyword search and read-only vault tools work immediately—no extra setup
 
 ## 한국어
 
-### 지식 베이스가 답을 알고 있을 때, 굳이 찾아 다닐 필요 없습니다
+> **답은 이미 볼트 안에 있습니다. 이제 노트를 하나씩 뒤지는 대신, 볼트 전체에 질문하세요.**
 
-Superpower Inside는 볼트 전체를 하나의 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
+Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
 
 **[커뮤니티 플러그인에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
+| 파일 트리가 아니라 볼트에 질문하세요 | 모든 답변에 출처가 따라옵니다 | 원하는 AI를 그대로 연결하세요 |
+| --- | --- | --- |
+| 열어놓은 파일 하나가 아니라 볼트 전체를 한 번의 질문으로 조사합니다. | 어떤 노트가 근거였는지 확인하고, 원문으로 바로 이동한 뒤, 믿기 전에 검증하세요. | OpenAI, Claude, Ollama, 또는 로컬 모델—이미 쓰는 것을 그대로 연결하세요. |
+
 > [!IMPORTANT]
-> 데스크톱 전용, 완전 무료, 오픈소스입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
+> **데스크톱 전용**, 완전 무료, 오픈소스입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
 
 ---
+
+### 작동 방식
+
+```
+자연어로 질문 → 볼트를 검색 → 근거를 읽고 연결 → 출처와 함께 답변
+```
+
+질문 한 번. 열어보고, 복사하고, 다시 쓸 수 있는 완전한 조사 기록.
 
 ### 이런 점이 달라집니다
 
