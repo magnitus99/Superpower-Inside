@@ -32,6 +32,7 @@ import {
   type RustRagStatusPlan,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import { appLogger } from '../utils/logger';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
@@ -189,7 +190,20 @@ export class RAGQueryEngine {
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
       this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true);
-    const qVector = this.embeddingProvider ? await this.embeddingProvider.embed(question) : [];
+    let qVector: number[] = [];
+    let embeddingFailure = false;
+    if (this.embeddingProvider) {
+      try {
+        qVector = await this.embeddingProvider.embed(question, { signal: options.signal });
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        embeddingFailure = true;
+        appLogger.warn('Query embedding failed; continuing with lexical retrieval.', {
+          source: 'rag.query',
+          error,
+        });
+      }
+    }
     throwIfQueryAborted(options.signal);
     const retrieval = await this.retrievalPipeline.retrieve(
       {
@@ -214,7 +228,23 @@ export class RAGQueryEngine {
       options.signal,
     );
     throwIfQueryAborted(options.signal);
-    this.lastRetrievalDiagnostics = retrieval.diagnostics;
+    this.lastRetrievalDiagnostics = [
+      ...(embeddingFailure
+        ? [
+            {
+              providerId: 'query-embedding',
+              source: 'embedding' as const,
+              status: 'error' as const,
+              durationMs: 0,
+              candidateCount: 0,
+              readiness: 'degraded' as const,
+              estimatedCost: 'medium' as const,
+              skippedReason: 'query-embedding-failed',
+            },
+          ]
+        : []),
+      ...retrieval.diagnostics,
+    ];
     const queryTokens = tokenizeRust(question) ?? [];
 
     const scored: QueryResult[] = [];
@@ -225,11 +255,13 @@ export class RAGQueryEngine {
         continue;
       }
       const vectorScore =
-        qVector.length > 0 && entry.vector.length === qVector.length
-          ? cosineSimilarityRust(qVector, entry.vector)
-          : candidate.sources.includes('bm25')
-            ? 0
-            : null;
+        qVector.length > 0
+          ? entry.vector.length === qVector.length
+            ? cosineSimilarityRust(qVector, entry.vector)
+            : candidate.sources.includes('bm25')
+              ? 0
+              : null
+          : 0;
       if (vectorScore === null) {
         continue;
       }
@@ -380,20 +412,22 @@ export class RAGQueryEngine {
     filePathPrefixes?: readonly string[],
     fileBackedOnly = false,
   ): boolean {
-    if (entry.vector.length !== queryVector.length) return false;
-    if (
-      this.embeddingProviderId &&
-      entry.metadata.embeddingProvider &&
-      entry.metadata.embeddingProvider !== this.embeddingProviderId
-    ) {
-      return false;
-    }
-    if (
-      this.embeddingModel &&
-      entry.metadata.embeddingModel &&
-      entry.metadata.embeddingModel !== this.embeddingModel
-    ) {
-      return false;
+    if (queryVector.length > 0) {
+      if (entry.vector.length !== queryVector.length) return false;
+      if (
+        this.embeddingProviderId &&
+        entry.metadata.embeddingProvider &&
+        entry.metadata.embeddingProvider !== this.embeddingProviderId
+      ) {
+        return false;
+      }
+      if (
+        this.embeddingModel &&
+        entry.metadata.embeddingModel &&
+        entry.metadata.embeddingModel !== this.embeddingModel
+      ) {
+        return false;
+      }
     }
     return this.isEntryInQueryScope(entry, filePathPrefixes, fileBackedOnly);
   }

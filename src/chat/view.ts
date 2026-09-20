@@ -91,6 +91,7 @@ import {
   resolveComposerKeyAction,
   type ComposerDraftSnapshot,
 } from './chat-composer';
+import { evaluateToolTrace } from './quality-evaluation';
 import {
   createChatReadinessSnapshot,
   resolveChatReadinessActionButtonState,
@@ -4372,6 +4373,18 @@ export class ChatView extends ItemView {
             ? groundedRepairCitations
             : selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
+        this.plugin.logger.debug('Chat tool trace quality measured.', {
+          source: 'chat.quality',
+          data: evaluateToolTrace({
+            question: args.question,
+            answer: accumulatedText,
+            toolCalls: allToolCalls,
+            citations: answerCitations,
+            contextAttachments: args.contextAttachments,
+            toolDefinitions: args.toolDefinitions,
+            maxToolRounds: maxRounds,
+          }),
+        });
         this.updateMessage(
           args.messageId,
           accumulatedText,

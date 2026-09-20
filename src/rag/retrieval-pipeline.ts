@@ -27,7 +27,7 @@ export type RetrievalCandidateSource =
   | 'graph-local'
   | 'graph-global'
   | 'evidence';
-export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'reranker';
+export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'embedding' | 'reranker';
 
 export interface RagRetrievalRequest {
   question: string;
@@ -484,10 +484,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
 export class RetrievalOrchestrator {
   constructor(private readonly providers: readonly CandidateProvider[]) {}
 
-  async retrieve(
-    request: RagRetrievalRequest,
-    signal?: AbortSignal,
-  ): Promise<RagRetrievalResult> {
+  async retrieve(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RagRetrievalResult> {
     throwIfAborted(signal);
     const providerResults = await Promise.all(
       this.providers.map((provider) => this.runProvider(provider, request, signal)),
@@ -505,6 +502,24 @@ export class RetrievalOrchestrator {
     signal?: AbortSignal,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
+    if (
+      request.queryVector.length === 0 &&
+      (provider.source === 'vector' || provider.source === 'ann')
+    ) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'skipped',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'low',
+          skippedReason: 'query-embedding-unavailable',
+        },
+      };
+    }
     let readiness: RetrievalProviderReadiness;
     try {
       throwIfAborted(signal);

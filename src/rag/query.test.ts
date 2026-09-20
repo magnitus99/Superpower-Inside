@@ -60,6 +60,42 @@ describe('RAGQueryEngine', () => {
     expect(results[0]?.entry.metadata.text).toContain('고객 문제');
   });
 
+  it('질의 임베딩이 실패해도 BM25로 계속 검색하고 fallback diagnostic을 남긴다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('keyword.md', [1, 0], '특수 키워드가 있는 원문')]);
+    const bm25 = await createBm25([['keyword.md', '특수 키워드가 있는 원문']]);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => Promise.reject(new Error('embedding unavailable')),
+        embedBatch: () => Promise.reject(new Error('embedding unavailable')),
+      },
+      bm25,
+      1,
+      0,
+    );
+
+    const results = await engine.query('특수 키워드', 5, 0);
+
+    expect(results.map((result) => result.sourcePath)).toEqual(['keyword.md']);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'query-embedding',
+          source: 'embedding',
+          status: 'error',
+          skippedReason: 'query-embedding-failed',
+        }),
+        expect.objectContaining({
+          providerId: 'exact-vector',
+          status: 'skipped',
+          skippedReason: 'query-embedding-unavailable',
+        }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
   it('loaded BM25도 현재 Vault metadata coverage가 빠지면 partial로 판정한다', async () => {
     const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
     await bm25.load();

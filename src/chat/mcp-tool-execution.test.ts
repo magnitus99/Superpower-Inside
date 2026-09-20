@@ -7,10 +7,7 @@ import {
   parseToolArguments,
   prepareToolCallsForExecution,
 } from './mcp-tool-execution';
-import {
-  createMcpProviderToolAlias,
-  createMcpToolBindingAllowlist,
-} from './mcp-tool-wire';
+import { createMcpProviderToolAlias, createMcpToolBindingAllowlist } from './mcp-tool-wire';
 import type { ToolCallRecord } from './types';
 
 describe('MCP 툴 실행 결과 반영', () => {
@@ -352,14 +349,12 @@ describe('MCP 툴 실행 결과 반영', () => {
   });
 
   it('destructive 실제 이름이 alias에 가려져도 mentioned-auto는 수동 승인을 유지한다', async () => {
-    const primaryClient = createNamedClient(
-      { content: [{ type: 'text', text: 'deleted' }] },
-      ['delete_file'],
-    );
-    const secondaryClient = createNamedClient(
-      { content: [{ type: 'text', text: 'deleted' }] },
-      ['delete_file'],
-    );
+    const primaryClient = createNamedClient({ content: [{ type: 'text', text: 'deleted' }] }, [
+      'delete_file',
+    ]);
+    const secondaryClient = createNamedClient({ content: [{ type: 'text', text: 'deleted' }] }, [
+      'delete_file',
+    ]);
     const clients = new Map([
       ['primary', primaryClient],
       ['secondary', secondaryClient],
@@ -440,14 +435,12 @@ describe('MCP 툴 실행 결과 반영', () => {
 
   it('다른 서버의 자연 도구 이름이 잠재 alias와 같아도 catalog binding을 역추정하지 않는다', async () => {
     const aliasLikeNaturalName = createMcpProviderToolAlias('alpha', 'safe_read');
-    const alphaClient = createNamedClient(
-      { content: [{ type: 'text', text: 'alpha result' }] },
-      ['safe_read'],
-    );
-    const betaClient = createNamedClient(
-      { content: [{ type: 'text', text: 'beta result' }] },
-      [aliasLikeNaturalName],
-    );
+    const alphaClient = createNamedClient({ content: [{ type: 'text', text: 'alpha result' }] }, [
+      'safe_read',
+    ]);
+    const betaClient = createNamedClient({ content: [{ type: 'text', text: 'beta result' }] }, [
+      aliasLikeNaturalName,
+    ]);
     const clients = new Map([
       ['alpha', alphaClient],
       ['beta', betaClient],
@@ -562,11 +555,10 @@ describe('MCP 툴 실행 결과 반영', () => {
     expect(secondaryClient.callTool).not.toHaveBeenCalled();
   });
 
-  it('modern catalog allowlist miss는 사용자가 승인해도 실행 단계에서 재탐색하지 않는다', async () => {
-    const client = createNamedClient(
-      { content: [{ type: 'text', text: 'should not run' }] },
-      ['delete_file'],
-    );
+  it('modern catalog allowlist miss는 승인 대기로 남지 않고 provider가 복구할 수 있는 오류가 된다', async () => {
+    const client = createNamedClient({ content: [{ type: 'text', text: 'should not run' }] }, [
+      'delete_file',
+    ]);
     const registry = createRegistry(client, 'filesystem');
     const providerName = createMcpProviderToolAlias('filesystem', 'delete_file');
     const prepared = await prepareToolCallsForExecution(
@@ -578,11 +570,12 @@ describe('MCP 툴 실행 결과 반영', () => {
     );
 
     expect(prepared[0]).toMatchObject({
-      approved: false,
+      status: 'error',
       mcpBindingSource: 'catalog',
       actualToolName: undefined,
       serverName: undefined,
     });
+    expect(prepared[0]?.result).toContain(providerName);
 
     const executed = await executeMcpToolCalls({
       registry,
@@ -596,10 +589,9 @@ describe('MCP 툴 실행 결과 반영', () => {
   });
 
   it('legacy alias discovery가 실패하면 always-auto에서도 destructive 재시도를 실행하지 않는다', async () => {
-    const client = createNamedClient(
-      { content: [{ type: 'text', text: 'deleted' }] },
-      ['delete_file'],
-    );
+    const client = createNamedClient({ content: [{ type: 'text', text: 'deleted' }] }, [
+      'delete_file',
+    ]);
     client.listTools
       .mockRejectedValueOnce(new Error('temporary discovery failure'))
       .mockResolvedValueOnce([

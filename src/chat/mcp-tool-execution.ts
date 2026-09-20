@@ -10,10 +10,7 @@ import {
   parseToolArguments as parseMcpToolArguments,
   shouldAutoExecuteToolCall,
 } from './mcp-tools';
-import {
-  matchesMcpProviderToolAlias,
-  type McpToolBindingAllowlist,
-} from './mcp-tool-wire';
+import { matchesMcpProviderToolAlias, type McpToolBindingAllowlist } from './mcp-tool-wire';
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 
 export interface MCPToolClientLike {
@@ -61,6 +58,9 @@ export async function prepareToolCallsForExecution(
       } else {
         next.serverName = undefined;
         next.actualToolName = undefined;
+        next.status = 'error';
+        next.result = t('mcpToolNotFoundInConnectedServers', { tool: next.name });
+        next.resultSummary = next.result;
       }
     } else if (!next.serverName || !next.actualToolName) {
       const binding = await resolveLegacyMcpToolBinding(
@@ -201,11 +201,8 @@ async function resolveLegacyMcpToolBinding(
   }
   const candidateServerNames = pinnedServerName
     ? [pinnedServerName]
-    : (planMcpServerCandidatesRust(
-        preferredServerNames,
-        enabledServerNames,
-        connectionStatuses,
-      ) ?? []);
+    : (planMcpServerCandidatesRust(preferredServerNames, enabledServerNames, connectionStatuses) ??
+      []);
 
   for (const serverName of candidateServerNames) {
     const client = registry.getClient(serverName);

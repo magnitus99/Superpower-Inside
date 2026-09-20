@@ -24,6 +24,12 @@ import {
   type MCPRegistryLike,
 } from './mcp-tool-execution';
 import type { McpToolBindingAllowlist } from './mcp-tool-wire';
+import { truncateUtf8Text } from '../utils/text-budget';
+
+/** 여러 툴 라운드가 provider context를 독점하지 않도록 유지하는 전체 결과 예산입니다. */
+export const MAX_TOOL_TRANSCRIPT_BYTES = 192 * 1024;
+const TOOL_RESULT_SUMMARY_BYTES = 8 * 1024;
+const MINIMAL_TOOL_RESULT_SUMMARY_BYTES = 128;
 
 interface AssistantToolOptions {
   toolCalls: ToolCallRecord[];
@@ -269,7 +275,7 @@ export function encodeNativeToolTranscript(
     return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
   });
   if (completedToolCalls.length === 0) return [...messages];
-  return [
+  return boundToolTranscript([
     ...messages,
     {
       role: 'assistant',
@@ -290,7 +296,7 @@ export function encodeNativeToolTranscript(
       name: toolCall.name,
       tool_result_is_error: toolCall.status === 'error',
     })),
-  ];
+  ]);
 }
 
 export function encodeCompatibilityToolTranscript(
@@ -318,7 +324,7 @@ export function encodeCompatibilityToolTranscript(
     content: providerPayload,
   }));
 
-  return [
+  return boundToolTranscript([
     ...messages,
     {
       role: 'assistant',
@@ -333,7 +339,70 @@ export function encodeCompatibilityToolTranscript(
         'Use these results to call another tool or answer the user.',
       ].join('\n'),
     },
-  ];
+  ]);
+}
+
+/**
+ * 개별 결과 상한만으로는 라운드가 누적될 때 provider 입력이 무한히 커집니다.
+ * 오래된 결과부터 원문 대신 재탐색 가능한 compact envelope로 바꿔 최신 근거를 우선 보존합니다.
+ */
+export function boundToolTranscript(
+  messages: readonly ChatMessage[],
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
+): ChatMessage[] {
+  const bounded = messages.map((message) => ({ ...message }));
+  const encoder = new TextEncoder();
+  const byteLength = (message: ChatMessage): number =>
+    encoder.encode(JSON.stringify(message)).byteLength;
+  let totalBytes = bounded.reduce((total, message) => total + byteLength(message), 0);
+  if (totalBytes <= maxBytes) return bounded;
+  const newestToolIndex = bounded.reduce(
+    (latest, message, index) => (isToolTranscriptMessage(message) ? index : latest),
+    -1,
+  );
+
+  for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
+    const message = bounded[index];
+    if (!message || !isToolTranscriptMessage(message) || index === newestToolIndex) continue;
+    const previousBytes = byteLength(message);
+    const compactContent = createToolResultSummaryEnvelope(message.content);
+    if (compactContent === message.content) continue;
+    bounded[index] = { ...message, content: compactContent };
+    totalBytes += byteLength(bounded[index]) - previousBytes;
+  }
+
+  if (totalBytes > maxBytes) {
+    for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
+      const message = bounded[index];
+      if (!message || !isToolTranscriptMessage(message) || index === newestToolIndex) continue;
+      const previousBytes = byteLength(message);
+      const compactContent = createToolResultSummaryEnvelope('', MINIMAL_TOOL_RESULT_SUMMARY_BYTES);
+      bounded[index] = { ...message, content: compactContent };
+      totalBytes += byteLength(bounded[index]) - previousBytes;
+    }
+  }
+
+  return bounded;
+}
+
+function isToolTranscriptMessage(message: ChatMessage): boolean {
+  return (
+    message.role === 'tool' ||
+    (message.role === 'user' && message.content.startsWith('[Superpower Inside tool results]'))
+  );
+}
+
+function createToolResultSummaryEnvelope(
+  content: string,
+  maxSummaryBytes = TOOL_RESULT_SUMMARY_BYTES,
+): string {
+  const summary = truncateUtf8Text(content, maxSummaryBytes).text;
+  const payload: ToolResultSummaryResumePayload = {
+    kind: 'tool-result-summary',
+    summary,
+    originalResultAvailable: false,
+  };
+  return JSON.stringify(payload);
 }
 
 function parseCompatibilityToolArguments(argumentsJson: string): unknown {

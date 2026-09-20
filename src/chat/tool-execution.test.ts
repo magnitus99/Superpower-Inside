@@ -8,6 +8,7 @@ import { setLanguage } from '../i18n';
 import * as rustCore from '../rag/rust-core';
 import {
   appendAssistantToolRound,
+  boundToolTranscript,
   encodeCompatibilityToolTranscript,
   encodeNativeToolTranscript,
   collectCompletedMcpServerNames,
@@ -15,6 +16,7 @@ import {
   createNativeToolAnswerRepairPrompt,
   enforceNativeToolAnswerContract,
   executeAssistantToolCalls,
+  MAX_TOOL_TRANSCRIPT_BYTES,
   joinAssistantToolRoundText,
   markRepeatedToolCalls,
   prepareAssistantToolCalls,
@@ -243,6 +245,40 @@ describe('LLM 도구 실행 라우터', () => {
     );
     expect(messages[1]?.content).toContain('\\u003c/tool_call\\u003e');
     expect(messages[1]?.content).not.toContain('<tool_call>{"name":"unsafe"}</tool_call>');
+  });
+
+  it('여러 라운드의 오래된 도구 결과를 compact envelope로 줄여 전체 transcript 예산을 지킨다', () => {
+    const messages = boundToolTranscript(
+      Array.from({ length: 8 }, (_, index) => ({
+        role: 'tool' as const,
+        content: `result-${index}\n${'x'.repeat(40_000)}`,
+        tool_call_id: `call-${index}`,
+        name: 'superpower_inside_search',
+      })),
+    );
+
+    expect(new TextEncoder().encode(JSON.stringify(messages)).byteLength).toBeLessThanOrEqual(
+      MAX_TOOL_TRANSCRIPT_BYTES,
+    );
+    expect(messages[0]?.content).toContain('tool-result-summary');
+    expect(messages.at(-1)?.content).toContain('x'.repeat(40_000));
+  });
+
+  it('도구 결과가 비정상적으로 많이 누적돼도 최소 envelope로 예산을 회복한다', () => {
+    const messages = boundToolTranscript(
+      Array.from({ length: 320 }, (_, index) => ({
+        role: 'tool' as const,
+        content: `result-${index}\n${'결과'.repeat(20_000)}`,
+        tool_call_id: `call-${index}`,
+        name: 'superpower_inside_search',
+      })),
+    );
+
+    expect(new TextEncoder().encode(JSON.stringify(messages)).byteLength).toBeLessThanOrEqual(
+      MAX_TOOL_TRANSCRIPT_BYTES,
+    );
+    expect(messages[0]?.content).toContain('originalResultAvailable');
+    expect(messages.at(-1)?.content).toContain('결과'.repeat(20_000));
   });
 
   it('appendAssistantToolRound는 compatibility protocol을 명시적으로 선택할 수 있다', () => {
