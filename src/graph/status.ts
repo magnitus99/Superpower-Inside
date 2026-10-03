@@ -294,6 +294,7 @@ function toGraphRagStatusEntryInput(entry: VectorEntry): RustGraphRagStatusEntry
     id: entry.id,
     filePath: entry.metadata.filePath,
     contentHash: entry.metadata.contentHash,
+    chunkHash: entry.metadata.chunkHash,
     text: entry.metadata.text,
   };
 }

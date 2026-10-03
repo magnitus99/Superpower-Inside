@@ -550,6 +550,23 @@ describe('VectorStore contract', () => {
 });
 
 describe('legacy JSON vector import', () => {
+  it('새 청크 계약에서는 이전 ID를 완료로 가져오지 않고 원본 JSON은 보존한다', async () => {
+    const adapter = new TestJsonAdapter();
+    const legacy = createEntry('legacy.md', 0, [1, 0], 'legacy');
+    const current = createEntry('current.md', 0, [0, 1], 'current');
+    current.id = 'current.md::chunk::0123456789abcdef::0';
+    current.metadata.chunkHash = '0123456789abcdef';
+    const malformed = { ...current, id: 'current.md::chunk::0123456789abcdef::00' };
+    adapter.setRaw('vectors.json', JSON.stringify([legacy, current, malformed]));
+    const store = createStore();
+    expect(
+      await importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json', {
+        requireSourceChunkIds: true,
+      }),
+    ).toEqual({ imported: 1, skipped: false });
+    expect((await store.getEntries()).map(({ id }) => id)).toEqual([current.id]);
+    expect(JSON.parse(await adapter.asDataAdapter().read('vectors.json'))).toHaveLength(3);
+  });
   it('기존 JSON 벡터 파일을 IndexedDB로 한 번만 가져온다', async () => {
     const adapter = new TestJsonAdapter();
     adapter.setRaw('vectors.json', JSON.stringify([createEntry('legacy.md', 0, [1, 0], 'legacy')]));

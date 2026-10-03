@@ -51,6 +51,61 @@ function makeRunnerOptions(overrides: {
 }
 
 describe('GraphRagIndexingRunner', () => {
+  it('청크 해시가 같으면 기존 관계를 재사용하고 이동한 원문 줄과 revision만 갱신한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    const first = { ...createEntry('source.md', 'file-before'), id: 'source.md::chunk::kept::0' };
+    first.metadata.chunkHash = 'kept';
+    await vectorStore.add([first]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({ vectorStore, graphStore, provider }),
+    );
+    await runner.run();
+    const originalEvidence = (await graphStore.getEvidence())[0];
+    const originalCalls = provider.calls;
+    const moved = {
+      ...first,
+      metadata: { ...first.metadata, startLine: 20, endLine: 21, contentHash: 'file-after' },
+    };
+    const added = {
+      ...createEntry('source.md', 'file-after', 1),
+      id: 'source.md::chunk::added::0',
+    };
+    added.metadata.chunkHash = 'added';
+    await vectorStore.replaceFileEntries('source.md', [moved, added]);
+    const result = await runner.run({ onlyStaleFiles: true, staleFilePaths: ['source.md'] });
+    expect(provider.calls - originalCalls).toBe(1);
+    expect(result).toMatchObject({ processedChunks: 1, skippedChunks: 1 });
+    expect(
+      (await graphStore.getEvidence()).find(({ id }) => id === originalEvidence?.id),
+    ).toMatchObject({
+      entryId: first.id,
+      contentHash: 'file-after',
+      startLine: 20,
+      endLine: 21,
+    });
+    expect(
+      await calculateGraphRagStatus({
+        vectorStore,
+        graphStore,
+        isRunning: false,
+        ragConfig: {
+          graphRagEnabled: true,
+          graphRagModel: 'openai:gpt-4.1-mini',
+          graphRagMaxFilesPerRun: 10,
+        },
+      }),
+    ).toMatchObject({ state: 'ready', staleFileCount: 0 });
+    await vectorStore.replaceFileEntries('source.md', [added]);
+    await runner.run({ onlyStaleFiles: true, staleFilePaths: ['source.md'] });
+    expect((await graphStore.getEvidence()).some(({ entryId }) => entryId === first.id)).toBe(
+      false,
+    );
+    expect(
+      (await graphStore.getExtractionCacheRecords()).some(({ entryId }) => entryId === first.id),
+    ).toBe(false);
+  });
   it('벡터 없는 지원 파일도 추출하고 실행 한도 이후 파일까지 다음 실행에서 도달한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add(

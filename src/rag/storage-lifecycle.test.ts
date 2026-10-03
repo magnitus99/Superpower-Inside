@@ -57,7 +57,7 @@ describe('RAG IndexedDB storage lifecycle', () => {
       indexNamespace: createRagIndexNamespace({ chunkSize: 500, overlap: 100 }),
     });
 
-    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v2:1000:100');
+    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v3:1000:100');
     expect(createRagIndexNamespace({ chunkSize: 500, overlap: 100 })).toContain('500');
     expect(changed.active.vector).not.toBe(legacy.active.vector);
     expect(changed.active.bm25).not.toBe(legacy.active.bm25);

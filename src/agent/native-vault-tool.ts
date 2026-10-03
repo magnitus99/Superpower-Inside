@@ -118,6 +118,7 @@ export interface NativeVaultStatsResult extends NativeVaultResultBase {
   action: 'stats';
   fileCount: number;
   totalBytes: number;
+  processing?: import('../rag/source-processing').SourceProcessingSummary;
 }
 
 export type NativeVaultToolResult =
@@ -311,9 +312,7 @@ function createReadPrefixResult(
   const nextStartOffset =
     newlineCount === 0 ? startOffset + content.length : content.length - lastNewline - 1;
   const endLine =
-    content.endsWith('\n') && nextStartLine > result.startLine
-      ? nextStartLine - 1
-      : nextStartLine;
+    content.endsWith('\n') && nextStartLine > result.startLine ? nextStartLine - 1 : nextStartLine;
   const boundedEndLine = Math.max(result.startLine, endLine);
   return {
     ...result,
@@ -379,7 +378,9 @@ function boundListModelResult(result: NativeVaultListResult): NativeVaultToolExe
   return ensureBoundedNativeResult(candidate, candidateText);
 }
 
-function boundLinksModelResult(result: NativeVaultLinksResult): NativeVaultToolExecutionResultShape {
+function boundLinksModelResult(
+  result: NativeVaultLinksResult,
+): NativeVaultToolExecutionResultShape {
   const outgoing = [...result.outgoing];
   const incoming = [...result.incoming];
   let candidate: NativeVaultLinksResult = { ...result, outgoing, incoming, citations: [] };
@@ -432,9 +433,7 @@ function boundCitationText(citation: SourceCitation): SourceCitation {
   return {
     ...citation,
     preview: truncateUtf8Text(citation.preview, 1024, '').text,
-    ...(citation.detail
-      ? { detail: truncateUtf8Text(citation.detail, 1024, '').text }
-      : {}),
+    ...(citation.detail ? { detail: truncateUtf8Text(citation.detail, 1024, '').text } : {}),
   };
 }
 
@@ -553,7 +552,12 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
           path: { type: 'string', description: 'Vault-relative seed file path' },
           start_line: { type: 'integer', minimum: 1, description: 'Optional seed start line' },
           end_line: { type: 'integer', minimum: 1, description: 'Optional seed end line' },
-          limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum candidates; defaults to 8' },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 20,
+            description: 'Maximum candidates; defaults to 8',
+          },
         },
       },
     ),

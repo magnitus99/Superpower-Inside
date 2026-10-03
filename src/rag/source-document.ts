@@ -5,7 +5,8 @@ import { createContentHash } from './hash';
 import {
   chunkMarkdownRust,
   chunkPlainTextRust,
-  isProtectedRagDocumentExtensionRust,
+  planSourceChunksRust,
+  type RustSourceChunk,
 } from './rust-core';
 
 export interface Chunk {
@@ -19,6 +20,7 @@ export interface SourceDocument extends BM25CorpusDocument {
   sourceMtime: number;
   sourceSize: number;
   contentHash: string;
+  chunkHash: string;
   indexedAt: number;
 }
 
@@ -35,12 +37,14 @@ export function chunkSourceFile(
   file: TFile,
   content: string,
   config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
-): Chunk[] {
-  const markdown = isProtectedRagDocumentExtensionRust(file.extension);
-  if (markdown === null) throw new Error('Source document format policy is unavailable.');
-  const chunks = markdown
-    ? chunkMarkdownRust(content, config.chunkSize, config.overlap)
-    : chunkPlainTextRust(content, config.chunkSize, config.overlap);
+): RustSourceChunk[] {
+  const chunks = planSourceChunksRust(
+    file.path,
+    file.extension ?? '',
+    content,
+    config.chunkSize,
+    config.overlap,
+  );
   if (chunks === null) throw new Error('Source document chunking is unavailable.');
   return chunks;
 }
@@ -58,8 +62,9 @@ export function buildSourceDocuments(
 ): SourceDocument[] {
   const indexedAt = Date.now();
   const contentHash = createContentHash(content);
-  return chunkSourceFile(file, content, config).map((chunk, index) => ({
-    id: `${file.path}::${chunk.metadata.startLine}::${index}`,
+  return chunkSourceFile(file, content, config).map((chunk) => ({
+    id: chunk.id,
+    chunkHash: chunk.chunkHash,
     text: buildSearchText(file, chunk),
     sourcePath: file.path,
     heading: chunk.metadata.heading,

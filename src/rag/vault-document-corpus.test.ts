@@ -74,6 +74,28 @@ function fixture(path = 'notes/source.txt') {
 }
 
 describe('파일 중심 문서 생명주기', () => {
+  it('파일 읽기 실패는 기록하고 성공한 재시도에서는 실패·진행 상태를 해제한다', async () => {
+    const source = fixture();
+    source.read.mockRejectedValueOnce(new Error('read failed'));
+    await expect(source.corpus.refreshFile(source.file)).rejects.toThrow('read failed');
+    expect(source.corpus.hasFailedPath(source.file.path)).toBe(true);
+    expect(source.corpus.isReadingPath(source.file.path)).toBe(false);
+    let finishRead = (_text: string): void => undefined;
+    source.read.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const retry = source.corpus.refreshFile(source.file);
+    await vi.waitFor(() => expect(source.read).toHaveBeenCalledTimes(2));
+    expect(source.corpus.isReadingPath(source.file.path)).toBe(true);
+    expect(source.corpus.hasFailedPath(source.file.path)).toBe(false);
+    finishRead('복구된 근거');
+    await retry;
+    expect(source.corpus.hasFailedPath(source.file.path)).toBe(false);
+    expect(source.corpus.isReadingPath(source.file.path)).toBe(false);
+  });
   it('이전 읽기의 늦은 실패가 더 최신 원문을 제거하지 않는다', async () => {
     const source = fixture();
     let fail = (_error: Error): void => undefined;

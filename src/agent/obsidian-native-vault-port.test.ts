@@ -1352,6 +1352,36 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
   });
 
+  it('stats에 같은 파일 목록의 처리 상태를 연결하며 진단 실패가 파일 통계를 막지 않는다', async () => {
+    const app = createApp([createFile('source.ts', '원문 근거')]);
+    const summary = {
+      totalFiles: 1,
+      chatReadyFiles: 1,
+      completeFiles: 1,
+      truncated: false,
+      files: [],
+    };
+    const readStatus = vi.fn(() => Promise.resolve(summary));
+    const scope = {
+      listCandidateFiles: () => Promise.resolve(app.vault.getFiles()),
+      isCandidateFile: () => Promise.resolve(true),
+      isPathVisible: () => true,
+    };
+    const port = new ObsidianNativeVaultToolPort(app, scope, () => null, readStatus);
+    expect(await port.stats({ action: 'stats' })).toMatchObject({
+      fileCount: 1,
+      processing: summary,
+    });
+    expect(readStatus).toHaveBeenCalledWith(app.vault.getFiles());
+    const unavailable = new ObsidianNativeVaultToolPort(
+      app,
+      scope,
+      () => null,
+      () => Promise.reject(new Error('diagnostics unavailable')),
+    );
+    expect(await unavailable.stats({ action: 'stats' })).toMatchObject({ fileCount: 1 });
+  });
+
   it('모든 검색어가 일치하지 않으면 일부 단어만 맞는 문서를 반환하지 않는다', async () => {
     const app = createApp([
       createFile('Bible/Genesis.md', '창세기 본문'),

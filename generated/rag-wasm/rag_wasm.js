@@ -3661,6 +3661,94 @@ export function plan_research_summary_batches_json(item_sizes_json, max_items, m
 }
 
 /**
+ * 현재 내용 기반 청크 ID와 일치하는 저장 벡터의 이관 인덱스를 반환합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_source_chunk_import_indices_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_chunk_import_indices_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 파일 형식별 원문 경계와 내용 기반 청크 ID를 반환합니다.
+ * @param {string} path
+ * @param {string} extension
+ * @param {string} content
+ * @param {number} max_size
+ * @param {number} overlap
+ * @returns {string}
+ */
+export function plan_source_chunks_json(path, extension, content, max_size, overlap) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_chunks_json(ptr0, len0, ptr1, len1, ptr2, len2, max_size, overlap);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * 변경 없는 청크의 근거를 최신 원문에 연결하고 삭제할 추출 단위를 반환합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_source_graph_reconcile_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_graph_reconcile_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 공통 원문·BM25·임베딩·선택적 그래프의 준비 상태를 파일별로 반환합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_source_processing_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_processing_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * assistant 답변에서 출처 참조와 path alias plan을 `JSON` 문자열로 만든다.
  * @param {string} content
  * @returns {string}

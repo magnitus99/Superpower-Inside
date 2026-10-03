@@ -51,6 +51,10 @@ import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
 import { IndexedDbDocumentCorpusStore } from './src/rag/document-corpus-store';
 import { VaultDocumentCorpus } from './src/rag/vault-document-corpus';
 import {
+  planSourceProcessingRust,
+  type SourceProcessingSummary,
+} from './src/rag/source-processing';
+import {
   VaultIndexer,
   registerModifyEvent,
   registerCreateEvent,
@@ -265,6 +269,87 @@ interface BM25BackgroundLoadOutcome {
 export default class SuperpowerInsidePlugin extends Plugin {
   documentCorpus: IndexedDbDocumentCorpusStore | null = null;
   private vaultDocumentCorpus: VaultDocumentCorpus | null = null;
+  async getSourceFileProcessingStatus(
+    files: readonly TFile[],
+    limit = 32,
+  ): Promise<SourceProcessingSummary | null> {
+    const corpus = this.documentCorpus;
+    if (!corpus) return null;
+    const paths = files.map((file) => file.path);
+    const [documents, bm25, vectors, cache, evidence] = await Promise.all([
+      corpus.getDocuments(),
+      this.bm25Index?.getCorpusDocumentsBySourcePaths(paths) ?? Promise.resolve([]),
+      this.vectorStore?.getFileIndexRecords() ?? Promise.resolve([]),
+      this.knowledgeGraphStore?.getExtractionCacheRecords() ?? Promise.resolve([]),
+      this.knowledgeGraphStore?.getEvidence() ?? Promise.resolve([]),
+    ]);
+    if (this.documentCorpus !== corpus) return null;
+    const rag = this.settings.rag;
+    const contract = buildKnowledgeGraphContract();
+    const embedding = resolveUsableProviderModelRef(
+      this.settings,
+      rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    const graphProvider =
+      rag.graphRagEnabled && rag.graphRagModel.trim()
+        ? this.createProviderForModel(rag.graphRagModel)
+        : null;
+    return planSourceProcessingRust({
+      files: files.map((file) => ({
+        filePath: file.path,
+        sourceMtime: file.stat.mtime,
+        sourceSize: file.stat.size,
+        readFailed: this.vaultDocumentCorpus?.hasFailedPath(file.path) ?? false,
+        readPending: this.vaultDocumentCorpus?.isReadingPath(file.path) ?? false,
+      })),
+      documents: documents.map(
+        ({ id, sourcePath, sourceMtime, sourceSize, contentHash, chunkHash }) => ({
+          id,
+          sourcePath,
+          sourceMtime,
+          sourceSize,
+          contentHash,
+          chunkHash,
+        }),
+      ),
+      bm25: bm25.map(({ id, sourcePath, sourceMtime, sourceSize, contentHash }) => ({
+        id,
+        sourcePath,
+        sourceMtime,
+        sourceSize,
+        contentHash,
+      })),
+      vectors,
+      cache,
+      evidence: evidence.map(({ entryId, filePath, contentHash }) => ({
+        entryId,
+        filePath,
+        contentHash,
+      })),
+      failedEmbeddingPaths: this.vaultIndexer?.getFailedFilePaths() ?? [],
+      failedGraphPaths: this.graphRagIndexingRunner?.getFailedSourceFilePaths() ?? [],
+      config: {
+        bm25Enabled: rag.enableBM25,
+        embeddingEnabled: embedding !== null,
+        graphEnabled: rag.graphRagEnabled,
+        embeddingProvider: rag.embeddingProvider,
+        embeddingModel: rag.embeddingModel,
+        graphModel: rag.graphRagModel,
+        ontologySchemaId: contract.id,
+        ontologyVersion: contract.version,
+        extractionContractVersion: graphExtractionContractVersionRust(),
+        providerEpochId: graphProvider
+          ? createGraphProviderEpochId(
+              graphProvider,
+              rag.graphRagModel,
+              graphExtractionContractVersionRust(),
+            )
+          : undefined,
+      },
+      limit,
+    });
+  }
   declare settings: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
   private provider: LLMProvider | null = null;
@@ -2577,6 +2662,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           this.app.vault.adapter,
           vectorStore,
           '.superpower-inside/vectors.json',
+          { requireSourceChunkIds: true },
         ),
       );
       requireCurrentRun();

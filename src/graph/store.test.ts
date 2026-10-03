@@ -17,6 +17,71 @@ import {
 const dbNames = new Set<string>();
 
 describe('KnowledgeGraphStore contract', () => {
+  it.each(['memory', 'indexeddb'])(
+    '%s 저장소는 변경 없는 분할 근거를 이동하고 삭제된 청크만 정리한다',
+    async (kind) => {
+      const store: KnowledgeGraphStore =
+        kind === 'memory' ? new InMemoryKnowledgeGraphStore() : createIndexedDbStore();
+      await store.addEvidence({
+        id: 'kept',
+        filePath: 'source.md',
+        entryId: 'source.md::chunk::kept::0',
+        startLine: 4,
+        endLine: 5,
+        sourceStartLine: 2,
+        contentHash: 'old',
+        quote: '유지 근거',
+        extractionModelKey: 'model',
+        updatedAt: 1,
+      });
+      await store.addEvidence({
+        id: 'gone',
+        filePath: 'source.md',
+        entryId: 'source.md::chunk::gone::0',
+        startLine: 8,
+        contentHash: 'old',
+        quote: '삭제 근거',
+        extractionModelKey: 'model',
+        updatedAt: 1,
+      });
+      for (const entryId of [
+        'source.md::chunk::kept::0',
+        'source.md::chunk::gone::0',
+        'source.md::chunk::gone::0::overflow::1::0',
+      ]) {
+        await store.markExtractionCached({
+          entryId,
+          contentHash: 'chunk',
+          extractionModelKey: 'model',
+          ontologySchemaId: 'knowledge-graph',
+          ontologyVersion: 1,
+          updatedAt: 1,
+        });
+      }
+      await store.reconcileSourceFile(
+        'source.md',
+        [
+          {
+            id: 'source.md::chunk::kept::0',
+            vector: [],
+            metadata: {
+              filePath: 'source.md',
+              startLine: 10,
+              contentHash: 'new',
+              text: '유지 근거',
+            },
+          },
+        ],
+        ['source.md::chunk::kept::0'],
+      );
+      expect(await store.getEvidence()).toEqual([
+        expect.objectContaining({ id: 'kept', startLine: 12, endLine: 13, contentHash: 'new' }),
+      ]);
+      expect((await store.getExtractionCacheRecords()).map(({ entryId }) => entryId)).toEqual([
+        'source.md::chunk::kept::0',
+      ]);
+    },
+  );
   afterEach(async () => {
     await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
     dbNames.clear();

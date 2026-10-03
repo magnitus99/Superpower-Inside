@@ -160,6 +160,10 @@ export class GraphRagIndexingRunner {
     return this.lastResult ? { ...this.lastResult } : null;
   }
 
+  getFailedSourceFilePaths(): string[] {
+    return [...this.failedFilePaths];
+  }
+
   getLastCommunityResult(): GraphRagCommunityBuildResult | null {
     return this.lastCommunityResult ? { ...this.lastCommunityResult } : null;
   }
@@ -483,7 +487,10 @@ export class GraphRagIndexingRunner {
         result.cancelled = true;
         return result;
       }
-      const contentHash = entry.metadata.contentHash ?? createContentHash(entry.metadata.text);
+      const contentHash =
+        entry.metadata.chunkHash ??
+        entry.metadata.contentHash ??
+        createContentHash(entry.metadata.text);
       const cacheKey = {
         entryId: entry.id,
         contentHash,
@@ -503,6 +510,15 @@ export class GraphRagIndexingRunner {
       }
     }
 
+    const incremental = entries.every((entry) => entry.metadata.chunkHash !== undefined);
+    if (incremental) {
+      await this.graphStore.reconcileSourceFile(
+        filePath,
+        entries,
+        preparedEntries.filter((item) => item.cached).map((item) => item.entry.id),
+      );
+    }
+
     if (preparedEntries.every((item) => item.cached)) {
       result.skippedChunks = preparedEntries.length;
       this.incrementProgressCounters({
@@ -513,14 +529,24 @@ export class GraphRagIndexingRunner {
     }
 
     this.updateProgressPhase('storing-results');
-    await this.graphStore.pruneByFilePaths([filePath]);
+    if (!incremental) await this.graphStore.pruneByFilePaths([filePath]);
+    const pendingEntries = incremental
+      ? preparedEntries.filter((item) => !item.cached)
+      : preparedEntries;
+    if (incremental) {
+      result.skippedChunks = preparedEntries.length - pendingEntries.length;
+      this.incrementProgressCounters({
+        skippedChunks: result.skippedChunks,
+        cachedChunks: result.skippedChunks,
+      });
+    }
 
-    for (let i = 0; i < preparedEntries.length; i += this.maxConcurrentRequests) {
+    for (let i = 0; i < pendingEntries.length; i += this.maxConcurrentRequests) {
       if (signal?.aborted) {
         result.cancelled = true;
         break;
       }
-      const batch = preparedEntries.slice(i, i + this.maxConcurrentRequests);
+      const batch = pendingEntries.slice(i, i + this.maxConcurrentRequests);
       const batchResults = await Promise.all(
         batch.map(
           async ({
@@ -542,6 +568,8 @@ export class GraphRagIndexingRunner {
                 startLine: entry.metadata.startLine,
                 endLine: entry.metadata.endLine,
                 contentHash,
+                sourceContentHash: entry.metadata.contentHash,
+                sourceStartLine: entry.metadata.startLine,
                 extractionModelKey: this.extractionModelKey,
                 knowledgeContract: this.knowledgeContract,
                 signal,

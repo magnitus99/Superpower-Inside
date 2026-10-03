@@ -1,4 +1,8 @@
 import {
+  plan_source_chunks_json,
+  plan_source_chunk_import_indices_json,
+  plan_source_graph_reconcile_json,
+  plan_source_processing_json,
   find_reusable_prompt,
   is_local_settings_provider,
   is_valid_settings_folder,
@@ -198,6 +202,7 @@ import {
   VectorRuntimeIndex,
 } from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
+import type { SourceProcessingInput, SourceProcessingSummary } from './source-processing';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
 
 const RUST_RECALL_UNKNOWN_INDEX = 0xffffffff;
@@ -1247,6 +1252,7 @@ export interface RustGraphRagStatusEntryInput {
   id: string;
   filePath: string;
   contentHash?: string;
+  chunkHash?: string;
   text: string;
 }
 
@@ -7198,6 +7204,144 @@ export function scoreLocalEvidenceRust(input: RustLocalEvidenceInput): RustVecto
   return decodeBoundedIndexScorePairs(pairs, input.evidenceCount);
 }
 
+export interface RustSourceChunk extends Chunk {
+  id: string;
+  chunkHash: string;
+}
+
+export function planSourceChunkImportIndicesRust(
+  entries: readonly { id: string; filePath: string; chunkHash?: string }[],
+): number[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_source_chunk_import_indices_json(JSON.stringify(entries)),
+    );
+    return Array.isArray(parsed) &&
+      parsed.every((index: unknown) => isValidNonNegativeInteger(index) && index < entries.length)
+      ? (parsed as number[])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceProcessingRust(
+  input: SourceProcessingInput,
+): SourceProcessingSummary | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_source_processing_json(JSON.stringify(input)));
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !('files' in parsed) ||
+      !Array.isArray(parsed.files) ||
+      !('totalFiles' in parsed) ||
+      !isValidNonNegativeInteger(parsed.totalFiles) ||
+      !('chatReadyFiles' in parsed) ||
+      !isValidNonNegativeInteger(parsed.chatReadyFiles) ||
+      !('completeFiles' in parsed) ||
+      !isValidNonNegativeInteger(parsed.completeFiles) ||
+      !('truncated' in parsed) ||
+      typeof parsed.truncated !== 'boolean'
+    )
+      return null;
+    const states = new Set(['ready', 'pending', 'stale', 'failed', 'disabled']);
+    for (const value of parsed.files as unknown[]) {
+      if (!value || typeof value !== 'object') return null;
+      const file = value as Record<string, unknown>;
+      if (
+        !file ||
+        typeof file !== 'object' ||
+        typeof file.filePath !== 'string' ||
+        !['source', 'bm25', 'embedding', 'graph'].every(
+          (field) => typeof file[field] === 'string' && states.has(file[field]),
+        ) ||
+        (file.chat !== 'ready' && file.chat !== 'pending')
+      )
+        return null;
+    }
+    return parsed as SourceProcessingSummary;
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceGraphReconcileRust<
+  T extends {
+    id: string;
+    entryId: string;
+    filePath: string;
+    startLine: number;
+    contentHash: string;
+  },
+>(input: {
+  filePath: string;
+  retainedEntryIds: readonly string[];
+  entries: readonly { id: string; startLine: number; contentHash?: string }[];
+  evidence: readonly T[];
+  cache: readonly { entryId: string }[];
+  rejectedFacts: readonly { entryId: string; filePath: string }[];
+}): { removedEntryIds: string[]; evidenceUpdates: T[] } | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_source_graph_reconcile_json(JSON.stringify(input)));
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !('removedEntryIds' in parsed) ||
+      !('evidenceUpdates' in parsed)
+    )
+      return null;
+    if (
+      !Array.isArray(parsed.removedEntryIds) ||
+      !parsed.removedEntryIds.every(isStringValue) ||
+      !Array.isArray(parsed.evidenceUpdates)
+    )
+      return null;
+    for (const value of parsed.evidenceUpdates as unknown[]) {
+      if (!value || typeof value !== 'object') return null;
+      const record = value as Record<string, unknown>;
+      if (
+        !['id', 'entryId', 'filePath', 'contentHash'].every(
+          (field) => typeof record[field] === 'string',
+        ) ||
+        !isValidNonNegativeInteger(record.startLine) ||
+        (record.endLine !== undefined && !isValidNonNegativeInteger(record.endLine)) ||
+        (record.sourceStartLine !== undefined && !isValidNonNegativeInteger(record.sourceStartLine))
+      )
+        return null;
+    }
+    return parsed as { removedEntryIds: string[]; evidenceUpdates: T[] };
+  } catch {
+    return null;
+  }
+}
+
+export function planSourceChunksRust(
+  path: string,
+  extension: string,
+  content: string,
+  maxChunkSize: number,
+  overlapChars: number,
+): RustSourceChunk[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_source_chunks_json(path, extension, content, maxChunkSize, overlapChars),
+    );
+    if (!isChunkArray(parsed)) return null;
+    for (const chunk of parsed) {
+      if (!('id' in chunk) || typeof chunk.id !== 'string') return null;
+      if (!('chunkHash' in chunk) || typeof chunk.chunkHash !== 'string') return null;
+    }
+    return parsed as RustSourceChunk[];
+  } catch {
+    return null;
+  }
+}
+
 export function chunkMarkdownRust(
   content: string,
   maxChunkSize: number,
@@ -9781,6 +9925,7 @@ function isValidGraphRagStatusEntryInput(input: RustGraphRagStatusEntryInput): b
     isStringValue(input.id) &&
     isStringValue(input.filePath) &&
     (input.contentHash === undefined || isStringValue(input.contentHash)) &&
+    (input.chunkHash === undefined || isStringValue(input.chunkHash)) &&
     isStringValue(input.text)
   );
 }

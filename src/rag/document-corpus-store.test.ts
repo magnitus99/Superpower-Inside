@@ -90,4 +90,60 @@ describe('지원 파일 공통 문서 저장소', () => {
     ).toEqual(md.map(({ heading, startLine, endLine }) => ({ heading, startLine, endLine })));
     expect(markdown[0]?.heading).toBe('제목');
   });
+
+  it('앞쪽에 다른 절을 삽입해도 변경 없는 청크 ID와 해시는 유지한다', () => {
+    const file = createFile('source.md');
+    const config = { chunkSize: 1000, overlap: 0 };
+    const before = buildSourceDocuments(file, '# 유지\n그대로인 근거', config);
+    const after = buildSourceDocuments(
+      file,
+      '# 추가\n새로운 근거\n\n# 유지\n그대로인 근거',
+      config,
+    );
+    expect(after.find((document) => document.heading === '유지')).toMatchObject({
+      id: before[0]?.id,
+      chunkHash: before[0]?.chunkHash,
+      startLine: 3,
+    });
+    expect(after[1]?.contentHash).not.toBe(before[0]?.contentHash);
+  });
+
+  it('중복 청크에도 서로 다른 결정적 ID를 부여한다', () => {
+    const file = createFile('source.md');
+    const content = '# 동일\n같은 본문\n# 동일\n같은 본문';
+    const first = buildSourceDocuments(file, content, { chunkSize: 1000, overlap: 0 });
+    const second = buildSourceDocuments(file, content, { chunkSize: 1000, overlap: 0 });
+    expect(new Set(first.map(({ id }) => id)).size).toBe(first.length);
+    expect(second.map(({ id }) => id)).toEqual(first.map(({ id }) => id));
+  });
+
+  it('JSON의 최상위 키와 코드 선언을 공통 검색 근거에 보존한다', () => {
+    const config = { chunkSize: 40, overlap: 0 };
+    const json = buildSourceDocuments(
+      createFile('source.json'),
+      '{\n  "users": [\n    {"name": "Kim", "role": "admin"}\n  ],\n  "enabled": true\n}',
+      config,
+    );
+    expect(json.some(({ heading }) => heading === '$.users')).toBe(true);
+    expect(json.some(({ heading }) => heading === '$.enabled')).toBe(true);
+    const code = buildSourceDocuments(
+      createFile('source.ts'),
+      'export function first() {\n  return "{";\n}\n\nexport function second() {\n  return 2;\n}',
+      { chunkSize: 1000, overlap: 0 },
+    );
+    expect(code).toHaveLength(2);
+    expect(code[0]?.heading).toContain('first');
+    expect(code[1]?.heading).toContain('second');
+  });
+
+  it('CSV의 헤더와 인용된 여러 줄 레코드를 분리하지 않고 보존한다', () => {
+    const documents = buildSourceDocuments(
+      createFile('source.csv'),
+      'name,description\nKim,"first\nsecond"\nLee,third',
+      { chunkSize: 20, overlap: 0 },
+    );
+    expect(documents.every(({ heading }) => heading === 'name,description')).toBe(true);
+    expect(documents.some(({ text }) => text.includes('Kim,"first\nsecond"'))).toBe(true);
+    expect(documents.find(({ text }) => text.includes('Kim,"first'))?.endLine).toBe(2);
+  });
 });

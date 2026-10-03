@@ -986,6 +986,10 @@ export function migrateLegacyProviderProfiles(
 export interface PluginLike {
   app: App;
   ragEngine: import('./rag/query').RAGQueryEngine | null;
+  getSourceFileProcessingStatus?(
+    files: readonly import('obsidian').TFile[],
+    limit?: number,
+  ): Promise<import('./rag/source-processing').SourceProcessingSummary | null>;
   manifest?: { id?: string; version?: string };
   settings: SuperpowerInsideSettings;
   graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;

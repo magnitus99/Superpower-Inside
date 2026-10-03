@@ -13,6 +13,8 @@ export class VaultDocumentCorpus {
   private suspended = false;
   private refreshing: Promise<void> | null = null;
   private candidatePaths = new Set<string>();
+  private readonly readingPaths = new Set<string>();
+  private readonly failedPaths = new Set<string>();
 
   constructor(
     private readonly vault: Vault,
@@ -34,37 +36,54 @@ export class VaultDocumentCorpus {
     return this.candidatePaths.has(path);
   }
 
+  isReadingPath(path: string): boolean {
+    return this.readingPaths.has(path);
+  }
+  hasFailedPath(path: string): boolean {
+    return this.failedPaths.has(path);
+  }
+
   async refreshFile(file: TFile): Promise<void> {
     if (this.suspended) return;
     const path = file.path;
     const owner = Symbol(path);
     this.ownership.set(path, owner);
+    this.readingPaths.add(path);
+    this.failedPaths.delete(path);
     const isCurrent = (): boolean => !this.suspended && this.ownership.get(path) === owner;
-    if (!(await isRagCandidateFile(this.vault, file, this.getRagConfig(), this.getChatConfig()))) {
-      if (isCurrent()) {
-        this.candidatePaths.delete(path);
-        await this.store.removeByFilePath(path);
-      }
-      return;
-    }
-    let snapshot;
     try {
-      snapshot = await readSourceFileSnapshot(this.vault, file);
+      if (
+        !(await isRagCandidateFile(this.vault, file, this.getRagConfig(), this.getChatConfig()))
+      ) {
+        if (isCurrent()) {
+          this.candidatePaths.delete(path);
+          this.failedPaths.delete(path);
+          await this.store.removeByFilePath(path);
+        }
+        return;
+      }
+      const snapshot = await readSourceFileSnapshot(this.vault, file);
+      if (!snapshot || !isCurrent()) return;
+      this.candidatePaths.add(path);
+      const documents = buildSourceDocuments(snapshot.file, snapshot.content, this.getRagConfig());
+      if (isCurrent()) await this.store.replaceFileDocuments(path, documents);
+      if (isCurrent()) this.failedPaths.delete(path);
     } catch (error) {
       if (isCurrent()) {
         this.candidatePaths.delete(path);
+        this.failedPaths.add(path);
         await this.store.removeByFilePath(path);
       }
       throw error;
+    } finally {
+      if (isCurrent()) this.readingPaths.delete(path);
     }
-    if (!snapshot || !isCurrent()) return;
-    this.candidatePaths.add(path);
-    const documents = buildSourceDocuments(snapshot.file, snapshot.content, this.getRagConfig());
-    if (isCurrent()) await this.store.replaceFileDocuments(path, documents);
   }
 
   async removeFile(path: string): Promise<void> {
     this.candidatePaths.delete(path);
+    this.readingPaths.delete(path);
+    this.failedPaths.delete(path);
     this.ownership.set(path, Symbol(path));
     if (!this.suspended) await this.store.removeByFilePath(path);
   }
@@ -72,6 +91,7 @@ export class VaultDocumentCorpus {
   suspend(): void {
     this.suspended = true;
     this.ownership.clear();
+    this.readingPaths.clear();
   }
   resume(): void {
     this.suspended = false;

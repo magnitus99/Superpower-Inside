@@ -30,6 +30,8 @@ import type {
 } from './native-vault-tool';
 import { truncateUtf8Text } from '../utils/text-budget';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import type { SourceProcessingSummary } from '../rag/source-processing';
+import { appLogger } from '../utils/logger';
 
 const MAX_READ_LINES = 400;
 const LEXICAL_READ_BATCH_SIZE = 8;
@@ -92,6 +94,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     private readonly app: App,
     private readonly fileScope: NativeVaultFileScope,
     private readonly getQueryEngine: () => NativeVaultQueryEngineLike | null = () => null,
+    private readonly getSourceProcessing?: (
+      files: readonly TFile[],
+    ) => Promise<SourceProcessingSummary | null>,
   ) {}
 
   async search(
@@ -340,7 +345,18 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     throwIfAborted(signal);
     const plan = planNativeVaultStatsRust(files.map((file) => file.stat.size));
     if (!plan) throw new Error(t('nativeVaultStatsFailed'));
-    return { action: 'stats', ...plan, citations: [] };
+    let processing: SourceProcessingSummary | null | undefined;
+    try {
+      processing = await this.getSourceProcessing?.(files);
+    } catch (error) {
+      throwIfAborted(signal);
+      appLogger.warn('Source processing diagnostics unavailable.', {
+        source: 'agent.vault.stats',
+        error,
+      });
+    }
+    throwIfAborted(signal);
+    return { action: 'stats', ...plan, ...(processing ? { processing } : {}), citations: [] };
   }
 
   private async tryIndexedSearch(

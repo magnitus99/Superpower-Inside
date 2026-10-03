@@ -29,7 +29,7 @@ export interface IndexedDbCleanupOptions {
 }
 
 /** 청킹 계약 버전. 청커 동작이나 청크 저장 형식이 바뀌면 올려 인덱스 세대를 교체합니다. */
-export const RAG_INDEX_CONTRACT_VERSION = 2;
+export const RAG_INDEX_CONTRACT_VERSION = 3;
 
 /** 청킹 계약 v1의 기본값은 기존 세대 이름을 그대로 써서 불필요한 재색인을 피합니다. */
 const LEGACY_GENERATION_CONTRACT = {

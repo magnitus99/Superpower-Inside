@@ -9,6 +9,7 @@ import {
   planGraphEntityMergeRust,
   planGraphStorageMaintenanceRust,
   planGraphPruneRust,
+  planSourceGraphReconcileRust,
   rewriteGraphEntityReferencesRust,
   type RustGraphExtractionCacheKey,
   type RustGraphEntityMergeInput,
@@ -22,6 +23,7 @@ import {
   mergeGraphEntityLabels,
   type GraphEntityLabelRecord,
 } from './entity-labels';
+import type { VectorEntry } from '../rag/store';
 
 export type GraphPropertyValue = string | number | boolean;
 export type GraphClaimStance = 'supports' | 'opposes' | 'neutral' | 'interprets';
@@ -105,6 +107,7 @@ export interface GraphEvidenceRecord {
   filePath: string;
   entryId: string;
   startLine: number;
+  sourceStartLine?: number;
   endLine?: number;
   quote: string;
   contentHash: string;
@@ -276,6 +279,13 @@ export interface GraphStorageMaintenanceResult {
 }
 
 export interface KnowledgeGraphStore {
+  getSourceFileRecords(
+    filePath: string,
+  ): Promise<{
+    evidence: GraphEvidenceRecord[];
+    cache: GraphExtractionCacheRecord[];
+    rejectedFacts: GraphRejectedFactRecord[];
+  }>;
   isExtractionCached(input: Omit<GraphExtractionCacheRecord, 'updatedAt'>): Promise<boolean>;
   markExtractionCached(record: GraphExtractionCacheRecord): Promise<void>;
   getExtractionCacheRecords(): Promise<GraphExtractionCacheRecord[]>;
@@ -318,7 +328,15 @@ export interface KnowledgeGraphStore {
   removeEvidenceByFilePaths(filePaths: readonly string[]): Promise<number>;
   removeExtractionCacheByEntryIds(entryIds: readonly string[]): Promise<number>;
   removeRejectedFactsByFilePaths(filePaths: readonly string[]): Promise<number>;
-  pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult>;
+  pruneByFilePaths(
+    filePaths: readonly string[],
+    entryIds?: readonly string[],
+  ): Promise<GraphPruneResult>;
+  reconcileSourceFile(
+    filePath: string,
+    entries: readonly VectorEntry[],
+    retainedEntryIds: readonly string[],
+  ): Promise<void>;
   maintainDerivedData(
     options: GraphStorageMaintenanceOptions,
   ): Promise<GraphStorageMaintenanceResult>;
@@ -448,6 +466,20 @@ class KnowledgeGraphDB extends Dexie {
 
 /** Dexie/IndexedDB 기반 production knowledge graph 저장소 */
 export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
+  async getSourceFileRecords(
+    filePath: string,
+  ): Promise<{
+    evidence: GraphEvidenceRecord[];
+    cache: GraphExtractionCacheRecord[];
+    rejectedFacts: GraphRejectedFactRecord[];
+  }> {
+    const [evidence, cache, rejectedFacts] = await Promise.all([
+      this.db.graphEvidence.where('filePath').equals(filePath).toArray(),
+      this.db.graphExtractionCache.where('entryId').startsWith(`${filePath}::`).toArray(),
+      this.db.graphRejectedFacts.where('filePath').equals(filePath).toArray(),
+    ]);
+    return { evidence, cache, rejectedFacts };
+  }
   private db: KnowledgeGraphDB;
 
   constructor(dbName = 'SuperpowerInsideKnowledgeGraphStore') {
@@ -858,7 +890,18 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
     return toDelete.length;
   }
 
-  async pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult> {
+  reconcileSourceFile(
+    filePath: string,
+    entries: readonly VectorEntry[],
+    retainedEntryIds: readonly string[],
+  ): Promise<void> {
+    return reconcileSourceGraph(this, filePath, entries, retainedEntryIds);
+  }
+
+  async pruneByFilePaths(
+    filePaths: readonly string[],
+    entryIds?: readonly string[],
+  ): Promise<GraphPruneResult> {
     if (filePaths.length === 0) return emptyPruneResult();
 
     return this.db.transaction(
@@ -883,16 +926,20 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
           this.db.graphCommunitySummaryJobs.toArray(),
           this.db.graphGlobalSearchJobs.toArray(),
         ]);
-        const snapshot = createPrunedGraphSnapshot(filePaths, {
-          evidence: await this.db.graphEvidence.toArray(),
-          entities: await this.db.graphEntities.toArray(),
-          relations: await this.db.graphRelations.toArray(),
-          claims: await this.db.graphClaims.toArray(),
-          communities: await this.db.graphCommunities.toArray(),
-          rejectedFacts: await this.db.graphRejectedFacts.toArray(),
-          extractionCache: await this.db.graphExtractionCache.toArray(),
-          pendingEntityMerges: await this.db.graphPendingEntityMerges.toArray(),
-        });
+        const snapshot = createPrunedGraphSnapshot(
+          filePaths,
+          {
+            evidence: await this.db.graphEvidence.toArray(),
+            entities: await this.db.graphEntities.toArray(),
+            relations: await this.db.graphRelations.toArray(),
+            claims: await this.db.graphClaims.toArray(),
+            communities: await this.db.graphCommunities.toArray(),
+            rejectedFacts: await this.db.graphRejectedFacts.toArray(),
+            extractionCache: await this.db.graphExtractionCache.toArray(),
+            pendingEntityMerges: await this.db.graphPendingEntityMerges.toArray(),
+          },
+          entryIds,
+        );
 
         if (snapshot.deletedEvidenceIds.length > 0) {
           await this.db.graphEvidence.bulkDelete(snapshot.deletedEvidenceIds);
@@ -927,8 +974,10 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
         if (snapshot.deletedPendingMergeIds.length > 0) {
           await this.db.graphPendingEntityMerges.bulkDelete(snapshot.deletedPendingMergeIds);
         }
-        const deletedExtractionJobs = extractionJobs.filter((job) =>
-          filePaths.includes(job.filePath),
+        const deletedExtractionJobs = extractionJobs.filter(
+          (job) =>
+            filePaths.includes(job.filePath) &&
+            (entryIds === undefined || entryIds.includes(job.entryId)),
         );
         if (deletedExtractionJobs.length > 0) {
           await this.db.graphExtractionJobs.bulkDelete(deletedExtractionJobs.map((job) => job.id));
@@ -1054,6 +1103,21 @@ export class IndexedDbKnowledgeGraphStore implements KnowledgeGraphStore {
 }
 
 export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
+  async getSourceFileRecords(
+    filePath: string,
+  ): Promise<{
+    evidence: GraphEvidenceRecord[];
+    cache: GraphExtractionCacheRecord[];
+    rejectedFacts: GraphRejectedFactRecord[];
+  }> {
+    return {
+      evidence: [...this.evidence.values()].filter((record) => record.filePath === filePath),
+      cache: await this.getExtractionCacheRecords(),
+      rejectedFacts: [...this.rejectedFacts.values()].filter(
+        (record) => record.filePath === filePath,
+      ),
+    };
+  }
   private evidence = new Map<string, GraphEvidenceRecord>();
   private entities = new Map<string, GraphEntityRecord>();
   private relations = new Map<string, GraphRelationRecord>();
@@ -1428,18 +1492,33 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     return Promise.resolve(toDelete.length);
   }
 
-  pruneByFilePaths(filePaths: readonly string[]): Promise<GraphPruneResult> {
+  reconcileSourceFile(
+    filePath: string,
+    entries: readonly VectorEntry[],
+    retainedEntryIds: readonly string[],
+  ): Promise<void> {
+    return reconcileSourceGraph(this, filePath, entries, retainedEntryIds);
+  }
+
+  pruneByFilePaths(
+    filePaths: readonly string[],
+    entryIds?: readonly string[],
+  ): Promise<GraphPruneResult> {
     if (filePaths.length === 0) return Promise.resolve(emptyPruneResult());
-    const snapshot = createPrunedGraphSnapshot(filePaths, {
-      evidence: [...this.evidence.values()],
-      entities: [...this.entities.values()],
-      relations: [...this.relations.values()],
-      claims: [...this.claims.values()],
-      communities: [...this.communities.values()],
-      rejectedFacts: [...this.rejectedFacts.values()],
-      extractionCache: [...this.extractionCache.values()],
-      pendingEntityMerges: [...this.pendingEntityMerges.values()],
-    });
+    const snapshot = createPrunedGraphSnapshot(
+      filePaths,
+      {
+        evidence: [...this.evidence.values()],
+        entities: [...this.entities.values()],
+        relations: [...this.relations.values()],
+        claims: [...this.claims.values()],
+        communities: [...this.communities.values()],
+        rejectedFacts: [...this.rejectedFacts.values()],
+        extractionCache: [...this.extractionCache.values()],
+        pendingEntityMerges: [...this.pendingEntityMerges.values()],
+      },
+      entryIds,
+    );
 
     for (const id of snapshot.deletedEvidenceIds) this.evidence.delete(id);
     for (const id of snapshot.deletedEntityIds) this.entities.delete(id);
@@ -1456,6 +1535,7 @@ export class InMemoryKnowledgeGraphStore implements KnowledgeGraphStore {
     const deletedJobRawResponseIds = new Set<string>();
     for (const [id, job] of this.extractionJobs) {
       if (!filePaths.includes(job.filePath)) continue;
+      if (entryIds !== undefined && !entryIds.includes(job.entryId)) continue;
       this.extractionJobs.delete(id);
       if (job.rawResponseId) deletedJobRawResponseIds.add(job.rawResponseId);
     }
@@ -1610,6 +1690,7 @@ interface PrunedGraphSnapshot {
 function createRustGraphPruneInput(
   filePaths: readonly string[],
   snapshot: GraphStoreSnapshot,
+  entryIds?: readonly string[],
 ): RustGraphPruneInput {
   const evidenceIndexById = new Map(snapshot.evidence.map((record, index) => [record.id, index]));
   const entityIndexById = new Map(snapshot.entities.map((record, index) => [record.id, index]));
@@ -1621,8 +1702,10 @@ function createRustGraphPruneInput(
   const toClaimIndex = (id: string): number => toRustGraphIndex(claimIndexById, id);
 
   return {
-    filePaths,
-    evidenceFilePaths: snapshot.evidence.map((record) => record.filePath),
+    filePaths: entryIds ?? filePaths,
+    evidenceFilePaths: snapshot.evidence.map((record) =>
+      entryIds === undefined ? record.filePath : record.entryId,
+    ),
     evidenceEntryIds: snapshot.evidence.map((record) => record.entryId),
     entitySchemaIds: snapshot.entities.map((record) => record.ontologySchemaId),
     entityEvidenceIndices: snapshot.entities.map((record) =>
@@ -1649,7 +1732,9 @@ function createRustGraphPruneInput(
       record.relationIds.map(toRelationIndex),
     ),
     communityClaimIndices: snapshot.communities.map((record) => record.claimIds.map(toClaimIndex)),
-    rejectedFactFilePaths: snapshot.rejectedFacts.map((record) => record.filePath),
+    rejectedFactFilePaths: snapshot.rejectedFacts.map((record) =>
+      entryIds === undefined ? record.filePath : record.entryId,
+    ),
     rejectedFactEntryIds: snapshot.rejectedFacts.map((record) => record.entryId),
     extractionCacheEntryIds: snapshot.extractionCache.map((record) => record.entryId),
     pendingMergeExistingEntityIndices: snapshot.pendingEntityMerges.map((record) =>
@@ -1748,12 +1833,39 @@ function selectByIndex<T>(records: readonly T[], indices: readonly number[]): T[
 function createPrunedGraphSnapshot(
   filePaths: readonly string[],
   snapshot: GraphStoreSnapshot,
+  entryIds?: readonly string[],
 ): PrunedGraphSnapshot {
-  const rustPlan = planGraphPruneRust(createRustGraphPruneInput(filePaths, snapshot));
+  const rustPlan = planGraphPruneRust(createRustGraphPruneInput(filePaths, snapshot, entryIds));
   if (rustPlan !== null) {
     return createPrunedGraphSnapshotFromRustPlan(snapshot, rustPlan);
   }
   return noRustPruneResult();
+}
+
+/** 변경 없는 청크의 사실을 보존하며 삭제와 줄 위치 갱신은 Rust 계획에 따릅니다. */
+async function reconcileSourceGraph(
+  store: KnowledgeGraphStore,
+  filePath: string,
+  entries: readonly VectorEntry[],
+  retainedEntryIds: readonly string[],
+): Promise<void> {
+  const { evidence, cache, rejectedFacts } = await store.getSourceFileRecords(filePath);
+  const plan = planSourceGraphReconcileRust({
+    filePath,
+    retainedEntryIds,
+    entries: entries.map((entry) => ({
+      id: entry.id,
+      startLine: entry.metadata.startLine,
+      contentHash: entry.metadata.contentHash,
+    })),
+    evidence,
+    cache,
+    rejectedFacts,
+  });
+  if (!plan) throw new Error('Source graph reconciliation is unavailable.');
+  if (plan.removedEntryIds.length > 0)
+    await store.pruneByFilePaths([filePath], plan.removedEntryIds);
+  for (const updated of plan.evidenceUpdates) await store.addEvidence(updated);
 }
 
 function noRustPruneResult(): PrunedGraphSnapshot {

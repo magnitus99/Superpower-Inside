@@ -53,6 +53,7 @@ export interface GraphExtractionChunkInput {
   contentHash: string;
   sourceEntryId?: string;
   sourceContentHash?: string;
+  sourceStartLine?: number;
   extractionModelKey: string;
   knowledgeContract: KnowledgeGraphContract;
   signal?: AbortSignal;
@@ -381,6 +382,7 @@ export class GraphExtractionIndexer {
         entryId: `${input.entryId}::overflow::${splitDepth + 1}::${index}`,
         sourceEntryId: input.sourceEntryId ?? input.entryId,
         sourceContentHash: input.sourceContentHash ?? input.contentHash,
+        sourceStartLine: input.sourceStartLine ?? input.startLine,
         startLine: childStartLine,
         endLine: childEndLine,
         contentHash: createId(
@@ -705,6 +707,7 @@ function createEvidence(
     filePath: input.filePath,
     entryId: input.sourceEntryId ?? input.entryId,
     startLine: input.startLine,
+    sourceStartLine: input.sourceStartLine ?? input.startLine,
     endLine: input.endLine,
     quote: input.chunkText,
     contentHash: input.sourceContentHash ?? input.contentHash,

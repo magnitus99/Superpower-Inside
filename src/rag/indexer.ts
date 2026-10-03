@@ -495,6 +495,33 @@ function buildPendingPlanFromUpdatePaths(
 
 /** 볼트 인덱서 */
 export class VaultIndexer {
+  private readonly failedFiles = new Map<string, { mtime: number; size: number }>();
+  private readonly fileOwners = new Map<string, symbol>();
+
+  getFailedFilePaths(): string[] {
+    return [...this.failedFiles]
+      .filter(([path, revision]) => {
+        const current = this.vault.getAbstractFileByPath(path);
+        return (
+          isCurrentVaultFile(current) &&
+          isSourceRevisionCurrentRust(
+            {
+              filePath: path,
+              sourceMtime: revision.mtime,
+              sourceSize: revision.size,
+              contentHash: 'status',
+            },
+            {
+              filePath: path,
+              sourceMtime: current.stat.mtime,
+              sourceSize: current.stat.size,
+              contentHash: 'status',
+            },
+          )
+        );
+      })
+      .map(([path]) => path);
+  }
   private vault: Vault;
   private vectorStore: VectorStore;
   private embeddingProvider: EmbeddingProvider;
@@ -629,6 +656,31 @@ export class VaultIndexer {
     progressTracker?: IndexingProgressTracker,
     fileIndex = 0,
   ): Promise<IndexingResult> {
+    const path = file.path;
+    const owner = Symbol(path);
+    const revision = { mtime: file.stat.mtime, size: file.stat.size };
+    this.fileOwners.set(path, owner);
+    try {
+      const result = await this.indexFileInternal(file, options, progressTracker, fileIndex);
+      if (this.fileOwners.get(path) === owner) this.failedFiles.delete(path);
+      return result;
+    } catch (error) {
+      if (
+        this.fileOwners.get(path) === owner &&
+        !(error instanceof IndexingCancelledError) &&
+        !(error instanceof IndexingPerformancePausedError)
+      )
+        this.failedFiles.set(path, revision);
+      throw error;
+    }
+  }
+
+  private async indexFileInternal(
+    file: TFile,
+    options: IndexingOptions,
+    progressTracker?: IndexingProgressTracker,
+    fileIndex = 0,
+  ): Promise<IndexingResult> {
     const startedAt = performance.now();
     const currentFile = this.vault.getAbstractFileByPath(file.path);
     if (!isCurrentVaultFile(currentFile)) {
@@ -745,7 +797,7 @@ export class VaultIndexer {
         const text = texts[index];
         if (!chunk || text === undefined) continue;
         this.bm25Index.addCorpusDocument({
-          id: `${file.path}::${chunk.metadata.startLine}::${index}`,
+          id: chunk.id,
           text,
           sourcePath: file.path,
           heading: chunk.metadata.heading,
@@ -764,7 +816,7 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
-      id: `${file.path}::${chunk.metadata.startLine}::${i}`,
+      id: chunk.id,
       vector: vectors[i],
       metadata: {
         filePath: file.path,
@@ -775,6 +827,7 @@ export class VaultIndexer {
         sourceMtime: file.stat.mtime,
         sourceSize: file.stat.size,
         contentHash: sourceHash,
+        chunkHash: chunk.chunkHash,
         indexedAt,
         embeddingProvider: this.ragConfig.embeddingProvider,
         embeddingModel: this.ragConfig.embeddingModel,

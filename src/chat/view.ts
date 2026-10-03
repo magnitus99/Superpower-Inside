@@ -340,6 +340,9 @@ export class ChatView extends ItemView {
           () => this.plugin.settings.chat,
         ),
         () => this.plugin.ragEngine,
+        this.plugin.getSourceFileProcessingStatus
+          ? (files) => this.plugin.getSourceFileProcessingStatus?.(files) ?? Promise.resolve(null)
+          : undefined,
       ),
     );
     this.sourcePanel = new SourcePanel({

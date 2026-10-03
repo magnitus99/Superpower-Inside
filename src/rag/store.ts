@@ -3,6 +3,7 @@ import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault } from '../utils/vault';
 import {
   planFileIndexRecordsRust,
+  planSourceChunkImportIndicesRust,
   planVectorStoreAddRust,
   planVectorStoreLookupByFilePathsRust,
   planVectorStoreLookupByIdsRust,
@@ -37,6 +38,7 @@ export interface VectorEntry {
     sourceMtime?: number;
     sourceSize?: number;
     contentHash?: string;
+    chunkHash?: string;
     indexedAt?: number;
     embeddingProvider?: string;
     embeddingModel?: string;
@@ -163,6 +165,7 @@ export interface LegacyJsonVectorImportResult {
 
 export interface LegacyJsonVectorImportOptions {
   maxBytes?: number;
+  requireSourceChunkIds?: boolean;
 }
 
 const LEGACY_JSON_VECTOR_IMPORT_KEY = 'legacy-json-vector-import:v1';
@@ -1232,13 +1235,24 @@ export async function importLegacyJsonVectorStore(
   }
 
   const data = await readJsonFromVault(adapter, path);
-  const entries = Array.isArray(data)
+  let entries = Array.isArray(data)
     ? data.filter(isVectorEntryLike).map((entry) => ({
         id: entry.id,
         vector: [...entry.vector],
         metadata: { ...entry.metadata },
       }))
     : [];
+  if (options.requireSourceChunkIds) {
+    const indices = planSourceChunkImportIndicesRust(
+      entries.map((entry) => ({
+        id: entry.id,
+        filePath: entry.metadata.filePath,
+        chunkHash: entry.metadata.chunkHash,
+      })),
+    );
+    if (indices === null) throw new Error('Source chunk import planning is unavailable.');
+    entries = selectByRustIndices(entries, indices);
+  }
   if (entries.length > 0) {
     await store.add(entries);
   }

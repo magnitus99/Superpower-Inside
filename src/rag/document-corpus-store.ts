@@ -115,6 +115,7 @@ export function toDocumentEntry(document: SourceDocument): VectorEntry {
       sourceMtime: document.sourceMtime,
       sourceSize: document.sourceSize,
       contentHash: document.contentHash,
+      chunkHash: document.chunkHash,
       indexedAt: document.indexedAt,
     },
   };

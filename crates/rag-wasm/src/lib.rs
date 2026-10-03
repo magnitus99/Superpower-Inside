@@ -11,6 +11,13 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+mod source_document;
+pub use source_document::{plan_source_chunk_import_indices_json, plan_source_chunks_json};
+mod source_graph;
+pub use source_graph::plan_source_graph_reconcile_json;
+mod source_processing;
+pub use source_processing::plan_source_processing_json;
+
 mod settings_ui;
 pub use settings_ui::{
     find_reusable_prompt, is_local_settings_provider, is_valid_settings_folder,
@@ -7923,6 +7930,8 @@ struct GraphRagStatusEntryInput {
     file_path: String,
     /// optional precomputed content hash.
     content_hash: Option<String>,
+    /// 원문 전체 revision과 분리한 추출 청크의 내용 해시입니다.
+    chunk_hash: Option<String>,
     /// entry text for Rust content hash fallback.
     text: String,
 }
@@ -9869,7 +9878,10 @@ fn collect_fresh_graph_rag_cache_counts(
 ) -> BTreeMap<String, usize> {
     let mut fresh_counts = BTreeMap::<String, usize>::new();
     for entry in &input.entries {
-        let content_hash = entry.effective_content_hash();
+        let content_hash = entry
+            .chunk_hash
+            .clone()
+            .unwrap_or_else(|| entry.effective_content_hash());
         let Some(cache) = cache_by_entry_id.get(entry.id.as_str()) else {
             stale_files.insert(entry.file_path.clone());
             continue;
@@ -18528,6 +18540,10 @@ fn parse_graph_rag_status_entries(values: &[JsonValue]) -> Option<Vec<GraphRagSt
         entries.push(GraphRagStatusEntryInput {
             id: object.get("id")?.as_str()?.to_owned(),
             file_path: object.get("filePath")?.as_str()?.to_owned(),
+            chunk_hash: object
+                .get("chunkHash")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned),
             content_hash: object
                 .get("contentHash")
                 .and_then(JsonValue::as_str)
