@@ -108,11 +108,13 @@ describe('설정 Overview snapshot', () => {
     setLanguage('en');
     const english = buildSettingsOverviewSnapshot({ settings, runtime: buildRuntime() });
 
-    expect(korean.metrics.find((metric) => metric.id === 'providers')?.label).toBe('프로바이더');
+    expect(korean.metrics.find((metric) => metric.id === 'providers')?.label).toBe('AI 연결');
     expect(korean.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
       '사용자 지정 OpenAI 호환',
     );
-    expect(english.metrics.find((metric) => metric.id === 'providers')?.label).toBe('Providers');
+    expect(english.metrics.find((metric) => metric.id === 'providers')?.label).toBe(
+      'AI connections',
+    );
     expect(english.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
       'Custom OpenAI-compatible',
     );
@@ -382,10 +384,22 @@ describe('설정 Overview snapshot', () => {
     ]);
     expect(snapshot.attentionItems.map((item) => item.actionLabel)).toEqual([
       '프로바이더 설정',
-      '기본 모델 선택',
+      '프로바이더 설정',
       '검색 설정',
       'MCP 설정',
     ]);
+  });
+
+  it('선택할 채팅 모델이 없는 첫 사용은 연결 설정으로 안내한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings(),
+      runtime: buildRuntime(),
+    });
+    const attention = snapshot.attentionItems.find(
+      (item) => item.id === 'chat-default-model-unavailable',
+    );
+    expect(attention?.target).toBe('providers');
+    expect(attention?.actionLabel).toBe('프로바이더 설정');
   });
 
   it('provider profile의 활성 일반 모델을 기본 채팅 모델로 인식한다', () => {

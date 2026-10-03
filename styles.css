@@ -901,6 +901,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-mcp-settings-workspace .superpower-inside-mcp-lint-status {
   padding-bottom: var(--superpower-inside-settings-row-padding);
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .superpower-inside-provider-connection-list {
@@ -7770,4 +7771,100 @@ button.superpower-inside-settings-status-row:focus-visible {
     animation: none;
     transition: none;
   }
+}
+.superpower-inside-settings-save-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.superpower-inside-settings-save-state[data-save-state='error'],
+.superpower-inside-settings-input-feedback {
+  color: var(--text-error);
+}
+
+.superpower-inside-settings-root .has-input-feedback {
+  flex-wrap: wrap;
+}
+
+.superpower-inside-settings-root .superpower-inside-provider-model-action-btn {
+  width: auto;
+  min-width: 30px;
+  gap: 6px;
+  padding-inline: 8px;
+}
+
+.superpower-inside-settings-root .superpower-inside-provider-model-checked {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+@container superpower-inside-settings (max-width: 520px) {
+  .superpower-inside-settings-root .setting-item-control input[type='password'] {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+.superpower-inside-settings-block {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.superpower-inside-settings-block .setting-item-control,
+.superpower-inside-settings-block textarea,
+.superpower-inside-settings-block .superpower-inside-exclude-editor {
+  width: 100%;
+  min-width: 0;
+}
+
+.superpower-inside-settings-block textarea {
+  resize: vertical;
+  min-height: 120px;
+  max-height: 60vh;
+}
+
+.superpower-inside-settings-root .superpower-inside-settings-status-value,
+.superpower-inside-settings-root .superpower-inside-settings-status-detail {
+  color: var(--text-muted);
+}
+
+.superpower-inside-settings-prompt-preview {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.superpower-inside-chat-preset-row > .superpower-inside-settings-disclosure {
+  grid-column: 1 / -1;
+}
+
+.superpower-inside-settings-input-feedback {
+  flex-basis: 100%;
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-settings-root input[aria-invalid='true'],
+.superpower-inside-settings-root textarea[aria-invalid='true'] {
+  border-color: var(--text-error);
+}
+
+.superpower-inside-mcp-path-row label {
+  font-weight: var(--font-semibold);
+}
+
+.superpower-inside-settings-root button:focus-visible,
+.superpower-inside-settings-block textarea:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }

@@ -27,7 +27,7 @@ describe('UI 언어 계약', () => {
     setLanguage('en');
 
     expect(getLanguage()).toBe('en');
-    expect(t('tabProviders')).toBe('Providers');
+    expect(t('tabProviders')).toBe('AI connections');
     expect(t('providerNewName')).toBe('New provider');
     expect(/[가-힣]/u.test(`${t('tabProviders')} ${t('providerNewName')}`)).toBe(false);
   });

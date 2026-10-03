@@ -78,6 +78,22 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   let isGenerating = false;
   let generationSequence = 0;
   let unsubscribeMutation = (): void => undefined;
+  let draft: { id: string; title: string; description: string; content: string } | null = null;
+  let confirmingDiscard = false;
+  let generationExpanded = false;
+  const confirmDiscardDraft = async (): Promise<boolean> => {
+    if (!draft) return true;
+    if (confirmingDiscard) return false;
+    confirmingDiscard = true;
+    try {
+      if (!(await confirmWithModal(options.plugin.app, t('settingsDiscardPromptDraft'))))
+        return false;
+      draft = null;
+      return true;
+    } finally {
+      confirmingDiscard = false;
+    }
+  };
 
   const close = (): void => {
     if (isClosed) return;
@@ -91,14 +107,19 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     if (previousFocus?.isConnected) previousFocus.focus();
     options.onClose?.();
   };
-  closeBtn.addEventListener('click', close);
+  const requestClose = (): void => {
+    void confirmDiscardDraft().then((discard) => {
+      if (discard) close();
+    });
+  };
+  closeBtn.addEventListener('click', requestClose);
   overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) close();
+    if (event.target === overlay) requestClose();
   });
   overlay.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault();
-      close();
+      requestClose();
       return;
     }
     if (event.key !== 'Tab') return;
@@ -106,7 +127,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       modal.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
       ),
-    );
+    ).filter((control) => control.getClientRects().length > 0);
     if (focusable.length === 0) {
       event.preventDefault();
       modal.focus();
@@ -138,8 +159,12 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
 
   const selectEntry = (id: string): void => {
     if (mutationAction.isRunning) return;
-    selectedId = id;
-    render('selectedPrompt');
+    if (id === selectedId) return;
+    void confirmDiscardDraft().then((discard) => {
+      if (!discard || isClosed) return;
+      selectedId = id;
+      render('selectedPrompt');
+    });
   };
 
   const setMutationBusy = (): void => {
@@ -185,6 +210,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   };
 
   const createNewPrompt = async (): Promise<void> => {
+    if (!(await confirmDiscardDraft()) || isClosed) return;
     await runMutation('titleInput', async () => {
       const previousLibrary = options.plugin.settings.chat.promptLibrary;
       const previousSelectedId = selectedId;
@@ -237,6 +263,8 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         options.plugin.settings.chat.activePromptId = previousActivePromptId;
         options.plugin.settings.chat.systemPrompt = previousSystemPrompt;
         selectedId = previousSelectedId;
+      } else {
+        draft = null;
       }
     });
   };
@@ -273,11 +301,16 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         options.plugin.settings.chat.systemPrompt = previousSystemPrompt;
         return;
       }
+      draft = null;
       new Notice(t('promptSavedNotice'));
     });
   };
 
   const applySelectedToSession = (): void => {
+    if (draft) {
+      new Notice(t('settingsPromptDraftHelp'));
+      return;
+    }
     const entry = getSelectedEntry();
     if (!entry || !options.onApplyToSession) return;
     options.onApplyToSession(entry.content);
@@ -285,6 +318,10 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   };
 
   const setSelectedAsGlobalDefault = async (): Promise<void> => {
+    if (draft) {
+      new Notice(t('settingsPromptDraftHelp'));
+      return;
+    }
     await runMutation('titleInput', async () => {
       const entry = getSelectedEntry();
       if (!entry) return;
@@ -306,6 +343,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     directionText: HTMLTextAreaElement,
     generateBtn: HTMLButtonElement,
   ): Promise<void> => {
+    if (!(await confirmDiscardDraft()) || isClosed) return;
     const vectorStore = options.plugin.vectorStore;
     if (!vectorStore) {
       new Notice(t('promptRagStoreMissing'), 7000);
@@ -458,6 +496,25 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       attr: { id: contentInputId, rows: '12' },
     });
     contentInput.value = entry.content;
+    if (draft?.id === entry.id) {
+      titleInput.value = draft.title;
+      descriptionInput.value = draft.description;
+      contentInput.value = draft.content;
+    }
+    const keepDraft = (): void => {
+      draft = {
+        id: entry.id,
+        title: titleInput.value,
+        description: descriptionInput.value,
+        content: contentInput.value,
+      };
+    };
+    for (const input of [titleInput, descriptionInput, contentInput])
+      input.addEventListener('input', keepDraft);
+    form.createDiv({
+      cls: 'superpower-inside-prompt-list-meta',
+      text: t('settingsPromptDraftHelp'),
+    });
 
     const actionRow = form.createDiv({ cls: 'superpower-inside-prompt-actions' });
     const saveBtn = actionRow.createEl('button', {
@@ -502,7 +559,29 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
   };
 
   const renderGenerationPanel = (container: HTMLElement): void => {
-    const panel = container.createDiv({ cls: 'superpower-inside-prompt-generation' });
+    const disclosure = container.createDiv({ cls: 'superpower-inside-settings-disclosure' });
+    const toggle = disclosure.createEl('button', {
+      cls: 'superpower-inside-settings-disclosure-button',
+      text: t('embeddedVaultGenerateTitle'),
+      attr: {
+        type: 'button',
+        'aria-expanded': String(generationExpanded),
+        'aria-controls': `${modalId}-generation-panel`,
+      },
+    });
+    const icon = toggle.createSpan({ cls: 'superpower-inside-settings-disclosure-icon' });
+    setIcon(icon, 'chevron-right');
+    const panel = disclosure.createDiv({
+      cls: 'superpower-inside-prompt-generation superpower-inside-settings-disclosure-content',
+      attr: { id: `${modalId}-generation-panel` },
+    });
+    panel.toggleClass('is-collapsed', !generationExpanded);
+    toggle.addEventListener('click', () => {
+      generationExpanded = !generationExpanded;
+      toggle.setAttribute('aria-expanded', String(generationExpanded));
+      disclosure.toggleClass('is-open', generationExpanded);
+      panel.toggleClass('is-collapsed', !generationExpanded);
+    });
     panel.createDiv({
       cls: 'superpower-inside-prompt-generation-heading',
       text: t('embeddedVaultGenerateTitle'),

@@ -7,11 +7,14 @@ import {
   PluginSettingTab,
   Platform,
   Setting,
+  TFile,
+  TFolder,
   setIcon,
   type EventRef,
   type Events,
 } from 'obsidian';
-import { validateMcpJson, formatMcpJson } from './utils/mcp-json';
+import { McpServerDraftModal } from './settings-mcp-modal';
+import { validateMcpJson } from './utils/mcp-json';
 import type { MCPRegistry } from './mcp/registry';
 import {
   MCP_STATUS_CHANGE_EVENT,
@@ -28,6 +31,10 @@ import type { RAGIndexingScheduler, RagIndexingSchedulerStatus } from './rag/ind
 import type { PerformanceGuardState } from './rag/performance-guard';
 import { calculateRagStatus, type RagDocumentUpdate, type RagStatusSummary } from './rag/status';
 import {
+  isValidSettingsFolderRust,
+  parseSettingsNumberRust,
+  findReusablePromptRust,
+  isLocalSettingsProviderRust,
   planChatModelStateRust,
   isExcludedPathRust,
   planProviderProfileStateRust,
@@ -82,7 +89,7 @@ import {
   getEffectiveExcludePaths,
   getRagFileTypeSummary,
 } from './utils/vault';
-import { isLocalizedValue, type Language, t } from './i18n';
+import { isLocalizedValue, setLanguage, type Language, t } from './i18n';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
   normalizeProviderCapabilityOverrides,
@@ -1053,7 +1060,6 @@ export function buildSettingsTabs(): {
     { id: 'rag', label: t('tabRag') },
     { id: 'chat', label: t('tabChat') },
     { id: 'mcp', label: t('tabMcp') },
-    { id: 'advanced', label: t('tabAdvanced') },
   ];
 }
 interface ProviderValidationCache {
@@ -1192,6 +1198,7 @@ class ProviderModelImportModal extends Modal {
     this.providerName = options.providerName;
   }
 
+  private visibleLimit = 150;
   private readonly providerName: string;
   private readonly onSubmit: (modelIds: string[]) => Promise<boolean>;
 
@@ -1219,6 +1226,7 @@ class ProviderModelImportModal extends Modal {
     });
     searchInput.addEventListener('input', () => {
       this.query = searchInput.value.trim().toLowerCase();
+      this.visibleLimit = 150;
       this.renderList();
     });
 
@@ -1265,7 +1273,7 @@ class ProviderModelImportModal extends Modal {
         (model.name?.toLowerCase().includes(this.query) ?? false)
       );
     });
-    const visible = filtered.slice(0, 150);
+    const visible = filtered.slice(0, this.visibleLimit);
     this.refreshSelectionSummary(filtered.length);
     if (this.candidates.length === 0) {
       this.listEl.createDiv({
@@ -1312,9 +1320,13 @@ class ProviderModelImportModal extends Modal {
       }
     }
     if (filtered.length > visible.length) {
-      this.listEl.createDiv({
-        cls: 'superpower-inside-provider-import-empty',
-        text: t('providerImportMoreResults', { v0: String(filtered.length - visible.length) }),
+      const more = this.listEl.createEl('button', {
+        text: t('settingsShowMore', { count: filtered.length - visible.length }),
+        attr: { type: 'button' },
+      });
+      more.addEventListener('click', () => {
+        this.visibleLimit += 150;
+        this.renderList();
       });
     }
   }
@@ -1347,6 +1359,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private validationCache: ProviderValidationCache = {};
   private saveTimeout: number | null = null;
   private pendingSave = false;
+  private saveStateEl: HTMLElement | null = null;
+  private saveState: 'saved' | 'pending' | 'saving' | 'error' = 'saved';
+  private saveChain: Promise<void> = Promise.resolve();
+  private saveRevision = 0;
+  private mcpDraftJson: string | null = null;
+  private mcpDraftRevision = 0;
+  private mcpApplying = false;
+  private mcpLintTimeout: number | null = null;
+  private chatStatusBody: HTMLElement | null = null;
+  private chatModelDropdownEl: HTMLSelectElement | null = null;
+  private readonly openDisclosures = new Set<string>();
   private pendingModelRefresh = false;
   private pendingSaveOptions: SettingsSaveOptions = createLightSaveOptions();
   private pendingEmbeddingProvider: EmbeddingProviderKey | null = null;
@@ -1385,6 +1408,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
   debouncedSave(options: Partial<SettingsSaveOptions> = {}): void {
+    this.saveRevision++;
+    this.saveState = 'pending';
+    this.renderSaveState();
+    this.refreshGeneralStatusSection();
+    this.refreshChatStatusSection();
     this.pendingSaveOptions = mergeSaveOptions(
       this.pendingSaveOptions,
       normalizeSaveOptions(options),
@@ -1433,19 +1461,93 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.pendingSaveOptions = createLightSaveOptions();
     return options;
   }
-  private async saveSettingsWithFeedback(options: SettingsSaveOptions): Promise<void> {
+  private saveSettingsWithFeedback(options: SettingsSaveOptions): Promise<void> {
+    const revision = this.saveRevision;
     const refreshModels = this.pendingModelRefresh;
     this.pendingModelRefresh = false;
-    try {
-      await this.plugin.saveSettings(options);
-      new Notice(t('autoSaveSuccessNotice'));
-      if (refreshModels) this.notifyProviderModelsChanged();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(t('autoSaveFailedNotice', { message }), 7000);
+    const save = async (): Promise<void> => {
+      this.saveState = 'saving';
+      this.renderSaveState();
+      try {
+        const result = await this.plugin.saveSettings(options);
+        if (!result.success) throw new Error(t('settingsApplyFailed'));
+        if (refreshModels) this.notifyProviderModelsChanged();
+        if (revision === this.saveRevision && !this.pendingSave) this.saveState = 'saved';
+      } catch {
+        this.pendingModelRefresh ||= refreshModels;
+        this.pendingSaveOptions = mergeSaveOptions(this.pendingSaveOptions, options);
+        this.saveState = 'error';
+        new Notice(t('settingsSaveFailed'), 7000);
+      }
+      this.renderSaveState();
+    };
+    this.saveChain = this.saveChain.then(save);
+    return this.saveChain;
+  }
+  private renderSaveState(): void {
+    const el = this.saveStateEl;
+    if (!el?.isConnected) return;
+    el.empty();
+    el.setAttribute('data-save-state', this.saveState);
+    el.createSpan({
+      text: t(
+        this.saveState === 'saved'
+          ? 'settingsSaved'
+          : this.saveState === 'pending'
+            ? 'settingsSavePending'
+            : this.saveState === 'saving'
+              ? 'settingsSaving'
+              : 'settingsSaveFailed',
+      ),
+    });
+    if (this.saveState === 'error') {
+      const button = el.createEl('button', {
+        text: t('settingsSaveRetry'),
+        attr: { type: 'button' },
+      });
+      button.addEventListener('click', () => {
+        void this.saveSettingsWithFeedback(this.consumePendingSaveOptions());
+      });
     }
   }
+  private refreshChatStatusSection(): void {
+    if (this.chatStatusBody?.isConnected) this.renderChatStatus(this.chatStatusBody);
+  }
+  private preserveSettingsFocus(container: HTMLElement, render: () => void): void {
+    const active = container.ownerDocument.activeElement;
+    const controls = Array.from(
+      container.querySelectorAll<HTMLElement>('input, textarea, select, button'),
+    );
+    const index = controls.findIndex((control) => control === active);
+    const label = index >= 0 ? controls[index].getAttribute('aria-label') : null;
+    const providerKey =
+      index >= 0
+        ? controls[index].closest<HTMLElement>('[data-provider-key]')?.dataset.providerKey
+        : undefined;
+    const scrollTop = this.containerEl.scrollTop;
+    render();
+    this.labelSettingsControls(container);
+    const next = Array.from(
+      container.querySelectorAll<HTMLElement>('input, textarea, select, button'),
+    );
+    if (index >= 0) {
+      const target = label
+        ? next.find(
+            (control) =>
+              control.getAttribute('aria-label') === label &&
+              control.closest<HTMLElement>('[data-provider-key]')?.dataset.providerKey ===
+                providerKey &&
+              control.getClientRects().length > 0,
+          )
+        : next[index];
+      target?.focus({ preventScroll: true });
+    }
+    this.containerEl.scrollTop = scrollTop;
+  }
   hide(): void {
+    if (this.mcpLintTimeout !== null) window.clearTimeout(this.mcpLintTimeout);
+    this.mcpLintTimeout = null;
+    this.saveStateEl = null;
     this.unregisterMcpStatusEvent();
     // RefreshAction 인스턴스 정리
     this.mcpStatusRefresh?.detach();
@@ -1464,6 +1566,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private resetRagDomReferences(): void {
     this.generalStatusBody = null;
+    this.chatStatusBody = null;
+    this.chatModelDropdownEl = null;
     this.defaultModelDropdownEl = null;
     this.ragStatusGrid = null;
     this.ragStatusTimestamp = null;
@@ -1522,6 +1626,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.refreshRagTab();
           this.refreshGeneralStatusSection();
           this.repopulateDefaultModelDropdown();
+          this.refreshChatStatusSection();
         }),
       );
       this.refreshBusUnsubscribers.push(
@@ -1546,11 +1651,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     containerEl.addClass('superpower-inside-settings-root');
     // 헤더
     new Setting(containerEl).setName(t('settingsTitle')).setHeading();
-    // 보안 경고
-    const warning = containerEl.createDiv({
-      cls: 'superpower-inside-settings-warning',
+    this.saveStateEl = containerEl.createDiv({
+      cls: 'superpower-inside-settings-save-state',
+      attr: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
     });
-    warning.setText(t('securityWarning'));
+    this.renderSaveState();
     // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'superpower-inside-settings-tabs' });
     tabBar.setAttribute('role', 'tablist');
@@ -1637,7 +1742,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.buildAdvancedTab(panel);
         break;
     }
+    this.labelSettingsControls(panel);
     this.builtTabPanelIds.add(tabId);
+  }
+  private labelSettingsControls(container: HTMLElement): void {
+    for (const control of Array.from(
+      container.querySelectorAll<HTMLElement>('input, textarea, select, [role="switch"]'),
+    )) {
+      if (control.hasAttribute('aria-label') || control.hasAttribute('aria-labelledby')) continue;
+      const name = control
+        .closest('.setting-item')
+        ?.querySelector('.setting-item-name')
+        ?.textContent?.trim();
+      if (name) control.setAttribute('aria-label', name);
+    }
   }
   private switchTab(tabId: SettingsTabId): void {
     // 활성 탭 업데이트
@@ -1682,29 +1800,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   /** General 탭의 기본 모델 dropdown만 다시 채웁니다 (full rebuild 대신). */
   private repopulateDefaultModelDropdown(): void {
-    const dropdown = this.defaultModelDropdownEl;
-    if (!dropdown?.isConnected) return;
-    const modelPlan = resolveChatModelPlan(this.plugin.settings);
-    const allModels = modelPlan.options;
-    dropdown.empty();
-    if (allModels.length === 0) {
-      const opt = dropdown.createEl('option');
-      opt.value = '';
-      opt.text = t('noModelsEnabled');
-      dropdown.disabled = true;
-    } else {
-      if (!modelPlan.selectedModel) {
+    for (const dropdown of [this.defaultModelDropdownEl, this.chatModelDropdownEl]) {
+      if (!dropdown?.isConnected) continue;
+      const modelPlan = resolveChatModelPlan(this.plugin.settings);
+      const allModels = modelPlan.options;
+      dropdown.empty();
+      if (allModels.length === 0) {
         const opt = dropdown.createEl('option');
         opt.value = '';
-        opt.text = t('chatReadinessSelectModelAction');
+        opt.text = t('noModelsEnabled');
+        dropdown.disabled = true;
+      } else {
+        if (!allModels.some((option) => option.value === this.plugin.settings.chat.defaultModel)) {
+          const opt = dropdown.createEl('option');
+          opt.value = '';
+          opt.text = t('chatReadinessSelectModelAction');
+        }
+        for (const m of allModels) {
+          const opt = dropdown.createEl('option');
+          opt.value = m.value;
+          opt.text = m.label;
+        }
+        dropdown.value = this.plugin.settings.chat.defaultModel;
+        dropdown.disabled = false;
       }
-      for (const m of allModels) {
-        const opt = dropdown.createEl('option');
-        opt.value = m.value;
-        opt.text = m.label;
-      }
-      dropdown.value = modelPlan.selectedModel;
-      dropdown.disabled = false;
     }
   }
   private refreshRagTab(): void {
@@ -1763,6 +1882,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .filter(Boolean)
         .join(' '),
       text: titleText,
+      attr: { role: 'heading', 'aria-level': '3' },
     });
     if (options.description) {
       copy.createDiv({
@@ -1924,8 +2044,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .join(' '),
       attr: { id: contentId },
     });
+    const remembersOpenState = options.idPrefix !== 'superpower-inside-provider-disclosure';
+    if (remembersOpenState && this.openDisclosures.has(contentId)) {
+      button.setAttribute('aria-expanded', 'true');
+      disclosure.addClass('is-open');
+      content.removeClass('is-collapsed');
+    }
     button.addEventListener('click', () => {
       const isOpen = button.getAttribute('aria-expanded') === 'true';
+      if (remembersOpenState) {
+        if (isOpen) this.openDisclosures.delete(contentId);
+        else this.openDisclosures.add(contentId);
+      }
       button.setAttribute('aria-expanded', String(!isOpen));
       disclosure.toggleClass('is-open', !isOpen);
       content.toggleClass('is-collapsed', isOpen);
@@ -2002,7 +2132,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         detail: primaryAttention.detail,
         actionLabel: primaryAttention.actionLabel,
         tone: primaryAttention.tone,
-        onActivate: () => this.switchTab(primaryAttention.target),
+        onActivate: () => {
+          this.switchTab(primaryAttention.target);
+          if (primaryAttention.target === 'general') this.defaultModelDropdownEl?.focus();
+        },
       });
     } else {
       this.createSettingsNotice(containerEl, {
@@ -2011,7 +2144,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         icon: 'check-circle-2',
       });
     }
-    const statusList = containerEl.createDiv({ cls: 'superpower-inside-settings-status-list' });
+    const details = this.createSettingsDisclosure(
+      containerEl,
+      'general-status-details',
+      t('settingsStatusDetails'),
+    );
+    const statusList = details.content.createDiv({ cls: 'superpower-inside-settings-status-list' });
     for (const metric of snapshot.metrics) {
       this.createSettingsStatusRow(statusList, {
         label: metric.label,
@@ -2046,23 +2184,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             dropdown.setValue(currentLang);
             return;
           }
-          this.plugin.settings.language = newLang;
-          await this.plugin.saveSettings();
-          window.location.reload();
+          dropdown.setDisabled(true);
+          try {
+            this.flushSave();
+            await this.saveChain;
+            this.plugin.settings.language = newLang;
+            const result = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: false });
+            if (!result.success) throw new Error(t('settingsSaveFailed'));
+            setLanguage(newLang);
+            this.renderSettingsView();
+          } catch {
+            this.plugin.settings.language = currentLang;
+            dropdown.setValue(currentLang);
+            new Notice(t('settingsSaveFailed'));
+          } finally {
+            dropdown.setDisabled(false);
+          }
         });
       });
-    new Setting(section.body)
-      .setName(t('autoSaveSettings'))
-      .setDesc(t('autoSaveSettingsDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.autoSaveEnabled).onChange(async (value) => {
-          this.plugin.settings.autoSaveEnabled = value;
-          await this.plugin.saveSettingsLight();
-        }),
-      );
     const modelPlan = resolveChatModelPlan(this.plugin.settings);
     const allModels = modelPlan.options;
-    new Setting(section.body)
+    const defaultSetting = new Setting(section.body)
       .setName(t('defaultModel'))
       .setDesc(t('defaultModelDesc'))
       .addDropdown((dropdown) => {
@@ -2071,20 +2213,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           dropdown.addOption('', t('noModelsEnabled'));
           dropdown.setDisabled(true);
         } else {
-          if (!modelPlan.selectedModel) {
+          if (
+            !allModels.some((option) => option.value === this.plugin.settings.chat.defaultModel)
+          ) {
             dropdown.addOption('', t('chatReadinessSelectModelAction'));
           }
           for (const opt of allModels) {
             dropdown.addOption(opt.value, opt.label);
           }
-          dropdown.setValue(modelPlan.selectedModel);
+          dropdown.setValue(this.plugin.settings.chat.defaultModel);
           dropdown.setDisabled(false);
         }
         dropdown.onChange((value) => {
           this.plugin.settings.chat.defaultModel = value;
-          this.debouncedProviderSave();
+          this.debouncedSave();
+          this.repopulateDefaultModelDropdown();
         });
       });
+    if (allModels.length === 0)
+      defaultSetting.addButton((button) =>
+        button.setButtonText(t('overviewOpenProviders')).onClick(() => {
+          this.switchTab('providers');
+          this.tabPanels.get('providers')?.querySelector<HTMLButtonElement>('.mod-cta')?.focus();
+        }),
+      );
   }
 
   private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {
@@ -2111,6 +2263,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
     };
     renderStatus();
+    const resultStatus = section.body.createDiv({
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
     const disclosure = this.createSettingsDisclosure(
       section.body,
       'general-diagnostics',
@@ -2147,7 +2302,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setDesc(t('agentDiagnosticsWriteSnapshotDesc'))
       .addButton((button) =>
         button.setButtonText(t('agentDiagnosticsWriteButton')).onClick(() => {
-          void this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
+          void runActionWithFeedback({
+            button,
+            action: async () => {
+              try {
+                await this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
+                const detail = t('settingsLastChecked', { time: new Date().toLocaleTimeString() });
+                resultStatus.setText(detail);
+                return { status: 'success', detail };
+              } catch {
+                resultStatus.setText(t('settingsApplyFailed'));
+                return { status: 'error', detail: t('settingsApplyFailed') };
+              }
+            },
+          });
         }),
       );
     new Setting(disclosure.content)
@@ -2155,7 +2323,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setDesc(t('agentDiagnosticsClearDetailedLoggingDesc'))
       .addButton((button) =>
         button.setButtonText(t('agentDiagnosticsClearButton')).onClick(() => {
-          void this.plugin.clearAgentDiagnosticsDetailedLogging();
+          void runActionWithFeedback({
+            button,
+            action: async () => {
+              try {
+                await this.plugin.clearAgentDiagnosticsDetailedLogging();
+                resultStatus.setText(t('actionCompletedNotice'));
+                return { status: 'success' };
+              } catch {
+                resultStatus.setText(t('settingsApplyFailed'));
+                return { status: 'error', detail: t('settingsApplyFailed') };
+              }
+            },
+          });
         }),
       );
   }
@@ -2175,14 +2355,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setDesc(t('autoSaveDelayDesc'))
       .addText((text) => {
         text.inputEl.type = 'number';
+        text.inputEl.min = '0';
+        text.inputEl.max = '5000';
+        text.inputEl.step = '100';
+        text.inputEl.setAttribute('aria-label', t('autoSaveDelay'));
         text.setValue(String(this.plugin.settings.autoSaveDebounceMs));
         text.inputEl.parentElement?.createSpan({
           cls: 'superpower-inside-delay-unit',
           text: ` ${t('delayMs')}`,
         });
         text.onChange((value) => {
-          const num = parseInt(value, 10);
-          if (!Number.isNaN(num) && num >= 0 && num <= 5000) {
+          const num = parseSettingsNumberRust(value, 0, 5000);
+          this.showNumericInputValidation(text.inputEl, num);
+          if (num !== null) {
             this.plugin.settings.autoSaveDebounceMs = num;
             this.debouncedSave();
           }
@@ -2293,8 +2478,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       className: 'superpower-inside-rag-foundation-section',
     });
     this.buildEmbeddingProviderSection(section.body);
-    this.buildExcludeOptionsSection(section.body);
-    this.buildTargetFileTypesSection(section.body);
+    const scope = this.createRagDisclosure(
+      section.body,
+      'search-scope',
+      t('settingsScopeSummary'),
+      t('settingsScopeDetail'),
+    );
+    this.buildExcludeOptionsSection(scope.content);
+    this.buildTargetFileTypesSection(scope.content);
   }
   private buildGraphRagSection(containerEl: HTMLElement): void {
     const section = this.createRagSection(containerEl, t('graphRagOverviewTitle'), {
@@ -2320,10 +2511,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       'diagnostics',
       t('ragDiagnosticsDisclosureTitle'),
     );
-    this.buildIndexingOptionsSection(disclosure.content);
-    this.buildSearchQualitySection(disclosure.content);
+    const tuning = this.createRagDisclosure(
+      section.body,
+      'search-tuning',
+      t('settingsSearchTuningTitle'),
+      t('settingsSearchTuningDetail'),
+    );
+    const tuningRoot = tuning.button.parentElement;
+    if (tuningRoot) section.body.prepend(tuningRoot);
+    this.buildIndexingOptionsSection(tuning.content);
+    this.buildSearchQualitySection(tuning.content);
     this.buildStatsSection(disclosure.content);
     this.buildUpdateRequiredDocumentsSection(disclosure.content);
+    const recovery = this.tabPanels
+      .get('rag')
+      ?.querySelector<HTMLElement>('#superpower-inside-rag-disclosure-recovery')?.parentElement;
+    if (recovery) section.body.append(recovery);
   }
   private buildRagStatusPanel(containerEl: HTMLElement): void {
     const section = this.createRagSection(containerEl, t('settingsAuto027'), {
@@ -2380,6 +2583,52 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderGraphRagOverview(section);
   }
 
+  private numericInputSequence = 0;
+  private setDependentInputState(input: HTMLInputElement, enabled: boolean): void {
+    input.disabled = !enabled;
+    const description = input
+      .closest('.setting-item')
+      ?.querySelector<HTMLElement>('.setting-item-description');
+    if (!description) return;
+    let reason = description.querySelector<HTMLElement>(
+      '.superpower-inside-settings-dependent-reason',
+    );
+    if (!reason)
+      reason = description.createDiv({
+        cls: 'superpower-inside-settings-dependent-reason',
+        text: t('settingsOffDependent'),
+      });
+    reason.hidden = enabled;
+  }
+  private showNumericInputValidation(input: HTMLInputElement, value: number | null): void {
+    input.setAttribute('aria-invalid', String(value === null));
+    let feedback = input.parentElement?.querySelector<HTMLElement>('[data-number-feedback]');
+    if (!feedback) {
+      input.parentElement?.addClass('has-input-feedback');
+      feedback = input.parentElement?.createDiv({
+        cls: 'superpower-inside-settings-input-feedback',
+        attr: { 'data-number-feedback': '', role: 'status', 'aria-live': 'polite' },
+      });
+      if (feedback) {
+        feedback.id = 'superpower-inside-number-feedback-' + ++this.numericInputSequence;
+        input.setAttribute('aria-describedby', feedback.id);
+      }
+    }
+    feedback?.setText(
+      value === null ? t('settingsNumericError', { min: input.min, max: input.max }) : '',
+    );
+  }
+  private getGraphProviderKind(): 'local' | 'remote' {
+    const resolved = resolveProviderModelRef(
+      this.plugin.settings,
+      this.plugin.settings.rag.graphRagModel,
+      'general',
+    );
+    return resolved &&
+      isLocalSettingsProviderRust(resolved.profile.strategy, resolved.profile.baseUrl) === true
+      ? 'local'
+      : 'remote';
+  }
   private renderGraphRagOverview(containerEl: HTMLElement): void {
     containerEl.empty();
     const rag = this.plugin.settings.rag;
@@ -2469,9 +2718,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
-      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:')
-        ? 'local'
-        : 'remote',
+      providerKind: this.getGraphProviderKind(),
     });
     if (recommendedAction) {
       const button = actions.createEl('button', {
@@ -2517,9 +2764,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
-      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:')
-        ? 'local'
-        : 'remote',
+      providerKind: this.getGraphProviderKind(),
     });
     const controls = getGraphRagControlState({
       enabled: rag.graphRagEnabled,
@@ -2567,7 +2812,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.graphRagProgressBanner = progressBanner;
     this.renderGraphRagProgressBanner();
     // 요약 배너
-    const total = graphState?.totalCandidateFiles ?? 0;
+    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
     const done = graphState?.graphEvidenceCount ?? 0;
     const failed = graphState?.failedFileCount ?? 0;
     const stale = graphState?.staleFileCount ?? 0;
@@ -2614,7 +2859,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       stale > 0 ? t('settingsAuto041') : t('settingsAuto042'),
       stale > 0 ? 'warning' : 'success',
     );
-    this.createRagStatusItem(grid, t('settingsAuto043'), cost.costLabel);
+    this.createRagStatusItem(
+      grid,
+      t('settingsAuto043'),
+      rag.graphRagModel ? cost.costLabel : t('settingsGraphNoModelCost'),
+    );
     const runnerRef = (
       this.plugin as unknown as {
         graphRagIndexingRunner?: {
@@ -2656,7 +2905,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(rag.graphRagEnabled).onChange((value) => {
           this.plugin.settings.rag.graphRagEnabled = value;
-          this.renderSettingsView();
+          this.preserveSettingsFocus(this.containerEl, () => this.renderSettingsView());
           this.debouncedRagSave();
         }),
       );
@@ -2698,8 +2947,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(rag.graphRagMaxFilesPerRun))
           .setPlaceholder('50')
           .onChange((value) => {
-            const num = Number.parseInt(value, 10);
-            if (Number.isNaN(num) || num < 1 || num > 10000 || !Number.isInteger(num)) return;
+            const num = parseSettingsNumberRust(value, 1, 10000);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.graphRagMaxFilesPerRun = num;
             this.debouncedRagSave();
           });
@@ -2710,21 +2960,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const concurrencySetting = new Setting(section)
       .setName(t('graphRagConcurrentRequestsLabel'))
       .setDesc(t('graphRagConcurrentRequestsDesc'));
-    const concurrencyValue = concurrencySetting.controlEl.createSpan({
-      cls: 'superpower-inside-graph-concurrency-value',
-      text: String(rag.graphRagMaxConcurrentRequests),
+    concurrencySetting.addText((text) => {
+      text.inputEl.type = 'number';
+      text.inputEl.min = '1';
+      text.inputEl.max = '10';
+      text.inputEl.step = '1';
+      text.inputEl.setAttribute('aria-label', t('graphRagConcurrentRequestsLabel'));
+      text.setValue(String(rag.graphRagMaxConcurrentRequests)).onChange((value) => {
+        const num = parseSettingsNumberRust(value, 1, 10);
+        this.showNumericInputValidation(text.inputEl, num);
+        if (num === null) return;
+        this.plugin.settings.rag.graphRagMaxConcurrentRequests = num;
+        this.debouncedRagSave();
+      });
     });
-    concurrencySetting.addSlider((slider) =>
-      slider
-        .setLimits(1, 10, 1)
-        .setValue(rag.graphRagMaxConcurrentRequests)
-        .setDynamicTooltip()
-        .onChange((value) => {
-          concurrencyValue.setText(String(value));
-          this.plugin.settings.rag.graphRagMaxConcurrentRequests = value;
-          this.debouncedRagSave();
-        }),
-    );
     new Setting(section)
       .setName(t('graphRagQueryModeLabel'))
       .setDesc(t('settingsAuto056'))
@@ -2742,39 +2991,50 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }),
       );
     new Setting(section)
-      .setName(t('graphRagMergeThresholdLabel'))
+      .setName(t('settingsAutoMergeLabel'))
       .setDesc(t('settingsAuto057'))
       .addText((text) => {
+        text.inputEl.setAttribute('aria-label', t('settingsAutoMergeLabel'));
+        text.inputEl.setAttribute('placeholder', t('settingsAutoMergeLabel'));
         text.setValue(String(rag.entityAutoMergeThreshold)).onChange((value) => {
-          const num = Number(value);
-          if (Number.isNaN(num) || num < 0 || num > 1) return;
+          const num = parseSettingsNumberRust(value, rag.entityPendingMergeThreshold, 1, false);
+          this.showNumericInputValidation(text.inputEl, num);
+          if (num === null) return;
           this.plugin.settings.rag.entityAutoMergeThreshold = num;
           this.debouncedRagSave();
         });
         text.inputEl.type = 'number';
-        text.inputEl.min = '0';
+        text.inputEl.min = String(rag.entityPendingMergeThreshold);
         text.inputEl.max = '1';
         text.inputEl.step = '0.01';
-      })
+      });
+    new Setting(section)
+      .setName(t('settingsPendingMergeLabel'))
+      .setDesc(t('settingsAuto057'))
       .addText((text) => {
+        text.inputEl.setAttribute('aria-label', t('settingsPendingMergeLabel'));
+        text.inputEl.setAttribute('placeholder', t('settingsPendingMergeLabel'));
         text.setValue(String(rag.entityPendingMergeThreshold)).onChange((value) => {
-          const num = Number(value);
-          if (Number.isNaN(num) || num < 0 || num > 1) return;
+          const num = parseSettingsNumberRust(value, 0, rag.entityAutoMergeThreshold, false);
+          this.showNumericInputValidation(text.inputEl, num);
+          if (num === null) return;
           this.plugin.settings.rag.entityPendingMergeThreshold = num;
           this.debouncedRagSave();
         });
         text.inputEl.type = 'number';
         text.inputEl.min = '0';
-        text.inputEl.max = '1';
+        text.inputEl.max = String(rag.entityAutoMergeThreshold);
         text.inputEl.step = '0.01';
       });
     // 자동 동기화 설정
+    let graphSyncInput: HTMLInputElement | null = null;
     new Setting(section)
       .setName(t('settingsAuto058'))
       .setDesc(t('settingsAuto059'))
       .addToggle((toggle) =>
         toggle.setValue(rag.graphRagAutoSyncEnabled).onChange((value) => {
           this.plugin.settings.rag.graphRagAutoSyncEnabled = value;
+          if (graphSyncInput) this.setDependentInputState(graphSyncInput, value);
           this.debouncedSave();
         }),
       );
@@ -2786,14 +3046,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(rag.graphRagAutoSyncIntervalMin))
           .setPlaceholder('30')
           .onChange((value) => {
-            const num = Number.parseInt(value, 10);
-            if (Number.isNaN(num) || num < 1 || num > 1440 || !Number.isInteger(num)) return;
+            const num = parseSettingsNumberRust(value, 1, 1440);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.graphRagAutoSyncIntervalMin = num;
             this.debouncedSave();
           });
         text.inputEl.type = 'number';
         text.inputEl.min = '1';
         text.inputEl.max = '1440';
+        text.inputEl.step = '1';
+        text.inputEl.setAttribute('aria-label', t('settingsAuto060'));
+        this.setDependentInputState(text.inputEl, rag.graphRagAutoSyncEnabled);
+        graphSyncInput = text.inputEl;
       });
     // 실행 버튼 그룹
     const actions = section.createDiv({ cls: 'superpower-inside-rag-action-groups' });
@@ -2941,9 +3206,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       maxFilesPerRun: rag.graphRagMaxFilesPerRun,
       averageChunksPerFile: 3,
       averageTokensPerChunk: 900,
-      providerKind: rag.graphRagModel.trim().toLowerCase().startsWith('ollama:')
-        ? 'local'
-        : 'remote',
+      providerKind: this.getGraphProviderKind(),
     });
     const controls = getGraphRagControlState({
       enabled: rag.graphRagEnabled,
@@ -2954,7 +3217,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
       failedFileCount: graphState?.failedFileCount ?? 0,
     });
-    const total = graphState?.totalCandidateFiles ?? 0;
+    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
     const done = graphState?.graphEvidenceCount ?? 0;
     const failed = graphState?.failedFileCount ?? 0;
     const stale = graphState?.staleFileCount ?? 0;
@@ -3000,7 +3263,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         stale > 0 ? t('settingsAuto041') : t('settingsAuto042'),
         stale > 0 ? 'warning' : 'success',
       );
-      this.createRagStatusItem(this.graphRagStatusGrid, t('settingsAuto043'), cost.costLabel);
+      this.createRagStatusItem(
+        this.graphRagStatusGrid,
+        t('settingsAuto043'),
+        rag.graphRagModel ? cost.costLabel : t('settingsGraphNoModelCost'),
+      );
       const runnerInfo = (
         this.plugin as unknown as {
           graphRagIndexingRunner?: {
@@ -3129,8 +3396,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       groupEl.createDiv({ cls: 'superpower-inside-rag-action-group-title', text: group.label });
       const listEl = groupEl.createDiv({ cls: 'superpower-inside-rag-action-list' });
       for (const action of group.actions) {
+        if (action.id === 'resetGraphRag') continue;
+        if (
+          (action.id === 'cancel' || action.id === 'resumeFailed' || action.id === 'syncStale') &&
+          action.state.disabled
+        )
+          continue;
         this.createGraphRagActionRow(listEl, action, input.cost);
       }
+      if (!listEl.childElementCount) groupEl.remove();
+    }
+    const reset = actions.find((action) => action.id === 'resetGraphRag');
+    if (reset) {
+      const danger = this.createRagDisclosure(
+        containerEl,
+        'graph-danger',
+        t('settingsGraphDanger'),
+      );
+      danger.button.addClass('is-danger');
+      this.createGraphRagActionRow(danger.content, reset, input.cost);
     }
   }
   private createGraphRagActionRow(
@@ -3429,8 +3713,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         emptyLabel: t('settingsAuto008'),
       });
       const isProfilePending = this.pendingEmbeddingModel !== null;
-      const profileNotice = section.createDiv({ cls: 'superpower-inside-model-description' });
-      profileNotice.setText(t('settingsAuto087'));
       if (isProfilePending) {
         const warningEl = section.createDiv({
           cls: `${WARNING_CLS} superpower-inside-settings-warning superpower-inside-embedding-pending-warning`,
@@ -3450,23 +3732,43 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.pendingEmbeddingModel = value;
             this.isRebuildingEmbeddingSection = true;
             try {
-              this.buildEmbeddingProviderSection(containerEl);
+              this.preserveSettingsFocus(containerEl, () =>
+                this.buildEmbeddingProviderSection(containerEl),
+              );
             } finally {
               this.isRebuildingEmbeddingSection = false;
             }
           });
         });
+      const selectedProvider = resolveProviderModelRef(
+        this.plugin.settings,
+        effectiveModelRef,
+        'embedding',
+      )?.profile;
+      const isLocal =
+        selectedProvider &&
+        isLocalSettingsProviderRust(selectedProvider.strategy, selectedProvider.baseUrl) === true;
       const localNote = section.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
       const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
       setIcon(icon, 'shield-check');
       const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
       copy.createDiv({
         cls: 'superpower-inside-rag-local-embedding-title',
-        text: t('ragLocalEmbeddingTitle'),
+        text: selectedProvider
+          ? isLocal
+            ? t('ragLocalEmbeddingTitle')
+            : t('settingsRemoteEmbeddingTitle')
+          : t('ragIndexerSelectEmbeddingModel'),
       });
       copy.createDiv({
         cls: 'superpower-inside-rag-local-embedding-detail',
-        text: t('ragLocalEmbeddingDetail'),
+        text: !selectedProvider
+          ? t('ragIndexerSelectEmbeddingModel')
+          : selectedProvider.strategy === 'ternlight'
+            ? t('ragLocalEmbeddingDetail')
+            : isLocal
+              ? t('settingsLocalEndpointDetail')
+              : t('settingsRemoteEmbeddingDetail'),
       });
       if (isProfilePending) {
         const btnRow = section.createDiv({
@@ -3474,27 +3776,51 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
         const saveBtn = btnRow.createEl('button', { text: t('settingsAuto088') });
         saveBtn.addEventListener('click', () => {
-          void (async () => {
-            if (this.isRebuildingEmbeddingSection) return;
-            const nextRef = this.pendingEmbeddingModel ?? '';
-            const resolved = resolveProviderModelRef(this.plugin.settings, nextRef, 'embedding');
-            ragConfig.embeddingModelRef = nextRef;
-            if (resolved) {
-              ragConfig.embeddingModel = resolved.modelId;
-              ragConfig.embeddingProvider =
-                resolved.profile.strategy === 'openAICompatible'
-                  ? `customOpenAI:${resolved.profile.id}`
-                  : (resolved.profile.strategy as EmbeddingProviderKey);
-            }
-            this.pendingEmbeddingModel = null;
-            await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
-            this.isRebuildingEmbeddingSection = true;
-            try {
-              this.buildEmbeddingProviderSection(containerEl);
-            } finally {
-              this.isRebuildingEmbeddingSection = false;
-            }
-          })();
+          if (this.isRebuildingEmbeddingSection) return;
+          void runActionWithFeedback({
+            button: saveBtn,
+            loadingText: t('settingsSaving'),
+            action: async () => {
+              this.isRebuildingEmbeddingSection = true;
+              const selector = section.querySelector<HTMLSelectElement>('select');
+              if (selector) selector.disabled = true;
+              const nextRef = this.pendingEmbeddingModel ?? '';
+              const previous = {
+                ref: ragConfig.embeddingModelRef,
+                model: ragConfig.embeddingModel,
+                provider: ragConfig.embeddingProvider,
+              };
+              const resolved = resolveProviderModelRef(this.plugin.settings, nextRef, 'embedding');
+              try {
+                this.flushSave();
+                await this.saveChain;
+                ragConfig.embeddingModelRef = nextRef;
+                if (resolved) {
+                  ragConfig.embeddingModel = resolved.modelId;
+                  ragConfig.embeddingProvider =
+                    resolved.profile.strategy === 'openAICompatible'
+                      ? `customOpenAI:${resolved.profile.id}`
+                      : (resolved.profile.strategy as EmbeddingProviderKey);
+                }
+                const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+                if (!saved.success) throw new Error(t('settingsApplyFailed'));
+                this.pendingEmbeddingModel = null;
+                this.preserveSettingsFocus(containerEl, () =>
+                  this.buildEmbeddingProviderSection(containerEl),
+                );
+                this.refreshGeneralStatusSection();
+                return { status: 'success', detail: t('settingsSaved') };
+              } catch {
+                ragConfig.embeddingModelRef = previous.ref;
+                ragConfig.embeddingModel = previous.model;
+                ragConfig.embeddingProvider = previous.provider;
+                return { status: 'error', detail: t('settingsSaveFailed') };
+              } finally {
+                this.isRebuildingEmbeddingSection = false;
+                if (selector) selector.disabled = false;
+              }
+            },
+          });
         });
         const cancelBtn = btnRow.createEl('button', { text: t('settingsAuto092') });
         cancelBtn.addEventListener('click', () => {
@@ -3512,11 +3838,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
       statusEl.setAttribute('role', 'status');
       statusEl.setAttribute('aria-live', 'polite');
-      new Setting(section)
+      const embeddingDiagnostics = this.createRagDisclosure(
+        section,
+        'embedding-test',
+        t('settingsAuto099'),
+      );
+      embeddingDiagnostics.content.append(statusEl);
+      new Setting(embeddingDiagnostics.content)
         .setName(t('settingsAuto099'))
         .setDesc(t('settingsAuto100'))
         .addButton((button) => {
           button.setButtonText(t('settingsAuto099'));
+          button.setDisabled(!selectedProvider);
           button.onClick(async () => {
             await runActionWithFeedback({
               button,
@@ -3762,7 +4095,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             saveBtn.setText(t('settingsAuto088'));
             this.isRebuildingEmbeddingSection = true;
             try {
-              this.buildEmbeddingProviderSection(containerEl);
+              this.preserveSettingsFocus(containerEl, () =>
+                this.buildEmbeddingProviderSection(containerEl),
+              );
             } finally {
               this.isRebuildingEmbeddingSection = false;
             }
@@ -3917,8 +4252,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       grid.setText(t('settingsAuto104'));
     });
   }
+  private statsRevision = 0;
   private async renderStats(gridEl: HTMLElement): Promise<void> {
+    const revision = ++this.statsRevision;
     const status = await this.getRagStatus();
+    if (!gridEl.isConnected || revision !== this.statsRevision) return;
     gridEl.empty();
     if (!status) {
       gridEl.setText(t('settingsAuto105'));
@@ -4075,13 +4413,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus);
   }
 
+  private ragStatusRevision = 0;
   updateRagStats(indexingDetail?: string): void {
+    const revision = ++this.ragStatusRevision;
     const statusGrid = this.ragStatusGrid;
     const timestampEl = this.ragStatusTimestamp;
     const actionEl = this.ragStatusAction;
     const detailsEl = this.ragStatusDetails;
     if (!statusGrid || !timestampEl || !actionEl || !detailsEl || !timestampEl.isConnected) return;
     const isCurrentView = (): boolean =>
+      revision === this.ragStatusRevision &&
       timestampEl.isConnected &&
       this.ragStatusGrid === statusGrid &&
       this.ragStatusTimestamp === timestampEl &&
@@ -4162,7 +4503,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const embeddingPanel = this.tabPanels
         .get('rag')
         ?.querySelector<HTMLElement>('.superpower-inside-rag-embedding-panel');
-      embeddingPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      embeddingPanel?.scrollIntoView({ block: 'nearest' });
       embeddingPanel?.querySelector<HTMLSelectElement>('select')?.focus();
     });
     this.ragStatusAction.empty();
@@ -4234,25 +4575,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   /** RAG 통계 섹션을 부분 업데이트합니다. */
   private updateRagStatsSection(): void {
-    const panel = this.ragStatusGrid?.closest('.superpower-inside-rag-status-panel');
-    if (!panel) return;
-    const statsEl = panel.querySelector('.superpower-inside-rag-stats');
-    if (statsEl) {
-      const ragTab = this.tabPanels.get('rag');
-      if (ragTab) {
-        const existingStats = ragTab.querySelector('.superpower-inside-rag-stats');
-        if (existingStats) {
-          const parent = existingStats.parentElement;
-          if (parent) {
-            existingStats.remove();
-            const tempDiv = parent.ownerDocument.createElement('div');
-            tempDiv.className = 'superpower-inside-rag-stats';
-            parent.appendChild(tempDiv);
-            this.buildUpdateRequiredDocumentsSection(parent);
-          }
-        }
-      }
-    }
+    this.refreshStatsGrid();
   }
   /** 업데이트가 필요한 문서 목록을 부분 업데이트합니다. */
   private updateRagUpdateList(): void {
@@ -4262,6 +4585,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (updateList) {
       updateList.setText(t('settingsAuto146'));
       void this.getRagStatus().then((status) => {
+        if (!updateList.isConnected) return;
         updateList.empty();
         if (!status) {
           updateList.setText(t('settingsAuto147'));
@@ -4279,9 +4603,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           cls: 'superpower-inside-rag-update-summary',
           text: this.formatRagUpdateSummary(documents),
         });
-        for (const document of documents.slice(0, 10)) {
-          this.renderRagUpdateDocument(updateList, document);
-        }
+        this.renderRagUpdatePage(updateList, documents);
       });
     }
   }
@@ -4291,6 +4613,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     listEl.setText(t('settingsAuto146'));
     void this.getRagStatus()
       .then((status) => {
+        if (!listEl.isConnected) return;
         listEl.empty();
         if (!status) {
           listEl.setText(t('settingsAuto147'));
@@ -4308,14 +4631,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           cls: 'superpower-inside-rag-update-summary',
           text: this.formatRagUpdateSummary(documents),
         });
-        for (const document of documents.slice(0, 10)) {
-          this.renderRagUpdateDocument(listEl, document);
-        }
+        this.renderRagUpdatePage(listEl, documents);
       })
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         listEl.setText(t('settingsAuto150', { v0: String(msg) }));
       });
+  }
+  private renderRagUpdatePage(
+    container: HTMLElement,
+    documents: RagDocumentUpdate[],
+    start = 0,
+  ): void {
+    for (const document of documents.slice(start, start + 10))
+      this.renderRagUpdateDocument(container, document);
+    if (start + 10 < documents.length) {
+      const more = container.createEl('button', {
+        text: t('settingsShowMore', { count: documents.length - start - 10 }),
+        attr: { type: 'button' },
+      });
+      more.addEventListener('click', () => {
+        more.remove();
+        this.renderRagUpdatePage(container, documents, start + 10);
+      });
+    }
   }
   private formatRagUpdateSummary(documents: RagDocumentUpdate[]): string {
     const missingCount = documents.filter((document) => document.status === 'missing').length;
@@ -4335,7 +4674,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       text: this.getRagStatusLabel(document.status),
     });
     const body = row.createDiv({ cls: 'superpower-inside-rag-update-body' });
-    body.createDiv({ cls: 'superpower-inside-rag-update-path', text: document.path });
+    const path = body.createEl('button', {
+      cls: 'superpower-inside-rag-update-path',
+      text: document.path,
+      attr: { type: 'button' },
+    });
+    path.addEventListener('click', () => {
+      void this.app.workspace.openLinkText(document.path, '', false);
+    });
     body.createDiv({ cls: 'superpower-inside-rag-update-reason', text: document.reason });
   }
   private getRagStatusLabel(status: RagDocumentUpdate['status']): string {
@@ -4730,18 +5076,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     };
   }): void {
     const setting = new Setting(input.containerEl).setName(input.name).setDesc(input.description);
+    setting.settingEl.addClass('superpower-inside-settings-block');
     const editor = setting.controlEl.createDiv({ cls: 'superpower-inside-exclude-editor' });
     const inputRow = editor.createDiv({ cls: 'superpower-inside-exclude-input-row' });
     const textInput = inputRow.createEl('input', {
       cls: 'superpower-inside-exclude-input',
-      attr: { type: 'text', placeholder: input.placeholder },
+      attr: { type: 'text', placeholder: input.placeholder, 'aria-label': input.name },
     });
     const addButton = inputRow.createEl('button', {
       cls: 'superpower-inside-exclude-add-btn',
       text: t('excludeListAdd'),
       attr: { type: 'button' },
     });
-    const feedbackEl = editor.createDiv({ cls: 'superpower-inside-exclude-feedback' });
+    const feedbackEl = editor.createDiv({
+      cls: 'superpower-inside-exclude-feedback',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
     const countMetaEl = input.countMeta
       ? editor.createDiv({ cls: 'superpower-inside-exclude-count-meta' })
       : null;
@@ -4814,7 +5164,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const removeButton = item.createEl('button', {
           cls: 'superpower-inside-exclude-remove-btn',
           text: t('excludeListRemove'),
-          attr: { type: 'button' },
+          attr: { type: 'button', 'aria-label': t('settingsRemoveNamed', { name: value }) },
         });
         removeButton.addEventListener('click', () => {
           input.values.splice(index, 1);
@@ -4859,7 +5209,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       case 'path-leading-slash':
         return t('excludePathLeadingSlash');
       case 'path-missing':
-        return t('excludePathMissingWarning');
+        return t('settingsExcludePathMissing');
       case 'extension-leading-dot':
         return t('excludeExtLeadingDot');
       case 'extension-invalid':
@@ -4930,13 +5280,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
     const section = this.createRagGroup(containerEl, t('settingsAuto182'));
     // 자동 업데이트 토글
+    let autoUpdateInput: HTMLInputElement | null = null;
     new Setting(section)
       .setName(t('settingsAuto120'))
       .setDesc(t('settingsAuto183'))
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.rag.autoUpdateEnabled).onChange(async (value) => {
+        toggle.setValue(this.plugin.settings.rag.autoUpdateEnabled).onChange((value) => {
           this.plugin.settings.rag.autoUpdateEnabled = value;
-          await this.plugin.saveSettingsLight();
+          if (autoUpdateInput) this.setDependentInputState(autoUpdateInput, value);
+          this.debouncedSave();
           this.plugin.setupAutoUpdate();
         }),
       );
@@ -4949,8 +5301,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.rag.autoUpdateIntervalMin))
           .setPlaceholder('5')
           .onChange((value) => {
-            const num = Number.parseInt(value, 10);
-            if (Number.isNaN(num) || num < 1 || num > 99 || !Number.isInteger(num)) return;
+            const num = parseSettingsNumberRust(value, 1, 99);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.autoUpdateIntervalMin = num;
             this.debouncedSave();
             this.plugin.setupAutoUpdate();
@@ -4958,6 +5311,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.type = 'number';
         text.inputEl.min = '1';
         text.inputEl.max = '99';
+        text.inputEl.step = '1';
+        text.inputEl.setAttribute('aria-label', t('autoUpdateInterval'));
+        this.setDependentInputState(text.inputEl, this.plugin.settings.rag.autoUpdateEnabled);
+        autoUpdateInput = text.inputEl;
       });
     const embeddingStrategy =
       resolveProviderModelRef(
@@ -4983,8 +5340,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.rag.chunkSize))
           .setPlaceholder('100')
           .onChange((value) => {
-            const num = Number.parseInt(value, 10);
-            if (Number.isNaN(num) || num < 100 || num > 5000 || !Number.isInteger(num)) return;
+            const num = parseSettingsNumberRust(value, 100, 5000);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.chunkSize = num;
             this.debouncedRagSave();
           });
@@ -4993,7 +5351,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '5000';
       });
     // Ollama 임베딩 모델 컨텍스트 길이 경고
-    if (this.plugin.settings.rag.embeddingProvider === 'ollama') {
+    if (embeddingStrategy === 'ollama') {
       const warnEl = chunkSizeSetting.descEl.createEl('div', {
         cls: 'superpower-inside-settings-warning',
       });
@@ -5002,6 +5360,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private buildSearchQualitySection(containerEl: HTMLElement): void {
     const section = this.createRagGroup(containerEl, t('settingsAuto198'));
+    let bm25Input: HTMLInputElement | null = null;
     section.createDiv({
       cls: 'superpower-inside-rag-guidance',
       text: t('bm25Guidance'),
@@ -5016,9 +5375,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.rag.minScore))
           .setPlaceholder(String(DEFAULT_SEARCH_QUALITY.minScore))
           .onChange((value) => {
-            const num = Number(value);
-            if (value.trim() === '') return;
-            if (Number.isNaN(num) || num < 0 || num > 1) return;
+            const num = parseSettingsNumberRust(value, 0, 1, false);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.minScore = num;
             this.debouncedRagSave();
           });
@@ -5035,7 +5394,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.rag.enableBM25).onChange((value) => {
           this.plugin.settings.rag.enableBM25 = value;
-          void this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          if (bm25Input) this.setDependentInputState(bm25Input, value);
+          this.debouncedRagSave();
         }),
       );
     new Setting(section)
@@ -5048,9 +5408,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.rag.bm25Weight))
           .setPlaceholder(String(DEFAULT_SEARCH_QUALITY.bm25Weight))
           .onChange((value) => {
-            const num = Number(value);
-            if (value.trim() === '') return;
-            if (Number.isNaN(num) || num < 0 || num > 1) return;
+            const num = parseSettingsNumberRust(value, 0, 1, false);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.rag.bm25Weight = num;
             this.debouncedRagSave();
           });
@@ -5058,6 +5418,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '0';
         text.inputEl.max = '1';
         text.inputEl.step = '0.05';
+        this.setDependentInputState(text.inputEl, this.plugin.settings.rag.enableBM25);
+        text.inputEl.setAttribute('aria-label', t('bm25Weight'));
+        bm25Input = text.inputEl;
       });
     new Setting(section)
       .setName(t('resetToDefault'))
@@ -5067,6 +5430,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           Object.assign(this.plugin.settings.rag, DEFAULT_SEARCH_QUALITY);
           this.debouncedRagSave();
           this.refreshRagTab();
+          this.preserveSettingsFocus(containerEl, () => {
+            section.remove();
+            this.buildSearchQualitySection(containerEl);
+          });
         }),
       );
   }
@@ -5079,11 +5446,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.buildChatPromptSection(workspace);
     this.buildChatStorageSection(workspace);
     this.buildChatToolsSection(workspace);
+    const advanced = this.createSettingsDisclosure(
+      workspace,
+      'chat-advanced',
+      t('settingsChatAdvancedTitle'),
+    );
+    this.buildAdvancedTab(advanced.content);
   }
   private buildChatStatusSection(containerEl: HTMLElement): void {
     const { body } = this.createSettingsSection(containerEl, t('chatStatusTitle'), {
       description: t('chatStatusDesc'),
     });
+    this.chatStatusBody = body;
+    this.renderChatStatus(body);
+  }
+  private renderChatStatus(body: HTMLElement): void {
+    body.empty();
     const modelPlan = resolveChatModelPlan(this.plugin.settings);
     const configuredModel = this.plugin.settings.chat.defaultModel.trim();
     const effectiveOption = modelPlan.options.find(
@@ -5131,6 +5509,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       description: t('chatPromptSectionDesc'),
     });
     new Setting(body)
+      .setName(t('defaultModel'))
+      .setDesc(t('defaultModelDesc'))
+      .addDropdown((dropdown) => {
+        this.chatModelDropdownEl = dropdown.selectEl;
+        this.repopulateDefaultModelDropdown();
+        dropdown.onChange((value) => {
+          this.plugin.settings.chat.defaultModel = value;
+          this.debouncedSave();
+          this.repopulateDefaultModelDropdown();
+        });
+      });
+    new Setting(body)
       .setName(t('promptLibraryOpen'))
       .setDesc(t('chatPromptLibraryDesc'))
       .addButton((button) => {
@@ -5153,11 +5543,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     new Setting(body)
+      .setClass('superpower-inside-settings-block')
       .setName(t('systemPrompt'))
       .setDesc(t('systemPromptDesc'))
       .addTextArea((text) => {
         const activePrompt = getActivePromptEntry(this.plugin.settings);
-        text.inputEl.rows = 6;
+        text.inputEl.rows = 10;
+        text.inputEl.setAttribute('aria-label', t('systemPrompt'));
         text.setValue(activePrompt.content);
         text.setPlaceholder(t('systemPromptPlaceholder'));
         text.onChange((value) => {
@@ -5172,7 +5564,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('chatPromptShortcutsDesc'),
     );
     const presetList = shortcuts.content.createDiv({ cls: 'superpower-inside-chat-preset-list' });
-    for (const preset of this.getChatPromptPresets()) {
+    for (const [presetIndex, preset] of this.getChatPromptPresets().entries()) {
       const row = presetList.createDiv({ cls: 'superpower-inside-chat-preset-row' });
       const copy = row.createDiv({ cls: 'superpower-inside-chat-preset-copy' });
       copy.createDiv({ cls: 'superpower-inside-chat-preset-label', text: preset.label });
@@ -5184,13 +5576,24 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text: t('chatApplyPreset'),
         attr: { type: 'button', title: preset.description },
       });
+      button.setAttribute('aria-label', t('chatApplyPreset') + ': ' + preset.label);
+      const preview = this.createSettingsDisclosure(
+        row,
+        'preset-' + presetIndex,
+        t('settingsPresetPreview'),
+      );
+      preview.content.createEl('pre', {
+        cls: 'superpower-inside-settings-prompt-preview',
+        text: preset.prompt,
+      });
       button.addEventListener('click', () => this.applyChatPromptPreset(preset));
     }
     new Setting(shortcuts.content)
       .setName(t('resetToDefault'))
       .setDesc(t('chatPromptResetDesc'))
       .addButton((button) =>
-        button.setButtonText(t('resetToDefault')).onClick(() => {
+        button.setButtonText(t('resetToDefault')).onClick(async () => {
+          if (!(await confirmWithModal(this.app, t('settingsResetPromptConfirm')))) return;
           resetActivePromptToDefault(this.plugin.settings);
           this.debouncedSave();
           this.refreshChatTab();
@@ -5236,13 +5639,26 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     description: string;
     prompt: string;
   }): void {
-    const entry = createPromptEntry({
-      title: preset.label,
-      description: preset.description,
-      content: preset.prompt,
-      source: 'user',
-    });
-    this.plugin.settings.chat.promptLibrary = [entry, ...this.plugin.settings.chat.promptLibrary];
+    const reusableIndex = findReusablePromptRust(
+      this.plugin.settings.chat.promptLibrary,
+      preset.prompt,
+    );
+    if (reusableIndex === null) {
+      new Notice(t('settingsApplyFailed'));
+      return;
+    }
+    const existing =
+      reusableIndex < 0 ? null : this.plugin.settings.chat.promptLibrary[reusableIndex];
+    const entry =
+      existing ??
+      createPromptEntry({
+        title: preset.label,
+        description: preset.description,
+        content: preset.prompt,
+        source: 'user',
+      });
+    if (!existing)
+      this.plugin.settings.chat.promptLibrary = [entry, ...this.plugin.settings.chat.promptLibrary];
     setActivePromptEntry(this.plugin.settings, entry);
     this.debouncedSave();
     this.refreshChatTab();
@@ -5252,21 +5668,47 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const { body } = this.createSettingsSection(containerEl, t('chatStorageSectionTitle'), {
       description: t('chatStorageSectionDesc'),
     });
+    const folderFeedback = body.createDiv({ attr: { role: 'status', 'aria-live': 'polite' } });
+    let folderInput: HTMLInputElement | null = null;
+    const applyFolder = (value: string): void => {
+      const path = value.trim();
+      const file = this.app.vault.getAbstractFileByPath(path);
+      const valid = isValidSettingsFolderRust(path) === true && !(file instanceof TFile);
+      folderInput?.setAttribute('aria-invalid', String(!valid));
+      folderFeedback.setText(valid ? '' : t('settingsChatFolderError'));
+      if (!valid) return;
+      this.plugin.settings.chat.saveFolder = path;
+      this.debouncedRagSave();
+    };
     new Setting(body)
       .setName(t('chatSaveFolder'))
       .setDesc(t('chatSaveFolderDesc'))
-      .addText((text) =>
-        text.setValue(this.plugin.settings.chat.saveFolder).onChange((value) => {
-          this.plugin.settings.chat.saveFolder = value.trim();
-          this.debouncedRagSave();
-        }),
-      );
+      .addText((text) => {
+        folderInput = text.inputEl;
+        text.inputEl.setAttribute('aria-label', t('chatSaveFolder'));
+        text.setValue(this.plugin.settings.chat.saveFolder).onChange(applyFolder);
+      })
+      .addDropdown((dropdown) => {
+        dropdown.selectEl.setAttribute('aria-label', t('settingsChooseFolder'));
+        dropdown.addOption('', t('settingsChooseFolder'));
+        for (const folder of this.app.vault.getAllLoadedFiles()) {
+          if (folder instanceof TFolder && folder.path)
+            dropdown.addOption(folder.path, folder.path);
+        }
+        dropdown.onChange((value) => {
+          if (!value) return;
+          if (folderInput) folderInput.value = value;
+          applyFolder(value);
+        });
+      });
+    let chatDelayInput: HTMLInputElement | null = null;
     new Setting(body)
       .setName(t('chatAutoSave'))
       .setDesc(t('chatAutoSaveDesc'))
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.chat.autoSaveEnabled).onChange((value) => {
           this.plugin.settings.chat.autoSaveEnabled = value;
+          if (chatDelayInput) this.setDependentInputState(chatDelayInput, value);
           this.debouncedSave();
         }),
       );
@@ -5284,9 +5726,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           .setValue(String(this.plugin.settings.chat.autoSaveDebounceMs))
           .setPlaceholder('3000')
           .onChange((value) => {
-            const num = Number(value);
-            if (value.trim() === '') return;
-            if (Number.isNaN(num) || num < 1000 || num > 10000 || !Number.isInteger(num)) return;
+            const num = parseSettingsNumberRust(value, 1000, 10000);
+            this.showNumericInputValidation(text.inputEl, num);
+            if (num === null) return;
             this.plugin.settings.chat.autoSaveDebounceMs = num;
             this.debouncedSave();
           });
@@ -5294,6 +5736,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.min = '1000';
         text.inputEl.max = '10000';
         text.inputEl.step = '500';
+        text.inputEl.setAttribute('aria-label', t('chatAutoSaveDelay'));
+        this.setDependentInputState(text.inputEl, this.plugin.settings.chat.autoSaveEnabled);
+        chatDelayInput = text.inputEl;
       });
   }
   private buildChatToolsSection(containerEl: HTMLElement): void {
@@ -5347,9 +5792,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private refreshChatTab(): void {
     const chatPanel = this.tabPanels.get('chat');
-    if (chatPanel?.isConnected) this.buildChatTab(chatPanel);
+    if (chatPanel?.isConnected)
+      this.preserveSettingsFocus(chatPanel, () => this.buildChatTab(chatPanel));
   }
   private buildMCPTab(containerEl: HTMLElement): void {
+    if (this.mcpLintTimeout !== null) window.clearTimeout(this.mcpLintTimeout);
     containerEl.empty();
     const workspace = containerEl.createDiv({
       cls: 'superpower-inside-settings-workspace superpower-inside-mcp-settings-workspace',
@@ -5358,7 +5805,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       description: t('mcpStatusSectionDesc'),
     });
     const serversSection = this.createSettingsSection(workspace, t('mcpServersSectionTitle'), {
-      description: t('mcpServersSectionDesc'),
+      description: t('settingsMcpDraftHelp'),
     });
     const environmentSection = this.createSettingsSection(
       workspace,
@@ -5386,47 +5833,79 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const pathRow = pathContent.createDiv({
       cls: 'superpower-inside-mcp-path-row superpower-inside-settings-row',
     });
+    pathRow.createEl('label', {
+      text: t('settingsMcpPathLabel'),
+      attr: { for: 'superpower-inside-mcp-path-input' },
+    });
     const pathText = pathRow.createEl('textarea', {
       cls: 'superpower-inside-mcp-json-editor',
-      attr: { placeholder: t('mcpPathPlaceholder'), rows: '3' },
+      attr: {
+        id: 'superpower-inside-mcp-path-input',
+        'aria-label': t('settingsMcpPathLabel'),
+        rows: '3',
+        placeholder: t('mcpPathPlaceholder'),
+      },
     });
     pathText.value = this.plugin.settings.mcpPath;
+    const pathStatus = pathRow.createDiv({
+      attr: { role: 'status', 'aria-live': 'polite' },
+      text: t('settingsMcpPathHelp'),
+    });
     const pathActions = pathRow.createDiv({ cls: 'superpower-inside-mcp-path-actions' });
-    const fetchBtn = pathActions.createEl('button', { text: t('mcpPathFetch') });
+    const fetchBtn = pathActions.createEl('button', {
+      text: t('mcpPathFetch'),
+      attr: { type: 'button' },
+    });
     fetchBtn.addEventListener('click', () => {
-      void (async () => {
-        const originalText = fetchBtn.textContent;
-        fetchBtn.setText(t('mcpPathFetching'));
-        fetchBtn.disabled = true;
-        try {
-          if (!isMcpStdioAvailable(Platform)) {
-            throw new Error(t('settingsAuto224'));
-          }
+      void runActionWithFeedback({
+        button: fetchBtn,
+        loadingText: t('mcpPathFetching'),
+        action: async () => {
+          if (!isMcpStdioAvailable(Platform))
+            return { status: 'error', detail: t('settingsAuto224') };
           const { getDesktopLoginShellPath } = await import('./mcp/path');
-          const output = getDesktopLoginShellPath({
+          pathText.value = getDesktopLoginShellPath({
             platform: Platform,
             includeWslPath: this.plugin.settings.mcpIncludeWslPath,
           });
-          pathText.value = output;
-          this.plugin.settings.mcpPath = output;
-          await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
-          new Notice(t('mcpPathFetchSuccess'));
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          new Notice(`${t('mcpPathFetchError')}: ${msg}\n${t('mcpPathFetchErrorHelp')}`, 10000);
-        } finally {
-          fetchBtn.setText(originalText);
-          fetchBtn.disabled = false;
-        }
-      })();
+          pathStatus.setText(t('settingsMcpPathDraft'));
+          return { status: 'success' };
+        },
+      });
     });
-    const saveBtn = pathActions.createEl('button', { text: t('save') });
-    saveBtn.addEventListener('click', () => {
-      void (async () => {
-        this.plugin.settings.mcpPath = pathText.value.trim();
-        await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
-        new Notice(t('mcpJsonSaved'));
-      })();
+    const pathApply = pathActions.createEl('button', {
+      text: t('settingsApplyPath'),
+      attr: { type: 'button' },
+    });
+    pathApply.disabled = this.mcpApplying;
+    pathApply.addEventListener('click', () => {
+      void runActionWithFeedback({
+        button: pathApply,
+        action: async () => {
+          if (this.mcpApplying) return { status: 'noop' };
+          this.mcpApplying = true;
+          this.flushSave();
+          await this.saveChain;
+          const previous = this.plugin.settings.mcpPath;
+          this.plugin.settings.mcpPath = pathText.value.trim();
+          try {
+            const result = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
+            if (!result.success && (result.mcpErrors?.length ?? 0) === 0)
+              throw new Error(t('settingsSaveFailed'));
+            const detail = result.success
+              ? t('mcpJsonSaved')
+              : t('settingsMcpPartialFailure', { count: result.mcpErrors?.length ?? 0 });
+            pathStatus.setText(detail);
+            return { status: result.success ? 'success' : 'partial', detail };
+          } catch {
+            this.plugin.settings.mcpPath = previous;
+            pathStatus.setText(t('settingsSaveFailed'));
+            return { status: 'error', detail: t('settingsSaveFailed') };
+          } finally {
+            this.mcpApplying = false;
+          }
+        },
+      });
     });
     const statusBody = statusSection.body.createDiv({
       cls: 'superpower-inside-mcp-status superpower-inside-settings-status-list',
@@ -5436,113 +5915,181 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.mcpStatusEventRef = (this.app.workspace as unknown as Events).on(
       MCP_STATUS_CHANGE_EVENT,
       () => {
-        this.renderMCPStatus(statusBody);
+        if (statusBody.isConnected) this.renderMCPStatus(statusBody);
       },
     );
     const editorPanel = serversSection.body;
-    const lintStatus = editorPanel.createDiv({ cls: 'superpower-inside-mcp-lint-status' });
-    lintStatus.setText('');
-    const defaultJson = buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
-    const jsonTextArea = editorPanel.createEl('textarea', {
-      cls: 'superpower-inside-mcp-json-editor',
+    const list = editorPanel.createDiv({ cls: 'superpower-inside-settings-status-list' });
+    const addServer = editorPanel.createEl('button', {
+      text: t('settingsAddServer'),
+      attr: { type: 'button' },
     });
-    jsonTextArea.value = defaultJson;
-    let lintTimeout: number | null = null;
-    let autoSaveTimeout: number | null = null;
-    const runLint = () => {
-      lintStatus.setText(t('mcpJsonLinting'));
-      lintStatus.removeClass('success');
-      lintStatus.removeClass('error');
-      if (lintTimeout) {
-        window.clearTimeout(lintTimeout);
-        lintTimeout = null;
-      }
-      if (autoSaveTimeout) {
-        window.clearTimeout(autoSaveTimeout);
-        autoSaveTimeout = null;
-      }
-      lintTimeout = window.setTimeout(() => {
-        lintTimeout = null;
-        const result = validateMcpJson(jsonTextArea.value);
-        if (result.valid) {
-          lintStatus.setText('✅ ' + t('mcpJsonLintOk'));
-          lintStatus.addClass('success');
-          lintStatus.removeClass('error');
-          autoSaveTimeout = window.setTimeout(() => {
-            autoSaveTimeout = null;
-            this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
-            void (async () => {
-              const saveResult = await this.plugin.saveSettings({
-                reinitRag: false,
-                reinitMcp: true,
-              });
-              if (saveResult.success) {
-                lintStatus.setText('✅ ' + t('mcpJsonSaved'));
-              } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
-                lintStatus.setText(
-                  t('settingsAuto225', { v0: String(saveResult.mcpErrors.length) }),
-                );
-                lintStatus.addClass('error');
-                lintStatus.removeClass('success');
-              }
-            })();
-          }, 1000);
-        } else {
-          lintStatus.setText(`❌ ${t('mcpJsonLintError', { error: result.error ?? '' })}`);
-          lintStatus.addClass('error');
-          lintStatus.removeClass('success');
-        }
-      }, 1000);
-    };
-    jsonTextArea.addEventListener('input', () => {
-      runLint();
+    const lintStatus = editorPanel.createDiv({
+      cls: 'superpower-inside-mcp-lint-status',
+      attr: {
+        id: 'superpower-inside-mcp-lint-status',
+        role: 'status',
+        'aria-live': 'polite',
+        'aria-atomic': 'true',
+      },
     });
-    jsonTextArea.addEventListener('blur', () => {
-      const formatted = formatMcpJson(jsonTextArea.value);
-      if (formatted !== null) {
-        jsonTextArea.value = formatted;
-      }
-    });
-    jsonTextArea.addEventListener('keydown', (e) => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const start = jsonTextArea.selectionStart;
-        const end = jsonTextArea.selectionEnd;
-        const indent = '  ';
-        jsonTextArea.setRangeText(indent, start, end, 'end');
-        runLint();
-      }
-    });
-    new Setting(editorPanel).addButton((btn) =>
-      btn.setButtonText(t('save')).onClick(async () => {
-        const result = validateMcpJson(jsonTextArea.value);
-        if (result.valid) {
-          this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
-          const saveResult = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
-          if (saveResult.success) {
-            lintStatus.setText('✅ ' + t('mcpJsonSaved'));
-            lintStatus.addClass('success');
-            lintStatus.removeClass('error');
-            new Notice(t('mcpJsonSaved'));
-            jsonTextArea.value = JSON.stringify(result.data, null, 2);
-          } else if (saveResult.mcpErrors && saveResult.mcpErrors.length > 0) {
-            lintStatus.setText(t('settingsAuto226', { v0: String(saveResult.mcpErrors.length) }));
-            lintStatus.addClass('error');
-            lintStatus.removeClass('success');
-            const errorDetails = saveResult.mcpErrors.map((err) => `• ${err}`).join('\n');
-            new Notice(t('settingsAuto227', { v0: String(errorDetails) }), 10000);
-          }
-          statusBody.empty();
-          this.renderMCPStatus(statusBody);
-        } else {
-          const detailedError = this.buildDetailedMcpError(result.error ?? '');
-          lintStatus.setText(`❌ ${detailedError.short}`);
-          lintStatus.addClass('error');
-          lintStatus.removeClass('success');
-          new Notice(detailedError.full, 10000);
-        }
-      }),
+    const advanced = this.createSettingsDisclosure(
+      editorPanel,
+      'mcp-json',
+      t('settingsMcpJsonTitle'),
+      t('settingsMcpDraftHelp'),
     );
+    advanced.content.createEl('label', {
+      text: t('settingsMcpJsonLabel'),
+      attr: { for: 'superpower-inside-mcp-json-input' },
+    });
+    const jsonTextArea = advanced.content.createEl('textarea', {
+      cls: 'superpower-inside-mcp-json-editor',
+      attr: {
+        id: 'superpower-inside-mcp-json-input',
+        'aria-label': t('settingsMcpJsonLabel'),
+        'aria-describedby': 'superpower-inside-mcp-lint-status',
+        rows: '12',
+      },
+    });
+    jsonTextArea.spellcheck = false;
+    jsonTextArea.value =
+      this.mcpDraftJson ?? buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
+    jsonTextArea.disabled = this.mcpApplying;
+    const apply = editorPanel.createEl('button', {
+      cls: 'mod-cta',
+      text: t('settingsApplyServers'),
+      attr: { type: 'button' },
+    });
+    const revert = editorPanel.createEl('button', {
+      text: t('settingsDiscardChanges'),
+      attr: { type: 'button' },
+    });
+    const renderDraft = (): void => {
+      list.empty();
+      const result = validateMcpJson(jsonTextArea.value);
+      jsonTextArea.setAttribute('aria-invalid', String(!result.valid));
+      apply.disabled = this.mcpApplying || !result.valid || this.mcpDraftJson === null;
+      revert.disabled = this.mcpApplying || this.mcpDraftJson === null;
+      lintStatus.toggleClass('error', !result.valid);
+      lintStatus.setText(
+        result.valid
+          ? t(this.mcpDraftJson === null ? 'settingsMcpApplied' : 'settingsMcpDraftValid')
+          : this.buildDetailedMcpError(result.error ?? '').full,
+      );
+      addServer.disabled = this.mcpApplying || !result.valid;
+      if (!result.valid) return;
+      const servers = standardToInternal(result.data as StandardMcpConfig);
+      if (servers.length === 0) list.createDiv({ text: t('mcpStatusNoServersDetail') });
+      for (const server of servers) {
+        new Setting(list)
+          .setName(server.name)
+          .setDesc(server.command)
+          .addButton((button) =>
+            button
+              .setButtonText(t('settingsEditServer'))
+              .setDisabled(this.mcpApplying)
+              .onClick(() => openEditor(server, servers)),
+          )
+          .addButton((button) =>
+            button
+              .setButtonText(t('deleteLabel'))
+              .setDisabled(this.mcpApplying)
+              .onClick(() => {
+                jsonTextArea.value = buildMcpJsonEditorValue(
+                  servers.filter((item) => item.name !== server.name),
+                );
+                this.mcpDraftJson = jsonTextArea.value;
+                this.mcpDraftRevision += 1;
+                renderDraft();
+              }),
+          );
+      }
+    };
+    const openEditor = (server: MCPServerConfig | null, servers: MCPServerConfig[]): void => {
+      new McpServerDraftModal(this.app, server, (draft) => {
+        if (servers.some((item) => item.name === draft.name && item.name !== server?.name))
+          return false;
+        const next = server
+          ? servers.map((item) => (item.name === server.name ? draft : item))
+          : [...servers, draft];
+        jsonTextArea.value = buildMcpJsonEditorValue(next);
+        this.mcpDraftJson = jsonTextArea.value;
+        this.mcpDraftRevision += 1;
+        renderDraft();
+        return true;
+      }).open();
+    };
+    addServer.addEventListener('click', () => {
+      const result = validateMcpJson(jsonTextArea.value);
+      if (result.valid) openEditor(null, standardToInternal(result.data as StandardMcpConfig));
+    });
+    jsonTextArea.addEventListener('input', () => {
+      this.mcpDraftJson = jsonTextArea.value;
+      this.mcpDraftRevision += 1;
+      lintStatus.setText(t('mcpJsonLinting'));
+      apply.disabled = true;
+      if (this.mcpLintTimeout !== null) window.clearTimeout(this.mcpLintTimeout);
+      this.mcpLintTimeout = window.setTimeout(() => {
+        this.mcpLintTimeout = null;
+        if (jsonTextArea.isConnected) renderDraft();
+      }, 400);
+    });
+    revert.addEventListener('click', () => {
+      jsonTextArea.value = buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
+      this.mcpDraftJson = null;
+      this.mcpDraftRevision += 1;
+      renderDraft();
+    });
+    apply.addEventListener('click', () => {
+      if (this.mcpApplying) return;
+      const result = validateMcpJson(jsonTextArea.value);
+      if (!result.valid) {
+        renderDraft();
+        return;
+      }
+      this.mcpApplying = true;
+      const draftRevision = this.mcpDraftRevision;
+      jsonTextArea.disabled = true;
+      pathApply.disabled = true;
+      renderDraft();
+      lintStatus.setText(t('settingsApplyingServers'));
+      const previous = this.plugin.settings.mcpServers;
+      void (async () => {
+        try {
+          this.flushSave();
+          await this.saveChain;
+          this.plugin.settings.mcpServers = standardToInternal(result.data as StandardMcpConfig);
+          const saved = await this.plugin.saveSettings({ reinitRag: false, reinitMcp: true });
+          if (!saved.success && (saved.mcpErrors?.length ?? 0) === 0)
+            throw new Error(t('settingsSaveFailed'));
+          if (saved.success || (saved.mcpErrors?.length ?? 0) > 0) {
+            if (draftRevision === this.mcpDraftRevision) this.mcpDraftJson = null;
+            jsonTextArea.value = JSON.stringify(result.data, null, 2);
+          }
+          this.mcpApplying = false;
+          renderDraft();
+          if (!saved.success)
+            lintStatus.setText(
+              t('settingsMcpPartialFailure', { count: saved.mcpErrors?.length ?? 0 }),
+            );
+          if (statusBody.isConnected) this.renderMCPStatus(statusBody);
+        } catch {
+          this.plugin.settings.mcpServers = previous;
+          this.mcpApplying = false;
+          renderDraft();
+          lintStatus.setText(t('settingsSaveFailed'));
+        } finally {
+          jsonTextArea.disabled = false;
+          pathApply.disabled = false;
+          if (!jsonTextArea.isConnected) {
+            const currentPanel = this.tabPanels.get('mcp');
+            if (currentPanel?.isConnected) this.buildMCPTab(currentPanel);
+          }
+        }
+      })();
+    });
+    renderDraft();
   }
   private buildDetailedMcpError(rawError: string): {
     short: string;
@@ -5622,6 +6169,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         tone: 'warning',
         icon: 'triangle-alert',
       });
+      const openMcp = body.createEl('button', {
+        text: t('settingsOpenMcp'),
+        attr: { type: 'button' },
+      });
+      openMcp.addEventListener('click', () => this.switchTab('mcp'));
     }
     new Setting(body)
       .setName(t('pluginAwareGeneration'))
@@ -5630,7 +6182,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.pluginAwareEnabled).onChange((value) => {
           this.plugin.settings.pluginAwareEnabled = value;
           this.debouncedSave();
-          this.buildAdvancedTab(containerEl);
+          this.preserveSettingsFocus(containerEl, () => this.buildAdvancedTab(containerEl));
         }),
       );
     this.createSettingsNotice(body, {
@@ -5677,7 +6229,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const firstAttentionName = firstAttention ? getProviderProfileDisplayName(firstAttention) : '';
     this.createSettingsStatusRow(containerEl, {
       label: t('providerConnectionTitle'),
-      value: `${readyCount + configuredCount}/${enabledCount}`,
+      value: t('providerStatusReadyCount', { count: readyCount }),
       statusLabel:
         profiles.length === 0
           ? t('providerStatusNone')
@@ -5695,6 +6247,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               total: profiles.length,
               enabled: enabledCount,
               ready: readyCount,
+              configured: configuredCount,
             }),
       tone: attentionCount > 0 ? 'warning' : readyCount > 0 ? 'success' : 'neutral',
     });
@@ -5861,6 +6414,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     disclosureRoot: HTMLElement | null,
   ): void {
     const group = containerEl.createDiv({ cls: 'superpower-inside-provider-connection-group' });
+    this.createSettingsNotice(group, {
+      text: t('securityWarning'),
+      tone: 'info',
+      icon: 'shield-check',
+    });
     group.createDiv({
       cls: 'superpower-inside-provider-group-title',
       text: t('providerConnectionSection'),
@@ -5885,6 +6443,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
     });
     this.buildProviderStrategySelector(group, profile);
+    this.createSettingsNotice(group, {
+      text: t('settingsProviderSetupSteps'),
+      tone: 'info',
+      icon: 'list-checks',
+    });
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
       let apiKeyInput: HTMLInputElement | null = null;
       new Setting(group)
@@ -5908,17 +6471,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         })
         .addExtraButton((button) => {
           button.setIcon('eye').setTooltip(t('providerApiKeyShow'));
+          button.extraSettingsEl.setAttribute('aria-pressed', 'false');
           button.onClick(() => {
             if (!apiKeyInput) return;
             const isVisible = apiKeyInput.type === 'text';
             apiKeyInput.type = isVisible ? 'password' : 'text';
+            button.extraSettingsEl.setAttribute('aria-pressed', String(!isVisible));
             button
               .setIcon(isVisible ? 'eye' : 'eye-off')
               .setTooltip(isVisible ? t('providerApiKeyShow') : t('providerApiKeyHide'));
           });
         });
     }
-    if (profile.strategy === 'openAICompatible') {
+    if (profile.strategy !== 'ternlight') {
       new Setting(group).setName(t('providerBaseUrl')).addText((text) => {
         text.inputEl.setAttribute('aria-label', t('providerBaseUrl'));
         text
@@ -6055,7 +6620,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       strategy: 'openAICompatible',
       apiKey: '',
       baseUrl: '',
-      enabled: false,
+      enabled: true,
       models: [],
       useRequestUrl: true,
     });
@@ -6067,14 +6632,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private refreshProvidersTab(focusProfileId?: string): void {
     const panel = this.tabPanels.get('providers');
     if (!panel?.isConnected) return;
-    this.buildProvidersTab(panel);
+    this.preserveSettingsFocus(panel, () => this.buildProvidersTab(panel));
     if (!focusProfileId) return;
     const disclosure = Array.from(
       panel.querySelectorAll<HTMLElement>('.superpower-inside-provider-disclosure'),
     ).find((candidate) => candidate.dataset.providerKey === focusProfileId);
-    const focusTarget = disclosure?.querySelector<HTMLButtonElement>(
-      '.superpower-inside-settings-disclosure-button',
+    const profile = this.plugin.settings.providerProfiles.find(
+      (item) => item.id === focusProfileId,
     );
+    const tone = profile ? resolveProviderProfileTone(profile) : null;
+    const targetLabel =
+      tone === 'needs-key' ? t('apiKey') : tone === 'needs-url' ? t('providerBaseUrl') : null;
+    const focusTarget = targetLabel
+      ? Array.from(disclosure?.querySelectorAll<HTMLElement>('[aria-label]') ?? []).find(
+          (el) => el.getAttribute('aria-label') === targetLabel,
+        )
+      : disclosure?.querySelector<HTMLElement>('.superpower-inside-settings-disclosure-button');
     window.setTimeout(() => {
       if (focusTarget?.isConnected) focusTarget.focus();
     }, 0);
@@ -6102,7 +6675,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.expandedProviderProfileId = null;
         }
         try {
-          await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          if (!saved.success) throw new Error(t('settingsApplyFailed'));
         } catch (err) {
           this.plugin.settings.providerProfiles = previousProfiles;
           this.expandedProviderProfileId = previousExpandedProfileId;
@@ -6136,6 +6710,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
             profile.baseUrl = nextDefault;
           }
+          const defaultName = PROVIDER_STRATEGY_LABELS[profile.strategy];
+          if (!profile.name || profile.name === defaultName)
+            profile.name = PROVIDER_STRATEGY_LABELS[strategy];
           profile.strategy = strategy;
           this.invalidateProviderProfileVerification(profile);
           this.debouncedProviderSave();
@@ -6201,7 +6778,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
       });
     }
-    const addRow = section.createDiv({ cls: 'superpower-inside-provider-model-add-row' });
+    const manual = this.createSettingsDisclosure(
+      section,
+      'manual-' + kind,
+      t('settingsAddModelManually'),
+      undefined,
+      { idPrefix: 'superpower-inside-model-' + profile.id },
+    );
+    if (kind === 'embedding' && profile.models.every((model) => model.kind !== kind))
+      manual.button.click();
+    const addRow = manual.content.createDiv({ cls: 'superpower-inside-provider-model-add-row' });
     const input = addRow.createEl('input', {
       type: 'text',
       placeholder: kind === 'embedding' ? 'text-embedding-3-small' : 'gpt-4o-mini',
@@ -6281,6 +6867,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         },
       });
       setIcon(verifyButton, kind === 'embedding' ? 'scan-search' : 'sparkles');
+      verifyButton.createSpan({ text: t('settingsTestModel') });
+      if (model.verification.lastCheckedAt)
+        item.createSpan({
+          cls: 'superpower-inside-provider-model-checked',
+          text: t('settingsLastChecked', {
+            time: new Date(model.verification.lastCheckedAt).toLocaleString(),
+          }),
+        });
+      if (status === 'failed' && model.verification.lastError)
+        item.createDiv({
+          cls: 'superpower-inside-settings-input-feedback',
+          text: model.verification.lastError,
+        });
       verifyButton.addEventListener('click', () => {
         void this.verifyProviderProfileModel(profile, model.id, kind, verifyButton, statusEl);
       });
@@ -6293,7 +6892,24 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         },
       });
       setIcon(removeButton, 'x');
+      removeButton.setAttribute('aria-label', t('settingsRemoveNamed', { name: model.id }));
       removeButton.addEventListener('click', () => {
+        const ref = buildProviderModelRef(profile.id, model.id);
+        if (
+          [
+            this.plugin.settings.chat.defaultModel,
+            this.plugin.settings.rag.embeddingModelRef,
+            this.plugin.settings.rag.graphRagModel,
+          ].includes(ref)
+        ) {
+          void confirmWithModal(this.app, t('settingsRemoveSelectedModel')).then((confirmed) => {
+            if (!confirmed) return;
+            profile.models = profile.models.filter((itemModel) => itemModel.id !== model.id);
+            this.debouncedProviderSave();
+            this.refreshProvidersTab(profile.id);
+          });
+          return;
+        }
         profile.models = profile.models.filter((itemModel) => itemModel.id !== model.id);
         this.debouncedProviderSave();
         this.refreshProvidersTab(profile.id);
@@ -6319,7 +6935,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           );
         }
         try {
-          await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          if (!saved.success) throw new Error(t('settingsApplyFailed'));
           statusEl.setText(t('providerImportAdded', { v0: String(modelIds.length) }));
           this.notifyProviderModelsChanged();
           this.refreshProvidersTab(profile.id);
@@ -6346,7 +6963,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const previousModels = profile.models;
     const persistVerification = async (): Promise<void> => {
       try {
-        await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+        const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+        if (!saved.success) throw new Error(t('settingsApplyFailed'));
       } catch (err) {
         profile.models = previousModels;
         throw err;
@@ -7316,6 +7934,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return id;
   }
   private renderMCPStatus(containerEl: HTMLElement): void {
+    this.mcpStatusRefresh?.detach();
+    this.mcpStatusRefresh = null;
     containerEl.empty();
     const plugin = this.plugin as unknown as {
       mcpRegistry: import('./mcp/registry').MCPRegistry | null;
@@ -7363,7 +7983,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setDesc(t('mcpReconnectDesc'));
     let refreshBtn: HTMLButtonElement | null = null;
     reconnectSetting.addButton((button) => {
-      button.setButtonText(t('mcpReconnect')).setCta();
+      button.setButtonText(t('mcpReconnect'));
+      if (overallTone === 'danger' || state === 'partial-error') button.setCta();
+      button.setDisabled(totalCount === 0 || state === 'connecting');
       refreshBtn = button.buttonEl;
     });
     if (!refreshBtn) return;

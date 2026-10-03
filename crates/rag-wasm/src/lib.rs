@@ -11,6 +11,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+mod settings_ui;
+pub use settings_ui::{
+    find_reusable_prompt, is_local_settings_provider, is_valid_settings_folder,
+    parse_settings_number,
+};
+
 /// IndexedDB naming, generation cleanup, and stale-record reconciliation policy.
 mod storage_lifecycle;
 pub use storage_lifecycle::{
@@ -4347,7 +4353,7 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
                 data: None,
                 error_code: Some("parse-error".to_owned()),
                 server_name: None,
-                parse_error: Some(format!("Invalid JSON: {error}")),
+                parse_error: Some(error.to_string()),
             };
         }
     };
@@ -4392,7 +4398,12 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
             };
         };
 
-        if !server_obj.contains_key("command") {
+        if name.trim().is_empty()
+            || server_obj
+                .get("command")
+                .and_then(JsonValue::as_str)
+                .is_none_or(|command| command.trim().is_empty())
+        {
             return McpJsonValidationPlan {
                 valid: false,
                 data: None,
@@ -4403,7 +4414,9 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
         }
 
         if let Some(args) = server_obj.get("args")
-            && !args.is_array()
+            && args
+                .as_array()
+                .is_none_or(|args| args.iter().any(|arg| !arg.is_string()))
         {
             return McpJsonValidationPlan {
                 valid: false,
@@ -4415,7 +4428,9 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
         }
 
         if let Some(env) = server_obj.get("env")
-            && !env.is_object()
+            && env
+                .as_object()
+                .is_none_or(|env| env.values().any(|value| !value.is_string()))
         {
             return McpJsonValidationPlan {
                 valid: false,

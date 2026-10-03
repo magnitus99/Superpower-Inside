@@ -340,11 +340,14 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).not.toContain('.superpower-inside-rag-action-disabled-reason');
   });
 
-  it('GraphRAG 동시 요청 수는 1부터 10까지의 슬라이더와 숫자값으로 표시한다', () => {
+  it('GraphRAG 동시 요청 수는 1부터 10까지의 숫자 입력으로 표시한다', () => {
     expect(settingsSource).toContain("setName(t('graphRagConcurrentRequestsLabel'))");
-    expect(settingsSource).toContain('.setLimits(1, 10, 1)');
-    expect(settingsSource).toContain('.setDynamicTooltip()');
-    expect(settingsSource).toContain('superpower-inside-graph-concurrency-value');
+    const start = settingsSource.indexOf('const concurrencySetting');
+    const end = settingsSource.indexOf(".setName(t('graphRagQueryModeLabel'))", start);
+    const source = settingsSource.slice(start, end);
+    expect(source.includes('parseSettingsNumberRust(value, 1, 10)')).toBe(true);
+    expect(source.includes("text.inputEl.step = '1'")).toBe(true);
+    expect(source.includes('addSlider')).toBe(false);
   });
 
   it('RAG 런타임을 만들 수 없을 때 빈 카드 대신 원인과 한 가지 복구 행동을 표시한다', () => {
@@ -540,7 +543,7 @@ describe('설정 화면 리디자인 구조', () => {
   });
 
   it('Provider 모델 변경 알림은 저장 성공 이후에만 발행한다', () => {
-    const saveStart = settingsSource.indexOf('private async saveSettingsWithFeedback(');
+    const saveStart = settingsSource.indexOf('private saveSettingsWithFeedback(');
     const saveEnd = settingsSource.indexOf('\n  hide(): void', saveStart);
     const saveSource = settingsSource.slice(saveStart, saveEnd);
     const importStart = settingsSource.indexOf('private openProviderModelImportModal(');
@@ -555,7 +558,7 @@ describe('설정 화면 리디자인 구조', () => {
       saveSource.indexOf('this.notifyProviderModelsChanged()'),
     );
     expect(saveSource.indexOf('this.notifyProviderModelsChanged()')).toBeLessThan(
-      saveSource.indexOf('} catch (err)'),
+      saveSource.indexOf('} catch'),
     );
     expect(saveSource).not.toContain('finally');
     expect(settingsSource).toContain('private debouncedProviderSave(reinitRag = true)');

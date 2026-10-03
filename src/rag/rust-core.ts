@@ -1,4 +1,8 @@
 import {
+  find_reusable_prompt,
+  is_local_settings_provider,
+  is_valid_settings_folder,
+  parse_settings_number,
   aggregate_graph_edges_flat,
   analyze_retrieval_sources,
   assign_vector_clusters,
@@ -1989,6 +1993,36 @@ export type RustMcpConnectionState =
   | 'connected'
   | 'partial-error'
   | 'error';
+
+export function parseSettingsNumberRust(
+  input: string,
+  min: number,
+  max: number,
+  integer = true,
+): number | null {
+  if (!ensureRustCore()) return null;
+  const value = parse_settings_number(input, min, max, integer);
+  return Number.isFinite(value) ? value : null;
+}
+
+export function findReusablePromptRust(
+  entries: readonly { content: string }[],
+  content: string,
+): number | null {
+  if (!ensureRustCore()) return null;
+  const index = find_reusable_prompt(JSON.stringify(entries), content);
+  return index;
+}
+
+export function isLocalSettingsProviderRust(strategy: string, baseUrl = ''): boolean | null {
+  if (!ensureRustCore()) return null;
+  return is_local_settings_provider(strategy, baseUrl);
+}
+
+export function isValidSettingsFolderRust(input: string): boolean | null {
+  if (!ensureRustCore()) return null;
+  return is_valid_settings_folder(input);
+}
 
 export function getMcpConnectionStateRust(
   totalCount: number,

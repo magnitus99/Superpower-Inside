@@ -579,13 +579,14 @@ function buildAttentionItems(input: {
   }
 
   if (input.chat.tone === 'warning') {
+    const hasModels = buildChatModelOptions(input.settings, { currentModel: '' }).length > 0;
     items.push({
       id: 'chat-default-model-unavailable',
       label: t('overviewChatModelAttention'),
       detail: input.chat.detail,
       tone: 'warning',
-      target: 'general',
-      actionLabel: t('overviewOpenGeneral'),
+      target: hasModels ? 'general' : 'providers',
+      actionLabel: t(hasModels ? 'overviewOpenGeneral' : 'overviewOpenProviders'),
     });
   }
 

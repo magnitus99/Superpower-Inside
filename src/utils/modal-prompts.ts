@@ -43,7 +43,7 @@ class ConfirmPromptModal extends Modal {
       attr: { type: 'button' },
     });
     confirmBtn.addEventListener('click', () => this.finish(true));
-    confirmBtn.focus();
+    cancelBtn.focus();
   }
 
   onClose(): void {

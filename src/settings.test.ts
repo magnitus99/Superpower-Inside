@@ -596,12 +596,18 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('설정 탭 라벨은 현재 언어로 매번 다시 계산한다', () => {
     setLanguage('ko');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('프로바이더');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('AI 연결');
 
     setLanguage('en');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('Providers');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('AI connections');
     expect(buildSettingsTabs().find((tab) => tab.id === 'chat')?.label).toBe('Chat');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'advanced')?.label).toBe('Advanced');
+    expect(buildSettingsTabs().map((tab) => tab.id)).toEqual([
+      'general',
+      'providers',
+      'rag',
+      'chat',
+      'mcp',
+    ]);
   });
 
   it('채팅 저장 폴더 제외 설명에 현재 폴더를 표시한다', () => {
@@ -1322,6 +1328,49 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('설정 자동 저장 기본 debounce는 1초다', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
+  });
+
+  it('실패 결과를 저장 성공으로 처리하지 않고 재시도할 요구를 보존한다', async () => {
+    const saveSettings = vi.fn().mockResolvedValue({ success: false });
+    const tab = new SuperpowerInsideSettingTab(
+      {} as never,
+      {
+        settings: { ...DEFAULT_SETTINGS, autoSaveEnabled: false },
+        saveSettings,
+      } as never,
+    );
+    tab.debouncedSave({ reinitRag: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = tab as unknown as {
+      saveState: string;
+      pendingSaveOptions: { reinitRag: boolean };
+      saveSettingsWithFeedback(options: { reinitRag: boolean; reinitMcp: boolean }): Promise<void>;
+    };
+    expect(state.saveState).toBe('error');
+    expect(state.pendingSaveOptions.reinitRag).toBe(true);
+    saveSettings.mockResolvedValue({ success: true });
+    await state.saveSettingsWithFeedback({ reinitRag: true, reinitMcp: false });
+    expect(state.saveState).toBe('saved');
+  });
+
+  it('동시에 요청한 저장은 앞선 저장이 끝난 뒤 순서대로 수행한다', async () => {
+    let finishFirst: (() => void) | undefined;
+    const first = new Promise<{ success: boolean }>((resolve) => {
+      finishFirst = () => resolve({ success: true });
+    });
+    const saveSettings = vi.fn().mockReturnValueOnce(first).mockResolvedValue({ success: true });
+    const tab = new SuperpowerInsideSettingTab(
+      {} as never,
+      { settings: { ...DEFAULT_SETTINGS, autoSaveEnabled: false }, saveSettings } as never,
+    );
+    tab.debouncedSave();
+    tab.debouncedSave({ reinitRag: true });
+    await Promise.resolve();
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    finishFirst?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(saveSettings.mock.calls[1][0]).toEqual({ reinitRag: true, reinitMcp: false });
   });
 
   it('agent diagnostics settings default to disabled and normalize legacy data', () => {

@@ -961,6 +961,21 @@ export function find_mentioned_entity_matches(question, ontology_schema_id, enti
 }
 
 /**
+ * 같은 본문의 기존 프롬프트 위치를 반환해 항목 중복을 방지합니다.
+ * @param {string} entries_json
+ * @param {string} content
+ * @returns {number}
+ */
+export function find_reusable_prompt(entries_json, content) {
+    const ptr0 = passStringToWasm0(entries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.find_reusable_prompt(ptr0, len0, ptr1, len1);
+    return ret;
+}
+
+/**
  * MCP JSON 설정을 검증 가능한 JSON 문자열로 다시 포맷한다.
  * @param {string} mcp_json_text
  * @returns {string}
@@ -1081,6 +1096,21 @@ export function is_graph_extraction_cache_hit_json(cached_json, input_json) {
 }
 
 /**
+ * 연결의 실제 주소가 로컬 처리 대상인지 판정합니다.
+ * @param {string} strategy
+ * @param {string} base_url
+ * @returns {boolean}
+ */
+export function is_local_settings_provider(strategy, base_url) {
+    const ptr0 = passStringToWasm0(strategy, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.is_local_settings_provider(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
  * MCP tool 목록에 요청 tool name이 있는지 Rust에서 판정한다.
  * @param {string} tool_name
  * @param {string} tool_names_json
@@ -1170,6 +1200,18 @@ export function is_same_graph_entity_pair(first_left, first_right, second_left, 
     const ptr3 = passStringToWasm0(second_right, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len3 = WASM_VECTOR_LEN;
     const ret = wasm.is_same_graph_entity_pair(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+    return ret !== 0;
+}
+
+/**
+ * 새 대화 저장 폴더가 볼트 안의 상대 경로인지 확인합니다.
+ * @param {string} input
+ * @returns {boolean}
+ */
+export function is_valid_settings_folder(input) {
+    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_valid_settings_folder(ptr0, len0);
     return ret !== 0;
 }
 
@@ -1394,6 +1436,21 @@ export function parse_mention_candidates_json(content) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
+}
+
+/**
+ * 설정의 편집 중 문자열을 검증하고 잘못된 값이면 `NaN`을 반환합니다.
+ * @param {string} input
+ * @param {number} min
+ * @param {number} max
+ * @param {boolean} integer
+ * @returns {number}
+ */
+export function parse_settings_number(input, min, max, integer) {
+    const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parse_settings_number(ptr0, len0, min, max, integer);
+    return ret;
 }
 
 /**

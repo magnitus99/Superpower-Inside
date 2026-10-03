@@ -1,6 +1,66 @@
 export type Language = 'ko' | 'en';
 
 export interface I18nKeys {
+  settingsChooseFolder: string;
+  settingsProviderSetupSteps: string;
+  settingsAddModelManually: string;
+  settingsTestModel: string;
+  settingsLastChecked: string;
+  settingsRemoveSelectedModel: string;
+  settingsStatusDetails: string;
+  settingsSaved: string;
+  settingsSavePending: string;
+  settingsSaving: string;
+  settingsSaveFailed: string;
+  settingsSaveRetry: string;
+  settingsApplyFailed: string;
+  settingsApplyServers: string;
+  settingsApplyingServers: string;
+  settingsMcpJsonLabel: string;
+  settingsMcpJsonTitle: string;
+  settingsMcpDraftHelp: string;
+  settingsMcpApplied: string;
+  settingsMcpDraftValid: string;
+  settingsMcpPartialFailure: string;
+  settingsMcpPathLabel: string;
+  settingsMcpPathHelp: string;
+  settingsMcpPathDraft: string;
+  settingsApplyPath: string;
+  settingsAddServer: string;
+  settingsEditServer: string;
+  settingsServerName: string;
+  settingsServerCommand: string;
+  settingsServerArgs: string;
+  settingsServerArgsDetail: string;
+  settingsServerEnv: string;
+  settingsServerEnvDetail: string;
+  settingsServerNameExists: string;
+  settingsKeepDraft: string;
+  settingsDiscardChanges: string;
+  settingsAutoMergeLabel: string;
+  settingsPendingMergeLabel: string;
+  settingsSearchTuningTitle: string;
+  settingsSearchTuningDetail: string;
+  settingsEmbeddingSelectionHelp: string;
+  settingsRemoteEmbeddingTitle: string;
+  settingsRemoteEmbeddingDetail: string;
+  settingsLocalEndpointDetail: string;
+  settingsExcludePathMissing: string;
+  settingsChatAdvancedTitle: string;
+  settingsResetPromptConfirm: string;
+  settingsDiscardPromptDraft: string;
+  settingsPromptDraftHelp: string;
+  settingsRemoveNamed: string;
+  settingsShowMore: string;
+  settingsOffDependent: string;
+  settingsScopeSummary: string;
+  settingsScopeDetail: string;
+  settingsGraphDanger: string;
+  settingsGraphNoModelCost: string;
+  settingsNumericError: string;
+  settingsOpenMcp: string;
+  settingsChatFolderError: string;
+  settingsPresetPreview: string;
   // 일반 탭
   autoSaveSettings: string;
   autoSaveSettingsDesc: string;
@@ -1082,6 +1142,7 @@ export interface I18nKeys {
   providerStatusNone: string;
   providerStatusNeedsSetup: string;
   providerStatusSummaryDetail: string;
+  providerStatusReadyCount: string;
   providerAttentionTitle: string;
   providerContinueSetup: string;
   providerAddTitle: string;
@@ -1609,6 +1670,76 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  settingsChooseFolder: '볼트 폴더 선택',
+  settingsProviderSetupSteps:
+    '연결 정보를 입력한 뒤 모델을 가져오거나 직접 추가하고 테스트하세요. 테스트는 실제 요청을 보내며 서버에 따라 비용이 발생할 수 있습니다.',
+  settingsAddModelManually: '모델 ID 직접 추가',
+  settingsTestModel: '테스트',
+  settingsLastChecked: '마지막 확인: {time}',
+  settingsRemoveSelectedModel:
+    '현재 채팅 또는 검색에서 사용하는 모델입니다. 목록에서 제거하면 해당 기능의 모델을 다시 선택해야 합니다. 제거할까요?',
+  settingsStatusDetails: '상태 자세히 보기',
+  settingsSaved: '변경사항이 자동으로 저장됩니다.',
+  settingsSavePending: '변경사항 저장 대기 중…',
+  settingsSaving: '변경사항 저장 중…',
+  settingsSaveFailed: '변경사항을 저장하지 못했습니다. 다시 시도해 주세요.',
+  settingsSaveRetry: '저장 다시 시도',
+  settingsApplyFailed: '설정을 적용하지 못했습니다.',
+  settingsApplyServers: '서버 설정 적용',
+  settingsApplyingServers: '설정을 저장하고 서버를 연결하는 중…',
+  settingsMcpJsonLabel: 'MCP 서버 설정 JSON',
+  settingsMcpJsonTitle: '고급 JSON 편집',
+  settingsMcpDraftHelp: '변경사항은 초안으로 보관됩니다. 적용하면 서버를 다시 연결합니다.',
+  settingsMcpApplied: '현재 서버 설정이 적용되어 있습니다.',
+  settingsMcpDraftValid: '초안 형식이 유효합니다. 적용하면 서버가 다시 연결됩니다.',
+  settingsMcpPartialFailure:
+    '설정은 저장됐지만 서버 {count}개를 연결하지 못했습니다. 위 연결 상태를 확인해 주세요.',
+  settingsMcpPathLabel: '서버 실행 PATH',
+  settingsMcpPathHelp:
+    '비어 있으면 실행 환경에서 자동으로 찾습니다. 수동 변경은 적용할 때 다시 연결됩니다.',
+  settingsMcpPathDraft: '터미널 PATH를 가져왔습니다. 적용하려면 PATH 적용을 누르세요.',
+  settingsApplyPath: 'PATH 적용',
+  settingsAddServer: '서버 추가',
+  settingsEditServer: '수정',
+  settingsServerName: '서버 이름',
+  settingsServerCommand: '실행 명령',
+  settingsServerArgs: '실행 인수',
+  settingsServerArgsDetail: 'JSON 배열로 입력합니다. 예: ["-y", "@upstash/context7-mcp"]',
+  settingsServerEnv: '환경 변수',
+  settingsServerEnvDetail:
+    'JSON 객체로 입력합니다. 여기에 넣은 키는 플러그인 설정에 평문으로 저장됩니다.',
+  settingsServerNameExists: '같은 이름의 서버가 있습니다. 다른 이름을 사용하세요.',
+  settingsKeepDraft: '초안에 반영',
+  settingsDiscardChanges: '변경 취소',
+  settingsAutoMergeLabel: '자동 병합 기준',
+  settingsPendingMergeLabel: '검토 대기 기준',
+  settingsSearchTuningTitle: '고급 검색 설정',
+  settingsSearchTuningDetail: '정기 점검, 검색 결과의 관련도와 키워드 비중을 조정합니다.',
+  settingsEmbeddingSelectionHelp:
+    '모델을 바꾸면 적용 전 확인할 수 있습니다. 적용 시 기존 검색 데이터를 새 모델로 다시 처리해야 합니다.',
+  settingsRemoteEmbeddingTitle: '선택한 서버에서 노트 검색 처리',
+  settingsRemoteEmbeddingDetail:
+    '검색 데이터를 만들 때 제외되지 않은 노트 내용이 선택한 연결의 서버로 전송됩니다. 서버의 데이터 처리 정책을 확인하세요.',
+  settingsLocalEndpointDetail:
+    '노트 내용은 설정한 로컬 서버로 전달됩니다. 해당 서버의 저장·처리 방식은 서버 설정을 따릅니다.',
+  settingsExcludePathMissing: '현재 볼트에 없음 · 해당 경로가 생기면 제외됩니다.',
+  settingsChatAdvancedTitle: '고급 응답 설정',
+  settingsResetPromptConfirm:
+    '현재 프롬프트 내용을 기본값으로 되돌릴까요? 편집한 내용은 사라집니다.',
+  settingsDiscardPromptDraft: '저장하지 않은 프롬프트 변경이 있습니다. 변경을 버리고 이동할까요?',
+  settingsPromptDraftHelp: '보관함 편집은 저장 버튼을 누를 때 반영됩니다.',
+  settingsRemoveNamed: '{name} 제거',
+  settingsShowMore: '더 보기 · 남은 {count}개',
+  settingsOffDependent: '이 값을 조정하려면 위 기능을 켜세요.',
+  settingsScopeSummary: '검색 범위와 제외 설정',
+  settingsScopeDetail: '검색 대상 형식과 제외할 폴더·확장자를 확인합니다.',
+  settingsGraphDanger: '연결 검색 데이터 초기화',
+  settingsGraphNoModelCost: '모델을 선택하면 전송 범위와 예상 사용량이 표시됩니다.',
+  settingsNumericError: '{min}~{max} 범위의 유효한 숫자를 입력하세요.',
+  settingsOpenMcp: '외부 도구 설정 열기',
+  settingsChatFolderError:
+    '저장할 볼트 폴더 경로를 입력하세요. 노트 파일 경로는 사용할 수 없습니다.',
+  settingsPresetPreview: '프롬프트 미리보기',
   agentDiagnosticsPanelTitle: '진단',
   agentDiagnosticsPanelDesc:
     'Codex와 opencode가 문제 원인을 확인할 수 있도록 런타임 상태를 기록합니다. 일반 사용에서는 기본적으로 꺼져 있습니다.',
@@ -1658,7 +1789,7 @@ const ko: I18nKeys = {
   actionCancelledNotice: '취소했습니다.',
   actionFailedWithMessage: '실패했습니다: {message}',
   noModelsEnabled: '활성화된 모델 없음',
-  pluginAwareGeneration: '플러그인 인식 생성 활성화',
+  pluginAwareGeneration: '설치된 플러그인에 맞춘 답변',
   pluginAwareGenerationDesc:
     'LLM 프롬프트에 활성 플러그인 목록을 포함하여 호환 문법을 유도합니다. (비공식 API 사용)',
   pluginAwareGenerationLimitNotice:
@@ -1669,13 +1800,12 @@ const ko: I18nKeys = {
   languageDesc: '플러그인 전체 UI 언어를 선택합니다',
   langKo: '한국어',
   langEn: 'English',
-  languageChangeConfirm:
-    '언어를 변경하시겠습니까? 변경 사항을 적용하려면 Obsidian을 다시 로드해야 합니다.',
+  languageChangeConfirm: '표시 언어를 변경할까요? 열린 설정 화면에 바로 적용됩니다.',
   generalStatusTitle: '현재 상태',
   generalStatusDesc: '채팅과 검색을 바로 사용할 수 있는지 확인하고 필요한 다음 행동만 안내합니다.',
   generalAllReady: '현재 바로 처리할 항목이 없습니다.',
   generalBasicsTitle: '기본 설정',
-  generalBasicsDesc: '언어, 기본 모델, 설정 저장 방식을 정합니다.',
+  generalBasicsDesc: '표시 언어와 채팅·명령어에 사용할 기본 모델을 정합니다.',
   generalDiagnosticsTitle: '진단',
   generalDiagnosticsDesc: '문제가 있을 때만 런타임 상태와 상세 기록을 확인합니다.',
   generalDiagnosticsDisclosureTitle: '진단 도구 보기',
@@ -1702,7 +1832,8 @@ const ko: I18nKeys = {
   chatPromptSectionDesc: 'AI의 기본 역할과 응답 방식을 정합니다.',
   chatPromptLibraryDesc: '저장된 프롬프트를 선택하고 이름·설명·내용을 관리합니다.',
   chatPromptShortcutsTitle: '빠른 시작과 초기화',
-  chatPromptShortcutsDesc: '프리셋을 새 기본값으로 적용하거나 기본 프롬프트로 되돌립니다.',
+  chatPromptShortcutsDesc:
+    '선택한 응답 방식을 보관함에 추가해 적용합니다. 같은 내용은 기존 항목을 다시 사용합니다.',
   chatApplyPreset: '적용',
   chatPromptResetDesc: '사용자 지정 전역 프롬프트를 기본 지식 작업 프롬프트로 되돌립니다.',
   chatStorageSectionTitle: '대화 저장',
@@ -1987,7 +2118,7 @@ const ko: I18nKeys = {
   ragOverviewReady: '최신',
   ragOverviewNeedsUpdate: '{count}개 업데이트 필요',
   ragOverviewEmpty: '인덱싱 대상 없음',
-  ragOverviewDetail: '{healthy}/{total}개 문서 최신 · 자동 업데이트 {auto}',
+  ragOverviewDetail: '{healthy}/{total}개 문서 최신 · 정기 점검 {auto}',
   ragOverviewUnavailable: '연결 필요',
   ragOverviewFixEmbedding: '임베딩 모델 선택',
   ragOverviewCheckProvider: '프로바이더 확인',
@@ -2379,7 +2510,7 @@ const ko: I18nKeys = {
   chatDeleteSession: '대화 삭제',
   chatDeleteConfirm: '이 대화를 정말 삭제하시겠습니까?',
   chatLoadSession: '대화 불러오기',
-  chatAutoSave: '자동 저장',
+  chatAutoSave: '대화를 노트로 자동 저장',
   chatAutoSaveDesc: '대화 내용을 자동으로 저장합니다',
   chatAutoSaveDelay: '자동 저장 지연(ms)',
   chatAutoSaveDelayDesc: '마지막 메시지 후 저장까지의 지연 시간',
@@ -2418,7 +2549,7 @@ const ko: I18nKeys = {
     '채팅과 명령어 실행에 사용할 LLM provider를 관리합니다. 활성화, 모델 선택, 연결 검증을 provider별로 확인합니다.',
   settingsAuto025: '{v0}개 구성',
   settingsAuto026: '고급 진단과 세부 튜닝',
-  settingsAuto027: 'RAG 운영 상태',
+  settingsAuto027: '노트 검색 상태',
   settingsAuto028: '상태 계산 중...',
   settingsAuto029: 'GraphRAG 선택 운영',
   settingsAuto030: '전체 {v0}개 .md 노트에서 {v1}개 증거 항목 처리 완료{v2}{v3}',
@@ -2480,16 +2611,16 @@ const ko: I18nKeys = {
   settingsAuto078: '대기 중',
   settingsAuto079: '인덱싱 중: {v0}, 대기 {v1}개',
   settingsAuto080: '{v0}개 문서, {v1}개 벡터',
-  settingsAuto081: '임베딩 프로바이더',
+  settingsAuto081: '검색 모델',
   settingsAuto082:
     'API 키는 Providers 탭에서 설정한 값을 사용합니다. 여기서는 임베딩 전용 모델만 선택하세요.',
   settingsAuto083:
-    '⚠️ 임베딩 프로바이더/모델 변경은 자동으로 저장되지 않습니다. "저장" 버튼을 클릭해야 적용됩니다. 변경 시 기존 임베딩 데이터가 삭제되지 않습니다. 새 모델을 모든 데이터에 적용하려면 "전체 재인덱싱"을 실행하세요.',
+    '모델 변경은 적용 버튼을 눌러야 저장됩니다. 기존 검색 데이터는 유지되며, 전체 데이터에 새 모델을 쓰려면 재인덱싱이 필요합니다.',
   settingsAuto084: '임베딩에 사용할 프로바이더를 선택하세요',
   settingsAuto085: '임베딩 모델 ID를 직접 입력하세요',
   settingsAuto086: '예: my-custom-model',
   settingsAuto087: '사용할 임베딩 모델을 선택하세요',
-  settingsAuto088: '저장',
+  settingsAuto088: '적용',
   settingsAuto089: '저장 중...',
   settingsAuto090: '임베딩 설정이 저장되었습니다.',
   settingsAuto091: '임베딩 설정 저장 실패: {v0}',
@@ -2522,7 +2653,7 @@ const ko: I18nKeys = {
   settingsAuto117: '마지막 상태 계산: {v0}',
   settingsAuto118: '현재 상태',
   settingsAuto119: '필요 작업',
-  settingsAuto120: '자동 업데이트',
+  settingsAuto120: '정기 검색 데이터 점검',
   settingsAuto121: '임베딩: {v0} / {v1}',
   settingsAuto122: '미설정',
   settingsAuto123: '저장소: {v0}',
@@ -2592,13 +2723,13 @@ const ko: I18nKeys = {
   settingsAuto181: '핵심 인덱싱 제외 대상',
   settingsAuto182: '자동 업데이트와 성능 튜닝',
   settingsAuto183:
-    '주기적으로 누락되거나 변경된 파일을 확인해 인덱스를 보정합니다. 파일 변경 감지는 별도로 계속 작동합니다.',
+    '노트 변경은 자동 감지합니다. 정기 점검은 놓친 변경을 추가로 찾아 검색 데이터를 보완합니다.',
   settingsAuto184: '성능 튜닝',
   settingsAuto185:
     '기본값은 임베딩 프로바이더에 맞춰 자동으로 적용하고, 필요할 때만 직접 조정합니다.',
   settingsAuto186: '자동',
   settingsAuto187: '수동',
-  settingsAuto188: '자동 조절 중 · 최대 배치 {v0} · 요청 간격과 부하는 실시간으로 최적화됩니다.',
+  settingsAuto188: '백그라운드에서 요청 속도와 처리량을 자동으로 조정합니다.',
   settingsAuto189: '성능 보호',
   settingsAuto190: '인덱싱 중 Obsidian이 느려지면 배치 크기와 대기 시간을 자동으로 조절합니다.',
   settingsAuto191: '임베딩 배치 크기',
@@ -2740,13 +2871,13 @@ const ko: I18nKeys = {
   mcpJsonMissingMcpServers: '"mcpServers" 키가 누락되었습니다.',
   mcpJsonInvalidMcpServers: '"mcpServers"는 객체여야 합니다.',
   mcpJsonInvalidServerValue: '서버 값이 객체가 아닙니다',
-  mcpJsonServerNeedsCommand: '서버는 "command"가 필요합니다',
-  mcpJsonInvalidArgs: '"args"는 배열이어야 합니다',
-  mcpJsonInvalidEnv: '"env"는 객체여야 합니다',
+  mcpJsonServerNeedsCommand: '비어 있지 않은 실행 명령 문자열이 필요합니다.',
+  mcpJsonInvalidArgs: '"args"의 각 인수는 문자열이어야 합니다. 예: ["-y", "패키지명"]',
+  mcpJsonInvalidEnv: '"env"는 값이 모두 문자열인 객체여야 합니다. 예: {"KEY":"값"}',
   mcpJsonInvalidArray: 'mcpServers는 반드시 배열(JSON Array)이어야 합니다.',
   mcpJsonLinting: 'JSON 검사 중...',
   mcpJsonLintOk: 'JSON 문법 OK',
-  mcpJsonLintError: 'JSON 문법 오류: {error}',
+  mcpJsonLintError: '서버 설정 오류: {error}',
   mcpJsonSchemaError: '스키마 오류: {field} 필드가 누락되었습니다',
   mcpJsonLine: '줄',
   mcpJsonAutoSave: '자동 저장',
@@ -2760,7 +2891,7 @@ const ko: I18nKeys = {
 
   // Tabs
   tabGeneral: '일반',
-  tabProviders: '프로바이더',
+  tabProviders: 'AI 연결',
   // Providers tab common actions
   collapseAll: '모두 접기',
   expandAll: '모두 펼치기',
@@ -2784,7 +2915,9 @@ const ko: I18nKeys = {
   providerStatusSectionDesc: '채팅과 검색에 사용할 프로바이더의 준비 상태를 확인합니다.',
   providerStatusNone: '아직 없음',
   providerStatusNeedsSetup: '{count}개 연결 설정 필요',
-  providerStatusSummaryDetail: '전체 {total}개 중 {enabled}개 활성, {ready}개 연결 확인됨',
+  providerStatusSummaryDetail:
+    '전체 {total}개 · 활성 {enabled}개 · 테스트 확인 {ready}개 · 미검증 {configured}개',
+  providerStatusReadyCount: '테스트 확인 {count}개',
   providerAttentionTitle: '{provider} 설정을 마무리하세요',
   providerContinueSetup: '설정 계속',
   providerAddTitle: '새 프로바이더 연결',
@@ -2876,9 +3009,9 @@ const ko: I18nKeys = {
   providerImportAdded: '{v0}개 모델을 추가했습니다.',
   providerImportFound: '사용 가능한 모델 {count}개를 찾았습니다.',
   overviewCustomOpenAIProvider: '사용자 지정 OpenAI 호환',
-  tabRag: 'RAG',
+  tabRag: '노트 검색',
   tabChat: '채팅',
-  tabMcp: 'MCP',
+  tabMcp: '외부 도구',
   tabAdvanced: '고급',
 
   // Commands
@@ -3375,6 +3508,74 @@ const ko: I18nKeys = {
 };
 
 const en: I18nKeys = {
+  settingsChooseFolder: 'Choose a vault folder',
+  settingsProviderSetupSteps:
+    'Enter connection details, import or add a model, then test it. Testing sends a real request and may incur charges.',
+  settingsAddModelManually: 'Add a model ID manually',
+  settingsTestModel: 'Test',
+  settingsLastChecked: 'Last checked: {time}',
+  settingsRemoveSelectedModel:
+    'This model is selected for chat or search. Removing it requires selecting another model for that feature. Remove it?',
+  settingsStatusDetails: 'View status details',
+  settingsSaved: 'Changes are saved automatically.',
+  settingsSavePending: 'Waiting to save changes…',
+  settingsSaving: 'Saving changes…',
+  settingsSaveFailed: 'Changes could not be saved. Please retry.',
+  settingsSaveRetry: 'Retry saving',
+  settingsApplyFailed: 'Settings could not be applied.',
+  settingsApplyServers: 'Apply server settings',
+  settingsApplyingServers: 'Saving settings and connecting servers…',
+  settingsMcpJsonLabel: 'MCP server configuration JSON',
+  settingsMcpJsonTitle: 'Advanced JSON editor',
+  settingsMcpDraftHelp: 'Changes stay in a draft. Applying them reconnects the servers.',
+  settingsMcpApplied: 'Current server settings are applied.',
+  settingsMcpDraftValid: 'Draft format is valid. Apply to reconnect the servers.',
+  settingsMcpPartialFailure:
+    'Settings were saved, but {count} servers could not connect. Check the connection status above.',
+  settingsMcpPathLabel: 'Server execution PATH',
+  settingsMcpPathHelp:
+    'Leave empty for automatic detection. Applying a manual override reconnects servers.',
+  settingsMcpPathDraft: 'Terminal PATH loaded. Choose Apply PATH to use it.',
+  settingsApplyPath: 'Apply PATH',
+  settingsAddServer: 'Add server',
+  settingsEditServer: 'Edit',
+  settingsServerName: 'Server name',
+  settingsServerCommand: 'Command',
+  settingsServerArgs: 'Arguments',
+  settingsServerArgsDetail: 'Enter a JSON array, e.g. ["-y", "@upstash/context7-mcp"].',
+  settingsServerEnv: 'Environment variables',
+  settingsServerEnvDetail:
+    'Enter a JSON object. Keys entered here are stored as plain text in plugin settings.',
+  settingsServerNameExists: 'A server with this name already exists. Choose another name.',
+  settingsKeepDraft: 'Update draft',
+  settingsDiscardChanges: 'Discard changes',
+  settingsAutoMergeLabel: 'Automatic merge threshold',
+  settingsPendingMergeLabel: 'Review threshold',
+  settingsSearchTuningTitle: 'Advanced search settings',
+  settingsSearchTuningDetail: 'Adjust periodic checks, relevance, and keyword weighting.',
+  settingsEmbeddingSelectionHelp:
+    'Review a model change before applying. Existing search data must be rebuilt for the new model.',
+  settingsRemoteEmbeddingTitle: 'Note search processed by the selected server',
+  settingsRemoteEmbeddingDetail:
+    'Eligible note content is sent to the selected server when building search data. Check its data handling policy.',
+  settingsLocalEndpointDetail:
+    'Note content is sent to your configured local server. Its storage and processing follow that server’s settings.',
+  settingsExcludePathMissing: 'Not in this vault yet · excluded when the path exists.',
+  settingsChatAdvancedTitle: 'Advanced response settings',
+  settingsResetPromptConfirm: 'Reset the current prompt? Your edited content will be replaced.',
+  settingsDiscardPromptDraft: 'This prompt has unsaved changes. Discard them and continue?',
+  settingsPromptDraftHelp: 'Library edits are applied when you choose Save.',
+  settingsRemoveNamed: 'Remove {name}',
+  settingsShowMore: 'Show more · {count} remaining',
+  settingsOffDependent: 'Enable the feature above to adjust this value.',
+  settingsScopeSummary: 'Search scope and exclusions',
+  settingsScopeDetail: 'Review eligible file types and excluded folders and extensions.',
+  settingsGraphDanger: 'Reset relationship search data',
+  settingsGraphNoModelCost: 'Choose a model to see transfer scope and estimated usage.',
+  settingsNumericError: 'Enter a valid number between {min} and {max}.',
+  settingsOpenMcp: 'Open external tool settings',
+  settingsChatFolderError: 'Enter a vault folder path. A note file path cannot be used.',
+  settingsPresetPreview: 'Preview prompt',
   // General
   autoSaveSettings: 'Auto-save settings',
   autoSaveSettingsDesc: 'Automatically save settings after changes (reduces disk I/O)',
@@ -3397,7 +3598,7 @@ const en: I18nKeys = {
   actionCancelledNotice: 'Cancelled.',
   actionFailedWithMessage: 'Failed: {message}',
   noModelsEnabled: 'No models enabled',
-  pluginAwareGeneration: 'Enable Plugin-Aware Generation',
+  pluginAwareGeneration: 'Answers informed by installed plugins',
   pluginAwareGenerationDesc:
     'Include active plugin list in LLM prompts to encourage compatible syntax. (Uses unofficial API)',
   pluginAwareGenerationLimitNotice:
@@ -3408,14 +3609,13 @@ const en: I18nKeys = {
   languageDesc: 'Select the plugin UI language',
   langKo: 'Korean',
   langEn: 'English',
-  languageChangeConfirm:
-    'Are you sure you want to change the language? Obsidian must be reloaded to apply the changes.',
+  languageChangeConfirm: 'Change the display language? It takes effect in the open settings view.',
   generalStatusTitle: 'Current status',
   generalStatusDesc:
     'See whether chat and search are ready, with only the next useful action surfaced.',
   generalAllReady: 'Nothing needs immediate attention.',
   generalBasicsTitle: 'Essentials',
-  generalBasicsDesc: 'Choose the language, default model, and settings save behavior.',
+  generalBasicsDesc: 'Choose your display language and the default model for chat and commands.',
   generalDiagnosticsTitle: 'Diagnostics',
   generalDiagnosticsDesc:
     'Inspect runtime state and detailed records only when something needs attention.',
@@ -3444,7 +3644,8 @@ const en: I18nKeys = {
   chatPromptSectionDesc: 'Set the AI’s default role and response behavior.',
   chatPromptLibraryDesc: 'Choose saved prompts and manage their names, descriptions, and content.',
   chatPromptShortcutsTitle: 'Quick starts and reset',
-  chatPromptShortcutsDesc: 'Apply a preset as the new default or return to the built-in prompt.',
+  chatPromptShortcutsDesc:
+    'Apply a response style from your library. Identical content reuses the existing entry.',
   chatApplyPreset: 'Apply',
   chatPromptResetDesc: 'Return the global prompt to the default knowledge-work prompt.',
   chatStorageSectionTitle: 'Chat saving',
@@ -3759,7 +3960,7 @@ const en: I18nKeys = {
   ragOverviewReady: 'Up to date',
   ragOverviewNeedsUpdate: '{count} need updating',
   ragOverviewEmpty: 'No indexing targets',
-  ragOverviewDetail: '{healthy}/{total} documents current · auto update {auto}',
+  ragOverviewDetail: '{healthy}/{total} documents current · periodic checks {auto}',
   ragOverviewUnavailable: 'Connection needed',
   ragOverviewFixEmbedding: 'Choose embedding model',
   ragOverviewCheckProvider: 'Review provider',
@@ -4153,7 +4354,7 @@ const en: I18nKeys = {
   chatDeleteSession: 'Delete Session',
   chatDeleteConfirm: 'Are you sure you want to delete this session?',
   chatLoadSession: 'Load Session',
-  chatAutoSave: 'Auto Save',
+  chatAutoSave: 'Automatically save conversations as notes',
   chatAutoSaveDesc: 'Automatically save conversation content',
   chatAutoSaveDelay: 'Auto-save delay (ms)',
   chatAutoSaveDelayDesc: 'Delay before saving after last message',
@@ -4192,7 +4393,7 @@ const en: I18nKeys = {
     'Manage LLM providers for chat and command execution. Check enablement, model selection, and connection validation per provider.',
   settingsAuto025: '{v0} configured',
   settingsAuto026: 'Advanced diagnostics and tuning',
-  settingsAuto027: 'RAG operations status',
+  settingsAuto027: 'Note search status',
   settingsAuto028: 'Calculating status...',
   settingsAuto029: 'Optional GraphRAG operations',
   settingsAuto030: 'Processed {v1} evidence items from {v0} eligible .md notes{v2}{v3}',
@@ -4256,16 +4457,16 @@ const en: I18nKeys = {
   settingsAuto078: 'Idle',
   settingsAuto079: 'Indexing: {v0}, queued {v1}',
   settingsAuto080: '{v0} documents, {v1} vectors',
-  settingsAuto081: 'Embedding provider',
+  settingsAuto081: 'Search model',
   settingsAuto082:
     'API keys use values configured in the Providers tab. Select only the embedding-specific model here.',
   settingsAuto083:
-    'Embedding provider/model changes are not saved automatically. Click "Save" to apply them. Existing embedding data is not deleted when changed. To apply the new model to all data, run "Reindex all".',
+    'Click Apply to save the model change. Existing search data is retained; reindex to use the new model for all data.',
   settingsAuto084: 'Select the provider to use for embeddings',
   settingsAuto085: 'Enter the embedding model ID directly',
   settingsAuto086: 'Example: my-custom-model',
   settingsAuto087: 'Select the embedding model to use',
-  settingsAuto088: 'Save',
+  settingsAuto088: 'Apply',
   settingsAuto089: 'Saving...',
   settingsAuto090: 'Embedding settings saved.',
   settingsAuto091: 'Failed to save embedding settings: {v0}',
@@ -4299,7 +4500,7 @@ const en: I18nKeys = {
   settingsAuto117: 'Last calculated: {v0}',
   settingsAuto118: 'Current status',
   settingsAuto119: 'Required work',
-  settingsAuto120: 'Auto update',
+  settingsAuto120: 'Periodic search data checks',
   settingsAuto121: 'Embedding: {v0} / {v1}',
   settingsAuto122: 'Not set',
   settingsAuto123: 'Storage: {v0}',
@@ -4369,13 +4570,13 @@ const en: I18nKeys = {
   settingsAuto181: 'Core indexing exclusions',
   settingsAuto182: 'Auto-update and performance tuning',
   settingsAuto183:
-    'Periodically reconcile missing or changed files. Live file-change detection continues independently.',
+    'Note changes are detected automatically. Periodic checks find any missed changes.',
   settingsAuto184: 'Performance tuning',
   settingsAuto185:
     'Defaults are applied automatically for the embedding provider; adjust manually only when needed.',
   settingsAuto186: 'Automatic',
   settingsAuto187: 'Manual',
-  settingsAuto188: 'Auto adjusting · max batch {v0} · request pacing and load are optimized live.',
+  settingsAuto188: 'Request pacing and throughput are adjusted automatically in the background.',
   settingsAuto189: 'Performance guard',
   settingsAuto190:
     'Automatically adjusts batch size and wait time if Obsidian becomes slow during indexing.',
@@ -4522,13 +4723,13 @@ const en: I18nKeys = {
   mcpJsonMissingMcpServers: '"mcpServers" key is missing.',
   mcpJsonInvalidMcpServers: '"mcpServers" must be an object.',
   mcpJsonInvalidServerValue: 'Server value is not an object',
-  mcpJsonServerNeedsCommand: 'Server needs "command"',
-  mcpJsonInvalidArgs: '"args" must be an array',
-  mcpJsonInvalidEnv: '"env" must be an object',
+  mcpJsonServerNeedsCommand: 'A non-empty command string is required.',
+  mcpJsonInvalidArgs: '"args" must be an array of strings. Example: ["-y", "package-name"]',
+  mcpJsonInvalidEnv: '"env" must be an object with string values. Example: {"KEY":"value"}',
   mcpJsonInvalidArray: 'mcpServers must be a JSON Array.',
   mcpJsonLinting: 'Linting JSON...',
   mcpJsonLintOk: 'JSON syntax OK',
-  mcpJsonLintError: 'JSON syntax error: {error}',
+  mcpJsonLintError: 'Server configuration error: {error}',
   mcpJsonSchemaError: 'Schema error: {field} field is missing',
   mcpJsonLine: 'Line',
   mcpJsonAutoSave: 'Auto Save',
@@ -4542,7 +4743,7 @@ const en: I18nKeys = {
 
   // Tabs
   tabGeneral: 'General',
-  tabProviders: 'Providers',
+  tabProviders: 'AI connections',
   // Providers tab common actions
   collapseAll: 'Collapse All',
   expandAll: 'Expand All',
@@ -4566,7 +4767,9 @@ const en: I18nKeys = {
   providerStatusSectionDesc: 'Check whether providers for chat and search are ready.',
   providerStatusNone: 'None yet',
   providerStatusNeedsSetup: 'Setup needed for {count} connections',
-  providerStatusSummaryDetail: '{enabled} of {total} enabled, {ready} connection-verified',
+  providerStatusSummaryDetail:
+    '{total} total · {enabled} enabled · {ready} tested · {configured} unverified',
+  providerStatusReadyCount: '{count} tested',
   providerAttentionTitle: 'Finish setting up {provider}',
   providerContinueSetup: 'Continue setup',
   providerAddTitle: 'Connect a new provider',
@@ -4663,9 +4866,9 @@ const en: I18nKeys = {
   providerImportAdded: 'Added {v0} models.',
   providerImportFound: 'Found {count} available models.',
   overviewCustomOpenAIProvider: 'Custom OpenAI-compatible',
-  tabRag: 'RAG',
+  tabRag: 'Note search',
   tabChat: 'Chat',
-  tabMcp: 'MCP',
+  tabMcp: 'External tools',
   tabAdvanced: 'Advanced',
 
   // Commands
