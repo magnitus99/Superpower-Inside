@@ -10,12 +10,12 @@ Superpower Inside turns your Obsidian vault into an AI research partner. Ask one
 
 **[Install from Obsidian Community Plugins](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)** · **[한국어로 읽기](#한국어)**
 
-| Ask the vault, not the file tree | Every answer shows its sources | Bring your own AI |
+| Ask the vault, not the file tree | Check the evidence | Bring your own AI |
 | --- | --- | --- |
-| One question covers your entire vault—not just the file you happened to open. | See exactly which notes were used, jump to the original, and verify before you trust. | OpenAI, Claude, Ollama, or your own local model—it works with what you already use. |
+| Research can span eligible notes across your vault. The answer states coverage limits. | Inspect available sources, open the original, and check whether it supports the claim. | Connect OpenAI, Claude, Ollama, OpenRouter, or an OpenAI-compatible endpoint. |
 
 > [!IMPORTANT]
-> Superpower Inside is **desktop-only**, completely free, and open source. No premium tier, no feature paywall, no account required.
+> Superpower Inside is **desktop-only**, free, and open source. The plugin has no paid tier or account requirement. Your chosen AI provider may require an account and charge for usage.
 
 ---
 
@@ -25,7 +25,7 @@ Superpower Inside turns your Obsidian vault into an AI research partner. Ask one
 Ask naturally → It searches your vault → It reads and connects the evidence → It answers with sources
 ```
 
-One question. A complete research trail you can inspect, copy, or reuse.
+Inspect the answer, available sources, and work log. Research is bounded by file eligibility, tool limits, and the evidence that could be verified.
 
 ## Why you'll love it
 
@@ -33,17 +33,17 @@ One question. A complete research trail you can inspect, copy, or reuse.
 
 Searching for a keyword finds files that contain that word. Superpower Inside understands what you're *asking*—themes, changes, contradictions, summaries—across your entire vault. You don't need to know where the answer lives. Just ask.
 
-**📎 Every answer comes with receipts**
+**📎 Inspect the sources behind vault claims**
 
-Source cards show which notes were used, down to the exact lines. Open the original, copy the link, or insert the evidence directly into your active note. You never have to take the AI's word for it.
+Available source cards identify notes and retrieved ranges. Open the original, copy the link, or insert the evidence into your active note. General knowledge and proposed content may have no vault source; inspect support before relying on a claim.
 
 **🧭 It sees connections you might miss**
 
 Beyond keyword and meaning-based search, it follows the relationships between your notes—the people, concepts, and recurring themes that link scattered thoughts into one picture.
 
-**🏠 Your notes stay on your device**
+**🏠 Built-in search runs locally**
 
-The built-in search model runs entirely on your machine. No API key, no network call, no data leaving your device for the search itself. Connect any AI model you trust for the conversation—OpenAI, Claude, Ollama, OpenRouter, or your own local endpoint.
+The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, graph extraction, summaries, reranking, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
 
 **✋ You're always in control**
 
@@ -60,9 +60,9 @@ Summarize the core themes in my vault, with sources for each claim.
 
 Find decisions that changed between my planning notes and final meeting minutes.
 
-What have I been repeating without evidence?
+Find recurring claims in @[Research] whose supporting evidence is missing from the checked notes. Distinguish missing evidence from false claims.
 
-Review @[Projects/Launch] and tell me what's blocked, why, and who owns it.
+Review @[Projects/Launch]. List blockers, evidence, owners, and next actions in a table. Mark missing owners as unknown.
 ```
 
 ## Focus your question when it matters
@@ -73,7 +73,23 @@ Review @[Projects/Launch] and tell me what's blocked, why, and who owns it.
 | `@[folder/path]` | Scope the research to one folder. |
 | `@server` | Bring in a connected external tool for this question. |
 
-You don't need to mention files every time. The default search finds relevant evidence on its own—use mentions when you want to lock the scope exactly.
+Use file and folder mentions to focus vault research. Mentioning only an external server skips automatic vault search for that turn; add a file or folder mention when you also need vault evidence.
+
+## Ask for a usable result
+
+State the result you need, the relevant notes, and the format or boundary that matters. A short question is enough for a simple task. For example:
+
+```text
+Compare the launch decisions in @[Projects/Launch] for a project lead.
+Use a table with decision, before, after, and source. Keep recorded dates unchanged.
+Separate inferred reasons from recorded reasons and flag unverified coverage.
+```
+
+Refine the answer with a follow-up such as “Keep the evidence, shorten the background, and put next actions first.” Keep recurring preferences in the prompt library and task-specific requirements in the chat message. The chat prompt library supports a global default and a prompt for the current session. Generated prompts use a bounded embedding-index summary with sample passages, sent to the selected generation model; review the generated body before applying it.
+
+These examples follow the [official ChatGPT prompting guide](https://learn.chatgpt.com/docs/prompting). For GPT-6.1 Sol, consult the [official model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and check provider availability and tool compatibility. Choosing a prompt does not change the configured model or reasoning setting.
+
+GPT-6.1 Sol requires the Responses API for OpenAI tool calling. The plugin’s current direct OpenAI connection uses Chat Completions, so native tool research with that model requires a provider implementation update. Prompt changes alone do not establish compatibility.
 
 ## Get started in three steps
 
@@ -86,7 +102,7 @@ Smart keyword search and read-only vault tools work immediately—no extra setup
 #### Manual install
 
 1. Download the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest).
-2. Copy the release files into `.obsidian/plugins/superpower-inside/`.
+2. Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/superpower-inside/`.
 3. Reload community plugins and enable **Superpower Inside**.
 
 <details>
@@ -113,12 +129,12 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 **[커뮤니티 플러그인에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
-| 파일 트리가 아니라 볼트에 질문하세요 | 모든 답변에 출처가 따라옵니다 | 원하는 AI를 그대로 연결하세요 |
+| 파일 트리가 아니라 볼트에 질문하세요 | 답변의 근거를 확인하세요 | 원하는 AI를 연결하세요 |
 | --- | --- | --- |
-| 열어놓은 파일 하나가 아니라 볼트 전체를 한 번의 질문으로 조사합니다. | 어떤 노트가 근거였는지 확인하고, 원문으로 바로 이동한 뒤, 믿기 전에 검증하세요. | OpenAI, Claude, Ollama, 또는 로컬 모델—이미 쓰는 것을 그대로 연결하세요. |
+| 볼트의 조사 대상 노트를 함께 찾고 답변에서 확인 범위와 한계를 확인합니다. | 제공된 출처를 열어 원문이 주장을 뒷받침하는지 검증하세요. | OpenAI, Claude, Ollama, OpenRouter 또는 OpenAI 호환 서버를 연결하세요. |
 
 > [!IMPORTANT]
-> **데스크톱 전용**, 완전 무료, 오픈소스입니다. 유료 등급도, 기능 잠금도, 계정 가입도 없습니다.
+> **데스크톱 전용**, 무료, 오픈소스입니다. 플러그인 자체에는 유료 등급이나 계정 가입이 없습니다. 선택한 AI 제공자는 계정과 별도 사용 요금을 요구할 수 있습니다.
 
 ---
 
@@ -128,7 +144,7 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 자연어로 질문 → 볼트를 검색 → 근거를 읽고 연결 → 출처와 함께 답변
 ```
 
-질문 한 번. 열어보고, 복사하고, 다시 쓸 수 있는 완전한 조사 기록.
+답변, 제공된 출처와 작업 기록을 확인하고 재사용하세요. 조사 범위는 대상 파일, 도구 한도와 검증 가능한 근거에 따라 제한됩니다.
 
 ### 이런 점이 달라집니다
 
@@ -136,17 +152,17 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 키워드 검색은 그 단어가 들어간 파일만 찾아줍니다. Superpower Inside는 주제, 변화, 모순, 요약처럼 *질문 자체*를 이해하고 볼트 전체에서 답을 찾습니다. 어디에 근거가 있는지 미리 알 필요가 없습니다.
 
-**📎 모든 답변에 근거가 따라옵니다**
+**📎 볼트 기반 주장의 출처를 확인하세요**
 
-출처 카드가 어떤 노트의 어느 줄을 근거로 썼는지 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입까지 한 번에 이어집니다. AI가 말한 걸 그냥 믿을 필요가 없습니다.
+제공된 출처 카드는 노트와 검색된 구간을 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입으로 이어집니다. 일반 지식과 새로 작성한 제안에는 볼트 출처가 없을 수 있으므로 주장의 근거를 확인하세요.
 
 **🧭 놓치기 쉬운 연결을 보여줍니다**
 
 단어 매칭과 의미 기반 검색을 넘어서, 노트 사이의 관계—인물, 개념, 반복 주제—를 따라 흩어진 생각을 하나의 그림으로 연결합니다.
 
-**🏠 노트는 기기 안에 남습니다**
+**🏠 내장 검색은 기기 안에서 실행됩니다**
 
-내장 검색 모델은 전적으로 기기 안에서 실행됩니다. API 키도, 네트워크 요청도, 검색 자체가 기기를 떠나지 않습니다. 대화에는 원하는 AI 모델을 연결하세요—OpenAI, Claude, Ollama, OpenRouter, 또는 로컬 모델.
+내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 그래프 추출, 요약, 재정렬과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
 
 **✋ 언제든 중단하고, 언제든 확인하세요**
 
@@ -163,9 +179,9 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 기획 노트와 최종 회의록 사이에서 바뀐 의사결정을 찾아줘.
 
-내가 반복해서 주장하지만 아직 근거를 남기지 않은 내용을 찾아줘.
+@[Research]에서 반복되는 주장 중 확인한 노트에 근거가 없는 것을 찾아줘. 근거 부족과 틀린 주장을 구분해줘.
 
-@[Projects/Launch]를 검토하고 무엇이, 누구 때문에, 왜 막혀 있는지 정리해줘.
+@[Projects/Launch]의 장애 요인, 근거, 담당자와 다음 행동을 표로 정리해줘. 담당자가 없으면 미확인으로 표시해줘.
 ```
 
 ### 정확한 범위를 지정하고 싶을 때
@@ -176,7 +192,23 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 | `@[folder/path]` | 조사 범위를 한 폴더로 좁힙니다. |
 | `@server` | 이 질문에 연결된 외부 도구를 가져옵니다. |
 
-매번 파일을 멘션할 필요는 없습니다. 기본 검색이 관련 근거를 자동으로 찾고, 멘션은 범위를 정확히 고정하고 싶을 때 사용합니다.
+파일·폴더 멘션으로 볼트 조사에 초점을 맞출 수 있습니다. 외부 서버만 멘션하면 그 턴의 볼트 자동 검색을 건너뜁니다. 볼트 근거도 필요하면 파일이나 폴더를 함께 멘션하세요.
+
+### 바로 쓸 수 있는 답변 요청하기
+
+필요한 결과, 관련 노트와 중요한 형식·경계를 알려주세요. 간단한 작업에는 짧은 질문이면 충분합니다.
+
+```text
+@[Projects/Launch]의 출시 결정을 프로젝트 담당자가 볼 수 있게 비교해줘.
+결정, 이전, 이후, 출처를 표로 쓰고 기록된 날짜는 바꾸지 마.
+이유가 기록된 경우와 추론한 경우를 구분하고 확인하지 못한 범위를 밝혀줘.
+```
+
+답변을 본 뒤 “근거는 유지하고 배경을 줄여줘. 다음 행동을 먼저 써줘”처럼 후속 요청으로 다듬으세요. 반복되는 선호는 프롬프트 보관함에, 이번 작업에만 필요한 요구는 채팅 메시지에 둡니다. 채팅의 프롬프트 보관함에서 전역 기본값과 현재 세션의 프롬프트를 적용할 수 있습니다. 프롬프트 생성은 대표 구간을 포함한 제한된 임베딩 인덱스 요약을 선택한 생성 모델에 전송합니다. 생성된 본문을 검토한 뒤 적용하세요.
+
+예시는 [ChatGPT 공식 프롬프팅 가이드](https://learn.chatgpt.com/docs/prompting)를 따릅니다. GPT-6.1 Sol을 사용할 때는 [공식 모델 문서](https://developers.openai.com/api/docs/models/gpt-6.1-sol)와 제공자의 모델·도구 지원을 확인하세요. 프롬프트를 선택해도 설정한 모델과 추론 강도는 바뀌지 않습니다.
+
+GPT-6.1 Sol의 OpenAI 도구 호출은 Responses API가 필요합니다. 현재 플러그인의 직접 OpenAI 연결은 Chat Completions를 사용하므로, 이 모델의 네이티브 도구 조사는 provider 구현 변경이 필요합니다. 프롬프트 수정만으로 호환성이 확보되지는 않습니다.
 
 ### 세 단계면 시작됩니다
 
@@ -189,7 +221,7 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 #### 수동 설치
 
 1. [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)를 내려받습니다.
-2. 릴리스 파일을 `.obsidian/plugins/superpower-inside/`에 복사합니다.
+2. `main.js`, `manifest.json`, `styles.css`를 `.obsidian/plugins/superpower-inside/`에 복사합니다.
 3. 커뮤니티 플러그인을 다시 불러온 뒤 **Superpower Inside**를 활성화합니다.
 
 <details>
