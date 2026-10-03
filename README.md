@@ -39,7 +39,7 @@ Available source cards identify notes and retrieved ranges. Open the original, c
 
 **🧭 It sees connections you might miss**
 
-Beyond keyword and meaning-based search, it follows the relationships between your notes—the people, concepts, and recurring themes that link scattered thoughts into one picture.
+Keyword search, semantic search, and chat tools use the same supported text files, including Markdown, plain text, and code. Retrieved passages are checked against the current source before they become answer evidence. Optional GraphRAG and ontology extraction are off by default. When enabled, they connect people, concepts, and claims from those same files. File search and source reading remain available while the graph is being built.
 
 **🏠 Built-in search runs locally**
 
@@ -158,7 +158,7 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 **🧭 놓치기 쉬운 연결을 보여줍니다**
 
-단어 매칭과 의미 기반 검색을 넘어서, 노트 사이의 관계—인물, 개념, 반복 주제—를 따라 흩어진 생각을 하나의 그림으로 연결합니다.
+키워드·의미 검색과 채팅 도구는 같은 지원 텍스트 파일을 사용합니다. Markdown, 일반 텍스트, 코드 등에서 찾은 구간은 현재 원문을 확인한 뒤 답변 근거로 사용합니다. 선택적인 GraphRAG와 ontology는 기본으로 꺼져 있습니다. 켜면 같은 파일에서 인물·개념·주장의 관계를 연결하며, 그래프 구축 여부와 관계없이 파일 검색과 원문 읽기를 사용할 수 있습니다.
 
 **🏠 내장 검색은 기기 안에서 실행됩니다**
 
