@@ -255,7 +255,7 @@ interface BM25BackgroundLoadOutcome {
 }
 
 export default class SuperpowerInsidePlugin extends Plugin {
-  settings!: SuperpowerInsideSettings;
+  declare settings: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
   private provider: LLMProvider | null = null;
   vectorStore: VectorStore | null = null;
