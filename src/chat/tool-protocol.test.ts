@@ -50,7 +50,8 @@ describe('모델 중립 도구 프로토콜', () => {
     expect(evidencePrompt).toContain(
       'Use the available tools proactively whenever the answer depends on vault contents',
     );
-    expect(evidencePrompt).toContain('A search or list result is only a candidate locator');
+    expect(evidencePrompt).toContain('citationStatus="verified"');
+    expect(evidencePrompt).toContain('requiresRead=true');
     expect(evidencePrompt).toContain(
       'Keep the latest user objective and every explicit subquestion',
     );
@@ -63,6 +64,7 @@ describe('모델 중립 도구 프로토콜', () => {
     expect(createNativeVaultEvidencePrompt([createMcpToolDefinition()])).toBe('');
 
     const prompt = createCompatibilityToolPrompt([createMcpToolDefinition()]);
+    expect(prompt).toMatch(/비신뢰|untrusted/i);
     expect(prompt).not.toContain('vault evidence contract');
     expect(prompt).not.toContain('vault-wide absence');
   });

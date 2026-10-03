@@ -36,7 +36,7 @@ import type {
 } from './store';
 import { getEntitySearchAliases } from './entity-labels';
 import { createGraphProviderEpochId } from './extraction';
-import { getLanguage } from '../i18n';
+import { getLanguage, t } from '../i18n';
 
 const GRAPH_FAST_RETRIEVAL_DEADLINE_MS = 450;
 const GRAPH_DEEP_RETRIEVAL_DEADLINE_MS = 20_000;
@@ -420,7 +420,10 @@ export class GraphRagQueryEngine {
             const messages: ChatMessage[] = [
               {
                 role: 'system',
-                content: `Extract only findings from this community report that directly help answer the question. Return concise ${responseLanguage} prose. If irrelevant, return IRRELEVANT.`,
+                content: [
+                  `Extract only findings from this community report that directly help answer the question. Return concise ${responseLanguage} prose. If irrelevant, return IRRELEVANT.`,
+                  t('llmEvidenceDataBoundary'),
+                ].join('\n'),
               },
               {
                 role: 'user',
@@ -452,7 +455,10 @@ export class GraphRagQueryEngine {
       messages: [
         {
           role: 'system',
-          content: `Synthesize the mapped community findings into one evidence-grounded answer in ${responseLanguage}. Preserve uncertainty and do not invent facts.`,
+          content: [
+            `Synthesize the mapped community findings into one evidence-grounded answer in ${responseLanguage}. Preserve uncertainty and do not invent facts.`,
+            t('llmEvidenceDataBoundary'),
+          ].join('\n'),
         },
         {
           role: 'user',

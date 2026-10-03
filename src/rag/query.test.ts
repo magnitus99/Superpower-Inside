@@ -248,6 +248,8 @@ describe('RAGQueryEngine', () => {
       'tail.md',
     ]);
     expect(reranker.getLastRerankStatus()).toBe('applied');
+    expect(provider.messages[0]?.[0]?.content).toMatch(/비신뢰|untrusted/i);
+    expect(provider.messages[0]?.[0]?.content).toContain('Return JSON only');
   });
 
   it('LLM reranker invalid JSON records a fallback diagnostic', async () => {
@@ -733,10 +735,17 @@ function createEntry(path: string, vector: number[], text: string, startLine = 0
   };
 }
 
-function createRerankProvider(response: string): LLMProvider {
+function createRerankProvider(response: string): LLMProvider & {
+  messages: Parameters<LLMProvider['chat']>[0][];
+} {
+  const messages: Parameters<LLMProvider['chat']>[0][] = [];
   return {
     capability: TEST_PROVIDER_CAPABILITY,
-    chat: () => Promise.resolve(response),
+    messages,
+    chat: (inputMessages) => {
+      messages.push(inputMessages);
+      return Promise.resolve(response);
+    },
     streamChat: () => Promise.resolve(),
   };
 }

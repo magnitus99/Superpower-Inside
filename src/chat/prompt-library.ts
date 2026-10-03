@@ -277,7 +277,7 @@ export function buildVaultPromptGenerationMessages(input: {
         directionLines.join('\n\n'),
         '',
         '[Vault Index Summary]',
-        summary,
+        JSON.stringify({ summary }),
       ]
         .filter(Boolean)
         .join('\n'),

@@ -739,8 +739,10 @@ export class VaultResearchAgent {
           [
             {
               role: 'system',
-              content:
+              content: [
                 'You are the internal research engine for an Obsidian vault. Use only supplied evidence, preserve source IDs, and never invent coverage.',
+                t('llmEvidenceDataBoundary'),
+              ].join('\n'),
             },
             { role: 'user', content: prompt },
           ],

@@ -59,6 +59,9 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
       expect.objectContaining({ path: 'Beta.md' }),
     ]);
     expect(chat).toHaveBeenCalledTimes(2);
+    expect(
+      chat.mock.calls.every(([messages]) => /비신뢰|untrusted/i.test(messages[0]?.content ?? '')),
+    ).toBe(true);
     expect(result.content).toContain('볼트 문서 2개를 로컬에서 확인했고');
     expect(result.content).toContain('볼트 전체 요약');
     expect(result.citations.map((citation) => citation.filePath)).toEqual(['Alpha.md', 'Beta.md']);

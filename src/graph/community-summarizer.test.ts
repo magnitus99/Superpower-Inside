@@ -50,6 +50,9 @@ describe('CommunitySummarizer', () => {
     );
 
     expect(provider.calls).toBe(2);
+    expect(
+      provider.messages.every((messages) => /비신뢰|untrusted/i.test(messages[0]?.content ?? '')),
+    ).toBe(true);
     expect(communities).toEqual([
       expect.objectContaining({
         title: 'Community 7',
@@ -261,14 +264,17 @@ function createClaim(id: string, entityIds: string[]): GraphClaimRecord {
   };
 }
 
-function createProvider(): LLMProvider & { calls: number } {
+function createProvider(): LLMProvider & { calls: number; messages: ChatMessage[][] } {
   let calls = 0;
+  const messages: ChatMessage[][] = [];
   return {
     capability: TEST_PROVIDER_CAPABILITY,
+    messages,
     get calls() {
       return calls;
     },
-    chat: () => {
+    chat: (inputMessages) => {
+      messages.push(inputMessages);
       calls++;
       return Promise.resolve(`summary-${calls}`);
     },

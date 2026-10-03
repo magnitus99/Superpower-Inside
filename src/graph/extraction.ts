@@ -1,4 +1,5 @@
 import type { LLMProvider } from '../llm/providers';
+import { t } from '../i18n';
 import type { KnowledgeGraphContract } from './knowledge-contract';
 import type { GraphRagIndexingCounterPatch, GraphRagIndexingPhase } from './indexing-progress';
 import {
@@ -631,6 +632,7 @@ function buildExtractionSystemPrompt(schema: KnowledgeGraphContract): string {
     .join(', ');
   return [
     'Extract evidence-grounded knowledge graph facts as JSON only.',
+    t('llmEvidenceDataBoundary'),
     `Suggested entity type hints: ${entityTypes.join(', ')}. Use other when none fit.`,
     `Suggested relation type hints: ${relationTypeHints}.`,
     `Use concise snake_case relationTypeId values that preserve the source meaning. ${schema.allowUnknownRelationTypes ? 'Unknown relations are allowed.' : 'Use only the suggested relation types.'}`,

@@ -33,6 +33,7 @@ import {
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
+import { t } from '../i18n';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
@@ -563,7 +564,7 @@ export class LLMRAGResultReranker implements RAGResultReranker {
         [
           {
             role: 'system' as const,
-            content: messagePlan.systemContent,
+            content: [messagePlan.systemContent, t('llmEvidenceDataBoundary')].join('\n'),
           },
           {
             role: 'user' as const,

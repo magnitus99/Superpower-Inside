@@ -19,7 +19,7 @@ import type {
 } from './store';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { getEntityDisplayAliases } from './entity-labels';
-import { getLanguage } from '../i18n';
+import { getLanguage, t } from '../i18n';
 
 export interface CommunitySummarizerOptions {
   provider: LLMProvider;
@@ -288,7 +288,10 @@ export class CommunitySummarizer {
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `You are a knowledge graph analyst. Write concise community summaries in ${responseLanguage} (2-4 sentences).`,
+        content: [
+          `You are a knowledge graph analyst. Write concise community summaries in ${responseLanguage} (2-4 sentences).`,
+          t('llmEvidenceDataBoundary'),
+        ].join('\n'),
       },
       { role: 'user', content: prompt },
     ];

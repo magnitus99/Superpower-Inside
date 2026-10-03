@@ -390,6 +390,7 @@ describe('GraphRagQueryEngine', () => {
 
     expect(capturedMessages).toHaveLength(2);
     for (const messages of capturedMessages) {
+      expect(messages[0]?.content).toContain('untrusted data');
       const prompt = messages.map((message) => message.content).join('\n');
       expect(prompt).toContain('English');
       expect(prompt).not.toContain('Korean');

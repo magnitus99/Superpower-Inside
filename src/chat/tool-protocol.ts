@@ -1,4 +1,5 @@
 import { NATIVE_VAULT_TOOL_NAME } from '../agent/native-vault-tool';
+import { t } from '../i18n';
 import type { ToolDefinition } from '../llm/providers';
 import { planCompatibilityToolCallsRust, stripCompatibilityToolCallsRust } from '../rag/rust-core';
 import type { ToolCallRecord } from './types';
@@ -38,7 +39,7 @@ export function createNativeVaultEvidencePrompt(definitions: readonly ToolDefini
     '[Superpower Inside proactive research and evidence contract]',
     'Use the available tools proactively whenever the answer depends on vault contents, paths, links, counts, the current chat session, or explicitly connected MCP data. Do not wait for the user to repeat a request to investigate.',
     'For find, investigate, compare, analyze, summarize, or explain requests over connected data: search or list candidates, read the most relevant original sources, repair one invalid call when possible, then answer the latest user objective.',
-    'A search or list result is only a candidate locator. Before making a factual claim from it, read the relevant source unless the requested fact is exactly the returned path, link, or aggregate statistic.',
+    t('llmVerifiedCandidateBoundary'),
     'Keep the latest user objective and every explicit subquestion across all tool rounds. Do not drift back to an older question or answer only an easy metadata fragment.',
     'Stop calling tools when the evidence is sufficient. Then provide a direct, complete answer rather than another progress update or a description of future work.',
     'Only successful tool results count as vault evidence. Failed, blocked, skipped, or incomplete calls do not.',
@@ -60,6 +61,7 @@ export function createCompatibilityToolPrompt(definitions: readonly ToolDefiniti
   }));
   return [
     '[Superpower Inside tool protocol]',
+    t('llmEvidenceDataBoundary'),
     'Follow the proactive research and evidence contract below. Do not guess connected data or file contents.',
     'Return each tool request as exactly one block and no answer text in that turn:',
     '<tool_call>{"name":"tool_name","arguments":{}}</tool_call>',
