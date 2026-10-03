@@ -1,8 +1,6 @@
 import type { KnowledgeGraphContract } from './knowledge-contract';
 import type { LLMProvider, ChatMessage } from '../llm/providers';
-import {
-  mergeRetrievalCandidateGroupsByEntryId,
-} from '../rag/retrieval-pipeline';
+import { mergeRetrievalCandidateGroupsByEntryId } from '../rag/retrieval-pipeline';
 import type {
   CandidateProvider,
   RagRetrievalRequest,
@@ -21,7 +19,7 @@ import {
   planGraphQueryExecutionRust,
   planGraphQueryRust,
   planLocalEvidenceScoresRust,
-  rankTopKPairsRust,
+  rankGraphCommunityPairsRust,
   createGraphIdRust,
   type RustGraphQueryExecutionAction,
   type RustGraphQueryPlan,
@@ -88,7 +86,7 @@ export class GraphRagQueryEngine {
 
   constructor(
     private readonly graphStore: KnowledgeGraphStore,
-    private readonly vectorStore: VectorStore,
+    private readonly vectorStore: Pick<VectorStore, 'getEntriesByFilePaths'>,
     private readonly knowledgeContract: KnowledgeGraphContract,
     options: GraphRagQueryEngineOptions = {},
   ) {
@@ -96,10 +94,7 @@ export class GraphRagQueryEngine {
     this.provider = options.provider;
   }
 
-  async query(
-    request: RagRetrievalRequest,
-    signal?: AbortSignal,
-  ): Promise<RetrievalCandidate[]> {
+  async query(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]> {
     throwIfGraphQueryAborted(signal);
     const autoPlan = this.queryMode === 'auto' ? planGraphQuery(request.question) : undefined;
     const plannedMode = this.queryMode === 'auto' ? (autoPlan?.queryMode ?? 'none') : 'none';
@@ -185,6 +180,7 @@ export class GraphRagQueryEngine {
       request.candidateLimit,
       request.isEntryCompatible,
       request.isEntryInScope,
+      request.requireSourceRevision,
     );
   }
 
@@ -218,6 +214,7 @@ export class GraphRagQueryEngine {
       request.candidateLimit,
       request.isEntryCompatible,
       request.isEntryInScope,
+      request.requireSourceRevision,
     );
   }
 
@@ -227,10 +224,13 @@ export class GraphRagQueryEngine {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfGraphQueryAborted(signal);
-    const schemaCommunities = await this.graphStore.getCommunitiesBySchema(this.knowledgeContract.id);
+    const schemaCommunities = await this.graphStore.getCommunitiesBySchema(
+      this.knowledgeContract.id,
+    );
     throwIfGraphQueryAborted(signal);
     const communities = rankGlobalCommunitiesWithRust(
       schemaCommunities,
+      request.question,
       request.queryVector,
       request.candidateLimit,
     );
@@ -264,19 +264,13 @@ export class GraphRagQueryEngine {
     if (evidenceCandidates.length > 0 && fastCandidates.length === 0) {
       return fallbackCandidates;
     }
-    if (
-      !this.provider ||
-      this.queryMode !== 'auto' ||
-      plan?.globalSearchDepth !== 'deep'
-    ) {
+    if (!this.provider || this.queryMode !== 'auto' || plan?.globalSearchDepth !== 'deep') {
       return fallbackCandidates;
     }
     try {
       const deepCandidate = await this.queryGlobalDeep(
         request,
-        communities.length > 0
-          ? communities.map(({ community }) => community)
-          : schemaCommunities,
+        communities.length > 0 ? communities.map(({ community }) => community) : schemaCommunities,
         this.provider,
         signal,
       );
@@ -340,9 +334,7 @@ export class GraphRagQueryEngine {
         .map((relation) => [relation.id, relation]),
     );
     const claimsById = new Map(
-      claims
-        .filter((claim) => selectedClaimIds.has(claim.id))
-        .map((claim) => [claim.id, claim]),
+      claims.filter((claim) => selectedClaimIds.has(claim.id)).map((claim) => [claim.id, claim]),
     );
     const evidenceScores: EvidenceScore[] = [];
 
@@ -366,12 +358,7 @@ export class GraphRagQueryEngine {
       }
 
       evidenceScores.push(
-        ...collectLocalEvidenceScores(
-          communityMatches,
-          communityRelations,
-          communityClaims,
-          1,
-        ),
+        ...collectLocalEvidenceScores(communityMatches, communityRelations, communityClaims, 1),
         ...collectClaimEvidenceScores(communityClaims),
       );
     }
@@ -383,6 +370,7 @@ export class GraphRagQueryEngine {
       request.candidateLimit,
       request.isEntryCompatible,
       request.isEntryInScope,
+      request.requireSourceRevision,
     );
   }
 
@@ -398,11 +386,7 @@ export class GraphRagQueryEngine {
       : [...communities];
     if (leafCommunities.length === 0) return null;
     const queryHash = requireGraphQueryId(['global-query', request.question]);
-    const providerEpochId = createGraphProviderEpochId(
-      provider,
-      provider.capability.model,
-      1,
-    );
+    const providerEpochId = createGraphProviderEpochId(provider, provider.capability.model, 1);
     const mapReports: string[] = [];
     const selectedCommunities = leafCommunities
       .slice(0, MAX_DEEP_GLOBAL_COMMUNITIES)
@@ -496,10 +480,7 @@ export class GraphRagQueryEngine {
     provider: LLMProvider;
     signal?: AbortSignal;
   }): Promise<string> {
-    const promptHash = requireGraphQueryId([
-      'global-prompt',
-      JSON.stringify(input.messages),
-    ]);
+    const promptHash = requireGraphQueryId(['global-prompt', JSON.stringify(input.messages)]);
     const id = requireGraphQueryId([
       'global-job',
       input.queryHash,
@@ -553,6 +534,7 @@ export class GraphRagQueryEngine {
     candidateLimit: number,
     isEntryCompatible?: (entry: VectorEntry) => boolean,
     isEntryInScope?: (entry: VectorEntry) => boolean,
+    requireSourceRevision = false,
   ): Promise<RetrievalCandidate[]> {
     if (candidateLimit <= 0) return [];
     const orderedEvidenceScores = planEvidenceCandidateOrderRust(
@@ -604,16 +586,25 @@ export class GraphRagQueryEngine {
       ...new Set(evidenceRecords.map((record) => record.evidence.filePath)),
     ]);
     const entryPlan = planGraphEvidenceEntryCandidatesRust(
-      evidenceRecords.map((record) => record.evidence.entryId),
+      // 원문 모드에서는 revision을 포함한 wire identity의 결합·선택을 Rust에 맡깁니다.
+      evidenceRecords.map(({ evidence: record }) =>
+        requireSourceRevision
+          ? JSON.stringify([record.entryId, record.filePath, record.contentHash])
+          : record.entryId,
+      ),
       entries.map((entry) => ({
-        id: entry.id,
-        compatible:
-          (isEntryInScope?.(entry) ?? true) &&
-          (isEntryCompatible?.(entry) ?? true),
+        id: requireSourceRevision
+          ? JSON.stringify([entry.id, entry.metadata.filePath, entry.metadata.contentHash ?? ''])
+          : entry.id,
+        compatible: (isEntryInScope?.(entry) ?? true) && (isEntryCompatible?.(entry) ?? true),
       })),
       candidateLimit,
     );
-    if (!entryPlan || entryPlan.candidateIndices.length === 0 || entryPlan.entryIndices.length === 0) {
+    if (
+      !entryPlan ||
+      entryPlan.candidateIndices.length === 0 ||
+      entryPlan.entryIndices.length === 0
+    ) {
       return [];
     }
 
@@ -702,10 +693,13 @@ function collectLocalEvidenceScoresFromNeighborhood(
 
 function rankGlobalCommunitiesWithRust(
   communities: readonly GraphCommunityRecord[],
+  question: string,
   queryVector: readonly number[],
   candidateLimit: number,
 ): Array<{ community: GraphCommunityRecord; score: number }> {
-  const rustScores = rankTopKPairsRust(
+  const rustScores = rankGraphCommunityPairsRust(
+    question,
+    communities.map((community) => `${community.title}\n${community.summary}`),
     queryVector,
     communities.map((community) => community.summaryVector),
     candidateLimit,
@@ -715,7 +709,11 @@ function rankGlobalCommunitiesWithRust(
   const ranked: Array<{ community: GraphCommunityRecord; score: number }> = [];
   for (const result of rustScores) {
     const communityIndex = result.index;
-    if (!Number.isInteger(communityIndex) || communityIndex < 0 || communityIndex >= communities.length) {
+    if (
+      !Number.isInteger(communityIndex) ||
+      communityIndex < 0 ||
+      communityIndex >= communities.length
+    ) {
       continue;
     }
     const community = communities[communityIndex];
@@ -825,15 +823,10 @@ export class GraphRagCandidateProvider implements CandidateProvider {
   }
 
   getDeadlineMs(request: RagRetrievalRequest): number {
-    return this.engine.requiresDeepRetrieval(request)
-      ? this.deepDeadlineMs
-      : this.deadlineMs;
+    return this.engine.requiresDeepRetrieval(request) ? this.deepDeadlineMs : this.deadlineMs;
   }
 
-  getCandidates(
-    request: RagRetrievalRequest,
-    signal?: AbortSignal,
-  ): Promise<RetrievalCandidate[]> {
+  getCandidates(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]> {
     return this.engine.query(request, signal);
   }
 }
@@ -927,7 +920,6 @@ function isGraphQueryType(value: string): value is GraphQueryType {
 function isGraphQueryExecutionMode(value: string): value is GraphRagQueryMode | 'none' {
   return ['local', 'global', 'hybrid', 'none'].includes(value);
 }
-
 
 function throwIfGraphQueryAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {

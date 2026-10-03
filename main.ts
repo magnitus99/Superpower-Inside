@@ -48,6 +48,8 @@ import {
 } from './src/rag/store';
 import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
 import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
+import { IndexedDbDocumentCorpusStore } from './src/rag/document-corpus-store';
+import { VaultDocumentCorpus } from './src/rag/vault-document-corpus';
 import {
   VaultIndexer,
   registerModifyEvent,
@@ -69,6 +71,7 @@ import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph
 import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
 import { buildKnowledgeGraphContract } from './src/graph/knowledge-contract';
 import { createGraphProviderEpochId } from './src/graph/extraction';
+import { graphExtractionContractVersionRust } from './src/rag/rust-core';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
   RAGIndexingScheduler,
@@ -76,7 +79,10 @@ import {
 } from './src/rag/indexing-scheduler';
 import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
 import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status';
-import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
+import type {
+  RetrievalProviderReadiness,
+  StructuralMetadataContext,
+} from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
 import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
 import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
@@ -230,6 +236,8 @@ function isSafeModeFlagEnabled(value: unknown): boolean {
 }
 
 interface RagRuntimeSnapshot {
+  documentCorpus: IndexedDbDocumentCorpusStore | null;
+  vaultDocumentCorpus: VaultDocumentCorpus | null;
   vectorStore: VectorStore | null;
   knowledgeGraphStore: KnowledgeGraphStore | null;
   embeddingProvider: EmbeddingProvider | null;
@@ -255,6 +263,8 @@ interface BM25BackgroundLoadOutcome {
 }
 
 export default class SuperpowerInsidePlugin extends Plugin {
+  documentCorpus: IndexedDbDocumentCorpusStore | null = null;
+  private vaultDocumentCorpus: VaultDocumentCorpus | null = null;
   declare settings: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
   private provider: LLMProvider | null = null;
@@ -870,6 +880,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.graphRagAbortController || !this.graphRagIndexingRunner) {
       return null;
     }
+    await this.vaultDocumentCorpus?.refresh();
     const controller = new AbortController();
     this.graphRagAbortController = controller;
     await this.computeAndEmitGraphRagStatus();
@@ -951,6 +962,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (!this.graphRagIndexingRunner || this.graphRagAbortController) {
       return null;
     }
+    await this.vaultDocumentCorpus?.refresh();
     if (!this.graphRagStatus?.staleFileCount && !this.graphRagStatus?.failedFileCount) {
       return null;
     }
@@ -1100,6 +1112,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('Plugin data reset started.', { source: 'settings.reset' });
     this.automaticRagRecovery?.dispose();
     this.automaticRagRecovery = null;
+    this.vaultDocumentCorpus?.suspend();
     this.cancelRagIndexing();
     this.cancelGraphRagIndexing();
     if (this.graphRagAbortController) {
@@ -1139,6 +1152,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         : this.embeddingProvider.clearCache()
       : Promise.resolve();
     await Promise.all([vectorStoreClear, knowledgeGraphClear, bm25Clear, embeddingCacheClear]);
+    this.documentCorpus?.close();
     this.clearRAG({ dispose: false });
     await deleteRagIndexedDbGenerations(resetStorageLayout);
 
@@ -1895,8 +1909,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.bm25Index = null;
       this.vaultIndexer?.setBM25Index(undefined);
       if (!this.vectorStore) {
-        this.unregisterRAGEvents();
-        this.ragEngine = null;
+        this.registerLexicalRAGEvents(undefined);
       }
       this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
         source: 'rag.bm25',
@@ -1921,6 +1934,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async buildBM25IndexDocumentsFromVault(): Promise<BM25CorpusDocument[]> {
+    if (this.vaultDocumentCorpus && this.documentCorpus) {
+      await this.vaultDocumentCorpus.refresh();
+      return this.documentCorpus.getDocuments();
+    }
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
     for (const file of files) {
@@ -1934,20 +1951,126 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return buildBM25CorpusDocuments(file, content, this.settings.rag);
   }
 
-  private async indexBM25File(bm25Index: IndexedDbBM25Index, file: TFile): Promise<void> {
-    const content = await this.app.vault.cachedRead(file);
-    const documents = this.buildBM25CorpusDocuments(file, content);
-    await bm25Index.withBatch(async () => {
+  private async indexBM25File(
+    bm25Index: IndexedDbBM25Index | undefined,
+    file: TFile,
+  ): Promise<void> {
+    await this.vaultDocumentCorpus?.refreshFile(file);
+    const documents = (await this.documentCorpus?.getDocumentsByFilePath(file.path)) ?? [];
+    await bm25Index?.withBatch(async () => {
       bm25Index.removeDocumentsBySource(file.path);
       for (const document of documents) bm25Index.addCorpusDocument(document);
       await bm25Index.persist();
     });
+    this.debouncedRefreshStats();
   }
 
-  private async removeBM25File(bm25Index: IndexedDbBM25Index, filePath: string): Promise<number> {
-    bm25Index.removeDocumentsBySource(filePath);
-    await bm25Index.persist();
+  private getStructuralMetadataContext(): StructuralMetadataContext | undefined {
+    const metadata = this.app.metadataCache;
+    if (!metadata) return undefined;
+    return {
+      resolvedLinks: metadata.resolvedLinks,
+      getFileByPath: (path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile ? file : null;
+      },
+      getFileCache: (file) => metadata.getFileCache(file),
+      getFirstLinkpathDest: (linkpath, sourcePath) =>
+        metadata.getFirstLinkpathDest(linkpath, sourcePath),
+    };
+  }
+
+  private async removeBM25File(
+    bm25Index: IndexedDbBM25Index | undefined,
+    filePath: string,
+  ): Promise<number> {
+    await this.vaultDocumentCorpus?.removeFile(filePath);
+    bm25Index?.removeDocumentsBySource(filePath);
+    await bm25Index?.persist();
+    if (this.knowledgeGraphStore) await this.cleanupGraphRagForDeletedFiles([filePath]);
     return 0;
+  }
+
+  /** 그래프는 사용자가 켠 경우에만 공통 원문을 소비하며 벡터 생성 완료를 요구하지 않습니다. */
+  private async initializeGraphCorpusRuntime(
+    graphDbName: string,
+    embeddingProvider?: EmbeddingProvider,
+  ): Promise<void> {
+    const rag = this.settings.rag;
+    if (!rag.graphRagEnabled || !this.documentCorpus) return;
+    this.knowledgeGraphStore ??= new IndexedDbKnowledgeGraphStore(graphDbName);
+    const provider = rag.graphRagModel.trim()
+      ? this.createProviderForModel(rag.graphRagModel)
+      : null;
+    this.graphRagIndexingRunner = provider
+      ? new GraphRagIndexingRunner({
+          vectorStore: this.documentCorpus,
+          graphStore: this.knowledgeGraphStore,
+          provider,
+          embeddingProvider,
+          knowledgeContract: buildKnowledgeGraphContract(),
+          extractionModelKey: rag.graphRagModel,
+          maxFilesPerRun: rag.graphRagMaxFilesPerRun,
+          maxConcurrentRequests: rag.graphRagMaxConcurrentRequests,
+          entityResolverOptions: {
+            autoMergeThreshold: rag.entityAutoMergeThreshold,
+            pendingMergeThreshold: rag.entityPendingMergeThreshold,
+          },
+          isProcessableFilePath: (path) => this.isCurrentVaultFilePath(path),
+          onProgress: (progress) => {
+            void this.recordAgentDiagnosticsBreadcrumb({
+              phase: 'graph.indexing',
+              action: 'mark',
+              detail: 'run',
+              data: {
+                phase: progress.phase,
+                currentFile: progress.currentFile,
+                processedFiles: progress.processedFiles,
+                failedFiles: progress.failedFiles,
+                runId: progress.runId,
+              },
+            });
+            this.refreshBus?.emit('graph-progress', {
+              status: 'partial',
+              detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
+              runId: progress.runId,
+              progress,
+            });
+          },
+        })
+      : null;
+    await this.computeAndEmitGraphRagStatus();
+    this.setupGraphRagAutoSync();
+    if (isGraphRagUsableForQuery(this.graphRagStatus)) {
+      const graphEngine = new GraphRagQueryEngine(
+        this.knowledgeGraphStore,
+        this.documentCorpus,
+        buildKnowledgeGraphContract(),
+        { queryMode: rag.graphRagQueryMode, provider: provider ?? undefined },
+      );
+      this.ragEngine = new RAGQueryEngine(
+        null,
+        null,
+        this.bm25Index ?? undefined,
+        rag.bm25Weight,
+        rag.minScore,
+        {
+          corpusStore: this.documentCorpus,
+          getCandidatePaths: async () =>
+            new Set(
+              (
+                await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)
+              ).map((file) => file.path),
+            ),
+          graphRagEnabled: true,
+          structuralGraphEnabled: rag.structuralGraphEnabled,
+          structuralMetadataContext: this.getStructuralMetadataContext(),
+          graphRagQueryEngine: graphEngine,
+          graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
+        },
+      );
+      this.graphRagProviderAttached = true;
+    }
   }
 
   async initRAG(): Promise<void> {
@@ -2100,6 +2223,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private captureRagRuntimeSnapshot(): RagRuntimeSnapshot {
     return {
+      documentCorpus: this.documentCorpus,
+      vaultDocumentCorpus: this.vaultDocumentCorpus,
       vectorStore: this.vectorStore,
       knowledgeGraphStore: this.knowledgeGraphStore,
       embeddingProvider: this.embeddingProvider,
@@ -2120,9 +2245,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private restoreRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): boolean {
-    if (!snapshot.vectorStore || !snapshot.vaultIndexer || !snapshot.ragIndexingScheduler) {
+    if (
+      !(snapshot.documentCorpus && snapshot.ragEngine) &&
+      !(snapshot.vectorStore && snapshot.vaultIndexer && snapshot.ragIndexingScheduler)
+    ) {
       return false;
     }
+    this.documentCorpus = snapshot.documentCorpus;
+    this.vaultDocumentCorpus = snapshot.vaultDocumentCorpus;
+    this.vaultDocumentCorpus?.resume();
     this.vectorStore = snapshot.vectorStore;
     this.knowledgeGraphStore = snapshot.knowledgeGraphStore;
     this.embeddingProvider = snapshot.embeddingProvider;
@@ -2142,7 +2273,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.setupAutoUpdate();
     this.setupGraphRagAutoSync();
     this.setupRagStatusTimer();
-    this.registerRAGEvents();
+    if (this.ragIndexingScheduler) this.registerRAGEvents();
+    else this.registerLexicalRAGEvents(this.bm25Index ?? undefined);
     this.automaticRagRecovery?.resume();
     this.refreshBus?.emit('rag', {
       status: 'success',
@@ -2154,6 +2286,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private disposeRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): void {
+    snapshot.vaultDocumentCorpus?.dispose();
+    snapshot.documentCorpus?.close();
     snapshot.automaticRagRecovery?.dispose();
     snapshot.vectorStore?.close?.();
     snapshot.knowledgeGraphStore?.close?.();
@@ -2176,6 +2310,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     };
     const previousRuntime = this.captureRagRuntimeSnapshot();
     previousRuntime.automaticRagRecovery?.suspend();
+    previousRuntime.vaultDocumentCorpus?.suspend();
     // Detach the current runtime while the replacement is assembled. Keep its
     // stores open so a failed rebuild can restore a genuinely usable snapshot.
     this.clearRAG({ dispose: false });
@@ -2221,6 +2356,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
         embeddingNamespace,
         indexNamespace: createRagIndexNamespace(rag),
       });
+      this.documentCorpus = new IndexedDbDocumentCorpusStore(storageLayout.active.corpus);
+      this.vaultDocumentCorpus = new VaultDocumentCorpus(
+        this.app.vault,
+        this.documentCorpus,
+        () => this.settings.rag,
+        () => this.settings.chat,
+        this.getLogger(),
+      );
+      const sourceCorpus = this.vaultDocumentCorpus;
+      void sourceCorpus
+        .refresh()
+        .then(() => {
+          if (this.vaultDocumentCorpus === sourceCorpus) this.debouncedRefreshStats();
+        })
+        .catch((error: unknown) => {
+          this.getLogger().warn(
+            'Source corpus refresh failed; native source reads remain available.',
+            {
+              source: 'rag.corpus',
+              error,
+            },
+          );
+        });
       let bm25Index: IndexedDbBM25Index | undefined;
       let bm25LoadOutcome: Promise<BM25BackgroundLoadOutcome> | null = null;
       let bm25BackgroundCompletionStarted = false;
@@ -2244,6 +2402,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         bm25Index = nextBm25Index;
         this.bm25Index = nextBm25Index;
         this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore, {
+          corpusStore: this.documentCorpus,
+          structuralGraphEnabled: rag.structuralGraphEnabled,
+          structuralMetadataContext: this.getStructuralMetadataContext(),
           getCandidatePaths: async () =>
             new Set(
               (
@@ -2254,7 +2415,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
         // 큰 로컬 색인은 채팅과 vector/Graph 런타임을 막지 않고 worker에서 준비한다.
         bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index);
       }
+      this.ragEngine ??= new RAGQueryEngine(null, null, undefined, rag.bm25Weight, rag.minScore, {
+        corpusStore: this.documentCorpus,
+        getCandidatePaths: async () =>
+          new Set(
+            (await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)).map(
+              (file) => file.path,
+            ),
+          ),
+      });
 
+      await this.initializeGraphCorpusRuntime(storageLayout.active.graph);
+      requireCurrentRun();
       if (!resolvedEmbeddingModel) {
         this.lastRagRuntimeInitSkippedReason = configuredEmbeddingModel
           ? t('ragIndexerConnectionFailed', {
@@ -2378,10 +2550,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
             slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
             slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
             onPolicyError: (message) => {
-              this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
-                source: 'rag.performance-guard',
-                data: { message },
-              });
+              this.getLogger().error(
+                'RAG performance guard policy failed; preserving last state.',
+                {
+                  source: 'rag.performance-guard',
+                  data: { message },
+                },
+              );
               void this.recordAgentDiagnosticsBreadcrumb({
                 phase: 'rag.performance-guard',
                 action: 'error',
@@ -2406,9 +2581,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       );
       requireCurrentRun();
       this.vectorStore = vectorStore;
-      this.knowledgeGraphStore = rag.graphRagEnabled
-        ? new IndexedDbKnowledgeGraphStore(storageLayout.active.graph)
-        : null;
+      await this.initializeGraphCorpusRuntime(storageLayout.active.graph, embeddingProvider);
       await this.runRagRuntimeInitStep('graph-status-initial', () =>
         this.computeAndEmitGraphRagStatus(),
       );
@@ -2436,10 +2609,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
       const graphRagQueryEngine =
         graphRagEnabledForQuery && this.knowledgeGraphStore
-          ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, knowledgeContract, {
-              queryMode: rag.graphRagQueryMode,
-              provider: graphProvider ?? undefined,
-            })
+          ? new GraphRagQueryEngine(
+              this.knowledgeGraphStore,
+              this.documentCorpus,
+              knowledgeContract,
+              {
+                queryMode: rag.graphRagQueryMode,
+                provider: graphProvider ?? undefined,
+              },
+            )
           : undefined;
       this.graphRagProviderAttached = graphRagQueryEngine !== undefined;
 
@@ -2451,6 +2629,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           rag.bm25Weight,
           rag.minScore,
           {
+            corpusStore: this.documentCorpus ?? undefined,
             getCandidatePaths: async () =>
               new Set(
                 (
@@ -2473,57 +2652,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       // Vector/Graph retrieval is usable before optional BM25 loading starts.
       this.ragEngine = createQueryEngine(bm25Index);
 
-      this.graphRagIndexingRunner =
-        graphProvider && this.knowledgeGraphStore && this.embeddingProvider
-          ? new GraphRagIndexingRunner({
-              vectorStore: this.vectorStore,
-              graphStore: this.knowledgeGraphStore,
-              provider: graphProvider,
-              embeddingProvider: this.embeddingProvider,
-              knowledgeContract: knowledgeContract,
-              extractionModelKey: rag.graphRagModel,
-              maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-              maxConcurrentRequests: rag.graphRagMaxConcurrentRequests,
-              entityResolverOptions: {
-                autoMergeThreshold: rag.entityAutoMergeThreshold,
-                pendingMergeThreshold: rag.entityPendingMergeThreshold,
-              },
-              isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
-              onProgress: (progress) => {
-                void this.recordAgentDiagnosticsBreadcrumb({
-                  phase: 'graph.indexing',
-                  action: 'mark',
-                  detail: 'run',
-                  data: {
-                    phase: progress.phase,
-                    currentFile: progress.currentFile,
-                    processedFiles: progress.processedFiles,
-                    failedFiles: progress.failedFiles,
-                    selectedFiles: progress.selectedFiles,
-                    runId: progress.runId,
-                    processedChunks: progress.processedChunks,
-                    failedChunks: progress.failedChunks,
-                  },
-                });
-                this.getLogger().debug('GraphRAG indexing progress updated.', {
-                  source: 'graph.progress',
-                  data: {
-                    currentFile: progress.currentFile,
-                    processedFiles: progress.processedFiles,
-                    failedFiles: progress.failedFiles,
-                    selectedFiles: progress.selectedFiles,
-                    runId: progress.runId,
-                  },
-                });
-                this.refreshBus.emit('graph-progress', {
-                  status: 'partial',
-                  detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
-                  runId: progress.runId,
-                  progress,
-                });
-              },
-            })
-          : null;
       await this.runRagRuntimeInitStep('graph-status-runner', () =>
         this.computeAndEmitGraphRagStatus(),
       );
@@ -2539,6 +2667,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.settings.chat,
         bm25Index,
         this.getLogger(),
+        this.vaultDocumentCorpus ?? undefined,
       );
 
       this.ragIndexingScheduler = new RAGIndexingScheduler({
@@ -2923,6 +3052,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
       window.clearInterval(this.graphAutoSyncTimer);
       this.graphAutoSyncTimer = null;
     }
+    this.documentCorpus = null;
+    this.vaultDocumentCorpus = null;
     this.vectorStore = null;
     this.knowledgeGraphStore = null;
     this.embeddingProvider = null;
@@ -2964,144 +3095,55 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private registerRAGEvents(): void {
-    this.unregisterRAGEvents();
-    if (!this.vaultIndexer || !this.ragIndexingScheduler) return;
-
-    const effectiveExcludePaths = getEffectiveExcludePaths(
-      this.settings.rag,
-      this.settings.chat,
-      this.app.vault.configDir,
-    );
-    this.getLogger().debug('Registering RAG vault events.', {
-      source: 'rag.events',
-      data: {
-        excludePaths: effectiveExcludePaths,
-        excludeExts: this.settings.rag.excludeExts,
-      },
-    });
-    this.modifyCleanup = registerModifyEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG reindex for modified file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
-          return Promise.resolve();
-        },
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      () => {
-        this.debouncedRefreshStats();
-      },
-    );
-    this.createCleanup = registerCreateEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG indexing for created file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
-          return Promise.resolve();
-        },
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      () => this.debouncedRefreshStats(),
-    );
-
-    if (!this.vectorStore || !this.ragIndexingScheduler) return;
-    this.deleteCleanup = registerDeleteEvent(
-      this.app.vault,
-      {
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      (filePath) => {
-        this.getLogger().debug('RAG entries removed for deleted file.', {
-          source: 'rag.events',
-          data: { path: filePath },
-        });
-        this.debouncedRefreshStats();
-        if (this.knowledgeGraphStore) {
-          void this.cleanupGraphRagForDeletedFiles([filePath]);
-        }
-      },
-    );
-    this.renameCleanup = registerRenameEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG reindex for renamed file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'rename');
-          return Promise.resolve();
-        },
-      },
-      {
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      (oldPath) => {
-        this.getLogger().debug('RAG entries removed for old renamed path.', {
-          source: 'rag.events',
-          data: { oldPath },
-        });
-        this.debouncedRefreshStats();
-        if (this.knowledgeGraphStore) {
-          void this.cleanupGraphRagForDeletedFiles([oldPath]);
-        }
-      },
-    );
+    this.registerSourceFileEvents(this.ragIndexingScheduler);
   }
 
-  private registerLexicalRAGEvents(bm25Index: IndexedDbBM25Index | undefined): void {
+  private registerLexicalRAGEvents(_bm25Index: IndexedDbBM25Index | undefined): void {
+    this.registerSourceFileEvents(null);
+  }
+
+  private registerSourceFileEvents(scheduler: RAGIndexingScheduler | null): void {
     this.unregisterRAGEvents();
-    if (!bm25Index) return;
-    const effectiveExcludePaths = getEffectiveExcludePaths(
+    if (!this.vaultDocumentCorpus) return;
+    const excludePaths = getEffectiveExcludePaths(
       this.settings.rag,
       this.settings.chat,
       this.app.vault.configDir,
     );
     const indexer = {
-      indexFile: (file: TFile) => this.indexBM25File(bm25Index, file),
-      removeByFilePath: (filePath: string) => this.removeBM25File(bm25Index, filePath),
+      indexFile: async (file: TFile): Promise<void> => {
+        await this.indexBM25File(this.bm25Index ?? undefined, file);
+        scheduler?.scheduleFile(file, 'modify');
+      },
+      removeByFilePath: async (path: string): Promise<number> => {
+        await this.removeBM25File(this.bm25Index ?? undefined, path);
+        this.debouncedRefreshStats();
+        return scheduler?.deleteFile(path) ?? 0;
+      },
     };
     this.modifyCleanup = registerModifyEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.createCleanup = registerCreateEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.deleteCleanup = registerDeleteEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.renameCleanup = registerRenameEvent(
       this.app.vault,
       indexer,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
   }
@@ -3139,7 +3181,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async computeAndEmitGraphRagStatus(): Promise<void> {
-    if (!this.vectorStore || !this.knowledgeGraphStore) {
+    const corpus = this.documentCorpus ?? this.vectorStore;
+    if (!corpus || !this.knowledgeGraphStore) {
       this.graphRagStatus = null;
       return;
     }
@@ -3147,17 +3190,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const graphProvider = this.settings.rag.graphRagModel.trim()
       ? this.createProviderForModel(this.settings.rag.graphRagModel)
       : null;
-    const knowledgeContract = buildKnowledgeGraphContract();
     const nextStatus = await calculateGraphRagStatus({
       ragConfig: this.settings.rag,
       graphStore: this.knowledgeGraphStore,
-      vectorStore: this.vectorStore,
+      vectorStore: corpus,
       isRunning: this.isGraphRagIndexing(),
       activeProviderEpochId: graphProvider
         ? createGraphProviderEpochId(
             graphProvider,
             this.settings.rag.graphRagModel,
-            knowledgeContract.version,
+            graphExtractionContractVersionRust(),
           )
         : undefined,
       isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
@@ -3206,7 +3248,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private isCurrentVaultFilePath(filePath: string): boolean {
-    return this.app.vault.getAbstractFileByPath(filePath) instanceof TFile;
+    return (
+      this.app.vault.getAbstractFileByPath(filePath) instanceof TFile &&
+      (!this.vaultDocumentCorpus || this.vaultDocumentCorpus.hasCandidatePath(filePath))
+    );
   }
 
   setupAutoUpdate(): void {

@@ -19,6 +19,7 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
 const CURRENT_ONTOLOGY_VERSION = buildKnowledgeGraphContract().version;
 import { GraphRagIndexingRunner } from './indexing-runner';
 import { InMemoryKnowledgeGraphStore } from './store';
+import { calculateGraphRagStatus } from './status';
 
 class FakeEmbeddingProvider implements EmbeddingProvider {
   embed(): Promise<number[]> {
@@ -50,6 +51,72 @@ function makeRunnerOptions(overrides: {
 }
 
 describe('GraphRagIndexingRunner', () => {
+  it('벡터 없는 지원 파일도 추출하고 실행 한도 이후 파일까지 다음 실행에서 도달한다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add(
+      ['a.txt', 'b.ts', 'c.markdown'].map((path) => ({ ...createEntry(path, path), vector: [] })),
+    );
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const provider = new FakeProvider();
+    const runner = new GraphRagIndexingRunner({
+      ...makeRunnerOptions({ vectorStore, graphStore, provider, maxFilesPerRun: 2 }),
+      embeddingProvider: undefined,
+    });
+    await runner.run();
+    const second = await runner.run();
+    expect(second.processedFiles).toBe(1);
+    expect(provider.calls).toBe(3);
+    expect((await graphStore.getEvidence()).map(({ filePath }) => filePath).sort()).toEqual([
+      'a.txt',
+      'b.ts',
+      'c.markdown',
+    ]);
+    expect(
+      await calculateGraphRagStatus({
+        vectorStore,
+        graphStore,
+        isRunning: false,
+        ragConfig: {
+          graphRagEnabled: true,
+          graphRagModel: 'openai:gpt-4.1-mini',
+          graphRagMaxFilesPerRun: 2,
+        },
+      }),
+    ).toMatchObject({ state: 'ready', staleFileCount: 0 });
+  });
+
+  it('추출 중 원문 revision이 바뀌면 늦게 받은 관계를 저장하지 않는다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('source.txt', 'before')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    const provider = new FakeProvider();
+    const chat = provider.chat.bind(provider);
+    provider.chat = async (...args: Parameters<LLMProvider['chat']>) => {
+      await vectorStore.replaceFileEntries('source.txt', [createEntry('source.txt', 'after')]);
+      return chat(...args);
+    };
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({ vectorStore, graphStore, provider }),
+    );
+    await runner.run();
+    expect(await graphStore.getEvidence()).toEqual([]);
+    expect(await graphStore.getExtractionCacheRecords()).toEqual([]);
+  });
+
+  it('후보 저장소 읽기가 실패해도 실행 상태를 해제해 다시 시도할 수 있다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    vectorStore.getFileIndexRecords = () => Promise.reject(new Error('storage failed'));
+    const runner = new GraphRagIndexingRunner(
+      makeRunnerOptions({
+        vectorStore,
+        graphStore: new InMemoryKnowledgeGraphStore(),
+        provider: new FakeProvider(),
+      }),
+    );
+    await expect(runner.run()).rejects.toThrow('storage failed');
+    expect(runner.isRunning()).toBe(false);
+    await expect(runner.run()).rejects.toThrow('storage failed');
+  });
   it('기본 설정에서는 한 번에 하나의 extraction 요청만 실행한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
@@ -113,7 +180,7 @@ describe('GraphRagIndexingRunner', () => {
     expect(provider.calls).toBe(12);
   });
 
-  it('maxFilesPerRun까지만 처리하고 cached 파일은 skip한다', async () => {
+  it('실행 한도에서 캐시 완료 파일보다 미처리 파일을 먼저 처리한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
       createEntry('a.md', 'hash-a'),
@@ -143,12 +210,16 @@ describe('GraphRagIndexingRunner', () => {
 
     expect(result.totalCandidateFiles).toBe(3);
     expect(result.selectedFiles).toBe(2);
-    expect(result.skippedFiles).toBe(1);
-    expect(result.processedFiles).toBe(1);
-    expect(provider.calls).toBe(1);
+    expect(result.skippedFiles).toBe(0);
+    expect(result.processedFiles).toBe(2);
+    expect(provider.calls).toBe(2);
+    expect((await graphStore.getEvidence()).map((evidence) => evidence.filePath).sort()).toEqual([
+      'b.md',
+      'c.md',
+    ]);
   });
 
-  it('GraphRAG 추출 후보에서 Markdown이 아닌 vector entry는 제외한다', async () => {
+  it('GraphRAG 추출 후보는 지원 파일의 확장자로 제한하지 않는다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([
       createEntry('Base.base', 'hash-base'),
@@ -166,10 +237,11 @@ describe('GraphRagIndexingRunner', () => {
 
     const result = await runner.run();
 
-    expect(result.totalCandidateFiles).toBe(1);
-    expect(result.processedFiles).toBe(1);
-    expect(provider.calls).toBe(1);
-    expect((await graphStore.getEvidence()).map((evidence) => evidence.filePath)).toEqual([
+    expect(result.totalCandidateFiles).toBe(2);
+    expect(result.processedFiles).toBe(2);
+    expect(provider.calls).toBe(2);
+    expect((await graphStore.getEvidence()).map((evidence) => evidence.filePath).sort()).toEqual([
+      'Base.base',
       'note.md',
     ]);
   });
@@ -202,7 +274,7 @@ describe('GraphRagIndexingRunner', () => {
     ]);
   });
 
-  it('기존 non-Markdown GraphRAG rejected fact는 다음 실행에서 정리한다', async () => {
+  it('현재 지원 대상에서 빠진 파일의 GraphRAG rejected fact는 다음 실행에서 정리한다', async () => {
     const vectorStore = new MemoryVectorStore();
     await vectorStore.add([createEntry('note.md', 'hash-note')]);
     const graphStore = new InMemoryKnowledgeGraphStore();
@@ -215,13 +287,10 @@ describe('GraphRagIndexingRunner', () => {
       updatedAt: 1000,
     });
     const provider = new FakeProvider();
-    const runner = new GraphRagIndexingRunner(
-      makeRunnerOptions({
-        vectorStore,
-        graphStore,
-        provider,
-      }),
-    );
+    const runner = new GraphRagIndexingRunner({
+      ...makeRunnerOptions({ vectorStore, graphStore, provider }),
+      isProcessableFilePath: (path) => path === 'note.md',
+    });
 
     await runner.run();
 

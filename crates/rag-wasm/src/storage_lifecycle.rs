@@ -25,7 +25,7 @@ const STORAGE_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Builds database names isolated by vault, storage contract, and embedding generation.
 ///
 /// `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
-/// vector와 BM25만 새 세대로 옮기고, 임베딩 캐시와 `GraphRAG` 저장소는 재사용한다.
+/// 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시와 `GraphRAG` 저장소는 재사용합니다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_indexed_db_storage_layout_json(
@@ -69,6 +69,7 @@ pub fn plan_indexed_db_storage_layout_json(
         "vector": format!("{current_vault_prefix}{vector_hash}:vectors"),
         "embeddingCache": format!("{current_vault_prefix}{embedding_hash}:embedding-cache"),
         "bm25": bm25_name,
+        "corpus": format!("{current_vault_prefix}{}:corpus", storage_key(&["corpus", index_generation])),
         "graph": format!("{current_vault_prefix}graph"),
     });
     let legacy_names = [

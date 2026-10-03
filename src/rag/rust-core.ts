@@ -12,6 +12,8 @@ import {
   chunk_markdown_json,
   collect_candidate_reasons as collect_candidate_reasons_json,
   chunk_plain_text_json,
+  source_revision_matches,
+  rank_graph_community_pairs,
   core_version,
   count_keyword_matches,
   create_entity_id,
@@ -118,7 +120,7 @@ import {
   plan_graph_rag_status_entry_lookups_json,
   plan_graph_rag_status_entry_snapshot_json,
   plan_graph_rag_status_file_snapshot_json,
-  plan_graph_rag_markdown_file_paths_json,
+  plan_graph_rag_source_file_paths_json,
   plan_graph_rag_run_file_selection_json,
   plan_graph_rag_status_json,
   should_rebuild_graph_runtime_for_graph_status,
@@ -853,10 +855,37 @@ export interface RustIndexedDbStorageLayout {
     vector: string;
     embeddingCache: string;
     bm25: string;
+    corpus: string;
     graph: string;
   };
   cleanupLegacyNames: string[];
   legacyNames: string[];
+}
+
+export interface RustSourceRevision {
+  filePath: string;
+  sourceMtime: number;
+  sourceSize: number;
+  contentHash: string;
+}
+
+export function isSourceRevisionCurrentRust(
+  expected: RustSourceRevision,
+  current: RustSourceRevision,
+): boolean {
+  if (!ensureRustCore()) return false;
+  return source_revision_matches(
+    expected.filePath,
+    current.filePath,
+    expected.contentHash,
+    current.contentHash,
+    new Float64Array([
+      expected.sourceMtime,
+      current.sourceMtime,
+      expected.sourceSize,
+      current.sourceSize,
+    ]),
+  );
 }
 
 export interface RustIndexedDbBoundedCleanupPlan {
@@ -2218,6 +2247,25 @@ export function rankTopKPairsRust(
     fallbackLimit,
   );
   return decodeRankPairs(pairs, compatibleRows);
+}
+
+export function rankGraphCommunityPairsRust(
+  question: string,
+  summaries: readonly string[],
+  query: readonly number[],
+  vectors: readonly (readonly number[])[],
+  topK: number,
+): RustVectorScore[] | null {
+  if (!ensureRustCore()) return null;
+  const pairs = rank_graph_community_pairs(
+    question,
+    JSON.stringify(summaries),
+    new Float64Array(query),
+    new Float64Array(vectors.flat()),
+    JSON.stringify(vectors.map((vector) => vector.length)),
+    topK,
+  );
+  return decodeBoundedIndexScorePairs(pairs, summaries.length);
 }
 
 function rankTopKPairsFallback(
@@ -4198,13 +4246,13 @@ export function planGraphRagStatusEntryLookupsFallback(
   return entryIds;
 }
 
-function isGraphRagMarkdownFilePathFallback(filePath: string): boolean {
-  const markdownPaths = planGraphRagMarkdownFilePathsRust([filePath]);
+function isGraphRagSourceFilePathFallback(filePath: string): boolean {
+  const markdownPaths = planGraphRagSourceFilePathsRust([filePath]);
   return markdownPaths?.[0] === filePath;
 }
 
-function sortedUniqueGraphRagMarkdownPathsFallback(filePaths: readonly string[]): string[] {
-  return planGraphRagMarkdownFilePathsRust(filePaths) ?? [];
+function sortedUniqueGraphRagSourcePathsFallback(filePaths: readonly string[]): string[] {
+  return planGraphRagSourceFilePathsRust(filePaths) ?? [];
 }
 
 export function planGraphRagStatusFileSnapshotFallback(
@@ -4218,7 +4266,7 @@ export function planGraphRagStatusFileSnapshotFallback(
     if (
       record.vectorCount === 0 ||
       !record.processable ||
-      !isGraphRagMarkdownFilePathFallback(record.filePath)
+      !isGraphRagSourceFilePathFallback(record.filePath)
     ) {
       continue;
     }
@@ -4237,7 +4285,7 @@ export function planGraphRagStatusFileSnapshotFallback(
 
   return {
     fileRecordIndices,
-    totalCandidateFiles: sortedUniqueGraphRagMarkdownPathsFallback(
+    totalCandidateFiles: sortedUniqueGraphRagSourcePathsFallback(
       indexedFilePaths.filter((row) => row.processable).map((row) => row.filePath),
     ).length,
   };
@@ -4250,7 +4298,7 @@ export function planGraphRagStatusEntrySnapshotFallback(
   const entryIndices: number[] = [];
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index];
-    if (!entry.processable || !isGraphRagMarkdownFilePathFallback(entry.filePath)) {
+    if (!entry.processable || !isGraphRagSourceFilePathFallback(entry.filePath)) {
       continue;
     }
     if (!seenEntryIds.has(entry.id)) {
@@ -4435,7 +4483,7 @@ export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): Rust
   if (input.isRunning) {
     return buildingGraphRagStatusFallback(input, failedFileCount, maxFilesPerRun);
   }
-  if (input.evidence.length === 0) {
+  if (input.evidence.length === 0 && input.cacheRecords.length === 0) {
     return {
       state: 'not-built',
       totalCandidateFiles: input.totalCandidateFiles,
@@ -4671,12 +4719,12 @@ export function planGraphRagStatusEntryLookupsRust(
   }
 }
 
-export function planGraphRagMarkdownFilePathsRust(filePaths: readonly string[]): string[] | null {
+export function planGraphRagSourceFilePathsRust(filePaths: readonly string[]): string[] | null {
   if (!filePaths.every(isStringValue)) return null;
   if (!ensureRustCore()) return null;
 
   try {
-    const raw = plan_graph_rag_markdown_file_paths_json(JSON.stringify(filePaths));
+    const raw = plan_graph_rag_source_file_paths_json(JSON.stringify(filePaths));
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
@@ -9123,6 +9171,7 @@ function isIndexedDbStorageLayout(value: unknown): value is RustIndexedDbStorage
     isStringValue(active.vector) &&
     isStringValue(active.embeddingCache) &&
     isStringValue(active.bm25) &&
+    isStringValue(active.corpus) &&
     isStringValue(active.graph) &&
     Array.isArray(layout.cleanupLegacyNames) &&
     layout.cleanupLegacyNames.every(isStringValue) &&

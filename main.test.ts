@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import type { GraphRagIndexingResult, GraphRagRunOptions } from './src/graph/indexing-runner';
 import type { GraphRagStatusSummary } from './src/graph/status';
+import type { TFile } from 'obsidian';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -61,6 +62,56 @@ vi.mock('obsidian', () => {
 });
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
+  it('임베딩과 BM25를 끄고도 켠 GraphRAG가 공통 텍스트 원문을 추출한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { TFile } = await import('obsidian');
+    const { resolveProviderCapability } = await import('./src/llm/provider-capabilities');
+    const file = Object.assign(new TFile(), {
+      path: 'source.txt',
+      name: 'source.txt',
+      basename: 'source',
+      extension: 'txt',
+      stat: { ctime: 1, mtime: 1, size: 7 },
+    });
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    plugin.app = createApp({ files: [file], contents: new Map([[file.path, '현재 원문 근거']]) });
+    plugin.settings = {
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [],
+      rag: {
+        ...DEFAULT_SETTINGS.rag,
+        embeddingModelRef: '',
+        enableBM25: false,
+        graphRagEnabled: true,
+        graphRagModel: 'test:graph',
+        graphRagAutoSyncEnabled: false,
+      },
+    };
+    const chat = vi.fn(() => Promise.resolve('{"entities":[],"relations":[],"claims":[]}'));
+    Object.assign(plugin, {
+      manifest: { id: `corpus-graph-test-${crypto.randomUUID()}` },
+      graphRagAbortController: null,
+      ragIndexAbortController: null,
+      createProviderForModel: () => ({
+        capability: resolveProviderCapability({ providerKey: 'openai', model: 'test-model' }),
+        chat,
+        streamChat: () => Promise.resolve(),
+      }),
+    });
+    await plugin.initRAG();
+    expect(plugin.vectorStore).toBeNull();
+    expect(plugin.ragEngine).not.toBeNull();
+    expect(await plugin.runGraphRagIndexing()).toMatchObject({ processedFiles: 1, failedFiles: 0 });
+    expect(
+      (await plugin.knowledgeGraphStore?.getEvidence())?.map(({ filePath }) => filePath),
+    ).toEqual([file.path]);
+    expect(plugin.graphRagStatus?.state).toBe('ready');
+    expect(chat).toHaveBeenCalledOnce();
+    await plugin.prepareRagForChat();
+    (plugin as unknown as { clearRAG(): void }).clearRAG();
+  });
+
   it('임베딩 모델이 없어도 BM25 lexical runtime을 채팅에 준비한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -81,7 +132,6 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         ...DEFAULT_SETTINGS.rag,
         embeddingModelRef: '',
         enableBM25: true,
-        graphRagEnabled: false,
       },
     };
 
@@ -91,6 +141,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.ragEngine).not.toBeNull();
     await expect(plugin.ragEngine?.query('아무 질의')).resolves.toEqual([]);
     expect(plugin.vectorStore).toBeNull();
+    expect(plugin.knowledgeGraphStore).toBeNull();
+    expect(plugin.graphRagIndexingRunner).toBeNull();
     expect(plugin.app.vault.on).toHaveBeenCalledTimes(4);
   });
 
@@ -1247,9 +1299,9 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
         content: t('defaultObsidianSystemPrompt'),
       }),
     );
-    expect(
-      plugin.settings.chat.promptLibrary.some((entry) => /[가-힣]/u.test(entry.content)),
-    ).toBe(false);
+    expect(plugin.settings.chat.promptLibrary.some((entry) => /[가-힣]/u.test(entry.content))).toBe(
+      false,
+    );
   });
 
   it('설정 로드 시 레거시 성능 보호 비활성 값을 활성 상태로 정규화한다', async () => {
@@ -1795,6 +1847,8 @@ function createApp(
     localSettings?: unknown;
     legacyDataExists?: boolean;
     pluginDataDirExists?: boolean;
+    files?: readonly TFile[];
+    contents?: ReadonlyMap<string, string>;
   } = {},
 ) {
   const refs: unknown[] = [];
@@ -1814,8 +1868,12 @@ function createApp(
       read: vi.fn(() => Promise.resolve('')),
       write: vi.fn(() => Promise.resolve()),
     },
-    getFiles: vi.fn(() => []),
+    getFiles: vi.fn(() => [...(options.files ?? [])]),
     getMarkdownFiles: vi.fn(() => []),
+    getAbstractFileByPath: vi.fn(
+      (path: string) => options.files?.find((file) => file.path === path) ?? null,
+    ),
+    cachedRead: vi.fn((file: TFile) => Promise.resolve(options.contents?.get(file.path) ?? '')),
     on: vi.fn((event: string, callback: unknown) => {
       const ref = { event, callback };
       refs.push(ref);

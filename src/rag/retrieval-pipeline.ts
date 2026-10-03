@@ -9,6 +9,7 @@ import {
   planBm25HitLookupRust,
   planBm25SourceLookupsRust,
   planMergedRetrievalCandidatesByEntryIdRust,
+  isSourceRevisionCurrentRust,
   planStructuralHeadingNeighborsRust,
   planStructuralLinkedPathsRust,
   type RustBm25EntryInput,
@@ -34,9 +35,11 @@ export interface RagRetrievalRequest {
   queryVector: number[];
   candidateLimit: number;
   fileBackedOnly?: boolean;
+  requireSourceRevision?: boolean;
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
   isEntryInScope?: (entry: VectorEntry) => boolean;
+  filterCurrentCandidates?: (candidates: RetrievalCandidate[]) => Promise<RetrievalCandidate[]>;
 }
 
 export interface RetrievalCandidate {
@@ -263,7 +266,31 @@ export class BM25CandidateProvider implements CandidateProvider {
     const hitPlan = planBm25HitLookupRust(hits, request.candidateLimit, 4);
     if (hitPlan === null || hitPlan.hits.length === 0) return [];
 
-    const foundEntries = await this.corpusStore.getEntriesByIds(hitPlan.lookupDocIds);
+    let foundEntries = await this.corpusStore.getEntriesByIds(hitPlan.lookupDocIds);
+    if (request.requireSourceRevision) {
+      const indexedDocuments = await this.bm25Index.getCorpusDocumentsByIds(hitPlan.lookupDocIds);
+      const indexedById = new Map(indexedDocuments.map((document) => [document.id, document]));
+      foundEntries = foundEntries.filter((entry) => {
+        const indexed = indexedById.get(entry.id);
+        return (
+          indexed !== undefined &&
+          isSourceRevisionCurrentRust(
+            {
+              filePath: indexed.sourcePath,
+              sourceMtime: indexed.sourceMtime ?? -1,
+              sourceSize: indexed.sourceSize ?? -1,
+              contentHash: indexed.contentHash ?? '',
+            },
+            {
+              filePath: entry.metadata.filePath,
+              sourceMtime: entry.metadata.sourceMtime ?? -1,
+              sourceSize: entry.metadata.sourceSize ?? -1,
+              contentHash: entry.metadata.contentHash ?? '',
+            },
+          )
+        );
+      });
+    }
     throwIfAborted(signal);
     const sourceLookupPaths = planBm25SourceLookupsRust(
       hitPlan.hits,
@@ -272,7 +299,7 @@ export class BM25CandidateProvider implements CandidateProvider {
     if (sourceLookupPaths === null) return [];
 
     const pathEntries =
-      sourceLookupPaths.length > 0
+      sourceLookupPaths.length > 0 && !request.requireSourceRevision
         ? await this.corpusStore.getEntriesByFilePaths(sourceLookupPaths)
         : [];
     throwIfAborted(signal);
@@ -337,10 +364,12 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
   readonly source = 'structural';
 
   constructor(
-    private readonly vectorStore: VectorStore,
+    private readonly vectorStore: VectorStore | null,
     private readonly metadata: StructuralMetadataContext,
     private readonly seedLimit = 1,
     readonly deadlineMs = 30,
+    private readonly corpusStore: RetrievalCorpusStore = requireCorpusStore(vectorStore),
+    private readonly bm25Index?: IndexedDbBM25Index,
   ) {}
 
   async getCandidates(
@@ -348,26 +377,37 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     const seedLimit = Math.max(1, Math.min(this.seedLimit, request.candidateLimit));
-    const seedEntries = request.isEntryCompatible
-      ? (
-          await this.vectorStore.search({
-            queryVector: request.queryVector,
-            topK: seedLimit,
-            filter: request.vectorFilter,
-            signal,
-          })
-        )
-          .map((result) => result.entry)
-          .filter(request.isEntryCompatible)
-      : (
-          await this.vectorStore.search({
-            queryVector: request.queryVector,
-            topK: seedLimit,
-            filter: request.vectorFilter,
-            signal,
-          })
-        ).map((result) => result.entry);
+    let seedEntries =
+      request.queryVector.length === 0 || !this.vectorStore
+        ? []
+        : request.isEntryCompatible
+          ? (
+              await this.vectorStore.search({
+                queryVector: request.queryVector,
+                topK: seedLimit,
+                filter: request.vectorFilter,
+                signal,
+              })
+            )
+              .map((result) => result.entry)
+              .filter(request.isEntryCompatible)
+          : (
+              await this.vectorStore.search({
+                queryVector: request.queryVector,
+                topK: seedLimit,
+                filter: request.vectorFilter,
+                signal,
+              })
+            ).map((result) => result.entry);
     throwIfAborted(signal);
+    if (seedEntries.length === 0 && this.bm25Index?.isReady) {
+      seedEntries = (
+        await new BM25CandidateProvider(this.corpusStore, this.bm25Index).getCandidates(
+          { ...request, candidateLimit: seedLimit },
+          signal,
+        )
+      ).map((candidate) => candidate.entry);
+    }
     if (seedEntries.length === 0) return [];
 
     const seedIds = new Set(seedEntries.map((entry) => entry.id));
@@ -379,7 +419,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     );
 
     const linkedEntries =
-      targetPaths.size > 0 ? await this.vectorStore.getEntriesByFilePaths([...targetPaths]) : [];
+      targetPaths.size > 0 ? await this.corpusStore.getEntriesByFilePaths([...targetPaths]) : [];
     throwIfAborted(signal);
     const headingEntries = await this.collectStructuralHeadingEntries(seedEntries, request);
     const candidatesById = new Map<string, RetrievalCandidate>();
@@ -431,7 +471,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     const paths = [...new Set(seedEntries.map((entry) => entry.metadata.filePath))];
     if (paths.length === 0) return [];
 
-    const entries = await this.vectorStore.getEntriesByFilePaths(paths);
+    const entries = await this.corpusStore.getEntriesByFilePaths(paths);
     const plan = planStructuralHeadingNeighborsRust({
       seeds: this.collectStructuralHeadingSeeds(seedEntries),
       entries: entries.map((entry) => toStructuralEntryInput(entry, request)),
@@ -574,6 +614,10 @@ export class RetrievalOrchestrator {
           signal,
         );
         throwIfAborted(signal);
+        if (request.filterCurrentCandidates) {
+          candidates = await withAbortSignal(request.filterCurrentCandidates(candidates), signal);
+          throwIfAborted(signal);
+        }
       } finally {
         detachAbort();
       }
@@ -624,6 +668,11 @@ async function resolveProviderDeadlineMs(
 }
 
 export class RagRetrievalPipeline extends RetrievalOrchestrator {}
+
+function requireCorpusStore(store: RetrievalCorpusStore | null): RetrievalCorpusStore {
+  if (!store) throw new Error('Source corpus is required for structural retrieval.');
+  return store;
+}
 
 export function mergeRetrievalCandidateGroupsByEntryId(
   candidates: readonly RetrievalCandidate[],

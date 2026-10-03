@@ -6,23 +6,23 @@ import {
   planGraphRagRunFileSelectionRust,
   planGraphRagUnsupportedPrunePathsRust,
   graphExtractionContractVersionRust,
+  isSourceRevisionCurrentRust,
   type RustGraphRagRunFilePathInput,
   type RustGraphRagRunFileSelectionMode,
   type RustGraphRagRunFileSelectionPlan,
 } from '../rag/rust-core';
-import type { VectorEntry, VectorStore } from '../rag/store';
+import type { VectorEntry } from '../rag/store';
+import type { DocumentCorpusStore } from '../rag/document-corpus-store';
 import { buildEdges } from './community-detector';
-import {
-  createGraphCommunityCompute,
-  type GraphCommunityComputePort,
-} from './community-compute';
+import { createGraphCommunityCompute, type GraphCommunityComputePort } from './community-compute';
 import { CommunitySummarizer } from './community-summarizer';
-import { GraphExtractionIndexer, isGraphExtractionDeferredError } from './extraction';
-import type { EntityResolverOptions } from './entity-resolver';
 import {
-  isProcessableGraphRagFilePath,
-  type GraphRagFilePathPredicate,
-} from './file-paths';
+  GraphExtractionIndexer,
+  GraphExtractionSourceChangedError,
+  isGraphExtractionDeferredError,
+} from './extraction';
+import type { EntityResolverOptions } from './entity-resolver';
+import { isProcessableGraphRagFilePath, type GraphRagFilePathPredicate } from './file-paths';
 import {
   createEmptyGraphRagProgressCounters,
   type GraphRagIndexingCounterPatch,
@@ -30,14 +30,15 @@ import {
   type GraphRagIndexingProgress,
 } from './indexing-progress';
 import type { GraphRejectedFactRecord, KnowledgeGraphStore } from './store';
+import { calculateGraphRagStatus } from './status';
 
 export type { GraphRagIndexingPhase, GraphRagIndexingProgress } from './indexing-progress';
 
 export interface GraphRagIndexingRunnerOptions {
-  vectorStore: VectorStore;
+  vectorStore: DocumentCorpusStore;
   graphStore: KnowledgeGraphStore;
   provider: LLMProvider;
-  embeddingProvider: EmbeddingProvider;
+  embeddingProvider?: EmbeddingProvider;
   knowledgeContract: KnowledgeGraphContract;
   extractionModelKey: string;
   maxFilesPerRun: number;
@@ -79,7 +80,7 @@ export interface GraphRagCommunityBuildResult {
 }
 
 export class GraphRagIndexingRunner {
-  private readonly vectorStore: VectorStore;
+  private readonly vectorStore: DocumentCorpusStore;
   private readonly graphStore: KnowledgeGraphStore;
   private readonly indexer: GraphExtractionIndexer;
   private readonly summarizer: CommunitySummarizer;
@@ -267,18 +268,18 @@ export class GraphRagIndexingRunner {
     this.running = true;
     const startedAt = Date.now();
     this.progress = createEmptyProgress(runId, 0, 'selecting-files');
-    this.emitProgress();
-    await this.pruneUnsupportedGraphFiles();
-    const fileSelection = await this.getFileSelection(options);
-    const candidateFilePaths = fileSelection.candidateFilePaths;
-    const selectedFilePaths = fileSelection.selectedFilePaths;
-    const result = createEmptyResult(startedAt, candidateFilePaths.length, selectedFilePaths.length, runId);
-    this.updateProgress({
-      selectedFiles: selectedFilePaths.length,
-      phase: selectedFilePaths.length > 0 ? 'checking-cache' : 'completed',
-    });
-
+    const result = createEmptyResult(startedAt, 0, 0, runId);
     try {
+      this.emitProgress();
+      await this.pruneUnsupportedGraphFiles();
+      const fileSelection = await this.getFileSelection(options);
+      const selectedFilePaths = fileSelection.selectedFilePaths;
+      result.totalCandidateFiles = fileSelection.candidateFilePaths.length;
+      result.selectedFiles = selectedFilePaths.length;
+      this.updateProgress({
+        selectedFiles: selectedFilePaths.length,
+        phase: selectedFilePaths.length > 0 ? 'checking-cache' : 'completed',
+      });
       for (const filePath of selectedFilePaths) {
         if (options.signal?.aborted) {
           result.cancelled = true;
@@ -393,11 +394,30 @@ export class GraphRagIndexingRunner {
       }
     }
 
+    const currentStatus =
+      mode === 'full'
+        ? await calculateGraphRagStatus({
+            ragConfig: {
+              graphRagEnabled: true,
+              graphRagModel: this.extractionModelKey,
+              graphRagMaxFilesPerRun: this.maxFilesPerRun,
+            },
+            vectorStore: this.vectorStore,
+            graphStore: this.graphStore,
+            isRunning: false,
+            isProcessableFilePath: this.isProcessableFilePath,
+            activeProviderEpochId: this.indexer.getProviderEpochId(
+              this.extractionModelKey,
+              graphExtractionContractVersionRust(),
+            ),
+          })
+        : null;
+
     return (
       planGraphRagRunFileSelectionRust({
         mode,
         failedFilePaths,
-        staleFilePaths: options.staleFilePaths ?? [],
+        staleFilePaths: options.staleFilePaths ?? currentStatus?.staleFilePaths ?? [],
         recordFilePaths,
         indexedFilePaths,
         maxFilesPerRun: this.maxFilesPerRun,
@@ -476,7 +496,7 @@ export class GraphRagIndexingRunner {
           graphExtractionContractVersionRust(),
         ),
       };
-      if (!forceReprocess && await this.graphStore.isExtractionCached(cacheKey)) {
+      if (!forceReprocess && (await this.graphStore.isExtractionCached(cacheKey))) {
         preparedEntries.push({ entry, contentHash, cached: true });
       } else {
         preparedEntries.push({ entry, contentHash, cached: false });
@@ -502,42 +522,73 @@ export class GraphRagIndexingRunner {
       }
       const batch = preparedEntries.slice(i, i + this.maxConcurrentRequests);
       const batchResults = await Promise.all(
-        batch.map(async ({ entry, contentHash }): Promise<{
-          processed: boolean;
-          failed: boolean;
-          cancelled: boolean;
-        }> => {
-          if (signal?.aborted) {
-            return { processed: false, failed: false, cancelled: true };
-          }
-          try {
-            await this.indexer.extractChunk({
-              chunkText: entry.metadata.text,
-              filePath,
-              entryId: entry.id,
-              startLine: entry.metadata.startLine,
-              endLine: entry.metadata.endLine,
-              contentHash,
-              extractionModelKey: this.extractionModelKey,
-              knowledgeContract: this.knowledgeContract,
-              signal,
-              ignoreRetryWait: forceReprocess,
-              onPhase: (phase) => this.updateProgressPhase(phase),
-              onProgress: (patch) => this.incrementProgressCounters(patch),
-            });
-            return { processed: true, failed: false, cancelled: false };
-          } catch (error) {
-            if (signal?.aborted || isAbortError(error)) {
+        batch.map(
+          async ({
+            entry,
+            contentHash,
+          }): Promise<{
+            processed: boolean;
+            failed: boolean;
+            cancelled: boolean;
+          }> => {
+            if (signal?.aborted) {
               return { processed: false, failed: false, cancelled: true };
             }
-            if (isGraphExtractionDeferredError(error)) {
-              return { processed: false, failed: false, cancelled: false };
+            try {
+              await this.indexer.extractChunk({
+                chunkText: entry.metadata.text,
+                filePath,
+                entryId: entry.id,
+                startLine: entry.metadata.startLine,
+                endLine: entry.metadata.endLine,
+                contentHash,
+                extractionModelKey: this.extractionModelKey,
+                knowledgeContract: this.knowledgeContract,
+                signal,
+                isSourceCurrent: async () => {
+                  if (!this.isProcessable(filePath)) return false;
+                  const current = (await this.vectorStore.getEntriesByIds([entry.id]))[0];
+                  return (
+                    current !== undefined &&
+                    isSourceRevisionCurrentRust(
+                      {
+                        filePath,
+                        sourceMtime: entry.metadata.sourceMtime ?? -1,
+                        sourceSize: entry.metadata.sourceSize ?? -1,
+                        contentHash: entry.metadata.contentHash ?? '',
+                      },
+                      {
+                        filePath: current.metadata.filePath,
+                        sourceMtime: current.metadata.sourceMtime ?? -1,
+                        sourceSize: current.metadata.sourceSize ?? -1,
+                        contentHash: current.metadata.contentHash ?? '',
+                      },
+                    )
+                  );
+                },
+                ignoreRetryWait: forceReprocess,
+                onPhase: (phase) => this.updateProgressPhase(phase),
+                onProgress: (patch) => this.incrementProgressCounters(patch),
+              });
+              return { processed: true, failed: false, cancelled: false };
+            } catch (error) {
+              if (error instanceof GraphExtractionSourceChangedError) {
+                return { processed: false, failed: false, cancelled: false };
+              }
+              if (signal?.aborted || isAbortError(error)) {
+                return { processed: false, failed: false, cancelled: true };
+              }
+              if (isGraphExtractionDeferredError(error)) {
+                return { processed: false, failed: false, cancelled: false };
+              }
+              await this.graphStore.addRejectedFact(
+                createChunkFailureRecord(filePath, entry, error),
+              );
+              this.incrementProgressCounters({ storedRejectedFacts: 1 });
+              return { processed: false, failed: true, cancelled: false };
             }
-            await this.graphStore.addRejectedFact(createChunkFailureRecord(filePath, entry, error));
-            this.incrementProgressCounters({ storedRejectedFacts: 1 });
-            return { processed: false, failed: true, cancelled: false };
-          }
-        }),
+          },
+        ),
       );
 
       for (const r of batchResults) {
@@ -620,9 +671,7 @@ const GRAPH_RAG_PROGRESS_COUNTER_KEYS = new Set<keyof GraphRagIndexingCounterPat
   'cachedChunks',
 ]);
 
-function isGraphRagProgressCounterKey(
-  key: string,
-): key is keyof GraphRagIndexingCounterPatch {
+function isGraphRagProgressCounterKey(key: string): key is keyof GraphRagIndexingCounterPatch {
   return GRAPH_RAG_PROGRESS_COUNTER_KEYS.has(key as keyof GraphRagIndexingCounterPatch);
 }
 

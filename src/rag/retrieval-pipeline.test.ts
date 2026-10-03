@@ -477,6 +477,28 @@ describe('RagRetrievalPipeline', () => {
     expect(candidates.every((candidate) => candidate.source === 'structural')).toBe(true);
   });
 
+  it('구조 검색은 임베딩 없이 BM25 seed와 공통 원문으로 링크를 따라간다', async () => {
+    const corpus = new MemoryVectorStore();
+    await corpus.add([
+      createEntry('seed.md', [], 'seedterm'),
+      createEntry('linked.txt', [], 'linked evidence'),
+    ]);
+    const bm25 = await createBm25([['seed.md::1', 'seedterm', 'seed.md']]);
+    const provider = new StructuralGraphCandidateProvider(
+      null,
+      createMetadataContext({ resolvedLinks: { 'seed.md': { 'linked.txt': 1 } } }),
+      1,
+      30,
+      corpus,
+      bm25,
+    );
+    const candidates = await provider.getCandidates({
+      ...createRequest([], 10),
+      question: 'seedterm',
+    });
+    expect(candidates.map(({ entry }) => entry.metadata.filePath)).toEqual(['linked.txt']);
+  });
+
   it('StructuralGraphCandidateProvider는 같은 heading 주변 chunk 후보를 추가한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

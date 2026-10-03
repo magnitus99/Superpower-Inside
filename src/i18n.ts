@@ -1978,7 +1978,7 @@ const ko: I18nKeys = {
   totalVectorsDesc: '파일 수정 시각·크기 기준으로 현재 문서와 동기화된 임베딩 벡터 개수',
   targetFileTypes: '대상 파일 형식',
   targetFileTypesDesc:
-    '위의 경로·채팅 폴더·확장자 제외를 모두 적용한 검색 대상입니다. 규칙을 바꾸면 자동으로 다시 계산합니다. GraphRAG는 이 중 Markdown 노트만 사용합니다.',
+    '경로·채팅 폴더·확장자 제외를 적용한 지원 텍스트 파일입니다. 같은 파일을 키워드·의미 검색과 채팅 도구에서 사용합니다. GraphRAG는 기본으로 꺼져 있으며, 켜면 같은 파일을 사용합니다.',
   targetFileTypesEmpty: '현재 설정 기준으로 RAG 대상 파일이 없습니다.',
   excludeRecommendations: '제외 추천',
   excludeRecommendationEmpty: '추가로 제외할 파일 형식 추천이 없습니다.',
@@ -3827,7 +3827,7 @@ const en: I18nKeys = {
   totalVectorsDesc: 'Embedding vectors synchronized with documents by file mtime and size',
   targetFileTypes: 'Target File Types',
   targetFileTypesDesc:
-    'Search targets after applying path, chat folder, and extension exclusions above. Recalculated when rules change. GraphRAG uses only Markdown notes from this scope.',
+    'Supported text files after path, chat folder, and extension exclusions. Keyword search, semantic search, and chat tools share this scope. GraphRAG is off by default and uses the same files when enabled.',
   targetFileTypesEmpty: 'No files are currently eligible for RAG.',
   excludeRecommendations: 'Exclude Recommendations',
   excludeRecommendationEmpty: 'No additional file types are recommended for exclusion.',

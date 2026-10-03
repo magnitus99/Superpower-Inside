@@ -2,6 +2,7 @@ import { TFile, TFolder, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import { RAGQueryEngine, type QueryResult } from '../rag/query';
 import { MemoryVectorStore } from '../rag/store';
+import { createContentHash } from '../rag/hash';
 import {
   ObsidianNativeVaultToolPort,
   type NativeVaultQueryEngineLike,
@@ -349,6 +350,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
             1,
             ['vector', 'bm25'],
             'keyword-vector',
+            alpha,
           ),
           chunkRange: { startLine: 1, endLine: 2 },
         },
@@ -423,7 +425,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const query = vi.fn(() =>
       Promise.resolve(
         files.map((file, index) =>
-          createQueryResult(file.path, `evidence-${index}`, 0, ['vector'], 'vector'),
+          createQueryResult(file.path, `evidence-${index}`, 0, ['vector'], 'vector', file),
         ),
       ),
     );
@@ -560,6 +562,9 @@ describe('Obsidian 네이티브 Vault 포트', () => {
             text: '창세기 본문',
             startLine: 0,
             endLine: 0,
+            sourceMtime: 2,
+            sourceSize: '창세기 본문'.length,
+            contentHash: createContentHash('창세기 본문'),
           },
         },
       },
@@ -947,7 +952,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(cachedRead).toHaveBeenCalledTimes(3);
   });
 
-  it('production vector file records가 healthy여도 답변 근거는 현재 Vault 본문으로 검증한다', async () => {
+  it('메타데이터가 같아도 해시가 다른 인덱스 구간은 검증된 근거로 승격하지 않는다', async () => {
     const indexedNote = createFile('Projects/Healthy.md', '현재 본문');
     const store = new MemoryVectorStore();
     await store.add([
@@ -995,8 +1000,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
 
     expect(result.hits[0]?.path).toBe(indexedNote.path);
-    expect(result.hits[0]).toMatchObject({ citationStatus: 'verified' });
-    expect(result.hits[0]).not.toHaveProperty('requiresRead');
+    expect(result.hits[0]).toMatchObject({ citationStatus: 'candidate', requiresRead: true });
     expect(cachedRead).toHaveBeenCalledOnce();
   });
 
@@ -1478,6 +1482,7 @@ function createQueryResult(
   startLine: number,
   retrievalSources: string[],
   selectionReason: NonNullable<QueryResult['selectionReason']>,
+  source?: TFile & { content: string },
 ): QueryResult {
   return {
     sourcePath: path,
@@ -1497,6 +1502,13 @@ function createQueryResult(
         text: `indexed evidence for ${path}`,
         startLine,
         endLine: startLine,
+        ...(source
+          ? {
+              sourceMtime: source.stat.mtime,
+              sourceSize: source.stat.size,
+              contentHash: createContentHash(source.content),
+            }
+          : {}),
       },
     },
   };

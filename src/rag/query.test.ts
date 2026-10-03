@@ -31,6 +31,56 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('BM25 문서와 공통 원문의 revision이 다르면 이전 키워드 점수를 새 본문에 붙이지 않는다', async () => {
+    const latest = createEntry('source.txt', [], '최신 원문');
+    const sourceStore = new MemoryVectorStore();
+    await sourceStore.add([latest]);
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: latest.id,
+      sourcePath: latest.metadata.filePath,
+      text: 'oldterm 이전 근거',
+      sourceMtime: 1000,
+      sourceSize: latest.metadata.sourceSize,
+      contentHash: 'old',
+    });
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { corpusStore: sourceStore });
+    expect(await engine.query('oldterm', 5, 0)).toEqual([]);
+  });
+  it('같은 청크 ID의 오래된 벡터를 제거해도 최신 BM25 근거는 병합에서 살아남는다', async () => {
+    const latest = createEntry('source.txt', [], 'freshterm 최신 근거');
+    const stale = {
+      ...latest,
+      vector: [1, 0],
+      metadata: { ...latest.metadata, contentHash: 'old', text: '이전 근거' },
+    };
+    const vectors = new MemoryVectorStore();
+    await vectors.add([stale]);
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: latest.id,
+      sourcePath: latest.metadata.filePath,
+      text: latest.metadata.text,
+      startLine: 0,
+      endLine: 0,
+      sourceMtime: 1000,
+      sourceSize: latest.metadata.sourceSize,
+      contentHash: 'hash',
+    });
+    const sourceStore = new MemoryVectorStore();
+    await sourceStore.add([latest]);
+    const engine = new RAGQueryEngine(
+      vectors,
+      { embed: () => Promise.resolve([1, 0]), embedBatch: () => Promise.resolve([]) },
+      bm25,
+      0.3,
+      0,
+      { corpusStore: sourceStore },
+    );
+    const results = await engine.query('freshterm', 5, 0);
+    expect(results[0]?.entry.metadata.text).toBe(latest.metadata.text);
+    expect(results[0]?.retrievalSources).toEqual(['bm25']);
+  });
   it('BM25 후보도 현재 검색 대상 목록에 속한 파일만 반환한다', async () => {
     const bm25 = await createBm25([
       ['visible.md', 'specialterm'],

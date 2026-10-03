@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assignVectorClustersRust,
+  rankGraphCommunityPairsRust,
   analyzeRetrievalSourcesRust,
   buildInitialCentroidsRust,
   calculateRecallAtKRust,
@@ -52,7 +53,7 @@ import {
   planGraphRagStatusEntrySnapshotRust,
   planGraphRagStatusFileSnapshotRust,
   planGraphRagStatusRust,
-  planGraphRagMarkdownFilePathsRust,
+  planGraphRagSourceFilePathsRust,
   planIndexPendingFilesRust,
   createIndexedDbRecordKeyRust,
   planIndexedDbStorageLayoutRust,
@@ -145,6 +146,17 @@ import {
 } from './rust-core';
 
 describe('Rust WASM RAG core bridge', () => {
+  it('그래프 요약 벡터가 없는 파일도 본문 관련도로 정렬한다', () => {
+    const ranked = rankGraphCommunityPairsRust(
+      '온보딩',
+      ['다른 주제', '온보딩 고객 근거'],
+      [],
+      [[], []],
+      2,
+    );
+    expect(ranked?.map(({ index }) => index)).toEqual([1, 0]);
+    expect(ranked?.[0]?.score).toBeGreaterThan(ranked?.[1]?.score ?? 0);
+  });
   it('loads embedded WASM bytes synchronously', () => {
     expect(isRustCoreAvailable()).toBe(true);
   });
@@ -2442,16 +2454,16 @@ describe('Rust WASM RAG core bridge', () => {
     });
   });
 
-  it('plans GraphRAG markdown file path filtering through Rust', () => {
+  it('지원 원문 경로를 Rust로 정리한다', () => {
     expect(
-      planGraphRagMarkdownFilePathsRust([
+      planGraphRagSourceFilePathsRust([
         'Notes/Paul.md',
         'Notes/Romans.MD',
         'Notes/archive.txt',
         'Notes/.md',
         '',
       ]),
-    ).toEqual(['Notes/Paul.md', 'Notes/Romans.MD', 'Notes/.md']);
+    ).toEqual(['Notes/Paul.md', 'Notes/Romans.MD', 'Notes/archive.txt', 'Notes/.md']);
   });
 
   it('plans referenced vault file self-skip and dedupe through Rust', () => {
@@ -3058,7 +3070,7 @@ describe('Rust WASM RAG core bridge', () => {
           { filePath: 'clip.png', processable: true },
         ],
       ),
-    ).toEqual({ fileRecordIndices: [0, 3], totalCandidateFiles: 2 });
+    ).toEqual({ fileRecordIndices: [0, 1, 3], totalCandidateFiles: 3 });
 
     expect(
       planGraphRagStatusFileSnapshotRust(
@@ -3074,7 +3086,7 @@ describe('Rust WASM RAG core bridge', () => {
           { filePath: 'second.md', processable: true },
         ],
       ),
-    ).toEqual({ fileRecordIndices: [], totalCandidateFiles: 2 });
+    ).toEqual({ fileRecordIndices: [0], totalCandidateFiles: 1 });
   });
 
   it('plans GraphRAG status vector entry snapshot through Rust', () => {
@@ -3086,7 +3098,7 @@ describe('Rust WASM RAG core bridge', () => {
         { id: 'fresh.md::0', filePath: 'fresh.md', processable: true },
         { id: 'second.md::0', filePath: 'second.md', processable: true },
       ]),
-    ).toEqual({ entryIndices: [0, 4] });
+    ).toEqual({ entryIndices: [0, 1, 4] });
   });
 
   it('plans GraphRAG status summary through Rust', () => {
@@ -3234,8 +3246,8 @@ describe('Rust WASM RAG core bridge', () => {
         maxFilesPerRun: 1,
       }),
     ).toEqual({
-      candidateFilePaths: ['m.md', 'z.md'],
-      selectedFilePaths: ['m.md'],
+      candidateFilePaths: ['Base.base', 'm.md', 'z.md'],
+      selectedFilePaths: ['Base.base'],
     });
 
     expect(
@@ -3248,8 +3260,8 @@ describe('Rust WASM RAG core bridge', () => {
         maxFilesPerRun: 8,
       }),
     ).toEqual({
-      candidateFilePaths: ['a.md', 'b.md'],
-      selectedFilePaths: ['a.md', 'b.md'],
+      candidateFilePaths: ['a.base', 'a.md', 'b.md'],
+      selectedFilePaths: ['a.base', 'a.md', 'b.md'],
     });
 
     expect(
@@ -3262,8 +3274,8 @@ describe('Rust WASM RAG core bridge', () => {
         maxFilesPerRun: 1,
       }),
     ).toEqual({
-      candidateFilePaths: ['deleted.md', 'stale.md'],
-      selectedFilePaths: ['deleted.md'],
+      candidateFilePaths: ['Base.base', 'deleted.md', 'stale.md'],
+      selectedFilePaths: ['Base.base'],
     });
   });
 

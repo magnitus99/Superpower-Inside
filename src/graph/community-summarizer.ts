@@ -20,10 +20,11 @@ import type {
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { getEntityDisplayAliases } from './entity-labels';
 import { getLanguage, t } from '../i18n';
+import { appLogger } from '../utils/logger';
 
 export interface CommunitySummarizerOptions {
   provider: LLMProvider;
-  embeddingProvider: EmbeddingProvider;
+  embeddingProvider?: EmbeddingProvider;
   store: KnowledgeGraphStore;
   ontologySchemaId: string;
 }
@@ -48,7 +49,10 @@ function formatRelationSummary(
   return `${sourceLabel} --[${relation.relationTypeId}]--> ${targetLabel}${relation.description ? `: ${relation.description}` : ''}`;
 }
 
-function formatClaimSummary(claim: GraphClaimRecord, entityMap: Map<string, GraphEntityRecord>): string {
+function formatClaimSummary(
+  claim: GraphClaimRecord,
+  entityMap: Map<string, GraphEntityRecord>,
+): string {
   const entityNames = claim.entityIds
     .map((id) => entityMap.get(id)?.canonicalName ?? id)
     .join(', ');
@@ -115,7 +119,7 @@ function selectByIndex<T>(items: readonly T[], indices: readonly number[]): T[] 
 
 export class CommunitySummarizer {
   private provider: LLMProvider;
-  private embeddingProvider: EmbeddingProvider;
+  private embeddingProvider: EmbeddingProvider | undefined;
   private store: KnowledgeGraphStore;
   private ontologySchemaId: string;
 
@@ -175,7 +179,19 @@ export class CommunitySummarizer {
       );
       if (signal?.aborted) break;
 
-      const summaryVector = await this.embeddingProvider.embed(summary, { signal });
+      let summaryVector: number[] = [];
+      if (this.embeddingProvider) {
+        try {
+          summaryVector = await this.embeddingProvider.embed(summary, { signal });
+        } catch (error) {
+          if (signal?.aborted || (error instanceof Error && error.name === 'AbortError'))
+            throw error;
+          appLogger.warn('Community embedding failed; preserving graph summary and evidence.', {
+            source: 'graph.community',
+            error,
+          });
+        }
+      }
 
       const relationIds = relations.map((r) => r.id);
       const claimIds = claims.map((c) => c.id);
@@ -216,10 +232,7 @@ export class CommunitySummarizer {
     for (const level of levels) {
       if (signal?.aborted) break;
       const assignments = new Map(
-        level.assignmentsById.map((assignment) => [
-          assignment.entityId,
-          assignment.communityId,
-        ]),
+        level.assignmentsById.map((assignment) => [assignment.entityId, assignment.communityId]),
       );
       const records = await this.summarizeCommunities(
         assignments,
@@ -259,9 +272,7 @@ export class CommunitySummarizer {
         return `  - ${formatRelationSummary(r, source?.canonicalName ?? r.sourceEntityId, target?.canonicalName ?? r.targetEntityId)}`;
       })
       .join('\n');
-    const claimLines = claims
-      .map((c) => `  - ${formatClaimSummary(c, entityMap)}`)
-      .join('\n');
+    const claimLines = claims.map((c) => `  - ${formatClaimSummary(c, entityMap)}`).join('\n');
     const childReportLines = childReports
       .map((report) => `  - ${report.title}: ${report.summary}`)
       .join('\n');
@@ -332,7 +343,10 @@ export class CommunitySummarizer {
           communityKey,
           memberHash,
           childReportHash,
-          level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+          level:
+            childReports.length === 0
+              ? 0
+              : Math.max(...childReports.map((report) => report.level)) + 1,
           promptHash,
           providerEpochId,
           state: 'prepared',
@@ -354,7 +368,10 @@ export class CommunitySummarizer {
           communityKey,
           memberHash,
           childReportHash,
-          level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+          level:
+            childReports.length === 0
+              ? 0
+              : Math.max(...childReports.map((report) => report.level)) + 1,
           promptHash,
           providerEpochId,
           state: 'response-received',
@@ -367,18 +384,26 @@ export class CommunitySummarizer {
         communityKey,
         memberHash,
         childReportHash,
-        level: childReports.length === 0 ? 0 : Math.max(...childReports.map((report) => report.level)) + 1,
+        level:
+          childReports.length === 0
+            ? 0
+            : Math.max(...childReports.map((report) => report.level)) + 1,
         promptHash,
         providerEpochId,
         state: 'committed',
-        rawResponseId: existingJob?.rawResponseId ?? requireGraphId([
-          'community-summary-response',
-          jobId,
-          requireGraphId(['community-summary-body', summary]),
-        ]),
+        rawResponseId:
+          existingJob?.rawResponseId ??
+          requireGraphId([
+            'community-summary-response',
+            jobId,
+            requireGraphId(['community-summary-body', summary]),
+          ]),
         updatedAt: Date.now(),
       });
-      return summary.trim() || `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;
+      return (
+        summary.trim() ||
+        `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`
+      );
     } catch {
       if (signal?.aborted) {
         return `Community ${communityId}: ${entities.map((e) => e.canonicalName).join(', ')}`;

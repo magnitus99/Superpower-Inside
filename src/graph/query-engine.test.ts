@@ -4,11 +4,7 @@ import { MemoryVectorStore, type VectorEntry } from '../rag/store';
 import type { ChatMessage, LLMProvider } from '../llm/providers';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { setLanguage } from '../i18n';
-import {
-  GraphRagCandidateProvider,
-  GraphRagQueryEngine,
-  planGraphQuery,
-} from './query-engine';
+import { GraphRagCandidateProvider, GraphRagQueryEngine, planGraphQuery } from './query-engine';
 import { RagRetrievalPipeline } from '../rag/retrieval-pipeline';
 import {
   InMemoryKnowledgeGraphStore,
@@ -19,6 +15,60 @@ import {
 } from './store';
 
 describe('GraphRagQueryEngine', () => {
+  it('같은 청크 ID라도 원문 해시가 바뀐 그래프 근거는 채팅 후보에서 제외한다', async () => {
+    const { graphStore, vectorStore } = await createGraphFixture();
+    const entries = await vectorStore.getEntriesByFilePaths(['Acts.md']);
+    await vectorStore.add(
+      entries.map((entry) => ({
+        ...entry,
+        metadata: { ...entry.metadata, sourceMtime: 1, sourceSize: 1, contentHash: 'changed' },
+      })),
+    );
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract());
+    const request = {
+      question: 'Paul과 Barnabas는 어떤 관계야?',
+      queryVector: [1, 0],
+      candidateLimit: 5,
+      requireSourceRevision: true,
+    };
+    expect(await engine.query(request)).toEqual([]);
+    const evidence = await graphStore.getEvidence();
+    await vectorStore.add(
+      entries.map((entry) => ({
+        ...entry,
+        metadata: {
+          ...entry.metadata,
+          sourceMtime: 1,
+          sourceSize: 1,
+          contentHash: evidence.find((record) => record.entryId === entry.id)?.contentHash,
+        },
+      })),
+    );
+    expect(
+      (await engine.query(request)).map((candidate) => candidate.entry.metadata.filePath),
+    ).toEqual(['Acts.md']);
+  });
+  it('질의·요약 임베딩 없이도 전체 그래프에서 원문 근거를 반환한다', async () => {
+    const { graphStore, vectorStore } = await createThematicGraphFixture();
+    const communities = await graphStore.getCommunitiesBySchema(buildKnowledgeGraphContract().id);
+    await graphStore.replaceCommunities(
+      buildKnowledgeGraphContract().id,
+      communities.map((community) => ({ ...community, summaryVector: [] })),
+    );
+    const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+      queryMode: 'global',
+    });
+    const candidates = await engine.query({
+      question: '반복되는 핵심 주제는?',
+      queryVector: [],
+      candidateLimit: 2,
+      fileBackedOnly: true,
+    });
+    expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
+      expect.arrayContaining(['A.md', 'B.md']),
+    );
+    expect(candidates.every((candidate) => candidate.reason === 'community-evidence')).toBe(true);
+  });
   beforeEach(() => {
     setLanguage('ko');
   });
@@ -121,9 +171,7 @@ describe('GraphRagQueryEngine', () => {
       'community-evidence',
     ]);
     expect(
-      candidates.every(
-        (candidate) => !candidate.entry.metadata.filePath.startsWith('graph://'),
-      ),
+      candidates.every((candidate) => !candidate.entry.metadata.filePath.startsWith('graph://')),
     ).toBe(true);
   });
 
@@ -278,8 +326,7 @@ describe('GraphRagQueryEngine', () => {
     const engine = new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
       provider,
     });
-    const isFileBacked = (entry: VectorEntry) =>
-      !entry.metadata.filePath.startsWith('graph://');
+    const isFileBacked = (entry: VectorEntry) => !entry.metadata.filePath.startsWith('graph://');
 
     const candidates = await engine.query({
       question: '반복되는 핵심 주제는?',
@@ -428,10 +475,7 @@ describe('GraphRagQueryEngine', () => {
     expect(candidates[0]?.source).toBe('graph-global');
     expect(candidates.map((candidate) => candidate.source)).not.toContain('graph-local');
     expect(candidates.map((candidate) => candidate.entry.metadata.filePath)).toEqual(
-      expect.arrayContaining([
-        'Acts.md',
-        'graph://community/community::mission',
-      ]),
+      expect.arrayContaining(['Acts.md', 'graph://community/community::mission']),
     );
   });
 
@@ -543,24 +587,29 @@ describe('GraphRagQueryEngine', () => {
     };
     await graphStore.addEvidence(evidence);
     await graphStore.upsertEntity(
-      createEntity('Paul', [], [evidence.id], [
-        {
-          value: 'Paul',
-          language: 'en',
-          kind: 'preferred',
-          source: 'llm-extraction',
-          confidence: 0.9,
-          evidenceIds: [evidence.id],
-        },
-        {
-          value: '바울',
-          language: 'ko',
-          kind: 'alias',
-          source: 'manual',
-          confidence: 1,
-          evidenceIds: [],
-        },
-      ]),
+      createEntity(
+        'Paul',
+        [],
+        [evidence.id],
+        [
+          {
+            value: 'Paul',
+            language: 'en',
+            kind: 'preferred',
+            source: 'llm-extraction',
+            confidence: 0.9,
+            evidenceIds: [evidence.id],
+          },
+          {
+            value: '바울',
+            language: 'ko',
+            kind: 'alias',
+            source: 'manual',
+            confidence: 1,
+            evidenceIds: [],
+          },
+        ],
+      ),
     );
     await graphStore.upsertEntity(createEntity('Barnabas', ['바나바'], [evidence.id]));
     await graphStore.addRelation(createRelation(evidence.id));
@@ -754,12 +803,9 @@ describe('GraphRagCandidateProvider', () => {
         streamChat: () => Promise.resolve(),
       };
       const graphProvider = new GraphRagCandidateProvider(
-        new GraphRagQueryEngine(
-          graphStore,
-          vectorStore,
-          buildKnowledgeGraphContract(),
-          { provider: delayedProvider },
-        ),
+        new GraphRagQueryEngine(graphStore, vectorStore, buildKnowledgeGraphContract(), {
+          provider: delayedProvider,
+        }),
         () => ({ readiness: 'ready', estimatedCost: 'medium' }),
       );
       const pipeline = new RagRetrievalPipeline([graphProvider]);
@@ -941,10 +987,7 @@ async function createThematicGraphFixture(): Promise<{
     id: 'community::theme',
     ontologySchemaId: 'knowledge-graph',
     title: 'Recurring theme',
-    entityIds: [
-      'entity::general::person::alpha',
-      'entity::general::person::beta',
-    ],
+    entityIds: ['entity::general::person::alpha', 'entity::general::person::beta'],
     relationIds: ['relation::alpha-beta'],
     claimIds: ['claim::theme'],
     summary: 'Alpha and Beta form a recurring theme.',
@@ -1056,10 +1099,11 @@ function createVectorEntry(id: string, filePath: string): VectorEntry {
   };
 }
 
-
 class FullScanFailingKnowledgeGraphStore extends InMemoryKnowledgeGraphStore {
   getRelations(): Promise<GraphRelationRecord[]> {
-    return Promise.reject(new Error('전체 relation scan은 local graph query에서 허용되지 않습니다.'));
+    return Promise.reject(
+      new Error('전체 relation scan은 local graph query에서 허용되지 않습니다.'),
+    );
   }
 
   getClaims(): Promise<GraphClaimRecord[]> {
@@ -1067,7 +1111,9 @@ class FullScanFailingKnowledgeGraphStore extends InMemoryKnowledgeGraphStore {
   }
 
   getEvidence(): Promise<GraphEvidenceRecord[]> {
-    return Promise.reject(new Error('전체 evidence scan은 local graph query에서 허용되지 않습니다.'));
+    return Promise.reject(
+      new Error('전체 evidence scan은 local graph query에서 허용되지 않습니다.'),
+    );
   }
 }
 

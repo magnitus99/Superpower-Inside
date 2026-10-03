@@ -1,24 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
-  filterGraphRagMarkdownFilePaths,
+  filterGraphRagSourceFilePaths,
   filterProcessableGraphRagFilePaths,
-  isGraphRagMarkdownFilePath,
+  isGraphRagSourceFilePath,
   isProcessableGraphRagFilePath,
 } from './file-paths';
 
 describe('GraphRAG file path policy', () => {
-  it('markdown extension 판정은 대소문자를 보존한 Rust plan 결과를 따른다', () => {
-    expect(isGraphRagMarkdownFilePath('Notes/Paul.md')).toBe(true);
-    expect(isGraphRagMarkdownFilePath('Notes/Romans.MD')).toBe(true);
-    expect(isGraphRagMarkdownFilePath('Notes/archive.txt')).toBe(false);
-    expect(filterGraphRagMarkdownFilePaths(['a.md', 'b.MD', 'c.canvas', 'd.md'])).toEqual([
+  it('지원 본문 경로는 확장자에 상관없이 그래프에 연결한다', () => {
+    expect(isGraphRagSourceFilePath('Notes/Paul.md')).toBe(true);
+    expect(isGraphRagSourceFilePath('Notes/Romans.MD')).toBe(true);
+    expect(isGraphRagSourceFilePath('Notes/archive.txt')).toBe(true);
+    expect(filterGraphRagSourceFilePaths(['a.md', 'b.MD', 'c.canvas', 'd.md'])).toEqual([
       'a.md',
       'b.MD',
+      'c.canvas',
       'd.md',
     ]);
   });
 
-  it('host predicate는 Rust markdown filtering 이후에만 적용한다', () => {
+  it('공통 파일 정책이 제외한 경로는 그래프에서도 제외한다', () => {
     const predicate = (filePath: string): boolean => !filePath.includes('/Archive/');
 
     expect(isProcessableGraphRagFilePath('Notes/Paul.md', predicate)).toBe(true);

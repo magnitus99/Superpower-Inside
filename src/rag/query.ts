@@ -15,10 +15,12 @@ import {
   type RetrievalProviderReadiness,
   type RetrievalProviderDiagnostic,
   type StructuralMetadataContext,
+  type RetrievalCandidate,
 } from './retrieval-pipeline';
 import {
   countKeywordMatchesRust,
   cosineSimilarityRust,
+  isSourceRevisionCurrentRust,
   planDiverseResultIndicesRust,
   planRagStatusRust,
   planQueryResultScoreRust,
@@ -75,6 +77,7 @@ export interface QueryResult {
 }
 
 export interface RAGQueryEngineOptions {
+  corpusStore?: import('./corpus-store').RetrievalCorpusStore;
   getCandidatePaths?: () => Promise<ReadonlySet<string>>;
   annEnabled?: boolean;
   annClusterCount?: number;
@@ -103,6 +106,7 @@ export interface RAGIndexFileSnapshot {
 }
 
 export class RAGQueryEngine {
+  private readonly corpusStore: import('./corpus-store').RetrievalCorpusStore | undefined;
   private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
   private vectorStore: VectorStore | null;
   private embeddingProvider: EmbeddingProvider | null;
@@ -124,6 +128,7 @@ export class RAGQueryEngine {
     minScore: number = DEFAULT_SEARCH_QUALITY.minScore,
     options: RAGQueryEngineOptions = {},
   ) {
+    this.corpusStore = options.corpusStore;
     this.getCandidatePaths = options.getCandidatePaths;
     this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
@@ -153,18 +158,26 @@ export class RAGQueryEngine {
       const bm25Corpus = new BM25DocumentCorpusStore(bm25Index);
       providers.push(
         new BM25CandidateProvider(
-          vectorStore ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus) : bm25Corpus,
+          options.corpusStore ??
+            (vectorStore ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus) : bm25Corpus),
           bm25Index,
         ),
       );
     }
     if (
-      vectorStore &&
+      (options.corpusStore || vectorStore) &&
       options.structuralGraphEnabled === true &&
       options.structuralMetadataContext
     ) {
       providers.push(
-        new StructuralGraphCandidateProvider(vectorStore, options.structuralMetadataContext),
+        new StructuralGraphCandidateProvider(
+          vectorStore,
+          options.structuralMetadataContext,
+          1,
+          30,
+          options.corpusStore ?? vectorStore ?? undefined,
+          bm25Index,
+        ),
       );
     }
     if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
@@ -212,6 +225,7 @@ export class RAGQueryEngine {
         queryVector: qVector,
         candidateLimit: topK * 8,
         fileBackedOnly: options.fileBackedOnly === true,
+        requireSourceRevision: this.corpusStore !== undefined,
         vectorFilter:
           qVector.length > 0
             ? {
@@ -225,6 +239,9 @@ export class RAGQueryEngine {
           isInScope(entry) &&
           this.isEntryCompatible(entry, qVector, filePathPrefixes, options.fileBackedOnly === true),
         isEntryInScope: isInScope,
+        filterCurrentCandidates: this.corpusStore
+          ? (candidates) => this.filterCurrentCandidates(candidates)
+          : undefined,
       },
       options.signal,
     );
@@ -259,7 +276,7 @@ export class RAGQueryEngine {
         qVector.length > 0
           ? entry.vector.length === qVector.length
             ? cosineSimilarityRust(qVector, entry.vector)
-            : candidate.sources.includes('bm25')
+            : entry.vector.length === 0 || candidate.sources.includes('bm25')
               ? 0
               : null
           : 0;
@@ -321,6 +338,34 @@ export class RAGQueryEngine {
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
     return [...this.lastRetrievalDiagnostics];
+  }
+
+  private async filterCurrentCandidates(
+    candidates: RetrievalCandidate[],
+  ): Promise<RetrievalCandidate[]> {
+    if (!this.corpusStore) return candidates;
+    const entries = await this.corpusStore.getEntriesByIds(candidates.map(({ entry }) => entry.id));
+    const currentById = new Map(entries.map((entry) => [entry.id, entry]));
+    return candidates.filter(({ entry }) => {
+      const current = currentById.get(entry.id);
+      return (
+        current !== undefined &&
+        isSourceRevisionCurrentRust(
+          {
+            filePath: entry.metadata.filePath,
+            sourceMtime: entry.metadata.sourceMtime ?? -1,
+            sourceSize: entry.metadata.sourceSize ?? -1,
+            contentHash: entry.metadata.contentHash ?? '',
+          },
+          {
+            filePath: current.metadata.filePath,
+            sourceMtime: current.metadata.sourceMtime ?? -1,
+            sourceSize: current.metadata.sourceSize ?? -1,
+            contentHash: current.metadata.contentHash ?? '',
+          },
+        )
+      );
+    });
   }
 
   async getIndexReadiness(
@@ -413,7 +458,7 @@ export class RAGQueryEngine {
     filePathPrefixes?: readonly string[],
     fileBackedOnly = false,
   ): boolean {
-    if (queryVector.length > 0) {
+    if (queryVector.length > 0 && entry.vector.length > 0) {
       if (entry.vector.length !== queryVector.length) return false;
       if (
         this.embeddingProviderId &&

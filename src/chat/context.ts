@@ -4,7 +4,8 @@ import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import type { KnowledgeGraphStore, GraphEntityRecord } from '../graph/store';
-import { createContentHash } from '../rag/hash';
+import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
   createContextPreviewRust,
   planChatContextMentionsRust,
@@ -602,10 +603,22 @@ async function verifyQueryResult(result: QueryResult, app: App): Promise<QueryRe
   if (metadata.sourceMtime !== file.stat.mtime || metadata.sourceSize !== file.stat.size) {
     return { status: 'stale', detail: t('contextFileModified') };
   }
-  const content = await app.vault.cachedRead(file);
-  if (createContentHash(content) !== metadata.contentHash) {
+  const snapshot = await readSourceFileSnapshot(app.vault, file);
+  if (
+    !snapshot ||
+    !isSourceRevisionCurrentRust(
+      {
+        filePath: metadata.filePath,
+        sourceMtime: metadata.sourceMtime,
+        sourceSize: metadata.sourceSize,
+        contentHash: metadata.contentHash,
+      },
+      snapshot.revision,
+    )
+  ) {
     return { status: 'stale', detail: t('contextHashChanged') };
   }
+  const content = snapshot.content;
   const lineCount = content.split('\n').length;
   if (
     metadata.startLine < 0 ||

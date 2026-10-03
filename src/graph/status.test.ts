@@ -31,6 +31,27 @@ function createEntry(filePath: string, contentHash: string) {
 }
 
 describe('calculateGraphRagStatus', () => {
+  it('관계가 없는 파일도 현재 extraction 완료 캐시가 있으면 ready다', async () => {
+    const vectorStore = new MemoryVectorStore();
+    await vectorStore.add([createEntry('empty-relations.txt', 'hash-a')]);
+    const graphStore = new InMemoryKnowledgeGraphStore();
+    await graphStore.markExtractionCached({
+      entryId: 'empty-relations.txt::0',
+      contentHash: 'hash-a',
+      extractionModelKey: baseRagConfig.graphRagModel,
+      ontologySchemaId: KNOWLEDGE_CONTRACT.id,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      updatedAt: 1000,
+    });
+    expect(
+      await calculateGraphRagStatus({
+        ragConfig: baseRagConfig,
+        vectorStore,
+        graphStore,
+        isRunning: false,
+      }),
+    ).toMatchObject({ state: 'ready', graphEvidenceCount: 0, staleFileCount: 0 });
+  });
   it('GraphRAG가 꺼져 있으면 저장소를 읽지 않고 disabled를 반환한다', async () => {
     const status = await calculateGraphRagStatus({
       ragConfig: { ...baseRagConfig, graphRagEnabled: false },
@@ -317,11 +338,33 @@ describe('calculateGraphRagStatus', () => {
 
   it('stale 조건: contentHash 불일치', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([{ id: 'e1', vector: [1, 0], metadata: { filePath: 'a.md', text: 'hi', contentHash: 'old', startLine: 1, endLine: 1 } }]);
+    await vectorStore.add([
+      {
+        id: 'e1',
+        vector: [1, 0],
+        metadata: { filePath: 'a.md', text: 'hi', contentHash: 'old', startLine: 1, endLine: 1 },
+      },
+    ]);
 
     const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence({ id: 'ev-2', filePath: 'a.md', entryId: 'e1', startLine: 1, quote: 'X is Y', contentHash: 'hash-a', extractionModelKey: 'openai:gpt-4.1-mini', updatedAt: Date.now() });
-    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'new', extractionModelKey: 'openai:gpt-4.1-mini', ontologySchemaId: KNOWLEDGE_CONTRACT.id, ontologyVersion: CURRENT_ONTOLOGY_VERSION, updatedAt: Date.now() });
+    await graphStore.addEvidence({
+      id: 'ev-2',
+      filePath: 'a.md',
+      entryId: 'e1',
+      startLine: 1,
+      quote: 'X is Y',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: Date.now(),
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'e1',
+      contentHash: 'new',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      ontologySchemaId: KNOWLEDGE_CONTRACT.id,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      updatedAt: Date.now(),
+    });
 
     const status = await calculateGraphRagStatus({
       ragConfig: baseRagConfig,
@@ -336,11 +379,33 @@ describe('calculateGraphRagStatus', () => {
 
   it('stale 조건: 추출 모델 불일치', async () => {
     const vectorStore = new MemoryVectorStore();
-    await vectorStore.add([{ id: 'e1', vector: [1, 0], metadata: { filePath: 'a.md', text: 'hi', contentHash: 'same', startLine: 1, endLine: 1 } }]);
+    await vectorStore.add([
+      {
+        id: 'e1',
+        vector: [1, 0],
+        metadata: { filePath: 'a.md', text: 'hi', contentHash: 'same', startLine: 1, endLine: 1 },
+      },
+    ]);
 
     const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence({ id: 'ev-2', filePath: 'a.md', entryId: 'e1', startLine: 1, quote: 'X is Y', contentHash: 'hash-a', extractionModelKey: 'openai:gpt-4.1-mini', updatedAt: Date.now() });
-    await graphStore.markExtractionCached({ entryId: 'e1', contentHash: 'same', extractionModelKey: 'old-model', ontologySchemaId: KNOWLEDGE_CONTRACT.id, ontologyVersion: CURRENT_ONTOLOGY_VERSION, updatedAt: Date.now() });
+    await graphStore.addEvidence({
+      id: 'ev-2',
+      filePath: 'a.md',
+      entryId: 'e1',
+      startLine: 1,
+      quote: 'X is Y',
+      contentHash: 'hash-a',
+      extractionModelKey: 'openai:gpt-4.1-mini',
+      updatedAt: Date.now(),
+    });
+    await graphStore.markExtractionCached({
+      entryId: 'e1',
+      contentHash: 'same',
+      extractionModelKey: 'old-model',
+      ontologySchemaId: KNOWLEDGE_CONTRACT.id,
+      ontologyVersion: CURRENT_ONTOLOGY_VERSION,
+      updatedAt: Date.now(),
+    });
 
     const status = await calculateGraphRagStatus({
       ragConfig: baseRagConfig,

@@ -173,7 +173,7 @@ const KOREAN_PARTICLES: &[&str] = &[
     "도", "만", "부터", "까지",
 ];
 /// Graph extraction parser/normalizer wire contract version.
-const GRAPH_EXTRACTION_CONTRACT_VERSION: u32 = 1;
+const GRAPH_EXTRACTION_CONTRACT_VERSION: u32 = 2;
 /// `wasm-bindgen` runtime getter가 읽는 extraction contract version.
 static GRAPH_EXTRACTION_CONTRACT_VERSION_EXPORT: AtomicU32 =
     AtomicU32::new(GRAPH_EXTRACTION_CONTRACT_VERSION);
@@ -651,6 +651,52 @@ pub fn rank_top_k_pairs(
         if let Ok(index) = u32::try_from(scored_row.row_index) {
             pairs.push(f64::from(index));
             pairs.push(scored_row.score);
+        }
+    }
+    pairs.into_boxed_slice()
+}
+
+/// 그래프 요약의 벡터가 없거나 호환되지 않으면 본문으로 후보를 정렬합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn rank_graph_community_pairs(
+    question: &str,
+    summaries_json: &str,
+    query: &[f64],
+    vectors: &[f64],
+    lengths_json: &str,
+    top_k: usize,
+) -> Box<[f64]> {
+    let Some(summaries) = parse_raw_string_array_json(summaries_json) else {
+        return Box::default();
+    };
+    let Some(lengths) = parse_usize_array_json(lengths_json) else {
+        return Box::default();
+    };
+    if summaries.len() != lengths.len() || top_k == 0 {
+        return Box::default();
+    }
+    let tokens = tokenize(question);
+    let token_text = tokens.join("\u{1f}");
+    let mut offset = 0usize;
+    let mut scored = Vec::with_capacity(top_k);
+    for (row_index, (summary, length)) in summaries.iter().zip(lengths).enumerate() {
+        let Some(end) = offset.checked_add(length) else {
+            return Box::default();
+        };
+        let Some(vector) = vectors.get(offset..end) else {
+            return Box::default();
+        };
+        offset = end;
+        let lexical = f64::from(count_keyword_matches(&token_text, summary))
+            / f64::from(u32::try_from(tokens.len().max(1)).unwrap_or(u32::MAX));
+        let score = cosine_similarity(query, vector).unwrap_or_else(|| lexical.max(0.05));
+        push_top_k_scored_row(&mut scored, ScoredRow { row_index, score }, top_k);
+    }
+    let mut pairs = Vec::with_capacity(scored.len() * 2);
+    for row in scored {
+        if let Ok(index) = u32::try_from(row.row_index) {
+            pairs.extend([f64::from(index), row.score]);
         }
     }
     pairs.into_boxed_slice()
@@ -2219,11 +2265,11 @@ pub fn plan_graph_rag_status_entry_snapshot_json(entries_json: &str) -> String {
 /// `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
 #[must_use]
 #[wasm_bindgen]
-pub fn plan_graph_rag_markdown_file_paths_json(file_paths_json: &str) -> String {
+pub fn plan_graph_rag_source_file_paths_json(file_paths_json: &str) -> String {
     let Some(file_paths) = parse_raw_string_array_json(file_paths_json) else {
         return String::new();
     };
-    serialize_string_array_json(&plan_graph_rag_markdown_file_paths(&file_paths))
+    serialize_string_array_json(&plan_graph_rag_source_file_paths(&file_paths))
 }
 
 /// `GraphRAG` indexing run에서 candidate/selected file path 목록을 계산한다.
@@ -3266,6 +3312,30 @@ pub fn normalize_graph_source_spans_flat(
 pub fn chunk_plain_text_json(content: &str, max_chunk_size: usize, overlap_chars: usize) -> String {
     let chunks = chunk_plain_text(content, max_chunk_size, overlap_chars);
     serialize_chunks_json(&chunks)
+}
+
+/// 비동기 처리 결과가 현재 원문 revision에 속하는지 판정합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn source_revision_matches(
+    expected_path: &str,
+    current_path: &str,
+    expected_hash: &str,
+    current_hash: &str,
+    revision_numbers: &[f64],
+) -> bool {
+    let [expected_mtime, current_mtime, expected_size, current_size] = revision_numbers else {
+        return false;
+    };
+    !expected_path.is_empty()
+        && expected_path == current_path
+        && revision_numbers
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
+        && expected_mtime.total_cmp(current_mtime).is_eq()
+        && expected_size.total_cmp(current_size).is_eq()
+        && !expected_hash.is_empty()
+        && expected_hash == current_hash
 }
 
 /// vault 내부 참조 링크를 추출하고 `JSON` 문자열로 반환한다.
@@ -9475,7 +9545,7 @@ fn plan_graph_rag_status_file_snapshot(
     for (index, record) in file_records.iter().enumerate() {
         if record.vector_count == 0
             || !record.processable
-            || !is_graph_rag_markdown_file_path(&record.file_path)
+            || !is_graph_rag_source_file_path(&record.file_path)
         {
             continue;
         }
@@ -9490,7 +9560,7 @@ fn plan_graph_rag_status_file_snapshot(
         };
     }
 
-    let total_candidate_files = sorted_unique_graph_rag_markdown_paths(
+    let total_candidate_files = sorted_unique_graph_rag_source_paths(
         indexed_file_paths
             .iter()
             .filter(|row| row.processable)
@@ -9510,7 +9580,7 @@ fn plan_graph_rag_status_entry_snapshot(
     let mut seen_entry_ids = BTreeSet::<String>::new();
     let mut entry_indices = Vec::<usize>::new();
     for (index, entry) in entries.iter().enumerate() {
-        if !entry.processable || !is_graph_rag_markdown_file_path(&entry.file_path) {
+        if !entry.processable || !is_graph_rag_source_file_path(&entry.file_path) {
             continue;
         }
         if seen_entry_ids.insert(entry.id.clone()) {
@@ -9521,10 +9591,10 @@ fn plan_graph_rag_status_entry_snapshot(
 }
 
 /// file path 목록에서 `GraphRAG` markdown path만 입력 순서대로 고른다.
-fn plan_graph_rag_markdown_file_paths(file_paths: &[String]) -> Vec<String> {
+fn plan_graph_rag_source_file_paths(file_paths: &[String]) -> Vec<String> {
     file_paths
         .iter()
-        .filter(|file_path| is_graph_rag_markdown_file_path(file_path))
+        .filter(|file_path| is_graph_rag_source_file_path(file_path))
         .cloned()
         .collect()
 }
@@ -9535,19 +9605,19 @@ fn plan_graph_rag_run_file_selection(
 ) -> GraphRagRunFileSelectionPlan {
     let max_files_per_run = input.max_files_per_run.max(1);
     let candidate_file_paths = match input.mode {
-        GraphRagRunFileSelectionMode::Failed => sorted_unique_graph_rag_markdown_paths(
-            input.failed_file_paths.iter().map(String::as_str),
-        ),
-        GraphRagRunFileSelectionMode::Stale => sorted_unique_graph_rag_markdown_paths(
-            input.stale_file_paths.iter().map(String::as_str),
-        ),
+        GraphRagRunFileSelectionMode::Failed => {
+            sorted_unique_graph_rag_source_paths(input.failed_file_paths.iter().map(String::as_str))
+        }
+        GraphRagRunFileSelectionMode::Stale => {
+            sorted_unique_graph_rag_source_paths(input.stale_file_paths.iter().map(String::as_str))
+        }
         GraphRagRunFileSelectionMode::Full => {
             let source = if input.record_file_paths.is_empty() {
                 &input.indexed_file_paths
             } else {
                 &input.record_file_paths
             };
-            sorted_unique_graph_rag_markdown_paths(
+            sorted_unique_graph_rag_source_paths(
                 source
                     .iter()
                     .filter(|row| row.processable)
@@ -9555,8 +9625,19 @@ fn plan_graph_rag_run_file_selection(
             )
         }
     };
+    let pending_paths = input
+        .stale_file_paths
+        .iter()
+        .chain(&input.failed_file_paths)
+        .collect::<BTreeSet<_>>();
     let selected_file_paths = candidate_file_paths
         .iter()
+        .filter(|path| pending_paths.contains(path))
+        .chain(
+            candidate_file_paths
+                .iter()
+                .filter(|path| !pending_paths.contains(path)),
+        )
         .take(max_files_per_run)
         .cloned()
         .collect();
@@ -9584,22 +9665,22 @@ fn plan_graph_rag_unsupported_prune_paths(
     paths
 }
 
-/// Markdown path를 dedupe/sort해 run candidate list로 만든다.
-fn sorted_unique_graph_rag_markdown_paths<'a>(
+/// 공통 원문 경로를 중복 제거하고 정렬해 실행 후보로 만듭니다.
+fn sorted_unique_graph_rag_source_paths<'a>(
     file_paths: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {
     let mut seen = BTreeSet::<String>::new();
     for file_path in file_paths {
-        if is_graph_rag_markdown_file_path(file_path) {
+        if is_graph_rag_source_file_path(file_path) {
             seen.insert(file_path.to_owned());
         }
     }
     seen.into_iter().collect()
 }
 
-/// `GraphRAG` markdown extension 정책을 판정한다.
-fn is_graph_rag_markdown_file_path(file_path: &str) -> bool {
-    file_path.to_lowercase().ends_with(".md")
+/// 공통 원문 경로에서 가상 그래프 결과를 제외합니다.
+fn is_graph_rag_source_file_path(file_path: &str) -> bool {
+    !file_path.trim().is_empty() && !file_path.starts_with("graph://")
 }
 
 /// `GraphRAG` status summary plan을 만든다.
@@ -9615,7 +9696,7 @@ fn plan_graph_rag_status(input: &GraphRagStatusInput) -> GraphRagStatusPlan {
         return graph_rag_building_status(input, failed_file_count, max_files_per_run);
     }
     let graph_evidence_count = input.evidence.len();
-    if graph_evidence_count == 0 {
+    if graph_evidence_count == 0 && input.cache_records.is_empty() {
         return graph_rag_not_built_status(input, failed_file_count, max_files_per_run);
     }
 
@@ -9744,6 +9825,14 @@ fn mark_missing_cache_entries(
 ) {
     for record in &input.cache_records {
         if !entries_by_id.contains_key(record.entry_id.as_str()) {
+            // 분할 추출의 내부 작업은 원문 청크가 존재하면 독립적인 삭제 파일이 아닙니다.
+            if record
+                .entry_id
+                .split_once("::overflow::")
+                .is_some_and(|(source_id, _)| entries_by_id.contains_key(source_id))
+            {
+                continue;
+            }
             stale_files.insert(file_path_for_missing_graph_entry(
                 &record.entry_id,
                 &input.evidence,
@@ -19494,6 +19583,73 @@ const fn hex_digit(nibble: u32) -> char {
 mod tests {
     //! `TypeScript`에서 옮기는 계산 커널의 `Rust` 동등성 테스트.
 
+    #[test]
+    fn source_revision_requires_current_identity_metadata_and_hash() {
+        assert!(super::source_revision_matches(
+            "notes/code.ts",
+            "notes/code.ts",
+            "hash",
+            "hash",
+            &[1.0, 1.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "b.txt",
+            "hash",
+            "hash",
+            &[1.0, 1.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "a.txt",
+            "hash",
+            "other",
+            &[1.0, 1.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "a.txt",
+            "hash",
+            "hash",
+            &[1.0, 2.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "a.txt",
+            "hash",
+            "hash",
+            &[-1.0, -1.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "a.txt",
+            "",
+            "",
+            &[1.0, 1.0, 2.0, 2.0]
+        ));
+        assert!(!super::source_revision_matches(
+            "a.txt",
+            "a.txt",
+            "hash",
+            "hash",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn graph_community_ranking_keeps_unembedded_source_evidence() {
+        let summaries = r#"["다른 주제","온보딩 고객 근거"]"#;
+        let pairs = super::rank_graph_community_pairs("온보딩", summaries, &[], &[], "[0,0]", 2);
+        assert_eq!(pairs.len(), 4);
+        if let [first_index, first_score, _, second_score] = pairs.as_ref() {
+            assert!(first_index.total_cmp(&1.0).is_eq());
+            assert!(first_score > second_score);
+        }
+        assert!(
+            super::rank_graph_community_pairs("온보딩", summaries, &[], &[], "[0]", 2).is_empty()
+        );
+    }
+
     use super::{
         BM25_B, BM25_K1, Bm25RuntimeIndex, Bm25SearchScore, IvfRuntimeIndex, JsonValue, SOURCE_ANN,
         SOURCE_BM25, SOURCE_GRAPH_EVIDENCE, SOURCE_STRUCTURAL, SOURCE_VECTOR, VectorRuntimeIndex,
@@ -19528,8 +19684,8 @@ mod tests {
         plan_graph_entity_merge_json, plan_graph_evidence_candidate_lookup_json,
         plan_graph_evidence_entry_candidates_json, plan_graph_extraction_child_units_json,
         plan_graph_mention_context_json, plan_graph_query_execution_json, plan_graph_query_json,
-        plan_graph_query_response_json, plan_graph_rag_markdown_file_paths_json,
-        plan_graph_rag_run_file_selection_json, plan_graph_rag_status_entry_lookups_json,
+        plan_graph_query_response_json, plan_graph_rag_run_file_selection_json,
+        plan_graph_rag_source_file_paths_json, plan_graph_rag_status_entry_lookups_json,
         plan_graph_rag_status_entry_snapshot_json, plan_graph_rag_status_file_snapshot_json,
         plan_graph_rag_status_json, plan_graph_rag_unsupported_prune_paths_json,
         plan_graph_relation_endpoint_indices_json, plan_graph_schema_community_indices_json,
@@ -20364,10 +20520,10 @@ mod tests {
     #[test]
     fn graph_rag_markdown_file_paths_are_planned_in_rust() {
         assert_eq!(
-            plan_graph_rag_markdown_file_paths_json(
+            plan_graph_rag_source_file_paths_json(
                 r#"["Notes/Paul.md","Notes/Romans.MD","Notes/archive.txt","Notes/.md",""]"#,
             ),
-            r#"["Notes/Paul.md","Notes/Romans.MD","Notes/.md"]"#,
+            r#"["Notes/Paul.md","Notes/Romans.MD","Notes/archive.txt","Notes/.md"]"#,
         );
     }
 
@@ -20378,19 +20534,19 @@ mod tests {
             plan_graph_rag_run_file_selection_json(
                 r#"{"mode":"full","failedFilePaths":["failed.md"],"staleFilePaths":["stale.md"],"recordFilePaths":[{"filePath":"z.md","processable":true},{"filePath":"Base.base","processable":true},{"filePath":"a.md","processable":false},{"filePath":"m.md","processable":true},{"filePath":"z.md","processable":true}],"indexedFilePaths":[{"filePath":"fallback.md","processable":true}],"maxFilesPerRun":1}"#,
             ),
-            r#"{"candidateFilePaths":["m.md","z.md"],"selectedFilePaths":["m.md"]}"#,
+            r#"{"candidateFilePaths":["Base.base","m.md","z.md"],"selectedFilePaths":["Base.base"]}"#,
         );
         assert_eq!(
             plan_graph_rag_run_file_selection_json(
                 r#"{"mode":"failed","failedFilePaths":["b.md","a.base","a.md","b.md"],"staleFilePaths":["stale.md"],"recordFilePaths":[],"indexedFilePaths":[],"maxFilesPerRun":8}"#,
             ),
-            r#"{"candidateFilePaths":["a.md","b.md"],"selectedFilePaths":["a.md","b.md"]}"#,
+            r#"{"candidateFilePaths":["a.base","a.md","b.md"],"selectedFilePaths":["a.base","a.md","b.md"]}"#,
         );
         assert_eq!(
             plan_graph_rag_run_file_selection_json(
                 r#"{"mode":"stale","failedFilePaths":["failed.md"],"staleFilePaths":["deleted.md","Base.base","stale.md","stale.md"],"recordFilePaths":[],"indexedFilePaths":[],"maxFilesPerRun":1}"#,
             ),
-            r#"{"candidateFilePaths":["deleted.md","stale.md"],"selectedFilePaths":["deleted.md"]}"#,
+            r#"{"candidateFilePaths":["Base.base","deleted.md","stale.md"],"selectedFilePaths":["Base.base"]}"#,
         );
     }
 
@@ -22617,6 +22773,10 @@ mod tests {
     /// `GraphRAG` status??entry lookup怨?stale/partial/ready ?먯젙? `Rust`媛 ?대떦?쒕떎.
     #[test]
     fn graph_rag_status_is_planned_in_rust() {
+        let overflow_status = plan_graph_rag_status_json(
+            r#"{"graphRagEnabled":true,"isRunning":false,"totalCandidateFiles":1,"graphRagMaxFilesPerRun":50,"graphRagModel":"model","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":2,"fileRecords":[{"filePath":"long.txt","vectorCount":1}],"evidence":[{"filePath":"long.txt","entryId":"long.txt::0","contentHash":"hash","extractionModelKey":"model","processable":true}],"rejectedFactFilePaths":[],"pendingMergeCount":0,"cacheRecords":[{"entryId":"long.txt::0","contentHash":"hash","extractionModelKey":"model","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":2},{"entryId":"long.txt::0::overflow::1::0","contentHash":"child-hash","extractionModelKey":"model","ontologySchemaId":"default","ontologyVersion":1,"extractionContractVersion":2}],"entries":[{"id":"long.txt::0","filePath":"long.txt","contentHash":"hash","text":"본문"}]}"#,
+        );
+        assert!(overflow_status.contains(r#""state":"ready""#));
         assert_eq!(
             plan_graph_rag_status_entry_lookups_json(
                 r#"["note.md::0","stale.md::0"]"#,
@@ -22629,12 +22789,12 @@ mod tests {
                 r#"[{"filePath":"z.md","vectorCount":2,"processable":true},{"filePath":"Base.base","vectorCount":1,"processable":true},{"filePath":"foreign.md","vectorCount":1,"processable":false},{"filePath":"a.md","vectorCount":1,"processable":true},{"filePath":"z.md","vectorCount":3,"processable":true}]"#,
                 r#"[{"filePath":"fallback.md","processable":true},{"filePath":"clip.png","processable":true}]"#,
             ),
-            r#"{"fileRecordIndices":[0,3],"totalCandidateFiles":2}"#,
+            r#"{"fileRecordIndices":[0,1,3],"totalCandidateFiles":3}"#,
         );
         assert_eq!(
             plan_graph_rag_status_file_snapshot_json(
-                r#"[{"filePath":"Base.base","vectorCount":1,"processable":true},{"filePath":"foreign.md","vectorCount":1,"processable":false}]"#,
-                r#"[{"filePath":"fallback.md","processable":true},{"filePath":"fallback.md","processable":true},{"filePath":"clip.png","processable":true},{"filePath":"blocked.md","processable":false},{"filePath":"second.md","processable":true}]"#,
+                r#"[{"filePath":"Base.base","vectorCount":1,"processable":false},{"filePath":"foreign.md","vectorCount":1,"processable":false}]"#,
+                r#"[{"filePath":"fallback.md","processable":true},{"filePath":"fallback.md","processable":true},{"filePath":"clip.png","processable":false},{"filePath":"blocked.md","processable":false},{"filePath":"second.md","processable":true}]"#,
             ),
             r#"{"fileRecordIndices":[],"totalCandidateFiles":2}"#,
         );
@@ -22642,7 +22802,7 @@ mod tests {
             plan_graph_rag_status_entry_snapshot_json(
                 r#"[{"id":"fresh.md::0","filePath":"fresh.md","processable":true},{"id":"Base.base::0","filePath":"Base.base","processable":true},{"id":"foreign.md::0","filePath":"foreign.md","processable":false},{"id":"fresh.md::0","filePath":"fresh.md","processable":true},{"id":"second.md::0","filePath":"second.md","processable":true}]"#,
             ),
-            r#"{"entryIndices":[0,4]}"#,
+            r#"{"entryIndices":[0,1,4]}"#,
         );
         assert_eq!(
             plan_graph_rag_status_json(

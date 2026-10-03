@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const rankTopKPairsRustMock = vi.hoisted(() => vi.fn());
+const rankGraphCommunityPairsRustMock = vi.hoisted(() => vi.fn());
 const planGraphQueryExecutionRustMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../rag/rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../rag/rust-core')>();
   return {
     ...actual,
-    rankTopKPairsRust: rankTopKPairsRustMock,
+    rankGraphCommunityPairsRust: rankGraphCommunityPairsRustMock,
     planGraphQueryExecutionRust: planGraphQueryExecutionRustMock,
   };
 });
@@ -27,7 +27,7 @@ import type { VectorEntry } from '../rag/store';
 
 describe('GraphRagQueryEngine Rust bridge usage', () => {
   beforeEach(() => {
-    rankTopKPairsRustMock.mockReset();
+    rankGraphCommunityPairsRustMock.mockReset();
     planGraphQueryExecutionRustMock.mockReset();
     planGraphQueryExecutionRustMock.mockReturnValue(null);
   });
@@ -37,7 +37,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     await graphStore.addCommunity(createCommunity('community::first', [1, 0]));
     await graphStore.addCommunity(createCommunity('community::second', [0, 1]));
     planGraphQueryExecutionRustMock.mockReturnValueOnce(null);
-    rankTopKPairsRustMock.mockReturnValue([
+    rankGraphCommunityPairsRustMock.mockReturnValue([
       { index: 0, score: 0.9 },
       { index: 1, score: 0.4 },
     ]);
@@ -87,7 +87,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addCommunity(createCommunity('community::first', [1, 0]));
     await graphStore.addCommunity(createCommunity('community::second', [0, 1]));
-    rankTopKPairsRustMock.mockReturnValue([
+    rankGraphCommunityPairsRustMock.mockReturnValue([
       { index: 1, score: 0.93 },
       { index: 0, score: 0.12 },
     ]);
@@ -104,7 +104,9 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
       candidateLimit: 2,
     });
 
-    expect(rankTopKPairsRustMock).toHaveBeenCalledWith(
+    expect(rankGraphCommunityPairsRustMock).toHaveBeenCalledWith(
+      'community summary',
+      ['community::first\ncommunity::first', 'community::second\ncommunity::second'],
       [1, 0],
       [
         [1, 0],
@@ -123,7 +125,7 @@ describe('GraphRagQueryEngine Rust bridge usage', () => {
     const graphStore = new InMemoryKnowledgeGraphStore();
     await graphStore.addCommunity(createCommunity('community::first', [1, 0]));
     await graphStore.addCommunity(createCommunity('community::second', [0, 1]));
-    rankTopKPairsRustMock.mockReturnValue([
+    rankGraphCommunityPairsRustMock.mockReturnValue([
       { index: -1, score: 0.93 },
       { index: 0, score: 0.12 },
       { index: 99, score: 0.4 },

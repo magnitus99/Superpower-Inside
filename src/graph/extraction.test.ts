@@ -5,6 +5,9 @@ import type { EmbeddingProvider } from '../llm/embedding';
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import { GraphExtractionDeferredError, GraphExtractionIndexer } from './extraction';
 import { InMemoryKnowledgeGraphStore } from './store';
+import { MemoryVectorStore } from '../rag/store';
+import { GraphRagQueryEngine } from './query-engine';
+import { graphExtractionContractVersionRust } from '../rag/rust-core';
 
 const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
   providerKey: 'openai',
@@ -177,9 +180,7 @@ describe('GraphExtractionIndexer', () => {
     await indexer.extractChunk(createInput(source));
 
     expect((await store.getEntities())[0]?.sourceSpans).toEqual([{ start: 0, end: 5 }]);
-    expect((await store.getEntities())[1]?.sourceSpans).toEqual([
-      { start: 0, end: source.length },
-    ]);
+    expect((await store.getEntities())[1]?.sourceSpans).toEqual([{ start: 0, end: source.length }]);
     expect((await store.getRelations())[0]?.sourceSpans).toEqual([
       { start: 0, end: source.length },
     ]);
@@ -230,7 +231,10 @@ describe('GraphExtractionIndexer', () => {
     const store = new InMemoryKnowledgeGraphStore();
     const provider = createProvider(JSON.stringify({ entities: [], relations: [], claims: [] }));
     const indexer = new GraphExtractionIndexer({ provider, store });
-    const providerEpochId = indexer.getProviderEpochId('openai:gpt-4o-mini', 1);
+    const providerEpochId = indexer.getProviderEpochId(
+      'openai:gpt-4o-mini',
+      graphExtractionContractVersionRust(),
+    );
     await store.putProviderCircuit({
       providerEpochId,
       consecutiveFailures: 3,
@@ -266,8 +270,41 @@ describe('GraphExtractionIndexer', () => {
 
     expect(provider.calls).toBeGreaterThan(1);
     expect(await store.getEvidence()).toHaveLength(provider.calls - 1);
+    expect(
+      (await store.getEvidence()).every(
+        (record) =>
+          record.entryId === createInput(content).entryId && record.contentHash === 'hash-1',
+      ),
+    ).toBe(true);
     expect(await store.getExtractionJobs()).toHaveLength(provider.calls);
     expect((await store.getExtractionJobs()).every((job) => job.state === 'committed')).toBe(true);
+    const input = createInput(content);
+    const corpus = new MemoryVectorStore();
+    await corpus.add([
+      {
+        id: input.entryId,
+        vector: [],
+        metadata: {
+          filePath: input.filePath,
+          startLine: input.startLine,
+          text: content,
+          sourceMtime: 1,
+          sourceSize: content.length,
+          contentHash: input.contentHash,
+        },
+      },
+    ]);
+    const engine = new GraphRagQueryEngine(store, corpus, input.knowledgeContract, {
+      queryMode: 'local',
+    });
+    const candidates = await engine.query({
+      question: 'Alpha 근거가 어디에 있어?',
+      queryVector: [],
+      candidateLimit: 5,
+      requireSourceRevision: true,
+      fileBackedOnly: true,
+    });
+    expect(candidates.map((candidate) => candidate.entry.id)).toEqual([input.entryId]);
   });
 
   it('연속 provider 실패 세 번 뒤에는 다른 chunk 호출도 회로 차단한다', async () => {
@@ -567,11 +604,14 @@ describe('GraphExtractionIndexer', () => {
       store,
     });
 
-    await indexer.extractChunk(createInput('분석 보고서는 데이터 모델을 사용해 원본 문서를 해석한다.'));
+    await indexer.extractChunk(
+      createInput('분석 보고서는 데이터 모델을 사용해 원본 문서를 해석한다.'),
+    );
 
-    expect(
-      (await store.getRelations()).map((relation) => relation.relationTypeId),
-    ).toEqual(['interprets', 'interprets']);
+    expect((await store.getRelations()).map((relation) => relation.relationTypeId)).toEqual([
+      'interprets',
+      'interprets',
+    ]);
     expect(await store.getRejectedFacts()).toEqual([]);
   });
 
@@ -623,11 +663,17 @@ describe('GraphExtractionIndexer', () => {
     const systemPrompt = provider.messages[0]?.[0]?.content ?? '';
     expect(systemPrompt).toContain('Unknown relations are allowed.');
     expect(systemPrompt).toContain('Suggested relation type hints:');
-    expect(systemPrompt).toContain('decision_claim|hypothesis_claim|requirement_claim|action_item_claim');
-    expect(systemPrompt).toContain('project|task|decision|question|requirement|metric|product|technology');
+    expect(systemPrompt).toContain(
+      'decision_claim|hypothesis_claim|requirement_claim|action_item_claim',
+    );
+    expect(systemPrompt).toContain(
+      'project|task|decision|question|requirement|metric|product|technology',
+    );
     expect(systemPrompt).toContain('Preserve explicit negation, uncertainty, and temporal order.');
     expect(systemPrompt).toContain('Relations must use sourceRef and targetRef.');
-    expect(systemPrompt).toContain('Claims must reference only directly relevant entity and relation ids.');
+    expect(systemPrompt).toContain(
+      'Claims must reference only directly relevant entity and relation ids.',
+    );
     expect(systemPrompt).toContain(
       'Every sourceRef, targetRef, entityRef, and relationRef must match a response-local id.',
     );
@@ -637,7 +683,9 @@ describe('GraphExtractionIndexer', () => {
     expect(systemPrompt).toContain(
       'Put explicit same-entity names from other languages into aliases only when the source text supports them.',
     );
-    expect(systemPrompt).toContain('Do not invent translated aliases just to make the graph multilingual.');
+    expect(systemPrompt).toContain(
+      'Do not invent translated aliases just to make the graph multilingual.',
+    );
   });
 
   it('JSON 파싱 실패는 rejected fact로 저장하고 다음 chunk 처리를 막지 않는다', async () => {
@@ -679,7 +727,9 @@ describe('GraphExtractionIndexer', () => {
     await indexer.extractChunk(createInput('Paul appears.'));
 
     expect(provider.messages).toHaveLength(2);
-    expect(provider.messages[1]?.[0]?.content).toContain('Repair the previous graph extraction response');
+    expect(provider.messages[1]?.[0]?.content).toContain(
+      'Repair the previous graph extraction response',
+    );
     expect(provider.messages[1]?.[1]?.content).toBe('not-json');
     expect((await store.getEntities()).map((entity) => entity.canonicalName)).toEqual(['Paul']);
     expect(await store.getRejectedFacts()).toEqual([]);

@@ -2407,26 +2407,6 @@ export function plan_graph_query_response_json(raw_response, fallback_question) 
 }
 
 /**
- * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
- * @param {string} file_paths_json
- * @returns {string}
- */
-export function plan_graph_rag_markdown_file_paths_json(file_paths_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_markdown_file_paths_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
  * `GraphRAG` indexing run에서 candidate/selected file path 목록을 계산한다.
  * @param {string} input_json
  * @returns {string}
@@ -2438,6 +2418,26 @@ export function plan_graph_rag_run_file_selection_json(input_json) {
         const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_graph_rag_run_file_selection_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
+ * @param {string} file_paths_json
+ * @returns {string}
+ */
+export function plan_graph_rag_source_file_paths_json(file_paths_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_graph_rag_source_file_paths_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -2770,7 +2770,7 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json, tota
  * Builds database names isolated by vault, storage contract, and embedding generation.
  *
  * `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
- * vector와 BM25만 새 세대로 옮기고, 임베딩 캐시와 `GraphRAG` 저장소는 재사용한다.
+ * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시와 `GraphRAG` 저장소는 재사용합니다.
  * @param {string} plugin_id
  * @param {string} vault_identity
  * @param {string} legacy_vault_name
@@ -4106,6 +4106,33 @@ export function rag_automatic_recovery_delay_ms(attempt) {
 }
 
 /**
+ * 그래프 요약의 벡터가 없거나 호환되지 않으면 본문으로 후보를 정렬합니다.
+ * @param {string} question
+ * @param {string} summaries_json
+ * @param {Float64Array} query
+ * @param {Float64Array} vectors
+ * @param {string} lengths_json
+ * @param {number} top_k
+ * @returns {Float64Array}
+ */
+export function rank_graph_community_pairs(question, summaries_json, query, vectors, lengths_json, top_k) {
+    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(summaries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(query, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArrayF64ToWasm0(vectors, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passStringToWasm0(lengths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.rank_graph_community_pairs(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, top_k);
+    var v6 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v6;
+}
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  * @param {Float64Array} query
  * @param {Float64Array} vectors
@@ -4359,6 +4386,30 @@ export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled,
     const ptr2 = passStringToWasm0(next_status_state, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len2 = WASM_VECTOR_LEN;
     const ret = wasm.should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled, ptr0, len0, ptr1, len1, ptr2, len2, graph_provider_attached);
+    return ret !== 0;
+}
+
+/**
+ * 비동기 처리 결과가 현재 원문 revision에 속하는지 판정합니다.
+ * @param {string} expected_path
+ * @param {string} current_path
+ * @param {string} expected_hash
+ * @param {string} current_hash
+ * @param {Float64Array} revision_numbers
+ * @returns {boolean}
+ */
+export function source_revision_matches(expected_path, current_path, expected_hash, current_hash, revision_numbers) {
+    const ptr0 = passStringToWasm0(expected_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(current_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(expected_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(current_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArrayF64ToWasm0(revision_numbers, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.source_revision_matches(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
     return ret !== 0;
 }
 

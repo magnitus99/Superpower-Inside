@@ -17,6 +17,22 @@ const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
 });
 
 describe('CommunitySummarizer', () => {
+  it('요약 임베딩 실패는 커뮤니티의 원문 연결과 요약을 제거하지 않는다', async () => {
+    const store = new InMemoryKnowledgeGraphStore();
+    await store.upsertEntity(createEntity('entity::paul', 'Paul'));
+    const summarizer = new CommunitySummarizer({
+      provider: createProvider(),
+      embeddingProvider: {
+        embed: () => Promise.reject(new Error('offline')),
+        embedBatch: () => Promise.reject(new Error('offline')),
+      },
+      store,
+      ontologySchemaId: 'default',
+    });
+    const communities = await summarizer.summarizeCommunities(new Map([['entity::paul', 1]]), [1]);
+    expect(communities[0]).toMatchObject({ entityIds: ['entity::paul'], summaryVector: [] });
+    expect(communities[0]?.summary).toBeTruthy();
+  });
   beforeEach(() => {
     setLanguage('ko');
   });
@@ -26,8 +42,12 @@ describe('CommunitySummarizer', () => {
     await store.upsertEntity(createEntity('entity::paul', 'Paul'));
     await store.upsertEntity(createEntity('entity::romans', 'Romans'));
     await store.upsertEntity(createEntity('entity::grace', 'Grace'));
-    await store.addRelation(createRelation('relation::paul-romans', 'entity::paul', 'entity::romans'));
-    await store.addRelation(createRelation('relation::paul-grace', 'entity::paul', 'entity::grace'));
+    await store.addRelation(
+      createRelation('relation::paul-romans', 'entity::paul', 'entity::romans'),
+    );
+    await store.addRelation(
+      createRelation('relation::paul-grace', 'entity::paul', 'entity::grace'),
+    );
     await store.addClaim(createClaim('claim::romans', ['entity::romans']));
     await store.addClaim(createClaim('claim::grace-first', ['entity::grace', 'entity::paul']));
     await store.addClaim(createClaim('claim::missing', ['entity::missing']));
@@ -197,7 +217,7 @@ describe('CommunitySummarizer', () => {
         store,
         ontologySchemaId: 'default',
       }).summarizeCommunities(assignments, [0]),
-    ).rejects.toThrow('simulated embedding interruption');
+    ).resolves.toEqual([expect.objectContaining({ summaryVector: [] })]);
     await expect(
       new CommunitySummarizer({
         provider,

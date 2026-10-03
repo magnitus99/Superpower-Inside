@@ -51,11 +51,14 @@ export interface GraphExtractionChunkInput {
   startLine: number;
   endLine?: number;
   contentHash: string;
+  sourceEntryId?: string;
+  sourceContentHash?: string;
   extractionModelKey: string;
   knowledgeContract: KnowledgeGraphContract;
   signal?: AbortSignal;
   ignoreRetryWait?: boolean;
   splitDepth?: number;
+  isSourceCurrent?: () => Promise<boolean>;
   onPhase?: (phase: GraphRagIndexingPhase) => void;
   onProgress?: (patch: GraphRagIndexingCounterPatch) => void;
 }
@@ -65,6 +68,19 @@ export class GraphExtractionDeferredError extends Error {
     super('Graph extraction retry is deferred.');
     this.name = 'GraphExtractionDeferredError';
   }
+}
+
+export class GraphExtractionSourceChangedError extends Error {
+  constructor() {
+    super('Source changed during graph extraction.');
+    this.name = 'GraphExtractionSourceChangedError';
+  }
+}
+
+async function requireCurrentSource(input: GraphExtractionChunkInput): Promise<void> {
+  throwIfGraphExtractionAborted(input.signal);
+  if (input.isSourceCurrent && !(await input.isSourceCurrent()))
+    throw new GraphExtractionSourceChangedError();
 }
 
 export function isGraphExtractionDeferredError(
@@ -108,6 +124,7 @@ export class GraphExtractionIndexer {
   }
 
   async extractChunk(input: GraphExtractionChunkInput): Promise<void> {
+    await requireCurrentSource(input);
     throwIfGraphExtractionAborted(input.signal);
     let job = await this.prepareExtractionJob(input);
     const cacheKey = {
@@ -152,10 +169,7 @@ export class GraphExtractionIndexer {
       ) {
         throw new GraphExtractionDeferredError(circuit.openUntil ?? Date.now());
       }
-      if (
-        circuit?.state === 'open' &&
-        (circuit.openUntil ?? 0) <= Date.now()
-      ) {
+      if (circuit?.state === 'open' && (circuit.openUntil ?? 0) <= Date.now()) {
         await this.store.putProviderCircuit({
           ...circuit,
           state: 'half-open',
@@ -191,6 +205,7 @@ export class GraphExtractionIndexer {
           (await this.extractOverflowChildren(input))
         ) {
           const committedAt = Date.now();
+          await requireCurrentSource(input);
           await this.store.markExtractionCached({ ...cacheKey, updatedAt: committedAt });
           await this.store.putExtractionJob({
             ...job,
@@ -231,6 +246,7 @@ export class GraphExtractionIndexer {
       parsed = parseExtractedGraphPayload(repairedResponse);
     }
     input.onPhase?.('storing-results');
+    await requireCurrentSource(input);
     if (!parsed.ok) {
       const rejectedEvidence = createEvidence(input, job.providerEpochId);
       await this.store.addEvidence(rejectedEvidence);
@@ -244,7 +260,7 @@ export class GraphExtractionIndexer {
     const evidence = createEvidence(input, job.providerEpochId);
     const provenance = createFactProvenance(input, job, rawResponse, committedAt);
     const facts = await this.buildAcceptedFacts(input, evidence, parsed.payload, provenance);
-    throwIfGraphExtractionAborted(input.signal);
+    await requireCurrentSource(input);
     await this.store.commitExtraction({
       evidence,
       ...facts,
@@ -363,6 +379,8 @@ export class GraphExtractionIndexer {
         ...input,
         chunkText: child.text,
         entryId: `${input.entryId}::overflow::${splitDepth + 1}::${index}`,
+        sourceEntryId: input.sourceEntryId ?? input.entryId,
+        sourceContentHash: input.sourceContentHash ?? input.contentHash,
         startLine: childStartLine,
         endLine: childEndLine,
         contentHash: createId(
@@ -437,17 +455,26 @@ export class GraphExtractionIndexer {
         description: entity.description ?? '',
         evidenceIds: [evidence.id],
       });
-      const record = createEntityRecord(input, evidence.id, entity, labels, resolution.entityId, now);
+      const record = createEntityRecord(
+        input,
+        evidence.id,
+        entity,
+        labels,
+        resolution.entityId,
+        now,
+      );
       record.provenance = [{ ...provenance }];
       record.sourceSpans = requireSourceSpans(entity.evidenceSpans, input.chunkText.length);
-      record.generations = [{
-        providerEpochId: provenance.providerEpochId,
-        rawResponseHash: provenance.rawResponseHash,
-        description: record.description,
-        properties: { ...record.properties },
-        confidence: record.confidence,
-        generatedAt: provenance.generatedAt,
-      }];
+      record.generations = [
+        {
+          providerEpochId: provenance.providerEpochId,
+          rawResponseHash: provenance.rawResponseHash,
+          description: record.description,
+          properties: { ...record.properties },
+          confidence: record.confidence,
+          generatedAt: provenance.generatedAt,
+        },
+      ];
       if (resolution.pendingMerge) pendingEntityMerges.push(resolution.pendingMerge);
       const entityIndex = entityRecords.length;
       entityRecords.push(record);
@@ -470,7 +497,11 @@ export class GraphExtractionIndexer {
         relationEndpointLookupRecords,
         entityRecords.length,
       ) ??
-      planGraphRelationEndpointIndicesFallback(payload.relations, relationEndpointLookupRecords, entityRecords.length);
+      planGraphRelationEndpointIndicesFallback(
+        payload.relations,
+        relationEndpointLookupRecords,
+        entityRecords.length,
+      );
 
     const relationIdsByLocalRef = new Map<string, string>();
     for (const [relationIndex, relation] of payload.relations.entries()) {
@@ -557,7 +588,10 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-function getProviderHttpErrorField(error: unknown, field: 'status' | 'retryAfterMs'): number | undefined {
+function getProviderHttpErrorField(
+  error: unknown,
+  field: 'status' | 'retryAfterMs',
+): number | undefined {
   if (!(error instanceof Error) || !(field in error)) return undefined;
   const value = (error as Error & Partial<Record<typeof field, unknown>>)[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -669,11 +703,11 @@ function createEvidence(
   return {
     id: createId('evidence', input.entryId, input.contentHash, providerEpochId),
     filePath: input.filePath,
-    entryId: input.entryId,
+    entryId: input.sourceEntryId ?? input.entryId,
     startLine: input.startLine,
     endLine: input.endLine,
     quote: input.chunkText,
-    contentHash: input.contentHash,
+    contentHash: input.sourceContentHash ?? input.contentHash,
     extractionModelKey: input.extractionModelKey,
     updatedAt: Date.now(),
   };

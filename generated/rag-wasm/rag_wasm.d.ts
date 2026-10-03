@@ -620,14 +620,14 @@ export function plan_graph_query_json(question: string): string;
 export function plan_graph_query_response_json(raw_response: string, fallback_question: string): string;
 
 /**
- * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
- */
-export function plan_graph_rag_markdown_file_paths_json(file_paths_json: string): string;
-
-/**
  * `GraphRAG` indexing run에서 candidate/selected file path 목록을 계산한다.
  */
 export function plan_graph_rag_run_file_selection_json(input_json: string): string;
+
+/**
+ * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
+ */
+export function plan_graph_rag_source_file_paths_json(file_paths_json: string): string;
 
 /**
  * `GraphRAG` status 계산에 필요한 vector entry id lookup plan을 만든다.
@@ -703,7 +703,7 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json: stri
  * Builds database names isolated by vault, storage contract, and embedding generation.
  *
  * `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
- * vector와 BM25만 새 세대로 옮기고, 임베딩 캐시와 `GraphRAG` 저장소는 재사용한다.
+ * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시와 `GraphRAG` 저장소는 재사용합니다.
  */
 export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_identity: string, legacy_vault_name: string, embedding_namespace: string, index_namespace: string): string;
 
@@ -1005,6 +1005,11 @@ export function prune_graph_indexes_json(config: Uint32Array, indices: Uint32Arr
 export function rag_automatic_recovery_delay_ms(attempt: number): number;
 
 /**
+ * 그래프 요약의 벡터가 없거나 호환되지 않으면 본문으로 후보를 정렬합니다.
+ */
+export function rank_graph_community_pairs(question: string, summaries_json: string, query: Float64Array, vectors: Float64Array, lengths_json: string, top_k: number): Float64Array;
+
+/**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
 export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
@@ -1068,6 +1073,11 @@ export function should_offer_context7_for_prompt(prompt: string): boolean;
  * `GraphRAG` runtime 재구성 여부를 판정한다.
  */
 export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled: boolean, graph_rag_model: string, previous_status_state: string, next_status_state: string, graph_provider_attached: boolean): boolean;
+
+/**
+ * 비동기 처리 결과가 현재 원문 revision에 속하는지 판정합니다.
+ */
+export function source_revision_matches(expected_path: string, current_path: string, expected_hash: string, current_hash: string, revision_numbers: Float64Array): boolean;
 
 /**
  * `<think>`류 태그를 reasoning/content로 분할한다.
@@ -1216,8 +1226,8 @@ export interface InitOutput {
     readonly plan_graph_query_execution_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_graph_query_json: (a: number, b: number) => [number, number];
     readonly plan_graph_query_response_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_rag_markdown_file_paths_json: (a: number, b: number) => [number, number];
     readonly plan_graph_rag_run_file_selection_json: (a: number, b: number) => [number, number];
+    readonly plan_graph_rag_source_file_paths_json: (a: number, b: number) => [number, number];
     readonly plan_graph_rag_status_entry_lookups_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_graph_rag_status_entry_snapshot_json: (a: number, b: number) => [number, number];
     readonly plan_graph_rag_status_file_snapshot_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1256,6 +1266,7 @@ export interface InitOutput {
     readonly plan_vector_store_replace_file_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_vector_store_stats_json: (a: number, b: number, c: number) => [number, number];
     readonly prune_graph_indexes_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly rank_graph_community_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recall_at_k: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
@@ -1269,6 +1280,7 @@ export interface InitOutput {
     readonly should_append_mcp_path_hint_rust: (a: number, b: number, c: number, d: number) => number;
     readonly should_offer_context7_for_prompt: (a: number, b: number) => number;
     readonly should_rebuild_graph_runtime_for_graph_status: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+    readonly source_revision_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly split_reasoning_tags_json: (a: number, b: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
@@ -1309,15 +1321,6 @@ export interface InitOutput {
     readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
     readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
     readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
-    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
-    readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
     readonly is_whole_vault_research_intent: (a: number, b: number) => number;
     readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
     readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
@@ -1328,6 +1331,15 @@ export interface InitOutput {
     readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
+    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

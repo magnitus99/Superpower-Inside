@@ -68,6 +68,12 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
+  it('GraphRAG와 ontology 추출은 기본 비활성이며 자동 실행도 끈 상태다', () => {
+    expect(DEFAULT_SETTINGS.rag.graphRagEnabled).toBe(false);
+    expect(DEFAULT_SETTINGS.rag.graphRagAutoSyncEnabled).toBe(false);
+    expect(DEFAULT_SETTINGS.rag.graphRagModel).toBe('');
+    expect(DEFAULT_SETTINGS.rag.enableBM25).toBe(true);
+  });
   it('provider profile model refs preserve provider id and colon-containing model ids', () => {
     const value = buildProviderModelRef('local-ollama', 'qwen3:8b-q8_0');
 

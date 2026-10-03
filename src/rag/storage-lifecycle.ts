@@ -29,7 +29,7 @@ export interface IndexedDbCleanupOptions {
 }
 
 /** 청킹 계약 버전. 청커 동작이나 청크 저장 형식이 바뀌면 올려 인덱스 세대를 교체합니다. */
-export const RAG_INDEX_CONTRACT_VERSION = 1;
+export const RAG_INDEX_CONTRACT_VERSION = 2;
 
 /** 청킹 계약 v1의 기본값은 기존 세대 이름을 그대로 써서 불필요한 재색인을 피합니다. */
 const LEGACY_GENERATION_CONTRACT = {
@@ -41,7 +41,7 @@ const LEGACY_GENERATION_CONTRACT = {
 /**
  * 청킹 계약에 따른 인덱스 세대 이름을 만듭니다.
  *
- * 빈 문자열이면 기존 세대를 유지하고, 값이 있으면 vector와 BM25만 새 세대로 옮깁니다.
+ * 공통 원문·벡터·BM25를 같은 청킹 세대로 옮깁니다. 임베딩 캐시와 그래프 저장소는 재사용합니다.
  */
 export function createRagIndexNamespace(rag: { chunkSize: number; overlap: number }): string {
   const contract = {
@@ -86,7 +86,7 @@ export async function cleanupStaleIndexedDbGenerations(
 ): Promise<IndexedDbCleanupResult> {
   const databaseNames = await host.listDatabaseNames();
   const preserveEmbeddingCache = options.preserveEmbeddingCache ?? true;
-  const activeNames = [layout.active.vector];
+  const activeNames = [layout.active.vector, layout.active.corpus];
   if (options.preserveBm25 ?? true) activeNames.push(layout.active.bm25);
   if (options.preserveGraph ?? true) activeNames.push(layout.active.graph);
   if (preserveEmbeddingCache) activeNames.push(layout.active.embeddingCache);

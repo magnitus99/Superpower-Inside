@@ -13,6 +13,7 @@ import {
   planNativeVaultReadRangeRust,
   planNativeVaultSearchRrfRust,
   planNativeVaultStatsRust,
+  isSourceRevisionCurrentRust,
   type RustNativeVaultToolRequest,
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
@@ -28,6 +29,7 @@ import type {
   NativeVaultToolPort,
 } from './native-vault-tool';
 import { truncateUtf8Text } from '../utils/text-budget';
+import { readSourceFileSnapshot } from '../rag/source-snapshot';
 
 const MAX_READ_LINES = 400;
 const LEXICAL_READ_BATCH_SIZE = 8;
@@ -108,6 +110,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         const indexedResult = await this.verifyCurrentSearchEvidence(
           buildIndexedSearchResult(request, queries, visible),
           signal,
+          visible,
         );
         if (!needsLiveLexicalFallback && indexedResult.hits.length > 0) return indexedResult;
         const files = indexedAttempt.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
@@ -233,6 +236,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         candidates,
       ),
       signal,
+      candidates,
     );
     return {
       action: 'related',
@@ -421,13 +425,16 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   private async verifyCurrentSearchEvidence(
     result: NativeVaultSearchResult,
     signal?: AbortSignal,
+    candidates: readonly IndexedSearchCandidate[] = [],
   ): Promise<NativeVaultSearchResult> {
     const hits: NativeVaultSearchHit[] = [];
     for (let offset = 0; offset < result.hits.length; offset += LEXICAL_READ_BATCH_SIZE) {
       throwIfAborted(signal);
       const batch = result.hits.slice(offset, offset + LEXICAL_READ_BATCH_SIZE);
       hits.push(
-        ...(await Promise.all(batch.map((hit) => this.verifyCurrentSearchHit(hit, signal)))),
+        ...(await Promise.all(
+          batch.map((hit) => this.verifyCurrentSearchHit(hit, signal, candidates)),
+        )),
       );
     }
     return buildSearchResult(
@@ -448,13 +455,35 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   private async verifyCurrentSearchHit(
     hit: NativeVaultSearchHit,
     signal?: AbortSignal,
+    candidates: readonly IndexedSearchCandidate[] = [],
   ): Promise<NativeVaultSearchHit> {
     throwIfAborted(signal);
     const file = this.resolveVaultFile(hit.path);
     if (!file) return hit;
     try {
-      const content = await awaitWithAbort(this.app.vault.cachedRead(file), signal);
+      const snapshot = await awaitWithAbort(readSourceFileSnapshot(this.app.vault, file), signal);
       throwIfAborted(signal);
+      if (!snapshot) return hit;
+      const source = candidates.find(
+        (candidate) =>
+          candidate.result.sourcePath === hit.path &&
+          zeroBasedLineToOneBased(candidate.result.chunkRange.startLine) === hit.startLine,
+      );
+      const metadata = source?.result.entry.metadata;
+      if (
+        !metadata ||
+        !isSourceRevisionCurrentRust(
+          {
+            filePath: metadata.filePath,
+            sourceMtime: metadata.sourceMtime ?? -1,
+            sourceSize: metadata.sourceSize ?? -1,
+            contentHash: metadata.contentHash ?? '',
+          },
+          snapshot.revision,
+        )
+      )
+        return hit;
+      const content = snapshot.content;
       const lines = content.split('\n');
       const range = planNativeVaultReadRangeRust(
         lines.length,

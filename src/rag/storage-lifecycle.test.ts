@@ -9,6 +9,18 @@ import {
 } from './storage-lifecycle';
 
 describe('RAG IndexedDB storage lifecycle', () => {
+  it('임베딩 모델 변경은 공통 원문 저장소를 변경하지 않는다', () => {
+    const base = {
+      pluginId: 'superpower-inside',
+      vaultIdentity: '/vault/example',
+      legacyVaultName: 'example',
+      indexNamespace: createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT),
+    };
+    const first = createRagStorageLayout({ ...base, embeddingNamespace: 'model-a' });
+    const next = createRagStorageLayout({ ...base, embeddingNamespace: 'model-b' });
+    expect(next.active.corpus).toBe(first.active.corpus);
+    expect(next.active.embeddingCache).not.toBe(first.active.embeddingCache);
+  });
   it('derives a generic vault and embedding generation layout through Rust', () => {
     const layout = createRagStorageLayout({
       pluginId: 'superpower-inside',
@@ -45,10 +57,11 @@ describe('RAG IndexedDB storage lifecycle', () => {
       indexNamespace: createRagIndexNamespace({ chunkSize: 500, overlap: 100 }),
     });
 
-    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('');
+    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v2:1000:100');
     expect(createRagIndexNamespace({ chunkSize: 500, overlap: 100 })).toContain('500');
     expect(changed.active.vector).not.toBe(legacy.active.vector);
     expect(changed.active.bm25).not.toBe(legacy.active.bm25);
+    expect(changed.active.corpus).not.toBe(legacy.active.corpus);
     expect(changed.active.embeddingCache).toBe(legacy.active.embeddingCache);
     expect(changed.active.graph).toBe(legacy.active.graph);
   });

@@ -1,6 +1,7 @@
 import { buildKnowledgeGraphContract } from './knowledge-contract';
 import type { RAGConfig } from '../settings';
-import type { FileIndexRecord, VectorEntry, VectorStore } from '../rag/store';
+import type { FileIndexRecord, VectorEntry } from '../rag/store';
+import type { DocumentCorpusStore } from '../rag/document-corpus-store';
 import {
   planGraphRagStatusEntryLookupsRust,
   graphExtractionContractVersionRust,
@@ -37,7 +38,7 @@ export type GraphRagIndexState =
 export interface GraphRagStatusInput {
   ragConfig: Pick<RAGConfig, 'graphRagEnabled' | 'graphRagModel' | 'graphRagMaxFilesPerRun'>;
   graphStore: KnowledgeGraphStore;
-  vectorStore: VectorStore;
+  vectorStore: DocumentCorpusStore;
   isRunning: boolean;
   activeProviderEpochId?: string;
   isProcessableFilePath?: GraphRagFilePathPredicate;
@@ -76,7 +77,7 @@ export async function calculateGraphRagStatus(
     input.graphStore.getExtractionCacheRecords(),
   ]);
   const entryIds =
-    evidence.length === 0
+    cacheRecords.length === 0 && evidence.length === 0
       ? []
       : requireGraphRagStatusEntryLookups(
           evidence.map((record) => record.entryId),
@@ -106,7 +107,7 @@ interface GraphRagStatusFileSnapshot {
 }
 
 async function getGraphRagStatusFileSnapshot(
-  vectorStore: VectorStore,
+  vectorStore: DocumentCorpusStore,
   isProcessableFilePath: GraphRagFilePathPredicate | undefined,
 ): Promise<GraphRagStatusFileSnapshot> {
   const fileIndexRecords = await vectorStore.getFileIndexRecords();
