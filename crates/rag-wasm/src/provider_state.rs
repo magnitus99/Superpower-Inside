@@ -313,12 +313,15 @@ fn usable_model_values<'a>(
 
 /// provider strategy가 비어 있지 않은 API 키를 요구하는지 확인한다.
 fn requires_api_key(strategy: &str) -> bool {
-    !matches!(strategy, "ollama" | "openAICompatible" | "ternlight")
+    !matches!(
+        strategy,
+        "ollama" | "openAICompatible" | "openAIChatGPT" | "ternlight"
+    )
 }
 
 /// provider strategy가 명시적 endpoint URL을 요구하는지 확인한다.
 fn requires_base_url(strategy: &str) -> bool {
-    strategy == "openAICompatible"
+    matches!(strategy, "openAICompatible" | "openAIChatGPT")
 }
 
 /// provider strategy가 임베딩 transport를 제공하는지 확인한다.
@@ -342,6 +345,31 @@ mod tests {
         plan_chat_model_state_json, plan_provider_profile_state_json,
         plan_provider_verification_reset_json,
     };
+
+    #[test]
+    fn chatgpt_relay_requires_url_but_not_api_key_and_excludes_embeddings() {
+        let mut provider = json!({
+            "strategy": "openAIChatGPT", "enabled": true,
+            "apiKeyConfigured": false, "baseUrlConfigured": true,
+            "models": [
+                {"value": "profile:subscription:model", "label": "ChatGPT / model", "kind": "general", "verificationStatus": "success"},
+                {"value": "profile:subscription:embedding", "label": "ChatGPT / embedding", "kind": "embedding", "verificationStatus": "success"}
+            ]
+        });
+        let output = plan_provider_profile_state_json(&provider.to_string());
+        let parsed = serde_json::from_str::<JsonValue>(&output).unwrap_or_default();
+        assert_eq!(parsed.get("tone"), Some(&json!("ready")));
+        assert_eq!(parsed.get("chatUsable"), Some(&json!(true)));
+        assert_eq!(parsed.get("embeddingSupported"), Some(&json!(false)));
+        assert_eq!(parsed.get("embeddingModelValues"), Some(&json!([])));
+        if let Some(configured) = provider.get_mut("baseUrlConfigured") {
+            *configured = json!(false);
+        }
+        let output = plan_provider_profile_state_json(&provider.to_string());
+        let parsed = serde_json::from_str::<JsonValue>(&output).unwrap_or_default();
+        assert_eq!(parsed.get("tone"), Some(&json!("needs-url")));
+        assert_eq!(parsed.get("chatUsable"), Some(&json!(false)));
+    }
 
     #[test]
     fn provider_state_requires_openai_compatible_url() {

@@ -140,6 +140,7 @@ function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
 }
 export interface ProviderConfig {
   apiKey: string;
+  relayApiKey?: string;
   baseUrl?: string;
   models: string[];
   enabled: boolean;
@@ -161,7 +162,7 @@ export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openRouter: 'OpenRouter',
 };
 export type ProviderKey = (typeof PROVIDER_KEYS)[number];
-export type ProviderStrategyKey = ProviderKey | 'openAICompatible' | 'ternlight';
+export type ProviderStrategyKey = ProviderKey | 'openAICompatible' | 'openAIChatGPT' | 'ternlight';
 export type ProviderModelKind = 'general' | 'embedding';
 export interface ProviderModelVerification {
   chatStatus: ModelCapabilityStatus;
@@ -179,6 +180,7 @@ export interface ProviderProfileConfig {
   name: string;
   strategy: ProviderStrategyKey;
   apiKey: string;
+  relayApiKey?: string;
   baseUrl?: string;
   enabled: boolean;
   models: ProviderModelConfig[];
@@ -347,11 +349,15 @@ function createProviderModel(
   };
 }
 
-export const PROVIDER_STRATEGY_LABELS: Record<ProviderStrategyKey, string> = {
-  ...PROVIDER_LABELS,
-  openAICompatible: 'OpenAI-Compatible',
-  ternlight: 'Ternlight (Local)',
-};
+export function getProviderStrategyLabels(): Record<ProviderStrategyKey, string> {
+  return {
+    ...PROVIDER_LABELS,
+    openai: 'OpenAI API',
+    openAIChatGPT: t('providerChatGPTLabel'),
+    openAICompatible: 'OpenAI-Compatible',
+    ternlight: 'Ternlight (Local)',
+  };
+}
 
 const LEGACY_PROFILE_IDS: Record<ProviderKey, string> = {
   openai: 'openai',
@@ -695,8 +701,8 @@ function normalizeProviderProfile(
       : `profile-${fallbackIndex + 1}`;
   const strategy = PROVIDER_KEYS.includes(source.strategy as ProviderKey)
     ? (source.strategy as ProviderKey)
-    : source.strategy === 'openAICompatible'
-      ? 'openAICompatible'
+    : source.strategy === 'openAICompatible' || source.strategy === 'openAIChatGPT'
+      ? source.strategy
       : source.strategy === 'ternlight'
         ? 'ternlight'
         : null;
@@ -713,6 +719,7 @@ function normalizeProviderProfile(
     name: rawName && !isLocalizedValue('providerNewName', rawName) ? rawName : '',
     strategy,
     apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
+    ...(typeof source.relayApiKey === 'string' ? { relayApiKey: source.relayApiKey } : {}),
     baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl.trim() : undefined,
     enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
     models,
@@ -6330,7 +6337,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       `provider-${profile.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
       getProviderProfileDisplayName(profile),
       t('providerModelCountLine', {
-        provider: PROVIDER_STRATEGY_LABELS[profile.strategy],
+        provider: getProviderStrategyLabels()[profile.strategy],
         general: String(profile.models.filter((model) => model.kind === 'general').length),
         embedding: String(profile.models.filter((model) => model.kind === 'embedding').length),
       }),
@@ -6452,33 +6459,42 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     this.buildProviderStrategySelector(group, profile);
     this.createSettingsNotice(group, {
-      text: t('settingsProviderSetupSteps'),
+      text:
+        profile.strategy === 'openAIChatGPT'
+          ? t('providerChatGPTSetup')
+          : t('settingsProviderSetupSteps'),
       tone: 'info',
       icon: 'list-checks',
     });
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
+      const isChatGPTRelay = profile.strategy === 'openAIChatGPT';
+      const keyLabel = isChatGPTRelay ? t('providerRelayKey') : t('apiKey');
       let apiKeyInput: HTMLInputElement | null = null;
       new Setting(group)
-        .setName(t('apiKey'))
+        .setName(keyLabel)
+        .setDesc(isChatGPTRelay ? t('providerRelayKeyDesc') : '')
         .addText((text) => {
           apiKeyInput = text.inputEl;
           text.inputEl.type = 'password';
           text.inputEl.autocomplete = 'off';
-          text.inputEl.setAttribute('aria-label', t('apiKey'));
+          text.inputEl.setAttribute('aria-label', keyLabel);
           text
-            .setPlaceholder('sk-...')
-            .setValue(profile.apiKey)
+            .setPlaceholder(isChatGPTRelay ? t('providerRelayKeyPlaceholder') : 'sk-...')
+            .setValue(isChatGPTRelay ? (profile.relayApiKey ?? '') : profile.apiKey)
             .onChange((value) => {
               const nextApiKey = value.trim();
-              if (profile.apiKey === nextApiKey) return;
-              profile.apiKey = nextApiKey;
+              if ((isChatGPTRelay ? profile.relayApiKey : profile.apiKey) === nextApiKey) return;
+              if (isChatGPTRelay) profile.relayApiKey = nextApiKey;
+              else profile.apiKey = nextApiKey;
               this.invalidateProviderProfileVerification(profile);
               this.debouncedProviderSave();
               this.refreshProviderProfilePresentation(profile, disclosureRoot);
             });
         })
         .addExtraButton((button) => {
-          button.setIcon('eye').setTooltip(t('providerApiKeyShow'));
+          const showLabel = isChatGPTRelay ? t('providerRelayKeyShow') : t('providerApiKeyShow');
+          const hideLabel = isChatGPTRelay ? t('providerRelayKeyHide') : t('providerApiKeyHide');
+          button.setIcon('eye').setTooltip(showLabel);
           button.extraSettingsEl.setAttribute('aria-pressed', 'false');
           button.onClick(() => {
             if (!apiKeyInput) return;
@@ -6487,7 +6503,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             button.extraSettingsEl.setAttribute('aria-pressed', String(!isVisible));
             button
               .setIcon(isVisible ? 'eye' : 'eye-off')
-              .setTooltip(isVisible ? t('providerApiKeyShow') : t('providerApiKeyHide'));
+              .setTooltip(isVisible ? showLabel : hideLabel);
           });
         });
     }
@@ -6506,6 +6522,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.refreshProviderProfilePresentation(profile, disclosureRoot);
           });
       });
+    }
+    if (profile.strategy === 'openAIChatGPT') {
+      new Setting(group)
+        .setName(t('providerCapabilityToolCalling'))
+        .setDesc(t('providerRelayToolCallingDesc'))
+        .addToggle((toggle) => {
+          toggle.toggleEl.setAttribute('aria-label', t('providerCapabilityToolCalling'));
+          toggle.setValue(profile.capabilityOverrides?.toolCalling ?? true).onChange((value) => {
+            profile.capabilityOverrides = { ...profile.capabilityOverrides, toolCalling: value };
+            this.invalidateProviderProfileVerification(profile);
+            this.debouncedProviderSave();
+          });
+        });
     }
   }
 
@@ -6705,7 +6734,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .setName(t('providerStrategyLabel'))
       .setDesc(t('providerStrategyDesc'))
       .addDropdown((dropdown) => {
-        for (const [value, label] of Object.entries(PROVIDER_STRATEGY_LABELS)) {
+        for (const [value, label] of Object.entries(getProviderStrategyLabels())) {
           if (value === 'ternlight') continue;
           dropdown.addOption(value, label);
         }
@@ -6718,9 +6747,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
             profile.baseUrl = nextDefault;
           }
-          const defaultName = PROVIDER_STRATEGY_LABELS[profile.strategy];
+          const defaultName = getProviderStrategyLabels()[profile.strategy];
           if (!profile.name || profile.name === defaultName)
-            profile.name = PROVIDER_STRATEGY_LABELS[strategy];
+            profile.name = getProviderStrategyLabels()[strategy];
           profile.strategy = strategy;
           this.invalidateProviderProfileVerification(profile);
           this.debouncedProviderSave();
@@ -7067,7 +7096,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private getProfileApiKeyVisibilityKey(
     profile: ProviderProfileConfig,
   ): 'ternlight' | 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter' | 'customOpenAI' {
-    return profile.strategy === 'openAICompatible' ? 'customOpenAI' : profile.strategy;
+    return profile.strategy === 'openAICompatible' || profile.strategy === 'openAIChatGPT'
+      ? 'customOpenAI'
+      : profile.strategy;
   }
 
   private getTernlightRuntimeOptions(): TernlightRuntimeOptions {
@@ -7092,6 +7123,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         return 'https://openrouter.ai/api';
       case 'openAICompatible':
         return 'http://localhost:1234/v1';
+      case 'openAIChatGPT':
+        return 'http://127.0.0.1:8317/v1';
       case 'ternlight':
         return '';
       default:

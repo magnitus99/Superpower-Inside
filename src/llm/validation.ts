@@ -34,7 +34,7 @@ export interface EmbeddingConnectionValidator {
   testEmbedding(modelId: string): Promise<ValidationResult>;
 }
 
-export type ProviderValidationKey = ProviderKey | 'customOpenAI';
+export type ProviderValidationKey = ProviderKey | 'customOpenAI' | 'openAIChatGPT';
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
@@ -523,12 +523,12 @@ function createProviderValidator(
   if (key === 'openRouter') {
     return new OpenAICompatibleValidator(config, OPENROUTER_BASE_URL, true);
   }
-  if (key === 'customOpenAI' || key === 'openAICompatible') {
+  if (key === 'customOpenAI' || key === 'openAICompatible' || key === 'openAIChatGPT') {
     if (!config.baseUrl?.trim()) {
       return null;
     }
     return new OpenAICompatibleValidator(
-      config,
+      key === 'openAIChatGPT' ? { ...config, apiKey: config.relayApiKey ?? '' } : config,
       normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? ''),
       false,
       true,
@@ -586,7 +586,7 @@ export async function fetchProviderModels(
       valid: false,
       models: [],
       error:
-        key === 'customOpenAI'
+        key === 'customOpenAI' || key === 'openAIChatGPT'
           ? t('customProviderBaseUrlRequired')
           : t('validationUnknownProvider'),
     };
@@ -618,7 +618,7 @@ export async function validateProviderConnection(
       valid: false,
       models: [],
       error:
-        key === 'customOpenAI'
+        key === 'customOpenAI' || key === 'openAIChatGPT'
           ? t('customProviderBaseUrlRequired')
           : t('validationUnknownProvider'),
     };
@@ -637,7 +637,7 @@ export async function testProviderGeneration(
       valid: false,
       models: [],
       error:
-        key === 'customOpenAI'
+        key === 'customOpenAI' || key === 'openAIChatGPT'
           ? t('customProviderBaseUrlRequired')
           : t('validationUnknownProvider'),
     };

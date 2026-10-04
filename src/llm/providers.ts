@@ -911,14 +911,18 @@ export function createProviderForStrategy(
   if (key === 'ternlight') {
     throw new Error('Ternlight is an embedding-only provider.');
   }
-  if (key === 'openAICompatible') {
+  if (key === 'openAICompatible' || key === 'openAIChatGPT') {
     return createCustomOpenAIProvider(
       {
         ...config,
         id: config.id ?? profileId,
         name: config.name ?? 'OpenAI-Compatible',
+        apiKey: key === 'openAIChatGPT' ? (config.relayApiKey ?? '') : config.apiKey,
         useRequestUrl: config.useRequestUrl ?? true,
-        capabilityOverrides: config.capabilityOverrides,
+        capabilityOverrides:
+          key === 'openAIChatGPT'
+            ? { toolCalling: true, reasoning: true, ...config.capabilityOverrides }
+            : config.capabilityOverrides,
       },
       modelOverride,
     );

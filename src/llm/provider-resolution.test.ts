@@ -19,6 +19,24 @@ import {
 import { buildStoredChatModelRef, createChatProviderForModel } from './provider-resolution';
 
 describe('채팅 provider 실행 연결', () => {
+  it('ChatGPT 중계의 canonical 모델은 API 키 없이 실행하고 임베딩 후보를 제외한다', () => {
+    const settings = createCanonicalSettings();
+    const profile = settings.providerProfiles[0];
+    if (!profile) throw new Error('테스트 프로필이 없습니다');
+    profile.strategy = 'openAIChatGPT';
+    profile.apiKey = '';
+    profile.baseUrl = 'http://127.0.0.1:8317/v1';
+    const resolved = createChatProviderForModel(settings, 'profile:remote:working');
+    expect(resolved).toMatchObject({ providerKey: 'profile:remote', model: 'working' });
+    expect(resolved?.provider.capability.toolCalling).toBe(true);
+    profile.capabilityOverrides = { toolCalling: false };
+    expect(
+      createChatProviderForModel(settings, 'profile:remote:working')?.provider.capability
+        .toolCalling,
+    ).toBe(false);
+    profile.baseUrl = '';
+    expect(createChatProviderForModel(settings, 'profile:remote:working')).toBeNull();
+  });
   it('Rust가 허용한 canonical 모델만 transport로 연결한다', () => {
     const settings = createCanonicalSettings();
 

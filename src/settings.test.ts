@@ -53,6 +53,8 @@ import {
   parseProviderModelRef,
   resetProviderProfileVerification,
   resolveProviderProfileTone,
+  resolveProviderProfileState,
+  getProviderStrategyLabels,
   resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
   upsertProviderProfileModel,
@@ -68,6 +70,50 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
+  it('ChatGPT 중계 프로필을 별도 종류로 보존하고 API 연결과 분리한다', () => {
+    const settings = migrateLegacyProviderProfiles({
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'subscription',
+          name: 'My ChatGPT',
+          strategy: 'openAIChatGPT',
+          enabled: true,
+          apiKey: 'preserved-api-key',
+          relayApiKey: 'relay-key',
+          baseUrl: 'http://127.0.0.1:8317/v1',
+          models: [
+            {
+              id: 'selected-model',
+              kind: 'general',
+              verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+    const profile = settings.providerProfiles.find((item) => item.id === 'subscription');
+    expect(profile).toMatchObject({
+      strategy: 'openAIChatGPT',
+      apiKey: 'preserved-api-key',
+      relayApiKey: 'relay-key',
+    });
+    if (!profile) throw new Error('프로필이 없습니다');
+    expect(resolveProviderProfileState(profile)).toMatchObject({
+      tone: 'ready',
+      chatUsable: true,
+      embeddingSupported: false,
+    });
+    profile.apiKey = '';
+    profile.relayApiKey = '';
+    expect(resolveProviderProfileTone(profile)).toBe('ready');
+    profile.baseUrl = '';
+    expect(resolveProviderProfileTone(profile)).toBe('needs-url');
+    expect(getProviderStrategyLabels().openai).toBe('OpenAI API');
+    expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
+    setLanguage('en');
+    expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth relay)');
+  });
   it('GraphRAG와 ontology 추출은 기본 비활성이며 자동 실행도 끈 상태다', () => {
     expect(DEFAULT_SETTINGS.rag.graphRagEnabled).toBe(false);
     expect(DEFAULT_SETTINGS.rag.graphRagAutoSyncEnabled).toBe(false);

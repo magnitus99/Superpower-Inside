@@ -9,6 +9,7 @@ import {
   testEmbeddingGeneration,
   testEmbeddingGenerationForStrategy,
   testProviderGeneration,
+  testProviderGenerationForStrategy,
   validateEmbeddingConnection,
   validateProviderConnection,
 } from './validation';
@@ -38,6 +39,38 @@ const ternlightRuntime = {
 } satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
+  it('ChatGPT 중계의 모델 목록과 생성은 별도 중계 키로 검증한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { data: [{ id: 'selected-model' }] },
+    });
+    const config = { ...baseConfig, relayApiKey: 'relay-key', baseUrl: 'http://127.0.0.1:8317/v1' };
+    expect(await fetchProviderModelsForStrategy('openAIChatGPT', config)).toMatchObject({
+      valid: true,
+      models: ['selected-model'],
+    });
+    expect(requestUrlMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        url: 'http://127.0.0.1:8317/v1/models',
+        headers: { Authorization: 'Bearer relay-key' },
+      }),
+    );
+    requestUrlMock.mockResolvedValueOnce({ status: 200, text: '', json: {} });
+    expect(
+      await testProviderGenerationForStrategy('openAIChatGPT', config, 'selected-model'),
+    ).toMatchObject({ valid: true });
+    expect(requestUrlMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        url: 'http://127.0.0.1:8317/v1/chat/completions',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer relay-key' },
+      }),
+    );
+    expect(
+      await testEmbeddingGenerationForStrategy('openAIChatGPT', 'selected-model', config),
+    ).toMatchObject({ valid: false });
+    expect(requestUrlMock).toHaveBeenCalledTimes(2);
+  });
   beforeEach(() => {
     requestUrlMock.mockReset();
     ternlightEmbedMock.mockReset();
@@ -430,16 +463,12 @@ describe('provider validation', () => {
       text: '',
     });
 
-    const result = await testEmbeddingGeneration(
-      'customOpenAI:local',
-      'custom-embedding',
-      {
-        ...baseConfig,
-        id: 'local',
-        name: 'Local',
-        baseUrl: 'http://localhost:1234/v1',
-      },
-    );
+    const result = await testEmbeddingGeneration('customOpenAI:local', 'custom-embedding', {
+      ...baseConfig,
+      id: 'local',
+      name: 'Local',
+      baseUrl: 'http://localhost:1234/v1',
+    });
 
     expect(result.valid).toBe(true);
     expect(requestUrlMock).toHaveBeenCalledWith(
@@ -459,17 +488,13 @@ describe('provider validation', () => {
       text: '',
     });
 
-    await testEmbeddingGeneration(
-      'customOpenAI:local',
-      'custom-embedding',
-      {
-        ...baseConfig,
-        id: 'local',
-        name: 'Local',
-        apiKey: '',
-        baseUrl: 'http://localhost:1234/v1',
-      },
-    );
+    await testEmbeddingGeneration('customOpenAI:local', 'custom-embedding', {
+      ...baseConfig,
+      id: 'local',
+      name: 'Local',
+      apiKey: '',
+      baseUrl: 'http://localhost:1234/v1',
+    });
 
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -80,6 +80,89 @@ beforeEach(() => {
   requestUrlMock.mockReset();
 });
 
+describe('ChatGPT OAuth 중계 연결', () => {
+  it('OpenAI API 키를 중계로 보내지 않고 별도 중계 키와 선택한 모델을 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { model: 'selected-model', choices: [{ message: { content: 'answer' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'openAIChatGPT',
+      {
+        enabled: true,
+        apiKey: 'openai-api-secret',
+        relayApiKey: 'local-relay-key',
+        baseUrl: 'http://127.0.0.1:8317/v1',
+        models: ['other-model'],
+      },
+      'selected-model',
+    );
+
+    expect(await provider.chat([{ role: 'user', content: 'question' }])).toBe('answer');
+    expect(requestUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'http://127.0.0.1:8317/v1/chat/completions',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer local-relay-key' },
+      }),
+    );
+    expect(parseRequestUrlBody().model).toBe('selected-model');
+    expect(provider.capability).toMatchObject({
+      streaming: false,
+      abort: 'best-effort',
+      toolCalling: true,
+    });
+  });
+
+  it('중계 키가 없으면 API 키를 대신 사용하지 않고 도구 결과를 재전송한다', async () => {
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      enabled: true,
+      apiKey: 'openai-api-secret',
+      baseUrl: 'http://127.0.0.1:8317',
+      models: ['selected-model'],
+    });
+    const toolCall = tc('call-relay', 'search_notes', '{"query":"test"}');
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall }] } }] })}\n\ndata: [DONE]\n`,
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const chunks: import('./providers').StreamChunk[] = [];
+    await provider.streamChat(
+      [{ role: 'user', content: 'question' }],
+      (chunk) => chunks.push(chunk),
+      0.7,
+      [createTool()],
+      { toolChoice: 'required' },
+    );
+    expect(chunks.some((chunk) => chunk.toolCalls?.[0]?.id === 'call-relay')).toBe(true);
+    expect(parseRequestUrlBody()).toMatchObject({ tools: [createTool()], tool_choice: 'required' });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { choices: [{ message: { content: 'grounded answer' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    await provider.chat([
+      { role: 'assistant', content: '', toolCalls: [toolCall] },
+      { role: 'tool', content: 'verified evidence', tool_call_id: 'call-relay' },
+    ]);
+    expect(parseRequestUrlBody(1).messages).toEqual([
+      { role: 'assistant', content: null, tool_calls: [toolCall] },
+      { role: 'tool', content: 'verified evidence', tool_call_id: 'call-relay' },
+    ]);
+  });
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });

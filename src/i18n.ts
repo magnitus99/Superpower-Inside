@@ -1214,6 +1214,14 @@ export interface I18nKeys {
   providerCustomDockTitle: string;
   providerCustomDockDesc: string;
   providerStrategyLabel: string;
+  providerChatGPTLabel: string;
+  providerChatGPTSetup: string;
+  providerRelayKey: string;
+  providerRelayKeyDesc: string;
+  providerRelayKeyPlaceholder: string;
+  providerRelayToolCallingDesc: string;
+  providerRelayKeyShow: string;
+  providerRelayKeyHide: string;
   providerStrategyDesc: string;
   providerBaseUrl: string;
   providerGeneralModels: string;
@@ -2991,6 +2999,17 @@ const ko: I18nKeys = {
   providerCustomDockTitle: '사용자 지정 OpenAI 호환',
   providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 서버를 연결합니다.',
   providerStrategyLabel: '프로바이더 종류',
+  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth 중계)',
+  providerChatGPTSetup:
+    'CLIProxyAPI 등 중계 서버에서 ChatGPT로 로그인한 뒤 중계 URL을 입력하세요. 웹 로그인과 구독 인증은 중계 서버가 처리합니다. 모델을 가져오고 테스트한 뒤 채팅에서 선택하세요. 구독 사용 한도가 적용되며 임베딩은 별도 연결을 사용합니다.',
+  providerRelayKey: '중계 서버 연결 키 (선택)',
+  providerRelayKeyDesc:
+    '중계 서버에 설정한 클라이언트 키만 입력하세요. OpenAI API 키나 ChatGPT 로그인 토큰을 입력하지 마세요.',
+  providerRelayKeyPlaceholder: '중계 서버의 클라이언트 키',
+  providerRelayKeyShow: '중계 서버 연결 키 표시',
+  providerRelayKeyHide: '중계 서버 연결 키 숨기기',
+  providerRelayToolCallingDesc:
+    '중계 서버가 모델의 도구 호출을 지원하면 켜세요. 지원하지 않으면 끄고 호환 방식으로 조사합니다.',
   providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
   providerBaseUrl: '엔드포인트 URL',
   providerGeneralModels: '채팅 모델',
@@ -4853,9 +4872,19 @@ const en: I18nKeys = {
   providerQuickModels: 'Models',
   providerQuickType: 'Type',
   providerCustomDockTitle: 'Custom OpenAI-compatible',
-  providerCustomDockDesc:
-    'Connect local servers or internal OpenAI-compatible endpoints.',
+  providerCustomDockDesc: 'Connect local servers or internal OpenAI-compatible endpoints.',
   providerStrategyLabel: 'Provider type',
+  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth relay)',
+  providerChatGPTSetup:
+    'Sign in with ChatGPT in a relay such as CLIProxyAPI, then enter its URL. The relay handles web sign-in and subscription authentication. Fetch and test a model, then select it in chat. Subscription usage limits apply; use a separate connection for embeddings.',
+  providerRelayKey: 'Relay connection key (optional)',
+  providerRelayKeyDesc:
+    'Enter only the client key configured in your relay. Do not enter an OpenAI API key or ChatGPT login token.',
+  providerRelayKeyPlaceholder: 'Relay client key',
+  providerRelayKeyShow: 'Show relay connection key',
+  providerRelayKeyHide: 'Hide relay connection key',
+  providerRelayToolCallingDesc:
+    'Enable when the relay supports model tool calls. Otherwise, turn it off to use the compatible research flow.',
   providerStrategyDesc: 'Choose how this profile connects to the model API.',
   providerBaseUrl: 'Endpoint URL',
   providerGeneralModels: 'Chat models',

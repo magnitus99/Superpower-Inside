@@ -196,7 +196,10 @@ function getProviderSources(settings: SuperpowerInsideSettings): ProviderSource[
       .map((profile) => ({
         id: `profile-${profile.id}`,
         label: getProviderProfileDisplayName(profile),
-        key: profile.strategy === 'openAICompatible' ? ('customOpenAI' as const) : profile.strategy,
+        key:
+          profile.strategy === 'openAICompatible' || profile.strategy === 'openAIChatGPT'
+            ? ('customOpenAI' as const)
+            : profile.strategy,
         config: {
           ...profile,
           models: profile.models.map((model) => model.id),
