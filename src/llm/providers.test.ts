@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
 
 import { requestUrl } from 'obsidian';
+import { connectTestChatGPT, completedChatGPTResponse, requestUrlPromise } from '../test/chatgpt';
+import { chatGPTOAuth } from './chatgpt-oauth';
 import type { ChatMessage, ToolCallInfo } from './providers';
 import {
   createCustomOpenAIProvider,
@@ -80,12 +82,79 @@ beforeEach(() => {
   requestUrlMock.mockReset();
 });
 
-describe('ChatGPT OAuth 중계 연결', () => {
-  it('OpenAI API 키를 중계로 보내지 않고 별도 중계 키와 선택한 모델을 사용한다', async () => {
+describe('ChatGPT 브라우저 OAuth 연결', () => {
+  it('401이면 토큰을 갱신해 같은 모델과 요청을 한 번만 재시도한다', async () => {
+    connectTestChatGPT();
+    const refreshed = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account' } })).toString('base64url')}.signature`;
+    requestUrlMock.mockResolvedValueOnce({
+      status: 401,
+      json: {},
+      text: '',
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
+      json: { access_token: refreshed, refresh_token: 'rotated', expires_in: 3600 },
       text: '',
-      json: { model: 'selected-model', choices: [{ message: { content: 'answer' } }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: {},
+      text: completedChatGPTResponse([
+        { type: 'message', content: [{ type: 'output_text', text: 'answer' }] },
+      ]),
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      apiKey: '',
+      enabled: true,
+      models: ['selected-model'],
+    });
+    expect(await provider.chat([{ role: 'user', content: 'question' }])).toBe('answer');
+    expect(requestUrlMock).toHaveBeenCalledTimes(3);
+    expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
+      url: 'https://auth.openai.com/oauth/token',
+    });
+    expect(requestUrlMock.mock.calls[2]?.[0]).toMatchObject({
+      headers: { Authorization: `Bearer ${refreshed}` },
+    });
+    expect(parseRequestUrlBody(0)).toEqual(parseRequestUrlBody(2));
+  });
+
+  it('구독 한도 오류는 상태와 재시도 시간을 전달하고 원문 인증 정보를 노출하지 않는다', async () => {
+    connectTestChatGPT();
+    requestUrlMock.mockResolvedValueOnce({
+      status: 429,
+      text: 'sensitive-echo',
+      json: {},
+      headers: { 'retry-after': '3' },
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      apiKey: '',
+      enabled: true,
+      models: ['selected-model'],
+    });
+    const error: unknown = await provider
+      .chat([{ role: 'user', content: 'question' }])
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({ name: 'LLMProviderHttpError', status: 429, retryAfterMs: 3000 });
+    expect(error instanceof Error ? error.message : '').not.toContain('sensitive-echo');
+    expect(requestUrlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('API 키와 중계 URL을 무시하고 OAuth 토큰으로 선택한 모델을 호출한다', async () => {
+    connectTestChatGPT();
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: completedChatGPTResponse([
+        { type: 'message', content: [{ type: 'output_text', text: 'answer' }] },
+      ]),
+      json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
     });
@@ -93,40 +162,56 @@ describe('ChatGPT OAuth 중계 연결', () => {
       'openAIChatGPT',
       {
         enabled: true,
-        apiKey: 'openai-api-secret',
-        relayApiKey: 'local-relay-key',
-        baseUrl: 'http://127.0.0.1:8317/v1',
+        apiKey: 'api-secret',
+        relayApiKey: 'relay-secret',
+        baseUrl: 'https://untrusted.example',
         models: ['other-model'],
       },
       'selected-model',
     );
-
-    expect(await provider.chat([{ role: 'user', content: 'question' }])).toBe('answer');
-    expect(requestUrlMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: 'http://127.0.0.1:8317/v1/chat/completions',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer local-relay-key' },
-      }),
-    );
-    expect(parseRequestUrlBody().model).toBe('selected-model');
+    expect(
+      await provider.chat([
+        { role: 'system', content: 'instructions' },
+        { role: 'user', content: 'question' },
+      ]),
+    ).toBe('answer');
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://chatgpt.com/backend-api/codex/responses',
+      headers: {
+        Authorization: 'Bearer oauth-access',
+        'ChatGPT-Account-Id': 'account',
+      },
+    });
+    expect(parseRequestUrlBody()).toMatchObject({
+      model: 'selected-model',
+      instructions: 'instructions',
+      stream: true,
+      store: false,
+    });
     expect(provider.capability).toMatchObject({
       streaming: false,
       abort: 'best-effort',
       toolCalling: true,
     });
+    expect(provider.getObservedModel?.()).toBe('selected-model');
   });
-
-  it('중계 키가 없으면 API 키를 대신 사용하지 않고 도구 결과를 재전송한다', async () => {
+  it('Responses 도구 호출과 결과의 call_id를 보존한다', async () => {
+    connectTestChatGPT();
     const provider = createProviderForStrategy('openAIChatGPT', {
       enabled: true,
-      apiKey: 'openai-api-secret',
-      baseUrl: 'http://127.0.0.1:8317',
+      apiKey: '',
       models: ['selected-model'],
     });
-    const toolCall = tc('call-relay', 'search_notes', '{"query":"test"}');
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall }] } }] })}\n\ndata: [DONE]\n`,
+      text: completedChatGPTResponse([
+        {
+          type: 'function_call',
+          call_id: 'call-1',
+          name: 'search_notes',
+          arguments: '{"query":"test"}',
+        },
+      ]),
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -139,30 +224,92 @@ describe('ChatGPT OAuth 중계 연결', () => {
       [createTool()],
       { toolChoice: 'required' },
     );
-    expect(chunks.some((chunk) => chunk.toolCalls?.[0]?.id === 'call-relay')).toBe(true);
-    expect(parseRequestUrlBody()).toMatchObject({ tools: [createTool()], tool_choice: 'required' });
-    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
-      headers: { 'Content-Type': 'application/json' },
+    expect(chunks[0]?.toolCalls?.[0]).toMatchObject({
+      id: 'call-1',
+      function: { name: 'search_notes', arguments: '{"query":"test"}' },
     });
-
+    expect(chunks.at(-1)).toEqual({ content: '', done: true });
+    expect(parseRequestUrlBody()).toMatchObject({
+      tools: [{ type: 'function', name: 'search_notes', strict: null }],
+      tool_choice: 'required',
+    });
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: '',
-      json: { choices: [{ message: { content: 'grounded answer' } }] },
+      text: completedChatGPTResponse([
+        { type: 'message', content: [{ type: 'output_text', text: 'grounded' }] },
+      ]),
+      json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
     });
     await provider.chat([
-      { role: 'assistant', content: '', toolCalls: [toolCall] },
-      { role: 'tool', content: 'verified evidence', tool_call_id: 'call-relay' },
+      { role: 'assistant', content: '', toolCalls: [tc('call-1', 'search_notes', '{}')] },
+      { role: 'tool', content: 'evidence', tool_call_id: 'call-1' },
     ]);
-    expect(parseRequestUrlBody(1).messages).toEqual([
-      { role: 'assistant', content: null, tool_calls: [toolCall] },
-      { role: 'tool', content: 'verified evidence', tool_call_id: 'call-relay' },
+    expect(parseRequestUrlBody(1).input).toEqual([
+      { type: 'function_call', call_id: 'call-1', name: 'search_notes', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call-1', output: 'evidence' },
     ]);
   });
+  it('연결 해제·실패·잘린 응답을 성공으로 표시하지 않는다', async () => {
+    connectTestChatGPT();
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      enabled: true,
+      apiKey: 'api-secret',
+      models: ['selected-model'],
+    });
+    for (const text of [
+      'data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+      'data: {"type":"response.failed"}\n\n',
+    ]) {
+      requestUrlMock.mockResolvedValueOnce({
+        status: 200,
+        text,
+        json: {},
+        headers: {},
+        arrayBuffer: new ArrayBuffer(0),
+      });
+      await expect(provider.chat([{ role: 'user', content: 'question' }])).rejects.toThrow();
+    }
+    chatGPTOAuth.disconnect('profile');
+    await expect(provider.chat([{ role: 'user', content: 'question' }])).rejects.toThrow();
+    expect(requestUrlMock).toHaveBeenCalledTimes(2);
+  });
+  it('요청 중 취소되면 늦은 텍스트와 도구 결과를 전달하지 않는다', async () => {
+    connectTestChatGPT();
+    const controller = new AbortController();
+    requestUrlMock.mockImplementationOnce(() => {
+      controller.abort();
+      return requestUrlPromise(
+        Promise.resolve({
+          status: 200,
+          text: completedChatGPTResponse([
+            { type: 'message', content: [{ type: 'output_text', text: 'late' }] },
+          ]),
+          json: {},
+          headers: {},
+          arrayBuffer: new ArrayBuffer(0),
+        }),
+      );
+    });
+    const chunks: import('./providers').StreamChunk[] = [];
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      enabled: true,
+      apiKey: '',
+      models: ['selected-model'],
+    });
+    await expect(
+      provider.streamChat(
+        [{ role: 'user', content: 'question' }],
+        (chunk) => chunks.push(chunk),
+        0.7,
+        undefined,
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(chunks).toEqual([]);
+  });
 });
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });

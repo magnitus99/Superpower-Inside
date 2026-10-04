@@ -11,15 +11,19 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
-  it('ChatGPT 중계는 별도 키와 외부 로그인 안내를 표시하며 임베딩을 약속하지 않는다', () => {
-    const start = settingsSource.indexOf('private buildProviderConnectionSettings(');
-    const end = settingsSource.indexOf('private renderProviderProfileAttention(', start);
+  it('ChatGPT는 브라우저 로그인 행을 제공하고 API 키와 중계 URL 입력을 숨긴다', () => {
+    const start = settingsSource.indexOf(
+      "if (profile.strategy === 'openAIChatGPT') {",
+      settingsSource.indexOf('private buildProviderConnectionSettings('),
+    );
+    const end = settingsSource.indexOf('if (shouldShowProviderApiKey(', start);
     const source = settingsSource.slice(start, end);
-    expect(source).toContain("t('providerChatGPTSetup')");
-    expect(source).toContain("t('providerRelayKey')");
-    expect(source).toContain("t('providerRelayKeyDesc')");
-    expect(source).toContain('profile.relayApiKey = nextApiKey');
-    expect(source).toContain("setAttribute('aria-label', keyLabel)");
+    expect(source).toContain('buildChatGPTLoginSettings(group, profile.id');
+    expect(source).toContain('return;');
+    const login = readFileSync(resolve(root, 'src/llm/chatgpt-login-ui.ts'), 'utf8');
+    expect(login).toContain('await chatGPTOAuth.startLogin(profileId)');
+    expect(login).toContain('await login.completed');
+    expect(login).toContain("'aria-live': 'polite'");
   });
   it('모든 설정 탭과 채팅은 같은 A안 간격·모서리 토큰을 사용한다', () => {
     expect(styles).toMatch(/--superpower-inside-section-gap:\s*20px/);
@@ -552,7 +556,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain("'provider-danger'");
     expect(methodSource).toContain("t('providerModelCountLine'");
     expect(methodSource).toContain("text.inputEl.type = 'password'");
-    expect(methodSource).toContain("t('providerRelayKeyShow') : t('providerApiKeyShow')");
+    expect(methodSource).toContain("const showLabel = t('providerApiKeyShow')");
     expect(methodSource).toContain('setTooltip(showLabel)');
     expect(settingsSource).toContain("confirmWithModal(this.app, t('providerRemoveConfirm'");
     expect(styles).toContain('.superpower-inside-provider-profile-content');

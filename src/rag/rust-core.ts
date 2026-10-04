@@ -1,4 +1,5 @@
 import {
+  plan_chatgpt_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
   plan_source_graph_reconcile_json,
@@ -4529,6 +4530,17 @@ export function planPromptLibrarySummaryRust(
     const parsed: unknown = JSON.parse(raw);
     if (!isPromptLibrarySummary(parsed)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** ChatGPT 네트워크·저장 wire 결과를 Rust에서 검증하고 매핑한다. */
+export function planChatGPTRust<T>(input: Record<string, unknown>): T | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_chatgpt_json(JSON.stringify(input));
+    return raw ? (JSON.parse(raw) as T) : null;
   } catch {
     return null;
   }

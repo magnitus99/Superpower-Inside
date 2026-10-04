@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import { ChatGPTProvider } from './chatgpt-provider';
 import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
@@ -911,18 +912,20 @@ export function createProviderForStrategy(
   if (key === 'ternlight') {
     throw new Error('Ternlight is an embedding-only provider.');
   }
-  if (key === 'openAICompatible' || key === 'openAIChatGPT') {
+  if (key === 'openAIChatGPT') {
+    return new ChatGPTProvider(
+      config.id ?? profileId,
+      modelOverride ?? config.models[0] ?? '',
+      config.capabilityOverrides,
+    );
+  }
+  if (key === 'openAICompatible') {
     return createCustomOpenAIProvider(
       {
         ...config,
         id: config.id ?? profileId,
         name: config.name ?? 'OpenAI-Compatible',
-        apiKey: key === 'openAIChatGPT' ? (config.relayApiKey ?? '') : config.apiKey,
         useRequestUrl: config.useRequestUrl ?? true,
-        capabilityOverrides:
-          key === 'openAIChatGPT'
-            ? { toolCalling: true, reasoning: true, ...config.capabilityOverrides }
-            : config.capabilityOverrides,
       },
       modelOverride,
     );

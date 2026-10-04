@@ -514,6 +514,44 @@ function createProviderValidator(
   key: ProviderValidationKey | ProviderStrategyKey,
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): ProviderConnectionValidator | null {
+  if (key === 'openAIChatGPT') {
+    return {
+      fetchModels: async () => {
+        try {
+          const { fetchChatGPTModels } = await import('./chatgpt-provider');
+          return {
+            valid: true,
+            models: await fetchChatGPTModels('id' in config ? config.id : 'profile'),
+          };
+        } catch (error) {
+          return {
+            valid: false,
+            models: [],
+            error: error instanceof Error ? error.message : t('chatGPTOAuthFailed'),
+          };
+        }
+      },
+      validateConnection: async () => {
+        return fetchProviderModels('openAIChatGPT', config);
+      },
+      testGeneration: async (modelId) => {
+        try {
+          const { ChatGPTProvider } = await import('./chatgpt-provider');
+          const provider = new ChatGPTProvider('id' in config ? config.id : 'profile', modelId);
+          const answer = await provider.chat([{ role: 'user', content: 'ping' }]);
+          return answer.trim()
+            ? { valid: true, models: [modelId] }
+            : { valid: false, models: [], error: t('chatGPTResponseInvalid') };
+        } catch (error) {
+          return {
+            valid: false,
+            models: [],
+            error: error instanceof Error ? error.message : t('chatGPTOAuthFailed'),
+          };
+        }
+      },
+    };
+  }
   if (key === 'claude') {
     return new AnthropicValidator(config);
   }
@@ -523,12 +561,12 @@ function createProviderValidator(
   if (key === 'openRouter') {
     return new OpenAICompatibleValidator(config, OPENROUTER_BASE_URL, true);
   }
-  if (key === 'customOpenAI' || key === 'openAICompatible' || key === 'openAIChatGPT') {
+  if (key === 'customOpenAI' || key === 'openAICompatible') {
     if (!config.baseUrl?.trim()) {
       return null;
     }
     return new OpenAICompatibleValidator(
-      key === 'openAIChatGPT' ? { ...config, apiKey: config.relayApiKey ?? '' } : config,
+      config,
       normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? ''),
       false,
       true,

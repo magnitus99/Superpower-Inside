@@ -1,3 +1,4 @@
+import { connectTestChatGPT, completedChatGPTResponse } from '../test/chatgpt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguage } from '../i18n';
 import type { ProviderConfig } from '../settings';
@@ -39,35 +40,36 @@ const ternlightRuntime = {
 } satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
-  it('ChatGPT 중계의 모델 목록과 생성은 별도 중계 키로 검증한다', async () => {
+  it('OAuth로 모델 목록과 실제 생성 응답을 검증하고 임베딩을 제외한다', async () => {
+    connectTestChatGPT();
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: '',
-      json: { data: [{ id: 'selected-model' }] },
+      json: { models: [{ slug: 'selected-model' }] },
+      headers: {},
     });
-    const config = { ...baseConfig, relayApiKey: 'relay-key', baseUrl: 'http://127.0.0.1:8317/v1' };
-    expect(await fetchProviderModelsForStrategy('openAIChatGPT', config)).toMatchObject({
+    expect(await fetchProviderModelsForStrategy('openAIChatGPT', baseConfig)).toMatchObject({
       valid: true,
       models: ['selected-model'],
     });
-    expect(requestUrlMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        url: 'http://127.0.0.1:8317/v1/models',
-        headers: { Authorization: 'Bearer relay-key' },
-      }),
-    );
-    requestUrlMock.mockResolvedValueOnce({ status: 200, text: '', json: {} });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      headers: { Authorization: 'Bearer oauth-access' },
+    });
+    const modelRequest = requestUrlMock.mock.calls[0]?.[0] as { url: string };
+    expect(modelRequest.url).toContain('/codex/models?client_version=');
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: completedChatGPTResponse([
+        { type: 'message', content: [{ type: 'output_text', text: 'OK' }] },
+      ]),
+      json: {},
+      headers: {},
+    });
     expect(
-      await testProviderGenerationForStrategy('openAIChatGPT', config, 'selected-model'),
+      await testProviderGenerationForStrategy('openAIChatGPT', baseConfig, 'selected-model'),
     ).toMatchObject({ valid: true });
-    expect(requestUrlMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        url: 'http://127.0.0.1:8317/v1/chat/completions',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer relay-key' },
-      }),
-    );
     expect(
-      await testEmbeddingGenerationForStrategy('openAIChatGPT', 'selected-model', config),
+      await testEmbeddingGenerationForStrategy('openAIChatGPT', 'selected-model', baseConfig),
     ).toMatchObject({ valid: false });
     expect(requestUrlMock).toHaveBeenCalledTimes(2);
   });

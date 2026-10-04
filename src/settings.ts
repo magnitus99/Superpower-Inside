@@ -1,3 +1,5 @@
+import { chatGPTOAuth } from './llm/chatgpt-oauth';
+import { buildChatGPTLoginSettings } from './llm/chatgpt-login-ui';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import {
   App,
@@ -234,7 +236,10 @@ function toRustProviderProfileState(profile: ProviderProfileConfig): RustProvide
   return {
     strategy: profile.strategy,
     enabled: profile.enabled,
-    apiKeyConfigured: profile.apiKey.trim().length > 0,
+    apiKeyConfigured:
+      profile.strategy === 'openAIChatGPT'
+        ? chatGPTOAuth.isConnected(profile.id)
+        : profile.apiKey.trim().length > 0,
     baseUrlConfigured: (profile.baseUrl?.trim().length ?? 0) > 0,
     models: profile.models
       .filter((model) => model.id.trim().length > 0)
@@ -6349,7 +6354,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const icon = disclosure.button.querySelector('.superpower-inside-settings-disclosure-icon');
     const status = disclosure.button.createSpan({
       cls: `superpower-inside-provider-disclosure-status is-${tone}`,
-      text: this.getProviderProfileStatusLabel(tone),
+      text: this.getProviderProfileStatusLabel(tone, profile.strategy),
     });
     status.dataset.providerTone = tone;
     status.setAttribute('aria-live', 'polite');
@@ -6376,7 +6381,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const attention = disclosure.content.createDiv({
       cls: 'superpower-inside-provider-profile-attention',
     });
-    this.renderProviderProfileAttention(attention, tone);
+    this.renderProviderProfileAttention(attention, tone, profile.strategy);
     this.buildProviderConnectionSettings(disclosure.content, profile, root);
     if (profileState.chatSupported) {
       this.buildProviderProfileModelSection(
@@ -6466,34 +6471,46 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       tone: 'info',
       icon: 'list-checks',
     });
+    if (profile.strategy === 'openAIChatGPT') {
+      buildChatGPTLoginSettings(group, profile.id, async () => {
+        if (
+          !this.plugin.settings.providerProfiles.includes(profile) ||
+          profile.strategy !== 'openAIChatGPT'
+        )
+          return;
+        this.invalidateProviderProfileVerification(profile);
+        const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+        if (!saved.success) throw new Error(t('settingsApplyFailed'));
+        this.notifyProviderModelsChanged();
+        this.refreshProvidersTab(profile.id);
+      });
+      return;
+    }
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
-      const isChatGPTRelay = profile.strategy === 'openAIChatGPT';
-      const keyLabel = isChatGPTRelay ? t('providerRelayKey') : t('apiKey');
+      const keyLabel = t('apiKey');
       let apiKeyInput: HTMLInputElement | null = null;
       new Setting(group)
         .setName(keyLabel)
-        .setDesc(isChatGPTRelay ? t('providerRelayKeyDesc') : '')
         .addText((text) => {
           apiKeyInput = text.inputEl;
           text.inputEl.type = 'password';
           text.inputEl.autocomplete = 'off';
           text.inputEl.setAttribute('aria-label', keyLabel);
           text
-            .setPlaceholder(isChatGPTRelay ? t('providerRelayKeyPlaceholder') : 'sk-...')
-            .setValue(isChatGPTRelay ? (profile.relayApiKey ?? '') : profile.apiKey)
+            .setPlaceholder('sk-...')
+            .setValue(profile.apiKey)
             .onChange((value) => {
               const nextApiKey = value.trim();
-              if ((isChatGPTRelay ? profile.relayApiKey : profile.apiKey) === nextApiKey) return;
-              if (isChatGPTRelay) profile.relayApiKey = nextApiKey;
-              else profile.apiKey = nextApiKey;
+              if (profile.apiKey === nextApiKey) return;
+              profile.apiKey = nextApiKey;
               this.invalidateProviderProfileVerification(profile);
               this.debouncedProviderSave();
               this.refreshProviderProfilePresentation(profile, disclosureRoot);
             });
         })
         .addExtraButton((button) => {
-          const showLabel = isChatGPTRelay ? t('providerRelayKeyShow') : t('providerApiKeyShow');
-          const hideLabel = isChatGPTRelay ? t('providerRelayKeyHide') : t('providerApiKeyHide');
+          const showLabel = t('providerApiKeyShow');
+          const hideLabel = t('providerApiKeyHide');
           button.setIcon('eye').setTooltip(showLabel);
           button.extraSettingsEl.setAttribute('aria-pressed', 'false');
           button.onClick(() => {
@@ -6523,24 +6540,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           });
       });
     }
-    if (profile.strategy === 'openAIChatGPT') {
-      new Setting(group)
-        .setName(t('providerCapabilityToolCalling'))
-        .setDesc(t('providerRelayToolCallingDesc'))
-        .addToggle((toggle) => {
-          toggle.toggleEl.setAttribute('aria-label', t('providerCapabilityToolCalling'));
-          toggle.setValue(profile.capabilityOverrides?.toolCalling ?? true).onChange((value) => {
-            profile.capabilityOverrides = { ...profile.capabilityOverrides, toolCalling: value };
-            this.invalidateProviderProfileVerification(profile);
-            this.debouncedProviderSave();
-          });
-        });
-    }
   }
 
   private renderProviderProfileAttention(
     containerEl: HTMLElement,
     tone: ProviderProfileTone,
+    strategy: ProviderStrategyKey,
   ): void {
     containerEl.empty();
     containerEl.dataset.providerTone = tone;
@@ -6555,7 +6560,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.createSettingsNotice(containerEl, {
       text:
         tone === 'needs-key'
-          ? t('providerSummaryNeedsKey')
+          ? strategy === 'openAIChatGPT'
+            ? t('chatGPTOAuthRequired')
+            : t('providerSummaryNeedsKey')
           : tone === 'needs-url'
             ? t('providerSummaryNeedsBaseUrl')
             : tone === 'failed'
@@ -6588,13 +6595,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (status && status.dataset.providerTone !== tone) {
       status.className = `superpower-inside-provider-disclosure-status is-${tone}`;
       status.dataset.providerTone = tone;
-      status.setText(this.getProviderProfileStatusLabel(tone));
+      status.setText(this.getProviderProfileStatusLabel(tone, profile.strategy));
     }
     const attention = disclosureRoot.querySelector<HTMLElement>(
       '.superpower-inside-provider-profile-attention',
     );
     if (attention && attention.dataset.providerTone !== tone) {
-      this.renderProviderProfileAttention(attention, tone);
+      this.renderProviderProfileAttention(attention, tone, profile.strategy);
     }
     disclosureRoot
       .querySelector<HTMLElement>(
@@ -6620,10 +6627,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return status;
   }
 
-  private getProviderProfileStatusLabel(tone: ProviderProfileTone): string {
+  private getProviderProfileStatusLabel(
+    tone: ProviderProfileTone,
+    strategy: ProviderStrategyKey,
+  ): string {
     if (tone === 'ready') return t('providerStatusReady');
     if (tone === 'configured') return t('providerStatusConfigured');
-    if (tone === 'needs-key') return t('providerStatusNeedsKey');
+    if (tone === 'needs-key')
+      return strategy === 'openAIChatGPT' ? t('chatGPTOAuthRequired') : t('providerStatusNeedsKey');
     if (tone === 'needs-url') return t('providerStatusNeedsBaseUrl');
     if (tone === 'needs-models') return t('providerStatusNeedsModels');
     if (tone === 'failed') return t('providerStatusValidationFailed');
@@ -6679,7 +6690,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
     const tone = profile ? resolveProviderProfileTone(profile) : null;
     const targetLabel =
-      tone === 'needs-key' ? t('apiKey') : tone === 'needs-url' ? t('providerBaseUrl') : null;
+      tone === 'needs-key'
+        ? profile?.strategy === 'openAIChatGPT'
+          ? t('chatGPTOAuthSignIn')
+          : t('apiKey')
+        : tone === 'needs-url'
+          ? t('providerBaseUrl')
+          : null;
     const focusTarget = targetLabel
       ? Array.from(disclosure?.querySelectorAll<HTMLElement>('[aria-label]') ?? []).find(
           (el) => el.getAttribute('aria-label') === targetLabel,
@@ -6719,6 +6736,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.expandedProviderProfileId = previousExpandedProfileId;
           throw err;
         }
+        chatGPTOAuth.disconnect(profile.id);
         this.notifyProviderModelsChanged();
         return { status: 'success', detail: t('providerRemoved', { provider: profileName }) };
       },
@@ -6742,6 +6760,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         dropdown.setValue(profile.strategy).onChange((value) => {
           const strategy = value as ProviderStrategyKey;
           if (profile.strategy === strategy) return;
+          chatGPTOAuth.cancelLogin(profile.id);
           const previousDefault = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
           const nextDefault = this.getProviderStrategyDefaultBaseUrl(strategy);
           if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
@@ -6750,6 +6769,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           const defaultName = getProviderStrategyLabels()[profile.strategy];
           if (!profile.name || profile.name === defaultName)
             profile.name = getProviderStrategyLabels()[strategy];
+          if (strategy === 'openAIChatGPT') profile.baseUrl = undefined;
           profile.strategy = strategy;
           this.invalidateProviderProfileVerification(profile);
           this.debouncedProviderSave();
@@ -7088,7 +7108,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         provider: getProviderProfileDisplayName(profile),
       });
     }
-    if (tone === 'needs-key') return t('providerSummaryNeedsKey');
+    if (tone === 'needs-key')
+      return profile.strategy === 'openAIChatGPT'
+        ? t('chatGPTOAuthRequired')
+        : t('providerSummaryNeedsKey');
     if (tone === 'needs-url') return t('providerSummaryNeedsBaseUrl');
     return null;
   }
@@ -7124,7 +7147,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       case 'openAICompatible':
         return 'http://localhost:1234/v1';
       case 'openAIChatGPT':
-        return 'http://127.0.0.1:8317/v1';
+        return '';
       case 'ternlight':
         return '';
       default:

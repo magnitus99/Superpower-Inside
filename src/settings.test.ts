@@ -1,3 +1,5 @@
+import { connectTestChatGPT } from './test/chatgpt';
+import { chatGPTOAuth } from './llm/chatgpt-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const modalPromptMocks = vi.hoisted(() => ({
@@ -70,7 +72,8 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
-  it('ChatGPT 중계 프로필을 별도 종류로 보존하고 API 연결과 분리한다', () => {
+  it('ChatGPT OAuth는 기기 로그인으로 준비 상태를 판정하고 기존 설정 값을 보존한다', () => {
+    connectTestChatGPT('subscription');
     const settings = migrateLegacyProviderProfiles({
       ...structuredClone(DEFAULT_SETTINGS),
       providerProfiles: [
@@ -108,11 +111,13 @@ describe('RAG 설정 표시 헬퍼', () => {
     profile.relayApiKey = '';
     expect(resolveProviderProfileTone(profile)).toBe('ready');
     profile.baseUrl = '';
-    expect(resolveProviderProfileTone(profile)).toBe('needs-url');
+    expect(resolveProviderProfileTone(profile)).toBe('ready');
+    chatGPTOAuth.disconnect(profile.id);
+    expect(resolveProviderProfileTone(profile)).toBe('needs-key');
     expect(getProviderStrategyLabels().openai).toBe('OpenAI API');
     expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
     setLanguage('en');
-    expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth relay)');
+    expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth)');
   });
   it('GraphRAG와 ontology 추출은 기본 비활성이며 자동 실행도 끈 상태다', () => {
     expect(DEFAULT_SETTINGS.rag.graphRagEnabled).toBe(false);

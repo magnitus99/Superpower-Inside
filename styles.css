@@ -580,7 +580,8 @@
   background: var(--superpower-inside-settings-surface);
 }
 
-.superpower-inside-settings-workspace > .superpower-inside-settings-section.superpower-inside-settings-status-section {
+.superpower-inside-settings-workspace
+  > .superpower-inside-settings-section.superpower-inside-settings-status-section {
   border: 0;
   border-bottom: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
@@ -997,6 +998,25 @@ button.superpower-inside-settings-status-row:focus-visible {
   font-weight: 700;
   line-height: 1.35;
   padding-bottom: 4px;
+}
+
+.superpower-inside-chatgpt-login .is-hidden,
+.superpower-inside-chatgpt-login > .setting-item-description:empty {
+  display: none;
+}
+
+.superpower-inside-chatgpt-login .setting-item-control {
+  flex-wrap: wrap;
+}
+
+.superpower-inside-chatgpt-auth-link {
+  display: inline-block;
+  margin-top: var(--size-4-2);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-chatgpt-login > .setting-item-description:not(:empty) {
+  margin-top: var(--size-4-2);
 }
 
 .superpower-inside-provider-connection-group > .setting-item {

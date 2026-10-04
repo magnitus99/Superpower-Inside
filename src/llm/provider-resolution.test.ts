@@ -1,3 +1,5 @@
+import { connectTestChatGPT } from '../test/chatgpt';
+import { chatGPTOAuth } from './chatgpt-oauth';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({
@@ -19,7 +21,8 @@ import {
 import { buildStoredChatModelRef, createChatProviderForModel } from './provider-resolution';
 
 describe('채팅 provider 실행 연결', () => {
-  it('ChatGPT 중계의 canonical 모델은 API 키 없이 실행하고 임베딩 후보를 제외한다', () => {
+  it('ChatGPT canonical 모델은 OAuth 로그인 후 실행하고 임베딩 후보를 제외한다', () => {
+    connectTestChatGPT('remote');
     const settings = createCanonicalSettings();
     const profile = settings.providerProfiles[0];
     if (!profile) throw new Error('테스트 프로필이 없습니다');
@@ -35,6 +38,8 @@ describe('채팅 provider 실행 연결', () => {
         .toolCalling,
     ).toBe(false);
     profile.baseUrl = '';
+    expect(createChatProviderForModel(settings, 'profile:remote:working')).not.toBeNull();
+    chatGPTOAuth.disconnect(profile.id);
     expect(createChatProviderForModel(settings, 'profile:remote:working')).toBeNull();
   });
   it('Rust가 허용한 canonical 모델만 transport로 연결한다', () => {

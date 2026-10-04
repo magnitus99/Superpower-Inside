@@ -33,6 +33,7 @@ import {
 import type { LLMProvider } from './src/llm/providers';
 import { createChatProviderForModel } from './src/llm/provider-resolution';
 import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
+import { chatGPTOAuth, initializeChatGPTOAuth } from './src/llm/chatgpt-oauth';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -405,6 +406,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const startedAt = Date.now();
     this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
+    const chatGPTAuth = initializeChatGPTOAuth(this.app, this.getLogger(), this.manifest.version);
+    this.register(() => chatGPTAuth.dispose());
     await this.loadSettings();
     await this.runStartupPluginFileMaintenance();
     await this.configureAgentDiagnosticsService();
@@ -1247,6 +1250,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     const resetLanguage = resolveUiLanguage(undefined, getObsidianLanguage());
+    for (const profile of this.settings.providerProfiles) chatGPTOAuth.disconnect(profile.id);
     setLanguage(resetLanguage);
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.settings.language = resetLanguage;

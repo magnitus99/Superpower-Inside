@@ -1216,12 +1216,22 @@ export interface I18nKeys {
   providerStrategyLabel: string;
   providerChatGPTLabel: string;
   providerChatGPTSetup: string;
-  providerRelayKey: string;
-  providerRelayKeyDesc: string;
-  providerRelayKeyPlaceholder: string;
-  providerRelayToolCallingDesc: string;
-  providerRelayKeyShow: string;
-  providerRelayKeyHide: string;
+  chatGPTOAuthSignIn: string;
+  chatGPTOAuthDisconnect: string;
+  chatGPTOAuthDisconnected: string;
+  chatGPTOAuthConnected: string;
+  chatGPTOAuthPending: string;
+  chatGPTOAuthOpenBrowser: string;
+  chatGPTOAuthCancel: string;
+  chatGPTOAuthCancelled: string;
+  chatGPTOAuthRequired: string;
+  chatGPTOAuthUnavailable: string;
+  chatGPTOAuthTimeout: string;
+  chatGPTOAuthFailed: string;
+  chatGPTOAuthInvalidCallback: string;
+  chatGPTOAuthBrowserDone: string;
+  chatGPTOAuthHttpError: string;
+  chatGPTResponseInvalid: string;
   providerStrategyDesc: string;
   providerBaseUrl: string;
   providerGeneralModels: string;
@@ -2999,17 +3009,28 @@ const ko: I18nKeys = {
   providerCustomDockTitle: '사용자 지정 OpenAI 호환',
   providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 서버를 연결합니다.',
   providerStrategyLabel: '프로바이더 종류',
-  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth 중계)',
+  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth)',
   providerChatGPTSetup:
-    'CLIProxyAPI 등 중계 서버에서 ChatGPT로 로그인한 뒤 중계 URL을 입력하세요. 웹 로그인과 구독 인증은 중계 서버가 처리합니다. 모델을 가져오고 테스트한 뒤 채팅에서 선택하세요. 구독 사용 한도가 적용되며 임베딩은 별도 연결을 사용합니다.',
-  providerRelayKey: '중계 서버 연결 키 (선택)',
-  providerRelayKeyDesc:
-    '중계 서버에 설정한 클라이언트 키만 입력하세요. OpenAI API 키나 ChatGPT 로그인 토큰을 입력하지 마세요.',
-  providerRelayKeyPlaceholder: '중계 서버의 클라이언트 키',
-  providerRelayKeyShow: '중계 서버 연결 키 표시',
-  providerRelayKeyHide: '중계 서버 연결 키 숨기기',
-  providerRelayToolCallingDesc:
-    '중계 서버가 모델의 도구 호출을 지원하면 켜세요. 지원하지 않으면 끄고 호환 방식으로 조사합니다.',
+    '브라우저에서 ChatGPT로 로그인하세요. 외부 중계 서버나 API 키 없이 구독으로 GPT 모델을 사용합니다. 구독 사용 한도가 적용되며 임베딩은 별도 연결이 필요합니다.',
+  chatGPTOAuthSignIn: 'ChatGPT로 로그인',
+  chatGPTOAuthDisconnect: '연결 해제',
+  chatGPTOAuthDisconnected: '브라우저에서 로그인하면 자동으로 연결됩니다.',
+  chatGPTOAuthConnected:
+    'ChatGPT 계정이 연결되었습니다. 모델을 가져오거나 추가한 뒤 채팅에서 선택하세요.',
+  chatGPTOAuthPending: '브라우저에서 로그인을 완료하세요. 완료되면 자동으로 연결됩니다.',
+  chatGPTOAuthOpenBrowser: '로그인 주소 열기',
+  chatGPTOAuthCancel: '로그인 취소',
+  chatGPTOAuthCancelled: '로그인을 취소했습니다.',
+  chatGPTOAuthRequired: '먼저 ChatGPT 계정으로 로그인하세요.',
+  chatGPTOAuthUnavailable: '로그인 콜백을 열 수 없습니다. 플러그인을 다시 로드하고 재시도하세요.',
+  chatGPTOAuthTimeout: '로그인 대기 시간이 지났습니다. 다시 로그인하세요.',
+  chatGPTOAuthFailed: 'ChatGPT 로그인에 실패했습니다. 다시 로그인하세요.',
+  chatGPTOAuthInvalidCallback: '유효하지 않은 로그인 응답입니다. 원래 로그인 창에서 완료하세요.',
+  chatGPTOAuthBrowserDone: 'ChatGPT 연결이 완료되었습니다. Obsidian으로 돌아가세요.',
+  chatGPTOAuthHttpError:
+    'ChatGPT 요청 실패 (HTTP {status}). 로그인 상태와 구독 사용 한도를 확인하세요.',
+  chatGPTResponseInvalid:
+    'ChatGPT 응답을 확인할 수 없습니다. 모델 지원 여부를 확인하고 다시 시도하세요.',
   providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
   providerBaseUrl: '엔드포인트 URL',
   providerGeneralModels: '채팅 모델',
@@ -4874,17 +4895,29 @@ const en: I18nKeys = {
   providerCustomDockTitle: 'Custom OpenAI-compatible',
   providerCustomDockDesc: 'Connect local servers or internal OpenAI-compatible endpoints.',
   providerStrategyLabel: 'Provider type',
-  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth relay)',
+  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth)',
   providerChatGPTSetup:
-    'Sign in with ChatGPT in a relay such as CLIProxyAPI, then enter its URL. The relay handles web sign-in and subscription authentication. Fetch and test a model, then select it in chat. Subscription usage limits apply; use a separate connection for embeddings.',
-  providerRelayKey: 'Relay connection key (optional)',
-  providerRelayKeyDesc:
-    'Enter only the client key configured in your relay. Do not enter an OpenAI API key or ChatGPT login token.',
-  providerRelayKeyPlaceholder: 'Relay client key',
-  providerRelayKeyShow: 'Show relay connection key',
-  providerRelayKeyHide: 'Hide relay connection key',
-  providerRelayToolCallingDesc:
-    'Enable when the relay supports model tool calls. Otherwise, turn it off to use the compatible research flow.',
+    'Sign in with ChatGPT in your browser to use GPT models with your subscription. No relay server or API key is needed. Subscription usage limits apply; use a separate connection for embeddings.',
+  chatGPTOAuthSignIn: 'Sign in with ChatGPT',
+  chatGPTOAuthDisconnect: 'Disconnect',
+  chatGPTOAuthDisconnected: 'Sign in in your browser to connect automatically.',
+  chatGPTOAuthConnected: 'ChatGPT is connected. Fetch or add a model, then select it in chat.',
+  chatGPTOAuthPending:
+    'Complete sign-in in your browser. The connection will finish automatically.',
+  chatGPTOAuthOpenBrowser: 'Open sign-in link',
+  chatGPTOAuthCancel: 'Cancel sign-in',
+  chatGPTOAuthCancelled: 'Sign-in cancelled.',
+  chatGPTOAuthRequired: 'Sign in with ChatGPT first.',
+  chatGPTOAuthUnavailable: 'Could not start the sign-in callback. Reload the plugin and retry.',
+  chatGPTOAuthTimeout: 'Sign-in timed out. Please try again.',
+  chatGPTOAuthFailed: 'ChatGPT sign-in failed. Please try again.',
+  chatGPTOAuthInvalidCallback:
+    'Invalid sign-in response. Complete sign-in in the original browser window.',
+  chatGPTOAuthBrowserDone: 'ChatGPT is connected. You can return to Obsidian.',
+  chatGPTOAuthHttpError:
+    'ChatGPT request failed (HTTP {status}). Check your sign-in and subscription usage limits.',
+  chatGPTResponseInvalid:
+    'Could not validate the ChatGPT response. Check model availability and retry.',
   providerStrategyDesc: 'Choose how this profile connects to the model API.',
   providerBaseUrl: 'Endpoint URL',
   providerGeneralModels: 'Chat models',

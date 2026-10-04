@@ -107,23 +107,21 @@ Smart keyword search and read-only vault tools work immediately—no extra setup
 2. Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/superpower-inside/`.
 3. Reload community plugins and enable **Superpower Inside**.
 
-### Connect a ChatGPT subscription through a relay
+### Connect with ChatGPT browser sign-in
 
-Choose **OpenAI API** for a direct API-key connection, or **OpenAI ChatGPT (OAuth relay)** for a ChatGPT subscription connected through an external relay. The plugin does not provide built-in ChatGPT browser sign-in.
+Choose **OpenAI API** for an API key, or **OpenAI ChatGPT (OAuth)** to use your ChatGPT subscription through the Codex backend.
 
-1. Set up a relay that supports OpenAI Chat Completions, such as [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), and complete its ChatGPT/Codex login in your browser. The relay stores and renews the OAuth credentials.
-2. Bind a local relay to `127.0.0.1` and configure its client key. Keep its OAuth credential directory outside your vault. Use the relay's documentation for the configuration supported by your installed version.
-3. In **Settings → Superpower Inside → AI connections**, add a connection and select **OpenAI ChatGPT (OAuth relay)**. Enter the relay endpoint, for example `http://127.0.0.1:8317/v1`.
-4. Enter the relay's client key in **Relay connection key (optional)** if it requires one. This key is stored separately from your OpenAI API key; do not paste ChatGPT access or refresh tokens here. Fetch the relay's models, choose one available to your account, and run its generation test.
-5. Select that connection's model in chat. Tool calling is enabled for this connection; turn it off if your relay does not support native function calls. Keep a separate embedding connection, such as the built-in local search model.
+1. In **Settings → Superpower Inside → AI connections**, add a connection and select **OpenAI ChatGPT (OAuth)**.
+2. Click **Sign in with ChatGPT**. Complete sign-in in the browser that opens, or open the displayed sign-in link yourself. The plugin receives the local callback and connects automatically; no relay URL, API key, or pasted token is needed.
+3. Fetch or manually add a model available to your account, run its generation test, then select it in chat. Keep a separate connection for embeddings, such as the built-in local search model.
 
-The relay must translate Chat Completions requests and tool results into the subscription backend's protocol. A raw Codex Responses endpoint is not compatible. Subscription limits still apply. Responses are buffered by Obsidian, and stopping a run may not cancel inference already executing at the relay. External relays are third-party software; their supported accounts and models may change. The plugin's contract tests do not verify a live subscription login or inference.
+The plugin renews OAuth tokens automatically and restores the connection on this device after restart. **Disconnect** removes its saved credentials. This follows the [Codex browser sign-in flow](https://learn.chatgpt.com/docs/auth); account access, supported models, and subscription limits depend on OpenAI. Responses are buffered by Obsidian, and stopping a run may not cancel inference already running on the server. Contract tests cover local OAuth callbacks and provider behavior; they do not verify a live subscription login or model inference.
 
 <details>
 <summary><strong>Privacy, security, and honest limits</strong></summary>
 
 - Settings and API keys are stored unencrypted in this device's Obsidian local plugin storage and plugin `data.json`. They can be included in vault sync and local backups.
-- Relay client keys are also stored unencrypted. ChatGPT OAuth credentials remain managed by your external relay; the plugin does not import them.
+- ChatGPT OAuth credentials are stored unencrypted only in this device's Obsidian local storage, separately from vault settings and `data.json`. Protect local backups and disconnect accounts you no longer use.
 - Chat messages, selected notes, retrieved passages, and tool results may be sent to the AI model or connected tools you configure.
 - Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to your chosen AI model, and coverage or transfer limits are stated in the answer.
 - The built-in vault tools are read-only. They can search, verify retrieved passages against current files, follow note links, read bounded ranges, list files, and report statistics—but they cannot create, modify, move, or delete files.
@@ -241,23 +239,21 @@ GPT-6.1 Sol의 OpenAI 도구 호출은 Responses API가 필요합니다. 현재 
 2. `main.js`, `manifest.json`, `styles.css`를 `.obsidian/plugins/superpower-inside/`에 복사합니다.
 3. 커뮤니티 플러그인을 다시 불러온 뒤 **Superpower Inside**를 활성화합니다.
 
-### 중계 서버로 ChatGPT 구독 연결하기
+### 브라우저 로그인으로 ChatGPT 연결하기
 
-API 키로 직접 연결하려면 **OpenAI API**, 외부 중계 서버에 로그인한 ChatGPT 구독을 사용하려면 **OpenAI ChatGPT (OAuth 중계)**를 선택하세요. 플러그인 자체의 ChatGPT 브라우저 로그인은 제공하지 않습니다.
+API 키로 연결하려면 **OpenAI API**, ChatGPT 구독을 Codex 서버에서 사용하려면 **OpenAI ChatGPT (OAuth)**를 선택하세요.
 
-1. [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)처럼 OpenAI Chat Completions를 지원하는 중계 서버를 준비하고, 서버에서 제공하는 ChatGPT/Codex 브라우저 로그인을 완료하세요. OAuth 인증 정보 보관과 갱신은 중계 서버가 처리합니다.
-2. 로컬 중계 서버를 `127.0.0.1`에 바인딩하고 클라이언트 키를 설정하세요. OAuth 인증 정보 폴더는 볼트 밖에 두세요. 설치한 버전의 설정 방법은 중계 서버 문서를 확인하세요.
-3. **설정 → Superpower Inside → AI 연결**에서 연결을 추가하고 **OpenAI ChatGPT (OAuth 중계)**를 선택하세요. 중계 URL을 입력하세요. 예: `http://127.0.0.1:8317/v1`.
-4. 중계 서버가 키를 요구하면 **중계 서버 연결 키 (선택)**에 서버의 클라이언트 키를 입력하세요. OpenAI API 키와 별도로 저장됩니다. ChatGPT access/refresh token을 붙여 넣지 마세요. 모델을 가져온 뒤 계정에서 사용할 모델을 선택하고 생성 테스트를 실행하세요.
-5. 채팅에서 해당 연결의 모델을 선택하세요. 이 연결은 도구 호출이 기본으로 켜져 있습니다. 중계 서버가 네이티브 함수 호출을 지원하지 않으면 끄세요. 임베딩은 내장 로컬 검색 모델 등 별도 연결을 유지하세요.
+1. **설정 → Superpower Inside → AI 연결**에서 연결을 추가하고 **OpenAI ChatGPT (OAuth)**를 선택하세요.
+2. **ChatGPT로 로그인**을 누르고 열린 브라우저에서 로그인을 완료하세요. 표시된 로그인 주소를 직접 열어도 됩니다. 플러그인이 로컬 콜백을 받아 자동으로 연결하므로 중계 URL·API 키·토큰 붙여넣기가 필요하지 않습니다.
+3. 계정에서 사용할 모델을 가져오거나 직접 추가하고 생성 테스트를 실행한 뒤 채팅에서 선택하세요. 임베딩은 내장 로컬 검색 모델 등 별도 연결을 유지하세요.
 
-중계 서버가 Chat Completions 요청과 도구 결과를 구독 서버의 프로토콜로 변환해야 합니다. Codex의 원본 Responses endpoint를 직접 입력하는 방식은 호환되지 않습니다. 구독 사용 한도가 적용됩니다. Obsidian은 응답을 버퍼링하며, 실행을 중단해도 중계 서버에서 이미 진행 중인 추론은 취소되지 않을 수 있습니다. 외부 중계 서버는 제삼자 소프트웨어이며 지원 계정과 모델은 바뀔 수 있습니다. 플러그인의 계약 테스트는 실제 구독 로그인이나 추론 성공을 검증하지 않습니다.
+토큰은 자동 갱신되며 이 기기에서 재시작해도 연결이 복원됩니다. **연결 해제**는 저장된 인증 정보를 삭제합니다. [Codex 브라우저 로그인 흐름](https://learn.chatgpt.com/docs/auth)을 사용하며 계정 접근 권한·지원 모델·구독 사용 한도는 OpenAI에서 결정합니다. Obsidian은 응답을 버퍼링하며 실행 중단 시 서버에서 이미 진행 중인 추론은 취소되지 않을 수 있습니다. 계약 테스트는 로컬 OAuth 콜백과 provider 동작을 검증하며 실제 구독 로그인이나 모델 추론 성공을 검증하지 않습니다.
 
 <details>
 <summary><strong>개인정보, 보안, 솔직한 한계</strong></summary>
 
 - 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 플러그인 저장소와 플러그인 `data.json`에 보관됩니다. 볼트 동기화와 로컬 백업에 포함될 수 있습니다.
-- 중계 서버의 클라이언트 키도 암호화되지 않은 값으로 보관됩니다. ChatGPT OAuth 인증 정보는 외부 중계 서버가 관리하며 플러그인은 가져오지 않습니다.
+- ChatGPT OAuth 인증 정보는 볼트 설정과 `data.json`에서 분리해 이 기기의 Obsidian 로컬 저장소에만 암호화 없이 보관됩니다. 로컬 백업을 보호하고 더 이상 사용하지 않는 계정은 연결 해제하세요.
 - 채팅 메시지, 선택한 노트, 검색된 구간, 도구 결과는 사용자가 설정한 AI 모델이나 연결된 도구로 전송될 수 있습니다.
 - 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 AI 모델로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
 - 내장 볼트 도구는 읽기 전용입니다. 검색, 현재 파일에 대한 검증, 노트 연결 확인, 제한된 범위 읽기, 파일 목록, 통계 보고는 하지만 파일을 생성·수정·이동·삭제할 수 없습니다.

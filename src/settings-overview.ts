@@ -146,7 +146,9 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
         : profileTone === 'configured'
           ? t('providerStatusConfigured')
           : profileTone === 'needs-key'
-            ? t('overviewProviderKeyNeeded')
+            ? source.profile?.strategy === 'openAIChatGPT'
+              ? t('chatGPTOAuthRequired')
+              : t('overviewProviderKeyNeeded')
             : profileTone === 'needs-url'
               ? t('providerStatusNeedsBaseUrl')
               : profileTone === 'needs-models'

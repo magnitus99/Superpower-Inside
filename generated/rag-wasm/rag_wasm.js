@@ -1800,6 +1800,26 @@ export function plan_chat_save_metadata_json(messages_json, existing_created, op
 }
 
 /**
+ * 호스트 I/O에 필요한 결정적 결과를 생성한다. 잘못된 입력은 빈 결과로 닫는다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_chatgpt_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_chatgpt_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * claim record snapshot에서 evidence score JSON plan을 만든다.
  * @param {string} claims_json
  * @returns {string}
