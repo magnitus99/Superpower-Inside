@@ -153,6 +153,7 @@ fn request(value: &Value) -> Option<Value> {
 /// 완료된 이벤트만 텍스트·추론 요약·도구 호출 결과로 인정한다.
 fn response(body: &str) -> Option<Value> {
     let mut terminal = None;
+    let mut completed_items = Vec::new();
     for block in body.replace("\r\n", "\n").split("\n\n") {
         let data = block
             .lines()
@@ -165,14 +166,25 @@ fn response(body: &str) -> Option<Value> {
         }
         let event: Value = serde_json::from_str(&data).ok()?;
         match text(&event, "type")? {
+            "response.output_item.done" => {
+                completed_items.push((
+                    event.get("output_index")?.as_u64()?,
+                    event.get("item")?.clone(),
+                ));
+            }
             "response.completed" => terminal = Some(event.get("response")?.clone()),
             "response.failed" | "response.incomplete" | "error" => return None,
             _ => {}
         }
     }
-    let terminal = terminal?;
+    let mut terminal = terminal?;
     if text(&terminal, "status")? != "completed" {
         return None;
+    }
+    if terminal.get("output")?.as_array()?.is_empty() {
+        completed_items.sort_by_key(|(index, _)| *index);
+        *terminal.get_mut("output")? =
+            Value::Array(completed_items.into_iter().map(|(_, item)| item).collect());
     }
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -208,6 +220,36 @@ fn response(body: &str) -> Option<Value> {
 mod tests {
     use super::plan;
     use serde_json::json;
+
+    #[test]
+    fn completed_response_recovers_finalized_items_when_terminal_output_is_empty() {
+        let events = [
+            json!({"type":"response.output_item.done","output_index":2,"item":{
+                "type":"message","content":[{"type":"output_text","text":" after"}]
+            }}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{
+                "type":"function_call","call_id":"call-1","name":"search","arguments":"{}"
+            }}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{
+                "type":"message","content":[{"type":"output_text","text":"answer"}]
+            }}),
+        ];
+        let mut incomplete = String::new();
+        for event in events {
+            incomplete.push_str("data: ");
+            incomplete.push_str(&event.to_string());
+            incomplete.push_str("\n\n");
+        }
+        let terminal = json!({"type":"response.completed","response":{"status":"completed","model":"chosen","output":[]}});
+        let body = format!("{incomplete}data: {terminal}\n\n");
+        let result = plan(&json!({"operation":"response","text":body})).unwrap_or_default();
+        assert_eq!(result.get("content"), Some(&json!("answer after")));
+        assert_eq!(result.pointer("/toolCalls/0/id"), Some(&json!("call-1")));
+        assert_eq!(result.get("model"), Some(&json!("chosen")));
+        assert!(plan(&json!({"operation":"response","text":incomplete})).is_none());
+        let failed = format!("{incomplete}data: {{\"type\":\"response.failed\"}}\n\n");
+        assert!(plan(&json!({"operation":"response","text":failed})).is_none());
+    }
 
     #[test]
     fn responses_preserve_tool_call_ids_and_system_instructions() {

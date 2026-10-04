@@ -40,6 +40,23 @@ const ternlightRuntime = {
 } satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
+  it('최종 output이 비어 있어도 완료된 항목의 답변으로 OAuth 모델 검사를 통과한다', async () => {
+    connectTestChatGPT();
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        `data: ${JSON.stringify({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { type: 'message', content: [{ type: 'output_text', text: 'pong' }] },
+        })}\n\n` + completedChatGPTResponse([]),
+      json: {},
+      headers: {},
+    });
+    expect(
+      await testProviderGenerationForStrategy('openAIChatGPT', baseConfig, 'selected-model'),
+    ).toMatchObject({ valid: true, models: ['selected-model'] });
+  });
   it('OAuth로 모델 목록과 실제 생성 응답을 검증하고 임베딩을 제외한다', async () => {
     connectTestChatGPT();
     requestUrlMock.mockResolvedValueOnce({
