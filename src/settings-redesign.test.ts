@@ -11,6 +11,25 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('공통 섹션 제목은 Obsidian heading을 쓰고 저장 상태는 화면 제목 옆에 둔다', () => {
+    const start = settingsSource.indexOf('private createSettingsSection(');
+    const end = settingsSource.indexOf('private createSettingsStatusRow(', start);
+    const section = settingsSource.slice(start, end);
+    expect(section).toContain('new Setting(header)');
+    expect(section).toContain('.setHeading()');
+    expect(section).toContain("setAttribute('aria-level', '3')");
+    expect(section).not.toContain('copy.createDiv(');
+    expect(settingsSource).toContain('this.saveStateEl = heading.controlEl.createDiv(');
+  });
+
+  it('수평 탭은 Obsidian 기본 버튼의 그림자와 둥근 테두리를 제거한다', () => {
+    expect(
+      /\.superpower-inside-settings-root \.superpower-inside-settings-tab\s*\{[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none/s.test(
+        styles,
+      ),
+    ).toBe(true);
+  });
+
   it('모델 검사 시각과 오류는 전체 행에 배치하고 좁은 폭의 행동은 다음 줄로 옮긴다', () => {
     expect(styles).toMatch(
       /\.superpower-inside-provider-profile-model-section \.superpower-inside-settings-model-item\s*\{[^}]*flex-shrink:\s*0/s,
@@ -39,10 +58,10 @@ describe('설정 화면 리디자인 구조', () => {
     expect(login).toContain('await login.completed');
     expect(login).toContain("'aria-live': 'polite'");
   });
-  it('모든 설정 탭과 채팅은 같은 A안 간격·모서리 토큰을 사용한다', () => {
-    expect(styles).toMatch(/--superpower-inside-section-gap:\s*20px/);
-    expect(styles).toMatch(/--superpower-inside-section-padding:\s*20px/);
-    expect(styles).toMatch(/--superpower-inside-row-padding:\s*15px/);
+  it('설정과 검색은 조밀한 행과 명확한 섹션 간격을 같은 토큰으로 사용한다', () => {
+    expect(styles).toMatch(/--superpower-inside-section-gap:\s*24px/);
+    expect(styles).toMatch(/--superpower-inside-section-padding:\s*16px/);
+    expect(styles).toMatch(/--superpower-inside-row-padding:\s*8px/);
     expect(styles).toMatch(/--superpower-inside-surface-radius:\s*8px/);
     for (const prefix of ['settings', 'rag']) {
       expect(styles).toContain(
@@ -52,6 +71,47 @@ describe('설정 화면 리디자인 구조', () => {
         `--superpower-inside-${prefix}-radius: var(--superpower-inside-surface-radius)`,
       );
     }
+  });
+
+  it('섹션 헤더와 본문은 같은 안쪽 여백으로 제목과 마지막 행을 테두리에서 띄운다', () => {
+    expect(
+      /\.superpower-inside-settings-section-header\s*\{[^}]*border-bottom:\s*1px[^}]*background:\s*var\(--background-primary-alt\)/s.test(
+        styles,
+      ),
+    ).toBe(true);
+    for (const prefix of ['settings', 'rag']) {
+      expect(
+        new RegExp(
+          `\\.superpower-inside-${prefix}-section-body\\s*\\{[^}]*padding:\\s*var\\(--superpower-inside-${prefix}-section-padding\\);`,
+        ).test(styles),
+      ).toBe(true);
+    }
+    expect(
+      /\.superpower-inside-rag-group-title\s*\{[^}]*margin-bottom:\s*var\(--superpower-inside-rag-row-padding\)/.test(
+        styles,
+      ),
+    ).toBe(true);
+  });
+
+  it('연결 행은 설명이 남은 폭을 채워 이름 길이와 무관하게 상태와 화살표를 정렬한다', () => {
+    expect(
+      /\.superpower-inside-settings-disclosure-copy\s*\{[^}]*flex:\s*1;[^}]*min-width:\s*0;/.test(
+        styles,
+      ),
+    ).toBe(true);
+    expect(
+      /\.superpower-inside-provider-disclosure-status\s*\{[^}]*flex:\s*0 0 auto;/.test(styles),
+    ).toBe(true);
+  });
+
+  it('설정 루트가 폭을 제공해 탭과 저장 상태에도 좁은 폭 규칙이 적용된다', () => {
+    expect(
+      /\.superpower-inside-settings-root\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*superpower-inside-settings/s.test(
+        styles,
+      ),
+    ).toBe(true);
+    expect(styles).toContain('flex: 0 1 260px;');
+    expect(styles).toContain('flex: 0 1 auto;');
   });
 
   it('다섯 탭의 현재 상태는 공통 요약 영역으로 표시한다', () => {

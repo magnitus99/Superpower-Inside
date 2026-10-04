@@ -1666,8 +1666,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     containerEl.addClass('superpower-inside-settings-root');
     // 헤더
-    new Setting(containerEl).setName(t('settingsTitle')).setHeading();
-    this.saveStateEl = containerEl.createDiv({
+    const heading = new Setting(containerEl).setName(t('settingsTitle')).setHeading();
+    heading.settingEl.addClass('superpower-inside-settings-heading');
+    this.saveStateEl = heading.controlEl.createDiv({
       cls: 'superpower-inside-settings-save-state',
       attr: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
     });
@@ -1888,28 +1889,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         .filter(Boolean)
         .join(' '),
     });
-    const copy = header.createDiv({
-      cls: ['superpower-inside-settings-section-copy', variantClass ? `${variantClass}-copy` : '']
-        .filter(Boolean)
-        .join(' '),
-    });
-    copy.createDiv({
-      cls: ['superpower-inside-settings-section-title', variantClass ? `${variantClass}-title` : '']
-        .filter(Boolean)
-        .join(' '),
-      text: titleText,
-      attr: { role: 'heading', 'aria-level': '3' },
-    });
-    if (options.description) {
-      copy.createDiv({
-        cls: [
-          'superpower-inside-settings-section-description',
-          variantClass ? `${variantClass}-description` : '',
-        ]
-          .filter(Boolean)
-          .join(' '),
-        text: options.description,
-      });
+    const heading = new Setting(header).setName(titleText).setHeading();
+    heading.infoEl.addClass('superpower-inside-settings-section-copy');
+    heading.nameEl.addClass('superpower-inside-settings-section-title');
+    heading.nameEl.setAttribute('role', 'heading');
+    heading.nameEl.setAttribute('aria-level', '3');
+    heading.descEl.addClass('superpower-inside-settings-section-description');
+    if (options.description) heading.setDesc(options.description);
+    if (variantClass) {
+      heading.infoEl.addClass(`${variantClass}-copy`);
+      heading.nameEl.addClass(`${variantClass}-title`);
+      heading.descEl.addClass(`${variantClass}-description`);
     }
     const body = section.createDiv({
       cls: ['superpower-inside-settings-section-body', variantClass ? `${variantClass}-body` : '']

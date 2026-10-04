@@ -1,12 +1,12 @@
 # Superpower Inside 디자인 언어
 
-선택된 A안의 차분한 행 구성과 답변 중심 채팅을 Obsidian의 설정 화면과 사이드 패널에 적용합니다. Linear의 정보 위계와 간격을 참고하되 색상·글꼴·아이콘·입력 요소는 현재 Obsidian 테마를 따릅니다.
+차분한 행 구성과 답변 중심 채팅을 Obsidian의 설정 화면과 사이드 패널에 적용합니다. 설정은 Obsidian 기본 설정의 제목·구분선·입력 정렬로 위계를 잡고 색상·글꼴·아이콘·입력 요소는 현재 테마를 따릅니다.
 
 ## 정보 위계
 
 설정은 `현재 상태 → 가장 작은 다음 행동 → 핵심 설정 → 고급 진단·복구` 순서입니다. 안전한 기본값과 자동 감지를 우선하고, 조치가 필요한 경우 이유 한 문장과 주 행동 하나를 제공합니다. 정상 상태는 작은 텍스트로 표시하며 상태·수치를 대시보드처럼 강조하지 않습니다.
 
-일반·AI 연결·검색·채팅·도구 탭은 같은 수평 탭과 섹션 구조를 사용합니다. 맨 위 현재 상태는 평평한 요약 영역으로 두고, 그 아래 최상위 섹션은 얇은 테두리와 8px 모서리를 가진 면으로 만듭니다. 내부 설정·모델·출처·작업 기록은 평평한 행과 구분선으로 읽습니다. 중첩 카드와 장식적인 그림자를 추가하지 않습니다.
+일반·AI 연결·노트 검색·채팅·외부 도구 탭은 같은 수평 탭과 섹션 구조를 사용합니다. 저장 상태는 화면 제목 옆에 작게 표시하고, 맨 위 현재 상태는 평평한 요약 영역으로 둡니다. 그 아래 최상위 섹션은 얇은 테두리와 8px 모서리를 가진 면으로 만들며, Obsidian 기본 설정 제목에 옅은 배경과 아래 구분선을 적용합니다. 내부 설정·모델·출처·작업 기록은 평평한 행과 구분선으로 읽고, 본문은 네 방향의 안쪽 여백으로 테두리에서 띄웁니다. 연결 행의 이름·설명은 남은 폭을 채워 상태와 화살표를 같은 오른쪽 열에 정렬합니다. 입력칸은 공통 열에 정렬하고 좁은 폭에서는 설명 아래로 옮깁니다. 중첩 카드와 장식적인 그림자를 추가하지 않습니다.
 
 채팅은 질문 뒤에 답변이 바로 이어지는 노트 같은 화면입니다. 사용자 질문만 옅은 면으로 구분하고 답변에는 카드 배경이나 그림자를 두지 않습니다. 답변·작업·출처는 한 응답의 수평 탭이며 답변을 기본으로 읽습니다. 진행 중 작업 표시와 출처 검증 상태는 기존 동작을 따릅니다.
 
@@ -18,9 +18,9 @@
 
 | 역할 | 값 또는 Obsidian 변수 |
 | --- | --- |
-| 섹션 사이 | `--superpower-inside-section-gap`: 20px |
-| 섹션 안쪽 | `--superpower-inside-section-padding`: 20px, 좁은 폭 14px |
-| 행 위·아래 | `--superpower-inside-row-padding`: 15px |
+| 섹션 사이 | `--superpower-inside-section-gap`: 24px |
+| 섹션 제목·본문 안쪽 | `--superpower-inside-section-padding`: 16px |
+| 행 위·아래와 그룹 제목 아래 | `--superpower-inside-row-padding`: 8px |
 | 면 모서리 | `--superpower-inside-surface-radius`: 8px |
 | 기본 면·질문/입력 면 | `--background-primary`, `--background-primary-alt` |
 | 구분선 | `--background-modifier-border` |
@@ -43,4 +43,4 @@
 
 모델 프롬프트는 화면 배치 지침을 소유하지 않습니다. `src/i18n.ts`의 기본 프롬프트는 요청한 형식과 간결한 결론 우선 답변을 유지하고, `src/chat/prompt-library.ts`의 사용자·세션 프롬프트는 사용자 의도를 보존합니다. 디자인 변경으로 모델·추론 강도·검색·승인·저장 동작을 바꾸지 않습니다.
 
-참고 패턴: [Linear Preferences](https://linear.app/docs/account-preferences)의 행 구성, [VS Code Chat](https://code.visualstudio.com/docs/agents/run/chat-view)의 패널 행동 분리. 참고 서비스의 색상이나 앱 전체 레이아웃은 가져오지 않습니다.
+참고 패턴: [Obsidian 설정 화면](https://docs.obsidian.md/Plugins/User+interface/Settings)의 기본 설정 요소, [Style Settings](https://github.com/community-archive/obsidian-style-settings)의 제목·구분선·접힘 구성, [VS Code Chat](https://code.visualstudio.com/docs/agents/run/chat-view)의 패널 행동 분리. 참고 서비스의 색상이나 앱 전체 레이아웃은 가져오지 않습니다.
