@@ -36,6 +36,37 @@ describe('BM25 tokenizer', () => {
 });
 
 describe('IndexedDbBM25Index', () => {
+  it('현행 WASM 런타임에서 문서 교체와 원문별 삭제 후 검색·저장을 보존한다', () => {
+    const runtime = RustBm25RuntimeIndex.empty(2);
+    if (!runtime) throw new Error('WASM 초기화 실패');
+    try {
+      runtime.addDocument('api.md::0', 'OpenRouter API access key', 'api.md', 2);
+      runtime.addDocument('other.md::0', 'Ollama local model', 'other.md', 2);
+      expect(runtime.search('open router')?.map((hit) => hit.docId)).toEqual(['api.md::0']);
+      runtime.addDocument('api.md::0', 'Ollama remote endpoint', 'api.md', 2);
+      expect(runtime.search('open router')).toEqual([]);
+      expect(runtime.search('ollama')?.map((hit) => hit.docId)).toEqual([
+        'api.md::0',
+        'other.md::0',
+      ]);
+      runtime.removeSource('api.md', 2);
+      expect(runtime.search('endpoint')).toEqual([]);
+      expect(runtime.sourcePathForDoc('other.md::0')).toBe('other.md');
+      const restored = RustBm25RuntimeIndex.fromJson(runtime.toJson(), 2);
+      if (!restored) throw new Error('WASM 복원 실패');
+      try {
+        expect(restored.search('ollama')?.map((hit) => hit.docId)).toEqual(['other.md::0']);
+        restored.removeDocument('other.md::0', 2);
+        expect(restored.totalDocs()).toBe(0);
+        expect(restored.search('ollama')).toEqual([]);
+      } finally {
+        restored.dispose();
+      }
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it('반복된 질의 토큰으로 같은 문서 점수를 중복 가산하지 않는다', async () => {
     const bm25 = await createBm25([
       ['doc.md::0', 'specialterm 직접 근거'],

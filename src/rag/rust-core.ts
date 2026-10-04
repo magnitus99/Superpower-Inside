@@ -7,18 +7,12 @@ import {
   is_local_settings_provider,
   is_valid_settings_folder,
   parse_settings_number,
-  aggregate_graph_edges_flat,
-  analyze_retrieval_sources,
-  assign_vector_clusters,
   Bm25RuntimeIndex,
-  bm25_score_pairs,
-  build_initial_centroids,
   chunk_markdown_json,
   collect_candidate_reasons as collect_candidate_reasons_json,
   chunk_plain_text_json,
   source_revision_matches,
   rank_graph_community_pairs,
-  core_version,
   count_keyword_matches,
   create_entity_id,
   create_context_preview,
@@ -26,18 +20,14 @@ import {
   create_graph_id,
   create_content_hash,
   create_indexed_db_record_key,
-  create_entries_fingerprint as create_entries_fingerprint_json,
   detect_communities_from_edges_json,
   detect_leiden_hierarchy_from_edges_json,
-  detect_communities_flat,
-  extract_json_object_text,
   extract_structured_reasoning,
   extract_vault_links_json,
   graph_extraction_contract_version,
   plan_graph_extraction_failure_json,
   plan_graph_extraction_child_units_json,
   find_mentioned_entity_matches,
-  hybrid_score_or_nan,
   initSync,
   IvfRuntimeIndex,
   is_graph_extraction_cache_hit_json,
@@ -54,9 +44,7 @@ import {
   is_mcp_tool_result_empty_json,
   classify_mcp_tool_error_json,
   normalize_exclude_extension_json,
-  is_relevant_result,
   normalize_entity_name,
-  normalize_extracted_graph_payload_json,
   normalize_reasoning_chunk_json,
   normalize_graph_confidence_or_default,
   normalize_graph_source_spans_flat,
@@ -82,10 +70,6 @@ import {
   plan_native_vault_tool_request_json,
   plan_bm25_candidate_resolution_json,
   plan_bm25_hit_lookup_json,
-  plan_bm25_index_add_document_json,
-  plan_bm25_index_remove_document_json,
-  plan_bm25_index_remove_source_json,
-  plan_bm25_search_json,
   plan_bm25_source_lookups_json,
   plan_chat_meta_json,
   plan_chat_messages_json,
@@ -129,11 +113,7 @@ import {
   plan_graph_rag_status_json,
   should_rebuild_graph_runtime_for_graph_status,
   plan_graph_rag_unsupported_prune_paths_json,
-  plan_graph_query_response_json,
   plan_graph_relation_endpoint_indices_json,
-  plan_graph_schema_community_indices_json,
-  plan_graph_schema_relation_indices_json,
-  plan_merged_retrieval_candidates,
   plan_merged_retrieval_candidates_by_entry_id,
   plan_query_result_score_json,
   plan_rag_file_content_probe_indices_json,
@@ -190,14 +170,8 @@ import {
   prune_graph_indexes_json,
   rank_top_k_pairs,
   recall_at_k,
-  recompute_centroids,
-  rrf_score_or_nan,
-  sanitize_graph_id_part,
   score_entity_match_or_nan,
-  select_diverse_indices,
   select_relevant_result_indices,
-  score_local_evidence_pairs,
-  token_frequencies_json,
   tokenize_json,
   VectorRuntimeIndex,
 } from '../../generated/rag-wasm/rag_wasm.js';
@@ -210,21 +184,6 @@ const RUST_RECALL_UNKNOWN_INDEX = 0xffffffff;
 export interface RustVectorScore {
   index: number;
   score: number;
-}
-
-export interface RustBm25Posting {
-  docIndex: number;
-  termFrequency: number;
-  docLength: number;
-}
-
-export interface RustBm25Term {
-  postings: readonly RustBm25Posting[];
-}
-
-export interface RustBm25TermFrequencies {
-  totalTokens: number;
-  frequencies: Record<string, number>;
 }
 
 export type RustNativeVaultToolRequest =
@@ -313,23 +272,6 @@ export interface RustNativeVaultSearchRrfPlan {
   totalEntries: number;
 }
 
-export interface RustHybridScoreInput {
-  combinedBase: number;
-  rrfScore: number;
-  sourcePrior: number;
-  sourceEvidenceScore: number;
-  bestEvidenceRank?: number;
-  retrievalSources: readonly string[];
-}
-
-export interface RustRetrievalSourceAnalysis {
-  sourcePrior: number;
-  sourceEvidenceScore: number;
-  bestEvidenceRank?: number;
-  hasGraphOrStructuralEvidence: boolean;
-  hasStrongGraphOrStructuralEvidence: boolean;
-}
-
 export interface RustQueryResultScoreInput {
   cosineScore: number;
   bm25Score: number;
@@ -383,18 +325,6 @@ export interface RustRerankResponsePlan {
   rerankStatus: RustRerankStatus;
 }
 
-export interface RustRelevantResultInput {
-  combinedScore: number;
-  vectorScore: number;
-  bm25Score: number;
-  keywordMatches: number;
-  threshold: number;
-  hasBm25: boolean;
-  retrievalSources: readonly string[];
-  sourceEvidenceScore: number;
-  bestEvidenceRank?: number;
-}
-
 export interface RustRelevantResultCandidate {
   score: number;
   vectorScore: number;
@@ -403,13 +333,6 @@ export interface RustRelevantResultCandidate {
   retrievalSources: readonly string[];
   sourceEvidenceScore: number;
   bestEvidenceRank?: number;
-}
-
-export interface RustRetrievalCandidateMergeInput {
-  entryIndex: number;
-  source: string;
-  sourceScore?: number;
-  rank?: number;
 }
 
 export interface RustRetrievalCandidateMergeByEntryIdInput {
@@ -1745,26 +1668,6 @@ export interface RustCommunityHierarchyResult {
   levels: RustCommunityHierarchyLevel[];
 }
 
-export interface RustLocalEvidenceInput {
-  entityCount: number;
-  matchEntityIndices: readonly number[];
-  matchScores: readonly number[];
-  matchEvidenceOffsets: readonly number[];
-  matchEvidenceIndices: readonly number[];
-  relationSourceIndices: readonly number[];
-  relationTargetIndices: readonly number[];
-  relationConfidences: readonly number[];
-  relationEvidenceOffsets: readonly number[];
-  relationEvidenceIndices: readonly number[];
-  claimEntityOffsets: readonly number[];
-  claimEntityIndices: readonly number[];
-  claimConfidences: readonly number[];
-  claimEvidenceOffsets: readonly number[];
-  claimEvidenceIndices: readonly number[];
-  evidenceCount: number;
-  traversalDepth: number;
-}
-
 export interface RustEntityMatchInput {
   candidateNames: readonly string[];
   existingNames: readonly string[];
@@ -1884,11 +1787,6 @@ export interface RustMcpToolErrorInfo {
   pattern?: string;
   field?: string;
   message?: string;
-}
-
-export interface RustExtractedGraphPayloadResult {
-  payload: RustExtractedGraphPayload;
-  rawFactCount: number;
 }
 
 export type RustExtractedGraphPayloadParseFailureReason = 'invalid-json' | 'schema-shape-mismatch';
@@ -2011,17 +1909,6 @@ export const RUST_GRAPH_PRUNE_UNKNOWN_INDEX = 0xffffffff;
 let initialized = false;
 let unavailable = false;
 
-export function isRustCoreAvailable(): boolean {
-  return ensureRustCore();
-}
-
-export function getRustCoreVersion(): string | null {
-  if (!ensureRustCore()) {
-    return null;
-  }
-  return core_version();
-}
-
 export type RustMcpConnectionState =
   | 'idle'
   | 'connecting'
@@ -2122,17 +2009,6 @@ export function tokenizeRust(text: string): string[] | null {
   }
 }
 
-export function bm25TermFrequenciesRust(text: string): RustBm25TermFrequencies | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(token_frequencies_json(text));
-    if (!isBm25TermFrequencies(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function countKeywordMatchesRust(
   queryTokens: readonly string[],
   text: string,
@@ -2145,36 +2021,6 @@ export function countKeywordMatchesRust(
   } catch {
     return null;
   }
-}
-
-export function createEntriesFingerprintRust(
-  entries: {
-    id: string;
-    vector: readonly number[];
-    metadata: {
-      indexedAt?: number;
-      contentHash?: string;
-    };
-  }[],
-): string | null {
-  if (!ensureRustCore()) return null;
-  if (
-    !entries.every(
-      (entry) =>
-        isStringValue(entry.id) &&
-        Number.isSafeInteger(entry.metadata.indexedAt ?? 0) &&
-        (entry.metadata.indexedAt ?? 0) >= 0,
-    )
-  ) {
-    return null;
-  }
-
-  return create_entries_fingerprint_json(
-    JSON.stringify(entries.map((entry) => entry.id)),
-    JSON.stringify(entries.map((entry) => entry.metadata.contentHash ?? '')),
-    JSON.stringify(entries.map((entry) => entry.metadata.indexedAt ?? 0)),
-    JSON.stringify(entries.map((entry) => entry.vector.length)),
-  );
 }
 
 export function collectCandidateReasonsRust(
@@ -2387,197 +2233,6 @@ export function calculateRecallAtKRust(
   return Number.isFinite(score) ? score : null;
 }
 
-export function assignVectorClustersRust(
-  vectors: readonly (readonly number[])[],
-  centroids: readonly (readonly number[])[],
-): number[] | null {
-  if (vectors.length === 0) return [];
-  const matrix = encodeCompatibleVectorMatrix(vectors, centroids);
-  if (matrix === null) return null;
-  if (!ensureRustCore()) return null;
-
-  const assignments = assign_vector_clusters(
-    matrix.flatVectors,
-    matrix.flatCentroids,
-    matrix.dimension,
-  );
-  const decoded = decodeIndexArray(assignments, centroids.length);
-  if (decoded === null || decoded.length !== vectors.length) return null;
-  return decoded;
-}
-
-export function recomputeCentroidsRust(
-  vectors: readonly (readonly number[])[],
-  assignments: readonly number[],
-  previousCentroids: readonly (readonly number[])[],
-): number[][] | null {
-  if (previousCentroids.length === 0) return [];
-  if (vectors.length !== assignments.length) return null;
-  const matrix = encodeCompatibleVectorMatrix(vectors, previousCentroids);
-  if (matrix === null) return null;
-  if (!isValidUint32Array(assignments, previousCentroids.length)) return null;
-  if (!ensureRustCore()) return null;
-
-  const values = recompute_centroids(
-    matrix.flatVectors,
-    new Uint32Array(assignments),
-    matrix.flatCentroids,
-    matrix.dimension,
-  );
-  return decodeVectorMatrix(values, previousCentroids.length, matrix.dimension);
-}
-
-export function buildInitialCentroidsRust(
-  vectors: readonly (readonly number[])[],
-  requestedClusterCount: number,
-): number[][] | null {
-  if (vectors.length === 0) return [];
-  const dimension = vectors[0]?.length ?? 0;
-  if (dimension <= 0) return null;
-  const flatVectors = encodeVectorMatrix(vectors, dimension);
-  if (flatVectors === null) return null;
-  if (!ensureRustCore()) return null;
-
-  const values = build_initial_centroids(
-    flatVectors,
-    dimension,
-    normalizeNonNegativeInteger(requestedClusterCount),
-  );
-  if (values.length % dimension !== 0) return null;
-  return decodeVectorMatrix(values, values.length / dimension, dimension);
-}
-
-export function scoreBm25Rust(
-  terms: readonly RustBm25Term[],
-  totalDocs: number,
-  avgDocLength: number,
-): RustVectorScore[] | null {
-  if (terms.length === 0 || totalDocs <= 0) return [];
-  if (!Number.isFinite(avgDocLength) || avgDocLength <= 0) return [];
-  if (!ensureRustCore()) return null;
-
-  const termOffsets: number[] = [0];
-  const docIndices: number[] = [];
-  const termFrequencies: number[] = [];
-  const docLengths: number[] = [];
-
-  for (const term of terms) {
-    for (const posting of term.postings) {
-      if (!isValidBm25Posting(posting)) continue;
-      docIndices.push(posting.docIndex);
-      termFrequencies.push(posting.termFrequency);
-      docLengths[posting.docIndex] = posting.docLength;
-    }
-    termOffsets.push(docIndices.length);
-  }
-
-  if (docIndices.length === 0) return [];
-
-  for (let index = 0; index < docLengths.length; index++) {
-    if (!Number.isFinite(docLengths[index]) || docLengths[index] <= 0) {
-      docLengths[index] = 1;
-    }
-  }
-
-  const pairs = bm25_score_pairs(
-    new Uint32Array(termOffsets),
-    new Uint32Array(docIndices),
-    new Float64Array(termFrequencies),
-    new Float64Array(docLengths),
-    normalizeNonNegativeInteger(totalDocs),
-    avgDocLength,
-  );
-  return decodeIndexScorePairs(pairs);
-}
-
-export function calculateRrfScoreRust(
-  sourceRanks: Partial<Record<string, number>>,
-  bm25Weight: number,
-): number | null {
-  const sourceCodes: number[] = [];
-  const ranks: number[] = [];
-  for (const [source, rank] of Object.entries(sourceRanks)) {
-    if (typeof rank !== 'number' || rank < 1) continue;
-    sourceCodes.push(sourceToCode(source));
-    ranks.push(rank);
-  }
-  if (sourceCodes.length === 0) return 0;
-  if (!ensureRustCore()) return null;
-
-  const score = rrf_score_or_nan(new Uint8Array(sourceCodes), new Float64Array(ranks), bm25Weight);
-  return Number.isFinite(score) ? score : null;
-}
-
-export function calculateHybridScoreRust(input: RustHybridScoreInput): number | null {
-  if (!ensureRustCore()) return null;
-  const sourceCodes = input.retrievalSources.map(sourceToCode);
-  const score = hybrid_score_or_nan(
-    input.combinedBase,
-    input.rrfScore,
-    input.sourcePrior,
-    input.sourceEvidenceScore,
-    input.bestEvidenceRank ?? Number.NaN,
-    new Uint8Array(sourceCodes),
-  );
-  return Number.isFinite(score) ? score : null;
-}
-
-export function analyzeRetrievalSourcesRust(
-  sourceScores: Partial<Record<string, number>>,
-  sourceRanks: Partial<Record<string, number>>,
-): RustRetrievalSourceAnalysis | null {
-  const sourceNames = [...new Set([...Object.keys(sourceScores), ...Object.keys(sourceRanks)])];
-  if (sourceNames.length === 0) {
-    return {
-      sourcePrior: 0,
-      sourceEvidenceScore: 0,
-      hasGraphOrStructuralEvidence: false,
-      hasStrongGraphOrStructuralEvidence: false,
-    };
-  }
-  if (!ensureRustCore()) return null;
-
-  const sourceCodes = new Uint8Array(sourceNames.map(sourceToCode));
-  const scores = new Float64Array(
-    sourceNames.map((source) => {
-      const score = sourceScores[source];
-      return typeof score === 'number' ? score : Number.NaN;
-    }),
-  );
-  const ranks = new Float64Array(
-    sourceNames.map((source) => {
-      const rank = sourceRanks[source];
-      return typeof rank === 'number' ? rank : Number.NaN;
-    }),
-  );
-
-  const values = analyze_retrieval_sources(sourceCodes, scores, ranks);
-  if (values.length !== 5) {
-    return null;
-  }
-  const sourcePrior = values[0] ?? 0;
-  const sourceEvidenceScore = values[1] ?? 0;
-  const bestEvidenceRank = values[2];
-  const graphFlag = values[3] ?? 0;
-  const strongFlag = values[4] ?? 0;
-  if (
-    !Number.isFinite(sourcePrior) ||
-    !Number.isFinite(sourceEvidenceScore) ||
-    (!Number.isFinite(bestEvidenceRank) && !Number.isNaN(bestEvidenceRank)) ||
-    !Number.isFinite(graphFlag) ||
-    !Number.isFinite(strongFlag)
-  ) {
-    return null;
-  }
-  return {
-    sourcePrior,
-    sourceEvidenceScore,
-    bestEvidenceRank: Number.isFinite(bestEvidenceRank) ? bestEvidenceRank : undefined,
-    hasGraphOrStructuralEvidence: graphFlag === 1,
-    hasStrongGraphOrStructuralEvidence: strongFlag === 1,
-  };
-}
-
 export function planQueryResultScoreRust(
   input: RustQueryResultScoreInput,
 ): RustQueryResultScorePlan | null {
@@ -2597,24 +2252,6 @@ export function planQueryResultScoreRust(
   if (rawPlan.length === 0) return null;
   const parsed = JSON.parse(rawPlan) as unknown;
   return normalizeQueryResultScorePlan(parsed);
-}
-
-export function isRelevantResultRust(input: RustRelevantResultInput): boolean | null {
-  if (!ensureRustCore()) return null;
-  const keywordMatches = normalizeNonNegativeInteger(input.keywordMatches);
-  return is_relevant_result(
-    new Float64Array([
-      input.combinedScore,
-      input.vectorScore,
-      input.bm25Score,
-      keywordMatches,
-      input.threshold,
-      input.hasBm25 ? 1 : 0,
-      input.sourceEvidenceScore,
-      input.bestEvidenceRank ?? Number.NaN,
-    ]),
-    new Uint8Array(input.retrievalSources.map(sourceToCode)),
-  );
 }
 
 export function selectRelevantResultIndicesRust(
@@ -2684,32 +2321,6 @@ function selectRelevantResultIndicesFallback(
     .map((entry) => entry.index);
 }
 
-export function planMergedRetrievalCandidatesRust(
-  candidates: readonly RustRetrievalCandidateMergeInput[],
-): RustMergedRetrievalCandidatePlan[] | null {
-  if (candidates.length === 0) return [];
-  if (!ensureRustCore()) return null;
-
-  const entryIndices = new Uint32Array(candidates.length);
-  const sourceCodes = new Uint8Array(candidates.length);
-  const sourceScores = new Float64Array(candidates.length);
-  const ranks = new Float64Array(candidates.length);
-
-  for (let index = 0; index < candidates.length; index++) {
-    const candidate = candidates[index];
-    if (!candidate || !isValidRetrievalCandidateMergeInput(candidate)) return null;
-    entryIndices[index] = candidate.entryIndex;
-    sourceCodes[index] = sourceToCode(candidate.source);
-    sourceScores[index] = candidate.sourceScore ?? Number.NaN;
-    ranks[index] = candidate.rank ?? Number.NaN;
-  }
-
-  return decodeMergedRetrievalCandidatePlan(
-    plan_merged_retrieval_candidates(entryIndices, sourceCodes, sourceScores, ranks),
-    candidates.length,
-  );
-}
-
 export function planMergedRetrievalCandidatesByEntryIdRust(
   candidates: readonly RustRetrievalCandidateMergeByEntryIdInput[],
 ): RustMergedRetrievalCandidatePlan[] | null {
@@ -2739,117 +2350,6 @@ export function planMergedRetrievalCandidatesByEntryIdRust(
     ),
     candidates.length,
   );
-}
-
-export function planBm25IndexAddDocumentRust(
-  index: RustBm25IndexData | null,
-  docId: string,
-  text: string,
-  sourcePath: string,
-  tokenizerVersion: number,
-): RustBm25IndexData | null {
-  if (
-    !isBm25IndexData(index) ||
-    !isStringValue(docId) ||
-    !isStringValue(text) ||
-    !isStringValue(sourcePath) ||
-    !isValidNonNegativeInteger(tokenizerVersion)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_bm25_index_add_document_json(
-      JSON.stringify(index),
-      docId,
-      text,
-      sourcePath,
-      tokenizerVersion,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isBm25IndexData(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planBm25IndexRemoveDocumentRust(
-  index: RustBm25IndexData | null,
-  docId: string,
-  tokenizerVersion: number,
-): RustBm25IndexData | null {
-  if (
-    !isBm25IndexData(index) ||
-    !isStringValue(docId) ||
-    !isValidNonNegativeInteger(tokenizerVersion)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_bm25_index_remove_document_json(
-      JSON.stringify(index),
-      docId,
-      tokenizerVersion,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isBm25IndexData(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planBm25IndexRemoveSourceRust(
-  index: RustBm25IndexData | null,
-  sourcePath: string,
-  tokenizerVersion: number,
-): RustBm25IndexData | null {
-  if (
-    !isBm25IndexData(index) ||
-    !isStringValue(sourcePath) ||
-    !isValidNonNegativeInteger(tokenizerVersion)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_bm25_index_remove_source_json(
-      JSON.stringify(index),
-      sourcePath,
-      tokenizerVersion,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isBm25IndexData(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planBm25SearchRust(
-  index: RustBm25IndexData | null,
-  query: string,
-): RustBm25SearchScore[] | null {
-  if (!isBm25IndexData(index) || !isStringValue(query)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_bm25_search_json(JSON.stringify(index), query);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isBm25SearchScore)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
 }
 
 export function planBm25HitLookupRust(
@@ -6744,13 +6244,6 @@ export function planStructuralHeadingNeighborsRust(
   }
 }
 
-export function planRerankResponseRust(
-  rawResponse: string,
-  allowedIds: readonly string[],
-): string[] | null {
-  return planRerankResponseWithStatusRust(rawResponse, allowedIds)?.rankedIds ?? null;
-}
-
 export function planRerankResponseWithStatusRust(
   rawResponse: string,
   allowedIds: readonly string[],
@@ -6811,52 +6304,6 @@ export function planRerankResultOrderRust(
   }
 }
 
-export function selectDiverseIndicesRust(
-  candidates: readonly RustDiverseCandidate[],
-  topK: number,
-): number[] | null {
-  if (topK <= 0) return [];
-  if (candidates.length === 0) return [];
-  if (candidates.length <= topK) return candidates.map((_, index) => index);
-  if (!ensureRustCore()) return null;
-
-  const dimension = candidates[0]?.vector.length ?? 0;
-  if (dimension <= 0) return null;
-
-  const scores = new Float64Array(candidates.length);
-  const flatVectors = new Float64Array(candidates.length * dimension);
-  const sourceKeys = new Uint32Array(candidates.length);
-  const headingKeys = new Uint32Array(candidates.length);
-
-  for (let index = 0; index < candidates.length; index++) {
-    const candidate = candidates[index];
-    if (!candidate || !isValidUint32(candidate.sourceKey) || !isValidUint32(candidate.headingKey)) {
-      return null;
-    }
-    if (!Number.isFinite(candidate.score) || candidate.vector.length !== dimension) {
-      return null;
-    }
-    scores[index] = candidate.score;
-    sourceKeys[index] = candidate.sourceKey;
-    headingKeys[index] = candidate.headingKey;
-    for (let vectorIndex = 0; vectorIndex < dimension; vectorIndex++) {
-      const value = candidate.vector[vectorIndex];
-      if (!Number.isFinite(value)) return null;
-      flatVectors[index * dimension + vectorIndex] = value;
-    }
-  }
-
-  const indexes = select_diverse_indices(
-    scores,
-    flatVectors,
-    dimension,
-    sourceKeys,
-    headingKeys,
-    normalizeNonNegativeInteger(topK),
-  );
-  return decodeIndexArray(indexes, candidates.length);
-}
-
 export function planDiverseResultIndicesRust(
   candidates: readonly RustDiverseResultCandidate[],
   topK: number,
@@ -6879,67 +6326,6 @@ export function planDiverseResultIndicesRust(
   } catch {
     return planDiverseResultIndicesFallback(candidates, topK);
   }
-}
-
-export function detectCommunitiesRust(
-  nodeCount: number,
-  sourceIndices: readonly number[],
-  targetIndices: readonly number[],
-  weights: readonly number[],
-  maxIterations: number,
-): RustCommunityDetectionResult | null {
-  if (nodeCount <= 0) {
-    return { assignments: [], communityIds: [], modularity: 0 };
-  }
-  if (
-    sourceIndices.length !== targetIndices.length ||
-    sourceIndices.length !== weights.length ||
-    !Number.isSafeInteger(nodeCount)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  const normalizedNodeCount = normalizePositiveInteger(nodeCount);
-  const normalizedSourceIndices = new Uint32Array(sourceIndices.length);
-  const normalizedTargetIndices = new Uint32Array(targetIndices.length);
-  const normalizedWeights = new Float64Array(weights.length);
-
-  for (let index = 0; index < sourceIndices.length; index++) {
-    const sourceIndex = sourceIndices[index];
-    const targetIndex = targetIndices[index];
-    const weight = weights[index];
-    if (
-      !isValidUint32(sourceIndex) ||
-      !isValidUint32(targetIndex) ||
-      sourceIndex >= normalizedNodeCount ||
-      targetIndex >= normalizedNodeCount ||
-      !Number.isFinite(weight)
-    ) {
-      return null;
-    }
-    normalizedSourceIndices[index] = sourceIndex;
-    normalizedTargetIndices[index] = targetIndex;
-    normalizedWeights[index] = weight;
-  }
-
-  const values = detect_communities_flat(
-    normalizedSourceIndices,
-    normalizedTargetIndices,
-    normalizedWeights,
-    normalizedNodeCount,
-    normalizeNonNegativeInteger(maxIterations),
-  );
-  if (values.length !== normalizedNodeCount + 1) return null;
-  const modularity = values[0];
-  if (!Number.isFinite(modularity)) return null;
-  const assignments = decodeIndexArray(values.slice(1), normalizedNodeCount);
-  if (assignments === null || assignments.length !== normalizedNodeCount) return null;
-  return {
-    assignments,
-    communityIds: [...new Set(assignments)].sort((left, right) => left - right),
-    modularity,
-  };
 }
 
 export function detectCommunitiesFromEdgesRust(
@@ -7022,55 +6408,6 @@ export function planGraphEdgeRecordsRust(
   } catch {
     return null;
   }
-}
-
-export function aggregateGraphEdgesRust(
-  sourceIndices: readonly number[],
-  targetIndices: readonly number[],
-  confidences: readonly number[],
-  nodeCount: number,
-): RustGraphEdge[] | null {
-  if (nodeCount <= 0) return [];
-  if (
-    sourceIndices.length !== targetIndices.length ||
-    sourceIndices.length !== confidences.length ||
-    !Number.isSafeInteger(nodeCount)
-  ) {
-    return null;
-  }
-  if (sourceIndices.length === 0) return [];
-  if (!ensureRustCore()) return null;
-
-  const normalizedNodeCount = normalizePositiveInteger(nodeCount);
-  const normalizedSourceIndices = new Uint32Array(sourceIndices.length);
-  const normalizedTargetIndices = new Uint32Array(targetIndices.length);
-  const normalizedConfidences = new Float64Array(confidences.length);
-
-  for (let index = 0; index < sourceIndices.length; index++) {
-    const sourceIndex = sourceIndices[index];
-    const targetIndex = targetIndices[index];
-    const confidence = confidences[index];
-    if (
-      !isValidUint32(sourceIndex) ||
-      !isValidUint32(targetIndex) ||
-      sourceIndex >= normalizedNodeCount ||
-      targetIndex >= normalizedNodeCount ||
-      !Number.isFinite(confidence)
-    ) {
-      return null;
-    }
-    normalizedSourceIndices[index] = sourceIndex;
-    normalizedTargetIndices[index] = targetIndex;
-    normalizedConfidences[index] = confidence;
-  }
-
-  const values = aggregate_graph_edges_flat(
-    normalizedSourceIndices,
-    normalizedTargetIndices,
-    normalizedConfidences,
-    normalizedNodeCount,
-  );
-  return decodeGraphEdgeTriples(values, normalizedNodeCount);
 }
 
 export function planGraphPruneRust(input: RustGraphPruneInput): RustGraphPrunePlan | null {
@@ -7162,46 +6499,6 @@ export function planGraphPruneRust(input: RustGraphPruneInput): RustGraphPrunePl
   } catch {
     return null;
   }
-}
-
-export function scoreLocalEvidenceRust(input: RustLocalEvidenceInput): RustVectorScore[] | null {
-  if (input.entityCount <= 0 || input.evidenceCount <= 0) return [];
-  if (!ensureRustCore()) return null;
-  if (!isValidLocalEvidenceInput(input)) return null;
-
-  const config = new Uint32Array([
-    normalizeNonNegativeInteger(input.entityCount),
-    normalizeNonNegativeInteger(input.evidenceCount),
-    normalizeNonNegativeInteger(input.traversalDepth),
-    input.matchEntityIndices.length,
-    input.matchEvidenceIndices.length,
-    input.relationSourceIndices.length,
-    input.relationEvidenceIndices.length,
-    input.claimConfidences.length,
-    input.claimEntityIndices.length,
-    input.claimEvidenceIndices.length,
-  ]);
-  const indices = new Uint32Array([
-    ...input.matchEntityIndices,
-    ...input.matchEvidenceOffsets,
-    ...input.matchEvidenceIndices,
-    ...input.relationSourceIndices,
-    ...input.relationTargetIndices,
-    ...input.relationEvidenceOffsets,
-    ...input.relationEvidenceIndices,
-    ...input.claimEntityOffsets,
-    ...input.claimEntityIndices,
-    ...input.claimEvidenceOffsets,
-    ...input.claimEvidenceIndices,
-  ]);
-  const values = new Float64Array([
-    ...input.matchScores,
-    ...input.relationConfidences,
-    ...input.claimConfidences,
-  ]);
-
-  const pairs = score_local_evidence_pairs(config, indices, values);
-  return decodeBoundedIndexScorePairs(pairs, input.evidenceCount);
 }
 
 export interface RustSourceChunk extends Chunk {
@@ -7491,27 +6788,6 @@ export function planReferenceFileIndicesRust(
   }
 }
 
-export function extractJsonObjectRust(rawResponse: string): string | null {
-  if (!ensureRustCore()) return null;
-  const extracted = extract_json_object_text(rawResponse);
-  return extracted.length > 0 ? extracted : null;
-}
-
-export function normalizeExtractedGraphPayloadRust(
-  jsonText: string,
-): RustExtractedGraphPayloadResult | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const raw = normalize_extracted_graph_payload_json(jsonText);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRustExtractedGraphPayloadResult(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function parseExtractedGraphPayloadRust(
   rawResponse: string,
 ): RustExtractedGraphPayloadParseResult | null {
@@ -7676,17 +6952,6 @@ export function planGraphQueryExecutionActionRust(
   return null;
 }
 
-export function planGraphSchemaRelationIndicesRust(
-  relationSchemaIds: readonly string[],
-  ontologySchemaId: string,
-): number[] | null {
-  return planGraphSchemaIndicesRust(
-    relationSchemaIds,
-    ontologySchemaId,
-    plan_graph_schema_relation_indices_json,
-  );
-}
-
 function planDiverseResultIndicesFallback(
   candidates: readonly RustDiverseResultCandidate[],
   topK: number,
@@ -7714,17 +6979,6 @@ function planDiverseResultIndicesFallback(
     .map((entry) => entry.index);
 }
 
-export function planGraphSchemaCommunityIndicesRust(
-  communitySchemaIds: readonly string[],
-  ontologySchemaId: string,
-): number[] | null {
-  return planGraphSchemaIndicesRust(
-    communitySchemaIds,
-    ontologySchemaId,
-    plan_graph_schema_community_indices_json,
-  );
-}
-
 export function planGraphCommunityReplacementDeleteIdsRust(
   communities: readonly RustGraphCommunityReplacementRecord[],
   ontologySchemaId: string,
@@ -7742,43 +6996,6 @@ export function planGraphCommunityReplacementDeleteIdsRust(
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function planGraphSchemaIndicesRust(
-  recordSchemaIds: readonly string[],
-  ontologySchemaId: string,
-  createPlanJson: (recordSchemaIdsJson: string, ontologySchemaId: string) => string,
-): number[] | null {
-  if (!recordSchemaIds.every(isStringValue) || !isStringValue(ontologySchemaId)) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = createPlanJson(JSON.stringify(recordSchemaIds), ontologySchemaId);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isBoundedIndexArray(parsed, recordSchemaIds.length)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphQueryResponseRust(
-  rawResponse: string,
-  fallbackQuestion: string,
-): RustGraphQueryPlan | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(
-      plan_graph_query_response_json(rawResponse, fallbackQuestion),
-    );
-    if (!isGraphQueryPlan(parsed)) return null;
     return parsed;
   } catch {
     return null;
@@ -7960,16 +7177,6 @@ export function normalizeGraphConfidenceRust(confidence: unknown): number | null
   return Number.isFinite(score) ? score : null;
 }
 
-export function sanitizeGraphIdPartRust(part: string): string | null {
-  if (!isStringValue(part)) return null;
-  if (!ensureRustCore()) return sanitizeGraphIdPartFallback(part);
-  try {
-    return sanitize_graph_id_part(part);
-  } catch {
-    return sanitizeGraphIdPartFallback(part);
-  }
-}
-
 export function createGraphIdRust(parts: readonly string[]): string | null {
   if (!parts.every(isStringValue)) return null;
   if (!ensureRustCore()) {
@@ -8109,17 +7316,6 @@ function decodeRankPairs(
   return scores;
 }
 
-function decodeIndexScorePairs(pairs: Float64Array): RustVectorScore[] {
-  const scores: RustVectorScore[] = [];
-  for (let offset = 0; offset + 1 < pairs.length; offset += 2) {
-    const index = pairs[offset];
-    const score = pairs[offset + 1];
-    if (!Number.isSafeInteger(index) || !Number.isFinite(score)) continue;
-    scores.push({ index, score });
-  }
-  return scores;
-}
-
 function decodeBoundedIndexScorePairs(
   pairs: Float64Array,
   maxExclusive: number,
@@ -8140,32 +7336,6 @@ function decodeBoundedIndexScorePairs(
     scores.push({ index, score });
   }
   return scores;
-}
-
-function decodeGraphEdgeTriples(
-  values: Float64Array,
-  maxExclusive: number,
-): RustGraphEdge[] | null {
-  if (values.length % 3 !== 0) return null;
-  const edges: RustGraphEdge[] = [];
-  for (let offset = 0; offset + 2 < values.length; offset += 3) {
-    const sourceIndex = values[offset];
-    const targetIndex = values[offset + 1];
-    const weight = values[offset + 2];
-    if (
-      !Number.isSafeInteger(sourceIndex) ||
-      sourceIndex < 0 ||
-      sourceIndex >= maxExclusive ||
-      !Number.isSafeInteger(targetIndex) ||
-      targetIndex < 0 ||
-      targetIndex >= maxExclusive ||
-      !Number.isFinite(weight)
-    ) {
-      return null;
-    }
-    edges.push({ sourceIndex, targetIndex, weight });
-  }
-  return edges;
 }
 
 function decodeIndexArray(values: Float64Array, maxExclusive: number): number[] | null {
@@ -8230,46 +7400,6 @@ function decodeMergedRetrievalCandidatePlan(
   return offset === values.length ? groups : null;
 }
 
-interface EncodedVectorMatrixPair {
-  flatVectors: Float64Array;
-  flatCentroids: Float64Array;
-  dimension: number;
-}
-
-function encodeCompatibleVectorMatrix(
-  vectors: readonly (readonly number[])[],
-  centroids: readonly (readonly number[])[],
-): EncodedVectorMatrixPair | null {
-  const dimension = vectors[0]?.length ?? centroids[0]?.length ?? 0;
-  if (dimension <= 0 || centroids.length === 0) return null;
-
-  const flatVectors = encodeVectorMatrix(vectors, dimension);
-  const flatCentroids = encodeVectorMatrix(centroids, dimension);
-  if (flatVectors === null || flatCentroids === null) return null;
-  return {
-    flatVectors,
-    flatCentroids,
-    dimension,
-  };
-}
-
-function encodeVectorMatrix(
-  vectors: readonly (readonly number[])[],
-  dimension: number,
-): Float64Array | null {
-  const values = new Float64Array(vectors.length * dimension);
-  for (let rowIndex = 0; rowIndex < vectors.length; rowIndex++) {
-    const vector = vectors[rowIndex];
-    if (!vector || vector.length !== dimension) return null;
-    for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
-      const value = vector[dimensionIndex];
-      if (!Number.isFinite(value)) return null;
-      values[rowIndex * dimension + dimensionIndex] = value;
-    }
-  }
-  return values;
-}
-
 function encodeVectorMatrixF32(
   vectors: readonly (readonly number[])[],
   dimension: number,
@@ -8285,25 +7415,6 @@ function encodeVectorMatrixF32(
     }
   }
   return values;
-}
-
-function decodeVectorMatrix(
-  values: Float64Array,
-  rowCount: number,
-  dimension: number,
-): number[][] | null {
-  if (dimension <= 0 || values.length !== rowCount * dimension) return null;
-  const rows: number[][] = [];
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
-    const row: number[] = [];
-    for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
-      const value = values[rowIndex * dimension + dimensionIndex];
-      if (!Number.isFinite(value)) return null;
-      row.push(value);
-    }
-    rows.push(row);
-  }
-  return rows;
 }
 
 interface EncodedNestedUint32Arrays {
@@ -8469,17 +7580,6 @@ function isBoundedIndexArray(value: unknown, maxExclusive: number): value is num
   return (
     Array.isArray(value) &&
     value.every((index) => Number.isSafeInteger(index) && index >= 0 && index < maxExclusive)
-  );
-}
-
-function isValidBm25Posting(posting: RustBm25Posting): boolean {
-  return (
-    Number.isSafeInteger(posting.docIndex) &&
-    posting.docIndex >= 0 &&
-    Number.isFinite(posting.termFrequency) &&
-    posting.termFrequency > 0 &&
-    Number.isFinite(posting.docLength) &&
-    posting.docLength > 0
   );
 }
 
@@ -8934,24 +8034,6 @@ function isBm25CandidatePlan(value: unknown): value is RustBm25CandidatePlan {
     entryIndex >= 0 &&
     Number.isFinite(plan.sourceScore)
   );
-}
-
-function isBm25IndexData(value: unknown): value is RustBm25IndexData {
-  if (!value || typeof value !== 'object') return false;
-  const index = value as Partial<RustBm25IndexData>;
-  return (
-    isValidNonNegativeInteger(index.tokenizerVersion) &&
-    isBm25InvertedIndex(index.inverted) &&
-    isStringNumberRecord(index.docLengths) &&
-    isStringStringRecord(index.docSources) &&
-    isValidNonNegativeInteger(index.totalDocs) &&
-    Number.isFinite(index.avgDocLength)
-  );
-}
-
-function isBm25InvertedIndex(value: unknown): value is Record<string, Record<string, number>> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  return Object.values(value).every(isStringNumberRecord);
 }
 
 function isStringNumberRecord(value: unknown): value is Record<string, number> {
@@ -10575,27 +9657,6 @@ function isValidStructuralHeadingInput(heading: RustStructuralHeadingInput): boo
   );
 }
 
-function isRustExtractedGraphPayloadResult(
-  value: unknown,
-): value is RustExtractedGraphPayloadResult {
-  if (!value || typeof value !== 'object') return false;
-  const result = value as Partial<RustExtractedGraphPayloadResult>;
-  const rawFactCount = result.rawFactCount;
-  return (
-    !!result.payload &&
-    typeof result.payload === 'object' &&
-    Array.isArray(result.payload.entities) &&
-    Array.isArray(result.payload.relations) &&
-    Array.isArray(result.payload.claims) &&
-    result.payload.entities.every(isRustExtractedGraphEntity) &&
-    result.payload.relations.every(isRustExtractedGraphRelation) &&
-    result.payload.claims.every(isRustExtractedGraphClaim) &&
-    typeof rawFactCount === 'number' &&
-    Number.isSafeInteger(rawFactCount) &&
-    rawFactCount >= 0
-  );
-}
-
 function isRustMcpJsonValidationResult(value: unknown): value is RustMcpJsonValidationResult {
   if (!value || typeof value !== 'object') return false;
   const result = value as Partial<RustMcpJsonValidationResult>;
@@ -10745,15 +9806,6 @@ function isValidRelevantResultCandidate(candidate: RustRelevantResultCandidate):
   );
 }
 
-function isValidRetrievalCandidateMergeInput(input: RustRetrievalCandidateMergeInput): boolean {
-  return (
-    isValidUint32(input.entryIndex) &&
-    sourceToCode(input.source) !== 0 &&
-    (input.sourceScore === undefined || Number.isFinite(input.sourceScore)) &&
-    (input.rank === undefined || Number.isFinite(input.rank))
-  );
-}
-
 function isValidRetrievalCandidateMergeByEntryIdInput(
   input: RustRetrievalCandidateMergeByEntryIdInput,
 ): boolean {
@@ -10785,65 +9837,9 @@ function isValidBm25EntryInput(entry: RustBm25EntryInput): boolean {
   );
 }
 
-function isValidLocalEvidenceInput(input: RustLocalEvidenceInput): boolean {
-  return (
-    Number.isSafeInteger(input.entityCount) &&
-    Number.isSafeInteger(input.evidenceCount) &&
-    Number.isFinite(input.traversalDepth) &&
-    input.matchEntityIndices.length === input.matchScores.length &&
-    input.matchEvidenceOffsets.length === input.matchEntityIndices.length + 1 &&
-    input.relationSourceIndices.length === input.relationTargetIndices.length &&
-    input.relationSourceIndices.length === input.relationConfidences.length &&
-    input.relationEvidenceOffsets.length === input.relationSourceIndices.length + 1 &&
-    input.claimEntityOffsets.length === input.claimConfidences.length + 1 &&
-    input.claimEvidenceOffsets.length === input.claimConfidences.length + 1 &&
-    isValidUint32Array(input.matchEntityIndices, input.entityCount) &&
-    isValidUint32Array(input.matchEvidenceOffsets) &&
-    isValidUint32Array(input.matchEvidenceIndices, input.evidenceCount) &&
-    isValidUint32Array(input.relationSourceIndices, input.entityCount) &&
-    isValidUint32Array(input.relationTargetIndices, input.entityCount) &&
-    isValidUint32Array(input.relationEvidenceOffsets) &&
-    isValidUint32Array(input.relationEvidenceIndices, input.evidenceCount) &&
-    isValidUint32Array(input.claimEntityOffsets) &&
-    isValidUint32Array(input.claimEntityIndices, input.entityCount) &&
-    isValidUint32Array(input.claimEvidenceOffsets) &&
-    isValidUint32Array(input.claimEvidenceIndices, input.evidenceCount) &&
-    input.matchScores.every(Number.isFinite) &&
-    input.relationConfidences.every(Number.isFinite) &&
-    input.claimConfidences.every(Number.isFinite) &&
-    areValidOffsets(input.matchEvidenceOffsets, input.matchEvidenceIndices.length) &&
-    areValidOffsets(input.relationEvidenceOffsets, input.relationEvidenceIndices.length) &&
-    areValidOffsets(input.claimEntityOffsets, input.claimEntityIndices.length) &&
-    areValidOffsets(input.claimEvidenceOffsets, input.claimEvidenceIndices.length)
-  );
-}
-
 function isValidUint32Array(values: readonly number[], maxExclusive?: number): boolean {
   return values.every(
     (value) => isValidUint32(value) && (maxExclusive === undefined || value < maxExclusive),
-  );
-}
-
-function areValidOffsets(offsets: readonly number[], flatLength: number): boolean {
-  if (offsets.length === 0 || offsets[0] !== 0) return false;
-  let previous = 0;
-  for (const offset of offsets) {
-    if (!isValidUint32(offset) || offset < previous || offset > flatLength) return false;
-    previous = offset;
-  }
-  return previous === flatLength;
-}
-
-function isBm25TermFrequencies(value: unknown): value is RustBm25TermFrequencies {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<RustBm25TermFrequencies>;
-  const totalTokens = candidate.totalTokens;
-  if (typeof totalTokens !== 'number' || !Number.isSafeInteger(totalTokens) || totalTokens < 0) {
-    return false;
-  }
-  if (!candidate.frequencies || typeof candidate.frequencies !== 'object') return false;
-  return Object.entries(candidate.frequencies).every(
-    ([token, count]) => token.length > 0 && Number.isSafeInteger(count) && count > 0,
   );
 }
 

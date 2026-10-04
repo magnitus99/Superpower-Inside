@@ -1,5 +1,4 @@
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
 import type { IndexedDbBM25Index } from './bm25';
 import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
@@ -24,37 +23,21 @@ import {
   planDiverseResultIndicesRust,
   planRagStatusRust,
   planQueryResultScoreRust,
-  planRerankMessagesRust,
   selectRelevantResultIndicesRust,
-  planRerankResponseWithStatusRust,
-  planRerankResultOrderRust,
   tokenizeRust,
-  type RustRerankStatus,
   type RustSourceSelectionReason,
   type RustRagStatusPlan,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
-import { t } from '../i18n';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
-const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
-const DEFAULT_RERANK_TIMEOUT_MS = 2500;
 const INDEX_READINESS_REASONS = {
   missing: 'missing',
   legacy: 'legacy',
   staleFile: 'stale-file',
   embeddingChanged: 'embedding-changed',
 } as const;
-
-export interface RAGResultReranker {
-  rerank(
-    question: string,
-    results: readonly QueryResult[],
-    signal?: AbortSignal,
-  ): Promise<readonly string[]>;
-  getLastRerankStatus?(): RustRerankStatus | null;
-}
 
 export interface QueryResult {
   entry: VectorEntry;
@@ -88,8 +71,6 @@ export interface RAGQueryEngineOptions {
   graphRagEnabled?: boolean;
   graphRagQueryEngine?: GraphRagQueryEngine;
   graphRagReadiness?: () => RetrievalProviderReadiness;
-  reranker?: RAGResultReranker;
-  rerankCandidateLimit?: number;
   embeddingModel?: string;
   embeddingProvider?: string;
 }
@@ -114,8 +95,6 @@ export class RAGQueryEngine {
   private bm25Weight: number;
   private minScore: number;
   private retrievalPipeline: RagRetrievalPipeline;
-  private reranker: RAGResultReranker | undefined;
-  private rerankCandidateLimit: number;
   private embeddingModel: string | undefined;
   private embeddingProviderId: string | undefined;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
@@ -135,13 +114,8 @@ export class RAGQueryEngine {
     this.bm25Index = bm25Index;
     this.bm25Weight = bm25Weight;
     this.minScore = minScore;
-    this.reranker = options.reranker;
     this.embeddingModel = options.embeddingModel;
     this.embeddingProviderId = options.embeddingProvider;
-    this.rerankCandidateLimit = Math.max(
-      1,
-      Math.floor(options.rerankCandidateLimit ?? DEFAULT_RERANK_CANDIDATE_LIMIT),
-    );
     const providers: CandidateProvider[] = [];
     if (vectorStore && embeddingProvider) {
       providers.push(
@@ -324,15 +298,6 @@ export class RAGQueryEngine {
       threshold,
       this.bm25Index?.isReady ?? false,
     );
-    if (this.reranker && relevantResults.length > 1) {
-      const diversePool = selectDiverseResults(
-        relevantResults,
-        Math.min(relevantResults.length, Math.max(topK, this.rerankCandidateLimit)),
-      );
-      const rerankedResults = await this.rerankResults(question, diversePool, options.signal);
-      throwIfQueryAborted(options.signal);
-      return rerankedResults.slice(0, topK);
-    }
     return selectDiverseResults(relevantResults, topK);
   }
 
@@ -513,169 +478,14 @@ export class RAGQueryEngine {
       )
       .join('\n\n---\n\n');
   }
-
-  private async rerankResults(
-    question: string,
-    results: readonly QueryResult[],
-    signal?: AbortSignal,
-  ): Promise<QueryResult[]> {
-    if (!this.reranker || results.length <= 1) return [...results];
-
-    const candidates = results.slice(0, this.rerankCandidateLimit);
-    const startedAt = Date.now();
-    try {
-      const rankedIds = await this.reranker.rerank(question, candidates, signal);
-      throwIfQueryAborted(signal);
-      const rerankStatus =
-        this.reranker.getLastRerankStatus?.() ??
-        (rankedIds.length > 0 ? 'applied' : 'empty-rank-plan');
-      const order = planRerankResultOrderRust(
-        results.map((result) => result.entry.id),
-        rankedIds,
-      );
-      if (!order || order.length !== results.length) {
-        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-        return [...results];
-      }
-      const reranked = selectByRustIndices(results, order, { dedupe: true });
-      if (reranked.length === results.length) {
-        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-        return reranked;
-      }
-      this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-      return [...results];
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      this.recordRerankDiagnostic('error', Date.now() - startedAt, candidates.length, error);
-      return [...results];
-    }
-  }
-
-  private recordRerankDiagnostic(
-    status: RustRerankStatus | 'error',
-    durationMs: number,
-    candidateCount: number,
-    error?: unknown,
-  ): void {
-    this.lastRetrievalDiagnostics = [
-      ...this.lastRetrievalDiagnostics,
-      {
-        providerId: 'llm-reranker',
-        source: 'reranker',
-        status: status === 'applied' ? 'ok' : 'error',
-        durationMs,
-        candidateCount,
-        readiness: 'ready',
-        estimatedCost: 'medium',
-        skippedReason: status,
-        ...(error instanceof Error ? { error: error.message } : {}),
-      },
-    ];
-  }
 }
 
 function defaultGraphRagReadiness(): RetrievalProviderReadiness {
   return { readiness: 'partial', estimatedCost: 'free' };
 }
 
-export class LLMRAGResultReranker implements RAGResultReranker {
-  private lastRerankStatus: RustRerankStatus | null = null;
-
-  constructor(
-    private readonly provider: LLMProvider,
-    private readonly timeoutMs = DEFAULT_RERANK_TIMEOUT_MS,
-  ) {}
-
-  async rerank(
-    question: string,
-    results: readonly QueryResult[],
-    signal?: AbortSignal,
-  ): Promise<readonly string[]> {
-    this.lastRerankStatus = null;
-    if (results.length === 0) return [];
-    const messagePlan = planRerankMessagesRust(
-      question,
-      results.map((result) => ({
-        id: result.entry.id,
-        sourcePath: result.sourcePath,
-        heading: result.entry.metadata.heading ?? '',
-        text: result.entry.metadata.text,
-      })),
-      700,
-    );
-    if (!messagePlan) return [];
-    const response = await withTimeout(
-      this.provider.chat(
-        [
-          {
-            role: 'system' as const,
-            content: [messagePlan.systemContent, t('llmEvidenceDataBoundary')].join('\n'),
-          },
-          {
-            role: 'user' as const,
-            content: messagePlan.userContent,
-          },
-        ],
-        0,
-        undefined,
-        { signal },
-      ),
-      this.timeoutMs,
-      signal,
-    );
-    const responsePlan = planRerankResponseWithStatusRust(
-      response,
-      results.map((result) => result.entry.id),
-    );
-    this.lastRerankStatus = responsePlan?.rerankStatus ?? 'invalid-json';
-    return responsePlan?.rankedIds ?? [];
-  }
-
-  getLastRerankStatus(): RustRerankStatus | null {
-    return this.lastRerankStatus;
-  }
-}
-
 function countKeywordMatches(queryTokens: string[], text: string): number {
   return countKeywordMatchesRust(queryTokens, text) ?? 0;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
-  if (timeoutMs <= 0 && !signal) return promise;
-
-  let timeoutId: number | undefined;
-  return new Promise<T>((resolve, reject) => {
-    const cleanup = (): void => {
-      if (timeoutId) window.clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-    };
-    const onAbort = (): void => {
-      cleanup();
-      reject(new Error('RAG reranking cancelled'));
-    };
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-    if (timeoutMs > 0) {
-      timeoutId = window.setTimeout(() => {
-        cleanup();
-        reject(new Error('RAG reranking timed out'));
-      }, timeoutMs);
-    }
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
 }
 
 function selectRelevantResults(

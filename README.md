@@ -45,7 +45,7 @@ JSON keys, CSV headers and records, and code block boundaries stay attached to t
 
 **🏠 Built-in search runs locally**
 
-The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, graph extraction, summaries, reranking, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
+The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, graph extraction, summaries, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
 
 **✋ You're always in control**
 
@@ -166,7 +166,7 @@ JSON 키, CSV 헤더·레코드, 코드 블록 경계도 공통 검색 구간에
 
 **🏠 내장 검색은 기기 안에서 실행됩니다**
 
-내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 그래프 추출, 요약, 재정렬과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
+내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 그래프 추출, 요약과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
 
 **✋ 언제든 중단하고, 언제든 확인하세요**
 

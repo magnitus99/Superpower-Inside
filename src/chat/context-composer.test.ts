@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { setLanguage } from '../i18n';
 import {
-  createContextAttachmentViews,
   createContextBudgetSnapshot,
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -54,27 +53,6 @@ describe('context composer contract', () => {
     { id: 'file-1', filePath: 'Notes/A.md', status: 'verified', preview: 'Evidence' },
     { id: 'rag-1', filePath: 'Notes/B.md', status: 'low-relevance', preview: 'Candidate' },
   ];
-
-  it('creates composer attachment view state with status, reason, and size', () => {
-    expect(createContextAttachmentViews(attachments)).toEqual([
-      expect.objectContaining({
-        id: 'file:Notes/A.md',
-        statusText: 'Included',
-        reasonText: 'Explicit file mention',
-        sizeText: '1,180 chars',
-        pinned: true,
-      }),
-      expect.objectContaining({
-        id: 'rag:auto',
-        statusText: 'Partially included',
-        detail: 'Some candidates left out',
-      }),
-      expect.objectContaining({
-        id: 'mcp:search',
-        statusText: 'Excluded',
-      }),
-    ]);
-  });
 
   it('stores included, excluded, and truncated state in a per-turn budget snapshot', () => {
     expect(

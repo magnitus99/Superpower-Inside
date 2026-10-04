@@ -3,8 +3,6 @@ import Dexie from 'dexie';
 import type { DataAdapter, TFile } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { LLMProvider } from '../llm/providers';
-import { resolveProviderCapability } from '../llm/provider-capabilities';
 import { buildKnowledgeGraphContract } from '../graph/knowledge-contract';
 import { GraphRagQueryEngine } from '../graph/query-engine';
 import {
@@ -13,13 +11,8 @@ import {
   type GraphEvidenceRecord,
   type GraphRelationRecord,
 } from '../graph/store';
-
-const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
-  providerKey: 'openai',
-  model: 'test-model',
-});
 import { IndexedDbBM25Index } from './bm25';
-import { LLMRAGResultReranker, RAGQueryEngine } from './query';
+import { RAGQueryEngine } from './query';
 import type { RagRetrievalRequest, RetrievalCandidate } from './retrieval-pipeline';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
@@ -218,119 +211,16 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
-  it('재랭커가 직접 근거로 더 적합한 낮은 점수 후보를 topK 앞으로 올린다', async () => {
+  it('현재 검색 점수와 다양성 선택으로 topK를 결정하고 반복 질의의 순서를 보존한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
       createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
       createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
     ]);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker: {
-        rerank: () => Promise.resolve(['direct.md::0', 'semantic.md::0']),
-      },
-      rerankCandidateLimit: 20,
-    });
-
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
     const results = await engine.query('Paul과 Barnabas 관계', 1);
-
-    expect(results[0]?.entry.metadata.filePath).toBe('direct.md');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'ok',
-          skippedReason: 'applied',
-        }),
-      ]),
-    );
-  });
-
-  it('재랭커가 실패하면 기존 점수 정렬로 fallback한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
-      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
-    ]);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker: {
-        rerank: () => Promise.reject(new Error('rerank failed')),
-      },
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 1);
-
-    expect(results[0]?.entry.metadata.filePath).toBe('semantic.md');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'error',
-          skippedReason: 'error',
-        }),
-      ]),
-    );
-  });
-
-  it('LLM 재랭커 응답의 JSON 추출, 외부 id 제거, 중복 제거, 최종 순서 계획은 Rust bridge를 따른다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
-      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
-      createEntry('tail.md', [0.97, 0.24], '나머지 관련 근거'),
-    ]);
-    const provider = createRerankProvider(
-      '결과입니다.\n```json\n{"rankedIds":["direct.md::0","missing.md::0","semantic.md::0","direct.md::0"]}\n```',
-    );
-    const reranker = new LLMRAGResultReranker(provider);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker,
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 3);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'direct.md',
-      'semantic.md',
-      'tail.md',
-    ]);
-    expect(reranker.getLastRerankStatus()).toBe('applied');
-    expect(provider.messages[0]?.[0]?.content).toMatch(/비신뢰|untrusted/i);
-    expect(provider.messages[0]?.[0]?.content).toContain('Return JSON only');
-  });
-
-  it('LLM reranker invalid JSON records a fallback diagnostic', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], 'semantic match'),
-      createEntry('direct.md', [0.98, 0.2], 'direct evidence'),
-    ]);
-    const reranker = new LLMRAGResultReranker(createRerankProvider('not-json'));
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker,
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('direct evidence', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'semantic.md',
-      'direct.md',
-    ]);
-    expect(reranker.getLastRerankStatus()).toBe('invalid-json');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'error',
-          skippedReason: 'invalid-json',
-        }),
-      ]),
-    );
+    expect(results.map((result) => result.sourcePath)).toEqual(['semantic.md']);
+    expect(await engine.query('Paul과 Barnabas 관계', 1)).toEqual(results);
   });
 
   it('벡터 상위 후보 밖의 BM25 전용 후보도 최종 후보에 포함한다', async () => {
@@ -782,21 +672,6 @@ function createEntry(path: string, vector: number[], text: string, startLine = 0
       embeddingProvider: 'openai',
       embeddingModel: 'text-embedding-3-small',
     },
-  };
-}
-
-function createRerankProvider(response: string): LLMProvider & {
-  messages: Parameters<LLMProvider['chat']>[0][];
-} {
-  const messages: Parameters<LLMProvider['chat']>[0][] = [];
-  return {
-    capability: TEST_PROVIDER_CAPABILITY,
-    messages,
-    chat: (inputMessages) => {
-      messages.push(inputMessages);
-      return Promise.resolve(response);
-    },
-    streamChat: () => Promise.resolve(),
   };
 }
 

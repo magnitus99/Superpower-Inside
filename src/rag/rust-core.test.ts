@@ -1,34 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  assignVectorClustersRust,
   rankGraphCommunityPairsRust,
-  analyzeRetrievalSourcesRust,
-  buildInitialCentroidsRust,
   calculateRecallAtKRust,
-  calculateHybridScoreRust,
-  calculateRrfScoreRust,
   createEntityIdRust,
   createPendingEntityMergeIdRust,
   createContentHashRust,
   chunkMarkdownRust,
   chunkPlainTextRust,
-  aggregateGraphEdgesRust,
   countFilesByExtensionsRust,
-  bm25TermFrequenciesRust,
-  detectCommunitiesRust,
   deriveNativeToolCoverageReceiptRust,
   countKeywordMatchesRust,
-  extractJsonObjectRust,
   extractVaultLinksRust,
   findMentionedEntityMatchesRust,
   isGraphExtractionCacheHitRust,
   isExcludedPathRust,
   isExcludedExtRust,
-  isRustCoreAvailable,
   createGraphIdRust,
   normalizeGraphConfidenceRust,
-  normalizeExtractedGraphPayloadRust,
   normalizeEntityNameRust,
   normalizeGraphNameRust,
   parseExtractedGraphPayloadRust,
@@ -66,14 +55,9 @@ import {
   planGraphPruneRust,
   parseMentionCandidatesRust,
   planEntityResolutionRust,
-  planBm25IndexAddDocumentRust,
-  planBm25IndexRemoveDocumentRust,
-  planBm25IndexRemoveSourceRust,
-  planBm25SearchRust,
   planClaimEvidenceScoresRust,
   planEvidenceCandidateOrderRust,
   planRerankMessagesRust,
-  planRerankResponseRust,
   planRerankResponseWithStatusRust,
   planRerankResultOrderRust,
   planBm25CandidateResolutionRust,
@@ -89,9 +73,6 @@ import {
   planGraphEntityMergeRust,
   planGraphQueryExecutionRust,
   planGraphQueryRust,
-  planGraphQueryResponseRust,
-  planGraphSchemaCommunityIndicesRust,
-  planGraphSchemaRelationIndicesRust,
   planGraphCommunityReplacementDeleteIdsRust,
   planGraphRagRunFileSelectionRust,
   planGraphRagUnsupportedPrunePathsRust,
@@ -114,7 +95,6 @@ import {
   planResearchProviderLedgerTransitionRust,
   planResearchProviderRequestBudgetRust,
   planMergedRetrievalCandidatesByEntryIdRust,
-  planMergedRetrievalCandidatesRust,
   planSourceReferencesRust,
   planSourceValidationInputsRust,
   planSourceValidationWarningsRust,
@@ -125,17 +105,11 @@ import {
   RustIvfRuntimeIndex,
   rankTopKPairsRust,
   classifyMcpToolErrorRust,
-  recomputeCentroidsRust,
   isMcpToolResultEmptyRust,
   normalizeMcpToolResultRust,
   parseMcpToolArgumentsRust,
   scoreEntityMatchRust,
-  isRelevantResultRust,
-  scoreBm25Rust,
-  sanitizeGraphIdPartRust,
   selectRelevantResultIndicesRust,
-  selectDiverseIndicesRust,
-  scoreLocalEvidenceRust,
   tokenizeRust,
   validateMcpJsonRust,
   formatMcpJsonRust,
@@ -157,9 +131,9 @@ describe('Rust WASM RAG core bridge', () => {
     expect(ranked?.map(({ index }) => index)).toEqual([1, 0]);
     expect(ranked?.[0]?.score).toBeGreaterThan(ranked?.[1]?.score ?? 0);
   });
-  it('loads embedded WASM bytes synchronously', () => {
-    expect(isRustCoreAvailable()).toBe(true);
-  });
+  it('내장 WASM을 동기 초기화해 토큰화한다', () => {
+          expect(tokenizeRust('hello')).toEqual(['hello']);
+        });
 
   it('프로바이더 필수 설정과 부분 성공 상태를 Rust에서 판정한다', () => {
     expect(
@@ -374,23 +348,6 @@ describe('Rust WASM RAG core bridge', () => {
     ]);
   });
 
-  it('returns BM25 term frequencies from Rust tokenizer output', () => {
-    const frequencies = bm25TermFrequenciesRust('OpenRouter OpenRouter freeLLMApi');
-
-    expect(frequencies).toEqual({
-      totalTokens: 10,
-      frequencies: {
-        openrouter: 2,
-        open: 2,
-        router: 2,
-        freellmapi: 1,
-        free: 1,
-        llm: 1,
-        api: 1,
-      },
-    });
-  });
-
   it('plans RAG vector indexing ETA through the Rust bridge', () => {
     const calibratedEta = planRagIndexingEtaRust({
       nowMs: 10000,
@@ -568,71 +525,6 @@ describe('Rust WASM RAG core bridge', () => {
     expect(shouldAppendMcpPathHintRust('npx', 'permission denied')).toBe(false);
   });
 
-  it('plans BM25 index mutation and search through Rust', () => {
-    const emptyIndex = {
-      tokenizerVersion: 2,
-      inverted: {},
-      docLengths: {},
-      docSources: {},
-      totalDocs: 0,
-      avgDocLength: 1,
-    };
-
-    const withApi = planBm25IndexAddDocumentRust(
-      emptyIndex,
-      'api.md::0',
-      'OpenRouter API access key',
-      'api.md',
-      2,
-    );
-
-    expect(withApi).not.toBeNull();
-    expect(withApi).toEqual(
-      expect.objectContaining({
-        tokenizerVersion: 2,
-        docLengths: { 'api.md::0': 6 },
-        docSources: { 'api.md::0': 'api.md' },
-        totalDocs: 1,
-        avgDocLength: 6,
-      }),
-    );
-    expect(withApi?.inverted.openrouter).toEqual({ 'api.md::0': 1 });
-    expect(withApi?.inverted.open).toEqual({ 'api.md::0': 1 });
-    expect(withApi?.inverted.router).toEqual({ 'api.md::0': 1 });
-
-    const withBoth = planBm25IndexAddDocumentRust(
-      withApi,
-      'other.md::0',
-      'Ollama local model',
-      'other.md',
-      2,
-    );
-    expect(planBm25SearchRust(withBoth, 'open router')?.map((hit) => hit.docId)).toEqual([
-      'api.md::0',
-    ]);
-
-    const replaced = planBm25IndexAddDocumentRust(
-      withBoth,
-      'api.md::0',
-      'Ollama remote endpoint',
-      'api.md',
-      2,
-    );
-    expect(planBm25SearchRust(replaced, 'open router')).toEqual([]);
-    expect(planBm25SearchRust(replaced, 'ollama')?.map((hit) => hit.docId)).toEqual([
-      'api.md::0',
-      'other.md::0',
-    ]);
-
-    const removedBySource = planBm25IndexRemoveSourceRust(replaced, 'api.md', 2);
-    expect(removedBySource?.docLengths).toEqual({ 'other.md::0': 3 });
-    expect(removedBySource?.docSources).toEqual({ 'other.md::0': 'other.md' });
-    expect(planBm25SearchRust(removedBySource, 'endpoint')).toEqual([]);
-
-    const removedByDoc = planBm25IndexRemoveDocumentRust(removedBySource, 'other.md::0', 2);
-    expect(removedByDoc).toEqual(emptyIndex);
-  });
-
   it('plans BM25 lookup and stale document repair through Rust', () => {
     const lookupPlan = planBm25HitLookupRust(
       [
@@ -784,10 +676,10 @@ describe('Rust WASM RAG core bridge', () => {
     });
 
     expect(
-      planRerankResponseRust(
+      (planRerankResponseWithStatusRust(
         '결과입니다.\n```json\n{"rankedIds":["b","missing","a","b",3,"c"]}\n```',
         ['a', 'b', 'c'],
-      ),
+      )?.rankedIds),
     ).toEqual(['b', 'a', 'c']);
 
     expect(
@@ -797,7 +689,7 @@ describe('Rust WASM RAG core bridge', () => {
       ),
     ).toEqual({ rankedIds: ['b', 'a', 'c'], rerankStatus: 'applied' });
 
-    expect(planRerankResponseRust('not-json', ['a'])).toEqual([]);
+    expect((planRerankResponseWithStatusRust('not-json', ['a'])?.rankedIds)).toEqual([]);
     expect(planRerankResponseWithStatusRust('not-json', ['a'])).toEqual({
       rankedIds: [],
       rerankStatus: 'invalid-json',
@@ -1051,73 +943,6 @@ describe('Rust WASM RAG core bridge', () => {
     expect(createIndexedDbRecordKeyRust('profile:remote::embedding-v2', 'same text')).not.toBe(key);
   });
 
-  it('assigns ANN vectors to nearest centroids through Rust', () => {
-    const assignments = assignVectorClustersRust(
-      [
-        [1, 0],
-        [0, 1],
-        [0.8, 0.2],
-        [0, 0],
-      ],
-      [
-        [1, 0],
-        [0, 1],
-      ],
-    );
-
-    expect(assignments).toEqual([0, 1, 0, 0]);
-  });
-
-  it('recomputes ANN centroids through Rust while preserving empty clusters', () => {
-    const centroids = recomputeCentroidsRust(
-      [
-        [1, 0],
-        [0.5, 0.5],
-        [0, 1],
-      ],
-      [0, 0, 2],
-      [
-        [9, 9],
-        [8, 8],
-        [7, 7],
-      ],
-    );
-
-    expect(centroids).toEqual([
-      [0.75, 0.25],
-      [8, 8],
-      [0, 1],
-    ]);
-  });
-
-  it('resolves ANN cluster count and initial centroids through Rust', () => {
-    const centroids = buildInitialCentroidsRust(
-      [
-        [1, 0],
-        [0.7, 0.3],
-        [0, 1],
-        [-1, 0],
-        [0, -1],
-      ],
-      3,
-    );
-
-    expect(centroids).toEqual([
-      [1, 0],
-      [0, 1],
-      [0, -1],
-    ]);
-
-    const autoCentroids = buildInitialCentroidsRust(
-      Array.from({ length: 20 }, (_, index) => [index, index + 1]),
-      0,
-    );
-
-    expect(autoCentroids).toHaveLength(4);
-    expect(autoCentroids?.[0]).toEqual([0, 1]);
-    expect(autoCentroids?.[3]).toEqual([19, 20]);
-  });
-
   it('queries ANN candidates through the Rust IVF runtime index', () => {
     const runtime = RustIvfRuntimeIndex.build(
       [
@@ -1144,85 +969,6 @@ describe('Rust WASM RAG core bridge', () => {
     expect(calculateRecallAtKRust(['a', 'b', 'c'], ['c', 'x', 'a'], 3)).toBeCloseTo(2 / 3);
     expect(calculateRecallAtKRust(['a', 'a', 'b'], ['a', 'b'], 3)).toBeCloseTo(1);
     expect(calculateRecallAtKRust(['a'], ['a'], 0)).toBe(0);
-  });
-
-  it('returns BM25 document scores from flat posting data', () => {
-    const scores = scoreBm25Rust(
-      [
-        {
-          postings: [
-            { docIndex: 0, termFrequency: 2, docLength: 3 },
-            { docIndex: 1, termFrequency: 1, docLength: 4 },
-          ],
-        },
-        {
-          postings: [{ docIndex: 0, termFrequency: 1, docLength: 3 }],
-        },
-      ],
-      2,
-      3.5,
-    );
-
-    const firstTermIdf = Math.log((2 - 2 + 0.5) / (2 + 0.5) + 1);
-    const secondTermIdf = Math.log((2 - 1 + 0.5) / (1 + 0.5) + 1);
-    const bm25 = (idf: number, tf: number, docLength: number) =>
-      idf * ((tf * (1.2 + 1)) / (tf + 1.2 * (1 - 0.75 + 0.75 * (docLength / 3.5))));
-
-    expect(scores).not.toBeNull();
-    expect(scores?.map((score) => score.index)).toEqual([0, 1]);
-    expect(scores?.[0]?.score).toBeCloseTo(bm25(firstTermIdf, 2, 3) + bm25(secondTermIdf, 1, 3));
-    expect(scores?.[1]?.score).toBeCloseTo(bm25(firstTermIdf, 1, 4));
-  });
-
-  it('returns RRF scores with retrieval source weights', () => {
-    const score = calculateRrfScoreRust(
-      {
-        vector: 1,
-        bm25: 3,
-        structural: 2,
-      },
-      0.3,
-    );
-
-    const weighted = 0.7 * (1 / (60 + 1)) + 0.3 * (1 / (60 + 3)) + 0.12 * (1 / (60 + 2));
-    const total = 0.7 * (1 / (60 + 1)) + 0.3 * (1 / (60 + 1)) + 0.12 * (1 / (60 + 1));
-
-    expect(score).toBeCloseTo(weighted / total);
-  });
-
-  it('returns evidence-aware hybrid scores for strong graph sources', () => {
-    const score = calculateHybridScoreRust({
-      combinedBase: 0.2,
-      rrfScore: 0.5,
-      sourcePrior: 0.1,
-      sourceEvidenceScore: 0.8,
-      bestEvidenceRank: 3,
-      retrievalSources: ['graph-local'],
-    });
-
-    expect(score).toBeCloseTo(0.58 + 0.8 * 0.25 + 0.5 * 0.08);
-  });
-
-  it('analyzes retrieval source evidence and priors through Rust', () => {
-    const analysis = analyzeRetrievalSourcesRust(
-      {
-        ann: 0.7,
-        structural: 0.9,
-        'graph-local': 0.8,
-      },
-      {
-        structural: 4,
-        'graph-local': 2,
-      },
-    );
-
-    expect(analysis).toEqual({
-      sourcePrior: 0.28,
-      sourceEvidenceScore: 0.9,
-      bestEvidenceRank: 2,
-      hasGraphOrStructuralEvidence: true,
-      hasStrongGraphOrStructuralEvidence: true,
-    });
   });
 
   it('plans RAG query result score rows through Rust', () => {
@@ -1256,48 +1002,6 @@ describe('Rust WASM RAG core bridge', () => {
     expect(plan?.hasStrongGraphOrStructuralEvidence).toBe(true);
     expect(plan?.combinedScore).toBeCloseTo(Math.min(0.58 + 0.9 * 0.25 + expectedRrf * 0.08, 0.88));
     expect(plan?.selectionReason).toBe('strong-graph-evidence');
-  });
-
-  it('evaluates RAG relevance threshold decisions through Rust', () => {
-    expect(
-      isRelevantResultRust({
-        combinedScore: 0.1,
-        vectorScore: -1,
-        bm25Score: 0,
-        keywordMatches: 0,
-        threshold: 0.5,
-        hasBm25: false,
-        retrievalSources: ['graph-local'],
-        sourceEvidenceScore: 0.8,
-        bestEvidenceRank: 3,
-      }),
-    ).toBe(true);
-
-    expect(
-      isRelevantResultRust({
-        combinedScore: 0.6,
-        vectorScore: 0.2,
-        bm25Score: 0.5,
-        keywordMatches: 1,
-        threshold: 0.5,
-        hasBm25: true,
-        retrievalSources: ['bm25'],
-        sourceEvidenceScore: 0,
-      }),
-    ).toBe(true);
-
-    expect(
-      isRelevantResultRust({
-        combinedScore: 0.2,
-        vectorScore: 0.2,
-        bm25Score: 0,
-        keywordMatches: 0,
-        threshold: 0.5,
-        hasBm25: true,
-        retrievalSources: ['bm25'],
-        sourceEvidenceScore: 0,
-      }),
-    ).toBe(false);
   });
 
   it('selects sorted RAG relevant result indexes through Rust', () => {
@@ -1350,67 +1054,6 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(indexes).toEqual([0, 2]);
-  });
-
-  it('plans retrieval candidate merge groups through Rust', () => {
-    const plan = planMergedRetrievalCandidatesRust([
-      {
-        entryIndex: 0,
-        source: 'vector',
-        sourceScore: 0.4,
-        rank: 2,
-      },
-      {
-        entryIndex: 1,
-        source: 'bm25',
-        sourceScore: 0.8,
-        rank: 1,
-      },
-      {
-        entryIndex: 0,
-        source: 'bm25',
-        sourceScore: 0.9,
-        rank: 1,
-      },
-      {
-        entryIndex: 0,
-        source: 'vector',
-        sourceScore: 0.6,
-        rank: 3,
-      },
-    ]);
-
-    expect(plan).toEqual([
-      {
-        entryIndex: 0,
-        firstCandidateIndex: 0,
-        candidateIndexes: [0, 2, 3],
-        sources: [
-          {
-            source: 'vector',
-            sourceScore: 0.6,
-            rank: 2,
-          },
-          {
-            source: 'bm25',
-            sourceScore: 0.9,
-            rank: 1,
-          },
-        ],
-      },
-      {
-        entryIndex: 1,
-        firstCandidateIndex: 1,
-        candidateIndexes: [1],
-        sources: [
-          {
-            source: 'bm25',
-            sourceScore: 0.8,
-            rank: 1,
-          },
-        ],
-      },
-    ]);
   });
 
   it('plans retrieval candidate merge entry id grouping through Rust', () => {
@@ -1474,19 +1117,6 @@ describe('Rust WASM RAG core bridge', () => {
     ]);
   });
 
-  it('returns MMR diverse indexes with same-file penalties', () => {
-    const indexes = selectDiverseIndicesRust(
-      [
-        { score: 1, vector: [1, 0], sourceKey: 1, headingKey: 1 },
-        { score: 0.99, vector: [0.999, 0.001], sourceKey: 1, headingKey: 1 },
-        { score: 0.96, vector: [0.96, 0.28], sourceKey: 2, headingKey: 0 },
-      ],
-      2,
-    );
-
-    expect(indexes).toEqual([0, 2]);
-  });
-
   it('plans diverse result indexes from source path and heading strings through Rust', () => {
     const indexes = planDiverseResultIndicesRust(
       [
@@ -1498,15 +1128,6 @@ describe('Rust WASM RAG core bridge', () => {
     );
 
     expect(indexes).toEqual([0, 2]);
-  });
-
-  it('returns graph community assignments and modularity from numeric edges', () => {
-    const result = detectCommunitiesRust(4, [0, 2, 1], [1, 3, 2], [1, 1, 0.1], 20);
-
-    expect(result).not.toBeNull();
-    expect(result?.assignments).toEqual([0, 0, 1, 1]);
-    expect(result?.communityIds).toEqual([0, 1]);
-    expect(result?.modularity).toBeGreaterThan(0);
   });
 
   it('detects GraphRAG communities from string edge records through Rust', () => {
@@ -1528,16 +1149,6 @@ describe('Rust WASM RAG core bridge', () => {
     ]);
     expect(result?.communityIds).toEqual([0, 1]);
     expect(result?.modularity).toBeGreaterThan(0);
-  });
-
-  it('aggregates GraphRAG relation edges by unordered endpoint pair', () => {
-    const edges = aggregateGraphEdgesRust([2, 1, 2, 0], [1, 2, 0, 3], [0.4, 0.6, 0.2, 0.9], 4);
-
-    expect(edges).toEqual([
-      { sourceIndex: 1, targetIndex: 2, weight: 1 },
-      { sourceIndex: 0, targetIndex: 2, weight: 0.2 },
-      { sourceIndex: 0, targetIndex: 3, weight: 0.9 },
-    ]);
   });
 
   it('plans GraphRAG edge records from entity and relation endpoint strings through Rust', () => {
@@ -2615,82 +2226,14 @@ describe('Rust WASM RAG core bridge', () => {
     expect(normalizeGraphConfidenceRust(Number.NaN)).toBe(0.5);
     expect(normalizeGraphConfidenceRust('0.9')).toBe(0.5);
 
-    expect(sanitizeGraphIdPartRust('  A+B 가/나:1.2  ')).toBe('a-b-가-나:1.2');
-    expect(sanitizeGraphIdPartRust('!!!')).toBe('-');
+    expect(createGraphIdRust(['  A+B 가/나:1.2  '])).toBe('a-b-가-나:1.2');
+    expect(createGraphIdRust(['!!!'])).toBe('-');
     expect(createGraphIdRust(['claim', 'factual claim', '가 나', '!!!'])).toBe(
       'claim::factual-claim::가-나::-',
     );
     expect(
       createPendingEntityMergeIdRust('entity::de f@@ult::person::Paul the apostle', 'entity::x'),
     ).toBe('pending-entity-merge::entity::de-fult::person::paul-the-apostle::entity::x');
-  });
-
-  it('extracts Graph LLM JSON object text through Rust', () => {
-    expect(extractJsonObjectRust('  {"entities":[]}  ')).toBe('{"entities":[]}');
-    expect(
-      extractJsonObjectRust(['결과입니다.', '```json', '{"claims":[]}', '```'].join('\n')),
-    ).toBe('{"claims":[]}');
-    expect(extractJsonObjectRust('prefix {"relations":[]} suffix')).toBe('{"relations":[]}');
-    expect(extractJsonObjectRust('not-json')).toBeNull();
-  });
-
-  it('normalizes extracted Graph payload JSON through Rust', () => {
-    const normalized = normalizeExtractedGraphPayloadRust(
-      JSON.stringify({
-        entities: {
-          Base: { type: 'work', aliases: 'Base.base', confidence: 1.2 },
-          표: { type_id: 'concept', desc: '  Table view  ' },
-        },
-        relations: {
-          r1: { from: '표', to: 'Base', relation: 'part_of', score: 0.8 },
-        },
-        claims: [
-          {
-            subject: 'Base',
-            object: '표',
-            claim: "The work titled 'Base' contains a table view named '표'.",
-            type: 'factual_claim',
-            stance: 'supports',
-            confidence: 0.7,
-          },
-        ],
-      }),
-    );
-
-    expect(normalized).toEqual({
-      payload: {
-        entities: [
-          { name: 'Base', typeId: 'work', aliases: ['Base.base'], confidence: 1.2 },
-          { name: '표', typeId: 'concept', description: 'Table view' },
-        ],
-        relations: [{ source: '표', target: 'Base', relationTypeId: 'part_of', confidence: 0.8 }],
-        claims: [
-          {
-            text: "The work titled 'Base' contains a table view named '표'.",
-            claimTypeId: 'factual_claim',
-            entityNames: ['Base', '표'],
-            stance: 'supports',
-            confidence: 0.7,
-          },
-        ],
-      },
-      rawFactCount: 4,
-    });
-
-    expect(
-      normalizeExtractedGraphPayloadRust(
-        JSON.stringify({ Paul: { typeId: 'person', description: 'Apostle' } }),
-      ),
-    ).toEqual({
-      payload: {
-        entities: [{ name: 'Paul', typeId: 'person', description: 'Apostle' }],
-        relations: [],
-        claims: [],
-      },
-      rawFactCount: 1,
-    });
-
-    expect(normalizeExtractedGraphPayloadRust(JSON.stringify({ unexpected: true }))).toBeNull();
   });
 
   it('parses extracted Graph payload raw responses through Rust', () => {
@@ -2801,30 +2344,6 @@ describe('Rust WASM RAG core bridge', () => {
     );
   });
 
-  it('plans GraphRAG LLM planner responses through Rust', () => {
-    expect(
-      planGraphQueryResponseRust(
-        '응답입니다.\n```json\n{"type":"relational","queryMode":"hybrid","traversalDepth":2.8,"evidenceFirst":true,"entityHints":["Paul",3," ","Barnabas"]}\n```',
-        '평범한 질문',
-      ),
-    ).toEqual({
-      type: 'relational',
-      queryMode: 'hybrid',
-      traversalDepth: 2,
-      evidenceFirst: true,
-      globalSearchDepth: 'fast',
-      entityHints: ['Paul', 'Barnabas'],
-    });
-
-    expect(planGraphQueryResponseRust('not-json', '근거가 어디에 있어?')).toEqual(
-      expect.objectContaining({
-        type: 'source-seeking',
-        queryMode: 'local',
-        evidenceFirst: true,
-      }),
-    );
-  });
-
   it('extracts chat mention candidates through Rust', () => {
     const candidates = parseMentionCandidatesRust(
       '@browser @[Project Plan.md] @[Project Plan.md] @[entity: Paul] @Notes/today.md @missing',
@@ -2837,40 +2356,6 @@ describe('Rust WASM RAG core bridge', () => {
       { raw: '@Notes/today.md', name: 'Notes/today.md' },
       { raw: '@missing', name: 'missing' },
     ]);
-  });
-
-  it('returns GraphRAG local evidence scores from numeric graph inputs', () => {
-    const scores = scoreLocalEvidenceRust({
-      entityCount: 3,
-      matchEntityIndices: [0],
-      matchScores: [0.9],
-      matchEvidenceOffsets: [0, 1],
-      matchEvidenceIndices: [0],
-      relationSourceIndices: [0, 1],
-      relationTargetIndices: [1, 2],
-      relationConfidences: [0.8, 0.7],
-      relationEvidenceOffsets: [0, 1, 2],
-      relationEvidenceIndices: [1, 2],
-      claimEntityOffsets: [0, 1, 2],
-      claimEntityIndices: [0, 1],
-      claimConfidences: [0.6, 0.5],
-      claimEvidenceOffsets: [0, 1, 2],
-      claimEvidenceIndices: [3, 4],
-      evidenceCount: 5,
-      traversalDepth: 2,
-    });
-
-    expect(scores).not.toBeNull();
-    expect(scores?.map((score) => score.index)).toEqual([0, 1, 3, 3, 3, 1, 2, 4, 4]);
-    expect(scores?.[0]?.score).toBeCloseTo(0.865);
-    expect(scores?.[1]?.score).toBeCloseTo(0.72);
-    expect(scores?.[2]?.score).toBeCloseTo(0.54);
-    expect(scores?.[3]?.score).toBeCloseTo(0.54);
-    expect(scores?.[4]?.score).toBeCloseTo(0.54);
-    expect(scores?.[5]?.score).toBeCloseTo((0.9 * 0.8) / 1.45);
-    expect(scores?.[6]?.score).toBeCloseTo((0.72 * 0.82 * 0.7) / 1.45);
-    expect(scores?.[7]?.score).toBeCloseTo((0.72 * 0.82 * 0.5) / 1.35);
-    expect(scores?.[8]?.score).toBeCloseTo((0.72 * 0.82 * 0.5) / 1.35);
   });
 
   it('plans GraphRAG local evidence scores from graph record snapshots through Rust', () => {
@@ -3489,36 +2974,6 @@ describe('Rust WASM RAG core bridge', () => {
       action: 'evidence-first',
       requiresPlanner: true,
     });
-  });
-
-  it('plans Graph relation schema filtering indexes through Rust', () => {
-    expect(
-      planGraphSchemaRelationIndicesRust(
-        ['daily-notes', 'project-notes', 'daily-notes', 'archive'],
-        'daily-notes',
-      ),
-    ).toEqual([0, 2]);
-    expect(
-      planGraphSchemaRelationIndicesRust(
-        ['daily-notes', 'project-notes', 'daily-notes', 'archive'],
-        'missing-schema',
-      ),
-    ).toEqual([]);
-  });
-
-  it('plans Graph community schema filtering indexes through Rust', () => {
-    expect(
-      planGraphSchemaCommunityIndicesRust(
-        ['daily-notes', 'project-notes', 'daily-notes', 'archive'],
-        'daily-notes',
-      ),
-    ).toEqual([0, 2]);
-    expect(
-      planGraphSchemaCommunityIndicesRust(
-        ['daily-notes', 'project-notes', 'daily-notes', 'archive'],
-        'missing-schema',
-      ),
-    ).toEqual([]);
   });
 
   it('plans Graph community replacement delete ids through Rust', () => {

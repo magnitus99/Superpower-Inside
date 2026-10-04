@@ -15,18 +15,6 @@ interface ActivePluginInfo {
   description?: string;
 }
 
-export function getActivePluginIds(app: App): string[] {
-  try {
-    const plugins = (app as unknown as Record<string, unknown>).plugins as
-      | { plugins?: Record<string, unknown> }
-      | undefined;
-    if (!plugins?.plugins) return [];
-    return Object.keys(plugins.plugins);
-  } catch {
-    return [];
-  }
-}
-
 export function getActivePluginInfo(app: App): ActivePluginInfo[] {
   try {
     const plugins = (app as unknown as Record<string, unknown>).plugins as
@@ -44,21 +32,6 @@ export function getActivePluginInfo(app: App): ActivePluginInfo[] {
     });
   } catch {
     return [];
-  }
-}
-
-export function isPluginActive(app: App, pluginId: string): boolean {
-  return getActivePluginIds(app).includes(pluginId);
-}
-
-export function getPluginVersion(app: App, pluginId: string): string | undefined {
-  try {
-    const plugins = (app as unknown as Record<string, unknown>).plugins as
-      | { plugins?: Record<string, { manifest?: { version?: string } }> }
-      | undefined;
-    return plugins?.plugins?.[pluginId]?.manifest?.version;
-  } catch {
-    return undefined;
   }
 }
 

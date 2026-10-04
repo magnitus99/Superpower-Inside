@@ -213,21 +213,6 @@ export function listChats(vault: Vault, folderPath: string): TFile[] {
   return files;
 }
 
-export function listChatMetas(vault: Vault, folderPath: string): ChatSessionMeta[] {
-  const files = listChats(vault, folderPath);
-  const metas: ChatSessionMeta[] = [];
-  for (const file of files) {
-    metas.push({
-      filePath: file.path,
-      title: file.basename,
-      created: new Date(file.stat.mtime).toISOString(),
-      messageCount: 0,
-    });
-  }
-  metas.sort((a, b) => b.created.localeCompare(a.created));
-  return metas;
-}
-
 export async function listChatMetasAsync(
   vault: Vault,
   folderPath: string,

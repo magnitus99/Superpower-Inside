@@ -660,13 +660,6 @@ export async function testProviderGenerationForStrategy(
   return testProviderGeneration(key === 'openAICompatible' ? 'customOpenAI' : key, config, modelId);
 }
 
-export async function validateProviderApi(
-  key: ProviderKey,
-  config: ProviderConfig,
-): Promise<ValidationResult> {
-  return validateProviderConnection(key, config);
-}
-
 export async function validateEmbeddingConnection(
   providerKey: EmbeddingProviderKey,
   modelId: string,

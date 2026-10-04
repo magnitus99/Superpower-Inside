@@ -160,6 +160,58 @@ describe('SourcePanel view model contract', () => {
     setLanguage('en');
   });
 
+  it('실제 출처 패널의 첨부 표시 경로에서 포함·부분 포함·연결 실패 상태를 보존한다', () => {
+    expect(
+      createContextAttachmentChipViews([
+        {
+          id: 'file:Notes/A.md',
+          type: 'file',
+          name: 'Notes/A.md',
+          label: 'Notes/A.md',
+          status: 'attached',
+          pinned: true,
+          actualChars: 1180,
+        },
+        {
+          id: 'rag:auto',
+          type: 'rag',
+          name: 'auto',
+          label: 'Related notes',
+          status: 'partial',
+          sourceIds: ['rag-1'],
+          detail: 'Some candidates left out',
+        },
+        {
+          id: 'mcp:search',
+          type: 'mcp-server',
+          name: 'search',
+          label: 'search',
+          status: 'missing',
+          excluded: true,
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 'file:Notes/A.md',
+        className: 'superpower-inside-chat-context-chip file attached',
+        label: 'Notes/A.md',
+        title: undefined,
+      },
+      {
+        id: 'rag:auto',
+        className: 'superpower-inside-chat-context-chip rag partial',
+        label: 'Checked 1 related note',
+        title: 'Found related notes automatically.',
+      },
+      {
+        id: 'mcp:search',
+        className: 'superpower-inside-chat-context-chip mcp-server missing',
+        label: 'Tool unavailable: search',
+        title: undefined,
+      },
+    ]);
+  });
+
   it('presents sources as checked evidence instead of retrieval internals', () => {
     const citations: SourceCitation[] = [
       {

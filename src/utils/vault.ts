@@ -44,13 +44,6 @@ const DEFAULT_EXCLUDE_PATHS = [
   '.playwright-mcp',
   '.playwright-cli',
 ];
-/**
- * 볼트에서 마크다운 파일 목록을 가져오되, 제외 패턴을 적용합니다.
- */
-export function getMarkdownFilesFiltered(vault: Vault, excludePatterns: string[]): TFile[] {
-  const allFiles = vault.getMarkdownFiles();
-  return allFiles.filter((file) => !isExcludedPath(file.path, excludePatterns));
-}
 
 export async function getRagCandidateFiles(
   vault: Vault,
@@ -110,14 +103,6 @@ export async function getRagFileTypeSummary(
     ...summary,
     excludeRecommendations: summary.excludeRecommendations.map(localizeRagExcludeRecommendation),
   };
-}
-
-/**
- * 주어진 경로가 제외 패턴에 매칭되는지 확인합니다.
- * 패턴은 폴더 이름(정확 매칭) 또는 glob-like 패턴을 지원합니다.
- */
-export function isExcluded(filePath: string, patterns: string[]): boolean {
-  return isExcludedPath(filePath, patterns);
 }
 
 export function isExcludedPath(filePath: string, patterns: readonly string[]): boolean {

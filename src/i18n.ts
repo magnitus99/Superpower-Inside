@@ -5445,13 +5445,3 @@ export function t<K extends keyof I18nKeys>(
   }
   return text;
 }
-
-/**
- * Get all available languages as dropdown options.
- */
-export function getLanguageOptions(): { value: Language; label: string }[] {
-  return [
-    { value: 'ko', label: t('langKo') },
-    { value: 'en', label: t('langEn') },
-  ];
-}

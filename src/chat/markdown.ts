@@ -48,16 +48,3 @@ export function enhanceCodeBlocks(container: HTMLElement): void {
     wrapper.appendChild(copyBtn);
   }
 }
-
-/**
- * 문자열 내의 HTML 특수문자를 이스케이프합니다.
- * 스트리밍 중 평문 표시용으로 사용됩니다.
- */
-export function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
