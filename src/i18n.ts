@@ -1745,7 +1745,7 @@ const ko: I18nKeys = {
   settingsExcludePathMissing: '현재 볼트에 없음 · 해당 경로가 생기면 제외됩니다.',
   settingsChatAdvancedTitle: '고급 응답 설정',
   settingsResetPromptConfirm:
-    '현재 프롬프트 내용을 기본값으로 되돌릴까요? 편집한 내용은 사라집니다.',
+    '기본 지식 작업 프롬프트를 다시 적용할까요? 기본 프롬프트의 편집 내용은 초기화되며, 보관함의 다른 프롬프트는 유지됩니다.',
   settingsDiscardPromptDraft: '저장하지 않은 프롬프트 변경이 있습니다. 변경을 버리고 이동할까요?',
   settingsPromptDraftHelp: '보관함 편집은 저장 버튼을 누를 때 반영됩니다.',
   settingsRemoveNamed: '{name} 제거',
@@ -1853,9 +1853,10 @@ const ko: I18nKeys = {
   chatPromptLibraryDesc: '저장된 프롬프트를 선택하고 이름·설명·내용을 관리합니다.',
   chatPromptShortcutsTitle: '빠른 시작과 초기화',
   chatPromptShortcutsDesc:
-    '선택한 응답 방식을 보관함에 추가해 적용합니다. 같은 내용은 기존 항목을 다시 사용합니다.',
+    '이름을 눌러 내용을 미리 보고 적용하세요. 적용한 응답 방식은 보관함에도 저장됩니다.',
   chatApplyPreset: '적용',
-  chatPromptResetDesc: '사용자 지정 전역 프롬프트를 기본 지식 작업 프롬프트로 되돌립니다.',
+  chatPromptResetDesc:
+    '기본 지식 작업 프롬프트로 돌아갑니다. 보관함의 다른 프롬프트는 유지됩니다.',
   chatStorageSectionTitle: '대화 저장',
   chatStorageSectionDesc: '대화를 보관할 위치와 자동 저장 여부를 정합니다.',
   chatStorageDetailsTitle: '저장 세부 조정',
@@ -3612,7 +3613,8 @@ const en: I18nKeys = {
     'Note content is sent to your configured local server. Its storage and processing follow that server’s settings.',
   settingsExcludePathMissing: 'Not in this vault yet · excluded when the path exists.',
   settingsChatAdvancedTitle: 'Advanced response settings',
-  settingsResetPromptConfirm: 'Reset the current prompt? Your edited content will be replaced.',
+  settingsResetPromptConfirm:
+    'Apply the default knowledge-work prompt again? Edits to the default prompt will be reset. Other library prompts will remain.',
   settingsDiscardPromptDraft: 'This prompt has unsaved changes. Discard them and continue?',
   settingsPromptDraftHelp: 'Library edits are applied when you choose Save.',
   settingsRemoveNamed: 'Remove {name}',
@@ -3695,9 +3697,10 @@ const en: I18nKeys = {
   chatPromptLibraryDesc: 'Choose saved prompts and manage their names, descriptions, and content.',
   chatPromptShortcutsTitle: 'Quick starts and reset',
   chatPromptShortcutsDesc:
-    'Apply a response style from your library. Identical content reuses the existing entry.',
+    'Select a name to preview, then apply. Applied response styles are also saved to your library.',
   chatApplyPreset: 'Apply',
-  chatPromptResetDesc: 'Return the global prompt to the default knowledge-work prompt.',
+  chatPromptResetDesc:
+    'Return to the default knowledge-work prompt. Other library prompts remain unchanged.',
   chatStorageSectionTitle: 'Chat saving',
   chatStorageSectionDesc: 'Choose where chats are stored and whether they save automatically.',
   chatStorageDetailsTitle: 'Saving details',

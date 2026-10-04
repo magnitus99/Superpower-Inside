@@ -317,6 +317,26 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).not.toContain("t('chatStatusModelFallbackDetail')");
   });
 
+  it('빠른 시작은 이름으로 미리보기를 펼치고 적용 행동과 초기화 영역을 구분한다', () => {
+    const start = settingsSource.indexOf('private buildChatPromptSection(');
+    const end = settingsSource.indexOf('\n  private getChatPromptPresets(', start);
+    const source = settingsSource.slice(start, end);
+
+    expect(source).toContain("className: 'superpower-inside-chat-preset-row'");
+    expect(source).toContain("t('settingsPresetPreview') + ': ' + preset.label");
+    expect(source).toContain('preview.content.before(button)');
+    expect(source).not.toContain('superpower-inside-chat-preset-copy');
+    expect(source).toContain("'chat-prompt-reset'");
+    expect(source).toContain('new Setting(reset.content)');
+    expect(source).toContain("confirmWithModal(this.app, t('settingsResetPromptConfirm'))");
+    expect(styles).toMatch(
+      /\.superpower-inside-chat-preset-row\s*>\s*\.superpower-inside-settings-disclosure-content\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-prompt-preview\s*\{[^}]*padding:[^}]*line-height:/s,
+    );
+  });
+
   it('MCP 탭은 현재 연결, 서버 설정, 실행 환경 순서의 공통 section을 사용한다', () => {
     const methodStart = settingsSource.indexOf('private buildMCPTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildDetailedMcpError', methodStart);

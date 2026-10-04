@@ -262,6 +262,11 @@ describe('프롬프트 보관함', () => {
   });
 
   it('기본값 초기화는 편집된 기본 항목을 실제 내장 프롬프트로 교체한다', () => {
+    const otherPrompt = createPromptEntry({
+      title: '보관할 프롬프트',
+      content: '보관할 사용자 지침',
+      source: 'user',
+    });
     const settings = createSettings({
       activePromptId: DEFAULT_OBSIDIAN_PROMPT_ID,
       systemPrompt: '내가 편집한 프롬프트',
@@ -271,6 +276,7 @@ describe('프롬프트 보관함', () => {
           source: 'user',
           content: '내가 편집한 프롬프트',
         },
+        otherPrompt,
       ],
     });
 
@@ -284,6 +290,7 @@ describe('프롬프트 보관함', () => {
       content: getDefaultObsidianSystemPrompt(),
       createdAt: '2026-08-01T00:00:00.000Z',
     });
+    expect(settings.chat.promptLibrary[1]).toEqual(otherPrompt);
   });
 
   it('활성 프롬프트 변경은 legacy systemPrompt mirror도 함께 갱신한다', () => {

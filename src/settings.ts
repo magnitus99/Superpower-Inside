@@ -5573,32 +5573,34 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
     const presetList = shortcuts.content.createDiv({ cls: 'superpower-inside-chat-preset-list' });
     for (const [presetIndex, preset] of this.getChatPromptPresets().entries()) {
-      const row = presetList.createDiv({ cls: 'superpower-inside-chat-preset-row' });
-      const copy = row.createDiv({ cls: 'superpower-inside-chat-preset-copy' });
-      copy.createDiv({ cls: 'superpower-inside-chat-preset-label', text: preset.label });
-      copy.createDiv({
-        cls: 'superpower-inside-chat-preset-description',
-        text: preset.description,
-      });
-      const button = row.createEl('button', {
-        text: t('chatApplyPreset'),
-        attr: { type: 'button', title: preset.description },
-      });
-      button.setAttribute('aria-label', t('chatApplyPreset') + ': ' + preset.label);
       const preview = this.createSettingsDisclosure(
-        row,
+        presetList,
         'preset-' + presetIndex,
-        t('settingsPresetPreview'),
+        preset.label,
+        preset.description,
+        { className: 'superpower-inside-chat-preset-row' },
       );
+      preview.button.setAttribute('aria-label', t('settingsPresetPreview') + ': ' + preset.label);
+      preview.button.setAttribute('title', t('settingsPresetPreview'));
+      const button = presetList.createEl('button', {
+        text: t('chatApplyPreset'),
+        attr: { type: 'button', 'aria-label': t('chatApplyPreset') + ': ' + preset.label },
+      });
+      preview.content.before(button);
       preview.content.createEl('pre', {
         cls: 'superpower-inside-settings-prompt-preview',
         text: preset.prompt,
       });
       button.addEventListener('click', () => this.applyChatPromptPreset(preset));
     }
-    new Setting(shortcuts.content)
-      .setName(t('resetToDefault'))
-      .setDesc(t('chatPromptResetDesc'))
+    const reset = this.createSettingsDisclosure(
+      shortcuts.content,
+      'chat-prompt-reset',
+      t('resetToDefault'),
+      t('chatPromptResetDesc'),
+    );
+    new Setting(reset.content)
+      .setName(t('systemPrompt'))
       .addButton((button) =>
         button.setButtonText(t('resetToDefault')).onClick(async () => {
           if (!(await confirmWithModal(this.app, t('settingsResetPromptConfirm')))) return;
