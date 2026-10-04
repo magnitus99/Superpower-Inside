@@ -35,7 +35,7 @@ Searching for a keyword finds files that contain that word. Superpower Inside un
 
 **📎 Inspect the sources behind vault claims**
 
-Available source cards identify notes and retrieved ranges. Open the original, copy the link, or insert the evidence into your active note. General knowledge and proposed content may have no vault source; inspect support before relying on a claim.
+The Sources tab lists notes and retrieved ranges. Open the original, copy the link, or insert the evidence into your active note. General knowledge and proposed content may have no vault source; inspect support before relying on a claim.
 
 **🧭 It sees connections you might miss**
 
@@ -156,7 +156,7 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 **📎 볼트 기반 주장의 출처를 확인하세요**
 
-제공된 출처 카드는 노트와 검색된 구간을 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입으로 이어집니다. 일반 지식과 새로 작성한 제안에는 볼트 출처가 없을 수 있으므로 주장의 근거를 확인하세요.
+출처 탭은 노트와 검색된 구간을 목록으로 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입으로 이어집니다. 일반 지식과 새로 작성한 제안에는 볼트 출처가 없을 수 있으므로 주장의 근거를 확인하세요.
 
 **🧭 놓치기 쉬운 연결을 보여줍니다**
 

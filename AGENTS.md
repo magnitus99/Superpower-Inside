@@ -24,12 +24,9 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 ## 제품·화면
 
-- 사용자가 신경 쓰지 않아도 알아서 작동하는 편안함을 우선합니다. 새 설정 전에 자동 감지·안전한 기본값·기존 설정 재사용을 검토하고 운영 상태를 계속 관리하게 만들지 않습니다.
-- 화면 순서는 `현재 상태 → 가장 작은 다음 행동 → 핵심 설정 → 고급 진단·복구`입니다. 행동이 필요 없으면 조용한 로그로 충분하며, 필요하면 이유 한 문장과 primary action 하나를 제공합니다.
-- 최상위 section만 카드로 만들고 내부는 평평한 row·구분선을 사용합니다. 기존 설정 helper와 Obsidian theme variable에 연결된 의미 토큰을 재사용합니다.
-- 상태는 label·state·detail로 표현하고 색상에만 의존하지 않습니다. disabled 이유는 영역당 한 번 설명합니다. recovery/destructive action은 마지막 disclosure와 확인 단계에 둡니다.
-- disclosure는 button·`aria-expanded`·`aria-controls`·Obsidian icon을 사용합니다. 좁은 폭·긴 텍스트 줄바꿈·키보드 focus·dark/light 대비·reduced-motion을 보장합니다.
-- 내부 용어는 사용자가 판단할 때만 노출합니다. 설계가 위 기준을 충족하지 않으면 구현 전에 범위·자동화·화면 구조를 고칩니다.
+- 설정·채팅의 정보 위계·간격·문구·상태 표현은 [design.md](design.md)를 단일 기준으로 적용합니다. 별도 화면 문서나 모델 프롬프트에 디자인 규칙을 복제하지 않습니다.
+- 기존 설정 helper와 Obsidian theme variable에 연결된 공통 의미 토큰을 재사용합니다. 새 설정 전에 자동 감지·안전한 기본값·기존 설정 재사용을 검토합니다.
+- 설계가 디자인 기준을 충족하지 않으면 구현 전에 범위·자동화·화면 구조를 고칩니다.
 
 ## TS/Rust 경계
 
