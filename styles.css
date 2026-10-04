@@ -1,6 +1,11 @@
 /* Superpower Inside — Plugin Styles */
 
 :root {
+  /* 공통 화면 토큰의 제품 기준은 design.md에 있습니다. */
+  --superpower-inside-section-gap: 20px;
+  --superpower-inside-section-padding: 20px;
+  --superpower-inside-row-padding: 15px;
+  --superpower-inside-surface-radius: 8px;
   --superpower-inside-chat-bg: var(--background-primary);
   --superpower-inside-user-msg-bg: var(--background-modifier-success);
   --superpower-inside-ai-msg-bg: var(--background-modifier-form-field);
@@ -439,7 +444,7 @@
 
 .superpower-inside-settings-tab {
   flex: 0 0 auto;
-  padding: 6px 14px;
+  padding: 9px 11px;
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -549,12 +554,12 @@
   resize: vertical;
 }
 
-/* ── Shared task-centered settings language ─────────────────────── */
+/* 설정 섹션: 공통 디자인 토큰과 평평한 내부 행 */
 .superpower-inside-settings-workspace {
-  --superpower-inside-settings-section-gap: 14px;
-  --superpower-inside-settings-section-padding: 16px;
-  --superpower-inside-settings-row-padding: 12px;
-  --superpower-inside-settings-radius: 10px;
+  --superpower-inside-settings-section-gap: var(--superpower-inside-section-gap);
+  --superpower-inside-settings-section-padding: var(--superpower-inside-section-padding);
+  --superpower-inside-settings-row-padding: var(--superpower-inside-row-padding);
+  --superpower-inside-settings-radius: var(--superpower-inside-surface-radius);
   --superpower-inside-settings-border: var(--background-modifier-border);
   --superpower-inside-settings-surface: var(--background-primary);
   display: flex;
@@ -575,6 +580,21 @@
   background: var(--superpower-inside-settings-surface);
 }
 
+.superpower-inside-settings-workspace > .superpower-inside-settings-section.superpower-inside-settings-status-section {
+  border: 0;
+  border-bottom: 1px solid var(--superpower-inside-settings-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.superpower-inside-settings-status-section > .superpower-inside-settings-section-header {
+  padding: 0 0 var(--superpower-inside-settings-row-padding);
+}
+
+.superpower-inside-settings-status-section > .superpower-inside-settings-section-body {
+  padding: 0 0 var(--superpower-inside-settings-row-padding);
+}
+
 .superpower-inside-settings-section-header {
   padding: var(--superpower-inside-settings-section-padding);
 }
@@ -588,7 +608,7 @@
   margin: 0;
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.3;
 }
 
@@ -929,28 +949,16 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-provider-disclosure.is-open > .superpower-inside-settings-disclosure-button {
-  padding-right: 10px;
-  padding-left: 12px;
-  background: var(--background-secondary);
-  box-shadow: inset 3px 0 0 var(--interactive-accent);
+  background: transparent;
+  color: var(--text-accent);
+  box-shadow: none;
 }
 
 .superpower-inside-provider-profile-content {
   position: relative;
   min-width: 0;
-  padding: 0 12px var(--superpower-inside-settings-row-padding) 16px;
-  background: var(--background-secondary);
-}
-
-.superpower-inside-provider-profile-content::before {
-  position: absolute;
-  top: 0;
-  bottom: var(--superpower-inside-settings-row-padding);
-  left: 0;
-  width: 3px;
-  background: var(--interactive-accent);
-  content: '';
-  opacity: 0.72;
+  padding: 0 0 var(--superpower-inside-settings-row-padding);
+  background: transparent;
 }
 
 .superpower-inside-provider-detail-context {
@@ -2924,7 +2932,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
   flex-shrink: 0;
@@ -2941,7 +2949,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-session-info {
   font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
+  color: var(--text-muted);
   line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2957,12 +2965,18 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-header-actions {
   display: flex;
-  gap: 6px;
+  gap: 3px;
   align-items: center;
 }
 
 .superpower-inside-chat-header-btn {
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0;
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
   background: var(--background-primary-alt);
@@ -3031,7 +3045,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-empty-state {
-  align-items: center;
+  align-items: flex-start;
   align-self: center;
   color: var(--text-muted);
   display: flex;
@@ -3041,14 +3055,14 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin: auto;
   max-width: 420px;
   padding: 28px 18px;
-  text-align: center;
+  text-align: left;
 }
 
 .superpower-inside-chat-empty-state-icon {
   align-items: center;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   color: var(--text-accent);
   display: flex;
   height: 44px;
@@ -3065,7 +3079,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-chat-empty-state-title {
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
-  font-weight: 700;
+  font-weight: 600;
   margin-bottom: 6px;
 }
 
@@ -3078,7 +3092,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  justify-content: center;
+  justify-content: flex-start;
   margin-top: 16px;
 }
 
@@ -3108,6 +3122,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-message-wrapper.user {
   flex-direction: row-reverse;
+  margin-left: 30px;
 }
 
 .superpower-inside-chat-message-wrapper.assistant,
@@ -3146,8 +3161,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-message-wrapper.user .superpower-inside-chat-avatar {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
+  display: none;
 }
 
 .superpower-inside-chat-message-wrapper.assistant .superpower-inside-chat-avatar {
@@ -3192,7 +3206,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-timestamp {
-  opacity: 0.7;
+  opacity: 1;
 }
 
 .superpower-inside-chat-model-meta,
@@ -3236,9 +3250,11 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-bubble.user {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  border-bottom-right-radius: 4px;
+  padding: 13px 15px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
 }
 
 .superpower-inside-chat-bubble.assistant {
@@ -3376,7 +3392,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
-  opacity: 0.72;
+  opacity: 1;
 }
 
 .superpower-inside-chat-message-actions button,
@@ -3471,7 +3487,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-context-chip {
   border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--background-secondary);
   color: var(--text-muted);
   font-size: 11px;
@@ -3486,13 +3502,13 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-chat-readiness {
   display: grid;
   gap: 4px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: var(--background-primary-alt);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   line-height: 1.4;
-  padding: 7px 9px;
+  padding: 0 0 6px;
 }
 
 .superpower-inside-chat-readiness.ready {
@@ -3533,9 +3549,8 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-chat-readiness-detail {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .superpower-inside-chat-readiness-action {
@@ -3989,8 +4004,8 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-chat-input-wrapper {
   flex-shrink: 0;
   border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  padding: 8px 12px;
+  background: var(--background-primary);
+  padding: 15px 16px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3998,14 +4013,14 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-run-control {
   align-items: center;
-  background: var(--background-primary-alt);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: flex;
   gap: 8px;
   justify-content: space-between;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 0 0 6px;
 }
 
 .superpower-inside-chat-run-control-status,
@@ -4039,8 +4054,19 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-input-toolbar {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
+}
+
+.superpower-inside-chat-input-toolbar .superpower-inside-chat-model-select {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.superpower-inside-chat-header-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .superpower-inside-chat-toolbar-btn {
@@ -4077,12 +4103,14 @@ button.superpower-inside-settings-status-row:focus-visible {
   flex: 1 1 auto;
   height: var(--superpower-inside-chat-input-height, auto);
   resize: none;
-  min-height: 36px;
+  min-width: 0;
+  width: 100%;
+  min-height: 72px;
   max-height: 200px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
-  padding: 8px 10px;
-  background: var(--background-primary);
+  padding: 11px 12px;
+  background: var(--background-primary-alt);
   color: var(--text-normal);
   font-family: inherit;
   font-size: var(--font-ui-small);
@@ -4102,8 +4130,9 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-send-btn {
   flex-shrink: 0;
-  padding: 8px 16px;
-  border-radius: 8px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 6px;
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   font-size: var(--font-ui-small);
@@ -4140,8 +4169,8 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 @container (max-width: 420px) {
   .superpower-inside-chat-header {
-    align-items: flex-start;
-    flex-wrap: wrap;
+    align-items: center;
+    flex-wrap: nowrap;
   }
 
   .superpower-inside-chat-header-actions,
@@ -4952,6 +4981,15 @@ button.superpower-inside-settings-status-row:focus-visible {
 /* Session Title */
 .superpower-inside-chat-session-title {
   flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5359,9 +5397,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: var(--background-primary);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.7) inset,
-    0 10px 24px rgba(0, 0, 0, 0.08);
+  box-shadow: none;
 }
 
 .superpower-inside-provider-summary-bar {
@@ -5542,7 +5578,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   border-left: 0;
   border-radius: 8px;
   background: var(--background-primary);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.06);
+  box-shadow: none;
   transition:
     border-color var(--superpower-inside-motion-fast) var(--superpower-inside-motion-ease),
     box-shadow var(--superpower-inside-motion-fast) var(--superpower-inside-motion-ease);
@@ -6002,7 +6038,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: var(--background-primary);
-  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.05);
+  box-shadow: none;
 }
 
 .superpower-inside-provider-custom-header {
@@ -6608,12 +6644,12 @@ button.superpower-inside-settings-status-row:focus-visible {
   overflow-wrap: anywhere;
 }
 
-/* ── RAG task-centered design language ─────────────────────────── */
+/* 검색 설정: 공통 디자인 토큰과 평평한 내부 행 */
 .superpower-inside-rag-workspace {
-  --superpower-inside-rag-section-gap: 14px;
-  --superpower-inside-rag-section-padding: 16px;
-  --superpower-inside-rag-row-padding: 12px;
-  --superpower-inside-rag-radius: 10px;
+  --superpower-inside-rag-section-gap: var(--superpower-inside-section-gap);
+  --superpower-inside-rag-section-padding: var(--superpower-inside-section-padding);
+  --superpower-inside-rag-row-padding: var(--superpower-inside-row-padding);
+  --superpower-inside-rag-radius: var(--superpower-inside-surface-radius);
   --superpower-inside-rag-border: var(--background-modifier-border);
   --superpower-inside-rag-surface: var(--background-primary);
   display: flex;
@@ -6647,7 +6683,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin: 0;
   color: var(--text-normal);
   font-size: var(--font-ui-medium);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.3;
 }
 
@@ -7064,10 +7100,10 @@ button.superpower-inside-settings-status-row:focus-visible {
   }
 }
 
-/* Chat response canvas — answer first, details on demand */
+/* 채팅 응답: 답변을 먼저 읽고 세부 정보는 탭에서 확인 */
 .superpower-inside-chat-container .superpower-inside-chat-messages {
-  gap: 18px;
-  padding: 14px 12px 84px;
+  gap: 24px;
+  padding: 24px 20px 84px;
 }
 
 .superpower-inside-chat-container .superpower-inside-chat-header {
@@ -7098,11 +7134,11 @@ button.superpower-inside-settings-status-row:focus-visible {
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 10px;
   width: 100%;
-  padding: 14px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 14px;
-  background: var(--background-primary-alt);
-  box-shadow: var(--shadow-s);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .superpower-inside-chat-container
@@ -7134,12 +7170,12 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-chat-message-wrapper.assistant .superpower-inside-chat-role {
   color: var(--text-normal);
   font-size: var(--font-ui-small);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .superpower-inside-chat-message-wrapper.assistant .superpower-inside-chat-timestamp {
   font-size: var(--font-ui-smaller);
-  opacity: 0.72;
+  opacity: 1;
 }
 
 .superpower-inside-chat-message-status {
@@ -7155,17 +7191,17 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-chat-message-wrapper.assistant .superpower-inside-chat-message-status.complete {
-  padding: 4px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
-  background: var(--background-primary);
-  color: var(--text-normal);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
 }
 
 .superpower-inside-chat-message-wrapper.assistant .superpower-inside-chat-message-status.error {
-  padding: 4px 10px;
-  border: 1px solid var(--text-error);
-  border-radius: 999px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--text-error);
 }
@@ -7222,6 +7258,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-assistant-response-tabs {
   display: flex;
+  gap: 17px;
   min-width: 0;
   margin-top: 7px;
   border-bottom: 1px solid var(--background-modifier-border);
@@ -7235,11 +7272,11 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-chat-container .superpower-inside-chat-assistant-response-tab {
   appearance: none;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 38px;
   margin: 0 0 -1px;
-  padding: 8px 6px;
+  padding: 8px 0;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -7301,7 +7338,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   background: transparent;
   color: var(--text-normal);
   font-size: var(--font-ui-small);
-  line-height: 1.6;
+  line-height: 1.85;
   white-space: normal;
 }
 
@@ -7714,13 +7751,13 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 @container (max-width: 420px) {
   .superpower-inside-chat-container .superpower-inside-chat-messages {
-    padding-inline: 8px;
+    padding-inline: 14px;
   }
 
   .superpower-inside-chat-message-wrapper.assistant {
     grid-template-columns: 20px minmax(0, 1fr);
     gap: 7px;
-    padding: 12px 10px;
+    padding: 0;
   }
 
   .superpower-inside-chat-container

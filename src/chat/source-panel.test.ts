@@ -321,7 +321,7 @@ describe('SourcePanel view model contract', () => {
       localLabel: 'Kept on this device',
       mcpLabel: 'Tools contacted',
       providerItems: ['Answer instructions', '3 notes and references', '2 source previews'],
-      localItems: ['Draft and source-card state'],
+      localItems: ['Draft and source state'],
       mcpItems: ['search'],
       privacyNotes: ['1 item was left out and was not sent.'],
     });

@@ -111,7 +111,7 @@ describe('context composer contract', () => {
     ).toEqual({
       providerLabel: 'Ollama',
       model: 'llama3.1',
-      localOnly: ['Draft and source-card state', 'Source-card state'],
+      localOnly: ['Draft and source state', 'Source state'],
       sentToProvider: [
         'Current question',
         '4 recent conversation messages',

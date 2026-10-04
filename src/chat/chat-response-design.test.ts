@@ -10,6 +10,51 @@ const sourcePanelSource = readFileSync(resolve(chatRoot, 'source-panel.ts'), 'ut
 const styles = readFileSync(resolve(chatRoot, '../../styles.css'), 'utf8');
 
 describe('assistant 단일 캔버스 디자인 계약', () => {
+  it('A안은 보조 행동을 헤더 메뉴에 두고 입력 아래에 전송 행동을 둔다', () => {
+    const header = viewSource.slice(
+      viewSource.indexOf('private buildHeader('),
+      viewSource.indexOf('private buildMcpStatusBar('),
+    );
+    const composer = viewSource.slice(
+      viewSource.indexOf('private buildInputArea('),
+      viewSource.indexOf('private async focusMessageSearch('),
+    );
+    expect(header).toContain("setIcon(newChatBtn, 'square-pen')");
+    expect(header).toContain("setIcon(historyBtn, 'history')");
+    expect(header).toContain("'aria-haspopup': 'menu'");
+    expect(header).toContain('this.focusMessageSearch()');
+    expect(header).toContain('openPromptLibraryModal');
+    expect(header.indexOf('moreBtn.focus()')).toBeLessThan(
+      header.indexOf('openPromptLibraryModal'),
+    );
+    expect(header).toContain('moreBtn.focus()');
+    expect(composer).not.toContain('chatSearchButton');
+    expect(composer).toContain("this.sendBtn = toolbar.createEl('button'");
+    expect(composer.indexOf('this.inputArea =')).toBeLessThan(
+      composer.indexOf('this.modelSelectEl ='),
+    );
+    expect(viewSource).not.toContain('private stopAllBtn');
+    expect(viewSource).toContain("toggleClass('superpower-inside-chat-stop-all', loading)");
+  });
+
+  it('A안의 답변은 그림자나 카드 배경 없이 노트처럼 읽힌다', () => {
+    const canvas = styles.slice(styles.indexOf('/* 채팅 응답:'));
+    expect(canvas).toMatch(
+      /\.superpower-inside-chat-message-wrapper\.assistant\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s,
+    );
+    expect(canvas).toMatch(
+      /\.superpower-inside-chat-container \.superpower-inside-chat-assistant-response-tab\s*\{[^}]*flex:\s*0 0 auto;/s,
+    );
+  });
+
+  it('시간과 보조 행동 텍스트에 추가 투명도를 적용하지 않는다', () => {
+    expect(styles).toMatch(/\.superpower-inside-chat-timestamp\s*\{[^}]*opacity:\s*1;/s);
+    expect(styles).toMatch(/\.superpower-inside-chat-message-actions\s*\{[^}]*opacity:\s*1;/s);
+    expect(styles).not.toMatch(
+      /\.superpower-inside-chat-message-wrapper\.assistant \.superpower-inside-chat-timestamp\s*\{[^}]*opacity:\s*0\./s,
+    );
+  });
+
   it('답변, 작업 기록, 출처를 접근 가능한 단일 응답 레이아웃으로 조립한다', () => {
     expect(viewSource.includes("from './assistant-response-layout'")).toBe(true);
     expect(viewSource.includes('createAssistantResponseLayout(')).toBe(true);
@@ -62,7 +107,7 @@ describe('assistant 단일 캔버스 디자인 계약', () => {
 
   it('답변 본문은 주변 채팅 UI와 같은 작은 본문 크기 토큰을 사용한다', () => {
     expect(styles).toMatch(
-      /\.superpower-inside-chat-assistant-response\s+\.superpower-inside-chat-bubble\.assistant\s*\{[^}]*font-size:\s*var\(--font-ui-small\)[^}]*line-height:\s*1\.6/s,
+      /\.superpower-inside-chat-assistant-response\s+\.superpower-inside-chat-bubble\.assistant\s*\{[^}]*font-size:\s*var\(--font-ui-small\)[^}]*line-height:\s*1\.85/s,
     );
   });
 });

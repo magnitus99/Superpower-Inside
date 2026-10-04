@@ -251,7 +251,6 @@ export class ChatView extends ItemView {
   private mcpStatusBar: HTMLElement | null;
   private readinessEl: HTMLElement | null;
   private runControlEl: HTMLElement | null;
-  private stopAllBtn: HTMLButtonElement | null;
   private modelSelectEl: HTMLSelectElement | null;
   private pendingReadinessAction: ChatReadinessAction | null;
   private contextPreviewEl: HTMLElement | null;
@@ -310,7 +309,6 @@ export class ChatView extends ItemView {
     this.mcpStatusBar = null;
     this.readinessEl = null;
     this.runControlEl = null;
-    this.stopAllBtn = null;
     this.modelSelectEl = null;
     this.pendingReadinessAction = null;
     this.contextPreviewEl = null;
@@ -521,9 +519,10 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-header-title-section',
     });
 
-    this.sessionTitleEl = titleSection.createSpan({
+    this.sessionTitleEl = titleSection.createEl('button', {
       cls: 'superpower-inside-chat-session-title',
       text: this.session.title || t('chatTabTitle'),
+      attr: { type: 'button', 'aria-label': t('chatRenameSession') },
     });
     this.sessionTitleEl.addEventListener('click', () => this.promptRenameSession());
 
@@ -534,32 +533,57 @@ export class ChatView extends ItemView {
 
     const newChatBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: t('chatNewSession'),
+      attr: { type: 'button', 'aria-label': t('chatNewSession'), title: t('chatNewSession') },
     });
+    setIcon(newChatBtn, 'square-pen');
     newChatBtn.addEventListener('click', () => void this.startNewSession());
 
     const historyBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: t('chatHistory'),
+      attr: { type: 'button', 'aria-label': t('chatHistory'), title: t('chatHistory') },
     });
+    setIcon(historyBtn, 'history');
     historyBtn.addEventListener('click', () => void this.openSessionHistoryModal());
 
-    const sysToggle = actions.createEl('button', {
+    const moreBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      attr: { 'aria-label': t('systemPrompt') },
+      attr: {
+        type: 'button',
+        'aria-label': t('assistantResponseMoreActions'),
+        title: t('assistantResponseMoreActions'),
+        'aria-haspopup': 'menu',
+      },
     });
-    setIcon(sysToggle, 'settings-2');
-    sysToggle.addEventListener('click', () => {
-      openPromptLibraryModal({
-        containerEl: container,
-        plugin: this.plugin,
-        currentSessionPrompt: this.sessionSystemPrompt,
-        selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
-        onApplyToSession: (prompt) => {
-          this.sessionSystemPrompt = prompt.trim() || null;
-          this.markDirtyAndAutoSave();
-        },
-      });
+    setIcon(moreBtn, 'ellipsis');
+    moreBtn.addEventListener('click', () => {
+      const menu = new Menu();
+      menu.setUseNativeMenu(false);
+      menu.addItem((item) =>
+        item
+          .setTitle(t('chatSearchButton'))
+          .setIcon('search')
+          .onClick(() => void this.focusMessageSearch()),
+      );
+      menu.addItem((item) =>
+        item
+          .setTitle(t('promptLibraryTitle'))
+          .setIcon('settings-2')
+          .onClick(() => {
+            moreBtn.focus();
+            openPromptLibraryModal({
+              containerEl: container,
+              plugin: this.plugin,
+              currentSessionPrompt: this.sessionSystemPrompt,
+              selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+              onApplyToSession: (prompt) => {
+                this.sessionSystemPrompt = prompt.trim() || null;
+                this.markDirtyAndAutoSave();
+              },
+            });
+          }),
+      );
+      const rect = moreBtn.getBoundingClientRect();
+      menu.showAtPosition({ x: rect.right, y: rect.bottom }, container.ownerDocument);
     });
   }
 
@@ -651,39 +675,6 @@ export class ChatView extends ItemView {
     });
     setIcon(runStatusIcon, 'sparkles');
     runStatus.createSpan({ text: t('chatRunActive') });
-    this.stopAllBtn = this.runControlEl.createEl('button', {
-      cls: 'superpower-inside-chat-stop-all',
-      attr: { type: 'button' },
-    });
-    setIcon(this.stopAllBtn, 'square');
-    this.stopAllBtn.createSpan({ text: t('stopAllButton') });
-    this.stopAllBtn.addEventListener('click', () => this.stopStreaming());
-
-    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
-
-    this.modelSelectEl = toolbar.createEl('select', {
-      cls: 'superpower-inside-chat-model-select',
-      attr: { 'aria-label': t('modelSelector') },
-    });
-    this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
-    this.populateModelSelect();
-
-    this.mcpBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-toolbar-btn',
-      attr: { 'aria-label': t('toolbarTools') },
-    });
-    setIcon(this.mcpBtn, 'wrench');
-    this.mcpBtn.createSpan({ text: t('toolbarTools') });
-    this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
-
-    const searchBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-toolbar-btn',
-      text: t('chatSearchButton'),
-      attr: { 'aria-label': t('chatMessageSearchAria') },
-    });
-    searchBtn.addEventListener('click', () => {
-      void this.focusMessageSearch();
-    });
 
     this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
     this.renderContextPreview('');
@@ -708,7 +699,23 @@ export class ChatView extends ItemView {
       window.setTimeout(() => this.hideMentionDropdown(), 200);
     });
 
-    this.sendBtn = inputRow.createEl('button', {
+    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
+    this.modelSelectEl = toolbar.createEl('select', {
+      cls: 'superpower-inside-chat-model-select',
+      attr: { 'aria-label': t('modelSelector') },
+    });
+    this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
+    this.populateModelSelect();
+
+    this.mcpBtn = toolbar.createEl('button', {
+      cls: 'superpower-inside-chat-toolbar-btn',
+      attr: { type: 'button', 'aria-label': t('toolbarTools') },
+    });
+    setIcon(this.mcpBtn, 'wrench');
+    this.mcpBtn.createSpan({ text: t('toolbarTools') });
+    this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
+
+    this.sendBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-send-btn',
       text: t('sendButton'),
       attr: { type: 'button' },
@@ -3665,14 +3672,16 @@ export class ChatView extends ItemView {
     if (this.sendBtn) {
       this.sendBtn.disabled = state.sendButton.disabled;
       this.sendBtn.setText(state.sendButton.text);
+      this.sendBtn.toggleClass('superpower-inside-chat-stop-all', loading);
+      this.sendBtn.setAttribute(
+        'aria-label',
+        loading ? state.runControl.stopText : state.sendButton.text,
+      );
     }
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
     if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
     setHidden(this.runControlEl, state.runControl.hidden);
-    if (this.stopAllBtn) {
-      this.stopAllBtn.setAttribute('aria-label', state.runControl.stopText);
-    }
     if (!loading) this.renderChatReadiness();
   }
 

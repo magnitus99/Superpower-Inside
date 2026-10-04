@@ -2116,7 +2116,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildGeneralStatusSection(containerEl: HTMLElement): void {
     const section = this.createSettingsSection(containerEl, t('generalStatusTitle'), {
       description: t('generalStatusDesc'),
-      className: 'superpower-inside-general-status-section',
+      className:
+        'superpower-inside-general-status-section superpower-inside-settings-status-section',
     });
     section.body.setAttribute('role', 'status');
     section.body.setAttribute('aria-live', 'polite');
@@ -2535,7 +2536,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildRagStatusPanel(containerEl: HTMLElement): void {
     const section = this.createRagSection(containerEl, t('settingsAuto027'), {
       description: t('ragStatusSectionDescription'),
-      className: 'superpower-inside-rag-status-panel',
+      className: 'superpower-inside-rag-status-panel superpower-inside-settings-status-section',
     });
     const statusGrid = section.body.createDiv({ cls: 'superpower-inside-rag-status-grid' });
     const actionEl = section.body.createDiv({ cls: 'superpower-inside-rag-status-action' });
@@ -3754,7 +3755,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         isLocalSettingsProviderRust(selectedProvider.strategy, selectedProvider.baseUrl) === true;
       const localNote = section.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
       const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
-      setIcon(icon, 'shield-check');
+      setIcon(icon, selectedProvider ? 'shield-check' : 'circle-alert');
       const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
       copy.createDiv({
         cls: 'superpower-inside-rag-local-embedding-title',
@@ -3762,7 +3763,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           ? isLocal
             ? t('ragLocalEmbeddingTitle')
             : t('settingsRemoteEmbeddingTitle')
-          : t('ragIndexerSelectEmbeddingModel'),
+          : t('ragOverviewUnavailable'),
       });
       copy.createDiv({
         cls: 'superpower-inside-rag-local-embedding-detail',
@@ -5460,6 +5461,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildChatStatusSection(containerEl: HTMLElement): void {
     const { body } = this.createSettingsSection(containerEl, t('chatStatusTitle'), {
       description: t('chatStatusDesc'),
+      className: 'superpower-inside-settings-status-section',
     });
     this.chatStatusBody = body;
     this.renderChatStatus(body);
@@ -5807,6 +5809,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const statusSection = this.createSettingsSection(workspace, t('mcpStatusSectionTitle'), {
       description: t('mcpStatusSectionDesc'),
+      className: 'superpower-inside-settings-status-section',
     });
     const serversSection = this.createSettingsSection(workspace, t('mcpServersSectionTitle'), {
       description: t('settingsMcpDraftHelp'),
@@ -6201,6 +6204,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   ): void {
     const section = this.createSettingsSection(containerEl, t('providerStatusSectionTitle'), {
       description: t('providerStatusSectionDesc'),
+      className: 'superpower-inside-settings-status-section',
     });
     this.providerStatusBody = section.body;
     this.renderProviderStatusSection(section.body, profiles);

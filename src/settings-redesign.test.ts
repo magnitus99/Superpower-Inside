@@ -11,6 +11,40 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('모든 설정 탭과 채팅은 같은 A안 간격·모서리 토큰을 사용한다', () => {
+    expect(styles).toMatch(/--superpower-inside-section-gap:\s*20px/);
+    expect(styles).toMatch(/--superpower-inside-section-padding:\s*20px/);
+    expect(styles).toMatch(/--superpower-inside-row-padding:\s*15px/);
+    expect(styles).toMatch(/--superpower-inside-surface-radius:\s*8px/);
+    for (const prefix of ['settings', 'rag']) {
+      expect(styles).toContain(
+        `--superpower-inside-${prefix}-section-gap: var(--superpower-inside-section-gap)`,
+      );
+      expect(styles).toContain(
+        `--superpower-inside-${prefix}-radius: var(--superpower-inside-surface-radius)`,
+      );
+    }
+  });
+
+  it('다섯 탭의 현재 상태는 공통 요약 영역으로 표시한다', () => {
+    expect(settingsSource.match(/superpower-inside-settings-status-section/g)).toHaveLength(5);
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-section\.superpower-inside-settings-status-section\s*\{[^}]*border:\s*0;[^}]*border-bottom:\s*1px/s,
+    );
+  });
+
+  it('임베딩 연결이 없으면 상태 제목과 이유를 구분해 안내를 중복하지 않는다', () => {
+    const start = settingsSource.indexOf('private buildEmbeddingProviderSection(');
+    const end = settingsSource.indexOf(
+      'if (isProfilePending)',
+      settingsSource.indexOf('const localNote', start),
+    );
+    const source = settingsSource.slice(start, end);
+    expect(source.match(/t\('ragIndexerSelectEmbeddingModel'\)/g)).toHaveLength(1);
+    expect(source).toContain("t('ragOverviewUnavailable')");
+    expect(source).toContain("selectedProvider ? 'shield-check' : 'circle-alert'");
+  });
+
   it('검색 품질은 기본값을 표시하고 세 항목만 초기화한다', () => {
     const start = settingsSource.indexOf('private buildSearchQualitySection(');
     const end = settingsSource.indexOf('private buildChatTab(', start);
@@ -623,7 +657,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toMatch(
       /\.superpower-inside-provider-disclosure\.is-open\s*>\s*\.superpower-inside-settings-disclosure-button/,
     );
-    expect(styles).toContain('.superpower-inside-provider-profile-content::before');
+    expect(styles).toMatch(
+      /\.superpower-inside-provider-profile-content\s*\{[^}]*background:\s*transparent/s,
+    );
     expect(styles).toContain('.superpower-inside-provider-detail-context');
     expect(styles).toMatch(
       /@container superpower-inside-settings \(max-width: 520px\)[\s\S]*\.superpower-inside-provider-profile-content/,
