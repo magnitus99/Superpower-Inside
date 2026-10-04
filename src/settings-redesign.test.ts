@@ -11,6 +11,20 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('모델 검사 시각과 오류는 전체 행에 배치하고 좁은 폭의 행동은 다음 줄로 옮긴다', () => {
+    expect(styles).toMatch(
+      /\.superpower-inside-provider-profile-model-section \.superpower-inside-settings-model-item\s*\{[^}]*flex-shrink:\s*0/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-provider-profile-model-section \.superpower-inside-provider-model-checked,\s*\.superpower-inside-provider-profile-model-section \.superpower-inside-settings-input-feedback\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(styles).toMatch(
+      /@container superpower-inside-settings \(max-width: 520px\)\s*\{\s*\.superpower-inside-provider-profile-model-section \.superpower-inside-settings-model-item\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto/s,
+    );
+    expect(styles).toMatch(
+      /@container superpower-inside-settings \(max-width: 520px\)\s*\{[^]*?\.superpower-inside-provider-profile-model-section \.superpower-inside-provider-model-actions\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s,
+    );
+  });
   it('ChatGPT는 브라우저 로그인 행을 제공하고 API 키와 중계 URL 입력을 숨긴다', () => {
     const start = settingsSource.indexOf(
       "if (profile.strategy === 'openAIChatGPT') {",

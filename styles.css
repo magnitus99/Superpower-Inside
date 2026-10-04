@@ -5967,9 +5967,27 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-provider-profile-model-section .superpower-inside-settings-model-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
+  flex-shrink: 0;
   align-items: center;
   min-height: 38px;
   cursor: default;
+}
+
+.superpower-inside-provider-profile-model-section .superpower-inside-provider-model-checked,
+.superpower-inside-provider-profile-model-section .superpower-inside-settings-input-feedback {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@container superpower-inside-settings (max-width: 520px) {
+  .superpower-inside-provider-profile-model-section .superpower-inside-settings-model-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .superpower-inside-provider-profile-model-section .superpower-inside-provider-model-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 .superpower-inside-provider-profile-model-section .superpower-inside-provider-model-capabilities {
