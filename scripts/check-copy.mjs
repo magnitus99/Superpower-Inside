@@ -8,12 +8,14 @@ import { delimiter } from 'node:path';
 
 const threshold = 15;
 const languages = ['en', 'ko'];
+// 사용자에게 제품을 소개하거나 사용을 안내하는 문서만 명시적으로 등록합니다.
+const copyDocuments = new Set(['README.md']);
 
 export function isCopyPath(file) {
   if (/(^|\/)AGENTS\.md$/i.test(file)) return false;
   return (
-    /(^|\/)README[^/]*\.(md|mdx|txt)$/i.test(file) ||
-    /^(docs|marketing|copy|public|releases)\/.*\.(md|mdx|txt|rst|adoc)$/i.test(file) ||
+    copyDocuments.has(file) ||
+    /^(marketing|copy|releases)\/.*\.(md|mdx|txt|rst|adoc)$/i.test(file) ||
     ['package.json', 'manifest.json'].includes(file)
   );
 }
@@ -56,19 +58,6 @@ export function validateRewrite(result, status) {
     throw new Error('재작성 의미 보존 검증 실패: 원본을 유지합니다.');
   }
   return result.output;
-}
-
-export function pushRevisions(input) {
-  return [
-    ...new Set(
-      input
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => line.split(/\s+/)[1])
-        .filter((sha) => sha && !/^0+$/.test(sha)),
-    ),
-  ];
 }
 
 function command(program, args, options = {}) {
@@ -216,37 +205,106 @@ function copyText(file, content) {
   return content;
 }
 
-function snapshots(mode, refs) {
-  if (mode === '--staged') {
-    return git(['ls-files', '--cached', '-z'])
+function changedSnapshots(before, after, staged = false) {
+  const files = git([
+    'diff',
+    ...(staged ? ['--cached'] : []),
+    '--name-only',
+    '-z',
+    '--no-renames',
+    '--diff-filter=ACMRT',
+    ...(before ? [before] : []),
+    ...(staged ? [] : [after]),
+    '--',
+  ])
+    .split('\0')
+    .filter(isCopyPath);
+  return files.flatMap((file) => {
+    const content = git(['show', `${staged ? '' : after}:${file}`]);
+    const previous = before ? command('git', ['show', `${before}:${file}`]) : null;
+    const text = copyText(file, content);
+    if (previous?.status === 0 && copyText(file, previous.stdout) === text) return [];
+    return [{ file: staged ? file : `${after.slice(0, 8)}:${file}`, content, text }];
+  });
+}
+
+function commitRevision(ref) {
+  return git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]).trim();
+}
+
+function rangeCommits(before, after, remote) {
+  const head = commitRevision(after);
+  return git([
+    'rev-list',
+    '--reverse',
+    head,
+    ...(before && !/^0+$/.test(before) ? [`^${commitRevision(before)}`] : []),
+    ...(remote ? ['--not', `--remotes=${remote}`] : []),
+    '--',
+  ])
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+}
+
+function commitSnapshots(commits) {
+  return [...new Set(commits)].flatMap((commit) => {
+    const parent = git(['rev-list', '--parents', '-n', '1', commit]).trim().split(/\s+/)[1];
+    if (parent) return changedSnapshots(parent, commit);
+    return git(['ls-tree', '-r', '--name-only', '-z', commit])
       .split('\0')
       .filter(isCopyPath)
-      .map((file) => ({ file, content: git(['show', `:${file}`]) }));
+      .map((file) => {
+        const content = git(['show', `${commit}:${file}`]);
+        return { file: `${commit.slice(0, 8)}:${file}`, content, text: copyText(file, content) };
+      });
+  });
+}
+
+function snapshots(mode, args) {
+  if (mode === '--staged') {
+    const head = command('git', ['rev-parse', '--verify', 'HEAD']);
+    return changedSnapshots(head.status === 0 ? head.stdout.trim() : null, null, true);
   }
   if (mode === '--push') {
-    return refs.flatMap((ref) =>
-      git(['ls-tree', '-r', '--name-only', '-z', `${ref}^{commit}`])
-        .split('\0')
-        .filter(isCopyPath)
-        .map((file) => ({
-          file: `${ref.slice(0, 8)}:${file}`,
-          content: copyText(file, git(['show', `${ref}:${file}`])),
-          extracted: true,
-        })),
-    );
+    const commits = readFileSync(0, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((line) => {
+        const [, after, , before] = line.trim().split(/\s+/);
+        if (!after || !before) throw new Error('잘못된 pre-push 입력입니다.');
+        return /^0+$/.test(after)
+          ? []
+          : rangeCommits(before, after, /^0+$/.test(before) ? args[0] || '*' : null);
+      });
+    return commitSnapshots(commits);
+  }
+  if (mode === '--range') {
+    const [before, after, offline] = args;
+    if (!before || !after || (offline && offline !== '--offline') || args.length > 3)
+      throw new Error(
+        '사용법: node scripts/check-copy.mjs --range <이전 커밋> <현재 커밋> [--offline]',
+      );
+    return commitSnapshots(rangeCommits(before, after));
   }
   return git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'])
     .split('\0')
     .filter(isCopyPath)
-    .map((file) => ({ file, content: readFileSync(file, 'utf8') }));
+    .map((file) => {
+      const content = readFileSync(file, 'utf8');
+      return { file, content, text: copyText(file, content) };
+    });
 }
 
 function run() {
   const [mode = '--worktree', ...args] = process.argv.slice(2);
-  if (!['--worktree', '--staged', '--push', '--fix', '--online', '--offline'].includes(mode))
+  if (
+    !['--worktree', '--staged', '--push', '--range', '--fix', '--online', '--offline'].includes(
+      mode,
+    )
+  )
     throw new Error(`알 수 없는 실행 모드: ${mode}`);
-  const refs = mode === '--push' ? pushRevisions(readFileSync(0, 'utf8')) : [];
-  const patina = latestPatina();
   if (mode === '--fix') {
     const [file, language, backend = 'codex-cli', model = 'gpt-6.1-sol'] = args;
     if (
@@ -262,17 +320,25 @@ function run() {
       );
     }
     const original = readFileSync(file, 'utf8');
+    const patina = latestPatina();
     saveRewrite(patina, file, original, rewriteText(patina, original, language, backend, model));
     return;
   }
+  const selected = snapshots(mode, args);
+  if (!selected.length) {
+    console.log('Patina: 검사할 제품 소개·사용 안내·홍보 문구 변경이 없습니다.');
+    return;
+  }
+  const patina = latestPatina();
   let passed = true;
   const seen = new Set();
-  for (const snapshot of snapshots(mode, refs)) {
-    const text = snapshot.extracted ? snapshot.content : copyText(snapshot.file, snapshot.content);
+  const online = mode !== '--offline' && !(mode === '--range' && args[2] === '--offline');
+  for (const snapshot of selected) {
+    const text = snapshot.text;
     const hash = createHash('sha256').update(text).digest('hex');
     if (seen.has(hash)) continue;
     seen.add(hash);
-    const failed = checkText(patina, snapshot.file, text, mode !== '--offline');
+    const failed = checkText(patina, snapshot.file, text, online);
     if (failed.length) {
       passed = false;
       if (mode === '--staged' && !snapshot.file.endsWith('.json')) {
