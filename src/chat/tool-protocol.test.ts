@@ -3,7 +3,7 @@ import { createNativeVaultToolDefinition } from '../agent/native-vault-tool';
 import type { ToolDefinition } from '../llm/providers';
 import {
   createCompatibilityToolPrompt,
-  createNativeVaultEvidencePrompt,
+  createToolEvidencePrompt,
   parseCompatibilityToolResponse,
   parseCompatibilityToolTurn,
   sanitizeNonExecutingToolTurn,
@@ -31,7 +31,7 @@ describe('모델 중립 도구 프로토콜', () => {
 
   it('네이티브 볼트 도구가 있으면 provider-native와 compatibility 경로가 같은 근거 계약을 공유한다', () => {
     const definitions = [createNativeVaultToolDefinition(), createMcpToolDefinition()];
-    const evidencePrompt = createNativeVaultEvidencePrompt(definitions);
+    const evidencePrompt = createToolEvidencePrompt(definitions);
     const compatibilityPrompt = createCompatibilityToolPrompt(definitions);
 
     expect(evidencePrompt).toContain('Only successful tool results count as vault evidence.');
@@ -61,7 +61,8 @@ describe('모델 중립 도구 프로토콜', () => {
   });
 
   it('네이티브 볼트 도구가 없으면 일반 MCP 도구에 볼트 근거 계약을 붙이지 않는다', () => {
-    expect(createNativeVaultEvidencePrompt([createMcpToolDefinition()])).toBe('');
+    expect(createToolEvidencePrompt([])).toBe('');
+    expect(createToolEvidencePrompt([createMcpToolDefinition()])).toMatch(/비신뢰|untrusted/i);
 
     const prompt = createCompatibilityToolPrompt([createMcpToolDefinition()]);
     expect(prompt).toMatch(/비신뢰|untrusted/i);

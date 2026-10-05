@@ -1145,6 +1145,22 @@ describe('normalizeForClaude', () => {
 });
 
 describe('normalizeForOllama', () => {
+  it('도구 라운드의 thinking을 후속 요청에 보존한다', () => {
+    expect(
+      normalizeForOllama([
+        {
+          role: 'assistant',
+          content: '',
+          reasoning: '원문을 확인해야 합니다.',
+          toolCalls: [tc('read-1', 'read_plan', '{}')],
+        },
+        { role: 'tool', content: 'Release: 2031-04-17', name: 'read_plan', tool_call_id: 'read-1' },
+      ])[0],
+    ).toMatchObject({
+      thinking: '원문을 확인해야 합니다.',
+      tool_calls: [{ function: { name: 'read_plan', arguments: {} } }],
+    });
+  });
   it('plain messages pass through with role and content', () => {
     const messages: ChatMessage[] = [
       { role: 'user', content: 'Hello!' },

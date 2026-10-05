@@ -196,6 +196,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
       return { role: 'tool', content: m.content, tool_name: m.name ?? 'unknown_tool' };
     }
     const normalized: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.reasoning) normalized.thinking = m.reasoning;
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
       normalized.tool_calls = m.toolCalls.map((tc) => ({
         function: {
@@ -359,10 +360,14 @@ class OpenAICompatibleProvider implements LLMProvider {
   private processSSELine(line: string, onChunk: (chunk: StreamChunk) => void): boolean {
     if (!line.startsWith('data: ')) return false;
     const data = line.slice(6).trim();
-    if (data === '[DONE]') return true;
+    if (data === '[DONE]') {
+      onChunk({ content: '', done: true });
+      return true;
+    }
     if (!data) return false;
     try {
       const chunk = JSON.parse(data) as {
+        error?: { message?: string; code?: number; status?: number };
         choices?: Array<{
           delta?: {
             content?: string;
@@ -376,6 +381,12 @@ class OpenAICompatibleProvider implements LLMProvider {
           };
         }>;
       };
+      if (chunk.error) {
+        throw new LLMProviderHttpError(
+          chunk.error.message ?? 'LLM stream failed',
+          chunk.error.status ?? chunk.error.code ?? 502,
+        );
+      }
       const delta = chunk.choices?.[0]?.delta;
       const normalized = normalizeReasoningChunk({
         content: delta?.content ?? '',
@@ -401,8 +412,9 @@ class OpenAICompatibleProvider implements LLMProvider {
           ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
         });
       }
-    } catch {
-      // malformed SSE line — skip
+    } catch (error) {
+      // JSON 구문 오류만 건너뛰며 provider 오류와 소비자 오류는 호출부에 전달합니다.
+      if (!(error instanceof SyntaxError)) throw error;
     }
     return false;
   }
@@ -549,6 +561,7 @@ class ClaudeProvider implements LLMProvider {
       try {
         const event = JSON.parse(data) as {
           type: string;
+          error?: { type?: string; message?: string };
           content_block?: { type: string; id?: string; name?: string };
           index?: number;
           delta?: {
@@ -558,6 +571,12 @@ class ClaudeProvider implements LLMProvider {
             partial_json?: string;
           };
         };
+        if (event.type === 'error') {
+          throw new LLMProviderHttpError(
+            event.error?.message ?? 'Claude stream failed',
+            event.error?.type === 'overloaded_error' ? 529 : 502,
+          );
+        }
         if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
           const toolCall: ToolCallDelta = {
             index: event.index ?? 0,
@@ -585,8 +604,9 @@ class ClaudeProvider implements LLMProvider {
           onChunk({ content: '', done: true });
           return;
         }
-      } catch {
-        // malformed SSE line — skip
+      } catch (error) {
+        // JSON 구문 오류만 건너뛰며 오류 이벤트를 성공 종료로 바꾸지 않습니다.
+        if (!(error instanceof SyntaxError)) throw error;
       }
     }
     onChunk({ content: '', done: true });
@@ -672,6 +692,7 @@ class OllamaProvider implements LLMProvider {
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
+      throw: false,
     });
     if (res.status >= 400) {
       throw createProviderHttpError('Ollama chat failed', res);
@@ -712,6 +733,7 @@ class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
+        throw: false,
       });
       if (res.status >= 400) {
         throw createProviderHttpError('Ollama stream failed', res);

@@ -2377,24 +2377,30 @@ pub fn normalize_mcp_tool_result_json(result_json: &str) -> String {
     let result = serde_json::from_str::<JsonValue>(result_json)
         .unwrap_or_else(|_| JsonValue::String(result_json.to_owned()));
 
-    let extracted = collect_mcp_tool_result_text_from_json(&result)
-        .or_else(|| {
-            result
-                .get("structuredContent")
-                .filter(|value| mcp_structured_content_is_meaningful(value))
-                .and_then(stringify_json_compact)
-        })
-        .unwrap_or_else(|| {
-            if result
-                .get("content")
-                .and_then(JsonValue::as_array)
-                .is_some_and(Vec::is_empty)
-            {
-                "[]".to_owned()
-            } else {
-                stringify_json_compact(&result).unwrap_or_else(|| "{}".to_owned())
-            }
-        });
+    let text = collect_mcp_tool_result_text_from_json(&result);
+    let structured = result
+        .get("structuredContent")
+        .filter(|value| mcp_structured_content_is_meaningful(value))
+        .and_then(stringify_json_compact);
+    // 표시용 텍스트와 구조화된 원문이 다르면 양쪽을 보존해 모델 입력의 사실 누락을 막습니다.
+    let extracted = match (text, structured) {
+        (Some(text), Some(structured)) if text != structured => {
+            Some(format!("{text}\n\n{structured}"))
+        }
+        (Some(text), _) => Some(text),
+        (None, structured) => structured,
+    }
+    .unwrap_or_else(|| {
+        if result
+            .get("content")
+            .and_then(JsonValue::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            "[]".to_owned()
+        } else {
+            stringify_json_compact(&result).unwrap_or_else(|| "{}".to_owned())
+        }
+    });
 
     let mut output = JsonMap::new();
     output.insert(
@@ -13212,6 +13218,18 @@ mod tests {
                 r#"{"content":[],"structuredContent":{"matches":["Alpha.md"]}}"#,
             ),
             r#"{"displayText":"{\"matches\":[\"Alpha.md\"]}","modelText":"{\"matches\":[\"Alpha.md\"]}"}"#,
+        );
+        assert_eq!(
+            normalize_mcp_tool_result_json(
+                r#"{"content":[{"type":"text","text":"Plan loaded."}],"structuredContent":{"releaseDate":"2031-04-17"}}"#,
+            ),
+            r#"{"displayText":"Plan loaded.\n\n{\"releaseDate\":\"2031-04-17\"}","modelText":"Plan loaded.\n\n{\"releaseDate\":\"2031-04-17\"}"}"#,
+        );
+        assert_eq!(
+            normalize_mcp_tool_result_json(
+                r#"{"content":[{"type":"text","text":"{\"count\":3}"}],"structuredContent":{"count":3}}"#,
+            ),
+            r#"{"displayText":"{\"count\":3}","modelText":"{\"count\":3}"}"#,
         );
 
         assert!(is_mcp_tool_result_empty_json(

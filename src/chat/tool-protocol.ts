@@ -22,20 +22,23 @@ export interface SanitizedNonExecutingToolTurn {
 const MAX_COMPATIBILITY_TOOL_CALLS_PER_TURN = 8;
 
 /**
- * 네이티브 볼트 도구가 노출된 요청에만 적용하는 provider 공통 근거 경계입니다.
+ * 노출된 모든 도구에 적용하는 provider 공통 근거 경계입니다.
  * provider-native function calling과 compatibility protocol이 같은 계약을 공유합니다.
  */
-export function createNativeVaultEvidencePrompt(definitions: readonly ToolDefinition[]): string {
+export function createToolEvidencePrompt(definitions: readonly ToolDefinition[]): string {
+  if (definitions.length === 0) return '';
+  const shared = [t('llmEvidenceDataBoundary'), t('llmToolEvidenceContract')].join('\n');
   if (
     !definitions.some((definition) => {
       const name = definition.function.name;
       return name === NATIVE_VAULT_TOOL_NAME || name.startsWith(`${NATIVE_VAULT_TOOL_NAME}_`);
     })
   ) {
-    return '';
+    return shared;
   }
 
   return [
+    shared,
     '[Superpower Inside proactive research and evidence contract]',
     'Use the available tools proactively whenever the answer depends on vault contents, paths, links, counts, the current chat session, or explicitly connected MCP data. Do not wait for the user to repeat a request to investigate.',
     'For find, investigate, compare, analyze, summarize, or explain requests over connected data: search or list candidates, read the most relevant original sources, repair one invalid call when possible, then answer the latest user objective.',
@@ -66,7 +69,7 @@ export function createCompatibilityToolPrompt(definitions: readonly ToolDefiniti
     'Return each tool request as exactly one block and no answer text in that turn:',
     '<tool_call>{"name":"tool_name","arguments":{}}</tool_call>',
     'After a tool result, follow the latest agent checkpoint: call the next required tool or, when evidence is sufficient, answer the current objective completely.',
-    createNativeVaultEvidencePrompt(definitions),
+    createToolEvidencePrompt(definitions),
     `Available tools: ${JSON.stringify(catalog)}`,
   ]
     .filter(Boolean)

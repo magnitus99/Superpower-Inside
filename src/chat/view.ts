@@ -133,7 +133,7 @@ import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
 import {
   createCompatibilityToolPrompt,
-  createNativeVaultEvidencePrompt,
+  createToolEvidencePrompt,
   parseCompatibilityToolTurn,
   sanitizeNonExecutingToolTurn,
 } from './tool-protocol';
@@ -3020,7 +3020,7 @@ export class ChatView extends ItemView {
         toolsEnabled && toolProtocol === 'native' ? initialToolDefinitions : undefined;
       const toolPrompt = toolsEnabled
         ? toolProtocol === 'native'
-          ? createNativeVaultEvidencePrompt(initialToolDefinitions)
+          ? createToolEvidencePrompt(initialToolDefinitions)
           : createCompatibilityToolPrompt(initialToolDefinitions)
         : '';
       let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
@@ -3836,6 +3836,7 @@ export class ChatView extends ItemView {
     messageId: string;
     conversationMessages: ChatMessage[];
     assistantContent: string;
+    assistantReasoning?: string;
     toolDefinitions: ToolDefinition[];
     toolProtocol: ToolTranscriptProtocol;
     checkpoint: string;
@@ -3875,6 +3876,7 @@ export class ChatView extends ItemView {
       args.assistantContent,
       completedToolCalls,
       args.toolProtocol,
+      args.assistantReasoning,
     );
     const roundCheckpoint =
       args.toolProtocol === 'compatibility' && args.toolDefinitions.length > 0
@@ -4078,6 +4080,7 @@ export class ChatView extends ItemView {
     let currentToolCalls = args.toolCalls;
     let conversationMessages = [...args.baseMessages];
     let currentAssistantContent = args.initialText ?? '';
+    let currentAssistantReasoning = args.initialReasoning ?? '';
     let accumulatedText = args.initialText ?? '';
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
@@ -4139,6 +4142,7 @@ export class ChatView extends ItemView {
           messageId: args.messageId,
           conversationMessages,
           assistantContent: currentAssistantContent,
+          assistantReasoning: currentAssistantReasoning,
           toolDefinitions: roundToolDefinitions,
           toolProtocol,
           checkpoint,
@@ -4295,6 +4299,7 @@ export class ChatView extends ItemView {
         if (!isChatRunActive(this.activeRun, args.run)) return;
         allToolCalls.push(...currentToolCalls);
         currentAssistantContent = result.finalText;
+        currentAssistantReasoning = result.finalReasoning;
         turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
         const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         this.updateMessage(
