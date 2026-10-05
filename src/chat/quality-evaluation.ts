@@ -2,7 +2,7 @@ import type { ToolDefinition } from '../llm/providers';
 import { planAgenticToolTurn } from './tool-orchestration';
 import type { ContextAttachment, SourceCitation, ToolCallRecord } from './types';
 
-/** 실제 모델 호출 없이 저장된 채팅 trace에서 계산할 수 있는 최소 품질 지표입니다. */
+/** 실제 모델 호출 없이 저장된 채팅 trace에서 계산하는 실행 관측값입니다. */
 export interface ToolTraceQualityInput {
   question: string;
   answer: string;
@@ -29,6 +29,8 @@ export interface ToolTraceQuality {
   hybridAnswerCitations: number;
   requiresEvidence: boolean;
   answerGrounded: boolean;
+  /** 출처 존재 여부로 문장 정확성·완결성을 판정할 수 없음을 명시합니다. */
+  semanticQualityAssessed: false;
   nextAction: string;
 }
 
@@ -89,6 +91,7 @@ export function evaluateToolTrace(input: ToolTraceQualityInput): ToolTraceQualit
     hybridAnswerCitations,
     requiresEvidence,
     answerGrounded,
+    semanticQualityAssessed: false,
     nextAction: plan?.nextAction ?? 'unknown',
   };
 }

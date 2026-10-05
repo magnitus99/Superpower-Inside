@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "reviewCriteria": [
+    "모든 하위 질문에 답했는가",
+    "각 사실을 전달된 원문이 뒷받침하는가",
+    "검색 범위와 확인하지 못한 내용을 정확히 밝혔는가",
+    "사용자 언어와 출력 형식을 따랐는가"
+  ],
+  "cases": [
+    {
+      "id": "long-document-tail",
+      "question": "@[Deployment.md] deployment owner는 누구야?",
+      "maxContextChars": 300,
+      "files": [
+        {
+          "path": "Deployment.md",
+          "prefix": "# Background\n",
+          "repeat": "Unrelated background.\n",
+          "repeatCount": 150,
+          "text": "# Deployment\nThe deployment owner is Mina."
+        }
+      ],
+      "expectedEvidence": ["owner is Mina"],
+      "expectedFacts": ["Mina"],
+      "forbiddenClaims": ["전체 문서를 읽었"]
+    },
+    {
+      "id": "explicit-files-before-links",
+      "question": "@[A.md] @[B.md] 두 결정을 비교해줘.",
+      "maxContextChars": 300,
+      "files": [
+        { "path": "A.md", "text": "A chooses Friday. [[Reference]]" },
+        { "path": "B.md", "text": "B chooses Monday." },
+        { "path": "Reference.md", "repeat": "Unrelated detail. ", "repeatCount": 200, "text": "" }
+      ],
+      "expectedEvidence": ["A chooses Friday", "B chooses Monday"],
+      "expectedFacts": ["Friday", "Monday"],
+      "forbiddenClaims": ["두 문서가 같은 날짜"]
+    },
+    {
+      "id": "folder-relevance",
+      "question": "@[docs] deployment owner를 알려줘.",
+      "maxFolderFiles": 1,
+      "files": [
+        { "path": "docs/a.md", "text": "Shopping list: milk." },
+        { "path": "docs/z.md", "text": "The deployment owner is Mina." }
+      ],
+      "expectedEvidence": ["owner is Mina"],
+      "expectedFacts": ["Mina"],
+      "forbiddenClaims": ["폴더 전체를 읽었"]
+    },
+    {
+      "id": "conflicting-sources",
+      "question": "@[Plan.md] @[Update.md] 배포 날짜와 변경 이유를 각각 알려줘.",
+      "files": [
+        { "path": "Plan.md", "text": "Original deployment: Friday. Reason: marketing launch." },
+        {
+          "path": "Update.md",
+          "text": "Revised deployment: Monday. Reason: unresolved security review."
+        }
+      ],
+      "expectedEvidence": ["Friday", "Monday", "security review"],
+      "expectedFacts": ["Friday", "Monday", "security"],
+      "forbiddenClaims": ["보안 검토가 완료"]
+    },
+    {
+      "id": "older-followup-condition",
+      "question": "앞에서 정한 예산 조건을 그대로 알려줘.",
+      "history": [
+        { "role": "user", "content": "예산은 73만원으로 고정해줘." },
+        { "role": "assistant", "content": "예산 조건을 기억하겠습니다." }
+      ],
+      "fillerTurns": 6,
+      "files": [],
+      "expectedEvidence": ["73만원"],
+      "expectedFacts": ["73"],
+      "forbiddenClaims": []
+    },
+    {
+      "id": "budget-excluded-evidence",
+      "question": "@[Hidden.md] 이 문서의 담당자는 누구야?",
+      "maxContextChars": 1,
+      "files": [{ "path": "Hidden.md", "text": "The owner is SecretOwner." }],
+      "expectedEvidence": [],
+      "expectedFacts": [],
+      "forbiddenClaims": ["SecretOwner"],
+      "expectNoVerifiedSources": true
+    },
+    {
+      "id": "whole-vault-user-format",
+      "workflow": "research",
+      "question": "볼트 전체를 요약해줘.",
+      "systemPrompt": "한국어로 답하고 최종 답변은 짧은 불릿 세 개로 작성해줘.",
+      "files": [
+        { "path": "Alpha.md", "text": "Alpha: 배포 책임자는 Mina." },
+        { "path": "Beta.md", "text": "Beta: 보안 검토가 남아 있다." }
+      ],
+      "expectedEvidence": [],
+      "expectedFacts": ["Mina", "보안"],
+      "forbiddenClaims": ["보안 검토 완료"]
+    },
+    {
+      "id": "verified-minimum-keeps-tools",
+      "workflow": "policy",
+      "question": "내 노트에서 배포 결정의 근거를 찾아줘.",
+      "files": [],
+      "expectedEvidence": [],
+      "expectedFacts": [],
+      "forbiddenClaims": []
+    }
+  ]
+}

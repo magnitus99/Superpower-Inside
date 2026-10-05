@@ -85,6 +85,7 @@ describe('채팅 품질 trace 평가', () => {
       embeddingBackedAnswerCitations: 1,
       hybridAnswerCitations: 1,
       answerGrounded: true,
+      semanticQualityAssessed: false,
       nextAction: 'answer',
     });
   });
