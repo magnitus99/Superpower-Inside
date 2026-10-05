@@ -1,0 +1,4 @@
+verification:
+  mps-floor: 95
+  fidelity-floor: 95
+star-nudge: false

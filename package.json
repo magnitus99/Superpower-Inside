@@ -4,6 +4,11 @@
   "description": "Native vault research agent with source-grounded tools, hybrid retrieval, and MCP.",
   "main": "main.js",
   "scripts": {
+    "prepare": "node scripts/install-copy-hooks.mjs",
+    "hooks:install": "node scripts/install-copy-hooks.mjs",
+    "copy:check": "node scripts/check-copy.mjs",
+    "copy:check:online": "node scripts/check-copy.mjs --online",
+    "copy:fix": "node scripts/check-copy.mjs --fix",
     "dev": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs",
     "build": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",

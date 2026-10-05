@@ -65,3 +65,8 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 - Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 Codex 내부 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
 - 문서만 바꾸면 `git diff --check`와 링크·명령을 검증합니다. 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 현재 기능·사용 흐름을 설명합니다. 사용자 가치가 있는 기능만 자연스럽게 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
+- README·사용자용 문서·홍보/마케팅 문구·릴리스 소개·제품 설명은 항상 [Patina](https://github.com/devswha/patina)로 영어와 한국어를 모두 검사합니다. 실행할 때마다 `npm run copy:check`가 레지스트리의 최신 버전을 확인하고 갱신하며, 확인 실패 시 이전 버전으로 진행하지 않습니다. AI 문체 점수는 낮을수록 좋고 통과 기준은 각 언어 15점 이하입니다. 초과하면 Codex가 피드백에 따라 재작성하고 통과할 때까지 다시 검사합니다. 사실·수치·링크·Markdown 구조를 보존합니다.
+- Patina 훅은 `npm run hooks:install` 또는 `npm install`로 설치합니다. pre-commit은 스테이징 내용, pre-push는 실제 푸시할 브랜치·태그의 커밋을 검사합니다. 새 홍보 문서는 README 또는 `docs/`, `marketing/`, `copy/`, `public/`, `releases/` 아래에 두거나 `scripts/check-copy.mjs`의 대상에 추가합니다. 외부에 작성한 릴리스 본문도 같은 검사 대상으로 준비합니다.
+- ChatGPT 데스크톱 앱은 Patina의 CLI 백엔드로 지원되지 않으므로 자동 재작성은 Codex CLI를 사용합니다. pre-commit에서 문서의 기준 초과 시 작업 파일과 스테이징 내용이 같으면 자동 재작성합니다. 미스테이징 변경은 보존합니다. `npm run copy:fix -- README.md en` 또는 `ko`로도 해당 언어를 수정할 수 있습니다. 기본 모델은 사용자가 지정한 `gpt-6.1-sol`, 추론 강도는 `high`입니다. Patina의 의미 보존·충실도 95점 이상과 한영 재검사를 통과한 결과만 작업 파일에 반영하고 인덱스나 커밋은 자동 수정하지 않습니다. 결과를 검토하고 다시 스테이징합니다. 푸시할 커밋 및 JSON 제품 설명의 기준 초과는 피드백과 함께 차단하며 Codex가 수정합니다.
+
+- 온라인 문체 점수 검사는 `npm run copy:check:online`으로 실행합니다. 최신 Patina의 Codex CLI 백엔드와 `gpt-6.1-sol/high`를 사용해 한영 모델 점수를 확인하며, 모델 응답 실패 시 오프라인 점수만으로 통과시키지 않습니다. 기본 훅과 CI는 오프라인 15점 게이트를 유지합니다.
