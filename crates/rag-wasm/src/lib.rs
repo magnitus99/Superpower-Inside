@@ -1730,6 +1730,30 @@ pub fn get_mcp_connection_state_rust(
     "error".to_owned()
 }
 
+/// MCP 시작 오류와 stderr를 합치고 환경 변수 값을 숨긴 뒤 표시 길이를 제한한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn format_mcp_connection_error(message: &str, stderr: &str, secrets_json: &str) -> String {
+    let Some(mut secrets) = parse_raw_string_array_json(secrets_json) else {
+        return String::new();
+    };
+    secrets.retain(|secret| !secret.is_empty());
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    let mut diagnostic = if stderr.trim().is_empty() {
+        message.to_owned()
+    } else {
+        format!("{message}\n{}", stderr.trim())
+    };
+    for secret in secrets {
+        diagnostic = diagnostic.replace(&secret, "[REDACTED]");
+    }
+    diagnostic
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .take(4096)
+        .collect()
+}
+
 /// MCP 경로 힌트가 필요한지 판정한다.
 #[must_use]
 #[wasm_bindgen]
@@ -14505,6 +14529,26 @@ mod tests {
             get_mcp_connection_state_rust(2, 0, 2, false),
             "error".to_owned(),
         );
+    }
+
+    /// MCP 시작 오류는 키를 숨긴 뒤 표시 길이를 제한한다.
+    #[test]
+    fn mcp_connection_diagnostics_hide_credentials_before_truncation() {
+        let message = format_mcp_connection_error(
+            "MCP error -32000: Connection closed",
+            "private-key-long\nAttributeError: list_tools",
+            r#"["private-key", "private-key-long"]"#,
+        );
+        assert!(message.contains("AttributeError: list_tools"));
+        assert!(message.contains("[REDACTED]"));
+        assert!(!message.contains("private-key"));
+        assert!(!message.contains("-long"));
+        assert_eq!(format_mcp_connection_error("failure", "", "[]"), "failure");
+        assert!(format_mcp_connection_error("failure", "stderr", "{}").is_empty());
+        let long = format!("{}private-key", "한".repeat(5000));
+        let bounded = format_mcp_connection_error("failure", &long, r#"["private-key"]"#);
+        assert_eq!(bounded.chars().count(), 4096);
+        assert!(!bounded.contains("private-key"));
     }
 
     /// MCP 경로 힌트 판정은 `Rust`가 담당한다.

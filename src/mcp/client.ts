@@ -1,6 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Buffer } from 'node:buffer';
+import { t } from '../i18n';
+import { formatMcpConnectionErrorRust } from '../rag/rust-core';
+import { redactLogValue } from '../utils/logger';
 
 export interface MCPServerConfig {
   name: string;
@@ -18,6 +22,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const DEFAULT_TOOLS_LIST_TIMEOUT_MS = 15000;
 const MAX_TOOL_LIST_PAGES = 64;
 const MAX_LISTED_TOOLS = 4096;
+const MAX_STARTUP_STDERR_BYTES = 16384;
 
 export type MCPListedTool = Pick<Tool, 'name' | 'description' | 'inputSchema'>;
 
@@ -68,7 +73,20 @@ export class MCPClientManager {
       command: config.command,
       args: config.args ?? [],
       env: config.env,
+      stderr: 'pipe',
     });
+    const stderrChunks: Buffer[] = [];
+    let stderrBytes = 0;
+    const collectStderr = (chunk: Buffer): void => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > MAX_STARTUP_STDERR_BYTES) {
+        // 한도를 넘긴 출력은 부분 credential이 남지 않게 통째로 버린다.
+        stderrChunks.length = 0;
+        return;
+      }
+      stderrChunks.push(chunk);
+    };
+    transport.stderr?.on('data', collectStderr);
     const client = new Client(
       { name: 'superpower-inside', version: '1.0.0' },
       {
@@ -94,12 +112,20 @@ export class MCPClientManager {
         `MCP stdio connection timed out after ${this.connectTimeoutMs}ms`,
       );
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const diagnostic = formatMcpConnectionErrorRust(
+        message,
+        Buffer.concat(stderrChunks).toString('utf8'),
+        config.env,
+      );
       try {
         await this.disconnect();
       } catch {
         // 연결 실패 후 정리 실패가 원래 연결 오류를 덮지 않게 한다.
       }
-      throw err;
+      throw new Error(String(redactLogValue(diagnostic ?? t('mcpConnectionFailed'))));
+    } finally {
+      transport.stderr?.removeListener('data', collectStderr);
     }
   }
 

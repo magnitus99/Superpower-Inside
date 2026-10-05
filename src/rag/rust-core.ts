@@ -114,6 +114,7 @@ import {
   plan_source_validation_warnings_json,
   get_mcp_connection_state_rust,
   should_append_mcp_path_hint_rust,
+  format_mcp_connection_error,
   should_offer_context7_for_prompt,
   plan_structural_heading_neighbors_json,
   plan_structural_linked_paths_json,
@@ -1460,6 +1461,21 @@ export function getMcpConnectionStateRust(
 export function shouldAppendMcpPathHintRust(command: string, errorMessage: string): boolean | null {
   if (!ensureRustCore()) return null;
   return should_append_mcp_path_hint_rust(command, errorMessage);
+}
+
+export function formatMcpConnectionErrorRust(
+  message: string,
+  stderr: string,
+  env: Record<string, string> | undefined,
+): string | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return (
+      format_mcp_connection_error(message, stderr, JSON.stringify(Object.values(env ?? {}))) || null
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function createContentHashRust(content: string): string | null {

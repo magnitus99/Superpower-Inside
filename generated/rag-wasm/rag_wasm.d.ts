@@ -236,6 +236,11 @@ export function extract_vault_links_json(content: string): string;
 export function find_reusable_prompt(entries_json: string, content: string): number;
 
 /**
+ * MCP 시작 오류와 stderr를 합치고 환경 변수 값을 숨긴 뒤 표시 길이를 제한한다.
+ */
+export function format_mcp_connection_error(message: string, stderr: string, secrets_json: string): string;
+
+/**
  * MCP JSON 설정을 검증 가능한 JSON 문자열로 다시 포맷한다.
  */
 export function format_mcp_json(mcp_json_text: string): string;
@@ -914,6 +919,7 @@ export interface InitOutput {
     readonly create_entries_fingerprint: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly extract_structured_reasoning: (a: number, b: number) => [number, number];
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];
+    readonly format_mcp_connection_error: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly format_mcp_json: (a: number, b: number) => [number, number];
     readonly get_mcp_connection_state_rust: (a: number, b: number, c: number, d: number) => [number, number];
     readonly is_excluded_ext_json: (a: number, b: number, c: number, d: number) => number;
@@ -1028,6 +1034,22 @@ export interface InitOutput {
     readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
+    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_chat_evidence_json: (a: number, b: number) => [number, number];
+    readonly plan_chat_request_json: (a: number, b: number) => [number, number];
+    readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
+    readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
+    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -1036,22 +1058,6 @@ export interface InitOutput {
     readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
     readonly plan_source_processing_json: (a: number, b: number) => [number, number];
-    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
-    readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
-    readonly plan_chat_evidence_json: (a: number, b: number) => [number, number];
-    readonly plan_chat_request_json: (a: number, b: number) => [number, number];
-    readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
-    readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
-    readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
