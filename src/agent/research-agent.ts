@@ -52,6 +52,8 @@ export interface VaultResearchProgress {
 
 export interface VaultResearchRunOptions {
   question: string;
+  /** 내부 추출과 분리해 최종 답변 및 교정에만 적용하는 유효 사용자 지침입니다. */
+  systemPrompt?: string;
   previousUserQuestions?: readonly string[];
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
@@ -268,6 +270,7 @@ export class VaultResearchAgent {
             coverage,
             requestLedger,
             options.signal,
+            options.systemPrompt,
           );
     const processedFiles = inventory.files.length - localScreen.failedFiles.length;
     const content = `${formatCoverageStatement(coverage, processedFiles)}\n\n${generatedContent}`;
@@ -632,6 +635,7 @@ export class VaultResearchAgent {
     coverage: RustResearchCoverageReceipt,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     const summaryTransferPlan = planContextBudgetAppendRust(
       PROVIDER_BATCH_MAX_CHARS,
@@ -666,12 +670,13 @@ export class VaultResearchAgent {
           .join('\n\n'),
         requestLedger,
         signal,
+        systemPrompt,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
       return t('vaultResearchAnswerContractFallback');
     }
-    return this.enforceAnswerContract(generated, coverage, requestLedger, signal);
+    return this.enforceAnswerContract(generated, coverage, requestLedger, signal, systemPrompt);
   }
 
   private async enforceAnswerContract(
@@ -679,6 +684,7 @@ export class VaultResearchAgent {
     coverage: RustResearchCoverageReceipt,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     const language = getLanguage();
     const firstPlan = planResearchAnswerContractRust({ answer, language, receipt: coverage });
@@ -699,6 +705,7 @@ export class VaultResearchAgent {
         ].join('\n\n'),
         requestLedger,
         signal,
+        systemPrompt,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
@@ -727,6 +734,7 @@ export class VaultResearchAgent {
     prompt: string,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     for (let failedAttempt = 0; ; failedAttempt++) {
       throwIfAborted(signal);
@@ -740,9 +748,12 @@ export class VaultResearchAgent {
             {
               role: 'system',
               content: [
+                systemPrompt,
                 'You are the internal research engine for an Obsidian vault. Use only supplied evidence, preserve source IDs, and never invent coverage.',
                 t('llmEvidenceDataBoundary'),
-              ].join('\n'),
+              ]
+                .filter(Boolean)
+                .join('\n'),
             },
             { role: 'user', content: prompt },
           ],

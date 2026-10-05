@@ -80,6 +80,31 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     );
   });
 
+  it('사용자 답변 지침을 최종 합성과 교정에 전달하고 내부 자료 추출에는 섞지 않는다', async () => {
+    const runtime = createRuntime(new Map([['Alpha.md', 'Alpha 근거 '.repeat(2_000)]]));
+    const instruction = 'Answer in English with exactly three bullets.';
+    const chat = vi.fn((messages: ChatMessage[]) =>
+      Promise.resolve(
+        lastPrompt(messages).includes('Write the final answer')
+          ? '모든 파일을 전부 읽었습니다.'
+          : lastPrompt(messages).includes('Rewrite the answer')
+            ? '확인한 근거 [vault:Alpha.md:1-1]'
+            : 'Alpha 근거 [vault:Alpha.md:1-1]',
+      ),
+    );
+    await new VaultResearchAgent({ chat }, runtime).run({
+      question: 'Alpha 관련 모든 자료를 조사해줘',
+      systemPrompt: instruction,
+    });
+    const requests = chat.mock.calls.map(([messages]) => messages);
+    expect(requests[0]?.[0]?.content).not.toContain(instruction);
+    expect(requests[1]?.[0]?.content).toContain(instruction);
+    expect(requests[2]?.[0]?.content).toContain(instruction);
+    expect(
+      requests.every((messages) => messages[0]?.content.includes('never invent coverage')),
+    ).toBe(true);
+  });
+
   it('이전 질문의 맥락과 현재 주제를 도메인 중립적으로 결합하고 1,406개 중 51개만 provider에 보낸다', async () => {
     const files = new Map<string, string>();
     for (let index = 0; index < 1_406; index++) {

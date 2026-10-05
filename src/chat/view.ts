@@ -3036,6 +3036,7 @@ export class ChatView extends ItemView {
       if (wholeVaultResearch) {
         const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
           question: text,
+          systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
           signal: abortController.signal,
           onProgress: (progress) => {
