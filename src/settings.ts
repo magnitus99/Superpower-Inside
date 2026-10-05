@@ -4761,7 +4761,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       className: 'superpower-inside-settings-status-section',
     });
     const serversSection = this.createSettingsSection(workspace, t('mcpServersSectionTitle'), {
-      description: t('settingsMcpDraftHelp'),
+      description: t('mcpServersSectionDesc'),
     });
     const environmentSection = this.createSettingsSection(
       workspace,
@@ -4895,6 +4895,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('settingsMcpJsonTitle'),
       t('settingsMcpDraftHelp'),
     );
+    advanced.content.createEl('p', {
+      cls: 'setting-item-description',
+      text: t('settingsMcpJsonFormatHelp'),
+      attr: { id: 'superpower-inside-mcp-json-format-help' },
+    });
     advanced.content.createEl('label', {
       text: t('settingsMcpJsonLabel'),
       attr: { for: 'superpower-inside-mcp-json-input' },
@@ -4904,7 +4909,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       attr: {
         id: 'superpower-inside-mcp-json-input',
         'aria-label': t('settingsMcpJsonLabel'),
-        'aria-describedby': 'superpower-inside-mcp-lint-status',
+        'aria-describedby':
+          'superpower-inside-mcp-json-format-help superpower-inside-mcp-lint-status',
         rows: '12',
       },
     });

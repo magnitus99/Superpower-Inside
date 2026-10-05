@@ -17,6 +17,7 @@ export interface I18nKeys {
   settingsApplyingServers: string;
   settingsMcpJsonLabel: string;
   settingsMcpJsonTitle: string;
+  settingsMcpJsonFormatHelp: string;
   settingsMcpDraftHelp: string;
   settingsMcpApplied: string;
   settingsMcpDraftValid: string;
@@ -1496,7 +1497,10 @@ const ko: I18nKeys = {
   settingsApplyingServers: '설정을 저장하고 서버를 연결하는 중…',
   settingsMcpJsonLabel: 'MCP 서버 설정 JSON',
   settingsMcpJsonTitle: '고급 JSON 편집',
-  settingsMcpDraftHelp: '변경사항은 초안으로 보관됩니다. 적용하면 서버를 다시 연결합니다.',
+  settingsMcpJsonFormatHelp:
+    'mcpServers 객체 안에 서버 이름별로 설정합니다. command는 필수 문자열이며, args(문자열 배열)와 env(문자열 값의 객체)는 생략할 수 있습니다. 주석과 마지막 쉼표 없이 작성하고 기존 서버 항목을 유지하세요.',
+  settingsMcpDraftHelp:
+    '변경사항은 초안으로 보관됩니다. 적용하면 서버 목록 전체를 교체하고 다시 연결합니다.',
   settingsMcpApplied: '현재 서버 설정이 적용되어 있습니다.',
   settingsMcpDraftValid: '초안 형식이 유효합니다. 적용하면 서버가 다시 연결됩니다.',
   settingsMcpPartialFailure:
@@ -1654,7 +1658,8 @@ const ko: I18nKeys = {
   mcpStatusSectionTitle: '현재 연결',
   mcpStatusSectionDesc: 'MCP 서버 연결 상태와 필요한 복구 행동을 확인합니다.',
   mcpServersSectionTitle: '서버 설정',
-  mcpServersSectionDesc: '표준 mcpServers JSON으로 사용할 서버를 관리합니다.',
+  mcpServersSectionDesc:
+    'Claude Desktop의 mcpServers JSON 형식을 사용합니다. 로컬 stdio 서버만 연결할 수 있습니다.',
   mcpEnvironmentSectionTitle: '실행 환경',
   mcpEnvironmentSectionDesc: '서버 명령을 찾는 데 필요한 로컬 실행 환경을 관리합니다.',
   mcpEnvironmentDetailsTitle: '실행 환경 세부 조정',
@@ -3127,7 +3132,10 @@ const en: I18nKeys = {
   settingsApplyingServers: 'Saving settings and connecting servers…',
   settingsMcpJsonLabel: 'MCP server configuration JSON',
   settingsMcpJsonTitle: 'Advanced JSON editor',
-  settingsMcpDraftHelp: 'Changes stay in a draft. Applying them reconnects the servers.',
+  settingsMcpJsonFormatHelp:
+    'Put each server under its name in the mcpServers object. command is a required string; args (an array of strings) and env (an object with string values) are optional. Use JSON without comments or trailing commas, and keep existing server entries.',
+  settingsMcpDraftHelp:
+    'Changes stay in a draft. Applying them replaces the entire server list and reconnects the servers.',
   settingsMcpApplied: 'Current server settings are applied.',
   settingsMcpDraftValid: 'Draft format is valid. Apply to reconnect the servers.',
   settingsMcpPartialFailure:
@@ -3261,7 +3269,8 @@ const en: I18nKeys = {
   mcpStatusSectionTitle: 'Current connections',
   mcpStatusSectionDesc: 'Check MCP server connections and the nearest recovery action.',
   mcpServersSectionTitle: 'Server setup',
-  mcpServersSectionDesc: 'Manage available servers with standard mcpServers JSON.',
+  mcpServersSectionDesc:
+    'Uses the Claude Desktop mcpServers JSON format. Only local stdio servers are supported.',
   mcpEnvironmentSectionTitle: 'Runtime environment',
   mcpEnvironmentSectionDesc: 'Manage the local environment used to find server commands.',
   mcpEnvironmentDetailsTitle: 'Runtime environment details',

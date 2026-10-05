@@ -58,6 +58,15 @@ describe('설정창 전체 개선 회귀 계약', () => {
     expect(result.error?.match(/Invalid JSON:/g)).toHaveLength(1);
     expect(result.error).toMatch(/line|column/);
   });
+  it('MCP 형식 안내는 설정창에 표시하고 JSON 입력의 접근 가능한 설명에 연결한다', () => {
+    const editor = method('private buildMCPTab(', 'private buildDetailedMcpError(');
+    expect(editor).toContain("description: t('mcpServersSectionDesc')");
+    expect(editor).toContain("text: t('settingsMcpJsonFormatHelp')");
+    expect(editor).toContain("id: 'superpower-inside-mcp-json-format-help'");
+    expect(editor).toContain(
+      "'superpower-inside-mcp-json-format-help superpower-inside-mcp-lint-status'",
+    );
+  });
   it('범위 입력은 숫자 검증과 접근 가능한 이름을 사용한다', () => {
     expect(settings).not.toContain('.addSlider(');
     expect(settings).toContain('parseSettingsNumberRust');

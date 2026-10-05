@@ -77,6 +77,14 @@ Review @[Projects/Launch]. List blockers, evidence, owners, and next actions in 
 
 Use file and folder mentions to focus vault research. Mentioning only an external server skips automatic vault search for that turn; add a file or folder mention when you also need vault evidence.
 
+## Connect external tools
+
+Open **Settings → Superpower Inside → External tools → Server setup → Advanced JSON editor**. The editor follows the [Claude Desktop `mcpServers` convention](https://modelcontextprotocol.io/docs/develop/connect-local-servers), rather than a configuration format required by the MCP protocol.
+
+The top-level `mcpServers` object maps server names to settings. Each server needs a `command` string; `args` is an optional array of strings, and `env` is an optional object of string values. The plugin supports local **stdio** servers. Remote HTTP/SSE configurations with `url` and `headers` are not supported. Use valid JSON without comments or trailing commas.
+
+Keep existing server entries when adding another server. **Apply server settings** replaces the configured server list with the editor contents.
+
 ## Ask for a usable result
 
 State the result you need, the relevant notes, and the format or boundary that matters. A short question is enough for a simple task. For example:
@@ -208,6 +216,14 @@ JSON 키, CSV 헤더·레코드, 코드 블록 경계도 공통 검색 구간에
 | `@server` | 이 질문에 연결된 외부 도구를 가져옵니다. |
 
 파일·폴더 멘션으로 볼트 조사에 초점을 맞출 수 있습니다. 외부 서버만 멘션하면 그 턴의 볼트 자동 검색을 건너뜁니다. 볼트 근거도 필요하면 파일이나 폴더를 함께 멘션하세요.
+
+### 외부 도구 연결하기
+
+**설정 → Superpower Inside → 외부 도구 → 서버 설정 → 고급 JSON 편집**을 엽니다. 편집기는 [Claude Desktop의 `mcpServers` 관례](https://modelcontextprotocol.io/docs/develop/connect-local-servers)를 따릅니다. MCP 프로토콜 자체가 정한 설정 파일 형식은 아닙니다.
+
+최상위 `mcpServers` 객체 안에 서버 이름별 설정을 넣습니다. 각 서버의 `command`는 필수 문자열입니다. `args`는 문자열 배열, `env`는 문자열 값을 담는 객체이며 둘 다 생략할 수 있습니다. 플러그인은 로컬 **stdio** 서버를 지원합니다. `url`과 `headers`를 쓰는 원격 HTTP/SSE 설정은 지원하지 않습니다. 주석과 마지막 쉼표가 없는 JSON을 사용하세요.
+
+서버를 추가할 때는 기존 서버 항목을 유지하세요. **서버 설정 적용**을 누르면 편집기 내용으로 서버 목록 전체를 교체합니다.
 
 ### 바로 쓸 수 있는 답변 요청하기
 

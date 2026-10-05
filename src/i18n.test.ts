@@ -31,4 +31,12 @@ describe('UI 언어 계약', () => {
     expect(isLocalizedValue('providerNewName', 'New provider')).toBe(true);
     expect(isLocalizedValue('providerNewName', 'Research endpoint')).toBe(false);
   });
+  it.each(['ko', 'en'] as const)('%s MCP 안내는 설정 관례와 지원 필드를 설명한다', (lang) => {
+    setLanguage(lang);
+    expect(t('mcpServersSectionDesc')).toContain('Claude Desktop');
+    expect(t('mcpServersSectionDesc')).toContain('mcpServers');
+    expect(t('mcpServersSectionDesc')).toContain('stdio');
+    for (const field of ['mcpServers', 'command', 'args', 'env'])
+      expect(t('settingsMcpJsonFormatHelp')).toContain(field);
+  });
 });
