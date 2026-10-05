@@ -11,6 +11,25 @@ import {
 } from './native-vault-tool';
 
 describe('Superpower Inside 네이티브 Vault 도구', () => {
+  it('잘못된 검색 모드와 필터는 볼트 I/O 전에 거부한다', async () => {
+    const { port, search } = createPort();
+    const runtime = new NativeVaultToolRuntime(port);
+    for (const extra of [
+      { mode: 'unknown' },
+      { mode: 'exact', match: 'unknown' },
+      { field: 'unknown' },
+      { filters: { modified_after: 100, modified_before: 50 } },
+      { filters: { tags: [1] } },
+      { filters: { properties: { status: ['active'] } } },
+      { filters: { unknown: true } },
+    ]) {
+      await expect(
+        runtime.execute(JSON.stringify({ action: 'search', query: 'API', ...extra })),
+      ).rejects.toThrow();
+    }
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it('저장된 호출 호환성을 위한 legacy function tool 계약을 보존한다', () => {
     const definition = createNativeVaultToolDefinition();
 
@@ -393,9 +412,7 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
       NATIVE_VAULT_NAMED_TOOL_NAMES.read,
     );
 
-    expect(new TextEncoder().encode(execution.modelText).byteLength).toBeLessThanOrEqual(
-      64 * 1024,
-    );
+    expect(new TextEncoder().encode(execution.modelText).byteLength).toBeLessThanOrEqual(64 * 1024);
     expect(JSON.parse(execution.modelText)).toMatchObject({
       action: 'read',
       path: 'Projects/Large.md',
@@ -531,11 +548,13 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
       action: 'links',
       path: 'Notes/Hub.md',
       direction: 'both',
-      outgoing: Array.from({ length: 100 }, (_, index) =>
-        `Outgoing/${index}-${'긴경로'.repeat(120)}.md`,
+      outgoing: Array.from(
+        { length: 100 },
+        (_, index) => `Outgoing/${index}-${'긴경로'.repeat(120)}.md`,
       ),
-      incoming: Array.from({ length: 100 }, (_, index) =>
-        `Incoming/${index}-${'긴경로'.repeat(120)}.md`,
+      incoming: Array.from(
+        { length: 100 },
+        (_, index) => `Incoming/${index}-${'긴경로'.repeat(120)}.md`,
       ),
       totalOutgoing: 100,
       totalIncoming: 100,

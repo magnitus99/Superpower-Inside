@@ -2120,6 +2120,45 @@ describe('Rust WASM RAG core bridge', () => {
     });
   });
 
+  it('필터 제한 검색의 coverage를 TS에서도 보존하고 전수 확인으로 확대하지 않는다', () => {
+    const receipt = deriveNativeToolCoverageReceiptRust([
+      JSON.stringify({
+        action: 'search',
+        query: 'Alpha',
+        path: '',
+        match: 'all',
+        hits: [],
+        scannedFiles: 1,
+        unreadableFiles: 0,
+        totalHits: 0,
+        truncated: false,
+        filters: { tags: ['project'] },
+        scopeRestricted: true,
+      }),
+    ]);
+    expect(receipt).toMatchObject({
+      wholeVaultLocallyScreened: false,
+      exactNegativeAllowed: false,
+      reasonCodes: ['local-screen-filtered'],
+    });
+    expect(
+      receipt &&
+        planResearchAnswerContractRust({
+          answer: '현재 검색 범위에서 Alpha 내용은 없습니다.',
+          language: 'ko',
+          receipt,
+        }),
+    ).toMatchObject({ allowed: false });
+    expect(
+      receipt &&
+        planResearchAnswerContractRust({
+          answer: '확인한 근거를 요약합니다.',
+          language: 'ko',
+          receipt,
+        }),
+    ).toMatchObject({ allowed: true });
+  });
+
   it('native 검색과 다른 주제의 부재 단정을 막고 같은 query의 제한 문구만 허용한다', () => {
     const receipt = deriveNativeToolCoverageReceiptRust([
       JSON.stringify({

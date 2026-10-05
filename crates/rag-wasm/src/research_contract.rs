@@ -628,7 +628,9 @@ fn accumulate_native_tool_result(result: &JsonValue, coverage: &mut NativeToolCo
         coverage.mark_unparseable();
         return;
     };
-    let complete = unreadable_files == 0 && !truncated && total_hits <= hit_count;
+    let restricted = object.get("scopeRestricted").and_then(JsonValue::as_bool) == Some(true)
+        || object.contains_key("filters");
+    let complete = unreadable_files == 0 && !truncated && total_hits <= hit_count && !restricted;
     coverage.search_scopes.push(NativeSearchScope {
         query: query.trim().to_owned(),
         path: path.trim().to_owned(),
@@ -641,6 +643,10 @@ fn accumulate_native_tool_result(result: &JsonValue, coverage: &mut NativeToolCo
     coverage.provider_omitted_count = coverage
         .provider_omitted_count
         .saturating_add(total_hits.saturating_sub(hit_count));
+    if restricted {
+        coverage.all_searches_complete = false;
+        push_reason(&mut coverage.reason_codes, "local-screen-filtered");
+    }
     if unreadable_files > 0 {
         coverage.all_searches_complete = false;
         push_reason(&mut coverage.reason_codes, "local-screen-unreadable");
@@ -1468,6 +1474,42 @@ fn parse_native_search_scopes(
 /// Detects claims that every file or the entire corpus was read or fully analyzed.
 fn contains_whole_read_claim(normalized: &str) -> bool {
     answer_fragments(normalized).any(|fragment| {
+        // 전수 확인을 부정하는 표현만 제거한다. 같은 문장의 별도 긍정 주장은 계속 검사한다.
+        let fragment = [
+            "전수 확인은 아닙",
+            "전수 조사는 아닙",
+            "전체를 읽은 것은 아닙",
+            "모든 문서를 읽지는 않았",
+            "모든 파일을 읽지는 않았",
+            "have not read every note",
+            "have not read all files",
+            "did not read the whole vault",
+        ]
+        .iter()
+        .fold(fragment.replace(['*', '`'], ""), |text, marker| {
+            text.replace(marker, "")
+        });
+        let explicit_vault_files = ["볼트 파일 전체", "볼트의 파일 전체"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        // 단일 문서를 가리키는 전체 읽기는 볼트 전수 읽기 주장이 아니다.
+        // 같은 구간에 남은 모든 파일·볼트 전체 주장은 계속 검사한다.
+        let fragment = [
+            "해당 파일 전체",
+            "해당 파일의 전체",
+            "이 파일 전체",
+            "이 파일의 전체",
+            "해당 문서 전체",
+            "해당 문서의 전체",
+            "이 문서 전체",
+            "이 문서의 전체",
+            "파일 전체",
+            "파일 한 편의 전체",
+        ]
+        .iter()
+        .fold(fragment, |text, marker| {
+            text.replace(marker, &marker.replace("전체", ""))
+        });
         let korean_scope = ["전체", "모든", "전부", "전수"]
             .iter()
             .any(|marker| fragment.contains(marker));
@@ -1518,6 +1560,7 @@ fn contains_whole_read_claim(normalized: &str) -> bool {
         .iter()
         .any(|marker| fragment.contains(marker));
         korean_direct_claim
+            || (explicit_vault_files && korean_action)
             || (korean_scope && korean_file_scope && korean_action)
             || (english_scope && english_action)
     })
@@ -2129,6 +2172,35 @@ mod tests {
     }
 
     #[test]
+    fn native_tool_filtered_search_cannot_prove_whole_vault_absence() {
+        for extra in [
+            json!({"scopeRestricted":true}),
+            json!({"filters":{"tags":["project"]}}),
+        ] {
+            let mut search = json!({"action":"search","query":"Neville","path":"","match":"all",
+                "hits":[],"scannedFiles":10,"unreadableFiles":0,"totalHits":0,"truncated":false});
+            if let (Some(search), Some(extra)) = (search.as_object_mut(), extra.as_object()) {
+                search.extend(extra.clone());
+            }
+            let receipt = parse_output(&derive_native_tool_coverage_receipt_json(
+                &json!([search.to_string()]).to_string(),
+            ));
+            assert_eq!(
+                receipt.get("exactNegativeAllowed"),
+                Some(&JsonValue::Bool(false))
+            );
+            assert_eq!(
+                receipt.get("wholeVaultLocallyScreened"),
+                Some(&JsonValue::Bool(false))
+            );
+            assert_eq!(
+                receipt.get("reasonCodes"),
+                Some(&json!(["local-screen-filtered"]))
+            );
+        }
+    }
+
+    #[test]
     fn native_tool_coverage_blocks_truncated_negative_claims_and_allows_complete_scoped_ones() {
         let truncated_receipt = parse_output(&derive_native_tool_coverage_receipt_json(
             &json!([json!({
@@ -2485,6 +2557,50 @@ mod tests {
 
         assert_eq!(output.get("allowed"), Some(&json!(true)));
         assert_eq!(output.get("violationCodes"), Some(&json!([])));
+    }
+
+    #[test]
+    fn answer_contract_allows_reading_limits_but_keeps_separate_positive_claims() {
+        let receipt = parse_output(&derive_native_tool_coverage_receipt_json("[]"));
+        for (answer, allowed) in [
+            ("읽기 실패 문서가 있어 전수 확인은 아닙니다.", true),
+            ("모든 문서를 읽지는 않았습니다.", true),
+            ("I have not read every note.", true),
+            ("전체 파일을 읽었지만 전수 확인은 아닙니다.", false),
+            (
+                "I have not read every note, but I checked all files.",
+                false,
+            ),
+        ] {
+            let plan = parse_output(&plan_research_answer_contract_json(
+                &json!({"answer":answer,"receipt":receipt}).to_string(),
+            ));
+            assert_eq!(plan.get("allowed"), Some(&json!(allowed)), "{answer}");
+        }
+    }
+
+    #[test]
+    fn answer_contract_distinguishes_one_file_from_whole_vault_claims() {
+        let receipt = parse_output(&derive_native_tool_coverage_receipt_json("[]"));
+        for (answer, allowed) in [
+            (
+                "해당 파일 **전체 267행을 읽어** 두 설명을 확인했습니다.",
+                true,
+            ),
+            ("강연을 찾았고 파일 전체 267행을 읽었습니다.", true),
+            ("확인 범위는 이 강연 파일 한 편의 전체 원문입니다.", true),
+            ("이 문서의 전체 내용을 읽었습니다.", true),
+            ("해당 파일 전체를 읽었고 모든 파일을 읽었습니다.", false),
+            ("볼트 전체를 읽고 해당 파일 전체를 확인했습니다.", false),
+            ("전체 파일을 읽었습니다.", false),
+            ("모든 파일 전체를 읽었습니다.", false),
+            ("볼트의 파일 전체를 읽었습니다.", false),
+        ] {
+            let plan = parse_output(&plan_research_answer_contract_json(
+                &json!({"answer":answer,"receipt":receipt}).to_string(),
+            ));
+            assert_eq!(plan.get("allowed"), Some(&json!(allowed)), "{answer}");
+        }
     }
 
     #[test]

@@ -47,6 +47,8 @@ import {
   plan_compatibility_tool_calls_json,
   plan_mcp_server_candidates_json,
   plan_native_vault_lexical_hit_json,
+  plan_native_vault_lexical_batch_json,
+  plan_native_vault_filtered_indices_json,
   plan_native_vault_link_paths_json,
   plan_native_vault_list_json,
   plan_native_vault_read_range_json,
@@ -145,6 +147,28 @@ export interface RustVectorScore {
   score: number;
 }
 
+export interface RustNativeVaultFilters {
+  modifiedAfter?: number;
+  modifiedBefore?: number;
+  tags?: string[];
+  properties?: Record<string, string | number | boolean>;
+}
+
+export interface RustNativeVaultLexicalCandidate {
+  path: string;
+  score: number;
+  startLine: number;
+  endLine: number;
+  preview: string;
+}
+
+export interface RustNativeVaultLexicalState {
+  streams: RustNativeVaultLexicalCandidate[][];
+  totalHits: number;
+  scannedFiles: number;
+  unreadableFiles: number;
+}
+
 export type RustNativeVaultToolRequest =
   | {
       action: 'search';
@@ -153,6 +177,9 @@ export type RustNativeVaultToolRequest =
       path: string;
       limit: number;
       match: 'all' | 'any' | 'phrase';
+      mode?: 'auto' | 'exact';
+      field?: 'both' | 'content' | 'path';
+      filters?: RustNativeVaultFilters;
     }
   | {
       action: 'read';
@@ -168,7 +195,13 @@ export type RustNativeVaultToolRequest =
       endLine: number | null;
       limit: number;
     }
-  | { action: 'list'; path: string; cursor: number; limit: number }
+  | {
+      action: 'list';
+      path: string;
+      cursor: number;
+      limit: number;
+      filters?: RustNativeVaultFilters;
+    }
   | {
       action: 'links';
       path: string;
@@ -3324,6 +3357,80 @@ export function planNativeVaultToolRequestRust(
   }
 }
 
+export function planNativeVaultFilteredIndicesRust(
+  files: readonly {
+    modifiedAt: number;
+    tags: readonly string[];
+    properties: Record<string, unknown>;
+  }[],
+  filters: RustNativeVaultFilters,
+): number[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_native_vault_filtered_indices_json(JSON.stringify(files), JSON.stringify(filters)),
+    );
+    return Array.isArray(parsed) &&
+      parsed.every((index: unknown) => isNonNegativeSafeInteger(index) && index < files.length)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planNativeVaultLexicalBatchRust(
+  request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
+  samples: readonly { path: string; content: string | null }[],
+  previous: RustNativeVaultLexicalState | null,
+): RustNativeVaultLexicalState | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_native_vault_lexical_batch_json(
+        JSON.stringify(request),
+        JSON.stringify(samples),
+        JSON.stringify(previous),
+      ),
+    );
+    if (
+      !isStringRecordValueMap(parsed) ||
+      !Array.isArray(parsed.streams) ||
+      !isNonNegativeSafeInteger(parsed.totalHits) ||
+      !isNonNegativeSafeInteger(parsed.scannedFiles) ||
+      !isNonNegativeSafeInteger(parsed.unreadableFiles)
+    )
+      return null;
+    const streams: RustNativeVaultLexicalCandidate[][] = [];
+    for (const stream of parsed.streams) {
+      if (
+        !Array.isArray(stream) ||
+        !stream.every(
+          (candidate: unknown): candidate is RustNativeVaultLexicalCandidate =>
+            isStringRecordValueMap(candidate) &&
+            isStringValue(candidate.path) &&
+            isStringValue(candidate.preview) &&
+            isNonNegativeSafeInteger(candidate.score) &&
+            isNonNegativeSafeInteger(candidate.startLine) &&
+            candidate.startLine > 0 &&
+            isNonNegativeSafeInteger(candidate.endLine) &&
+            candidate.endLine >= candidate.startLine,
+        )
+      )
+        return null;
+      streams.push(stream);
+    }
+    return {
+      streams,
+      totalHits: parsed.totalHits,
+      scannedFiles: parsed.scannedFiles,
+      unreadableFiles: parsed.unreadableFiles,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function planNativeVaultListRust(
   filePaths: readonly string[],
   pathPrefix: string,
@@ -3557,6 +3664,7 @@ export type RustResearchCoverageReasonCode =
   | 'pagination-next-cursor-mismatch'
   | 'pagination-incomplete'
   | 'local-screen-incomplete'
+  | 'local-screen-filtered'
   | 'local-selection-invalid'
   | 'local-screen-unreadable'
   | 'local-screen-omitted'
@@ -4000,6 +4108,7 @@ function isResearchCoverageReasonCode(value: unknown): value is RustResearchCove
     value === 'pagination-next-cursor-mismatch' ||
     value === 'pagination-incomplete' ||
     value === 'local-screen-incomplete' ||
+    value === 'local-screen-filtered' ||
     value === 'local-selection-invalid' ||
     value === 'local-screen-unreadable' ||
     value === 'local-screen-omitted' ||
@@ -5402,6 +5511,12 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
           queries.every((query) => typeof query === 'string' && query.length > 0))) &&
       typeof value.path === 'string' &&
       isNonNegativeSafeInteger(value.limit) &&
+      (value.mode === undefined || value.mode === 'auto' || value.mode === 'exact') &&
+      (value.field === undefined ||
+        value.field === 'both' ||
+        value.field === 'content' ||
+        value.field === 'path') &&
+      (value.filters === undefined || isNativeVaultFilters(value.filters)) &&
       (value.match === 'all' || value.match === 'any' || value.match === 'phrase')
     );
   }
@@ -5425,6 +5540,7 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
     return (
       typeof value.path === 'string' &&
       isNonNegativeSafeInteger(value.cursor) &&
+      (value.filters === undefined || isNativeVaultFilters(value.filters)) &&
       isNonNegativeSafeInteger(value.limit)
     );
   }
@@ -5435,6 +5551,23 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
       value.direction === 'outgoing' ||
       value.direction === 'both') &&
     isNonNegativeSafeInteger(value.limit)
+  );
+}
+
+function isNativeVaultFilters(value: unknown): value is RustNativeVaultFilters {
+  if (!isStringRecordValueMap(value)) return false;
+  return (
+    (value.modifiedAfter === undefined || isNonNegativeSafeInteger(value.modifiedAfter)) &&
+    (value.modifiedBefore === undefined || isNonNegativeSafeInteger(value.modifiedBefore)) &&
+    (value.tags === undefined || (Array.isArray(value.tags) && value.tags.every(isStringValue))) &&
+    (value.properties === undefined ||
+      (isStringRecordValueMap(value.properties) &&
+        Object.values(value.properties).every(
+          (property) =>
+            typeof property === 'string' ||
+            typeof property === 'boolean' ||
+            (typeof property === 'number' && Number.isFinite(property)),
+        )))
   );
 }
 

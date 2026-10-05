@@ -1,5 +1,9 @@
 import type { ToolDefinition } from '../llm/providers';
-import { planNativeVaultToolRequestRust, type RustNativeVaultToolRequest } from '../rag/rust-core';
+import {
+  planNativeVaultToolRequestRust,
+  type RustNativeVaultToolRequest,
+  type RustNativeVaultFilters,
+} from '../rag/rust-core';
 import type { SourceCitation, SourceSelectionReason } from '../chat/types';
 import { t } from '../i18n';
 import { truncateUtf8Text } from '../utils/text-budget';
@@ -65,6 +69,10 @@ export interface NativeVaultSearchResult extends NativeVaultResultBase {
   queries?: string[];
   path: string;
   match: 'all' | 'any' | 'phrase';
+  mode?: 'auto' | 'exact';
+  field?: 'both' | 'content' | 'path';
+  filters?: RustNativeVaultFilters;
+  scopeRestricted?: boolean;
   hits: NativeVaultSearchHit[];
   scannedFiles: number;
   unreadableFiles: number;
@@ -101,6 +109,8 @@ export interface NativeVaultListResult extends NativeVaultResultBase {
   files: NativeVaultFileSummary[];
   nextCursor: number | null;
   total: number;
+  filters?: RustNativeVaultFilters;
+  scopeRestricted?: boolean;
 }
 
 export interface NativeVaultLinksResult extends NativeVaultResultBase {
@@ -484,7 +494,8 @@ export function createNativeVaultToolDefinition(): ToolDefinition {
             description:
               'Search matching policy. all is the precise default, any is for alternatives, and phrase requires the exact phrase.',
           },
-          path: { type: 'string', description: 'Vault-relative file or folder path' },
+          ...createNativeSearchOptions(),
+          path: { type: 'string', description: t('nativeVaultPathScopeDescription') },
           start_line: { type: 'integer', minimum: 1, description: 'First line to read' },
           start_offset: {
             type: 'integer',
@@ -509,10 +520,12 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
   return [
     createActionToolDefinition(
       NATIVE_VAULT_NAMED_TOOL_NAMES.search,
-      'Find up to 20 ranked passages in files allowed by the current vault indexing policy, using embeddings, BM25, structural, and live lexical retrieval when available. The runtime re-reads indexed ranges from the current Vault: citationStatus="verified" is answer-ready current text, while requiresRead=true marks a locator that still needs superpower_inside_read. Results are bounded and never prove exhaustive coverage. Use focused terms; match defaults to all for the emergency lexical fallback, any accepts alternatives, and phrase requests an exact phrase.',
+      'Find up to 20 ranked passages in files allowed by the current vault indexing policy, using embeddings, BM25, structural, and live lexical retrieval when available. The runtime re-reads indexed ranges from the current Vault: citationStatus="verified" is answer-ready current text, while requiresRead=true marks a locator that still needs superpower_inside_read. Results are bounded and never prove exhaustive coverage. Use focused terms; match defaults to all for the emergency lexical fallback, any accepts alternatives, and phrase requests an exact phrase.\n' +
+        t('nativeVaultSearchOptionsDescription'),
       {
         required: ['query'],
         properties: {
+          ...createNativeSearchOptions(),
           query: {
             type: 'string',
             maxLength: 512,
@@ -532,7 +545,7 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
           },
           path: {
             type: 'string',
-            description: 'Optional vault-relative folder prefix that narrows the search',
+            description: t('nativeVaultPathScopeDescription'),
           },
           limit: {
             type: 'integer',
@@ -593,13 +606,15 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
     ),
     createActionToolDefinition(
       NATIVE_VAULT_NAMED_TOOL_NAMES.list,
-      'List one stable page of up to 100 allowed vault files under a folder. Returned paths are inventory metadata, not content evidence. Follow nextCursor pages until it is null before making an exhaustive inventory claim, and use superpower_inside_read for file contents.',
+      'List one stable page of up to 100 allowed vault files under a folder. Returned paths are inventory metadata, not content evidence. Follow nextCursor pages until it is null before making an exhaustive inventory claim, and use superpower_inside_read for file contents.\n' +
+        t('nativeVaultFiltersDescription'),
       {
         required: [],
         properties: {
+          filters: createNativeFiltersProperty(),
           path: {
             type: 'string',
-            description: 'Optional vault-relative folder path; omit for the vault root',
+            description: t('nativeVaultPathScopeDescription'),
           },
           cursor: {
             type: 'integer',
@@ -648,6 +663,59 @@ export function createNativeVaultToolDefinitions(): ToolDefinition[] {
       },
     ),
   ];
+}
+
+function createNativeSearchOptions(): Record<string, unknown> {
+  return {
+    mode: {
+      type: 'string',
+      enum: ['auto', 'exact'],
+      description: t('nativeVaultSearchModeDescription'),
+    },
+    field: {
+      type: 'string',
+      enum: ['both', 'content', 'path'],
+      description: t('nativeVaultSearchFieldDescription'),
+    },
+    filters: createNativeFiltersProperty(),
+  };
+}
+
+function createNativeFiltersProperty(): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    description: t('nativeVaultFiltersDescription'),
+    properties: {
+      modified_after: {
+        type: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: t('nativeVaultModifiedAfterDescription'),
+      },
+      modified_before: {
+        type: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: t('nativeVaultModifiedBeforeDescription'),
+      },
+      tags: {
+        type: 'array',
+        maxItems: 16,
+        items: { type: 'string', minLength: 1, maxLength: 128 },
+        description: t('nativeVaultTagsDescription'),
+      },
+      properties: {
+        type: 'object',
+        maxProperties: 16,
+        propertyNames: { minLength: 1, maxLength: 128 },
+        additionalProperties: {
+          anyOf: [{ type: 'string', maxLength: 512 }, { type: 'number' }, { type: 'boolean' }],
+        },
+        description: t('nativeVaultPropertiesDescription'),
+      },
+    },
+  };
 }
 
 function createActionToolDefinition(

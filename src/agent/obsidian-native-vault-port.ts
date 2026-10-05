@@ -1,4 +1,4 @@
-import { TFile, TFolder, type App } from 'obsidian';
+import { TFile, TFolder, getAllTags, type App } from 'obsidian';
 import type { QueryResult } from '../rag/query';
 import type {
   RetrievalProviderDiagnostic,
@@ -6,7 +6,8 @@ import type {
 } from '../rag/retrieval-pipeline';
 import {
   createContextPreviewRust,
-  planFolderLexicalEvidenceIndicesRust,
+  planNativeVaultFilteredIndicesRust,
+  planNativeVaultLexicalBatchRust,
   planNativeVaultLexicalHitRust,
   planNativeVaultLinkPathsRust,
   planNativeVaultListRust,
@@ -15,6 +16,8 @@ import {
   planNativeVaultStatsRust,
   isSourceRevisionCurrentRust,
   type RustNativeVaultToolRequest,
+  type RustNativeVaultFilters,
+  type RustNativeVaultLexicalState,
 } from '../rag/rust-core';
 import type { SourceCitation } from '../chat/types';
 import { t } from '../i18n';
@@ -62,6 +65,7 @@ export interface NativeVaultFileScope {
 
 interface NativeVaultListSnapshot {
   path: string;
+  filtersKey: string;
   expectedCursor: number;
   files: readonly TFile[];
 }
@@ -105,12 +109,32 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   ): Promise<NativeVaultSearchResult> {
     throwIfAborted(signal);
     const queries = getSearchQueries(request);
-    const indexedAttempt = await this.tryIndexedSearch(request, queries, signal);
+    const filteredFiles = request.filters
+      ? this.filterFiles(await this.fileScope.listCandidateFiles(), request.filters, request.path)
+      : undefined;
+    if (request.mode === 'exact' || (request.field !== undefined && request.field !== 'both')) {
+      return this.searchLexically(
+        request,
+        queries,
+        filteredFiles ?? (await this.fileScope.listCandidateFiles()),
+        signal,
+      );
+    }
+    const indexedAttempt = await this.tryIndexedSearch(request, queries, signal, filteredFiles);
     throwIfAborted(signal);
     if (indexedAttempt !== null) {
-      const visible = await this.filterVisibleIndexedCandidates(indexedAttempt.candidates);
+      const allowedPaths = filteredFiles
+        ? new Set(filteredFiles.map((file) => file.path))
+        : undefined;
+      const visible = await this.filterVisibleIndexedCandidates(
+        indexedAttempt.candidates.filter(
+          (candidate) => !allowedPaths || allowedPaths.has(candidate.result.sourcePath),
+        ),
+      );
       const needsLiveLexicalFallback =
-        visible.length === 0 || shouldUseLiveLexicalFallback(indexedAttempt);
+        visible.length === 0 ||
+        request.filters !== undefined ||
+        shouldUseLiveLexicalFallback(indexedAttempt);
       if (visible.length > 0) {
         const indexedResult = await this.verifyCurrentSearchEvidence(
           buildIndexedSearchResult(request, queries, visible),
@@ -118,7 +142,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
           visible,
         );
         if (!needsLiveLexicalFallback && indexedResult.hits.length > 0) return indexedResult;
-        const files = indexedAttempt.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
+        const files =
+          filteredFiles ??
+          indexedAttempt.inventoryFiles ??
+          (await this.fileScope.listCandidateFiles());
         const lexicalResult = await this.searchLexically(request, queries, files, signal);
         return lexicalResult.hits.length > 0
           ? mergeIndexedAndLexicalSearchResults(request, queries, indexedResult, lexicalResult)
@@ -132,7 +159,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       }
     }
 
-    const files = indexedAttempt?.inventoryFiles ?? (await this.fileScope.listCandidateFiles());
+    const files =
+      filteredFiles ??
+      indexedAttempt?.inventoryFiles ??
+      (await this.fileScope.listCandidateFiles());
     return this.searchLexically(request, queries, files, signal);
   }
 
@@ -258,7 +288,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     signal?: AbortSignal,
   ): Promise<NativeVaultListResult> {
     throwIfAborted(signal);
-    const files = await this.getListCandidateFiles(request.path, request.cursor);
+    const files = await this.getListCandidateFiles(request.path, request.cursor, request.filters);
     throwIfAborted(signal);
     const plan = planNativeVaultListRust(
       files.map((file) => file.path),
@@ -275,6 +305,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         ? null
         : {
             path: request.path,
+            filtersKey: JSON.stringify(request.filters ?? null),
             expectedCursor: plan.nextCursor,
             files,
           };
@@ -292,6 +323,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       }),
       nextCursor: plan.nextCursor,
       total: plan.total,
+      ...(request.filters ? { filters: request.filters, scopeRestricted: true } : {}),
       citations: [],
     };
   }
@@ -362,9 +394,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     request: Extract<RustNativeVaultToolRequest, { action: 'search' }>,
     queries: readonly string[],
     signal?: AbortSignal,
+    filteredFiles?: readonly TFile[],
   ): Promise<IndexedSearchAttempt | null> {
     const engine = this.getQueryEngine();
     if (!engine) return null;
+    if (filteredFiles?.length === 0) return null;
 
     const candidates: IndexedSearchCandidate[] = [];
     const diagnosticsByQuery: RetrievalProviderDiagnostic[][] = [];
@@ -394,9 +428,19 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       try {
         throwIfAborted(signal);
         const results = await awaitWithAbort(
-          engine.query(query, request.limit, undefined, request.path ? [request.path] : undefined, {
-            signal,
-          }),
+          engine.query(
+            query,
+            request.limit,
+            undefined,
+            filteredFiles
+              ? filteredFiles.map((file) => file.path)
+              : request.path
+                ? [request.path]
+                : undefined,
+            {
+              signal,
+            },
+          ),
           signal,
         );
         throwIfAborted(signal);
@@ -462,6 +506,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         unreadableFiles: result.unreadableFiles,
         totalHits: result.totalHits,
         truncated: result.truncated,
+        scopeRestricted: result.scopeRestricted,
+        filters: result.filters,
+        mode: result.mode,
+        field: result.field,
       },
     );
   }
@@ -551,70 +599,50 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     );
     if (!scope) throw new Error(t('nativeVaultSearchScopeFailed'));
     const filesByPath = new Map(files.map((file) => [file.path, file]));
-    const readable: Array<{ file: TFile; content: string }> = [];
+    let state: RustNativeVaultLexicalState | null = null;
     for (let offset = 0; offset < scope.paths.length; offset += LEXICAL_READ_BATCH_SIZE) {
       throwIfAborted(signal);
       const batch = scope.paths.slice(offset, offset + LEXICAL_READ_BATCH_SIZE);
       const entries = await Promise.all(
         batch.map(async (path) => {
           const file = filesByPath.get(path);
-          if (!file) return null;
+          if (!file) return { path, content: null };
           try {
             return {
-              file,
-              content: await awaitWithAbort(this.app.vault.cachedRead(file), signal),
+              path,
+              content:
+                request.field === 'path'
+                  ? ''
+                  : await awaitWithAbort(this.app.vault.cachedRead(file), signal),
             };
           } catch {
-            return null;
+            return { path, content: null };
           }
         }),
       );
       throwIfAborted(signal);
-      readable.push(
-        ...entries.filter((entry): entry is { file: TFile; content: string } => entry !== null),
+      state = planNativeVaultLexicalBatchRust(
+        { ...request, queries: [...queries] },
+        entries,
+        state,
       );
+      if (!state) throw new Error(t('nativeVaultSearchScopeFailed'));
     }
-    const searchableTexts = readable.map(({ file, content }) => `${file.path}\n${content}`);
     const candidates: LexicalSearchCandidate[] = [];
-    const matchedPaths = new Set<string>();
-    let lexicalWasTruncated = false;
-    for (let queryIndex = 0; queryIndex < queries.length; queryIndex++) {
-      throwIfAborted(signal);
-      const query = queries[queryIndex];
-      if (!query) continue;
-      const matchingIndices =
-        planFolderLexicalEvidenceIndicesRust(
-          query,
-          searchableTexts,
-          readable.length,
-          request.match,
-        ) ?? [];
-      for (const matchedIndex of matchingIndices) {
-        const matchedPath = readable[matchedIndex]?.file.path;
-        if (matchedPath) matchedPaths.add(matchedPath);
-      }
-      const selectedIndices = matchingIndices.slice(0, request.limit);
-      lexicalWasTruncated ||= selectedIndices.length < matchingIndices.length;
-      for (let rankIndex = 0; rankIndex < selectedIndices.length; rankIndex++) {
-        const entryIndex = selectedIndices[rankIndex];
-        const entry = entryIndex === undefined ? undefined : readable[entryIndex];
-        if (!entry) continue;
-        const evidence = planNativeVaultLexicalHitRust(query, entry.content, request.match);
-        const recommendedReadRange = boundRecommendedReadRange(
-          evidence?.startLine ?? 1,
-          evidence?.endLine,
-        );
+    for (const [queryIndex, stream] of (state?.streams ?? []).entries()) {
+      for (const [rankIndex, entry] of stream.entries()) {
+        const recommendedReadRange = boundRecommendedReadRange(entry.startLine, entry.endLine);
         candidates.push({
           queryIndex,
           rank: rankIndex + 1,
           hit: {
-            path: entry.file.path,
+            path: entry.path,
             startLine: recommendedReadRange.startLine,
             endLine: recommendedReadRange.endLine,
-            preview: evidence?.preview ?? createContextPreviewRust(entry.content) ?? '',
+            preview: entry.preview,
             retrievalSources: ['live-lexical'],
             selectionReason: 'keyword',
-            matchedQueries: [query],
+            matchedQueries: queries[queryIndex] ? [queries[queryIndex]] : [],
             recommendedReadRange,
             citationStatus: 'candidate',
             requiresRead: true,
@@ -646,20 +674,69 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       ];
     });
     return buildSearchResult(request.query, queries, request.path, request.match, hits, {
-      scannedFiles: scope.paths.length,
-      unreadableFiles: scope.paths.length - readable.length,
-      totalHits: matchedPaths.size,
-      truncated: lexicalWasTruncated || matchedPaths.size > hits.length,
+      scannedFiles: state?.scannedFiles ?? 0,
+      unreadableFiles: state?.unreadableFiles ?? 0,
+      totalHits: state?.totalHits ?? 0,
+      truncated: (state?.totalHits ?? 0) > hits.length,
+      scopeRestricted:
+        request.filters !== undefined || (request.field !== undefined && request.field !== 'both'),
+      ...(request.filters ? { filters: request.filters } : {}),
+      ...(request.mode ? { mode: request.mode } : {}),
+      ...(request.field ? { field: request.field } : {}),
     });
   }
 
-  private async getListCandidateFiles(path: string, cursor: number): Promise<readonly TFile[]> {
+  private filterFiles(
+    files: readonly TFile[],
+    filters: RustNativeVaultFilters,
+    path = '',
+  ): readonly TFile[] {
+    const scope = planNativeVaultListRust(
+      files.map((file) => file.path),
+      path,
+      0,
+      files.length,
+    );
+    if (!scope) throw new Error(t('nativeVaultSearchScopeFailed'));
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const scoped = scope.paths.flatMap((path) => filesByPath.get(path) ?? []);
+    const rows = scoped.map((file) => {
+      const cache =
+        filters.tags || filters.properties ? this.app.metadataCache.getFileCache?.(file) : null;
+      return {
+        modifiedAt: file.stat.mtime,
+        tags: filters.tags && cache ? (getAllTags(cache) ?? []) : [],
+        properties: Object.fromEntries(
+          Object.keys(filters.properties ?? {}).flatMap((name) => {
+            const value: unknown = cache?.frontmatter?.[name];
+            return value === undefined ? [] : [[name, value]];
+          }),
+        ),
+      };
+    });
+    const indices = planNativeVaultFilteredIndicesRust(rows, filters);
+    if (!indices) throw new Error(t('nativeVaultSearchScopeFailed'));
+    return indices.flatMap((index) => (scoped[index] ? [scoped[index]] : []));
+  }
+
+  private async getListCandidateFiles(
+    path: string,
+    cursor: number,
+    filters?: RustNativeVaultFilters,
+  ): Promise<readonly TFile[]> {
     const snapshot = this.listSnapshot;
-    if (cursor > 0 && snapshot?.path === path && snapshot.expectedCursor === cursor) {
+    const filtersKey = JSON.stringify(filters ?? null);
+    if (
+      cursor > 0 &&
+      snapshot?.path === path &&
+      snapshot.expectedCursor === cursor &&
+      snapshot.filtersKey === filtersKey
+    ) {
       return snapshot.files;
     }
     this.listSnapshot = null;
-    return this.fileScope.listCandidateFiles();
+    const files = await this.fileScope.listCandidateFiles();
+    return filters ? this.filterFiles(files, filters) : files;
   }
 
   private resolveCandidateFile(path: string, files: readonly TFile[]): TFile | null {
@@ -809,6 +886,11 @@ function buildIndexedSearchResult(
     totalHits: plan.totalEntries,
     // 각 query의 topK 후보만 융합하므로 결과 수와 무관하게 전체 검색 완료를 뜻하지 않습니다.
     truncated: true,
+    scopeRestricted:
+      request.filters !== undefined || (request.field !== undefined && request.field !== 'both'),
+    filters: request.filters,
+    mode: request.mode,
+    field: request.field,
   });
 }
 
@@ -863,6 +945,10 @@ function mergeIndexedAndLexicalSearchResults(
     unreadableFiles: lexical.unreadableFiles,
     totalHits: Math.max(plan.totalEntries, indexed.totalHits, lexical.totalHits),
     truncated: indexed.truncated || lexical.truncated || plan.totalEntries > hits.length,
+    scopeRestricted: lexical.scopeRestricted,
+    filters: lexical.filters,
+    mode: lexical.mode,
+    field: lexical.field,
   });
 }
 
@@ -947,6 +1033,10 @@ function buildSearchResult(
     unreadableFiles?: number;
     totalHits?: number;
     truncated?: boolean;
+    scopeRestricted?: boolean;
+    filters?: RustNativeVaultFilters;
+    mode?: 'auto' | 'exact';
+    field?: 'both' | 'content' | 'path';
   } = {},
 ): NativeVaultSearchResult {
   const hits = rawHits.map((rawHit): NativeVaultSearchHit => {
@@ -981,6 +1071,10 @@ function buildSearchResult(
     unreadableFiles: coverage.unreadableFiles ?? 0,
     totalHits,
     truncated: coverage.truncated ?? totalHits > hits.length,
+    ...(coverage.scopeRestricted ? { scopeRestricted: true } : {}),
+    ...(coverage.filters ? { filters: coverage.filters } : {}),
+    ...(coverage.mode ? { mode: coverage.mode } : {}),
+    ...(coverage.field ? { field: coverage.field } : {}),
     citations,
   };
 }

@@ -64,6 +64,10 @@ pub use native_vault_tool::{
 /// Native lexical search evidence-location policy.
 mod native_lexical_hit;
 pub use native_lexical_hit::plan_native_vault_lexical_hit_json;
+mod native_search;
+pub use native_search::{
+    plan_native_vault_filtered_indices_json, plan_native_vault_lexical_batch_json,
+};
 
 /// Compact persisted tool-result resume policy.
 mod tool_result_resume;
@@ -2755,36 +2759,16 @@ pub fn plan_folder_lexical_evidence_indices_json(
     if !matches!(match_mode, "all" | "any" | "phrase") {
         return String::new();
     }
-    let tokens = tokenize(query)
-        .into_iter()
-        .filter(|token| token != "or" && token != "and")
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    if tokens.is_empty() {
+    let Some(query) = prepare_folder_lexical_query(query) else {
         return "[]".to_owned();
-    }
-    let joined_tokens = tokens.join("\u{1f}");
-    let normalized_phrase = query.trim().to_lowercase();
+    };
     let mut scored = samples
         .iter()
         .enumerate()
         .filter_map(|(index, sample)| {
-            let (file_path, content) = sample.split_once('\n').unwrap_or((sample, ""));
-            let combined = format!("{file_path}\n{content}").to_lowercase();
-            let path_score = count_keyword_matches(&joined_tokens, file_path);
-            let content_score = count_keyword_matches(&joined_tokens, content).min(9_999);
-            let matched_tokens = count_keyword_matches(&joined_tokens, &combined);
-            let is_match = match match_mode {
-                "all" => usize::try_from(matched_tokens).ok() == Some(tokens.len()),
-                "any" => matched_tokens > 0,
-                "phrase" => combined.contains(&normalized_phrase),
-                _ => false,
-            };
-            let score = path_score
-                .saturating_mul(10_000)
-                .saturating_add(content_score);
-            is_match.then_some((index, score))
+            let (path, content) = sample.split_once('\n').unwrap_or((sample, ""));
+            score_folder_lexical_sample(&query, path, content, match_mode)
+                .map(|score| (index, score))
         })
         .collect::<Vec<_>>();
     scored.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -2792,9 +2776,60 @@ pub fn plan_folder_lexical_evidence_indices_json(
         &scored
             .into_iter()
             .take(top_k)
-            .map(|(index, _score)| index)
+            .map(|(index, _)| index)
             .collect::<Vec<_>>(),
     )
+}
+
+/// 파일 수와 무관하게 질의 정규화는 검색당 한 번만 수행한다.
+struct FolderLexicalQuery {
+    /// 토큰 비교에 사용하는 구분자로 연결된 어휘.
+    joined_tokens: String,
+    /// 일치해야 하는 서로 다른 어휘 수.
+    term_count: usize,
+    /// 대소문자를 정규화한 구절.
+    phrase: String,
+}
+
+/// 폴더 검색과 묶음 검색이 공유하는 어휘 질의를 준비한다.
+fn prepare_folder_lexical_query(query: &str) -> Option<FolderLexicalQuery> {
+    let tokens = tokenize(query)
+        .into_iter()
+        .filter(|token| token != "or" && token != "and")
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(FolderLexicalQuery {
+        joined_tokens: tokens.join("\u{1f}"),
+        term_count: tokens.len(),
+        phrase: query.trim().to_lowercase(),
+    })
+}
+
+/// 묶음 검색과 폴더 근거 선택이 같은 어휘 점수를 사용하도록 한다.
+fn score_folder_lexical_sample(
+    query: &FolderLexicalQuery,
+    file_path: &str,
+    content: &str,
+    match_mode: &str,
+) -> Option<u32> {
+    let combined = format!("{file_path}\n{content}").to_lowercase();
+    let path_score = count_keyword_matches(&query.joined_tokens, file_path);
+    let content_score = count_keyword_matches(&query.joined_tokens, content).min(9_999);
+    let matched_tokens = count_keyword_matches(&query.joined_tokens, &combined);
+    let is_match = match match_mode {
+        "all" => usize::try_from(matched_tokens).ok() == Some(query.term_count),
+        "any" => matched_tokens > 0,
+        "phrase" => combined.contains(&query.phrase),
+        _ => false,
+    };
+    let score = path_score
+        .saturating_mul(10_000)
+        .saturating_add(content_score);
+    is_match.then_some(score)
 }
 
 /// Context7를 암묵적으로 제공할 만큼 programming intent가 분명한지 판정한다.

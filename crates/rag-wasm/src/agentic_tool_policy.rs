@@ -910,6 +910,8 @@ struct EvidenceLedger {
     verified_read_ranges: BTreeSet<EvidenceLocator>,
     /// Latest search candidates that still require a matching source read.
     pending_candidate: PendingCandidate,
+    /// 최신 검색의 후보 중 하나 이상을 정확한 원문 구간으로 확인했는지 여부.
+    latest_search_verified: bool,
     /// 일치하는 원문 읽기가 추가로 필요할 수 있는 최신 링크 결과 경로.
     pending_link_candidate: PendingCandidate,
     /// 대기 중인 링크 결과 경로와 일치한 완전한 native 원문 읽기 수.
@@ -941,7 +943,7 @@ impl EvidenceLedger {
             return true;
         }
         if requirements_need_content(requirements, relation_requires_content) {
-            return self.pending_candidate.is_pending()
+            return self.pending_candidate.is_pending() && !self.latest_search_verified
                 || self.pending_link_candidate.is_pending()
                 || self.read_coverage.needs_follow_up();
         }
@@ -956,7 +958,7 @@ impl EvidenceLedger {
         requires_multiple_sources: bool,
     ) -> bool {
         (requirements_need_content(requirements, relation_requires_content)
-            && (self.pending_candidate.is_pending()
+            && (self.pending_candidate.is_pending() && !self.latest_search_verified
                 || self.pending_link_candidate.is_pending()
                 || self.read_coverage.needs_follow_up())
             && self.read_verification_failures >= 2)
@@ -1341,6 +1343,7 @@ fn record_successful_search(
         .insert(native_search_attempt_signature(call));
     if search_result_has_candidates(result) {
         ledger.candidate_searches = ledger.candidate_searches.saturating_add(1);
+        ledger.latest_search_verified = false;
         ledger.pending_candidate = match search_result_candidate_locators(result) {
             Some(locators) if !locators.is_empty() => {
                 let verified_locators = search_result_verified_locators(result).unwrap_or_default();
@@ -1356,6 +1359,8 @@ fn record_successful_search(
                     })
                     .cloned()
                     .collect::<BTreeSet<_>>();
+                ledger.latest_search_verified =
+                    has_verified_locators || unverified_locators.len() < locators.len();
                 ledger
                     .candidate_source_paths
                     .extend(locators.iter().map(|locator| locator.path.clone()));
@@ -1439,6 +1444,7 @@ fn record_successful_read(ledger: &mut EvidenceLedger, result: &JsonValue) {
     }
     if verifies_pending_candidate && !read.truncated {
         ledger.pending_candidate.mark_verified_by(&read);
+        ledger.latest_search_verified = true;
     }
     if verifies_pending_link && !read.truncated {
         ledger.pending_link_candidate.mark_verified_by(&read);

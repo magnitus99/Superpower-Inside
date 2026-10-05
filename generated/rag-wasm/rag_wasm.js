@@ -1980,6 +1980,55 @@ export function plan_native_tool_compatibility_fallback_json(input_json) {
 }
 
 /**
+ * Obsidian이 제공한 메타데이터에서 모든 조건이 일치하는 파일 index를 선택한다.
+ * @param {string} files_json
+ * @param {string} filters_json
+ * @returns {string}
+ */
+export function plan_native_vault_filtered_indices_json(files_json, filters_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(files_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(filters_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_filtered_indices_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 이전 상위 후보와 최대 8개 본문을 결합한다. 본문은 다음 묶음으로 넘기지 않는다.
+ * @param {string} request_json
+ * @param {string} samples_json
+ * @param {string} previous_json
+ * @returns {string}
+ */
+export function plan_native_vault_lexical_batch_json(request_json, samples_json, previous_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(request_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(samples_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(previous_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_lexical_batch_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * 파일 단위 lexical 일치 결과에서 가장 관련 있는 실제 행과 검증 상태를 반환한다.
  * @param {string} query
  * @param {string} content
@@ -2027,7 +2076,7 @@ export function plan_native_vault_link_paths_json(paths_json, limit) {
 }
 
 /**
- * 볼트 폴더 prefix 아래의 Markdown 경로를 안정적이고 제한된 한 페이지로 선택한다.
+ * 정확한 파일 또는 폴더 prefix 범위의 허용 경로를 안정된 한 페이지로 선택한다.
  * @param {string} file_paths_json
  * @param {string} path_prefix
  * @param {number} cursor

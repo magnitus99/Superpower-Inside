@@ -605,6 +605,15 @@ export interface I18nKeys {
   vaultResearchPhaseReduce: string;
   vaultResearchPhaseComplete: string;
   nativeVaultActionSearch: string;
+  nativeVaultSearchOptionsDescription: string;
+  nativeVaultSearchModeDescription: string;
+  nativeVaultSearchFieldDescription: string;
+  nativeVaultPathScopeDescription: string;
+  nativeVaultFiltersDescription: string;
+  nativeVaultModifiedAfterDescription: string;
+  nativeVaultModifiedBeforeDescription: string;
+  nativeVaultTagsDescription: string;
+  nativeVaultPropertiesDescription: string;
   nativeVaultActionRelated: string;
   nativeVaultActionRead: string;
   nativeVaultActionList: string;
@@ -2143,6 +2152,24 @@ const ko: I18nKeys = {
   vaultResearchPhaseReduce: '내용 종합',
   vaultResearchPhaseComplete: '완료',
   nativeVaultActionSearch: '검색',
+  nativeVaultSearchOptionsDescription:
+    '정확한 문구는 mode=exact로 검색하세요. exact는 대소문자와 내부 공백을 보존하고 임베딩을 호출하지 않습니다. 파일명은 field=path, 본문만은 field=content를 사용하세요. 필터와 검색 필드로 제한한 결과를 볼트 전체의 근거로 삼지 마세요.',
+  nativeVaultSearchModeDescription:
+    'auto는 기본 필드 both에서 기존 혼합 검색을 사용합니다. exact는 현재 원문의 리터럴 구간 검색입니다. 기본값은 auto입니다.',
+  nativeVaultSearchFieldDescription:
+    'both는 경로와 본문을 검색합니다. content와 path는 현재 본문만 또는 경로만 어휘 검색하며 인덱스를 건너뜁니다. path는 본문을 읽지 않습니다. 기본값은 both입니다.',
+  nativeVaultPathScopeDescription:
+    '볼트 기준의 정확한 파일 경로 또는 폴더 범위입니다. 폴더는 하위 경로를 포함하며 생략하면 볼트 전체가 대상입니다. 현재 제외 정책을 따릅니다.',
+  nativeVaultFiltersDescription:
+    '선택적 파일 조건입니다. 날짜는 파일 수정 시각이고 노트의 날짜 속성과 다릅니다. 지정한 날짜·태그·속성 조건을 모두 충족해야 합니다. 필터 결과의 부재는 볼트 전체의 부재를 증명하지 않습니다.',
+  nativeVaultModifiedAfterDescription:
+    '포함할 최소 파일 수정 시각. Unix epoch 밀리초이며 경계를 포함합니다.',
+  nativeVaultModifiedBeforeDescription:
+    '포함할 최대 파일 수정 시각. Unix epoch 밀리초이며 경계를 포함합니다.',
+  nativeVaultTagsDescription:
+    '모두 있어야 하는 태그. frontmatter와 본문 태그를 사용하며 #은 생략할 수 있습니다. 대소문자는 구분하지 않고 계층 태그는 정확히 일치해야 합니다.',
+  nativeVaultPropertiesDescription:
+    'frontmatter 속성의 타입을 보존한 정확 일치 조건. 문자열·숫자·불리언만 지원하며 누락된 속성은 일치하지 않습니다.',
   nativeVaultActionRelated: '관련 문서 찾기',
   nativeVaultActionRead: '문서 읽기',
   nativeVaultActionList: '문서 목록',
@@ -3794,6 +3821,24 @@ const en: I18nKeys = {
   vaultResearchPhaseReduce: 'Synthesizing',
   vaultResearchPhaseComplete: 'Complete',
   nativeVaultActionSearch: 'Search',
+  nativeVaultSearchOptionsDescription:
+    'Use mode=exact for literal phrases. Exact preserves case and internal whitespace without calling embeddings. Use field=path for filenames and field=content for body-only search. Filtered or field-restricted results are not whole-vault evidence.',
+  nativeVaultSearchModeDescription:
+    'auto uses hybrid retrieval with the default both field; exact finds literal spans in current text. Defaults to auto.',
+  nativeVaultSearchFieldDescription:
+    'both searches paths and bodies. content and path use live lexical search over bodies only or paths only, bypassing the index. path never reads bodies. Defaults to both.',
+  nativeVaultPathScopeDescription:
+    'Exact vault-relative file path or folder scope, including descendants. Omit for the vault root. Current exclusion policy still applies.',
+  nativeVaultFiltersDescription:
+    'Optional file predicates, all required. Dates refer to file modification time, not a note date property. Absence within filters does not prove whole-vault absence.',
+  nativeVaultModifiedAfterDescription:
+    'Inclusive minimum file modification timestamp in Unix epoch milliseconds.',
+  nativeVaultModifiedBeforeDescription:
+    'Inclusive maximum file modification timestamp in Unix epoch milliseconds.',
+  nativeVaultTagsDescription:
+    'All required frontmatter or inline tags. Leading # is optional. Case insensitive; hierarchical tags must match exactly.',
+  nativeVaultPropertiesDescription:
+    'Exact typed frontmatter equality. Supports strings, numbers, and booleans. Missing properties never match.',
   nativeVaultActionRelated: 'Find related documents',
   nativeVaultActionRead: 'Read document',
   nativeVaultActionList: 'List documents',

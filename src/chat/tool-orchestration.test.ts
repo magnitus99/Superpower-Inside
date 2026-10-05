@@ -71,6 +71,39 @@ function normalizedReadResult(path: string): string {
 }
 
 describe('적극적 도구 오케스트레이션 경계', () => {
+  it('질문에 필요한 후보를 읽은 뒤에는 다른 검색 후보를 모두 읽도록 강제하지 않는다', () => {
+    const plan = planAgenticToolTurn({
+      question: '내 노트에서 이 구절의 앞뒤 원문을 읽고 누가 말했는지 알려줘',
+      contextAttachments: [],
+      explicitToolServerCount: 0,
+      toolDefinitions: definitions,
+      toolCalls: [
+        {
+          id: 'search',
+          name: 'superpower_inside_search',
+          arguments: '{"query":"구절"}',
+          status: 'success',
+          normalizedResult: normalizedSearchResult(['Answer.md', 'Related.md']),
+        },
+        {
+          id: 'read',
+          name: 'superpower_inside_read',
+          arguments: '{"path":"Answer.md"}',
+          status: 'success',
+          normalizedResult: normalizedReadResult('Answer.md'),
+        },
+      ],
+      phase: 'after-tools',
+      round: 2,
+      maxRounds: 10,
+    });
+    expect(plan).toMatchObject({
+      nextAction: 'answer',
+      toolChoice: 'auto',
+      shouldRetryWithoutTools: false,
+    });
+  });
+
   it('명시적인 볼트 근거 질문은 첫 응답부터 도구 사용을 요구한다', () => {
     const plan = planAgenticToolTurn({
       question: '내 볼트에서 이 결정의 근거를 찾아줘',
@@ -392,9 +425,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
       ['github'],
     );
 
-    expect(result.map((definition) => definition.function.name)).toEqual([
-      'github_search',
-    ]);
+    expect(result.map((definition) => definition.function.name)).toEqual(['github_search']);
   });
 
   it('명시 MCP 서버 매핑이 catalog와 어긋나면 전체 catalog를 보존한다', () => {
@@ -408,11 +439,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
     };
     const catalog = [...definitions, externalDefinition];
 
-    const result = selectAgenticToolDefinitions(
-      catalog,
-      ['github_search'],
-      ['jira'],
-    );
+    const result = selectAgenticToolDefinitions(catalog, ['github_search'], ['jira']);
 
     expect(result).toEqual(catalog);
   });

@@ -53,7 +53,7 @@ pub fn plan_native_vault_tool_request_json(arguments_json: &str) -> String {
     }
 }
 
-/// 볼트 폴더 prefix 아래의 Markdown 경로를 안정적이고 제한된 한 페이지로 선택한다.
+/// 정확한 파일 또는 폴더 prefix 범위의 허용 경로를 안정된 한 페이지로 선택한다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_native_vault_list_json(
@@ -73,7 +73,11 @@ pub fn plan_native_vault_list_json(
     };
     let paths = file_paths
         .into_iter()
-        .filter(|path| folder_prefix.is_empty() || path.starts_with(&folder_prefix))
+        .filter(|path| {
+            folder_prefix.is_empty()
+                || path.as_str() == normalized_prefix
+                || path.starts_with(&folder_prefix)
+        })
         .collect::<BTreeSet<_>>();
     let total = paths.len();
     let selected_paths = paths
@@ -384,10 +388,23 @@ fn normalize_related_request(
 fn normalize_search_request(
     object: &JsonMap<String, JsonValue>,
 ) -> Result<JsonValue, &'static str> {
+    let options = super::native_search::normalize_search_options(object)?;
+    let exact = options.get("mode").and_then(JsonValue::as_str) == Some("exact");
     let primary_query = required_string(object, "query", "query_required")?;
     let raw_path = optional_string(object, "path")?;
     let path = normalize_optional_path(raw_path.as_deref())?;
-    let explicit_match_mode = optional_string(object, "match")?;
+    let supplied_match = optional_string(object, "match")?;
+    if supplied_match
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "all" | "any" | "phrase"))
+    {
+        return Err("invalid_match");
+    }
+    let explicit_match_mode = if exact {
+        Some("phrase".to_owned())
+    } else {
+        supplied_match
+    };
     let (queries, inferred_any_match) =
         normalize_search_queries(object, primary_query, explicit_match_mode.is_none())?;
     let match_mode = explicit_match_mode
@@ -403,14 +420,18 @@ fn normalize_search_request(
         DEFAULT_SEARCH_LIMIT,
         MAX_SEARCH_LIMIT,
     );
-    Ok(json!({
+    let mut result = json!({
         "action": "search",
         "query": query,
         "queries": queries,
         "path": path,
         "limit": limit,
         "match": match_mode
-    }))
+    });
+    if let Some(result) = result.as_object_mut() {
+        result.extend(options);
+    }
+    Ok(result)
 }
 
 /// 주 질의와 선택적 변형을 정규화·검증하고 중복 제거한다.
@@ -427,7 +448,11 @@ fn normalize_search_queries(
     let mut seen = BTreeSet::new();
     let mut inferred_any_match = false;
     for raw_query in raw_queries {
-        let canonical_query = normalize_query_whitespace(&raw_query);
+        let canonical_query = if object.get("mode").and_then(JsonValue::as_str) == Some("exact") {
+            raw_query.trim().to_owned()
+        } else {
+            normalize_query_whitespace(&raw_query)
+        };
         if canonical_query.is_empty() {
             return Err("query_required");
         }
@@ -444,7 +469,11 @@ fn normalize_search_queries(
         if count_original_query_terms(&normalized_query) > MAX_SEARCH_QUERY_TERMS {
             return Err("query_too_many_terms");
         }
-        let deduplication_key = normalized_query.to_lowercase();
+        let deduplication_key = if object.get("mode").and_then(JsonValue::as_str) == Some("exact") {
+            normalized_query.clone()
+        } else {
+            normalized_query.to_lowercase()
+        };
         if seen.insert(deduplication_key) {
             normalized_queries.push(normalized_query);
         }
@@ -531,7 +560,13 @@ fn normalize_list_request(object: &JsonMap<String, JsonValue>) -> Result<JsonVal
         DEFAULT_LIST_LIMIT,
         MAX_LIST_LIMIT,
     );
-    Ok(json!({ "action": "list", "path": path, "cursor": cursor, "limit": limit }))
+    let mut result = json!({ "action": "list", "path": path, "cursor": cursor, "limit": limit });
+    if let Some(filters) = super::native_search::normalize_filters(object.get("filters"))?
+        && let Some(result) = result.as_object_mut()
+    {
+        result.insert("filters".to_owned(), filters);
+    }
+    Ok(result)
 }
 
 /// 제한된 구조 링크 순회 요청을 검증한다.

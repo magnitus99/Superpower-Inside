@@ -17,6 +17,11 @@ const obsidianAdapter = `
 export class TFile {}
 export class TFolder {}
 export function normalizePath(value) { return value.replaceAll('\\\\', '/'); }
+export function getAllTags(cache) {
+  const frontmatter = cache.frontmatter?.tags;
+  return [...(cache.tags?.map(item => item.tag) ?? []),
+    ...(Array.isArray(frontmatter) ? frontmatter : typeof frontmatter === 'string' ? [frontmatter] : [])];
+}
 export async function requestUrl(options) {
   const response = await fetch(options.url, { method: options.method, headers: options.headers, body: options.body,
     signal: AbortSignal.timeout(120000) });
