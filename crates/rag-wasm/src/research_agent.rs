@@ -450,9 +450,9 @@ mod tests {
     #[test]
     fn citation_selection_keeps_only_bounded_markers_from_the_final_answer() {
         let raw = plan_research_citation_indices_json(
-            "결론 [vault:Alpha.md:1-10] 및 Source graph-2",
-            r#"["vault:Alpha.md:1-1","vault:Alpha.md:1-10","graph-2","unused"]"#,
-            r#"["Alpha.md","Alpha.md","graph://2","Unused.md"]"#,
+            "결론 [vault:Alpha.md:1-10] 및 Source links-2",
+            r#"["vault:Alpha.md:1-1","vault:Alpha.md:1-10","links-2","unused"]"#,
+            r#"["Alpha.md","Alpha.md","Links.md","Unused.md"]"#,
             2,
         );
 

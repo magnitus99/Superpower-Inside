@@ -147,7 +147,7 @@ function buildBm25Index(documentCount) {
     const group = documentIndex % 17;
     index.add_document(
       `doc-${documentIndex}.md::0`,
-      `alpha beta graph rag evidence group-${group} doc-${documentIndex}`,
+      `alpha beta retrieval evidence group-${group} doc-${documentIndex}`,
       `doc-${documentIndex}.md`,
       2,
     );
@@ -158,7 +158,7 @@ function buildBm25Index(documentCount) {
 function fixtureMarkdown2Mb() {
   const segment = [
     '# Heading',
-    'alpha beta graph rag evidence paragraph.',
+    'alpha beta retrieval evidence paragraph.',
     '',
     'beta gamma delta with korean 요고49 포인트 페이백 tokens.',
     '',

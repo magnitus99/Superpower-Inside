@@ -1,20 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import {
-  parseMentions,
-  shouldUseAutoRagForMentions,
-  type MentionResolver,
-} from './mention-parser';
+import { parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
 
 function resolver(): MentionResolver {
   const servers = new Set(['browser', 'filesystem']);
   const files = new Set(['Notes/today.md', 'Project Plan.md']);
   const folders = new Set(['Notes', 'Projects/Alpha']);
-  const entities = new Set(['paul', 'augustine', 'romans']);
   return {
     isServer: (name) => servers.has(name),
     isFile: (name) => files.has(name),
     isFolder: (name) => folders.has(name),
-    isEntity: (name) => entities.has(name.toLowerCase()),
   };
 }
 

@@ -4,7 +4,7 @@ use super::{JsonValue, source_revision_matches};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// 공통 원문·BM25·임베딩·선택적 그래프의 준비 상태를 파일별로 반환합니다.
+/// 공통 원문·BM25·임베딩의 준비 상태를 파일별로 반환합니다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_source_processing_json(input_json: &str) -> String {
@@ -74,21 +74,8 @@ fn parse_processing(input_json: &str) -> Option<JsonValue> {
         .map(|document| Some((document.get("id")?.as_str()?, document)))
         .collect::<Option<BTreeMap<_, _>>>()?;
     let vectors = by_path(input.get("vectors")?.as_array()?, "filePath")?;
-    let evidence = by_path(input.get("evidence")?.as_array()?, "filePath")?;
-    let caches = input
-        .get("cache")?
-        .as_array()?
-        .iter()
-        .map(|record| Some((record.get("entryId")?.as_str()?, record)))
-        .collect::<Option<BTreeMap<_, _>>>()?;
     let failed_embedding = input
         .get("failedEmbeddingPaths")?
-        .as_array()?
-        .iter()
-        .map(JsonValue::as_str)
-        .collect::<Option<BTreeSet<_>>>()?;
-    let failed_graph = input
-        .get("failedGraphPaths")?
         .as_array()?
         .iter()
         .map(JsonValue::as_str)
@@ -147,15 +134,7 @@ fn parse_processing(input_json: &str) -> Option<JsonValue> {
             config,
             failed_embedding.contains(path),
         )?;
-        let graph = graph_state(
-            source,
-            docs,
-            &caches,
-            config,
-            failed_graph.contains(path),
-            evidence.get(path).map_or(&[], Vec::as_slice),
-        )?;
-        states.push(serde_json::json!({ "filePath": path, "source": source, "bm25": bm25_state, "embedding": embedding, "graph": graph, "chat": if source == "ready" { "ready" } else { "pending" } }));
+        states.push(serde_json::json!({ "filePath": path, "source": source, "bm25": bm25_state, "embedding": embedding, "chat": if source == "ready" { "ready" } else { "pending" } }));
     }
     Some(summarize_processing(
         states,
@@ -173,14 +152,12 @@ fn summarize_processing(mut states: Vec<JsonValue>, limit: usize) -> JsonValue {
     let complete = states
         .iter()
         .filter(|state| {
-            ["source", "bm25", "embedding", "graph"]
-                .iter()
-                .all(|field| {
-                    matches!(
-                        state.get(*field).and_then(JsonValue::as_str),
-                        Some("ready" | "disabled")
-                    )
-                })
+            ["source", "bm25", "embedding"].iter().all(|field| {
+                matches!(
+                    state.get(*field).and_then(JsonValue::as_str),
+                    Some("ready" | "disabled")
+                )
+            })
         })
         .count();
     states.truncate(limit);
@@ -216,57 +193,6 @@ fn embedding_state(
                     .and_then(JsonValue::as_u64)
                     .is_some_and(|count| usize::try_from(count).ok() == Some(docs.len()))
         })
-    });
-    Some(if ready { "ready" } else { "pending" })
-}
-
-/// 관계가 없는 정상 추출도 캐시 계약이 일치하면 준비 완료로 인정합니다.
-fn graph_state(
-    source: &str,
-    docs: &[&JsonValue],
-    caches: &BTreeMap<&str, &JsonValue>,
-    config: &JsonValue,
-    failed: bool,
-    evidence: &[&JsonValue],
-) -> Option<&'static str> {
-    if !config.get("graphEnabled")?.as_bool()? {
-        return Some("disabled");
-    }
-    if failed {
-        return Some("failed");
-    }
-    if source != "ready" {
-        return Some("stale");
-    }
-    let hash = docs.first()?.get("contentHash")?.as_str()?;
-    if evidence.iter().any(|record| {
-        record.get("contentHash").and_then(JsonValue::as_str) != Some(hash)
-            || !docs
-                .iter()
-                .any(|document| document.get("id") == record.get("entryId"))
-    }) {
-        return Some("stale");
-    }
-    let ready = docs.iter().all(|document| {
-        document
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .and_then(|id| caches.get(id))
-            .is_some_and(|cache| {
-                cache
-                    .get("contentHash")
-                    .and_then(JsonValue::as_str)
-                    .is_some_and(|hash| {
-                        Some(hash) == document.get("chunkHash").and_then(JsonValue::as_str)
-                    })
-                    && cache.get("extractionModelKey") == config.get("graphModel")
-                    && cache.get("ontologySchemaId") == config.get("ontologySchemaId")
-                    && cache.get("ontologyVersion") == config.get("ontologyVersion")
-                    && cache.get("extractionContractVersion")
-                        == config.get("extractionContractVersion")
-                    && (config.get("providerEpochId").is_none()
-                        || cache.get("providerEpochId") == config.get("providerEpochId"))
-            })
     });
     Some(if ready { "ready" } else { "pending" })
 }

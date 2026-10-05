@@ -2,7 +2,7 @@ import { parseMentionCandidatesRust, planChatContextMentionsRust } from '../rag/
 
 export interface ParsedMention {
   raw: string;
-  type: 'file' | 'server' | 'folder' | 'entity';
+  type: 'file' | 'server' | 'folder';
   name: string;
 }
 
@@ -10,7 +10,6 @@ export interface MentionResolver {
   isServer(name: string): boolean;
   isFile(name: string): boolean;
   isFolder(name: string): boolean;
-  isEntity(name: string): boolean;
 }
 
 export function parseMentions(text: string, resolver: MentionResolver): ParsedMention[] {
@@ -18,15 +17,6 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
   const candidates = parseMentionCandidatesRust(text) ?? [];
 
   const addMention = (raw: string, name: string): void => {
-    if (name.startsWith('entity:')) {
-      const entityName = name.slice(7).trim();
-      if (entityName && resolver.isEntity(entityName)) {
-        mentions.push({ raw, type: 'entity', name: entityName });
-        return;
-      }
-      return;
-    }
-
     if (resolver.isServer(name)) {
       mentions.push({ raw, type: 'server', name });
     } else if (resolver.isFile(name)) {

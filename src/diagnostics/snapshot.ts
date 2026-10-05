@@ -1,4 +1,3 @@
-import type { GraphRagStatusSummary } from '../graph/status';
 import type { MCPConnectionState, MCPServerConnectionStatus } from '../mcp/connection-state';
 import type { PerformanceGuardState } from '../rag/performance-guard';
 import type { RagIndexingSchedulerStatus } from '../rag/indexing-scheduler';
@@ -45,12 +44,9 @@ export interface AgentDiagnosticsMcpServerRuntime {
 
 export interface AgentDiagnosticsRuntimeState {
   ragStatus: RagStatusSummary | null;
-  graphRagStatus: GraphRagStatusSummary | null;
   mcpConnectionState: MCPConnectionState;
   mcpServers: readonly AgentDiagnosticsMcpServerRuntime[];
   isRagIndexing: boolean;
-  isGraphRagIndexing: boolean;
-  hasGraphRagRunner: boolean;
   ragIndexingStatus: RagIndexingSchedulerStatus | null;
   performanceGuardState: PerformanceGuardState | null;
   nextAutoUpdateAt: number | null;
@@ -71,7 +67,6 @@ export interface AgentDiagnosticsRagRuntimeInitState {
 
 export interface AgentDiagnosticsRuntimeFlags {
   vectorStoreReady: boolean;
-  knowledgeGraphStoreReady: boolean;
   ragEngineReady: boolean;
   providerReady: boolean;
 }
@@ -131,7 +126,6 @@ export interface AgentDiagnosticsRefreshEvent {
   status: RefreshResult['status'];
   detail?: string;
   runId?: number;
-  source?: RefreshResult['source'];
 }
 
 export interface AgentDiagnosticsFileWriteState {
@@ -205,8 +199,6 @@ export interface AgentDiagnosticsSnapshot {
       embeddingProvider: SuperpowerInsideSettings['rag']['embeddingProvider'];
       embeddingModel: string;
       autoUpdateEnabled: boolean;
-      graphRagEnabled: boolean;
-      graphRagModelConfigured: boolean;
       enableBM25: boolean;
       annEnabled: boolean;
     };
@@ -220,11 +212,6 @@ export interface AgentDiagnosticsSnapshot {
     lastAutoUpdateResult: IndexingResult | null;
     performanceGuard: PerformanceGuardState | null;
     init: AgentDiagnosticsRagRuntimeInitState;
-  };
-  graphRag: {
-    status: GraphRagStatusSummary | null;
-    isIndexing: boolean;
-    hasRunner: boolean;
   };
   mcp: {
     state: MCPConnectionState;
@@ -328,11 +315,6 @@ export function buildAgentDiagnosticsSnapshot(
       performanceGuard: input.runtime.performanceGuardState,
       init: { ...input.runtime.ragRuntimeInit },
     },
-    graphRag: {
-      status: input.runtime.graphRagStatus,
-      isIndexing: input.runtime.isGraphRagIndexing,
-      hasRunner: input.runtime.hasGraphRagRunner,
-    },
     mcp: {
       state: input.runtime.mcpConnectionState,
       servers: input.runtime.mcpServers.map(toMcpServerSnapshot),
@@ -400,12 +382,10 @@ function inferSuspectedCause(
 ): string | null {
   if (!operation) {
     if (input.runtime.isRagIndexing) return 'rag-indexing';
-    if (input.runtime.isGraphRagIndexing) return 'graph-rag-indexing';
     if (input.runtime.mcpConnectionState === 'connecting') return 'mcp-connection';
     return null;
   }
   if (operation.phase.startsWith('rag.')) return 'rag-runtime-or-indexing';
-  if (operation.phase.startsWith('graph.')) return 'graph-rag-indexing';
   if (operation.phase.startsWith('mcp.')) return 'mcp-connection';
   if (operation.phase.startsWith('plugin.')) return 'plugin-startup';
   return operation.phase;
@@ -426,7 +406,6 @@ function buildRecommendedActions(
           enableBM25: false,
           structuralGraphEnabled: false,
           annEnabled: false,
-          graphRagAutoSyncEnabled: false,
         },
       },
     },
@@ -555,8 +534,6 @@ function buildSettingsSummary(
       embeddingProvider: settings.rag.embeddingProvider,
       embeddingModel: settings.rag.embeddingModel,
       autoUpdateEnabled: settings.rag.autoUpdateEnabled,
-      graphRagEnabled: settings.rag.graphRagEnabled,
-      graphRagModelConfigured: settings.rag.graphRagModel.trim().length > 0,
       enableBM25: settings.rag.enableBM25,
       annEnabled: settings.rag.annEnabled,
     },

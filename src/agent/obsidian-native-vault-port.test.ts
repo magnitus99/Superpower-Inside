@@ -25,6 +25,31 @@ vi.mock('obsidian', () => {
 });
 
 describe('Obsidian 네이티브 Vault 포트', () => {
+  it('links는 Obsidian 링크 그래프에서 outgoing과 incoming을 함께 찾는다', async () => {
+    const alpha = createFile('Projects/Alpha.md', '[[Beta]]');
+    const beta = createFile('Projects/Beta.md', 'beta');
+    const gamma = createFile('Projects/Gamma.md', '[[Alpha]]');
+    const excluded = createFile('Archive/Hidden.md', '[[Alpha]]');
+    const app = createApp([alpha, beta, gamma, excluded], {
+      'Projects/Alpha.md': { 'Projects/Beta.md': 1, 'Archive/Hidden.md': 1 },
+      'Projects/Gamma.md': { 'Projects/Alpha.md': 1 },
+      'Archive/Hidden.md': { 'Projects/Alpha.md': 1 },
+    });
+    const port = createNativeVaultPort(app, () => Promise.resolve([alpha, beta, gamma]));
+
+    const result = await port.links({
+      action: 'links',
+      path: 'Projects/Alpha.md',
+      direction: 'both',
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      outgoing: ['Projects/Beta.md'],
+      incoming: ['Projects/Gamma.md'],
+    });
+  });
+
   it('read는 실제 행 번호를 보존하고 한 번에 최대 400행만 반환한다', async () => {
     const lines = Array.from({ length: 500 }, (_, index) => `${index + 1}번째 줄`);
     const port = createNativeVaultPort(
@@ -329,7 +354,6 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: true,
     });
     expect(query).toHaveBeenCalledWith('고객 문제', 2, undefined, undefined, {
-      fileBackedOnly: true,
     });
     expect(cachedRead).toHaveBeenCalledOnce();
   });
@@ -475,7 +499,6 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
 
     expect(query).toHaveBeenCalledWith(seed.content, 7, 0, undefined, {
-      fileBackedOnly: true,
     });
     expect(result).toMatchObject({
       action: 'related',
@@ -637,7 +660,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         createQueryResult(beta.path, 'beta-entry', 20, ['bm25'], 'keyword'),
       ],
       'onboarding churn': [
-        createQueryResult(gamma.path, 'gamma-entry', 30, ['graph-local'], 'strong-graph-evidence'),
+        createQueryResult(
+          gamma.path,
+          'gamma-entry',
+          30,
+          ['structural'],
+          'strong-structural-evidence',
+        ),
         createQueryResult(beta.path, 'beta-entry', 20, ['vector', 'bm25'], 'keyword-vector'),
       ],
     };
@@ -656,10 +685,8 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
 
     expect(query).toHaveBeenNthCalledWith(1, 'customer retention', 3, undefined, undefined, {
-      fileBackedOnly: true,
     });
     expect(query).toHaveBeenNthCalledWith(2, 'onboarding churn', 3, undefined, undefined, {
-      fileBackedOnly: true,
     });
     expect(result.hits[0]).toMatchObject({
       path: beta.path,
@@ -703,7 +730,6 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
     expect(query).toHaveBeenCalledOnce();
     expect(query).toHaveBeenCalledWith('first query', 3, undefined, undefined, {
-      fileBackedOnly: true,
       signal: controller.signal,
     });
     firstQuery.resolve([]);
@@ -801,7 +827,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
       query,
       getLastRetrievalDiagnostics: () => [
-        createRetrievalDiagnostic('partial', 'graph-local'),
+        createRetrievalDiagnostic('partial', 'structural'),
         createRetrievalDiagnostic('ready', 'vector'),
       ],
     }));
@@ -816,30 +842,6 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits.map((hit) => hit.path)).toEqual([alpha.path]);
     expect(cachedRead).toHaveBeenCalledWith(alpha);
-  });
-
-  it('선택적 GraphRAG가 ready여도 core vector가 stale이면 live scan을 실행한다', async () => {
-    const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const query = vi.fn(() => Promise.resolve([]));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
-      query,
-      getLastRetrievalDiagnostics: () => [
-        createRetrievalDiagnostic('ready', 'graph-local'),
-        createRetrievalDiagnostic('stale', 'vector'),
-      ],
-    }));
-
-    const result = await port.search({
-      action: 'search',
-      query: '고객 문제',
-      path: '',
-      limit: 3,
-      match: 'all',
-    });
-
-    expect(result.hits[0]?.path).toBe(alpha.path);
-    expect(cachedRead).toHaveBeenCalledOnce();
   });
 
   it('stale indexed semantic 근거와 live lexical 새 노트를 bounded RRF로 함께 보존한다', async () => {
@@ -1317,31 +1319,6 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits).toHaveLength(3);
   });
 
-  it('links는 Obsidian 링크 그래프에서 outgoing과 incoming을 함께 찾는다', async () => {
-    const alpha = createFile('Projects/Alpha.md', '[[Beta]]');
-    const beta = createFile('Projects/Beta.md', 'beta');
-    const gamma = createFile('Projects/Gamma.md', '[[Alpha]]');
-    const excluded = createFile('Archive/Hidden.md', '[[Alpha]]');
-    const app = createApp([alpha, beta, gamma, excluded], {
-      'Projects/Alpha.md': { 'Projects/Beta.md': 1, 'Archive/Hidden.md': 1 },
-      'Projects/Gamma.md': { 'Projects/Alpha.md': 1 },
-      'Archive/Hidden.md': { 'Projects/Alpha.md': 1 },
-    });
-    const port = createNativeVaultPort(app, () => Promise.resolve([alpha, beta, gamma]));
-
-    const result = await port.links({
-      action: 'links',
-      path: 'Projects/Alpha.md',
-      direction: 'both',
-      limit: 10,
-    });
-
-    expect(result).toMatchObject({
-      outgoing: ['Projects/Beta.md'],
-      incoming: ['Projects/Gamma.md'],
-    });
-  });
-
   it('stats는 현재 RAG 후보 파일 개수와 전체 크기를 반환한다', async () => {
     const app = createApp([createFile('Alpha.md', '1234'), createFile('Beta.md', '123456')]);
     const port = createNativeVaultPort(app);
@@ -1493,7 +1470,7 @@ function createReadyQueryEngineDouble(
 
 function createRetrievalDiagnostic(
   readiness: 'cold' | 'partial' | 'ready' | 'stale' | 'degraded',
-  source: 'vector' | 'ann' | 'bm25' | 'structural' | 'graph-local' = 'bm25',
+  source: 'vector' | 'ann' | 'bm25' | 'structural' = 'bm25',
 ) {
   return {
     providerId: 'test-provider',

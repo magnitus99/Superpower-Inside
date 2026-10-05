@@ -34,7 +34,7 @@ function createFile(path: string): TFile {
 
 describe('지원 파일 공통 문서 저장소', () => {
   it.each(['md', 'markdown', 'txt', 'ts', 'json', 'csv', 'custom'])(
-    '임베딩과 그래프 없이도 %s 본문과 원문 revision을 보존한다',
+    '임베딩 없이도 %s 본문과 원문 revision을 보존한다',
     async (extension) => {
       const store = createStore();
       const file = createFile(`notes/source.${extension}`);

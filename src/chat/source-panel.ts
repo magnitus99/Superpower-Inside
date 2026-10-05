@@ -18,7 +18,6 @@ export interface CitationCardView {
   metaText?: string;
   detail?: string;
   preview: string;
-  graphKindText?: string;
 }
 
 export interface CitationSectionView {
@@ -87,7 +86,6 @@ export function createCitationCardView(citation: SourceCitation): CitationCardVi
     metaText: metaParts.length > 0 ? metaParts.join(' / ') : undefined,
     detail: normalizeSourceDetail(citation.detail),
     preview: citation.preview,
-    graphKindText: citation.graphType ? getGraphKindText(citation.graphType) : undefined,
   };
 }
 
@@ -185,10 +183,6 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
           : t('contextChipNoRelatedNotes');
       }
       return t('contextChipNoRelatedNotes');
-    case 'graph-rag':
-      return attachment.status === 'attached' || attachment.status === 'partial'
-        ? t('contextChipKnowledgeGraph')
-        : t('contextChipKnowledgeGraphMissing');
     case 'folder': {
       const fileCount = attachment.fileCount ?? attachment.sourceIds?.length ?? 0;
       return fileCount > 0
@@ -375,12 +369,6 @@ export class SourcePanel {
         cls: 'superpower-inside-chat-citation-status',
         text: cardView.statusText,
       });
-      if (cardView.graphKindText) {
-        title.createSpan({
-          cls: 'superpower-inside-chat-citation-graph-kind',
-          text: cardView.graphKindText,
-        });
-      }
       if (cardView.metaText) {
         card.createDiv({
           cls: 'superpower-inside-chat-citation-meta',
@@ -703,25 +691,14 @@ function getCitationStatusText(status: NonNullable<SourceCitation['status']>): s
   }
 }
 
-function getGraphKindText(graphType: NonNullable<SourceCitation['graphType']>): string {
-  switch (graphType) {
-    case 'entity':
-      return t('sourceGraphEntity');
-    case 'relation':
-      return t('sourceGraphRelation');
-    case 'community':
-      return t('sourceGraphCommunity');
-  }
-}
-
 function getCitationSelectionReasonText(
   reason: NonNullable<SourceCitation['selectionReason']>,
 ): string {
   switch (reason) {
-    case 'strong-graph-evidence':
-      return t('sourceReasonStrongGraph');
-    case 'graph-structural-evidence':
-      return t('sourceReasonGraphStructural');
+    case 'strong-structural-evidence':
+      return t('sourceReasonStrongStructural');
+    case 'structural-evidence':
+      return t('sourceReasonStructural');
     case 'keyword-vector':
       return t('sourceReasonKeywordVector');
     case 'keyword':

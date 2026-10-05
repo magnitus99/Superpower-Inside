@@ -13,7 +13,12 @@ import type {
 } from './snapshot';
 import type { RefreshBus, RefreshDomain } from '../utils/refresh-bus';
 import type { RefreshResult } from '../utils/refresh-action';
-import { redactLogValue, type AppLogger, type LogEntry, type LoggerChangeEvent } from '../utils/logger';
+import {
+  redactLogValue,
+  type AppLogger,
+  type LogEntry,
+  type LoggerChangeEvent,
+} from '../utils/logger';
 import { writeJsonToVault } from '../utils/vault';
 import {
   DEFAULT_DIAGNOSTICS_EVENT_LOG_MAX_BYTES,
@@ -26,8 +31,6 @@ const REFRESH_DOMAINS: readonly RefreshDomain[] = [
   'models',
   'sessions',
   'exclude-counts',
-  'graph-progress',
-  'graph-data',
 ];
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 1_000;
@@ -335,8 +338,6 @@ export class AgentDiagnosticsService {
       domain,
       status: result.status,
       detail: result.detail,
-      runId: result.runId,
-      source: result.source,
     };
     this.refreshEvents.push(event);
     if (this.refreshEvents.length > this.maxRefreshEvents) {
@@ -549,9 +550,7 @@ function createSessionId(startedAt: number): string {
   return `agent-diagnostics-${startedAt.toString(36)}-${random}`;
 }
 
-function parsePreviousSessionSuspect(
-  value: unknown,
-): AgentDiagnosticsPreviousSessionState | null {
+function parsePreviousSessionSuspect(value: unknown): AgentDiagnosticsPreviousSessionState | null {
   if (!isRecord(value)) return null;
   const session = value.session;
   if (!isRecord(session)) return null;

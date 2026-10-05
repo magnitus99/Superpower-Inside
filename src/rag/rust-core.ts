@@ -2,7 +2,6 @@ import {
   plan_chatgpt_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
-  plan_source_graph_reconcile_json,
   plan_source_processing_json,
   find_reusable_prompt,
   is_local_settings_provider,
@@ -13,26 +12,15 @@ import {
   collect_candidate_reasons as collect_candidate_reasons_json,
   chunk_plain_text_json,
   source_revision_matches,
-  rank_graph_community_pairs,
   count_keyword_matches,
-  create_entity_id,
   create_context_preview,
   cosine_similarity_or_nan,
-  create_graph_id,
   create_content_hash,
   create_indexed_db_record_key,
-  detect_communities_from_edges_json,
-  detect_leiden_hierarchy_from_edges_json,
   extract_structured_reasoning,
   extract_vault_links_json,
-  graph_extraction_contract_version,
-  plan_graph_extraction_failure_json,
-  plan_graph_extraction_child_units_json,
-  find_mentioned_entity_matches,
   initSync,
   IvfRuntimeIndex,
-  is_graph_extraction_cache_hit_json,
-  is_same_graph_entity_pair,
   is_protected_rag_document_extension_json,
   count_files_by_extensions_json,
   is_excluded_path,
@@ -45,12 +33,7 @@ import {
   is_mcp_tool_result_empty_json,
   classify_mcp_tool_error_json,
   normalize_exclude_extension_json,
-  normalize_entity_name,
   normalize_reasoning_chunk_json,
-  normalize_graph_confidence_or_default,
-  normalize_graph_source_spans_flat,
-  normalize_graph_name,
-  parse_extracted_graph_payload_json,
   parse_mention_candidates_json,
   plan_agentic_tool_turn_json,
   plan_folder_lexical_evidence_indices_json,
@@ -76,45 +59,19 @@ import {
   plan_chat_messages_json,
   plan_chat_save_metadata_json,
   plan_context_budget_append_json,
-  plan_context_graph_verification_json,
   plan_context_sources_json,
   plan_diverse_result_indices_json,
-  plan_entity_resolution_json,
   plan_index_pending_files_json,
-  plan_claim_evidence_scores_json,
   plan_evidence_candidate_order_json,
   plan_empty_file_index_record_json,
-  plan_local_evidence_scores_json,
   plan_file_index_records_json,
   plan_indexed_db_bounded_cleanup_json,
   plan_indexed_db_bounded_retention_json,
   plan_indexed_db_storage_layout_json,
-  plan_graph_storage_maintenance_json,
   plan_inactive_indexed_db_cleanup_json,
   plan_plugin_owned_file_maintenance_json,
   plan_stale_index_source_paths_json,
   plan_folder_mention_file_indices_json,
-  plan_graph_community_replacement_delete_ids_json,
-  plan_graph_community_summary_groups_json,
-  plan_graph_claim_entity_ids_json,
-  plan_graph_deletion_indices_json,
-  plan_graph_edge_records_json,
-  plan_graph_entity_merge_json,
-  rewrite_graph_entity_references_json,
-  plan_graph_evidence_candidate_lookup_json,
-  plan_graph_evidence_entry_candidates_json,
-  plan_graph_mention_context_json,
-  plan_graph_query_execution_json,
-  plan_graph_query_json,
-  plan_graph_rag_status_entry_lookups_json,
-  plan_graph_rag_status_entry_snapshot_json,
-  plan_graph_rag_status_file_snapshot_json,
-  plan_graph_rag_source_file_paths_json,
-  plan_graph_rag_run_file_selection_json,
-  plan_graph_rag_status_json,
-  should_rebuild_graph_runtime_for_graph_status,
-  plan_graph_rag_unsupported_prune_paths_json,
-  plan_graph_relation_endpoint_indices_json,
   plan_merged_retrieval_candidates_by_entry_id,
   plan_query_result_score_json,
   plan_rag_file_content_probe_indices_json,
@@ -168,10 +125,8 @@ import {
   plan_vector_store_stats_json,
   plan_vault_link_candidates_json,
   plan_vault_link_fallback_index_json,
-  prune_graph_indexes_json,
   rank_top_k_pairs,
   recall_at_k,
-  score_entity_match_or_nan,
   select_relevant_result_indices,
   tokenize_json,
   VectorRuntimeIndex,
@@ -289,15 +244,15 @@ export interface RustQueryResultScorePlan {
   sourcePrior: number;
   sourceEvidenceScore: number;
   bestEvidenceRank?: number;
-  hasGraphOrStructuralEvidence: boolean;
-  hasStrongGraphOrStructuralEvidence: boolean;
+  hasStructuralEvidence: boolean;
+  hasStrongStructuralEvidence: boolean;
   combinedScore: number;
   selectionReason: RustSourceSelectionReason;
 }
 
 export type RustSourceSelectionReason =
-  | 'strong-graph-evidence'
-  | 'graph-structural-evidence'
+  | 'strong-structural-evidence'
+  | 'structural-evidence'
   | 'keyword-vector'
   | 'keyword'
   | 'vector'
@@ -597,136 +552,9 @@ export class RustIvfRuntimeIndex {
   }
 }
 
-export interface RustClaimEvidenceInput {
-  confidence: number;
-  evidenceIds: readonly string[];
-}
-
 export interface RustEvidenceScore {
   evidenceId: string;
   score: number;
-}
-
-export interface RustLocalEvidenceMatchInput {
-  entityId: string;
-  entityConfidence: number;
-  matchScore: number;
-  evidenceIds: readonly string[];
-}
-
-export interface RustLocalEvidenceRelationInput {
-  sourceEntityId: string;
-  targetEntityId: string;
-  confidence: number;
-  evidenceIds: readonly string[];
-}
-
-export interface RustLocalEvidenceClaimInput {
-  entityIds: readonly string[];
-  confidence: number;
-  evidenceIds: readonly string[];
-}
-
-export interface RustLocalEvidencePlanInput {
-  matches: readonly RustLocalEvidenceMatchInput[];
-  relations: readonly RustLocalEvidenceRelationInput[];
-  claims: readonly RustLocalEvidenceClaimInput[];
-  traversalDepth: number;
-}
-
-export interface RustGraphCommunityReplacementRecord {
-  id: string;
-  ontologySchemaId: string;
-}
-
-export interface RustGraphEvidenceLookupRecord {
-  id: string;
-  filePath: string;
-}
-
-export interface RustGraphEvidenceCandidateLookupPlan {
-  scoreIndices: number[];
-  evidenceIndices: number[];
-  filePaths: string[];
-}
-
-export interface RustGraphEvidenceEntryRecord {
-  id: string;
-  compatible: boolean;
-}
-
-export interface RustGraphEvidenceEntryCandidatePlan {
-  candidateIndices: number[];
-  entryIndices: number[];
-}
-
-export interface RustGraphMentionEntityInput {
-  id: string;
-  canonicalName: string;
-  aliases: readonly string[];
-  typeId?: string;
-  description?: string;
-}
-
-export interface RustGraphMentionRelationInput {
-  sourceEntityId: string;
-  targetEntityId: string;
-  relationTypeId?: string;
-  description?: string;
-}
-
-export interface RustGraphMentionContextPlan {
-  matchedEntityIndices: number[];
-  matchedRelationIndices: number[];
-  contextLines: string[];
-}
-
-export interface RustGraphClaimEntityLookupRecord {
-  name: string;
-  entityId: string;
-}
-
-export interface RustGraphRelationEndpointInput {
-  source: string;
-  target: string;
-}
-
-export interface RustGraphRelationEndpointLookupRecord {
-  name: string;
-  entityIndex: number;
-}
-
-export interface RustGraphRelationEndpointPair {
-  sourceEntityIndex: number;
-  targetEntityIndex: number;
-}
-
-export interface RustGraphRelationEndpointPlan {
-  pairs: Array<RustGraphRelationEndpointPair | null>;
-}
-
-export interface RustGraphCommunityAssignmentInput {
-  entityId: string;
-  communityId: number;
-}
-
-export interface RustGraphCommunitySummaryRelationInput {
-  sourceEntityId: string;
-  targetEntityId: string;
-}
-
-export interface RustGraphCommunitySummaryClaimInput {
-  entityIds: readonly string[];
-}
-
-export interface RustGraphCommunitySummaryGroup {
-  entityIndices: number[];
-  relationIndices: number[];
-  claimIndices: number[];
-}
-
-export interface RustGraphCommunitySummaryGroupsPlan {
-  groups: RustGraphCommunitySummaryGroup[];
 }
 
 export interface RustFileIndexEntryInput {
@@ -785,7 +613,6 @@ export interface RustIndexedDbStorageLayout {
     embeddingCache: string;
     bm25: string;
     corpus: string;
-    graph: string;
   };
   cleanupLegacyNames: string[];
   legacyNames: string[];
@@ -855,45 +682,6 @@ export interface RustInactiveIndexedDbCleanupPlan {
   records: RustInactiveIndexedDbRecord[];
   deleteNames: string[];
   remainingDeleteCount: number;
-}
-
-export interface RustGraphStorageRecord {
-  id: string;
-  state?: string;
-  filePath?: string;
-  rawResponseId?: string;
-  leaseExpiresAt?: number;
-  openUntil?: number;
-  updatedAt?: number;
-  receivedAt?: number;
-}
-
-export interface RustGraphStorageMaintenanceInput {
-  validFilePaths: readonly string[];
-  graphFilePaths: readonly string[];
-  extractionJobs: readonly RustGraphStorageRecord[];
-  rawResponses: readonly RustGraphStorageRecord[];
-  communitySummaryJobs: readonly RustGraphStorageRecord[];
-  globalSearchJobs: readonly RustGraphStorageRecord[];
-  providerCircuits: readonly RustGraphStorageRecord[];
-  now: number;
-  maxAgeMs: number;
-  maxExtractionJobs: number;
-  maxRawResponses: number;
-  maxCommunitySummaryJobs: number;
-  maxGlobalSearchJobs: number;
-  maxProviderCircuits: number;
-  maxDeletions: number;
-}
-
-export interface RustGraphStorageMaintenancePlan {
-  deleteFilePaths: string[];
-  deleteExtractionJobIds: string[];
-  deleteRawResponseIds: string[];
-  deleteCommunitySummaryJobIds: string[];
-  deleteGlobalSearchJobIds: string[];
-  deleteProviderCircuitIds: string[];
-  remainingWork: boolean;
 }
 
 export interface RustPluginOwnedFileRecord {
@@ -1133,113 +921,6 @@ export interface RustRagIndexingEtaPlan {
   etaConfidenceReason: string;
 }
 
-export type RustGraphRagIndexState =
-  | 'disabled'
-  | 'not-built'
-  | 'building'
-  | 'ready'
-  | 'partial'
-  | 'stale';
-
-export interface RustGraphRagStatusFileRecordInput {
-  filePath: string;
-  vectorCount: number;
-}
-
-export interface RustGraphRagStatusFileSnapshotRecordInput extends RustGraphRagStatusFileRecordInput {
-  processable: boolean;
-}
-
-export interface RustGraphRagStatusFileSnapshotPlan {
-  fileRecordIndices: number[];
-  totalCandidateFiles: number;
-}
-
-export interface RustGraphRagStatusEvidenceInput {
-  filePath: string;
-  entryId: string;
-  contentHash: string;
-  extractionModelKey: string;
-  processable: boolean;
-}
-
-export interface RustGraphRagStatusCacheInput {
-  entryId: string;
-  contentHash: string;
-  extractionModelKey: string;
-  ontologySchemaId: string;
-  ontologyVersion: number;
-  extractionContractVersion: number;
-}
-
-export interface RustGraphRagStatusEntryInput {
-  id: string;
-  filePath: string;
-  contentHash?: string;
-  chunkHash?: string;
-  text: string;
-}
-
-export interface RustGraphRagStatusEntrySnapshotInput {
-  id: string;
-  filePath: string;
-  processable: boolean;
-}
-
-export interface RustGraphRagStatusEntrySnapshotPlan {
-  entryIndices: number[];
-}
-
-export interface RustGraphRagStatusInput {
-  graphRagEnabled: boolean;
-  isRunning: boolean;
-  totalCandidateFiles: number;
-  graphRagMaxFilesPerRun: number;
-  graphRagModel: string;
-  ontologySchemaId: string;
-  ontologyVersion: number;
-  extractionContractVersion: number;
-  fileRecords: readonly RustGraphRagStatusFileRecordInput[];
-  evidence: readonly RustGraphRagStatusEvidenceInput[];
-  rejectedFactFilePaths: readonly string[];
-  pendingMergeCount: number;
-  cacheRecords: readonly RustGraphRagStatusCacheInput[];
-  entries: readonly RustGraphRagStatusEntryInput[];
-}
-
-export interface RustGraphRagStatusPlan {
-  state: RustGraphRagIndexState;
-  totalCandidateFiles: number;
-  graphEvidenceCount: number;
-  rejectedFactCount: number;
-  failedFileCount: number;
-  pendingMergeCount: number;
-  staleFileCount: number;
-  staleFilePaths: string[];
-  maxFilesPerRun: number;
-}
-
-export type RustGraphRagRunFileSelectionMode = 'failed' | 'stale' | 'full';
-
-export interface RustGraphRagRunFilePathInput {
-  filePath: string;
-  processable: boolean;
-}
-
-export interface RustGraphRagRunFileSelectionInput {
-  mode: RustGraphRagRunFileSelectionMode;
-  failedFilePaths: readonly string[];
-  staleFilePaths: readonly string[];
-  recordFilePaths: readonly RustGraphRagRunFilePathInput[];
-  indexedFilePaths: readonly RustGraphRagRunFilePathInput[];
-  maxFilesPerRun: number;
-}
-
-export interface RustGraphRagRunFileSelectionPlan {
-  candidateFilePaths: string[];
-  selectedFilePaths: string[];
-}
-
 export interface RustRagFileTypeInput {
   filePath: string;
   extension?: string;
@@ -1468,8 +1149,6 @@ export type RustContextSourceStatus =
   | 'stale'
   | 'low-relevance';
 
-export type RustContextGraphType = 'entity' | 'relation' | 'community';
-
 export interface RustContextSourceInput {
   filePath: string;
   heading?: string;
@@ -1485,7 +1164,6 @@ export interface RustContextSourceInput {
 export interface RustContextSourceVerification {
   status: RustContextSourceStatus;
   detail?: string;
-  graphType?: RustContextGraphType;
 }
 
 export interface RustContextCitationPlan {
@@ -1502,7 +1180,6 @@ export interface RustContextCitationPlan {
   preview: string;
   previewTruncated: boolean;
   selectionReason?: RustSourceSelectionReason;
-  graphType?: RustContextGraphType;
 }
 
 export interface RustContextSourceBlockPlan {
@@ -1527,7 +1204,6 @@ export interface RustContextBudgetAppendPlan {
 export interface RustChatContextMentionPlan {
   fileIndices: number[];
   folderIndices: number[];
-  entityIndices: number[];
   serverIndices: number[];
   useAutoRag: boolean;
   autoRagReason: RustAutoRagReason;
@@ -1540,11 +1216,6 @@ export type RustAutoRagReason =
   | 'vault-mention'
   | 'implicit'
   | 'disabled';
-
-export interface RustContextGraphVerificationPlan {
-  isGraphSource: boolean;
-  verification: RustContextSourceVerification | null;
-}
 
 export interface RustVaultLinkCandidatePlan {
   candidates: string[];
@@ -1632,106 +1303,7 @@ export interface RustDiverseResultCandidate {
   heading?: string;
 }
 
-export interface RustCommunityDetectionResult {
-  assignments: number[];
-  communityIds: number[];
-  modularity: number;
-}
-
-export interface RustGraphEdge {
-  sourceIndex: number;
-  targetIndex: number;
-  weight: number;
-}
-
-export interface RustCommunityEdgeRecord {
-  source: string;
-  target: string;
-  weight: number;
-}
-
-export interface RustCommunityAssignmentById {
-  entityId: string;
-  communityId: number;
-}
-
-export interface RustCommunityDetectionByIdResult {
-  assignmentsById: RustCommunityAssignmentById[];
-  communityIds: number[];
-  modularity: number;
-}
-
-export interface RustCommunityHierarchyLevel extends RustCommunityDetectionByIdResult {
-  level: number;
-}
-
-export interface RustCommunityHierarchyResult {
-  levels: RustCommunityHierarchyLevel[];
-}
-
-export interface RustEntityMatchInput {
-  candidateNames: readonly string[];
-  existingNames: readonly string[];
-  candidateDescription: string;
-  existingDescription: string;
-  candidateEvidenceIds: readonly string[];
-  existingEvidenceIds: readonly string[];
-  sameType: boolean;
-  embeddingScore: number;
-}
-
-export type RustEntityResolutionStatus = 'new' | 'auto-merge' | 'pending-merge';
-
-export interface RustEntityResolutionCandidate {
-  entityId: string;
-  ontologySchemaId: string;
-  typeId: string;
-  score: number;
-}
-
-export interface RustEntityResolutionInput {
-  ontologySchemaId: string;
-  typeId: string;
-  candidateEntityId: string;
-  autoMergeThreshold: number;
-  pendingMergeThreshold: number;
-  candidates: readonly RustEntityResolutionCandidate[];
-}
-
-export interface RustEntityResolutionPlan {
-  status: RustEntityResolutionStatus;
-  entityId: string;
-  mergeScore: number;
-  matchedEntityId?: string;
-}
-
-export interface RustGraphEntityMergeInput {
-  aliases: readonly string[];
-  description: string;
-  confidence: number;
-  evidenceIds: readonly string[];
-  updatedAt: number;
-}
-
-export interface RustGraphEntityMergePlan {
-  aliases: string[];
-  description: string;
-  confidence: number;
-  evidenceIds: string[];
-  updatedAt: number;
-}
-
-export interface RustGraphExtractionCacheKey {
-  entryId: string;
-  contentHash: string;
-  extractionModelKey: string;
-  ontologySchemaId: string;
-  ontologyVersion: number;
-  extractionContractVersion: number;
-}
-
 export interface RustMentionedEntityInput {
-  ontologySchemaId: string;
   canonicalName: string;
   aliases: readonly string[];
 }
@@ -1739,27 +1311,6 @@ export interface RustMentionedEntityInput {
 export interface RustMentionCandidate {
   raw: string;
   name: string;
-}
-
-export interface RustGraphQueryPlan {
-  type: string;
-  queryMode: string;
-  traversalDepth: number;
-  evidenceFirst: boolean;
-  globalSearchDepth: 'fast' | 'deep';
-  entityHints: string[];
-}
-
-export type RustGraphQueryExecutionAction =
-  | 'none'
-  | 'local'
-  | 'global'
-  | 'hybrid'
-  | 'evidence-first';
-
-export interface RustGraphQueryExecutionPlan {
-  action: RustGraphQueryExecutionAction;
-  requiresPlanner: boolean;
 }
 
 export interface RustMcpJsonValidationResult {
@@ -1789,123 +1340,6 @@ export interface RustMcpToolErrorInfo {
   field?: string;
   message?: string;
 }
-
-export type RustExtractedGraphPayloadParseFailureReason = 'invalid-json' | 'schema-shape-mismatch';
-
-export type RustExtractedGraphPayloadParseResult =
-  | { ok: true; payload: RustExtractedGraphPayload }
-  | { ok: false; reason: RustExtractedGraphPayloadParseFailureReason; rawFact: unknown };
-
-export interface RustExtractedGraphPayload {
-  entities: RustExtractedGraphEntity[];
-  relations: RustExtractedGraphRelation[];
-  claims: RustExtractedGraphClaim[];
-}
-
-export interface RustExtractedGraphEntity {
-  name: string;
-  typeId: string;
-  description?: string;
-  aliases?: string[];
-  confidence?: number;
-  evidenceSpans?: RustGraphSourceSpan[];
-}
-
-export interface RustGraphSourceSpan {
-  start: number;
-  end: number;
-}
-
-export interface RustExtractedGraphRelation {
-  id?: string;
-  source: string;
-  target: string;
-  relationTypeId: string;
-  description?: string;
-  confidence?: number;
-  evidenceSpans?: RustGraphSourceSpan[];
-}
-
-export interface RustExtractedGraphClaim {
-  id?: string;
-  text: string;
-  claimTypeId: string;
-  entityNames?: string[];
-  relationRefs?: string[];
-  stance?: 'supports' | 'opposes' | 'neutral' | 'interprets';
-  confidence?: number;
-  evidenceSpans?: RustGraphSourceSpan[];
-}
-
-export function normalizeGraphSourceSpansRust(
-  spans: readonly RustGraphSourceSpan[] | undefined,
-  contentLength: number,
-): RustGraphSourceSpan[] | null {
-  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || !ensureRustCore()) return null;
-  const starts = new Uint32Array(spans?.length ?? 0);
-  const ends = new Uint32Array(spans?.length ?? 0);
-  for (const [index, span] of (spans ?? []).entries()) {
-    if (!isValidUint32(span.start) || !isValidUint32(span.end)) return null;
-    starts[index] = span.start;
-    ends[index] = span.end;
-  }
-  const output = normalize_graph_source_spans_flat(starts, ends, contentLength);
-  if (output.length % 2 !== 0) return null;
-  const normalized: RustGraphSourceSpan[] = [];
-  for (let index = 0; index < output.length; index += 2) {
-    const start = output[index];
-    const end = output[index + 1];
-    if (start === undefined || end === undefined || start >= end || end > contentLength)
-      return null;
-    normalized.push({ start, end });
-  }
-  return normalized;
-}
-
-export interface RustGraphPruneInput {
-  filePaths: readonly string[];
-  evidenceFilePaths: readonly string[];
-  evidenceEntryIds: readonly string[];
-  entitySchemaIds: readonly string[];
-  entityEvidenceIndices: readonly (readonly number[])[];
-  relationSchemaIds: readonly string[];
-  relationSourceEntityIndices: readonly number[];
-  relationTargetEntityIndices: readonly number[];
-  relationEvidenceIndices: readonly (readonly number[])[];
-  claimEntityIndices: readonly (readonly number[])[];
-  claimRelationIndices: readonly (readonly number[])[];
-  claimEvidenceIndices: readonly (readonly number[])[];
-  communitySchemaIds: readonly string[];
-  communityEntityIndices: readonly (readonly number[])[];
-  communityRelationIndices: readonly (readonly number[])[];
-  communityClaimIndices: readonly (readonly number[])[];
-  rejectedFactFilePaths: readonly string[];
-  rejectedFactEntryIds: readonly string[];
-  extractionCacheEntryIds: readonly string[];
-  pendingMergeExistingEntityIndices: readonly number[];
-  pendingMergeCandidateEntityIndices: readonly number[];
-}
-
-export interface RustGraphPrunePlan {
-  deletedEvidenceIndices: number[];
-  deletedEntityIndices: number[];
-  updatedEntityIndices: number[];
-  updatedEntityEvidenceIndices: number[][];
-  deletedRelationIndices: number[];
-  updatedRelationIndices: number[];
-  updatedRelationEvidenceIndices: number[][];
-  deletedClaimIndices: number[];
-  updatedClaimIndices: number[];
-  updatedClaimEntityIndices: number[][];
-  updatedClaimRelationIndices: number[][];
-  updatedClaimEvidenceIndices: number[][];
-  deletedCommunityIndices: number[];
-  deletedRejectedFactIndices: number[];
-  deletedExtractionCacheIndices: number[];
-  deletedPendingMergeIndices: number[];
-}
-
-export const RUST_GRAPH_PRUNE_UNKNOWN_INDEX = 0xffffffff;
 
 let initialized = false;
 let unavailable = false;
@@ -1963,25 +1397,6 @@ export function getMcpConnectionStateRust(
     isConnecting,
   );
   return isRustMcpConnectionState(state) ? state : null;
-}
-
-export function shouldRebuildGraphRuntimeForGraphStatusRust(
-  graphRagEnabled: boolean,
-  graphRagModel: string,
-  previousStatusState: string,
-  nextStatusState: string,
-  graphProviderAttached: boolean,
-): boolean | null {
-  if (!ensureRustCore()) {
-    return null;
-  }
-  return should_rebuild_graph_runtime_for_graph_status(
-    graphRagEnabled,
-    graphRagModel,
-    previousStatusState,
-    nextStatusState,
-    graphProviderAttached,
-  );
 }
 
 export function shouldAppendMcpPathHintRust(command: string, errorMessage: string): boolean | null {
@@ -2100,25 +1515,6 @@ export function rankTopKPairsRust(
     fallbackLimit,
   );
   return decodeRankPairs(pairs, compatibleRows);
-}
-
-export function rankGraphCommunityPairsRust(
-  question: string,
-  summaries: readonly string[],
-  query: readonly number[],
-  vectors: readonly (readonly number[])[],
-  topK: number,
-): RustVectorScore[] | null {
-  if (!ensureRustCore()) return null;
-  const pairs = rank_graph_community_pairs(
-    question,
-    JSON.stringify(summaries),
-    new Float64Array(query),
-    new Float64Array(vectors.flat()),
-    JSON.stringify(vectors.map((vector) => vector.length)),
-    topK,
-  );
-  return decodeBoundedIndexScorePairs(pairs, summaries.length);
 }
 
 function rankTopKPairsFallback(
@@ -2426,51 +1822,6 @@ export function planBm25CandidateResolutionRust(
   }
 }
 
-export function planClaimEvidenceScoresRust(
-  claims: readonly RustClaimEvidenceInput[],
-): RustEvidenceScore[] | null {
-  if (
-    !claims.every(
-      (claim) => Number.isFinite(claim.confidence) && claim.evidenceIds.every(isStringValue),
-    )
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_claim_evidence_scores_json(JSON.stringify(claims));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planLocalEvidenceScoresRust(
-  input: RustLocalEvidencePlanInput,
-): RustEvidenceScore[] | null {
-  if (!isLocalEvidencePlanInput(input)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_local_evidence_scores_json(
-      JSON.stringify(input.matches),
-      JSON.stringify(input.relations),
-      JSON.stringify(input.claims),
-      normalizeNonNegativeInteger(input.traversalDepth),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function planEvidenceCandidateOrderRust(
   scores: readonly RustEvidenceScore[],
   availableEvidenceIds: readonly string[],
@@ -2490,283 +1841,6 @@ export function planEvidenceCandidateOrderRust(
   } catch {
     return null;
   }
-}
-
-export function planGraphEvidenceCandidateLookupRust(
-  scores: readonly RustEvidenceScore[],
-  evidence: readonly RustGraphEvidenceLookupRecord[],
-): RustGraphEvidenceCandidateLookupPlan | null {
-  if (!scores.every(isEvidenceScore) || !evidence.every(isGraphEvidenceLookupRecord)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_evidence_candidate_lookup_json(
-      JSON.stringify(scores),
-      JSON.stringify(evidence),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphEvidenceCandidateLookupPlan(parsed, scores.length, evidence.length)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphEvidenceEntryCandidatesRust(
-  candidateEntryIds: readonly string[],
-  entries: readonly RustGraphEvidenceEntryRecord[],
-  candidateLimit: number,
-): RustGraphEvidenceEntryCandidatePlan | null {
-  if (
-    !candidateEntryIds.every(isStringValue) ||
-    !entries.every(isGraphEvidenceEntryRecord) ||
-    !Number.isFinite(candidateLimit)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_evidence_entry_candidates_json(
-      JSON.stringify(candidateEntryIds),
-      JSON.stringify(entries),
-      normalizeNonNegativeInteger(candidateLimit),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphEvidenceEntryCandidatePlan(parsed, candidateEntryIds.length, entries.length)) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphMentionContextRust(
-  mentionNames: readonly string[],
-  entities: readonly RustGraphMentionEntityInput[],
-  relations: readonly RustGraphMentionRelationInput[],
-): RustGraphMentionContextPlan | null {
-  if (
-    !mentionNames.every(isStringValue) ||
-    !entities.every(isGraphMentionEntityInput) ||
-    !relations.every(isGraphMentionRelationInput)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_mention_context_json(
-      JSON.stringify(mentionNames),
-      JSON.stringify(entities),
-      JSON.stringify(relations),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphMentionContextPlan(parsed, entities.length, relations.length)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphClaimEntityIdsRust(
-  entityNames: readonly string[],
-  lookupRecords: readonly RustGraphClaimEntityLookupRecord[],
-): string[] | null {
-  if (!entityNames.every(isStringValue) || !lookupRecords.every(isGraphClaimEntityLookupRecord)) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_claim_entity_ids_json(
-      JSON.stringify(entityNames),
-      JSON.stringify(lookupRecords),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphRelationEndpointIndicesRust(
-  relations: readonly RustGraphRelationEndpointInput[],
-  lookupRecords: readonly RustGraphRelationEndpointLookupRecord[],
-  entityCount: number,
-): RustGraphRelationEndpointPlan | null {
-  if (
-    !Number.isSafeInteger(entityCount) ||
-    entityCount < 0 ||
-    !relations.every(isGraphRelationEndpointInput) ||
-    !lookupRecords.every((record) => isGraphRelationEndpointLookupRecord(record, entityCount))
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_relation_endpoint_indices_json(
-      JSON.stringify(relations),
-      JSON.stringify(lookupRecords),
-      entityCount,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphRelationEndpointPlan(parsed, relations.length, entityCount)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphCommunitySummaryGroupsRust(
-  assignments: readonly RustGraphCommunityAssignmentInput[],
-  entityIds: readonly string[],
-  relations: readonly RustGraphCommunitySummaryRelationInput[],
-  claims: readonly RustGraphCommunitySummaryClaimInput[],
-  communityIds: readonly number[],
-): RustGraphCommunitySummaryGroupsPlan | null {
-  if (
-    !assignments.every(isGraphCommunityAssignmentInput) ||
-    !entityIds.every(isStringValue) ||
-    !relations.every(isGraphCommunitySummaryRelationInput) ||
-    !claims.every(isGraphCommunitySummaryClaimInput) ||
-    !communityIds.every(isValidNonNegativeInteger)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) {
-    return planGraphCommunitySummaryGroupsFallback(
-      assignments,
-      entityIds,
-      relations,
-      claims,
-      communityIds,
-    );
-  }
-
-  try {
-    const raw = plan_graph_community_summary_groups_json(
-      JSON.stringify(assignments),
-      JSON.stringify(entityIds),
-      JSON.stringify(relations),
-      JSON.stringify(claims),
-      JSON.stringify(communityIds),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      !isGraphCommunitySummaryGroupsPlan(
-        parsed,
-        entityIds.length,
-        relations.length,
-        claims.length,
-        communityIds.length,
-      )
-    ) {
-      return planGraphCommunitySummaryGroupsFallback(
-        assignments,
-        entityIds,
-        relations,
-        claims,
-        communityIds,
-      );
-    }
-    return parsed;
-  } catch {
-    return planGraphCommunitySummaryGroupsFallback(
-      assignments,
-      entityIds,
-      relations,
-      claims,
-      communityIds,
-    );
-  }
-}
-
-export function planGraphCommunitySummaryGroupsFallback(
-  assignments: readonly RustGraphCommunityAssignmentInput[],
-  entityIds: readonly string[],
-  relations: readonly RustGraphCommunitySummaryRelationInput[],
-  claims: readonly RustGraphCommunitySummaryClaimInput[],
-  communityIds: readonly number[],
-): RustGraphCommunitySummaryGroupsPlan {
-  const groups: RustGraphCommunitySummaryGroup[] = communityIds.map(() => ({
-    entityIndices: [],
-    relationIndices: [],
-    claimIndices: [],
-  }));
-
-  const groupIndexByCommunityId = new Map<number, number>();
-  for (let index = 0; index < communityIds.length; index++) {
-    groupIndexByCommunityId.set(communityIds[index], index);
-  }
-
-  const entityIndexById = new Map<string, number>();
-  for (let index = 0; index < entityIds.length; index++) {
-    entityIndexById.set(entityIds[index], index);
-  }
-
-  const communityIdByEntityId = new Map<string, number>();
-  for (const assignment of assignments) {
-    const communityIndex = groupIndexByCommunityId.get(assignment.communityId);
-    const entityIndex = entityIndexById.get(assignment.entityId);
-    if (communityIndex === undefined || entityIndex === undefined) {
-      continue;
-    }
-    groups[communityIndex]?.entityIndices.push(entityIndex);
-    if (!communityIdByEntityId.has(assignment.entityId)) {
-      communityIdByEntityId.set(assignment.entityId, assignment.communityId);
-    }
-  }
-
-  for (let index = 0; index < relations.length; index++) {
-    const relation = relations[index];
-    if (!relation) {
-      continue;
-    }
-    const sourceCommunityId = communityIdByEntityId.get(relation.sourceEntityId);
-    const targetCommunityId = communityIdByEntityId.get(relation.targetEntityId);
-    if (sourceCommunityId === undefined || targetCommunityId === undefined) {
-      continue;
-    }
-    if (sourceCommunityId !== targetCommunityId) {
-      continue;
-    }
-    const groupIndex = groupIndexByCommunityId.get(sourceCommunityId);
-    if (groupIndex === undefined) continue;
-    groups[groupIndex]?.relationIndices.push(index);
-  }
-
-  for (let index = 0; index < claims.length; index++) {
-    const claim = claims[index];
-    if (!claim) {
-      continue;
-    }
-    for (const entityId of claim.entityIds) {
-      const communityId = communityIdByEntityId.get(entityId);
-      if (communityId === undefined) {
-        continue;
-      }
-      const groupIndex = groupIndexByCommunityId.get(communityId);
-      if (groupIndex === undefined) {
-        continue;
-      }
-      groups[groupIndex]?.claimIndices.push(index);
-      break;
-    }
-  }
-
-  return {
-    groups,
-  };
 }
 
 export function planFileIndexRecordsRust(
@@ -3058,19 +2132,6 @@ export function planInactiveIndexedDbCleanupRust(
     const raw = plan_inactive_indexed_db_cleanup_json(JSON.stringify(input));
     const parsed: unknown = JSON.parse(raw);
     return isInactiveIndexedDbCleanupPlan(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphStorageMaintenanceRust(
-  input: RustGraphStorageMaintenanceInput,
-): RustGraphStorageMaintenancePlan | null {
-  if (!isGraphStorageMaintenanceInput(input) || !ensureRustCore()) return null;
-  try {
-    const raw = plan_graph_storage_maintenance_json(JSON.stringify(input));
-    const parsed: unknown = JSON.parse(raw);
-    return isGraphStorageMaintenancePlan(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -3453,150 +2514,6 @@ function planVectorStoreStatsFallback(
   };
 }
 
-function normalizeEntityNameFallback(name: string): string {
-  let normalized = '';
-  let lastWasSpace = true;
-  for (const character of name.trim().toLowerCase()) {
-    if (isEntityNameSeparatorFallback(character) || /\s/.test(character)) {
-      if (!lastWasSpace) {
-        normalized += ' ';
-        lastWasSpace = true;
-      }
-      continue;
-    }
-    normalized += character;
-    lastWasSpace = false;
-  }
-  if (normalized.endsWith(' ')) {
-    normalized = normalized.slice(0, -1);
-  }
-  return normalized;
-}
-
-function isEntityNameSeparatorFallback(character: string): boolean {
-  return (
-    character === '_' ||
-    character === '/' ||
-    character === '\\' ||
-    character === '|' ||
-    character === '(' ||
-    character === ')' ||
-    character === '[' ||
-    character === ']' ||
-    character === '{' ||
-    character === '}' ||
-    character === '"' ||
-    character === "'" ||
-    character === '「' ||
-    character === '」' ||
-    character === '『' ||
-    character === '』' ||
-    character === '【' ||
-    character === '】' ||
-    character === '《' ||
-    character === '》' ||
-    character === '.' ||
-    character === ',' ||
-    character === ';' ||
-    character === ':' ||
-    character === '!' ||
-    character === '?'
-  );
-}
-
-function normalizeGraphNameFallback(name: string): string {
-  return normalizeEntityNameFallback(name);
-}
-
-export function createEntityIdFallback(
-  ontologySchemaId: string,
-  typeId: string,
-  canonicalName: string,
-): string {
-  return `entity::${sanitizeGraphIdPartFallback(ontologySchemaId)}::${sanitizeGraphIdPartFallback(typeId)}::${sanitizeGraphIdPartFallback(
-    normalizeEntityNameFallback(canonicalName).replace(/ /g, '-'),
-  )}`;
-}
-
-function sanitizeGraphIdPartFallback(part: string): string {
-  let sanitized = '';
-  let lastWasReplacement = false;
-  for (const character of part.trim().toLowerCase()) {
-    if (isGraphIdPartCharacterFallback(character)) {
-      sanitized += character;
-      lastWasReplacement = false;
-    } else if (!lastWasReplacement) {
-      sanitized += '-';
-      lastWasReplacement = true;
-    }
-  }
-  return sanitized;
-}
-
-function isGraphIdPartCharacterFallback(character: string): boolean {
-  if (character.length === 0) return false;
-  const code = character.codePointAt(0);
-  if (code === undefined) return false;
-  return (
-    (code >= 0x61 && code <= 0x7a) ||
-    (code >= 0x30 && code <= 0x39) ||
-    character === '_' ||
-    character === '.' ||
-    character === ':' ||
-    character === '-' ||
-    (code >= 0xac00 && code <= 0xd7a3)
-  );
-}
-
-function planEntityResolutionFallback(input: RustEntityResolutionInput): RustEntityResolutionPlan {
-  let topCandidate: RustEntityResolutionCandidate | null = null;
-  for (const candidate of input.candidates) {
-    if (
-      candidate.ontologySchemaId !== input.ontologySchemaId ||
-      candidate.typeId !== input.typeId
-    ) {
-      continue;
-    }
-    if (!topCandidate || candidate.score > topCandidate.score) {
-      topCandidate = candidate;
-    }
-  }
-
-  if (!topCandidate) {
-    return {
-      status: 'new',
-      entityId: input.candidateEntityId,
-      mergeScore: 0,
-      matchedEntityId: undefined,
-    };
-  }
-
-  if (topCandidate.score >= input.autoMergeThreshold) {
-    return {
-      status: 'auto-merge',
-      entityId: topCandidate.entityId,
-      mergeScore: topCandidate.score,
-      matchedEntityId: topCandidate.entityId,
-    };
-  }
-
-  if (topCandidate.score >= input.pendingMergeThreshold) {
-    return {
-      status: 'pending-merge',
-      entityId: input.candidateEntityId,
-      mergeScore: topCandidate.score,
-      matchedEntityId: topCandidate.entityId,
-    };
-  }
-
-  return {
-    status: 'new',
-    entityId: input.candidateEntityId,
-    mergeScore: topCandidate.score,
-    matchedEntityId: topCandidate.entityId,
-  };
-}
-
 function isRagDocumentStatusOrder(status: RustRagDocumentStatus): number {
   switch (status) {
     case 'missing':
@@ -3646,13 +2563,6 @@ function ragFileIndexStateFallback(
   }
 
   return { status: 'healthy', reason: '' };
-}
-
-function normalizeGraphRagMaxFilesPerRunFallback(value: number): number {
-  if (!Number.isFinite(value)) return 1;
-  const floored = Math.floor(value);
-  if (floored < 1) return 1;
-  return Math.max(1, Number.isFinite(floored) ? floored : 1);
 }
 
 export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusPlan {
@@ -3734,353 +2644,6 @@ export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusP
   };
 }
 
-export function planGraphRagStatusEntryLookupsFallback(
-  evidenceEntryIds: readonly string[],
-  cacheEntryIds: readonly string[],
-): string[] {
-  const seen = new Set<string>();
-  const entryIds: string[] = [];
-  for (const entryId of evidenceEntryIds) {
-    if (seen.has(entryId)) continue;
-    seen.add(entryId);
-    entryIds.push(entryId);
-  }
-  for (const entryId of cacheEntryIds) {
-    if (seen.has(entryId)) continue;
-    seen.add(entryId);
-    entryIds.push(entryId);
-  }
-  return entryIds;
-}
-
-function isGraphRagSourceFilePathFallback(filePath: string): boolean {
-  const markdownPaths = planGraphRagSourceFilePathsRust([filePath]);
-  return markdownPaths?.[0] === filePath;
-}
-
-function sortedUniqueGraphRagSourcePathsFallback(filePaths: readonly string[]): string[] {
-  return planGraphRagSourceFilePathsRust(filePaths) ?? [];
-}
-
-export function planGraphRagStatusFileSnapshotFallback(
-  fileRecords: readonly RustGraphRagStatusFileSnapshotRecordInput[],
-  indexedFilePaths: readonly RustGraphRagRunFilePathInput[],
-): RustGraphRagStatusFileSnapshotPlan {
-  const seenRecordPaths = new Set<string>();
-  const fileRecordIndices: number[] = [];
-  for (let index = 0; index < fileRecords.length; index++) {
-    const record = fileRecords[index];
-    if (
-      record.vectorCount === 0 ||
-      !record.processable ||
-      !isGraphRagSourceFilePathFallback(record.filePath)
-    ) {
-      continue;
-    }
-    if (!seenRecordPaths.has(record.filePath)) {
-      seenRecordPaths.add(record.filePath);
-      fileRecordIndices.push(index);
-    }
-  }
-
-  if (fileRecordIndices.length > 0) {
-    return {
-      fileRecordIndices,
-      totalCandidateFiles: fileRecordIndices.length,
-    };
-  }
-
-  return {
-    fileRecordIndices,
-    totalCandidateFiles: sortedUniqueGraphRagSourcePathsFallback(
-      indexedFilePaths.filter((row) => row.processable).map((row) => row.filePath),
-    ).length,
-  };
-}
-
-export function planGraphRagStatusEntrySnapshotFallback(
-  entries: readonly RustGraphRagStatusEntrySnapshotInput[],
-): RustGraphRagStatusEntrySnapshotPlan {
-  const seenEntryIds = new Set<string>();
-  const entryIndices: number[] = [];
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index];
-    if (!entry.processable || !isGraphRagSourceFilePathFallback(entry.filePath)) {
-      continue;
-    }
-    if (!seenEntryIds.has(entry.id)) {
-      seenEntryIds.add(entry.id);
-      entryIndices.push(index);
-    }
-  }
-  return { entryIndices };
-}
-
-function countUniqueValuesFallback(values: readonly string[]): number {
-  const unique = new Set<string>(values);
-  return unique.size;
-}
-
-function resolveEntryContentHashFallback(entry: RustGraphRagStatusEntryInput): string {
-  if (entry.contentHash !== undefined) {
-    return entry.contentHash;
-  }
-  const rustHash = createContentHashRust(entry.text);
-  if (rustHash !== null) {
-    return rustHash;
-  }
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < entry.text.length; index++) {
-    hash ^= entry.text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function filePathForMissingGraphEntryFallback(
-  entryId: string,
-  evidence: readonly RustGraphRagStatusEvidenceInput[],
-): string {
-  for (const record of evidence) {
-    if (record.entryId === entryId) {
-      return record.filePath;
-    }
-  }
-  const firstSegment = entryId.split('::')[0];
-  return firstSegment || entryId;
-}
-
-function collectFreshGraphRagCacheCountsFallback(
-  input: RustGraphRagStatusInput,
-  cacheByEntryId: Map<string, RustGraphRagStatusCacheInput>,
-  staleFilePathSet: Set<string>,
-): Map<string, number> {
-  const freshCountsByFilePath = new Map<string, number>();
-  for (const entry of input.entries) {
-    const cache = cacheByEntryId.get(entry.id);
-    if (!cache) {
-      staleFilePathSet.add(filePathForMissingGraphEntryFallback(entry.id, input.evidence));
-      continue;
-    }
-    const contentHash = resolveEntryContentHashFallback(entry);
-    if (
-      cache.contentHash !== contentHash ||
-      cache.extractionModelKey !== input.graphRagModel ||
-      cache.ontologySchemaId !== input.ontologySchemaId ||
-      cache.ontologyVersion !== input.ontologyVersion
-    ) {
-      staleFilePathSet.add(entry.filePath);
-      continue;
-    }
-    const next = freshCountsByFilePath.get(entry.filePath) ?? 0;
-    freshCountsByFilePath.set(entry.filePath, next + 1);
-  }
-  return freshCountsByFilePath;
-}
-
-function collectGraphRagStaleFilesFallback(input: RustGraphRagStatusInput): string[] {
-  const vectorFilePaths = new Set<string>();
-  for (const record of input.fileRecords) {
-    vectorFilePaths.add(record.filePath);
-  }
-
-  const cacheByEntryId = new Map<string, RustGraphRagStatusCacheInput>();
-  for (const record of input.cacheRecords) {
-    cacheByEntryId.set(record.entryId, record);
-  }
-
-  const entriesById = new Map<string, RustGraphRagStatusEntryInput>();
-  for (const entry of input.entries) {
-    entriesById.set(entry.id, entry);
-  }
-
-  const staleFilePathSet = new Set<string>();
-
-  for (const evidence of input.evidence) {
-    if (!evidence.processable || !vectorFilePaths.has(evidence.filePath)) {
-      staleFilePathSet.add(evidence.filePath);
-    }
-  }
-
-  for (const cache of input.cacheRecords) {
-    if (!entriesById.has(cache.entryId)) {
-      staleFilePathSet.add(filePathForMissingGraphEntryFallback(cache.entryId, input.evidence));
-    }
-  }
-
-  for (const evidence of input.evidence) {
-    const entry = entriesById.get(evidence.entryId);
-    if (!entry) {
-      staleFilePathSet.add(evidence.filePath);
-      continue;
-    }
-    const contentHash = resolveEntryContentHashFallback(entry);
-    if (
-      evidence.contentHash !== contentHash ||
-      evidence.extractionModelKey !== input.graphRagModel
-    ) {
-      staleFilePathSet.add(evidence.filePath);
-    }
-  }
-
-  const freshCacheCountByFilePath = collectFreshGraphRagCacheCountsFallback(
-    input,
-    cacheByEntryId,
-    staleFilePathSet,
-  );
-  for (const record of input.fileRecords) {
-    const freshCacheCount = freshCacheCountByFilePath.get(record.filePath) ?? 0;
-    if (freshCacheCount < record.vectorCount) {
-      staleFilePathSet.add(record.filePath);
-    }
-  }
-
-  return [...staleFilePathSet].sort((left, right) => left.localeCompare(right));
-}
-
-function determineGraphRagStatusStateFallback(
-  staleFilePaths: readonly string[],
-  failedFileCount: number,
-): RustGraphRagIndexState {
-  return staleFilePaths.length === 0 ? (failedFileCount > 0 ? 'partial' : 'ready') : 'stale';
-}
-
-function emptyGraphRagStatusFallback(
-  state: RustGraphRagIndexState,
-  totalCandidateFiles: number,
-  maxFilesPerRun: number,
-): RustGraphRagStatusPlan {
-  return {
-    state,
-    totalCandidateFiles,
-    graphEvidenceCount: 0,
-    rejectedFactCount: 0,
-    failedFileCount: 0,
-    pendingMergeCount: 0,
-    staleFileCount: 0,
-    staleFilePaths: [],
-    maxFilesPerRun,
-  };
-}
-
-function buildingGraphRagStatusFallback(
-  input: RustGraphRagStatusInput,
-  failedFileCount: number,
-  maxFilesPerRun: number,
-): RustGraphRagStatusPlan {
-  return {
-    state: 'building',
-    totalCandidateFiles: input.totalCandidateFiles,
-    graphEvidenceCount: input.evidence.length,
-    rejectedFactCount: input.rejectedFactFilePaths.length,
-    failedFileCount,
-    pendingMergeCount: input.pendingMergeCount,
-    staleFileCount: 0,
-    staleFilePaths: [],
-    maxFilesPerRun,
-  };
-}
-
-export function planGraphRagStatusFallback(input: RustGraphRagStatusInput): RustGraphRagStatusPlan {
-  const maxFilesPerRun = normalizeGraphRagMaxFilesPerRunFallback(input.graphRagMaxFilesPerRun);
-  if (!input.graphRagEnabled) {
-    return emptyGraphRagStatusFallback('disabled', input.totalCandidateFiles, maxFilesPerRun);
-  }
-  const failedFileCount = countUniqueValuesFallback(input.rejectedFactFilePaths);
-  if (input.isRunning) {
-    return buildingGraphRagStatusFallback(input, failedFileCount, maxFilesPerRun);
-  }
-  if (input.evidence.length === 0 && input.cacheRecords.length === 0) {
-    return {
-      state: 'not-built',
-      totalCandidateFiles: input.totalCandidateFiles,
-      graphEvidenceCount: 0,
-      rejectedFactCount: input.rejectedFactFilePaths.length,
-      failedFileCount,
-      pendingMergeCount: 0,
-      staleFileCount: 0,
-      staleFilePaths: [],
-      maxFilesPerRun,
-    };
-  }
-
-  const staleFilePaths = collectGraphRagStaleFilesFallback(input);
-  const state = determineGraphRagStatusStateFallback(staleFilePaths, failedFileCount);
-
-  return {
-    state,
-    totalCandidateFiles: input.totalCandidateFiles,
-    graphEvidenceCount: input.evidence.length,
-    rejectedFactCount: input.rejectedFactFilePaths.length,
-    failedFileCount,
-    pendingMergeCount: input.pendingMergeCount,
-    staleFileCount: staleFilePaths.length,
-    staleFilePaths,
-    maxFilesPerRun,
-  };
-}
-
-function mergeOrderedStringsFallback(left: readonly string[], right: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const merged: string[] = [];
-  for (const value of left) {
-    if (!seen.has(value)) {
-      seen.add(value);
-      merged.push(value);
-    }
-  }
-  for (const value of right) {
-    if (!seen.has(value)) {
-      seen.add(value);
-      merged.push(value);
-    }
-  }
-  return merged;
-}
-
-export function planGraphEntityMergeFallback(
-  existingRecord: RustGraphEntityMergeInput,
-  nextRecord: RustGraphEntityMergeInput,
-): RustGraphEntityMergePlan {
-  return {
-    aliases: mergeOrderedStringsFallback(existingRecord.aliases, nextRecord.aliases),
-    description:
-      nextRecord.description.length === 0 ? existingRecord.description : nextRecord.description,
-    confidence: Math.max(existingRecord.confidence, nextRecord.confidence),
-    evidenceIds: mergeOrderedStringsFallback(existingRecord.evidenceIds, nextRecord.evidenceIds),
-    updatedAt: nextRecord.updatedAt,
-  };
-}
-
-export function rewriteGraphEntityReferencesFallback(
-  references: readonly string[],
-  candidateEntityId: string,
-  existingEntityId: string,
-  deduplicate: boolean,
-): string[] {
-  const rewritten = references.map((reference) =>
-    reference === candidateEntityId ? existingEntityId : reference,
-  );
-  return deduplicate ? [...new Set(rewritten)] : rewritten;
-}
-
-export function isGraphExtractionCacheHitFallback(
-  cachedRecord: RustGraphExtractionCacheKey | null,
-  input: RustGraphExtractionCacheKey,
-): boolean {
-  if (cachedRecord === null) {
-    return false;
-  }
-  return (
-    cachedRecord.entryId === input.entryId &&
-    cachedRecord.contentHash === input.contentHash &&
-    cachedRecord.extractionModelKey === input.extractionModelKey &&
-    cachedRecord.ontologySchemaId === input.ontologySchemaId &&
-    cachedRecord.ontologyVersion === input.ontologyVersion &&
-    cachedRecord.extractionContractVersion === input.extractionContractVersion
-  );
-}
-
 export function planRagStatusRust(input: RustRagStatusInput): RustRagStatusPlan | null {
   if (
     !input.includedFiles.every(isValidRagStatusFileInput) ||
@@ -4160,341 +2723,6 @@ export function planRagIndexingEtaRust(
     const parsed: unknown = JSON.parse(raw);
     if (!isRagIndexingEtaPlan(parsed)) return null;
     return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphDeletionIndicesRust(
-  recordKeys: readonly string[],
-  requestedKeys: readonly string[],
-): number[] | null {
-  if (!recordKeys.every(isStringValue) || !requestedKeys.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planGraphDeletionIndicesFallback(recordKeys, requestedKeys);
-  }
-
-  try {
-    const raw = plan_graph_deletion_indices_json(
-      JSON.stringify(recordKeys),
-      JSON.stringify(requestedKeys),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isBoundedIndexArray(parsed, recordKeys.length)) return null;
-    return parsed;
-  } catch {
-    return planGraphDeletionIndicesFallback(recordKeys, requestedKeys);
-  }
-}
-
-function planGraphDeletionIndicesFallback(
-  recordKeys: readonly string[],
-  requestedKeys: readonly string[],
-): number[] {
-  if (recordKeys.length === 0 || requestedKeys.length === 0) return [];
-  const requested = new Set(requestedKeys);
-  const deletionIndices: number[] = [];
-  for (let index = 0; index < recordKeys.length; index++) {
-    if (requested.has(recordKeys[index])) {
-      deletionIndices.push(index);
-    }
-  }
-  return deletionIndices;
-}
-
-export function planGraphRagStatusEntryLookupsRust(
-  evidenceEntryIds: readonly string[],
-  cacheEntryIds: readonly string[],
-): string[] | null {
-  if (!evidenceEntryIds.every(isStringValue) || !cacheEntryIds.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planGraphRagStatusEntryLookupsFallback(evidenceEntryIds, cacheEntryIds);
-  }
-
-  try {
-    const raw = plan_graph_rag_status_entry_lookups_json(
-      JSON.stringify(evidenceEntryIds),
-      JSON.stringify(cacheEntryIds),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return planGraphRagStatusEntryLookupsFallback(evidenceEntryIds, cacheEntryIds);
-  }
-}
-
-export function planGraphRagSourceFilePathsRust(filePaths: readonly string[]): string[] | null {
-  if (!filePaths.every(isStringValue)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_rag_source_file_paths_json(JSON.stringify(filePaths));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphRagStatusFileSnapshotRust(
-  fileRecords: readonly RustGraphRagStatusFileSnapshotRecordInput[],
-  indexedFilePaths: readonly RustGraphRagRunFilePathInput[],
-): RustGraphRagStatusFileSnapshotPlan | null {
-  if (
-    !fileRecords.every(isValidGraphRagStatusFileSnapshotRecordInput) ||
-    !indexedFilePaths.every(isValidGraphRagRunFilePathInput)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) {
-    return planGraphRagStatusFileSnapshotFallback(fileRecords, indexedFilePaths);
-  }
-
-  try {
-    const raw = plan_graph_rag_status_file_snapshot_json(
-      JSON.stringify(fileRecords),
-      JSON.stringify(indexedFilePaths),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphRagStatusFileSnapshotPlan(parsed, fileRecords.length)) return null;
-    return parsed;
-  } catch {
-    return planGraphRagStatusFileSnapshotFallback(fileRecords, indexedFilePaths);
-  }
-}
-
-export function planGraphRagStatusEntrySnapshotRust(
-  entries: readonly RustGraphRagStatusEntrySnapshotInput[],
-): RustGraphRagStatusEntrySnapshotPlan | null {
-  if (!entries.every(isValidGraphRagStatusEntrySnapshotInput)) return null;
-  if (!ensureRustCore()) {
-    return planGraphRagStatusEntrySnapshotFallback(entries);
-  }
-
-  try {
-    const raw = plan_graph_rag_status_entry_snapshot_json(JSON.stringify(entries));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphRagStatusEntrySnapshotPlan(parsed, entries.length)) return null;
-    return parsed;
-  } catch {
-    return planGraphRagStatusEntrySnapshotFallback(entries);
-  }
-}
-
-export function planGraphRagRunFileSelectionRust(
-  input: RustGraphRagRunFileSelectionInput,
-): RustGraphRagRunFileSelectionPlan | null {
-  if (!isValidGraphRagRunFileSelectionInput(input)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_rag_run_file_selection_json(JSON.stringify(input));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphRagRunFileSelectionPlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphRagUnsupportedPrunePathsRust(
-  evidence: readonly RustGraphRagRunFilePathInput[],
-  rejectedFacts: readonly RustGraphRagRunFilePathInput[],
-): string[] | null {
-  if (
-    !evidence.every(isValidGraphRagRunFilePathInput) ||
-    !rejectedFacts.every(isValidGraphRagRunFilePathInput)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_rag_unsupported_prune_paths_json(
-      JSON.stringify(evidence),
-      JSON.stringify(rejectedFacts),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphRagStatusRust(
-  input: RustGraphRagStatusInput,
-): RustGraphRagStatusPlan | null {
-  if (!isValidGraphRagStatusInput(input)) return null;
-  if (!ensureRustCore()) return planGraphRagStatusFallback(input);
-
-  try {
-    const raw = plan_graph_rag_status_json(JSON.stringify(input));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphRagStatusPlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return planGraphRagStatusFallback(input);
-  }
-}
-
-export function planGraphEntityMergeRust(
-  existing: RustGraphEntityMergeInput,
-  next: RustGraphEntityMergeInput,
-): RustGraphEntityMergePlan | null {
-  if (!isValidGraphEntityMergeInput(existing) || !isValidGraphEntityMergeInput(next)) return null;
-  if (!ensureRustCore()) {
-    return planGraphEntityMergeFallback(existing, next);
-  }
-
-  try {
-    const raw = plan_graph_entity_merge_json(JSON.stringify(existing), JSON.stringify(next));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphEntityMergePlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return planGraphEntityMergeFallback(existing, next);
-  }
-}
-
-export function rewriteGraphEntityReferencesRust(
-  references: readonly string[],
-  candidateEntityId: string,
-  existingEntityId: string,
-  deduplicate: boolean,
-): string[] | null {
-  if (
-    !references.every(isStringValue) ||
-    candidateEntityId.length === 0 ||
-    existingEntityId.length === 0
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) {
-    return rewriteGraphEntityReferencesFallback(
-      references,
-      candidateEntityId,
-      existingEntityId,
-      deduplicate,
-    );
-  }
-
-  try {
-    const raw = rewrite_graph_entity_references_json(
-      JSON.stringify(references),
-      candidateEntityId,
-      existingEntityId,
-      deduplicate,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.every(isStringValue) ? parsed : null;
-  } catch {
-    return rewriteGraphEntityReferencesFallback(
-      references,
-      candidateEntityId,
-      existingEntityId,
-      deduplicate,
-    );
-  }
-}
-
-export function isSameGraphEntityPairRust(
-  firstLeft: string,
-  firstRight: string,
-  secondLeft: string,
-  secondRight: string,
-): boolean {
-  if (!ensureRustCore()) {
-    return (
-      (firstLeft === secondLeft && firstRight === secondRight) ||
-      (firstLeft === secondRight && firstRight === secondLeft)
-    );
-  }
-  return is_same_graph_entity_pair(firstLeft, firstRight, secondLeft, secondRight);
-}
-
-export function isGraphExtractionCacheHitRust(
-  cached: RustGraphExtractionCacheKey | null,
-  input: RustGraphExtractionCacheKey,
-): boolean | null {
-  if (cached !== null && !isValidGraphExtractionCacheKey(cached)) return null;
-  if (!isValidGraphExtractionCacheKey(input)) return null;
-  if (!ensureRustCore()) return isGraphExtractionCacheHitFallback(cached, input);
-
-  try {
-    const raw = is_graph_extraction_cache_hit_json(JSON.stringify(cached), JSON.stringify(input));
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return typeof parsed === 'boolean' ? parsed : null;
-  } catch {
-    return isGraphExtractionCacheHitFallback(cached, input);
-  }
-}
-
-export function graphExtractionContractVersionRust(): number {
-  if (!ensureRustCore()) return 1;
-  try {
-    const version = graph_extraction_contract_version();
-    return isValidNonNegativeInteger(version) ? version : 1;
-  } catch {
-    return 1;
-  }
-}
-
-export interface RustGraphExtractionFailurePlan {
-  code: string;
-  retryable: boolean;
-  opensCircuit: boolean;
-  nextAttemptAt: number;
-}
-
-export function planGraphExtractionFailureRust(input: {
-  message: string;
-  status?: number;
-  attemptCount: number;
-  consecutiveFailures: number;
-  now: number;
-  retryAfterMs?: number;
-}): RustGraphExtractionFailurePlan | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const raw = plan_graph_extraction_failure_json(
-      input.message,
-      input.status ?? 0,
-      input.attemptCount,
-      input.consecutiveFailures,
-      input.now,
-      input.retryAfterMs ?? Number.NaN,
-    );
-    const value: unknown = JSON.parse(raw);
-    if (!isStringRecordValueMap(value)) return null;
-    if (
-      !isStringValue(value.code) ||
-      typeof value.retryable !== 'boolean' ||
-      typeof value.opensCircuit !== 'boolean' ||
-      typeof value.nextAttemptAt !== 'number' ||
-      !Number.isFinite(value.nextAttemptAt)
-    ) {
-      return null;
-    }
-    return {
-      code: value.code,
-      retryable: value.retryable,
-      opensCircuit: value.opensCircuit,
-      nextAttemptAt: value.nextAttemptAt,
-    };
   } catch {
     return null;
   }
@@ -6193,24 +4421,6 @@ export function classifyMcpToolErrorRust(rawMsg: string): RustMcpToolErrorInfo |
   }
 }
 
-export function planContextGraphVerificationRust(
-  filePath: string,
-  unsupportedDetail: string,
-): RustContextGraphVerificationPlan | null {
-  if (!isStringValue(filePath) || !isStringValue(unsupportedDetail)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_context_graph_verification_json(filePath, unsupportedDetail);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isContextGraphVerificationPlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function planStructuralLinkedPathsRust(
   seedPaths: readonly string[],
   edges: readonly RustStructuralLinkEdge[],
@@ -6340,179 +4550,6 @@ export function planDiverseResultIndicesRust(
   }
 }
 
-export function detectCommunitiesFromEdgesRust(
-  edges: readonly RustCommunityEdgeRecord[],
-  maxIterations: number,
-): RustCommunityDetectionByIdResult | null {
-  if (!edges.every(isCommunityEdgeRecord) || !Number.isFinite(maxIterations)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = detect_communities_from_edges_json(
-      JSON.stringify(edges),
-      normalizeNonNegativeInteger(maxIterations),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isCommunityDetectionByIdResult(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function detectLeidenHierarchyFromEdgesRust(
-  edges: readonly RustCommunityEdgeRecord[],
-  maxIterations: number,
-  maxLevels: number,
-): RustCommunityHierarchyResult | null {
-  if (
-    !edges.every(isCommunityEdgeRecord) ||
-    !Number.isFinite(maxIterations) ||
-    !Number.isFinite(maxLevels) ||
-    !ensureRustCore()
-  ) {
-    return null;
-  }
-  try {
-    const raw = detect_leiden_hierarchy_from_edges_json(
-      JSON.stringify(edges),
-      normalizeNonNegativeInteger(maxIterations),
-      normalizePositiveInteger(maxLevels),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return isCommunityHierarchyResult(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphEdgeRecordsRust(
-  entityIds: readonly string[],
-  relationSourceIds: readonly string[],
-  relationTargetIds: readonly string[],
-  confidences: readonly number[],
-): RustCommunityEdgeRecord[] | null {
-  if (
-    !entityIds.every(isStringValue) ||
-    !relationSourceIds.every(isStringValue) ||
-    !relationTargetIds.every(isStringValue) ||
-    !confidences.every(Number.isFinite) ||
-    relationSourceIds.length !== relationTargetIds.length ||
-    relationSourceIds.length !== confidences.length
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_edge_records_json(
-      JSON.stringify(entityIds),
-      JSON.stringify(relationSourceIds),
-      JSON.stringify(relationTargetIds),
-      JSON.stringify(confidences),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isCommunityEdgeRecord)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphPruneRust(input: RustGraphPruneInput): RustGraphPrunePlan | null {
-  if (!isValidGraphPruneInput(input)) return null;
-  if (!ensureRustCore()) return null;
-
-  const entityEvidence = encodeNestedUint32Arrays(input.entityEvidenceIndices);
-  const relationEvidence = encodeNestedUint32Arrays(input.relationEvidenceIndices);
-  const claimEntity = encodeNestedUint32Arrays(input.claimEntityIndices);
-  const claimRelation = encodeNestedUint32Arrays(input.claimRelationIndices);
-  const claimEvidence = encodeNestedUint32Arrays(input.claimEvidenceIndices);
-  const communityEntity = encodeNestedUint32Arrays(input.communityEntityIndices);
-  const communityRelation = encodeNestedUint32Arrays(input.communityRelationIndices);
-  const communityClaim = encodeNestedUint32Arrays(input.communityClaimIndices);
-  if (
-    entityEvidence === null ||
-    relationEvidence === null ||
-    claimEntity === null ||
-    claimRelation === null ||
-    claimEvidence === null ||
-    communityEntity === null ||
-    communityRelation === null ||
-    communityClaim === null
-  ) {
-    return null;
-  }
-
-  const config = new Uint32Array([
-    input.filePaths.length,
-    input.evidenceFilePaths.length,
-    input.entitySchemaIds.length,
-    entityEvidence.flat.length,
-    input.relationSchemaIds.length,
-    relationEvidence.flat.length,
-    input.claimEvidenceIndices.length,
-    claimEntity.flat.length,
-    claimRelation.flat.length,
-    claimEvidence.flat.length,
-    input.communitySchemaIds.length,
-    communityEntity.flat.length,
-    communityRelation.flat.length,
-    communityClaim.flat.length,
-    input.rejectedFactFilePaths.length,
-    input.extractionCacheEntryIds.length,
-    input.pendingMergeExistingEntityIndices.length,
-  ]);
-  const indices = new Uint32Array([
-    ...entityEvidence.offsets,
-    ...entityEvidence.flat,
-    ...input.relationSourceEntityIndices,
-    ...input.relationTargetEntityIndices,
-    ...relationEvidence.offsets,
-    ...relationEvidence.flat,
-    ...claimEntity.offsets,
-    ...claimEntity.flat,
-    ...claimRelation.offsets,
-    ...claimRelation.flat,
-    ...claimEvidence.offsets,
-    ...claimEvidence.flat,
-    ...communityEntity.offsets,
-    ...communityEntity.flat,
-    ...communityRelation.offsets,
-    ...communityRelation.flat,
-    ...communityClaim.offsets,
-    ...communityClaim.flat,
-    ...input.pendingMergeExistingEntityIndices,
-    ...input.pendingMergeCandidateEntityIndices,
-  ]);
-  const wireValues = [
-    input.filePaths,
-    input.evidenceFilePaths,
-    input.evidenceEntryIds,
-    input.entitySchemaIds,
-    input.relationSchemaIds,
-    input.communitySchemaIds,
-    input.rejectedFactFilePaths,
-    input.rejectedFactEntryIds,
-    input.extractionCacheEntryIds,
-  ]
-    .map((section) => section.join('\0'))
-    .join('\u{1f}');
-
-  try {
-    const raw = prune_graph_indexes_json(config, indices, wireValues);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphPrunePlan(parsed, input)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export interface RustSourceChunk extends Chunk {
   id: string;
   chunkHash: string;
@@ -6564,7 +4601,7 @@ export function planSourceProcessingRust(
         !file ||
         typeof file !== 'object' ||
         typeof file.filePath !== 'string' ||
-        !['source', 'bm25', 'embedding', 'graph'].every(
+        !['source', 'bm25', 'embedding'].every(
           (field) => typeof file[field] === 'string' && states.has(file[field]),
         ) ||
         (file.chat !== 'ready' && file.chat !== 'pending')
@@ -6572,57 +4609,6 @@ export function planSourceProcessingRust(
         return null;
     }
     return parsed as SourceProcessingSummary;
-  } catch {
-    return null;
-  }
-}
-
-export function planSourceGraphReconcileRust<
-  T extends {
-    id: string;
-    entryId: string;
-    filePath: string;
-    startLine: number;
-    contentHash: string;
-  },
->(input: {
-  filePath: string;
-  retainedEntryIds: readonly string[];
-  entries: readonly { id: string; startLine: number; contentHash?: string }[];
-  evidence: readonly T[];
-  cache: readonly { entryId: string }[];
-  rejectedFacts: readonly { entryId: string; filePath: string }[];
-}): { removedEntryIds: string[]; evidenceUpdates: T[] } | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(plan_source_graph_reconcile_json(JSON.stringify(input)));
-    if (
-      !parsed ||
-      typeof parsed !== 'object' ||
-      !('removedEntryIds' in parsed) ||
-      !('evidenceUpdates' in parsed)
-    )
-      return null;
-    if (
-      !Array.isArray(parsed.removedEntryIds) ||
-      !parsed.removedEntryIds.every(isStringValue) ||
-      !Array.isArray(parsed.evidenceUpdates)
-    )
-      return null;
-    for (const value of parsed.evidenceUpdates as unknown[]) {
-      if (!value || typeof value !== 'object') return null;
-      const record = value as Record<string, unknown>;
-      if (
-        !['id', 'entryId', 'filePath', 'contentHash'].every(
-          (field) => typeof record[field] === 'string',
-        ) ||
-        !isValidNonNegativeInteger(record.startLine) ||
-        (record.endLine !== undefined && !isValidNonNegativeInteger(record.endLine)) ||
-        (record.sourceStartLine !== undefined && !isValidNonNegativeInteger(record.sourceStartLine))
-      )
-        return null;
-    }
-    return parsed as { removedEntryIds: string[]; evidenceUpdates: T[] };
   } catch {
     return null;
   }
@@ -6667,21 +4653,6 @@ export function chunkMarkdownRust(
     );
     if (!isChunkArray(parsed)) return null;
     return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphExtractionChildUnitsRust(
-  content: string,
-  splitDepth: number,
-): Chunk[] | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(
-      plan_graph_extraction_child_units_json(content, normalizeNonNegativeInteger(splitDepth)),
-    );
-    return isChunkArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -6800,21 +4771,6 @@ export function planReferenceFileIndicesRust(
   }
 }
 
-export function parseExtractedGraphPayloadRust(
-  rawResponse: string,
-): RustExtractedGraphPayloadParseResult | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const raw = parse_extracted_graph_payload_json(rawResponse);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRustExtractedGraphPayloadParseResult(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function parseMentionCandidatesRust(content: string): RustMentionCandidate[] | null {
   if (!ensureRustCore()) return null;
   try {
@@ -6907,63 +4863,6 @@ export function shouldOfferContext7ForPromptRust(prompt: string): boolean | null
   return should_offer_context7_for_prompt(prompt);
 }
 
-export function planGraphQueryRust(question: string): RustGraphQueryPlan | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(plan_graph_query_json(question));
-    if (!isGraphQueryPlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphQueryExecutionRust(
-  configuredMode: string,
-  plannedMode: string,
-  evidenceFirst: boolean,
-): RustGraphQueryExecutionPlan | null {
-  if (
-    !isStringValue(configuredMode) ||
-    !isStringValue(plannedMode) ||
-    typeof evidenceFirst !== 'boolean'
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_query_execution_json(configuredMode, plannedMode, evidenceFirst);
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isGraphQueryExecutionPlan(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planGraphQueryExecutionActionRust(
-  executionPlan: RustGraphQueryExecutionPlan | null,
-  configuredMode: string,
-  plannedMode: string,
-  evidenceFirst: boolean,
-): RustGraphQueryExecutionAction | null {
-  if (executionPlan) return executionPlan.action;
-
-  if (configuredMode === 'global') return 'global';
-  if (configuredMode === 'local') return 'local';
-  if (configuredMode === 'hybrid') return 'hybrid';
-
-  if (plannedMode === 'none') return 'none';
-  if (plannedMode === 'global') return 'global';
-  if (plannedMode === 'hybrid') return 'hybrid';
-  if (plannedMode === 'local' && evidenceFirst) return 'evidence-first';
-  if (plannedMode === 'local') return 'local';
-
-  return null;
-}
-
 function planDiverseResultIndicesFallback(
   candidates: readonly RustDiverseResultCandidate[],
   topK: number,
@@ -6989,29 +4888,6 @@ function planDiverseResultIndicesFallback(
     })
     .slice(0, validCount)
     .map((entry) => entry.index);
-}
-
-export function planGraphCommunityReplacementDeleteIdsRust(
-  communities: readonly RustGraphCommunityReplacementRecord[],
-  ontologySchemaId: string,
-): string[] | null {
-  if (!communities.every(isGraphCommunityReplacementRecord) || !isStringValue(ontologySchemaId)) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_graph_community_replacement_delete_ids_json(
-      JSON.stringify(communities),
-      ontologySchemaId,
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isStringValue)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
 }
 
 export function validateMcpJsonRust(jsonText: string): RustMcpJsonValidationResult | null {
@@ -7141,151 +5017,6 @@ export function validateExcludeExtensionInputRust(
   } catch {
     return null;
   }
-}
-
-export function normalizeEntityNameRust(name: string): string | null {
-  if (!isStringValue(name)) return null;
-  if (!ensureRustCore()) return normalizeEntityNameFallback(name);
-  try {
-    return normalize_entity_name(name);
-  } catch {
-    return normalizeEntityNameFallback(name);
-  }
-}
-
-export function createEntityIdRust(
-  ontologySchemaId: string,
-  typeId: string,
-  canonicalName: string,
-): string | null {
-  if (!isStringValue(ontologySchemaId) || !isStringValue(typeId) || !isStringValue(canonicalName)) {
-    return null;
-  }
-  if (!ensureRustCore()) {
-    return createEntityIdFallback(ontologySchemaId, typeId, canonicalName);
-  }
-  try {
-    return create_entity_id(ontologySchemaId, typeId, canonicalName);
-  } catch {
-    return createEntityIdFallback(ontologySchemaId, typeId, canonicalName);
-  }
-}
-
-export function normalizeGraphNameRust(name: string): string | null {
-  if (!isStringValue(name)) return null;
-  if (!ensureRustCore()) return normalizeGraphNameFallback(name);
-  try {
-    return normalize_graph_name(name);
-  } catch {
-    return normalizeGraphNameFallback(name);
-  }
-}
-
-export function normalizeGraphConfidenceRust(confidence: unknown): number | null {
-  if (!ensureRustCore()) return null;
-  const score = normalize_graph_confidence_or_default(
-    typeof confidence === 'number' ? confidence : Number.NaN,
-  );
-  return Number.isFinite(score) ? score : null;
-}
-
-export function createGraphIdRust(parts: readonly string[]): string | null {
-  if (!parts.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return parts.map(sanitizeGraphIdPartFallback).join('::');
-  }
-  try {
-    return create_graph_id(parts.join('\0'));
-  } catch {
-    return parts.map(sanitizeGraphIdPartFallback).join('::');
-  }
-}
-
-export function createPendingEntityMergeIdRust(
-  existingEntityId: string,
-  candidateEntityId: string,
-): string | null {
-  const normalizedExisting = existingEntityId.replace(/@+/g, '');
-  const normalizedCandidate = candidateEntityId.replace(/@+/g, '');
-  return createGraphIdRust([
-    'pending-entity-merge',
-    ...normalizedExisting.split('::').filter((segment) => segment.length > 0),
-    ...normalizedCandidate.split('::').filter((segment) => segment.length > 0),
-  ]);
-}
-
-export function scoreEntityMatchRust(input: RustEntityMatchInput): number | null {
-  if (!ensureRustCore()) return null;
-  if (!input.candidateNames.every(isStringValue) || !input.existingNames.every(isStringValue)) {
-    return null;
-  }
-  if (
-    !input.candidateEvidenceIds.every(isStringValue) ||
-    !input.existingEvidenceIds.every(isStringValue)
-  ) {
-    return null;
-  }
-  if (!Number.isFinite(input.embeddingScore)) return null;
-
-  const score = score_entity_match_or_nan(
-    input.candidateNames.join('\0'),
-    input.existingNames.join('\0'),
-    `${input.existingDescription}\u{1f}${input.candidateDescription}`,
-    `${input.existingEvidenceIds.join('\0')}\u{1f}${input.candidateEvidenceIds.join('\0')}`,
-    input.sameType,
-    input.embeddingScore,
-  );
-  return Number.isFinite(score) ? score : null;
-}
-
-export function planEntityResolutionRust(
-  input: RustEntityResolutionInput,
-): RustEntityResolutionPlan | null {
-  if (
-    !isStringValue(input.ontologySchemaId) ||
-    !isStringValue(input.typeId) ||
-    !isStringValue(input.candidateEntityId) ||
-    !Number.isFinite(input.autoMergeThreshold) ||
-    !Number.isFinite(input.pendingMergeThreshold) ||
-    !input.candidates.every(isEntityResolutionCandidate)
-  ) {
-    return null;
-  }
-  if (!ensureRustCore()) {
-    return planEntityResolutionFallback(input);
-  }
-
-  try {
-    const rawPlan = plan_entity_resolution_json(JSON.stringify(input));
-    if (rawPlan.length === 0) return null;
-    const parsed = JSON.parse(rawPlan) as unknown;
-    return isEntityResolutionPlan(parsed) ? parsed : null;
-  } catch {
-    return planEntityResolutionFallback(input);
-  }
-}
-
-export function findMentionedEntityMatchesRust(
-  question: string,
-  entities: readonly RustMentionedEntityInput[],
-  ontologySchemaId: string,
-  entityHints: readonly string[],
-): RustVectorScore[] | null {
-  if (entities.length === 0) return [];
-  if (!entities.every(isMentionedEntityInput) || !entityHints.every(isStringValue)) {
-    return null;
-  }
-  if (!ensureRustCore()) return null;
-
-  const pairs = find_mentioned_entity_matches(
-    question,
-    ontologySchemaId,
-    entities.map((entity) => entity.ontologySchemaId).join('\0'),
-    entities.map((entity) => entity.canonicalName).join('\0'),
-    entities.map((entity) => entity.aliases.join('\0')).join('\u{1f}'),
-    entityHints.join('\0'),
-  );
-  return decodeBoundedIndexScorePairs(pairs, entities.length);
 }
 
 function ensureRustCore(): boolean {
@@ -7427,165 +5158,6 @@ function encodeVectorMatrixF32(
     }
   }
   return values;
-}
-
-interface EncodedNestedUint32Arrays {
-  offsets: number[];
-  flat: number[];
-}
-
-function encodeNestedUint32Arrays(
-  rows: readonly (readonly number[])[],
-): EncodedNestedUint32Arrays | null {
-  const offsets = [0];
-  const flat: number[] = [];
-  for (const row of rows) {
-    for (const value of row) {
-      if (!isValidUint32(value)) return null;
-      flat.push(value);
-    }
-    if (!isValidUint32(flat.length)) return null;
-    offsets.push(flat.length);
-  }
-  return { offsets, flat };
-}
-
-function isValidGraphPruneInput(input: RustGraphPruneInput): boolean {
-  const evidenceCount = input.evidenceFilePaths.length;
-  const entityCount = input.entitySchemaIds.length;
-  const relationCount = input.relationSchemaIds.length;
-  const claimCount = input.claimEvidenceIndices.length;
-  const communityCount = input.communitySchemaIds.length;
-  const rejectedFactCount = input.rejectedFactFilePaths.length;
-  const pendingMergeCount = input.pendingMergeExistingEntityIndices.length;
-
-  return (
-    isDelimiterSafeStringArray(input.filePaths) &&
-    isDelimiterSafeStringArray(input.evidenceFilePaths) &&
-    isDelimiterSafeStringArray(input.evidenceEntryIds) &&
-    isDelimiterSafeStringArray(input.entitySchemaIds) &&
-    isDelimiterSafeStringArray(input.relationSchemaIds) &&
-    isDelimiterSafeStringArray(input.communitySchemaIds) &&
-    isDelimiterSafeStringArray(input.rejectedFactFilePaths) &&
-    isDelimiterSafeStringArray(input.rejectedFactEntryIds) &&
-    isDelimiterSafeStringArray(input.extractionCacheEntryIds) &&
-    input.evidenceEntryIds.length === evidenceCount &&
-    input.entityEvidenceIndices.length === entityCount &&
-    input.relationSourceEntityIndices.length === relationCount &&
-    input.relationTargetEntityIndices.length === relationCount &&
-    input.relationEvidenceIndices.length === relationCount &&
-    input.claimEntityIndices.length === claimCount &&
-    input.claimRelationIndices.length === claimCount &&
-    input.communityEntityIndices.length === communityCount &&
-    input.communityRelationIndices.length === communityCount &&
-    input.communityClaimIndices.length === communityCount &&
-    input.rejectedFactEntryIds.length === rejectedFactCount &&
-    input.pendingMergeCandidateEntityIndices.length === pendingMergeCount &&
-    input.entityEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
-    input.relationSourceEntityIndices.every((index) =>
-      isValidGraphPruneIndex(index, entityCount),
-    ) &&
-    input.relationTargetEntityIndices.every((index) =>
-      isValidGraphPruneIndex(index, entityCount),
-    ) &&
-    input.relationEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
-    input.claimEntityIndices.every((row) => isValidGraphPruneIndexArray(row, entityCount)) &&
-    input.claimRelationIndices.every((row) => isValidGraphPruneIndexArray(row, relationCount)) &&
-    input.claimEvidenceIndices.every((row) => isValidGraphPruneIndexArray(row, evidenceCount)) &&
-    input.communityEntityIndices.every((row) => isValidGraphPruneIndexArray(row, entityCount)) &&
-    input.communityRelationIndices.every((row) =>
-      isValidGraphPruneIndexArray(row, relationCount),
-    ) &&
-    input.communityClaimIndices.every((row) => isValidGraphPruneIndexArray(row, claimCount)) &&
-    input.pendingMergeExistingEntityIndices.every((index) =>
-      isValidGraphPruneIndex(index, entityCount),
-    ) &&
-    input.pendingMergeCandidateEntityIndices.every((index) =>
-      isValidGraphPruneIndex(index, entityCount),
-    )
-  );
-}
-
-function isDelimiterSafeString(value: unknown): value is string {
-  return typeof value === 'string' && !value.includes('\0') && !value.includes('\u{1f}');
-}
-
-function isDelimiterSafeStringArray(values: readonly string[]): boolean {
-  return values.every(isDelimiterSafeString);
-}
-
-function isValidGraphPruneIndexArray(values: readonly number[], maxExclusive: number): boolean {
-  return values.every((value) => isValidGraphPruneIndex(value, maxExclusive));
-}
-
-function isValidGraphPruneIndex(value: number, maxExclusive: number): boolean {
-  return (
-    value === RUST_GRAPH_PRUNE_UNKNOWN_INDEX ||
-    (Number.isSafeInteger(value) && value >= 0 && value < maxExclusive)
-  );
-}
-
-function isGraphPrunePlan(value: unknown, input: RustGraphPruneInput): value is RustGraphPrunePlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphPrunePlan>;
-  return (
-    isBoundedIndexArray(plan.deletedEvidenceIndices, input.evidenceFilePaths.length) &&
-    isBoundedIndexArray(plan.deletedEntityIndices, input.entitySchemaIds.length) &&
-    isBoundedIndexArray(plan.updatedEntityIndices, input.entitySchemaIds.length) &&
-    isBoundedReferenceIndexMatrix(
-      plan.updatedEntityEvidenceIndices,
-      plan.updatedEntityIndices,
-      input.entityEvidenceIndices,
-    ) &&
-    isBoundedIndexArray(plan.deletedRelationIndices, input.relationSchemaIds.length) &&
-    isBoundedIndexArray(plan.updatedRelationIndices, input.relationSchemaIds.length) &&
-    isBoundedReferenceIndexMatrix(
-      plan.updatedRelationEvidenceIndices,
-      plan.updatedRelationIndices,
-      input.relationEvidenceIndices,
-    ) &&
-    isBoundedIndexArray(plan.deletedClaimIndices, input.claimEvidenceIndices.length) &&
-    isBoundedIndexArray(plan.updatedClaimIndices, input.claimEvidenceIndices.length) &&
-    isBoundedReferenceIndexMatrix(
-      plan.updatedClaimEntityIndices,
-      plan.updatedClaimIndices,
-      input.claimEntityIndices,
-    ) &&
-    isBoundedReferenceIndexMatrix(
-      plan.updatedClaimRelationIndices,
-      plan.updatedClaimIndices,
-      input.claimRelationIndices,
-    ) &&
-    isBoundedReferenceIndexMatrix(
-      plan.updatedClaimEvidenceIndices,
-      plan.updatedClaimIndices,
-      input.claimEvidenceIndices,
-    ) &&
-    isBoundedIndexArray(plan.deletedCommunityIndices, input.communitySchemaIds.length) &&
-    isBoundedIndexArray(plan.deletedRejectedFactIndices, input.rejectedFactFilePaths.length) &&
-    isBoundedIndexArray(plan.deletedExtractionCacheIndices, input.extractionCacheEntryIds.length) &&
-    isBoundedIndexArray(
-      plan.deletedPendingMergeIndices,
-      input.pendingMergeExistingEntityIndices.length,
-    )
-  );
-}
-
-function isBoundedReferenceIndexMatrix(
-  value: unknown,
-  ownerIndices: readonly number[] | undefined,
-  referenceRows: readonly (readonly number[])[],
-): value is number[][] {
-  if (!Array.isArray(value) || ownerIndices === undefined || value.length !== ownerIndices.length) {
-    return false;
-  }
-
-  return value.every((row, index) => {
-    const ownerIndex = ownerIndices[index];
-    if (ownerIndex === undefined) return false;
-    const referenceRow = referenceRows[ownerIndex];
-    return referenceRow !== undefined && isBoundedIndexArray(row, referenceRow.length);
-  });
 }
 
 function isBoundedIndexArray(value: unknown, maxExclusive: number): value is number[] {
@@ -7858,14 +5430,6 @@ function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   return typeof candidate.raw === 'string' && typeof candidate.name === 'string';
 }
 
-function isMentionedEntityInput(value: RustMentionedEntityInput): boolean {
-  return (
-    isStringValue(value.ontologySchemaId) &&
-    isStringValue(value.canonicalName) &&
-    value.aliases.every(isStringValue)
-  );
-}
-
 function isFiniteMetricRecord(value: unknown): value is Partial<Record<string, number>> {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).every(
@@ -7881,8 +5445,8 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     rrfScore,
     sourcePrior,
     sourceEvidenceScore,
-    hasGraphOrStructuralEvidence,
-    hasStrongGraphOrStructuralEvidence,
+    hasStructuralEvidence,
+    hasStrongStructuralEvidence,
     combinedScore,
     selectionReason,
   } = plan;
@@ -7895,8 +5459,8 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     !Number.isFinite(sourcePrior) ||
     typeof sourceEvidenceScore !== 'number' ||
     !Number.isFinite(sourceEvidenceScore) ||
-    typeof hasGraphOrStructuralEvidence !== 'boolean' ||
-    typeof hasStrongGraphOrStructuralEvidence !== 'boolean' ||
+    typeof hasStructuralEvidence !== 'boolean' ||
+    typeof hasStrongStructuralEvidence !== 'boolean' ||
     typeof combinedScore !== 'number' ||
     !Number.isFinite(combinedScore) ||
     !isSourceSelectionReason(selectionReason)
@@ -7916,8 +5480,8 @@ function normalizeQueryResultScorePlan(value: unknown): RustQueryResultScorePlan
     sourcePrior,
     sourceEvidenceScore,
     bestEvidenceRank: typeof plan.bestEvidenceRank === 'number' ? plan.bestEvidenceRank : undefined,
-    hasGraphOrStructuralEvidence,
-    hasStrongGraphOrStructuralEvidence,
+    hasStructuralEvidence,
+    hasStrongStructuralEvidence,
     combinedScore,
     selectionReason,
   };
@@ -7959,67 +5523,12 @@ function isRerankStatus(value: unknown): value is RustRerankStatus {
 
 function isSourceSelectionReason(value: unknown): value is RustSourceSelectionReason {
   return (
-    value === 'strong-graph-evidence' ||
-    value === 'graph-structural-evidence' ||
+    value === 'strong-structural-evidence' ||
+    value === 'structural-evidence' ||
     value === 'keyword-vector' ||
     value === 'keyword' ||
     value === 'vector' ||
     value === 'hybrid'
-  );
-}
-
-function isEntityResolutionCandidate(value: RustEntityResolutionCandidate): boolean {
-  return (
-    isStringValue(value.entityId) &&
-    isStringValue(value.ontologySchemaId) &&
-    isStringValue(value.typeId) &&
-    Number.isFinite(value.score)
-  );
-}
-
-function isEntityResolutionPlan(value: unknown): value is RustEntityResolutionPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustEntityResolutionPlan>;
-  return (
-    isEntityResolutionStatus(plan.status) &&
-    isStringValue(plan.entityId) &&
-    Number.isFinite(plan.mergeScore) &&
-    (plan.matchedEntityId === undefined || isStringValue(plan.matchedEntityId)) &&
-    (plan.status === 'new' || isStringValue(plan.matchedEntityId))
-  );
-}
-
-function isEntityResolutionStatus(value: unknown): value is RustEntityResolutionStatus {
-  return value === 'new' || value === 'auto-merge' || value === 'pending-merge';
-}
-
-function isGraphQueryPlan(value: unknown): value is RustGraphQueryPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphQueryPlan>;
-  return (
-    isStringValue(plan.type) &&
-    isStringValue(plan.queryMode) &&
-    Number.isFinite(plan.traversalDepth) &&
-    typeof plan.evidenceFirst === 'boolean' &&
-    (plan.globalSearchDepth === 'fast' || plan.globalSearchDepth === 'deep') &&
-    Array.isArray(plan.entityHints) &&
-    plan.entityHints.every(isStringValue)
-  );
-}
-
-function isGraphQueryExecutionPlan(value: unknown): value is RustGraphQueryExecutionPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphQueryExecutionPlan>;
-  return isGraphQueryExecutionAction(plan.action) && typeof plan.requiresPlanner === 'boolean';
-}
-
-function isGraphQueryExecutionAction(value: unknown): value is RustGraphQueryExecutionAction {
-  return (
-    value === 'none' ||
-    value === 'local' ||
-    value === 'global' ||
-    value === 'hybrid' ||
-    value === 'evidence-first'
   );
 }
 
@@ -8070,56 +5579,6 @@ function isEvidenceScore(value: unknown): value is RustEvidenceScore {
   return isStringValue(score.evidenceId) && Number.isFinite(score.score);
 }
 
-function isLocalEvidencePlanInput(value: unknown): value is RustLocalEvidencePlanInput {
-  if (!value || typeof value !== 'object') return false;
-  const input = value as Partial<RustLocalEvidencePlanInput>;
-  return (
-    Array.isArray(input.matches) &&
-    input.matches.every(isLocalEvidenceMatchInput) &&
-    Array.isArray(input.relations) &&
-    input.relations.every(isLocalEvidenceRelationInput) &&
-    Array.isArray(input.claims) &&
-    input.claims.every(isLocalEvidenceClaimInput) &&
-    Number.isFinite(input.traversalDepth)
-  );
-}
-
-function isLocalEvidenceMatchInput(value: unknown): value is RustLocalEvidenceMatchInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustLocalEvidenceMatchInput>;
-  return (
-    isStringValue(record.entityId) &&
-    Number.isFinite(record.entityConfidence) &&
-    Number.isFinite(record.matchScore) &&
-    Array.isArray(record.evidenceIds) &&
-    record.evidenceIds.every(isStringValue)
-  );
-}
-
-function isLocalEvidenceRelationInput(value: unknown): value is RustLocalEvidenceRelationInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustLocalEvidenceRelationInput>;
-  return (
-    isStringValue(record.sourceEntityId) &&
-    isStringValue(record.targetEntityId) &&
-    Number.isFinite(record.confidence) &&
-    Array.isArray(record.evidenceIds) &&
-    record.evidenceIds.every(isStringValue)
-  );
-}
-
-function isLocalEvidenceClaimInput(value: unknown): value is RustLocalEvidenceClaimInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustLocalEvidenceClaimInput>;
-  return (
-    Array.isArray(record.entityIds) &&
-    record.entityIds.every(isStringValue) &&
-    Number.isFinite(record.confidence) &&
-    Array.isArray(record.evidenceIds) &&
-    record.evidenceIds.every(isStringValue)
-  );
-}
-
 function isDiverseResultCandidate(value: unknown): value is RustDiverseResultCandidate {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustDiverseResultCandidate>;
@@ -8129,236 +5588,6 @@ function isDiverseResultCandidate(value: unknown): value is RustDiverseResultCan
     candidate.vector.every((item) => Number.isFinite(item)) &&
     isStringValue(candidate.sourcePath) &&
     (candidate.heading === undefined || isStringValue(candidate.heading))
-  );
-}
-
-function isCommunityEdgeRecord(value: unknown): value is RustCommunityEdgeRecord {
-  if (!value || typeof value !== 'object') return false;
-  const edge = value as Partial<RustCommunityEdgeRecord>;
-  return isStringValue(edge.source) && isStringValue(edge.target) && Number.isFinite(edge.weight);
-}
-
-function isCommunityDetectionByIdResult(value: unknown): value is RustCommunityDetectionByIdResult {
-  if (!value || typeof value !== 'object') return false;
-  const result = value as Partial<RustCommunityDetectionByIdResult>;
-  return (
-    Array.isArray(result.assignmentsById) &&
-    result.assignmentsById.every(isCommunityAssignmentById) &&
-    Array.isArray(result.communityIds) &&
-    result.communityIds.every(isValidNonNegativeInteger) &&
-    Number.isFinite(result.modularity)
-  );
-}
-
-function isCommunityHierarchyResult(value: unknown): value is RustCommunityHierarchyResult {
-  if (!value || typeof value !== 'object') return false;
-  const result = value as Partial<RustCommunityHierarchyResult>;
-  return Array.isArray(result.levels) && result.levels.every(isCommunityHierarchyLevel);
-}
-
-function isCommunityHierarchyLevel(value: unknown): value is RustCommunityHierarchyLevel {
-  if (!isCommunityDetectionByIdResult(value)) return false;
-  return isValidNonNegativeInteger((value as Partial<RustCommunityHierarchyLevel>).level);
-}
-
-function isCommunityAssignmentById(value: unknown): value is RustCommunityAssignmentById {
-  if (!value || typeof value !== 'object') return false;
-  const assignment = value as Partial<RustCommunityAssignmentById>;
-  return isStringValue(assignment.entityId) && isValidNonNegativeInteger(assignment.communityId);
-}
-
-function isGraphEvidenceLookupRecord(value: unknown): value is RustGraphEvidenceLookupRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphEvidenceLookupRecord>;
-  return isStringValue(record.id) && isStringValue(record.filePath);
-}
-
-function isGraphEvidenceCandidateLookupPlan(
-  value: unknown,
-  scoreCount: number,
-  evidenceCount: number,
-): value is RustGraphEvidenceCandidateLookupPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphEvidenceCandidateLookupPlan>;
-  return (
-    isBoundedIndexArray(plan.scoreIndices, scoreCount) &&
-    isBoundedIndexArray(plan.evidenceIndices, evidenceCount) &&
-    plan.scoreIndices.length === plan.evidenceIndices.length &&
-    Array.isArray(plan.filePaths) &&
-    plan.filePaths.every(isStringValue)
-  );
-}
-
-function isGraphEvidenceEntryRecord(value: unknown): value is RustGraphEvidenceEntryRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphEvidenceEntryRecord>;
-  return isStringValue(record.id) && typeof record.compatible === 'boolean';
-}
-
-function isGraphMentionEntityInput(value: unknown): value is RustGraphMentionEntityInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphMentionEntityInput>;
-  return (
-    isStringValue(record.id) &&
-    isStringValue(record.canonicalName) &&
-    Array.isArray(record.aliases) &&
-    record.aliases.every(isStringValue) &&
-    (record.typeId === undefined || isStringValue(record.typeId)) &&
-    (record.description === undefined || isStringValue(record.description))
-  );
-}
-
-function isGraphMentionRelationInput(value: unknown): value is RustGraphMentionRelationInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphMentionRelationInput>;
-  return (
-    isStringValue(record.sourceEntityId) &&
-    isStringValue(record.targetEntityId) &&
-    (record.relationTypeId === undefined || isStringValue(record.relationTypeId)) &&
-    (record.description === undefined || isStringValue(record.description))
-  );
-}
-
-function isGraphClaimEntityLookupRecord(value: unknown): value is RustGraphClaimEntityLookupRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphClaimEntityLookupRecord>;
-  return isStringValue(record.name) && isStringValue(record.entityId);
-}
-
-function isGraphRelationEndpointInput(value: unknown): value is RustGraphRelationEndpointInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphRelationEndpointInput>;
-  return isStringValue(record.source) && isStringValue(record.target);
-}
-
-function isGraphRelationEndpointLookupRecord(
-  value: unknown,
-  entityCount: number,
-): value is RustGraphRelationEndpointLookupRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphRelationEndpointLookupRecord>;
-  return (
-    isStringValue(record.name) &&
-    typeof record.entityIndex === 'number' &&
-    isBoundedInteger(record.entityIndex, entityCount)
-  );
-}
-
-function isGraphRelationEndpointPlan(
-  value: unknown,
-  relationCount: number,
-  entityCount: number,
-): value is RustGraphRelationEndpointPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphRelationEndpointPlan>;
-  return (
-    Array.isArray(plan.pairs) &&
-    plan.pairs.length === relationCount &&
-    plan.pairs.every((pair) => {
-      if (pair === null) return true;
-      if (!pair || typeof pair !== 'object') return false;
-      const record = pair as Partial<RustGraphRelationEndpointPair>;
-      return (
-        typeof record.sourceEntityIndex === 'number' &&
-        typeof record.targetEntityIndex === 'number' &&
-        isBoundedInteger(record.sourceEntityIndex, entityCount) &&
-        isBoundedInteger(record.targetEntityIndex, entityCount)
-      );
-    })
-  );
-}
-
-function isGraphCommunityAssignmentInput(
-  value: unknown,
-): value is RustGraphCommunityAssignmentInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphCommunityAssignmentInput>;
-  return isStringValue(record.entityId) && isValidNonNegativeInteger(record.communityId);
-}
-
-function isGraphCommunitySummaryRelationInput(
-  value: unknown,
-): value is RustGraphCommunitySummaryRelationInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphCommunitySummaryRelationInput>;
-  return isStringValue(record.sourceEntityId) && isStringValue(record.targetEntityId);
-}
-
-function isGraphCommunitySummaryClaimInput(
-  value: unknown,
-): value is RustGraphCommunitySummaryClaimInput {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphCommunitySummaryClaimInput>;
-  return Array.isArray(record.entityIds) && record.entityIds.every(isStringValue);
-}
-
-function isGraphCommunitySummaryGroupsPlan(
-  value: unknown,
-  entityCount: number,
-  relationCount: number,
-  claimCount: number,
-  communityCount: number,
-): value is RustGraphCommunitySummaryGroupsPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphCommunitySummaryGroupsPlan>;
-  return (
-    Array.isArray(plan.groups) &&
-    plan.groups.length === communityCount &&
-    plan.groups.every((group) =>
-      isGraphCommunitySummaryGroup(group, entityCount, relationCount, claimCount),
-    )
-  );
-}
-
-function isGraphCommunitySummaryGroup(
-  value: unknown,
-  entityCount: number,
-  relationCount: number,
-  claimCount: number,
-): value is RustGraphCommunitySummaryGroup {
-  if (!value || typeof value !== 'object') return false;
-  const group = value as Partial<RustGraphCommunitySummaryGroup>;
-  return (
-    isBoundedIndexArray(group.entityIndices, entityCount) &&
-    isBoundedIndexArray(group.relationIndices, relationCount) &&
-    isBoundedIndexArray(group.claimIndices, claimCount)
-  );
-}
-
-function isGraphCommunityReplacementRecord(
-  value: unknown,
-): value is RustGraphCommunityReplacementRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<RustGraphCommunityReplacementRecord>;
-  return isStringValue(record.id) && isStringValue(record.ontologySchemaId);
-}
-
-function isGraphEvidenceEntryCandidatePlan(
-  value: unknown,
-  candidateCount: number,
-  entryCount: number,
-): value is RustGraphEvidenceEntryCandidatePlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphEvidenceEntryCandidatePlan>;
-  return (
-    isBoundedIndexArray(plan.candidateIndices, candidateCount) &&
-    isBoundedIndexArray(plan.entryIndices, entryCount) &&
-    plan.candidateIndices.length === plan.entryIndices.length
-  );
-}
-
-function isGraphMentionContextPlan(
-  value: unknown,
-  entityCount: number,
-  relationCount: number,
-): value is RustGraphMentionContextPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphMentionContextPlan>;
-  return (
-    isBoundedIndexArray(plan.matchedEntityIndices, entityCount) &&
-    isBoundedIndexArray(plan.matchedRelationIndices, relationCount) &&
-    Array.isArray(plan.contextLines) &&
-    plan.contextLines.every(isStringValue)
   );
 }
 
@@ -8410,7 +5639,6 @@ function isIndexedDbStorageLayout(value: unknown): value is RustIndexedDbStorage
     isStringValue(active.embeddingCache) &&
     isStringValue(active.bm25) &&
     isStringValue(active.corpus) &&
-    isStringValue(active.graph) &&
     Array.isArray(layout.cleanupLegacyNames) &&
     layout.cleanupLegacyNames.every(isStringValue) &&
     Array.isArray(layout.legacyNames) &&
@@ -8492,63 +5720,6 @@ function isInactiveIndexedDbCleanupPlan(value: unknown): value is RustInactiveIn
     Array.isArray(plan.deleteNames) &&
     plan.deleteNames.every(isStringValue) &&
     isValidNonNegativeInteger(plan.remainingDeleteCount)
-  );
-}
-
-function isGraphStorageMaintenanceInput(value: RustGraphStorageMaintenanceInput): boolean {
-  const recordGroups = [
-    value.extractionJobs,
-    value.rawResponses,
-    value.communitySummaryJobs,
-    value.globalSearchJobs,
-    value.providerCircuits,
-  ];
-  return (
-    value.validFilePaths.every((path) => isStringValue(path) && path.length > 0) &&
-    value.graphFilePaths.every((path) => isStringValue(path) && path.length > 0) &&
-    recordGroups.every((records) => records.every(isGraphStorageRecord)) &&
-    Number.isFinite(value.now) &&
-    Number.isFinite(value.maxAgeMs) &&
-    value.maxAgeMs >= 0 &&
-    [
-      value.maxExtractionJobs,
-      value.maxRawResponses,
-      value.maxCommunitySummaryJobs,
-      value.maxGlobalSearchJobs,
-      value.maxProviderCircuits,
-      value.maxDeletions,
-    ].every(isValidNonNegativeInteger)
-  );
-}
-
-function isGraphStorageRecord(value: RustGraphStorageRecord): boolean {
-  return (
-    isStringValue(value.id) &&
-    value.id.length > 0 &&
-    (value.state === undefined || isStringValue(value.state)) &&
-    (value.filePath === undefined ||
-      (isStringValue(value.filePath) && value.filePath.length > 0)) &&
-    (value.rawResponseId === undefined ||
-      (isStringValue(value.rawResponseId) && value.rawResponseId.length > 0)) &&
-    [value.leaseExpiresAt, value.openUntil, value.updatedAt, value.receivedAt].every(
-      (timestamp) => timestamp === undefined || Number.isFinite(timestamp),
-    )
-  );
-}
-
-function isGraphStorageMaintenancePlan(value: unknown): value is RustGraphStorageMaintenancePlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphStorageMaintenancePlan>;
-  return (
-    [
-      plan.deleteFilePaths,
-      plan.deleteExtractionJobIds,
-      plan.deleteRawResponseIds,
-      plan.deleteCommunitySummaryJobIds,
-      plan.deleteGlobalSearchJobIds,
-      plan.deleteProviderCircuitIds,
-    ].every((ids) => Array.isArray(ids) && ids.every(isStringValue)) &&
-    typeof plan.remainingWork === 'boolean'
   );
 }
 
@@ -8966,190 +6137,6 @@ function isRagIndexingEtaBasis(value: unknown): value is RustRagIndexingEtaBasis
   );
 }
 
-function isValidGraphRagStatusInput(input: RustGraphRagStatusInput): boolean {
-  return (
-    typeof input.graphRagEnabled === 'boolean' &&
-    typeof input.isRunning === 'boolean' &&
-    isValidNonNegativeInteger(input.totalCandidateFiles) &&
-    Number.isFinite(input.graphRagMaxFilesPerRun) &&
-    isStringValue(input.graphRagModel) &&
-    isStringValue(input.ontologySchemaId) &&
-    isValidNonNegativeInteger(input.ontologyVersion) &&
-    input.fileRecords.every(isValidGraphRagStatusFileRecordInput) &&
-    input.evidence.every(isValidGraphRagStatusEvidenceInput) &&
-    input.rejectedFactFilePaths.every(isStringValue) &&
-    isValidNonNegativeInteger(input.pendingMergeCount) &&
-    input.cacheRecords.every(isValidGraphRagStatusCacheInput) &&
-    input.entries.every(isValidGraphRagStatusEntryInput)
-  );
-}
-
-function isValidGraphRagStatusFileRecordInput(input: RustGraphRagStatusFileRecordInput): boolean {
-  return isStringValue(input.filePath) && isValidNonNegativeInteger(input.vectorCount);
-}
-
-function isValidGraphRagStatusFileSnapshotRecordInput(
-  input: RustGraphRagStatusFileSnapshotRecordInput,
-): boolean {
-  return isValidGraphRagStatusFileRecordInput(input) && typeof input.processable === 'boolean';
-}
-
-function isValidGraphRagStatusEvidenceInput(input: RustGraphRagStatusEvidenceInput): boolean {
-  return (
-    isStringValue(input.filePath) &&
-    isStringValue(input.entryId) &&
-    isStringValue(input.contentHash) &&
-    isStringValue(input.extractionModelKey) &&
-    typeof input.processable === 'boolean'
-  );
-}
-
-function isValidGraphRagStatusCacheInput(input: RustGraphRagStatusCacheInput): boolean {
-  return (
-    isStringValue(input.entryId) &&
-    isStringValue(input.contentHash) &&
-    isStringValue(input.extractionModelKey) &&
-    isStringValue(input.ontologySchemaId) &&
-    isValidNonNegativeInteger(input.ontologyVersion)
-  );
-}
-
-function isValidGraphRagStatusEntryInput(input: RustGraphRagStatusEntryInput): boolean {
-  return (
-    isStringValue(input.id) &&
-    isStringValue(input.filePath) &&
-    (input.contentHash === undefined || isStringValue(input.contentHash)) &&
-    (input.chunkHash === undefined || isStringValue(input.chunkHash)) &&
-    isStringValue(input.text)
-  );
-}
-
-function isValidGraphRagStatusEntrySnapshotInput(
-  input: RustGraphRagStatusEntrySnapshotInput,
-): boolean {
-  return (
-    isStringValue(input.id) &&
-    isStringValue(input.filePath) &&
-    typeof input.processable === 'boolean'
-  );
-}
-
-function isGraphRagStatusFileSnapshotPlan(
-  value: unknown,
-  fileRecordCount: number,
-): value is RustGraphRagStatusFileSnapshotPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphRagStatusFileSnapshotPlan>;
-  return (
-    Array.isArray(plan.fileRecordIndices) &&
-    plan.fileRecordIndices.every(
-      (index) => isValidNonNegativeInteger(index) && index < fileRecordCount,
-    ) &&
-    isValidNonNegativeInteger(plan.totalCandidateFiles)
-  );
-}
-
-function isGraphRagStatusEntrySnapshotPlan(
-  value: unknown,
-  entryCount: number,
-): value is RustGraphRagStatusEntrySnapshotPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphRagStatusEntrySnapshotPlan>;
-  return (
-    Array.isArray(plan.entryIndices) &&
-    plan.entryIndices.every((index) => isValidNonNegativeInteger(index) && index < entryCount)
-  );
-}
-
-function isGraphRagStatusPlan(value: unknown): value is RustGraphRagStatusPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphRagStatusPlan>;
-  return (
-    isGraphRagIndexState(plan.state) &&
-    isValidNonNegativeInteger(plan.totalCandidateFiles) &&
-    isValidNonNegativeInteger(plan.graphEvidenceCount) &&
-    isValidNonNegativeInteger(plan.rejectedFactCount) &&
-    isValidNonNegativeInteger(plan.failedFileCount) &&
-    isValidNonNegativeInteger(plan.pendingMergeCount) &&
-    isValidNonNegativeInteger(plan.staleFileCount) &&
-    Array.isArray(plan.staleFilePaths) &&
-    plan.staleFilePaths.every(isStringValue) &&
-    isValidNonNegativeInteger(plan.maxFilesPerRun)
-  );
-}
-
-function isValidGraphRagRunFileSelectionInput(input: RustGraphRagRunFileSelectionInput): boolean {
-  return (
-    (input.mode === 'failed' || input.mode === 'stale' || input.mode === 'full') &&
-    input.failedFilePaths.every(isStringValue) &&
-    input.staleFilePaths.every(isStringValue) &&
-    input.recordFilePaths.every(isValidGraphRagRunFilePathInput) &&
-    input.indexedFilePaths.every(isValidGraphRagRunFilePathInput) &&
-    isValidNonNegativeInteger(input.maxFilesPerRun)
-  );
-}
-
-function isValidGraphRagRunFilePathInput(input: RustGraphRagRunFilePathInput): boolean {
-  return isStringValue(input.filePath) && typeof input.processable === 'boolean';
-}
-
-function isGraphRagRunFileSelectionPlan(value: unknown): value is RustGraphRagRunFileSelectionPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphRagRunFileSelectionPlan>;
-  return (
-    Array.isArray(plan.candidateFilePaths) &&
-    plan.candidateFilePaths.every(isStringValue) &&
-    Array.isArray(plan.selectedFilePaths) &&
-    plan.selectedFilePaths.every(isStringValue)
-  );
-}
-
-function isValidGraphEntityMergeInput(input: RustGraphEntityMergeInput): boolean {
-  return (
-    input.aliases.every(isStringValue) &&
-    isStringValue(input.description) &&
-    Number.isFinite(input.confidence) &&
-    input.evidenceIds.every(isStringValue) &&
-    Number.isFinite(input.updatedAt)
-  );
-}
-
-function isGraphEntityMergePlan(value: unknown): value is RustGraphEntityMergePlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustGraphEntityMergePlan>;
-  return (
-    Array.isArray(plan.aliases) &&
-    plan.aliases.every(isStringValue) &&
-    isStringValue(plan.description) &&
-    Number.isFinite(plan.confidence) &&
-    Array.isArray(plan.evidenceIds) &&
-    plan.evidenceIds.every(isStringValue) &&
-    Number.isFinite(plan.updatedAt)
-  );
-}
-
-function isValidGraphExtractionCacheKey(value: RustGraphExtractionCacheKey): boolean {
-  return (
-    isStringValue(value.entryId) &&
-    isStringValue(value.contentHash) &&
-    isStringValue(value.extractionModelKey) &&
-    isStringValue(value.ontologySchemaId) &&
-    isValidNonNegativeInteger(value.ontologyVersion) &&
-    isValidNonNegativeInteger(value.extractionContractVersion)
-  );
-}
-
-function isGraphRagIndexState(value: unknown): value is RustGraphRagIndexState {
-  return (
-    value === 'disabled' ||
-    value === 'not-built' ||
-    value === 'building' ||
-    value === 'ready' ||
-    value === 'partial' ||
-    value === 'stale'
-  );
-}
-
 function isValidRagFileTypeInput(input: RustRagFileTypeInput): boolean {
   return (
     isStringValue(input.filePath) &&
@@ -9499,7 +6486,6 @@ function isChatContextMentionPlan(
   return (
     isBoundedIndexArray(plan.fileIndices, mentionCount) &&
     isBoundedIndexArray(plan.folderIndices, mentionCount) &&
-    isBoundedIndexArray(plan.entityIndices, mentionCount) &&
     isBoundedIndexArray(plan.serverIndices, mentionCount) &&
     typeof plan.useAutoRag === 'boolean' &&
     isAutoRagReason(plan.autoRagReason)
@@ -9507,7 +6493,7 @@ function isChatContextMentionPlan(
 }
 
 function isChatContextMentionType(value: string): boolean {
-  return value === 'file' || value === 'folder' || value === 'entity' || value === 'server';
+  return value === 'file' || value === 'folder' || value === 'server';
 }
 
 function isAutoRagReason(value: unknown): value is RustAutoRagReason {
@@ -9537,8 +6523,7 @@ function isContextCitationPlan(value: unknown): value is RustContextCitationPlan
     (citation.detail === undefined || isStringValue(citation.detail)) &&
     isStringValue(citation.preview) &&
     typeof citation.previewTruncated === 'boolean' &&
-    (citation.selectionReason === undefined || isSourceSelectionReason(citation.selectionReason)) &&
-    (citation.graphType === undefined || isContextGraphType(citation.graphType))
+    (citation.selectionReason === undefined || isSourceSelectionReason(citation.selectionReason))
   );
 }
 
@@ -9546,17 +6531,6 @@ function isContextSourceBlockPlan(value: unknown): value is RustContextSourceBlo
   if (!value || typeof value !== 'object') return false;
   const block = value as Partial<RustContextSourceBlockPlan>;
   return isStringValue(block.sourceId) && isStringValue(block.text);
-}
-
-function isContextGraphVerificationPlan(value: unknown): value is RustContextGraphVerificationPlan {
-  if (!value || typeof value !== 'object') return false;
-  const plan = value as Partial<RustContextGraphVerificationPlan>;
-  return (
-    typeof plan.isGraphSource === 'boolean' &&
-    (plan.verification === null ||
-      plan.verification === undefined ||
-      isContextSourceVerification(plan.verification))
-  );
 }
 
 function isValidContextSourceInput(input: RustContextSourceInput): boolean {
@@ -9580,8 +6554,7 @@ function isContextSourceVerification(value: unknown): value is RustContextSource
   const verification = value as Partial<RustContextSourceVerification>;
   return (
     isContextSourceStatus(verification.status) &&
-    (verification.detail === undefined || isStringValue(verification.detail)) &&
-    (verification.graphType === undefined || isContextGraphType(verification.graphType))
+    (verification.detail === undefined || isStringValue(verification.detail))
   );
 }
 
@@ -9593,10 +6566,6 @@ function isContextSourceStatus(value: unknown): value is RustContextSourceStatus
     value === 'stale' ||
     value === 'low-relevance'
   );
-}
-
-function isContextGraphType(value: unknown): value is RustContextGraphType {
-  return value === 'entity' || value === 'relation' || value === 'community';
 }
 
 function isVaultLinkCandidatePlan(value: unknown): value is RustVaultLinkCandidatePlan {
@@ -9685,36 +6654,6 @@ function isRustMcpJsonValidationResult(value: unknown): value is RustMcpJsonVali
   );
 }
 
-function isRustExtractedGraphPayloadParseResult(
-  value: unknown,
-): value is RustExtractedGraphPayloadParseResult {
-  if (!value || typeof value !== 'object') return false;
-  const result = value as Partial<RustExtractedGraphPayloadParseResult>;
-  if (result.ok === true) {
-    return !!result.payload && isRustExtractedGraphPayload(result.payload);
-  }
-  if (result.ok === false) {
-    return (
-      (result.reason === 'invalid-json' || result.reason === 'schema-shape-mismatch') &&
-      Object.prototype.hasOwnProperty.call(result, 'rawFact')
-    );
-  }
-  return false;
-}
-
-function isRustExtractedGraphPayload(value: unknown): value is RustExtractedGraphPayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Partial<RustExtractedGraphPayload>;
-  return (
-    Array.isArray(payload.entities) &&
-    Array.isArray(payload.relations) &&
-    Array.isArray(payload.claims) &&
-    payload.entities.every(isRustExtractedGraphEntity) &&
-    payload.relations.every(isRustExtractedGraphRelation) &&
-    payload.claims.every(isRustExtractedGraphClaim)
-  );
-}
-
 function isRustMcpToolNormalizedResult(value: unknown): value is RustMcpToolNormalizedResult {
   if (!value || typeof value !== 'object') return false;
   const result = value as Partial<RustMcpToolNormalizedResult>;
@@ -9740,69 +6679,6 @@ function isRustMcpToolErrorKind(value: unknown): value is RustMcpToolErrorKind {
     value === 'validation-generic' ||
     value === 'validation-schema-failed' ||
     value === 'raw'
-  );
-}
-
-function isRustExtractedGraphEntity(value: unknown): value is RustExtractedGraphEntity {
-  if (!value || typeof value !== 'object') return false;
-  const entity = value as Partial<RustExtractedGraphEntity>;
-  return (
-    isStringValue(entity.name) &&
-    isStringValue(entity.typeId) &&
-    (entity.description === undefined || isStringValue(entity.description)) &&
-    (entity.aliases === undefined ||
-      (Array.isArray(entity.aliases) && entity.aliases.every(isStringValue))) &&
-    (entity.confidence === undefined || Number.isFinite(entity.confidence)) &&
-    isOptionalGraphSourceSpans(entity.evidenceSpans)
-  );
-}
-
-function isRustExtractedGraphRelation(value: unknown): value is RustExtractedGraphRelation {
-  if (!value || typeof value !== 'object') return false;
-  const relation = value as Partial<RustExtractedGraphRelation>;
-  return (
-    (relation.id === undefined || isStringValue(relation.id)) &&
-    isStringValue(relation.source) &&
-    isStringValue(relation.target) &&
-    isStringValue(relation.relationTypeId) &&
-    (relation.description === undefined || isStringValue(relation.description)) &&
-    (relation.confidence === undefined || Number.isFinite(relation.confidence)) &&
-    isOptionalGraphSourceSpans(relation.evidenceSpans)
-  );
-}
-
-function isRustExtractedGraphClaim(value: unknown): value is RustExtractedGraphClaim {
-  if (!value || typeof value !== 'object') return false;
-  const claim = value as Partial<RustExtractedGraphClaim>;
-  return (
-    (claim.id === undefined || isStringValue(claim.id)) &&
-    isStringValue(claim.text) &&
-    isStringValue(claim.claimTypeId) &&
-    (claim.entityNames === undefined ||
-      (Array.isArray(claim.entityNames) && claim.entityNames.every(isStringValue))) &&
-    (claim.relationRefs === undefined ||
-      (Array.isArray(claim.relationRefs) && claim.relationRefs.every(isStringValue))) &&
-    (claim.stance === undefined ||
-      claim.stance === 'supports' ||
-      claim.stance === 'opposes' ||
-      claim.stance === 'neutral' ||
-      claim.stance === 'interprets') &&
-    (claim.confidence === undefined || Number.isFinite(claim.confidence)) &&
-    isOptionalGraphSourceSpans(claim.evidenceSpans)
-  );
-}
-
-function isOptionalGraphSourceSpans(value: unknown): boolean {
-  return (
-    value === undefined ||
-    (Array.isArray(value) &&
-      value.every(
-        (span) =>
-          typeof span === 'object' &&
-          span !== null &&
-          isValidNonNegativeInteger((span as Partial<RustGraphSourceSpan>).start) &&
-          isValidNonNegativeInteger((span as Partial<RustGraphSourceSpan>).end),
-      ))
   );
 }
 
@@ -9858,22 +6734,16 @@ function isValidUint32Array(values: readonly number[], maxExclusive?: number): b
 function sourceToCode(source: string): number {
   if (source === 'bm25') return 1;
   if (source === 'vector') return 2;
-  if (source === 'graph-local') return 3;
   if (source === 'structural') return 4;
   if (source === 'ann') return 5;
-  if (source === 'graph-global') return 6;
-  if (source === 'evidence') return 7;
   return 0;
 }
 
 function sourceCodeToSource(sourceCode: number): string | null {
   if (sourceCode === 1) return 'bm25';
   if (sourceCode === 2) return 'vector';
-  if (sourceCode === 3) return 'graph-local';
   if (sourceCode === 4) return 'structural';
   if (sourceCode === 5) return 'ann';
-  if (sourceCode === 6) return 'graph-global';
-  if (sourceCode === 7) return 'evidence';
   return null;
 }
 

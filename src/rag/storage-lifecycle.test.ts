@@ -9,6 +9,32 @@ import {
 } from './storage-lifecycle';
 
 describe('RAG IndexedDB storage lifecycle', () => {
+  it('BM25 비활성 상태에서 재생성 가능한 BM25 저장소만 제거한다', async () => {
+    const layout = createRagStorageLayout({
+      pluginId: 'superpower-inside',
+      vaultIdentity: 'C:/Vaults/Example',
+      legacyVaultName: 'Example',
+      embeddingNamespace: 'memory-only',
+      indexNamespace: createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT),
+    });
+    const deleteDatabase = vi.fn(() => Promise.resolve<'deleted'>('deleted'));
+    const host: IndexedDbLifecycleHost = {
+      listDatabaseNames: vi.fn(() =>
+        Promise.resolve([layout.active.vector, layout.active.bm25]),
+      ),
+      deleteDatabase,
+    };
+
+    await cleanupStaleIndexedDbGenerations(
+      layout,
+      { maxDeletions: 4, preserveBm25: false },
+      host,
+    );
+
+    expect(deleteDatabase).toHaveBeenCalledWith(layout.active.bm25);
+    expect(deleteDatabase).not.toHaveBeenCalledWith(layout.active.vector);
+  });
+
   it('임베딩 모델 변경은 공통 원문 저장소를 변경하지 않는다', () => {
     const base = {
       pluginId: 'superpower-inside',
@@ -63,7 +89,6 @@ describe('RAG IndexedDB storage lifecycle', () => {
     expect(changed.active.bm25).not.toBe(legacy.active.bm25);
     expect(changed.active.corpus).not.toBe(legacy.active.corpus);
     expect(changed.active.embeddingCache).toBe(legacy.active.embeddingCache);
-    expect(changed.active.graph).toBe(legacy.active.graph);
   });
 
   it('deletes only stale current-vault generations and known legacy stores', async () => {
@@ -120,7 +145,6 @@ describe('RAG IndexedDB storage lifecycle', () => {
           currentGeneration.active.vector,
           currentGeneration.active.bm25,
           currentGeneration.active.embeddingCache,
-          currentGeneration.active.graph,
         ]),
       ),
       deleteDatabase,
@@ -161,33 +185,6 @@ describe('RAG IndexedDB storage lifecycle', () => {
     );
 
     expect(deleteDatabase).toHaveBeenCalledWith(layout.active.embeddingCache);
-  });
-
-  it('retires rebuildable BM25 and Graph stores while their features are disabled', async () => {
-    const layout = createRagStorageLayout({
-      pluginId: 'superpower-inside',
-      vaultIdentity: 'C:/Vaults/Example',
-      legacyVaultName: 'Example',
-      embeddingNamespace: 'memory-only',
-      indexNamespace: createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT),
-    });
-    const deleteDatabase = vi.fn(() => Promise.resolve<'deleted'>('deleted'));
-    const host: IndexedDbLifecycleHost = {
-      listDatabaseNames: vi.fn(() =>
-        Promise.resolve([layout.active.vector, layout.active.bm25, layout.active.graph]),
-      ),
-      deleteDatabase,
-    };
-
-    await cleanupStaleIndexedDbGenerations(
-      layout,
-      { maxDeletions: 4, preserveBm25: false, preserveGraph: false },
-      host,
-    );
-
-    expect(deleteDatabase).toHaveBeenCalledWith(layout.active.bm25);
-    expect(deleteDatabase).toHaveBeenCalledWith(layout.active.graph);
-    expect(deleteDatabase).not.toHaveBeenCalledWith(layout.active.vector);
   });
 
   it('deletes active and stale current-vault generations during a full plugin reset', async () => {

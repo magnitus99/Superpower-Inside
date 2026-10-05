@@ -39,13 +39,13 @@ The Sources tab lists notes and retrieved ranges. Open the original, copy the li
 
 **🧭 It sees connections you might miss**
 
-Keyword search, semantic search, and chat tools use the same supported text files, including Markdown, plain text, and code. Retrieved passages are checked against the current source before they become answer evidence. Optional GraphRAG and ontology extraction are off by default. When enabled, they connect people, concepts, and claims from those same files. File search and source reading remain available while the graph is being built.
+Keyword search, semantic search, and chat tools use the same supported text files, including Markdown, plain text, and code. Retrieved passages are checked against the current source before they become answer evidence.
 
-JSON keys, CSV headers and records, and code block boundaries stay attached to the shared passages. When a file changes, graph extraction reuses unchanged passages and updates their source locations. The vault statistics tool reports each file's source, keyword, embedding, and graph readiness separately.
+JSON keys, CSV headers and records, and code block boundaries stay attached to the shared passages. The vault statistics tool reports each file's source, keyword, and embedding readiness separately.
 
 **🏠 Built-in search runs locally**
 
-The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, graph extraction, summaries, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
+The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, summaries, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
 
 **✋ You're always in control**
 
@@ -171,13 +171,13 @@ Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. �
 
 **🧭 놓치기 쉬운 연결을 보여줍니다**
 
-키워드·의미 검색과 채팅 도구는 같은 지원 텍스트 파일을 사용합니다. Markdown, 일반 텍스트, 코드 등에서 찾은 구간은 현재 원문을 확인한 뒤 답변 근거로 사용합니다. 선택적인 GraphRAG와 ontology는 기본으로 꺼져 있습니다. 켜면 같은 파일에서 인물·개념·주장의 관계를 연결하며, 그래프 구축 여부와 관계없이 파일 검색과 원문 읽기를 사용할 수 있습니다.
+키워드·의미 검색과 채팅 도구는 같은 지원 텍스트 파일을 사용합니다. Markdown, 일반 텍스트, 코드 등에서 찾은 구간은 현재 원문을 확인한 뒤 답변 근거로 사용합니다.
 
-JSON 키, CSV 헤더·레코드, 코드 블록 경계도 공통 검색 구간에 보존합니다. 파일을 수정하면 변경 없는 구간의 그래프 추출 결과는 재사용하고 원문 위치를 갱신합니다. 볼트 통계 도구에서는 파일별 원문·키워드·임베딩·그래프 처리 상태를 구분해 확인할 수 있습니다.
+JSON 키, CSV 헤더·레코드, 코드 블록 경계도 공통 검색 구간에 보존합니다. 볼트 통계 도구에서는 파일별 원문·키워드·임베딩 처리 상태를 구분해 확인할 수 있습니다.
 
 **🏠 내장 검색은 기기 안에서 실행됩니다**
 
-내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 그래프 추출, 요약과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
+내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 요약과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
 
 **✋ 언제든 중단하고, 언제든 확인하세요**
 

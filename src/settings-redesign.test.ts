@@ -140,7 +140,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(section.match(/t\('searchQualityDefault'/g)).toHaveLength(3);
     expect(section).toContain('Object.assign(this.plugin.settings.rag, DEFAULT_SEARCH_QUALITY)');
     expect(section).toContain('this.debouncedRagSave()');
-    expect(section).toContain('this.refreshRagTab()');
+    expect(section).toContain('this.buildSearchQualitySection(containerEl)');
   });
   it('청크 크기 변경은 인덱스 세대를 바꾸므로 RAG 런타임 재초기화로 저장한다', () => {
     const start = settingsSource.indexOf('private buildIndexingOptionsSection(');
@@ -155,7 +155,7 @@ describe('설정 화면 리디자인 구조', () => {
   });
   it('검색 대상 형식은 제외 설정 바로 다음에 표시하고 규칙 변경 시 갱신한다', () => {
     const start = settingsSource.indexOf('private buildRagFoundationSection(');
-    const end = settingsSource.indexOf('private buildGraphRagSection(', start);
+    const end = settingsSource.indexOf('private buildFileTypeScopeSection(', start);
     const foundation = settingsSource.slice(start, end);
     expect(foundation).toMatch(/buildExcludeOptionsSection[\s\S]*buildTargetFileTypesSection/);
     expect(settingsSource).toContain('currentRevision !== revision');
@@ -258,10 +258,12 @@ describe('설정 화면 리디자인 구조', () => {
     expect(renderSource).toContain("bus.on('rag'");
     expect(renderSource).toContain("bus.on('models'");
     expect(renderSource).toContain("bus.on('mcp'");
-    expect(renderSource).toContain("bus.on('graph-data'");
-    expect(
-      renderSource.match(/this\.refreshGeneralStatusSection\(\)/g)?.length,
-    ).toBeGreaterThanOrEqual(4);
+    for (const domain of ['rag', 'models', 'mcp']) {
+      const start = renderSource.indexOf(`bus.on('${domain}'`);
+      const next = renderSource.indexOf('bus.on(', start + 1);
+      const callback = renderSource.slice(start, next < 0 ? undefined : next);
+      expect(callback).toContain('this.refreshGeneralStatusSection()');
+    }
     expect(refreshSource).toContain('this.generalStatusBody');
     expect(refreshSource).toContain('statusBody.isConnected');
     expect(refreshSource).not.toContain('this.buildGeneralTab');
@@ -408,7 +410,6 @@ describe('설정 화면 리디자인 구조', () => {
     const expectedOrder = [
       'buildRagStatusPanel',
       'buildRagFoundationSection',
-      'buildGraphRagSection',
       'buildRagAdvancedSection',
     ];
 
@@ -464,32 +465,6 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('is-danger');
     expect(styles).toContain('.superpower-inside-rag-primary-actions');
     expect(styles).toContain('.superpower-inside-rag-controls-group button[hidden]');
-  });
-
-  it('GraphRAG 작업은 중첩 카드와 반복 disabled reason 대신 평평한 action row를 사용한다', () => {
-    const renderStart = settingsSource.indexOf('private renderGraphRagActions(');
-    const renderEnd = settingsSource.indexOf('\n  private async handleGraphRagAction', renderStart);
-    const renderSource = settingsSource.slice(renderStart, renderEnd);
-
-    expect(renderStart).toBeGreaterThanOrEqual(0);
-    expect(renderSource).toContain('createGraphRagActionRow');
-    expect(renderSource).not.toContain('createGraphRagActionCard');
-    expect(renderSource).not.toContain('superpower-inside-rag-action-card');
-    expect(renderSource).not.toContain('superpower-inside-rag-action-disabled-reason');
-    expect(styles).toContain('.superpower-inside-rag-action-row');
-    expect(styles).not.toContain('.superpower-inside-rag-action-row.is-primary');
-    expect(styles).not.toContain('.superpower-inside-rag-action-card');
-    expect(styles).not.toContain('.superpower-inside-rag-action-disabled-reason');
-  });
-
-  it('GraphRAG 동시 요청 수는 1부터 10까지의 숫자 입력으로 표시한다', () => {
-    expect(settingsSource).toContain("setName(t('graphRagConcurrentRequestsLabel'))");
-    const start = settingsSource.indexOf('const concurrencySetting');
-    const end = settingsSource.indexOf(".setName(t('graphRagQueryModeLabel'))", start);
-    const source = settingsSource.slice(start, end);
-    expect(source.includes('parseSettingsNumberRust(value, 1, 10)')).toBe(true);
-    expect(source.includes("text.inputEl.step = '1'")).toBe(true);
-    expect(source.includes('addSlider')).toBe(false);
   });
 
   it('RAG 런타임을 만들 수 없을 때 빈 카드 대신 원인과 한 가지 복구 행동을 표시한다', () => {
@@ -734,7 +709,7 @@ describe('설정 화면 리디자인 구조', () => {
     const subscriptionEnd = settingsSource.indexOf('\n        }),', subscriptionStart);
     const subscriptionSource = settingsSource.slice(subscriptionStart, subscriptionEnd);
     const repopulateStart = settingsSource.indexOf('private repopulateDefaultModelDropdown()');
-    const repopulateEnd = settingsSource.indexOf('\n  private refreshRagTab', repopulateStart);
+    const repopulateEnd = settingsSource.indexOf('\n  private createSettingsSection', repopulateStart);
     const repopulateSource = settingsSource.slice(repopulateStart, repopulateEnd);
     expect(subscriptionSource).toContain('this.repopulateDefaultModelDropdown()');
     expect(repopulateSource).not.toContain("refreshBus.emit('models'");

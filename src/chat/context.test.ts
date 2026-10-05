@@ -1,6 +1,5 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
-import type { GraphEntityRecord, GraphRelationRecord, KnowledgeGraphStore } from '../graph/store';
 import type { MCPRegistry } from '../mcp/registry';
 import { createContentHash } from '../rag/hash';
 import type { QueryResult } from '../rag/query';
@@ -184,40 +183,6 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
-  it('GraphRAG community 후보는 vault 파일이 없어도 Vault Context에 포함한다', async () => {
-    const app = createApp(new Map());
-    const graphResult = createResult(
-      'graph://community/community::mission',
-      'Paul and Barnabas missionary conflict',
-      'graph-hash',
-    );
-    graphResult.retrievalSources = ['graph-global'];
-    const ragEngine = createRagEngine([graphResult]);
-
-    const context = await buildChatContext('반복되는 핵심 주제는?', { app, ragEngine });
-
-    expect(context.systemPrompt).toContain('[Vault Context Rules]');
-    expect(context.systemPrompt).toContain('[Source rag-1: graph://community/community::mission]');
-    expect(context.systemPrompt).toContain('Paul and Barnabas missionary conflict');
-    expect(context.citations[0]).toEqual(
-      expect.objectContaining({
-        filePath: 'graph://community/community::mission',
-        status: 'verified',
-        graphType: 'community',
-      }),
-    );
-    expect(context.attachments[0]).toEqual(
-      expect.objectContaining({ type: 'rag', status: 'attached', sourceIds: ['rag-1'] }),
-    );
-    expect(context.attachments[1]).toEqual(
-      expect.objectContaining({
-        type: 'graph-rag',
-        status: 'attached',
-        detail: '1개 출처가 문서 간 연결을 통해 보강되었습니다.',
-      }),
-    );
-  });
-
   it('자연어의 한글 표기와 가까운 영문 폴더에서 확장된 키워드로 원문을 직접 찾는다', async () => {
     const archive = createFile('archive/overview.md', '지난 프로젝트 개요', 1000);
     const aurora = createFile('aurora/migration.txt', 'Aurora migration plan', 1000, 'txt');
@@ -297,107 +262,6 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
     expect(context.citations.map((citation) => citation.filePath)).toEqual([
       'aurora/migration.txt',
-    ]);
-  });
-
-  it('검증된 local Graph 근거만 연결 근거 attachment로 표시한다', async () => {
-    const file = createFile('note.md', '현재 내용', 1000);
-    const app = createApp(new Map([['note.md', file]]));
-    const graphResult = createResult('note.md', '현재 내용', createContentHash('현재 내용'));
-    graphResult.retrievalSources = ['vector', 'graph-local'];
-
-    const context = await buildChatContext('관계를 알려줘', {
-      app,
-      ragEngine: createRagEngine([graphResult]),
-    });
-
-    expect(context.attachments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'graph-rag',
-          status: 'attached',
-          sourceIds: ['rag-1'],
-        }),
-      ]),
-    );
-  });
-
-  it('검색 대상에서 빠진 파일에 근거한 그래프 설명을 답변에 넣지 않는다', async () => {
-    const entity = createEntity('entity::paul', 'Paul', ['Apostle'], '제외된 원문에서 나온 설명');
-    entity.evidenceIds = ['evidence::excluded'];
-    const graphStore = createGraphStore([entity], []);
-    graphStore.getEvidenceByIds = () =>
-      Promise.resolve([
-        {
-          id: 'evidence::excluded',
-          filePath: 'excluded.md',
-          entryId: 'excluded.md::0',
-          startLine: 0,
-          quote: '원문',
-          contentHash: 'hash',
-          extractionModelKey: 'test',
-          updatedAt: 1,
-        },
-      ]);
-    const context = await buildChatContext('@[entity: Apostle] 설명해줘', {
-      app: createApp(new Map()),
-      knowledgeGraphStore: graphStore,
-      candidatePaths: new Set(['visible.md']),
-    });
-    expect(context.systemPrompt ?? '').not.toContain('제외된 원문에서 나온 설명');
-    expect(context.attachments).toContainEqual(
-      expect.objectContaining({ type: 'graph-rag', status: 'missing' }),
-    );
-  });
-
-  it('entity mention은 GraphRAG entity와 relation context를 첨부한다', async () => {
-    const app = createApp(new Map());
-    const graphStore = createGraphStore(
-      [
-        createEntity('entity::paul', 'Paul', ['Apostle'], '사도 바울'),
-        createEntity('entity::barnabas', 'Barnabas', [], '동역자'),
-        createEntity('entity::mark', 'Mark', [], '마가'),
-      ],
-      [
-        createRelation(
-          'relation::paul-barnabas',
-          'entity::paul',
-          'entity::barnabas',
-          'worked_with',
-        ),
-        createRelation(
-          'relation::mark-barnabas',
-          'entity::mark',
-          'entity::barnabas',
-          'worked_with',
-        ),
-      ],
-    );
-
-    const context = await buildChatContext('@[entity: Apostle] 관계를 알려줘', {
-      app,
-      knowledgeGraphStore: graphStore,
-    });
-
-    expect(context.systemPrompt).toContain('[Graph Knowledge Context]');
-    expect(context.systemPrompt).toContain('- [person] Paul (aka Apostle)');
-    expect(context.systemPrompt).toContain('- Paul → [worked_with] → Barnabas');
-    expect(context.systemPrompt).not.toContain('Mark → [worked_with] → Barnabas');
-    expect(context.attachments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'graph-rag',
-          status: 'attached',
-          sourceIds: ['graph-1'],
-        }),
-      ]),
-    );
-    expect(context.citations).toEqual([
-      expect.objectContaining({
-        id: 'graph-1',
-        filePath: 'graph://entities',
-        graphType: 'entity',
-      }),
     ]);
   });
 });
@@ -773,61 +637,4 @@ function createMcpRegistry(...serverNames: string[]): MCPRegistry {
           }
         : null,
   } as unknown as MCPRegistry;
-}
-
-function createGraphStore(
-  entities: GraphEntityRecord[],
-  relations: GraphRelationRecord[],
-): KnowledgeGraphStore {
-  return {
-    getEntities: () => Promise.resolve(entities),
-    getRelations: () => Promise.resolve(relations),
-    getClaims: () => Promise.resolve([]),
-    getEvidence: () => Promise.resolve([]),
-    getCommunities: () => Promise.resolve([]),
-  } as unknown as KnowledgeGraphStore;
-}
-
-function createEntity(
-  id: string,
-  canonicalName: string,
-  aliases: string[],
-  description: string,
-): GraphEntityRecord {
-  return {
-    id,
-    ontologySchemaId: 'default',
-    ontologyVersion: 1,
-    typeId: 'person',
-    canonicalName,
-    aliases,
-    description,
-    properties: {},
-    confidence: 1,
-    evidenceIds: [],
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}
-
-function createRelation(
-  id: string,
-  sourceEntityId: string,
-  targetEntityId: string,
-  relationTypeId: string,
-): GraphRelationRecord {
-  return {
-    id,
-    ontologySchemaId: 'default',
-    ontologyVersion: 1,
-    relationTypeId,
-    sourceEntityId,
-    targetEntityId,
-    description: '',
-    properties: {},
-    confidence: 1,
-    evidenceIds: [],
-    createdAt: 1,
-    updatedAt: 1,
-  };
 }

@@ -78,8 +78,8 @@ export interface AssistantQuestion {
 }
 
 export type SourceSelectionReason =
-  | 'strong-graph-evidence'
-  | 'graph-structural-evidence'
+  | 'strong-structural-evidence'
+  | 'structural-evidence'
   | 'keyword-vector'
   | 'keyword'
   | 'vector'
@@ -109,7 +109,6 @@ export interface SourceCitation {
   preview: string;
   previewTruncated?: boolean;
   selectionReason?: SourceSelectionReason;
-  graphType?: 'entity' | 'relation' | 'community';
 }
 
 export interface SourceValidationWarning {
@@ -121,7 +120,7 @@ export interface SourceValidationWarning {
 
 export interface ContextAttachment {
   id: string;
-  type: 'file' | 'folder' | 'reference' | 'rag' | 'graph-rag' | 'mcp-server';
+  type: 'file' | 'folder' | 'reference' | 'rag' | 'mcp-server';
   name: string;
   label: string;
   status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';

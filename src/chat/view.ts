@@ -4759,7 +4759,6 @@ export class ChatView extends ItemView {
       candidatePaths: new Set(candidateFiles.map((file) => file.path)),
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
-      knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
       deferImplicitFolderEvidenceToTools,
       queryExpander: (question) =>

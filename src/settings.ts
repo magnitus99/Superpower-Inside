@@ -45,7 +45,6 @@ import {
   type RustProviderProfileStatePlan,
   type RustProviderStateInput,
 } from './rag/rust-core';
-import type { GraphRagCommunityBuildResult, GraphRagIndexingResult } from './graph/indexing-runner';
 import {
   buildEmbeddingModelOptions,
   getRagIndexingControlState,
@@ -56,16 +55,6 @@ import {
   type RagPerformanceTuningMode,
   shouldRequireProviderApiKey,
   shouldShowProviderApiKey,
-  buildGraphRagActionGroups,
-  getGraphRagStatusPresentation,
-  getGraphRagStatusLabel,
-  getGraphRagLiveStatusPresentation,
-  getGraphRagControlState,
-  getGraphRagIndexingResultNotice,
-  estimateGraphRagIndexingCost,
-  type GraphRagActionId,
-  type GraphRagActionDefinition,
-  type GraphRagIndexingResultNoticeScope,
   type ModelCapabilitySnapshot,
   type ModelCapabilityStatus,
   type ProviderValidationSnapshot,
@@ -506,15 +495,6 @@ export interface RAGConfig {
   slowEventLoopThresholdMs: number;
   slowBatchThresholdMs: number;
   structuralGraphEnabled: boolean;
-  graphRagEnabled: boolean;
-  graphRagModel: string;
-  graphRagMaxFilesPerRun: number;
-  graphRagMaxConcurrentRequests: number;
-  graphRagQueryMode: 'auto' | 'local' | 'global' | 'hybrid';
-  graphRagAutoSyncEnabled: boolean;
-  graphRagAutoSyncIntervalMin: number;
-  entityAutoMergeThreshold: number;
-  entityPendingMergeThreshold: number;
   annEnabled: boolean;
   annClusterCount: number;
   annProbeCount: number;
@@ -621,15 +601,6 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     slowEventLoopThresholdMs: 150,
     slowBatchThresholdMs: 3000,
     structuralGraphEnabled: true,
-    graphRagEnabled: false,
-    graphRagModel: '',
-    graphRagMaxFilesPerRun: 50,
-    graphRagMaxConcurrentRequests: 1,
-    graphRagQueryMode: 'auto',
-    graphRagAutoSyncEnabled: false,
-    graphRagAutoSyncIntervalMin: 30,
-    entityAutoMergeThreshold: 0.85,
-    entityPendingMergeThreshold: 0.7,
     annEnabled: true,
     annClusterCount: 0,
     annProbeCount: 4,
@@ -876,7 +847,7 @@ export function migrateLegacyProviderProfiles(
     const embeddingSelectionChanged =
       embeddingProvider !== DEFAULT_SETTINGS.rag.embeddingProvider ||
       embeddingModel !== DEFAULT_SETTINGS.rag.embeddingModel;
-    const legacyRefs = [settings.chat.defaultModel, settings.rag.graphRagModel]
+    const legacyRefs = [settings.chat.defaultModel]
       .map((value) => parseProviderModelRef(value))
       .filter((parsed): parsed is Exclude<ParsedProviderModelRef, { kind: 'invalid' }> => {
         return parsed.kind !== 'invalid';
@@ -1004,12 +975,9 @@ export interface PluginLike {
   ): Promise<import('./rag/source-processing').SourceProcessingSummary | null>;
   manifest?: { id?: string; version?: string };
   settings: SuperpowerInsideSettings;
-  graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
-  knowledgeGraphStore: import('./graph/store').KnowledgeGraphStore | null;
   vectorStore: import('./rag/store').VectorStore | null;
   getRagRuntimeState(): {
     ragStatus: RagStatusSummary | null;
-    graphRagStatus: import('./graph/status').GraphRagStatusSummary | null;
     vectorStore: VectorStore | null;
     embeddingProvider: { clearCache(): Promise<void> } | null;
     ragIndexingScheduler: RAGIndexingScheduler | null;
@@ -1028,16 +996,7 @@ export interface PluginLike {
   saveSettingsLight(): Promise<void>;
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
-  isGraphRagIndexing(): boolean;
-  cancelGraphRagIndexing(): void;
-  runGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
-  resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null>;
-  syncStaleGraphRag(): Promise<GraphRagIndexingResult | null>;
-  buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null>;
-  resetGraphRagData(): Promise<void>;
   resetPluginData(): Promise<void>;
-  hasGraphRagRunner(): boolean;
-  openGraphRagView(): void;
   openAgentDiagnosticsView(): void;
   getAgentDiagnosticsFilePath(): string;
   getAgentDiagnosticsEventLogPath(): string;
@@ -1111,12 +1070,6 @@ interface ProviderVisualState {
   keyLabel: string;
   modelLabel: string;
   typeLabel: string;
-}
-const HIDDEN_CLASS = 'superpower-inside-hidden';
-
-function setHidden(el: HTMLElement | null, hidden: boolean): void {
-  if (!el) return;
-  el.toggleClass(HIDDEN_CLASS, hidden);
 }
 
 function createProviderValidationFingerprint(
@@ -1407,14 +1360,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private reindexAllButton: HTMLButtonElement | null = null;
   private cancelIndexingButton: HTMLButtonElement | null = null;
   private resumeIndexingButton: HTMLButtonElement | null = null;
-  // GraphRAG 상태 패널의 DOM 참조 (부분 업데이트용)
-  private graphRagSummaryBanner: HTMLElement | null = null;
-  private graphRagStatusGrid: HTMLElement | null = null;
-  private graphRagActionsGroup: HTMLElement | null = null;
-  private graphRagSectionContainer: HTMLElement | null = null;
-  private graphRagOverviewContainer: HTMLElement | null = null;
-  private graphRagProgressBanner: HTMLElement | null = null;
-  private graphRagModelSelectEl: HTMLSelectElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
@@ -1594,13 +1539,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
-    this.graphRagSummaryBanner = null;
-    this.graphRagStatusGrid = null;
-    this.graphRagActionsGroup = null;
-    this.graphRagSectionContainer = null;
-    this.graphRagOverviewContainer = null;
-    this.graphRagProgressBanner = null;
-    this.graphRagModelSelectEl = null;
     this.providerStatusBody = null;
   }
   display(): void {
@@ -1625,21 +1563,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             return;
           }
           this.updateRagStats(result.detail);
-          this.updateGraphRagStats();
           this.refreshStatsGrid();
           this.refreshFileTypeSummary();
           this.refreshGeneralStatusSection();
         }),
       );
-      this.refreshBusUnsubscribers.push(
-        bus.on('graph-progress', () => {
-          this.updateGraphRagStats();
-          this.refreshGeneralStatusSection();
-        }),
-      );
+
       this.refreshBusUnsubscribers.push(
         bus.on('models', () => {
-          this.refreshRagTab();
           this.refreshGeneralStatusSection();
           this.repopulateDefaultModelDropdown();
           this.refreshChatStatusSection();
@@ -1651,12 +1582,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.refreshGeneralStatusSection();
         }),
       );
-      this.refreshBusUnsubscribers.push(
-        bus.on('graph-data', () => {
-          this.updateGraphRagStats();
-          this.refreshGeneralStatusSection();
-        }),
-      );
+
       this.refreshBusUnsubscribers.push(
         bus.on('exclude-counts', () => {
           this.excludeCountRenderer?.();
@@ -1802,8 +1728,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     if (tabId === 'general') {
       this.refreshGeneralTab();
-    } else if (tabId === 'rag') {
-      this.refreshRagTab();
     }
   }
   private refreshGeneralTab(): void {
@@ -1841,29 +1765,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         dropdown.value = this.plugin.settings.chat.defaultModel;
         dropdown.disabled = false;
       }
-    }
-  }
-  private refreshRagTab(): void {
-    const ragPanel = this.tabPanels.get('rag');
-    if (!ragPanel) return;
-    if (this.graphRagModelSelectEl) {
-      const modelOptions = buildChatModelOptions(this.plugin.settings, {
-        currentModel: this.plugin.settings.rag.graphRagModel,
-        includeEmpty: true,
-        emptyLabel: t('settingsAuto008'),
-      });
-      this.graphRagModelSelectEl.empty();
-      for (const option of modelOptions) {
-        const opt = this.graphRagModelSelectEl.createEl('option');
-        opt.value = option.value;
-        opt.text = option.label;
-      }
-      const selectedModel = this.plugin.settings.rag.graphRagModel.trim();
-      this.graphRagModelSelectEl.value = resolveChatModelPlan(this.plugin.settings).options.some(
-        (option) => option.value === selectedModel,
-      )
-        ? selectedModel
-        : '';
     }
   }
   private createSettingsSection(
@@ -2415,8 +2316,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const result = await runActionWithFeedback({
       button,
       loadingText: t('pluginDataResetRunning'),
+      refreshDomains: ['rag', 'mcp', 'models'],
       refreshBus: this.plugin.refreshBus,
-      refreshDomains: ['rag', 'mcp', 'models', 'graph-data'],
       action: async () => {
         if (!(await confirmWithModal(this.app, t('pluginDataResetConfirm')))) {
           return { status: 'noop', detail: t('actionCancelledNotice') };
@@ -2447,7 +2348,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const registry = this.plugin.mcpRegistry;
     return {
       ragStatus: runtime.ragStatus,
-      graphRagStatus: runtime.graphRagStatus,
       mcpConnectionState: this.plugin.mcpConnectionState ?? 'idle',
       mcpServers: this.plugin.settings.mcpServers.map((server) => ({
         name: server.name,
@@ -2455,8 +2355,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         error: registry?.getLastError(server.name),
       })),
       isRagIndexing: this.plugin.isRagIndexing(),
-      isGraphRagIndexing: this.plugin.isGraphRagIndexing(),
-      hasGraphRagRunner: this.plugin.hasGraphRagRunner(),
     };
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
@@ -2476,7 +2374,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     this.buildRagStatusPanel(workspace);
     this.buildRagFoundationSection(workspace);
-    this.buildGraphRagSection(workspace);
     this.buildRagAdvancedSection(workspace);
   }
   private buildRagFoundationSection(containerEl: HTMLElement): void {
@@ -2493,20 +2390,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
     this.buildExcludeOptionsSection(scope.content);
     this.buildTargetFileTypesSection(scope.content);
-  }
-  private buildGraphRagSection(containerEl: HTMLElement): void {
-    const section = this.createRagSection(containerEl, t('graphRagOverviewTitle'), {
-      description: t('ragGraphSectionDescription'),
-      className: 'superpower-inside-rag-graph-section',
-    });
-    this.buildGraphRagOverview(section.body);
-    const disclosure = this.createRagDisclosure(
-      section.body,
-      'graph-operations',
-      t('ragGraphDisclosureTitle'),
-      t('ragGraphDisclosureDescription'),
-    );
-    this.buildGraphRagOperationsSection(disclosure.content);
   }
   private buildRagAdvancedSection(containerEl: HTMLElement): void {
     const section = this.createRagSection(containerEl, t('ragDiagnosticsTitle'), {
@@ -2556,39 +2439,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     // 자동 갱신은 백그라운드 타이머/이벤트에서 처리
     void this.updateRagStats();
   }
-  private createRagStatusItem(containerEl: HTMLElement, label: string, value: string): void {
-    const item = containerEl.createDiv({
-      cls: 'superpower-inside-rag-row superpower-inside-rag-status-item',
-    });
-    item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
-    item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
-  }
-  private createRagStatusItemWithDesc(
-    containerEl: HTMLElement,
-    label: string,
-    value: string,
-    description: string,
-    tone: 'neutral' | 'success' | 'warning' | 'danger' = 'neutral',
-  ): void {
-    const item = containerEl.createDiv({
-      cls: 'superpower-inside-rag-row superpower-inside-rag-status-item',
-    });
-    item.createDiv({ cls: 'superpower-inside-rag-status-label', text: label });
-    const valueEl = item.createDiv({ cls: 'superpower-inside-rag-status-value', text: value });
-    if (tone !== 'neutral') {
-      valueEl.addClass(`is-${tone}`);
-    }
-    if (description) {
-      item.createDiv({ cls: 'superpower-inside-rag-status-description', text: description });
-    }
-  }
-  private buildGraphRagOverview(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row superpower-inside-graph-rag-overview',
-    });
-    this.graphRagOverviewContainer = section;
-    this.renderGraphRagOverview(section);
-  }
 
   private numericInputSequence = 0;
   private setDependentInputState(input: HTMLInputElement, enabled: boolean): void {
@@ -2624,908 +2474,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     feedback?.setText(
       value === null ? t('settingsNumericError', { min: input.min, max: input.max }) : '',
     );
-  }
-  private getGraphProviderKind(): 'local' | 'remote' {
-    const resolved = resolveProviderModelRef(
-      this.plugin.settings,
-      this.plugin.settings.rag.graphRagModel,
-      'general',
-    );
-    return resolved &&
-      isLocalSettingsProviderRust(resolved.profile.strategy, resolved.profile.baseUrl) === true
-      ? 'local'
-      : 'remote';
-  }
-  private renderGraphRagOverview(containerEl: HTMLElement): void {
-    containerEl.empty();
-    const rag = this.plugin.settings.rag;
-    const runtime = this.plugin.getRagRuntimeState();
-    const graphState = runtime.graphRagStatus;
-    const statusLabel =
-      graphState?.state ??
-      getGraphRagStatusLabel({
-        enabled: rag.graphRagEnabled,
-        hasGraphIndex: false,
-        isRunning: this.plugin.isGraphRagIndexing(),
-        isStale: false,
-        partialFailureCount: 0,
-      });
-    const presentation = getGraphRagStatusPresentation(statusLabel);
-    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
-    const stale = graphState?.staleFileCount ?? 0;
-    const failed = graphState?.failedFileCount ?? 0;
-    const done = graphState?.graphEvidenceCount ?? 0;
-    const copy = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
-    copy.createDiv({
-      cls: 'superpower-inside-rag-overview-title',
-      text: t('ragStatusCurrentState'),
-    });
-    const status = copy.createDiv({
-      cls: `superpower-inside-rag-overview-status is-${presentation.tone}`,
-      text: presentation.label,
-    });
-    status.setAttribute('role', 'status');
-    copy.createDiv({
-      cls: 'superpower-inside-rag-overview-detail',
-      text: t('graphRagOverviewDetail', {
-        total: String(total),
-        done: String(done),
-        stale: String(stale),
-        failed: String(failed),
-      }),
-    });
-
-    const actions = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-actions' });
-    const controls = getGraphRagControlState({
-      enabled: rag.graphRagEnabled,
-      hasProvider: this.plugin.hasGraphRagRunner(),
-      hasModel: rag.graphRagModel.trim().length > 0,
-      isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles: total,
-      failedFileCount: failed,
-    });
-    const syncStale = getGraphRagControlState({
-      enabled: rag.graphRagEnabled,
-      hasProvider: this.plugin.hasGraphRagRunner(),
-      hasModel: rag.graphRagModel.trim().length > 0,
-      isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles: stale,
-      failedFileCount: 0,
-    }).start;
-    const enabledState = {
-      disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
-      reason: null,
-    };
-    const availableState = { disabled: done === 0, reason: null };
-    const groups = buildGraphRagActionGroups({
-      controls,
-      syncStale,
-      buildCommunities: enabledState,
-      resetGraphRag: enabledState,
-      openExplorer: availableState,
-      totalCandidateFiles: total,
-      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-      failedFileCount: failed,
-      staleFileCount: stale,
-    });
-    const recommendedActionId: GraphRagActionId | null = this.plugin.isGraphRagIndexing()
-      ? 'cancel'
-      : stale > 0
-        ? 'syncStale'
-        : failed > 0
-          ? 'resumeFailed'
-          : statusLabel === 'not-built' && total > 0
-            ? 'start'
-            : null;
-    const recommendedAction = groups
-      .flatMap((group) => group.actions)
-      .find((action) => action.id === recommendedActionId && !action.state.disabled);
-    const cost = estimateGraphRagIndexingCost({
-      totalCandidateFiles: recommendedActionId === 'syncStale' ? stale : total,
-      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-      averageChunksPerFile: 3,
-      averageTokensPerChunk: 900,
-      providerKind: this.getGraphProviderKind(),
-    });
-    if (recommendedAction) {
-      const button = actions.createEl('button', {
-        cls: 'mod-cta superpower-inside-rag-overview-primary',
-        attr: { type: 'button' },
-      });
-      setIcon(button, recommendedAction.iconName);
-      button.createSpan({ text: recommendedAction.label });
-      button.addEventListener('click', () => {
-        void this.handleGraphRagAction(recommendedAction, cost);
-      });
-    }
-    if (done > 0) {
-      const explorerButton = actions.createEl('button', {
-        text: t('graphRagOpenExplorer'),
-        attr: { type: 'button' },
-      });
-      explorerButton.addEventListener('click', () => this.plugin.openGraphRagView());
-    }
-  }
-
-  private buildGraphRagOperationsSection(containerEl: HTMLElement): void {
-    const section = containerEl.createDiv({
-      cls: 'superpower-inside-rag-graph-operations',
-    });
-    this.graphRagSectionContainer = section;
-    const rag = this.plugin.settings.rag;
-    const runtime = this.plugin.getRagRuntimeState();
-    const graphState = runtime.graphRagStatus;
-    const statusLabel =
-      graphState?.state ??
-      getGraphRagStatusLabel({
-        enabled: rag.graphRagEnabled,
-        hasGraphIndex: false,
-        isRunning: this.plugin.isGraphRagIndexing(),
-        isStale: false,
-        partialFailureCount: 0,
-      });
-    const presentation = getGraphRagStatusPresentation(statusLabel);
-    const cost = estimateGraphRagIndexingCost({
-      totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
-      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-      averageChunksPerFile: 3,
-      averageTokensPerChunk: 900,
-      providerKind: this.getGraphProviderKind(),
-    });
-    const controls = getGraphRagControlState({
-      enabled: rag.graphRagEnabled,
-      hasProvider: this.plugin.hasGraphRagRunner(),
-      hasModel: rag.graphRagModel.trim().length > 0,
-      isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
-      failedFileCount: graphState?.failedFileCount ?? 0,
-    });
-    // 진행 중 배너 (기본 숨김)
-    const progressBanner = section.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-banner superpower-inside-hidden',
-    });
-    const spinner = progressBanner.createDiv({ cls: 'superpower-inside-spinner' });
-    spinner.setAttr('aria-hidden', 'true');
-    const progressBody = progressBanner.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-body',
-    });
-    const progressTitle = progressBody.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-title',
-      text: '',
-    });
-    progressTitle.id = 'superpower-inside-graph-progress-title';
-    const progressPhase = progressBody.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-phase',
-      text: '',
-    });
-    progressPhase.id = 'superpower-inside-graph-progress-phase';
-    const progressText = progressBody.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-detail',
-      text: '',
-    });
-    progressText.id = 'superpower-inside-graph-progress-text';
-    const progressChunks = progressBody.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-detail',
-      text: '',
-    });
-    progressChunks.id = 'superpower-inside-graph-progress-chunks';
-    const progressStorage = progressBody.createDiv({
-      cls: 'superpower-inside-rag-graph-progress-detail',
-      text: '',
-    });
-    progressStorage.id = 'superpower-inside-graph-progress-storage';
-    this.graphRagProgressBanner = progressBanner;
-    this.renderGraphRagProgressBanner();
-    // 요약 배너
-    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
-    const done = graphState?.graphEvidenceCount ?? 0;
-    const failed = graphState?.failedFileCount ?? 0;
-    const stale = graphState?.staleFileCount ?? 0;
-    const summaryText =
-      total > 0
-        ? t('settingsAuto030', {
-            v0: String(total),
-            v1: String(done),
-            v2: String(failed > 0 ? t('settingsAuto031', { v0: String(failed) }) : ''),
-            v3: String(stale > 0 ? t('settingsAuto032', { v0: String(stale) }) : ''),
-          })
-        : t('graphRagNoFilesReason');
-    const banner = section.createDiv({ cls: 'superpower-inside-rag-graph-summary-banner' });
-    this.graphRagSummaryBanner = banner;
-    banner.setText(summaryText);
-    // 상태 그리드
-    const grid = section.createDiv({ cls: 'superpower-inside-rag-status-grid' });
-    this.graphRagStatusGrid = grid;
-    this.createRagStatusItemWithDesc(
-      grid,
-      t('settingsAuto034'),
-      presentation.label,
-      presentation.description,
-      presentation.tone,
-    );
-    this.createRagStatusItem(grid, t('settingsAuto035'), String(total));
-    this.createRagStatusItemWithDesc(
-      grid,
-      t('settingsAuto036'),
-      String(done),
-      t('settingsAuto036Desc'),
-      'success',
-    );
-    this.createRagStatusItemWithDesc(
-      grid,
-      t('settingsAuto037'),
-      String(failed),
-      failed > 0 ? t('settingsAuto038') : t('settingsAuto039'),
-    );
-    this.createRagStatusItemWithDesc(
-      grid,
-      t('settingsAuto040'),
-      String(stale),
-      stale > 0 ? t('settingsAuto041') : t('settingsAuto042'),
-      stale > 0 ? 'warning' : 'success',
-    );
-    this.createRagStatusItem(
-      grid,
-      t('settingsAuto043'),
-      rag.graphRagModel ? cost.costLabel : t('settingsGraphNoModelCost'),
-    );
-    const runnerRef = (
-      this.plugin as unknown as {
-        graphRagIndexingRunner?: {
-          getLastCommunityResult(): {
-            communityCount: number;
-            modularity: number;
-          } | null;
-        } | null;
-      }
-    ).graphRagIndexingRunner;
-    const lastCommunity = runnerRef?.getLastCommunityResult();
-    if (lastCommunity) {
-      this.createRagStatusItemWithDesc(
-        grid,
-        t('settingsAuto044'),
-        String(lastCommunity.communityCount),
-        `modularity ${lastCommunity.modularity.toFixed(3)}`,
-      );
-    }
-    // 비용 상세는 같은 disclosure 언어로 점진적으로 공개
-    const costDetail = this.createRagDisclosure(
-      section,
-      'graph-cost',
-      t('settingsAuto045'),
-    ).content;
-    costDetail.addClass('superpower-inside-rag-graph-cost-detail');
-    this.createRagStatusItem(costDetail, t('settingsAuto047'), String(cost.estimatedFiles));
-    this.createRagStatusItem(costDetail, t('settingsAuto048'), String(cost.estimatedCalls));
-    this.createRagStatusItem(costDetail, t('settingsAuto049'), String(cost.estimatedInputTokens));
-    this.createRagStatusItem(
-      costDetail,
-      t('graphRagPendingMergeLabel'),
-      String(graphState?.pendingMergeCount ?? 0),
-    );
-    // 기본 설정
-    new Setting(section)
-      .setName(t('settingsAuto050'))
-      .setDesc(t('settingsAuto051'))
-      .addToggle((toggle) =>
-        toggle.setValue(rag.graphRagEnabled).onChange((value) => {
-          this.plugin.settings.rag.graphRagEnabled = value;
-          this.preserveSettingsFocus(this.containerEl, () => this.renderSettingsView());
-          this.debouncedRagSave();
-        }),
-      );
-    const renderGraphRagModelOptions = (selectEl: HTMLSelectElement): void => {
-      const modelOptions = buildChatModelOptions(this.plugin.settings, {
-        currentModel: this.plugin.settings.rag.graphRagModel,
-        includeEmpty: true,
-        emptyLabel: t('settingsAuto008'),
-      });
-      selectEl.empty();
-      for (const option of modelOptions) {
-        const opt = selectEl.createEl('option');
-        opt.value = option.value;
-        opt.text = option.label;
-      }
-      const selectedModel = this.plugin.settings.rag.graphRagModel.trim();
-      selectEl.value = resolveChatModelPlan(this.plugin.settings).options.some(
-        (option) => option.value === selectedModel,
-      )
-        ? selectedModel
-        : '';
-    };
-    new Setting(section)
-      .setName(t('settingsAuto052'))
-      .setDesc(t('settingsAuto053'))
-      .addDropdown((dropdown) => {
-        this.graphRagModelSelectEl = dropdown.selectEl;
-        renderGraphRagModelOptions(dropdown.selectEl);
-        dropdown.onChange((value) => {
-          this.plugin.settings.rag.graphRagModel = value.trim();
-          this.debouncedRagSave();
-        });
-      });
-    new Setting(section)
-      .setName(t('settingsAuto054'))
-      .setDesc(t('settingsAuto055'))
-      .addText((text) => {
-        text
-          .setValue(String(rag.graphRagMaxFilesPerRun))
-          .setPlaceholder('50')
-          .onChange((value) => {
-            const num = parseSettingsNumberRust(value, 1, 10000);
-            this.showNumericInputValidation(text.inputEl, num);
-            if (num === null) return;
-            this.plugin.settings.rag.graphRagMaxFilesPerRun = num;
-            this.debouncedRagSave();
-          });
-        text.inputEl.type = 'number';
-        text.inputEl.min = '1';
-        text.inputEl.max = '10000';
-      });
-    const concurrencySetting = new Setting(section)
-      .setName(t('graphRagConcurrentRequestsLabel'))
-      .setDesc(t('graphRagConcurrentRequestsDesc'));
-    concurrencySetting.addText((text) => {
-      text.inputEl.type = 'number';
-      text.inputEl.min = '1';
-      text.inputEl.max = '10';
-      text.inputEl.step = '1';
-      text.inputEl.setAttribute('aria-label', t('graphRagConcurrentRequestsLabel'));
-      text.setValue(String(rag.graphRagMaxConcurrentRequests)).onChange((value) => {
-        const num = parseSettingsNumberRust(value, 1, 10);
-        this.showNumericInputValidation(text.inputEl, num);
-        if (num === null) return;
-        this.plugin.settings.rag.graphRagMaxConcurrentRequests = num;
-        this.debouncedRagSave();
-      });
-    });
-    new Setting(section)
-      .setName(t('graphRagQueryModeLabel'))
-      .setDesc(t('settingsAuto056'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('auto', t('graphRagQueryAutoLabel'))
-          .addOption('local', t('graphRagQueryLocalLabel'))
-          .addOption('global', t('graphRagQueryGlobalLabel'))
-          .addOption('hybrid', t('graphRagQueryHybridLabel'))
-          .setValue(rag.graphRagQueryMode)
-          .onChange((value) => {
-            this.plugin.settings.rag.graphRagQueryMode =
-              value === 'local' || value === 'global' || value === 'hybrid' ? value : 'auto';
-            this.debouncedRagSave();
-          }),
-      );
-    new Setting(section)
-      .setName(t('settingsAutoMergeLabel'))
-      .setDesc(t('settingsAuto057'))
-      .addText((text) => {
-        text.inputEl.setAttribute('aria-label', t('settingsAutoMergeLabel'));
-        text.inputEl.setAttribute('placeholder', t('settingsAutoMergeLabel'));
-        text.setValue(String(rag.entityAutoMergeThreshold)).onChange((value) => {
-          const num = parseSettingsNumberRust(value, rag.entityPendingMergeThreshold, 1, false);
-          this.showNumericInputValidation(text.inputEl, num);
-          if (num === null) return;
-          this.plugin.settings.rag.entityAutoMergeThreshold = num;
-          this.debouncedRagSave();
-        });
-        text.inputEl.type = 'number';
-        text.inputEl.min = String(rag.entityPendingMergeThreshold);
-        text.inputEl.max = '1';
-        text.inputEl.step = '0.01';
-      });
-    new Setting(section)
-      .setName(t('settingsPendingMergeLabel'))
-      .setDesc(t('settingsAuto057'))
-      .addText((text) => {
-        text.inputEl.setAttribute('aria-label', t('settingsPendingMergeLabel'));
-        text.inputEl.setAttribute('placeholder', t('settingsPendingMergeLabel'));
-        text.setValue(String(rag.entityPendingMergeThreshold)).onChange((value) => {
-          const num = parseSettingsNumberRust(value, 0, rag.entityAutoMergeThreshold, false);
-          this.showNumericInputValidation(text.inputEl, num);
-          if (num === null) return;
-          this.plugin.settings.rag.entityPendingMergeThreshold = num;
-          this.debouncedRagSave();
-        });
-        text.inputEl.type = 'number';
-        text.inputEl.min = '0';
-        text.inputEl.max = String(rag.entityAutoMergeThreshold);
-        text.inputEl.step = '0.01';
-      });
-    // 자동 동기화 설정
-    let graphSyncInput: HTMLInputElement | null = null;
-    new Setting(section)
-      .setName(t('settingsAuto058'))
-      .setDesc(t('settingsAuto059'))
-      .addToggle((toggle) =>
-        toggle.setValue(rag.graphRagAutoSyncEnabled).onChange((value) => {
-          this.plugin.settings.rag.graphRagAutoSyncEnabled = value;
-          if (graphSyncInput) this.setDependentInputState(graphSyncInput, value);
-          this.debouncedSave();
-        }),
-      );
-    new Setting(section)
-      .setName(t('settingsAuto060'))
-      .setDesc(t('settingsAuto061'))
-      .addText((text) => {
-        text
-          .setValue(String(rag.graphRagAutoSyncIntervalMin))
-          .setPlaceholder('30')
-          .onChange((value) => {
-            const num = parseSettingsNumberRust(value, 1, 1440);
-            this.showNumericInputValidation(text.inputEl, num);
-            if (num === null) return;
-            this.plugin.settings.rag.graphRagAutoSyncIntervalMin = num;
-            this.debouncedSave();
-          });
-        text.inputEl.type = 'number';
-        text.inputEl.min = '1';
-        text.inputEl.max = '1440';
-        text.inputEl.step = '1';
-        text.inputEl.setAttribute('aria-label', t('settingsAuto060'));
-        this.setDependentInputState(text.inputEl, rag.graphRagAutoSyncEnabled);
-        graphSyncInput = text.inputEl;
-      });
-    // 실행 버튼 그룹
-    const actions = section.createDiv({ cls: 'superpower-inside-rag-action-groups' });
-    this.graphRagActionsGroup = actions;
-    const syncButtonState = getGraphRagControlState({
-      enabled: rag.graphRagEnabled,
-      hasProvider: this.plugin.hasGraphRagRunner(),
-      hasModel: rag.graphRagModel.trim().length > 0,
-      isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles: graphState?.staleFileCount ?? 0,
-      failedFileCount: 0,
-    }).start;
-    const communityButtonState = {
-      disabled:
-        !rag.graphRagEnabled ||
-        !this.plugin.hasGraphRagRunner() ||
-        !rag.graphRagModel.trim() ||
-        this.plugin.isGraphRagIndexing(),
-      reason: !rag.graphRagEnabled
-        ? t('settingsAuto062')
-        : !rag.graphRagModel.trim()
-          ? t('settingsAuto064')
-          : !this.plugin.hasGraphRagRunner()
-            ? t('settingsAuto063')
-            : this.plugin.isGraphRagIndexing()
-              ? t('settingsAuto065')
-              : null,
-    };
-    const hasData = done > 0;
-    const detailButtonState = { disabled: !hasData, reason: hasData ? null : t('settingsAuto066') };
-    const resetGraphRagState = {
-      disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
-      reason: !rag.graphRagEnabled
-        ? t('settingsAuto062')
-        : this.plugin.isGraphRagIndexing()
-          ? t('settingsAuto065')
-          : null,
-    };
-    this.renderGraphRagActions(actions, {
-      controls,
-      syncButtonState,
-      communityButtonState,
-      detailButtonState,
-      resetGraphRag: resetGraphRagState,
-      cost,
-      totalCandidateFiles: total,
-      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-      failedFileCount: failed,
-      staleFileCount: stale,
-    });
-  }
-
-  private renderGraphRagProgressBanner(): void {
-    if (!this.graphRagProgressBanner) return;
-    const runner = (
-      this.plugin as unknown as {
-        graphRagIndexingRunner?: {
-          getProgress(): {
-            processedFiles: number;
-            skippedFiles: number;
-            failedFiles: number;
-            selectedFiles: number;
-            currentFile: string | null;
-            phase?: import('./graph/indexing-progress').GraphRagIndexingPhase;
-            processedChunks: number;
-            skippedChunks: number;
-            failedChunks: number;
-            storedEvidence: number;
-            storedEntities: number;
-            storedRelations: number;
-            storedClaims: number;
-            storedRejectedFacts: number;
-            cachedChunks: number;
-          };
-        } | null;
-      }
-    ).graphRagIndexingRunner;
-    const progress = runner?.getProgress();
-    const presentation = getGraphRagLiveStatusPresentation({
-      isRunning: this.plugin.isGraphRagIndexing() && progress !== undefined,
-      phase: progress?.phase ?? null,
-      currentFile: progress?.currentFile ?? null,
-      processedFiles: progress?.processedFiles ?? 0,
-      skippedFiles: progress?.skippedFiles ?? 0,
-      failedFiles: progress?.failedFiles ?? 0,
-      selectedFiles: progress?.selectedFiles ?? 0,
-      processedChunks: progress?.processedChunks ?? 0,
-      skippedChunks: progress?.skippedChunks ?? 0,
-      failedChunks: progress?.failedChunks ?? 0,
-      storedEvidence: progress?.storedEvidence ?? 0,
-      storedEntities: progress?.storedEntities ?? 0,
-      storedRelations: progress?.storedRelations ?? 0,
-      storedClaims: progress?.storedClaims ?? 0,
-      storedRejectedFacts: progress?.storedRejectedFacts ?? 0,
-      cachedChunks: progress?.cachedChunks ?? 0,
-    });
-    const titleEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
-      '#superpower-inside-graph-progress-title',
-    );
-    const phaseEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
-      '#superpower-inside-graph-progress-phase',
-    );
-    const detailEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
-      '#superpower-inside-graph-progress-text',
-    );
-    const chunksEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
-      '#superpower-inside-graph-progress-chunks',
-    );
-    const storageEl = this.graphRagProgressBanner.querySelector<HTMLElement>(
-      '#superpower-inside-graph-progress-storage',
-    );
-    titleEl?.setText(presentation.title);
-    phaseEl?.setText(presentation.phaseLabel);
-    detailEl?.setText(presentation.detail);
-    chunksEl?.setText(presentation.chunkDetail ?? '');
-    storageEl?.setText(presentation.storageDetail ?? '');
-    setHidden(chunksEl, presentation.chunkDetail === null);
-    setHidden(storageEl, presentation.storageDetail === null);
-    setHidden(this.graphRagProgressBanner, !presentation.active);
-  }
-
-  /** GraphRAG 대시보드를 부분 업데이트합니다. */
-  updateGraphRagStats(): void {
-    if (this.graphRagOverviewContainer) {
-      this.renderGraphRagOverview(this.graphRagOverviewContainer);
-    }
-    if (!this.graphRagSectionContainer) return;
-    this.renderGraphRagProgressBanner();
-    const runtime = this.plugin.getRagRuntimeState();
-    const graphState = runtime.graphRagStatus;
-    const rag = this.plugin.settings.rag;
-    const statusLabel =
-      graphState?.state ??
-      getGraphRagStatusLabel({
-        enabled: rag.graphRagEnabled,
-        hasGraphIndex: false,
-        isRunning: this.plugin.isGraphRagIndexing(),
-        isStale: false,
-        partialFailureCount: 0,
-      });
-    const presentation = getGraphRagStatusPresentation(statusLabel);
-    const cost = estimateGraphRagIndexingCost({
-      totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
-      maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-      averageChunksPerFile: 3,
-      averageTokensPerChunk: 900,
-      providerKind: this.getGraphProviderKind(),
-    });
-    const controls = getGraphRagControlState({
-      enabled: rag.graphRagEnabled,
-      hasProvider: this.plugin.hasGraphRagRunner(),
-      hasModel: rag.graphRagModel.trim().length > 0,
-      isRunning: this.plugin.isGraphRagIndexing(),
-      totalCandidateFiles:
-        graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0,
-      failedFileCount: graphState?.failedFileCount ?? 0,
-    });
-    const total = graphState?.totalCandidateFiles ?? runtime.ragStatus?.totalDocuments ?? 0;
-    const done = graphState?.graphEvidenceCount ?? 0;
-    const failed = graphState?.failedFileCount ?? 0;
-    const stale = graphState?.staleFileCount ?? 0;
-    if (this.graphRagSummaryBanner) {
-      const summaryText =
-        total > 0
-          ? t('settingsAuto030', {
-              v0: String(total),
-              v1: String(done),
-              v2: String(failed > 0 ? t('settingsAuto031', { v0: String(failed) }) : ''),
-              v3: String(stale > 0 ? t('settingsAuto032', { v0: String(stale) }) : ''),
-            })
-          : t('graphRagNoFilesReason');
-      this.graphRagSummaryBanner.setText(summaryText);
-    }
-    if (this.graphRagStatusGrid) {
-      this.graphRagStatusGrid.empty();
-      this.createRagStatusItemWithDesc(
-        this.graphRagStatusGrid,
-        t('settingsAuto034'),
-        presentation.label,
-        presentation.description,
-        presentation.tone,
-      );
-      this.createRagStatusItem(this.graphRagStatusGrid, t('settingsAuto035'), String(total));
-      this.createRagStatusItemWithDesc(
-        this.graphRagStatusGrid,
-        t('settingsAuto036'),
-        String(done),
-        t('settingsAuto036Desc'),
-        'success',
-      );
-      this.createRagStatusItemWithDesc(
-        this.graphRagStatusGrid,
-        t('settingsAuto037'),
-        String(failed),
-        failed > 0 ? t('settingsAuto038') : t('settingsAuto039'),
-      );
-      this.createRagStatusItemWithDesc(
-        this.graphRagStatusGrid,
-        t('settingsAuto040'),
-        String(stale),
-        stale > 0 ? t('settingsAuto041') : t('settingsAuto042'),
-        stale > 0 ? 'warning' : 'success',
-      );
-      this.createRagStatusItem(
-        this.graphRagStatusGrid,
-        t('settingsAuto043'),
-        rag.graphRagModel ? cost.costLabel : t('settingsGraphNoModelCost'),
-      );
-      const runnerInfo = (
-        this.plugin as unknown as {
-          graphRagIndexingRunner?: {
-            getLastCommunityResult(): {
-              communityCount: number;
-              modularity: number;
-            } | null;
-          } | null;
-        }
-      ).graphRagIndexingRunner;
-      const lastCommunity = runnerInfo?.getLastCommunityResult();
-      if (lastCommunity) {
-        this.createRagStatusItemWithDesc(
-          this.graphRagStatusGrid,
-          t('settingsAuto044'),
-          String(lastCommunity.communityCount),
-          t('graphRagModularityDetail', { value: lastCommunity.modularity.toFixed(3) }),
-        );
-      }
-    }
-    if (this.graphRagActionsGroup) {
-      const syncButtonState = getGraphRagControlState({
-        enabled: rag.graphRagEnabled,
-        hasProvider: this.plugin.hasGraphRagRunner(),
-        hasModel: rag.graphRagModel.trim().length > 0,
-        isRunning: this.plugin.isGraphRagIndexing(),
-        totalCandidateFiles: stale,
-        failedFileCount: 0,
-      }).start;
-      const communityButtonState = {
-        disabled:
-          !rag.graphRagEnabled ||
-          !this.plugin.hasGraphRagRunner() ||
-          !rag.graphRagModel.trim() ||
-          this.plugin.isGraphRagIndexing(),
-        reason: !rag.graphRagEnabled
-          ? t('settingsAuto062')
-          : !rag.graphRagModel.trim()
-            ? t('settingsAuto064')
-            : !this.plugin.hasGraphRagRunner()
-              ? t('settingsAuto063')
-              : this.plugin.isGraphRagIndexing()
-                ? t('settingsAuto065')
-                : null,
-      };
-      const hasDetailData = done > 0;
-      const detailState = {
-        disabled: !hasDetailData,
-        reason: hasDetailData ? null : t('settingsAuto066'),
-      };
-      const resetGraphRagState = {
-        disabled: !rag.graphRagEnabled || this.plugin.isGraphRagIndexing(),
-        reason: !rag.graphRagEnabled
-          ? t('settingsAuto062')
-          : this.plugin.isGraphRagIndexing()
-            ? t('settingsAuto065')
-            : null,
-      };
-      this.renderGraphRagActions(this.graphRagActionsGroup, {
-        controls,
-        syncButtonState,
-        communityButtonState,
-        detailButtonState: detailState,
-        resetGraphRag: resetGraphRagState,
-        cost,
-        totalCandidateFiles: total,
-        maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-        failedFileCount: failed,
-        staleFileCount: stale,
-      });
-    }
-  }
-  private renderGraphRagActions(
-    containerEl: HTMLElement,
-    input: {
-      controls: ReturnType<typeof getGraphRagControlState>;
-      syncButtonState: {
-        disabled: boolean;
-        reason: string | null;
-      };
-      resetGraphRag: {
-        disabled: boolean;
-        reason: string | null;
-      };
-      communityButtonState: {
-        disabled: boolean;
-        reason: string | null;
-      };
-      detailButtonState: {
-        disabled: boolean;
-        reason: string | null;
-      };
-      cost: {
-        costLabel: string;
-      };
-      totalCandidateFiles: number;
-      maxFilesPerRun: number;
-      failedFileCount: number;
-      staleFileCount: number;
-    },
-  ): void {
-    containerEl.empty();
-    const groups = buildGraphRagActionGroups({
-      controls: input.controls,
-      syncStale: input.syncButtonState,
-      buildCommunities: input.communityButtonState,
-      resetGraphRag: input.resetGraphRag,
-      openExplorer: input.detailButtonState,
-      totalCandidateFiles: input.totalCandidateFiles,
-      maxFilesPerRun: input.maxFilesPerRun,
-      failedFileCount: input.failedFileCount,
-      staleFileCount: input.staleFileCount,
-    });
-    const actions = groups.flatMap((group) => group.actions);
-    const unavailableReason = actions.every((action) => action.state.disabled)
-      ? actions.find((action) => action.state.reason)?.state.reason
-      : null;
-    if (unavailableReason) {
-      containerEl.createDiv({
-        cls: 'superpower-inside-rag-action-availability',
-        text: unavailableReason,
-      });
-    }
-    for (const group of groups) {
-      const groupEl = containerEl.createDiv({ cls: 'superpower-inside-rag-action-group' });
-      groupEl.createDiv({ cls: 'superpower-inside-rag-action-group-title', text: group.label });
-      const listEl = groupEl.createDiv({ cls: 'superpower-inside-rag-action-list' });
-      for (const action of group.actions) {
-        if (action.id === 'resetGraphRag') continue;
-        if (
-          (action.id === 'cancel' || action.id === 'resumeFailed' || action.id === 'syncStale') &&
-          action.state.disabled
-        )
-          continue;
-        this.createGraphRagActionRow(listEl, action, input.cost);
-      }
-      if (!listEl.childElementCount) groupEl.remove();
-    }
-    const reset = actions.find((action) => action.id === 'resetGraphRag');
-    if (reset) {
-      const danger = this.createRagDisclosure(
-        containerEl,
-        'graph-danger',
-        t('settingsGraphDanger'),
-      );
-      danger.button.addClass('is-danger');
-      this.createGraphRagActionRow(danger.content, reset, input.cost);
-    }
-  }
-  private createGraphRagActionRow(
-    containerEl: HTMLElement,
-    action: GraphRagActionDefinition,
-    cost: {
-      costLabel: string;
-    },
-  ): void {
-    const item = containerEl.createDiv({
-      cls: `superpower-inside-rag-row superpower-inside-rag-action-row is-${action.tone}`,
-    });
-    const copy = item.createDiv({ cls: 'superpower-inside-rag-action-copy' });
-    copy.createDiv({ cls: 'superpower-inside-rag-action-label', text: action.label });
-    copy.createDiv({ cls: 'superpower-inside-rag-action-desc', text: action.description });
-    const button = item.createEl('button', { attr: { type: 'button' } });
-    setIcon(button, action.iconName);
-    button.createSpan({ text: action.label });
-    button.disabled = action.state.disabled;
-    button.title = action.state.reason ?? action.description;
-    button.addEventListener('click', () => {
-      void this.handleGraphRagAction(action, cost);
-    });
-  }
-  private async handleGraphRagAction(
-    action: GraphRagActionDefinition,
-    cost: {
-      costLabel: string;
-    },
-  ): Promise<void> {
-    switch (action.id) {
-      case 'start': {
-        if (!(await this.confirmGraphRagRemoteRun(cost))) return;
-        const result = await this.plugin.runGraphRagIndexing();
-        this.showGraphRagResult(result, 'start');
-        this.updateGraphRagStats();
-        return;
-      }
-      case 'cancel':
-        this.plugin.cancelGraphRagIndexing();
-        new Notice(t('settingsAuto068'));
-        this.updateGraphRagStats();
-        return;
-      case 'resumeFailed': {
-        if (!(await this.confirmGraphRagRemoteRun(cost))) return;
-        const result = await this.plugin.resumeGraphRagIndexing();
-        this.showGraphRagResult(result, 'resumeFailed');
-        this.updateGraphRagStats();
-        return;
-      }
-      case 'syncStale': {
-        if (!(await this.confirmGraphRagRemoteRun(cost))) return;
-        const result = await this.plugin.syncStaleGraphRag();
-        this.showGraphRagResult(result, 'syncStale');
-        this.updateGraphRagStats();
-        return;
-      }
-      case 'buildCommunities': {
-        if (!(await this.confirmGraphRagRemoteRun(cost))) return;
-        const result = await this.plugin.buildGraphRagCommunities();
-        if (result) {
-          new Notice(
-            t('settingsAuto069', {
-              v0: String(result.communityCount),
-              v1: String(result.modularity.toFixed(3)),
-              v2: String((result.durationMs / 1000).toFixed(1)),
-            }),
-          );
-        }
-        this.updateGraphRagStats();
-        return;
-      }
-      case 'openExplorer':
-        this.plugin.openGraphRagView();
-        return;
-      case 'resetGraphRag': {
-        if (!(await this.confirmGraphRagReset())) {
-          return;
-        }
-        try {
-          await this.plugin.resetGraphRagData();
-          new Notice(t('graphRagResetDataDone'));
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          new Notice(t('graphRagResetDataFailed', { v0: message }));
-        }
-        this.updateGraphRagStats();
-        return;
-      }
-    }
-  }
-  private async confirmGraphRagRemoteRun(cost: { costLabel: string }): Promise<boolean> {
-    if (cost.costLabel !== t('settingsAuto070')) return true;
-    return confirmWithModal(this.app, t('settingsAuto071'));
-  }
-
-  private confirmGraphRagReset(): Promise<boolean> {
-    return confirmWithModal(this.app, t('graphRagResetDataConfirm'));
-  }
-  private showGraphRagResult(
-    result: GraphRagIndexingResult | null,
-    scope: GraphRagIndexingResultNoticeScope,
-  ): void {
-    new Notice(getGraphRagIndexingResultNotice(result, scope));
   }
   /** RefreshBus 'rag' 이벤트 수신 시 인덱스 통계 그리드를 갱신합니다. */
   private refreshStatsGrid(): void {
@@ -5436,7 +4384,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         button.setButtonText(t('resetToDefault')).onClick(() => {
           Object.assign(this.plugin.settings.rag, DEFAULT_SEARCH_QUALITY);
           this.debouncedRagSave();
-          this.refreshRagTab();
           this.preserveSettingsFocus(containerEl, () => {
             section.remove();
             this.buildSearchQualitySection(containerEl);
@@ -5599,17 +4546,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('resetToDefault'),
       t('chatPromptResetDesc'),
     );
-    new Setting(reset.content)
-      .setName(t('systemPrompt'))
-      .addButton((button) =>
-        button.setButtonText(t('resetToDefault')).onClick(async () => {
-          if (!(await confirmWithModal(this.app, t('settingsResetPromptConfirm')))) return;
-          resetActivePromptToDefault(this.plugin.settings);
-          this.debouncedSave();
-          this.refreshChatTab();
-          new Notice(t('settingsAuto220'));
-        }),
-      );
+    new Setting(reset.content).setName(t('systemPrompt')).addButton((button) =>
+      button.setButtonText(t('resetToDefault')).onClick(async () => {
+        if (!(await confirmWithModal(this.app, t('settingsResetPromptConfirm')))) return;
+        resetActivePromptToDefault(this.plugin.settings);
+        this.debouncedSave();
+        this.refreshChatTab();
+        new Notice(t('settingsAuto220'));
+      }),
+    );
   }
   private getChatPromptPresets(): {
     label: string;
@@ -6942,27 +5887,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
       setIcon(removeButton, 'x');
       removeButton.setAttribute('aria-label', t('settingsRemoveNamed', { name: model.id }));
-      removeButton.addEventListener('click', () => {
-        const ref = buildProviderModelRef(profile.id, model.id);
-        if (
-          [
-            this.plugin.settings.chat.defaultModel,
-            this.plugin.settings.rag.embeddingModelRef,
-            this.plugin.settings.rag.graphRagModel,
-          ].includes(ref)
-        ) {
-          void confirmWithModal(this.app, t('settingsRemoveSelectedModel')).then((confirmed) => {
-            if (!confirmed) return;
-            profile.models = profile.models.filter((itemModel) => itemModel.id !== model.id);
-            this.debouncedProviderSave();
-            this.refreshProvidersTab(profile.id);
-          });
-          return;
-        }
-        profile.models = profile.models.filter((itemModel) => itemModel.id !== model.id);
-        this.debouncedProviderSave();
-        this.refreshProvidersTab(profile.id);
-      });
     }
   }
 

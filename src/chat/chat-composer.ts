@@ -44,7 +44,7 @@ export interface ComposerDraftSnapshot {
 }
 
 export interface ContextPreviewMention {
-  type: 'file' | 'server' | 'folder' | 'entity';
+  type: 'file' | 'server' | 'folder';
   name: string;
 }
 
@@ -101,7 +101,6 @@ export function resolveComposerKeyAction(input: ComposerKeyInput): ComposerKeyAc
 function createMentionChipLabel(mention: ContextPreviewMention): string {
   if (mention.type === 'server') return t('chatToolMentionChip', { name: mention.name });
   if (mention.type === 'folder') return t('chatFolderMentionChip', { name: mention.name });
-  if (mention.type === 'entity') return t('contextChipKnowledgeGraph');
   return t('chatFileMentionChip', { name: mention.name });
 }
 

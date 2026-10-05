@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workers = [
-  ['graph/community', 'graph-community', 'GRAPH_COMMUNITY'],
   ['rag/bm25', 'bm25', 'BM25'],
   ['rag/vector-search', 'vector-search', 'VECTOR_SEARCH'],
   ['llm/ternlight', 'ternlight', 'TERNLIGHT'],

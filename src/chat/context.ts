@@ -3,14 +3,11 @@ import { t } from '../i18n';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
-import type { KnowledgeGraphStore, GraphEntityRecord } from '../graph/store';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
 import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
   createContextPreviewRust,
   planChatContextMentionsRust,
-  planGraphMentionContextRust,
-  planContextGraphVerificationRust,
   planContextSourcesRust,
   planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
@@ -18,14 +15,12 @@ import {
   type RustAutoRagReason,
   type RustContextSourceInput,
   type RustContextSourceVerification,
-  type RustGraphMentionEntityInput,
-  type RustGraphMentionRelationInput,
 } from '../rag/rust-core';
 import type { ContextAttachment, FolderLimitReason, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
 import { createContextBudgetSnapshot } from './context-composer';
 import { expandReferencedVaultFiles } from './context-expansion';
-import { type ParsedMention, parseMentions, type MentionResolver } from './mention-parser';
+import { parseMentions, type MentionResolver } from './mention-parser';
 import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { isRagIndexableFile } from '../utils/vault';
@@ -69,7 +64,6 @@ interface BuildContextOptions {
   candidatePaths?: ReadonlySet<string>;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
-  knowledgeGraphStore?: KnowledgeGraphStore | null;
   maxFolderFiles?: number;
   maxContextChars?: number;
   maxReferenceFiles?: number;
@@ -104,20 +98,11 @@ export async function buildChatContext(
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
   const warnings: string[] = [];
-  const graphEntities = options.knowledgeGraphStore
-    ? await options.knowledgeGraphStore.getEntities()
-    : undefined;
-  const resolver = createAppMentionResolver(
-    options.app,
-    options.mcpRegistry,
-    options.knowledgeGraphStore,
-    graphEntities,
-  );
+  const resolver = createAppMentionResolver(options.app, options.mcpRegistry);
   const mentions = parseMentions(question, resolver);
   const mentionPlan = planChatContextMentionsRust(mentions.map((mention) => mention.type)) ?? {
     fileIndices: [],
     folderIndices: [],
-    entityIndices: [],
     serverIndices: [],
     useAutoRag: false,
     autoRagReason: 'disabled',
@@ -229,17 +214,7 @@ export async function buildChatContext(
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
       for (const result of uniqueResults) {
-        const graphPlan = planContextGraphVerificationRust(
-          result.entry.metadata.filePath,
-          t('contextUnsupportedGraphRagSource'),
-        );
-        const verified =
-          graphPlan?.isGraphSource === true
-            ? (graphPlan.verification ?? {
-                status: 'missing',
-                detail: t('contextUnsupportedGraphRagSource'),
-              })
-            : await verifyQueryResult(result, options.app);
+        const verified = await verifyQueryResult(result, options.app);
         sourceInputs.push(contextSourceInputFromQueryResult(result));
         verifications.push(verified);
       }
@@ -278,18 +253,6 @@ export async function buildChatContext(
         sourceIds: sourcePlan.sourceIds,
         autoRagReason: mentionPlan.autoRagReason,
       });
-      const graphContributionCount = countVerifiedGraphContributions(uniqueResults, verifications);
-      if (graphContributionCount > 0) {
-        attachments.push({
-          id: 'graph-rag:auto',
-          type: 'graph-rag',
-          name: 'auto',
-          label: t('contextGraphContributionTitle'),
-          status: 'attached',
-          detail: t('contextGraphContributionDetail', { count: graphContributionCount }),
-          sourceIds: sourcePlan.sourceIds,
-        });
-      }
     } catch (err) {
       appLogger.warn('Auto RAG context build failed.', {
         source: 'chat.context',
@@ -316,21 +279,6 @@ export async function buildChatContext(
       reason: t('contextAutoRagTitle'),
       autoRagReason: mentionPlan.autoRagReason,
     });
-  }
-
-  const entityMentions: ParsedMention[] = selectByRustIndices(mentions, mentionPlan.entityIndices, {
-    dedupe: true,
-  });
-  if (entityMentions.length > 0 && options.knowledgeGraphStore) {
-    await appendGraphEntityContext(
-      entityMentions,
-      options.knowledgeGraphStore,
-      appendBlock,
-      attachments,
-      citations,
-      graphEntities,
-      options.candidatePaths,
-    );
   }
 
   for (const mention of selectByRustIndices(mentions, mentionPlan.serverIndices, {
@@ -464,47 +412,12 @@ function dedupeQueryResults(results: readonly QueryResult[]): QueryResult[] {
   });
 }
 
-function countVerifiedGraphContributions(
-  results: readonly QueryResult[],
-  verifications: readonly RustContextSourceVerification[],
-): number {
-  let count = 0;
-  for (const [index, result] of results.entries()) {
-    if (verifications[index]?.status !== 'verified') continue;
-    if (
-      result.retrievalSources?.some(
-        (source) => source === 'graph-local' || source === 'graph-global' || source === 'evidence',
-      )
-    ) {
-      count++;
-    }
-  }
-  return count;
-}
-
-export function createAppMentionResolver(
-  app: App,
-  registry?: MCPRegistry | null,
-  knowledgeGraphStore?: KnowledgeGraphStore | null,
-  graphEntities?: readonly GraphEntityRecord[],
-): MentionResolver {
-  let entityNames = new Set<string>();
-  if (knowledgeGraphStore && graphEntities) {
-    const names = new Set<string>();
-    for (const entity of graphEntities) {
-      names.add(entity.canonicalName.toLowerCase());
-      for (const alias of entity.aliases) {
-        names.add(alias.toLowerCase());
-      }
-    }
-    entityNames = names;
-  }
+export function createAppMentionResolver(app: App, registry?: MCPRegistry | null): MentionResolver {
   return {
     isServer: (name: string) =>
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,
     isFolder: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFolder,
-    isEntity: (name: string) => entityNames.has(name.toLowerCase()),
   };
 }
 
@@ -892,102 +805,6 @@ async function appendServerMention(
       detail: stringifyError(err),
     });
   }
-}
-
-async function appendGraphEntityContext(
-  entityMentions: ParsedMention[],
-  graphStore: KnowledgeGraphStore,
-  appendBlock: (block: ContextBlock) => boolean,
-  attachments: ContextAttachment[],
-  citations: SourceCitation[],
-  graphEntities?: readonly GraphEntityRecord[],
-  candidatePaths?: ReadonlySet<string>,
-): Promise<void> {
-  const [storedEntities, storedRelations] = await Promise.all([
-    graphEntities ? Promise.resolve([...graphEntities]) : graphStore.getEntities(),
-    graphStore.getRelations(),
-  ]);
-  const scopedEvidence = candidatePaths
-    ? new Map(
-        (
-          await graphStore.getEvidenceByIds([
-            ...storedEntities.flatMap((entity) => entity.evidenceIds),
-            ...storedRelations.flatMap((relation) => relation.evidenceIds),
-          ])
-        ).map((evidence) => [evidence.id, candidatePaths.has(evidence.filePath)]),
-      )
-    : null;
-  const isScoped = (fact: { evidenceIds: string[] }): boolean =>
-    !scopedEvidence ||
-    (fact.evidenceIds.length > 0 &&
-      fact.evidenceIds.every((id) => scopedEvidence.get(id) === true));
-  const entities = storedEntities.filter(isScoped);
-  const relations = storedRelations.filter(isScoped);
-
-  const mentionPlan = planGraphMentionContextRust(
-    entityMentions.map((mention) => mention.name),
-    entities.map(
-      (entity): RustGraphMentionEntityInput => ({
-        id: entity.id,
-        canonicalName: entity.canonicalName,
-        aliases: entity.aliases,
-        typeId: entity.typeId,
-        description: entity.description,
-      }),
-    ),
-    relations.map(
-      (relation): RustGraphMentionRelationInput => ({
-        sourceEntityId: relation.sourceEntityId,
-        targetEntityId: relation.targetEntityId,
-        relationTypeId: relation.relationTypeId,
-        description: relation.description,
-      }),
-    ),
-  );
-  const matchedEntities = mentionPlan?.matchedEntityIndices
-    ? selectByRustIndices(entities, mentionPlan.matchedEntityIndices, { dedupe: true })
-    : [];
-
-  if (matchedEntities.length === 0) {
-    attachments.push({
-      id: 'graph-rag:auto',
-      type: 'graph-rag',
-      name: 'auto',
-      label: t('contextGraphRagEntitiesTitle'),
-      status: 'missing',
-      detail: t('contextGraphRagEntityNotFound'),
-    });
-    return;
-  }
-
-  const graphText = mentionPlan?.contextLines.join('\n') ?? '';
-  appendBlock({ text: graphText });
-
-  const entityCitation = createGraphCitation(matchedEntities, citations.length + 1);
-  citations.push(entityCitation);
-
-  attachments.push({
-    id: 'graph-rag:auto',
-    type: 'graph-rag',
-    name: 'auto',
-    label: t('contextGraphRagEntitiesDetail', { count: matchedEntities.length }),
-    status: 'attached',
-    detail: t('contextGraphRagRelationsDetail', {
-      count: mentionPlan?.matchedRelationIndices.length ?? 0,
-    }),
-    sourceIds: [entityCitation.id],
-  });
-}
-
-function createGraphCitation(entities: GraphEntityRecord[], index: number): SourceCitation {
-  const names = entities.map((e) => e.canonicalName).join(', ');
-  return {
-    id: `graph-${index}`,
-    filePath: `graph://entities`,
-    status: 'verified',
-    preview: `Graph entities: ${createContextPreviewRust(names) ?? ''}`,
-    graphType: 'entity',
-  };
 }
 
 function stringifyError(err: unknown): string {

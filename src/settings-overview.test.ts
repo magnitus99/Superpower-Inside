@@ -13,8 +13,6 @@ vi.mock('obsidian', () => ({
   PluginSettingTab: class {},
   Setting: class {},
 }));
-
-import type { GraphRagStatusSummary } from './graph/status';
 import { setLanguage } from './i18n';
 import type { RagStatusSummary } from './rag/status';
 import {
@@ -44,12 +42,9 @@ function buildRuntime(
 ): SettingsOverviewRuntimeState {
   return {
     ragStatus: null,
-    graphRagStatus: null,
     mcpConnectionState: 'idle',
     mcpServers: [],
     isRagIndexing: false,
-    isGraphRagIndexing: false,
-    hasGraphRagRunner: false,
     ...override,
   };
 }
@@ -65,21 +60,6 @@ function buildRagStatus(override: Partial<RagStatusSummary> = {}): RagStatusSumm
     totalVectors: 48,
     lastCalculatedAt: 1_780_371_000_000,
     updateRequiredDocuments: [],
-    ...override,
-  };
-}
-
-function buildGraphStatus(override: Partial<GraphRagStatusSummary> = {}): GraphRagStatusSummary {
-  return {
-    state: 'ready',
-    totalCandidateFiles: 12,
-    graphEvidenceCount: 24,
-    rejectedFactCount: 0,
-    failedFileCount: 0,
-    pendingMergeCount: 0,
-    staleFileCount: 0,
-    staleFilePaths: [],
-    maxFilesPerRun: 50,
     ...override,
   };
 }
@@ -277,59 +257,6 @@ describe('설정 Overview snapshot', () => {
     expect(snapshot.attentionItems.map((item) => item.id)).not.toContain(
       'provider-custom-local-api-key',
     );
-  });
-
-  it('RAG stale/empty/ready 상태와 GraphRAG 상태를 요약한다', () => {
-    const snapshot = buildSettingsOverviewSnapshot({
-      settings: buildSettings({
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          embeddingProvider: 'openai',
-          embeddingModel: 'text-embedding-3-small',
-          graphRagEnabled: true,
-          graphRagModel: 'claude:claude-3-5-sonnet-latest',
-        },
-      }),
-      runtime: buildRuntime({
-        ragStatus: buildRagStatus({
-          healthyDocuments: 8,
-          staleDocuments: 3,
-          missingDocuments: 1,
-          updateRequiredDocuments: [
-            { path: 'a.md', status: 'stale', reason: '수정됨', mtime: 1, size: 1 },
-            { path: 'b.md', status: 'missing', reason: '누락', mtime: 1, size: 1 },
-          ],
-        }),
-        graphRagStatus: buildGraphStatus({ state: 'stale', staleFileCount: 2 }),
-        hasGraphRagRunner: true,
-      }),
-    });
-
-    expect(snapshot.rag.statusLabel).toBe('동기화 필요');
-    expect(snapshot.rag.tone).toBe('warning');
-    expect(snapshot.rag.detail).toContain('2개 문서');
-    expect(snapshot.graphRag.statusLabel).toBe('동기화 필요');
-    expect(snapshot.graphRag.tone).toBe('warning');
-  });
-
-  it('GraphRAG 빌드 허용이 꺼져 있어도 준비된 인덱스는 일반 채팅 보강 상태로 표시한다', () => {
-    const snapshot = buildSettingsOverviewSnapshot({
-      settings: buildSettings({
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          graphRagEnabled: false,
-          graphRagModel: '',
-        },
-      }),
-      runtime: buildRuntime({
-        graphRagStatus: buildGraphStatus({ state: 'ready', graphEvidenceCount: 7 }),
-        hasGraphRagRunner: false,
-      }),
-    });
-
-    expect(snapshot.graphRag.statusLabel).toBe('최신');
-    expect(snapshot.graphRag.detail).toContain('7');
-    expect(snapshot.graphRag.tone).toBe('success');
   });
 
   it('MCP connected/error/disconnected 상태를 서버 행과 요약 metric으로 표시한다', () => {

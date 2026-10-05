@@ -12,12 +12,7 @@ describe('RAG storage maintenance', () => {
 
     await runRagStorageMaintenance(fixture.host, fixture.fingerprint, false, () => false);
 
-    expect(fixture.order).toEqual([
-      'prune-cache',
-      'reconcile-bm25',
-      'maintain-graph',
-      'cleanup-inactive',
-    ]);
+    expect(fixture.order).toEqual(['prune-cache', 'reconcile-bm25', 'cleanup-inactive']);
   });
 
   it('reconciles against every valid RAG path, including files outside quiet recovery', async () => {
@@ -56,7 +51,6 @@ describe('RAG storage maintenance', () => {
       'reconcile',
       'prune-cache',
       'reconcile-bm25',
-      'maintain-graph',
       'cleanup-inactive',
       'cleanup',
       'yield',
@@ -160,10 +154,6 @@ async function createFixture(options: FixtureOptions = {}) {
     }),
     reconcileBm25SourceBatch: vi.fn(() => {
       order.push('reconcile-bm25');
-      return Promise.resolve({ remainingWork: false });
-    }),
-    maintainGraphStorageBatch: vi.fn(() => {
-      order.push('maintain-graph');
       return Promise.resolve({ remainingWork: false });
     }),
     cleanupStaleGenerationBatch: vi.fn(() => {

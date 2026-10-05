@@ -366,27 +366,6 @@ export class VectorRuntimeIndex {
 if (Symbol.dispose) VectorRuntimeIndex.prototype[Symbol.dispose] = VectorRuntimeIndex.prototype.free;
 
 /**
- * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
- * @param {Uint32Array} source_indices
- * @param {Uint32Array} target_indices
- * @param {Float64Array} confidences
- * @param {number} node_count
- * @returns {Float64Array}
- */
-export function aggregate_graph_edges_flat(source_indices, target_indices, confidences, node_count) {
-    const ptr0 = passArray32ToWasm0(source_indices, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray32ToWasm0(target_indices, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(confidences, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.aggregate_graph_edges_flat(ptr0, len0, ptr1, len1, ptr2, len2, node_count);
-    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v4;
-}
-
-/**
  * retrieval source score/rank를 source-aware RAG relevance 계산 입력으로 요약한다.
  * @param {Uint8Array} source_codes
  * @param {Float64Array} source_scores
@@ -663,32 +642,6 @@ export function create_context_preview(text) {
 }
 
 /**
- * `GraphRAG` entity id를 기존 resolver 규칙으로 만든다.
- * @param {string} ontology_schema_id
- * @param {string} type_id
- * @param {string} canonical_name
- * @returns {string}
- */
-export function create_entity_id(ontology_schema_id, type_id, canonical_name) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(type_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(canonical_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.create_entity_id(ptr0, len0, ptr1, len1, ptr2, len2);
-        deferred4_0 = ret[0];
-        deferred4_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
  * 벡터 entry snapshot 배열 fingerprint를 생성한다.
  * @param {string} entry_ids_json
  * @param {string} content_hashes_json
@@ -714,26 +667,6 @@ export function create_entries_fingerprint(entry_ids_json, content_hashes_json, 
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` record id를 기존 extraction ID 규칙으로 만든다.
- * @param {string} parts
- * @returns {string}
- */
-export function create_graph_id(parts) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(parts, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.create_graph_id(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -807,91 +740,6 @@ export function derive_research_coverage_receipt_json(input_json) {
 }
 
 /**
- * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
- * @param {Uint32Array} source_indices
- * @param {Uint32Array} target_indices
- * @param {Float64Array} weights
- * @param {number} node_count
- * @param {number} max_iterations
- * @returns {Float64Array}
- */
-export function detect_communities_flat(source_indices, target_indices, weights, node_count, max_iterations) {
-    const ptr0 = passArray32ToWasm0(source_indices, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray32ToWasm0(target_indices, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.detect_communities_flat(ptr0, len0, ptr1, len1, ptr2, len2, node_count, max_iterations);
-    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v4;
-}
-
-/**
- * `GraphRAG` string edge snapshot에서 community assignment JSON plan을 만든다.
- * @param {string} edges_json
- * @param {number} max_iterations
- * @returns {string}
- */
-export function detect_communities_from_edges_json(edges_json, max_iterations) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(edges_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.detect_communities_from_edges_json(ptr0, len0, max_iterations);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` string edge snapshot에서 연결성 refinement를 포함한 계층 community plan을 만든다.
- * @param {string} edges_json
- * @param {number} max_iterations
- * @param {number} max_levels
- * @returns {string}
- */
-export function detect_leiden_hierarchy_from_edges_json(edges_json, max_iterations, max_levels) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(edges_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.detect_leiden_hierarchy_from_edges_json(ptr0, len0, max_iterations, max_levels);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` LLM 응답에서 JSON object 텍스트를 추출한다. 실패하면 빈 문자열을 반환한다.
- * @param {string} raw_response
- * @returns {string}
- */
-export function extract_json_object_text(raw_response) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(raw_response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.extract_json_object_text(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
  * `delta` 객체의 구조화 reasoning 필드를 추출한다.
  * @param {string} delta_json
  * @returns {string}
@@ -929,35 +777,6 @@ export function extract_vault_links_json(content) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
-}
-
-/**
- * 질문과 entity name 목록에서 언급된 `GraphRAG` entity index/score 쌍을 찾는다.
- * @param {string} question
- * @param {string} ontology_schema_id
- * @param {string} entity_schema_ids
- * @param {string} canonical_names
- * @param {string} aliases_by_entity
- * @param {string} entity_hints
- * @returns {Float64Array}
- */
-export function find_mentioned_entity_matches(question, ontology_schema_id, entity_schema_ids, canonical_names, aliases_by_entity, entity_hints) {
-    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(entity_schema_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(canonical_names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passStringToWasm0(aliases_by_entity, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ptr5 = passStringToWasm0(entity_hints, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len5 = WASM_VECTOR_LEN;
-    const ret = wasm.find_mentioned_entity_matches(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
-    var v7 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v7;
 }
 
 /**
@@ -1017,32 +836,6 @@ export function get_mcp_connection_state_rust(total_count, connected_count, fail
 }
 
 /**
- * 현재 Graph extraction parser/normalizer wire contract version을 반환한다.
- * @returns {number}
- */
-export function graph_extraction_contract_version() {
-    const ret = wasm.graph_extraction_contract_version();
-    return ret >>> 0;
-}
-
-/**
- * RAG hybrid score를 계산한다.
- * @param {number} combined_base
- * @param {number} rrf_score
- * @param {number} source_prior
- * @param {number} source_evidence_score
- * @param {number} best_evidence_rank
- * @param {Uint8Array} source_codes
- * @returns {number}
- */
-export function hybrid_score_or_nan(combined_base, rrf_score, source_prior, source_evidence_score, best_evidence_rank, source_codes) {
-    const ptr0 = passArray8ToWasm0(source_codes, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.hybrid_score_or_nan(combined_base, rrf_score, source_prior, source_evidence_score, best_evidence_rank, ptr0, len0);
-    return ret;
-}
-
-/**
  * 파일 경로 확장자가 제외 대상 목록에 있으면 `true`를 반환한다.
  * @param {string} file_path
  * @param {string} extension_keys_json
@@ -1070,29 +863,6 @@ export function is_excluded_path(file_path, patterns) {
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.is_excluded_path(ptr0, len0, ptr1, len1);
     return ret !== 0;
-}
-
-/**
- * `GraphRAG` extraction cache snapshot이 요청 key와 일치하는지 판정한다.
- * @param {string} cached_json
- * @param {string} input_json
- * @returns {string}
- */
-export function is_graph_extraction_cache_hit_json(cached_json, input_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(cached_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.is_graph_extraction_cache_hit_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
 }
 
 /**
@@ -1183,27 +953,6 @@ export function is_relevant_result(config, source_codes) {
 }
 
 /**
- * 두 entity id 쌍이 순서와 무관하게 같은 대상을 가리키는지 판정한다.
- * @param {string} first_left
- * @param {string} first_right
- * @param {string} second_left
- * @param {string} second_right
- * @returns {boolean}
- */
-export function is_same_graph_entity_pair(first_left, first_right, second_left, second_right) {
-    const ptr0 = passStringToWasm0(first_left, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(first_right, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(second_left, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(second_right, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.is_same_graph_entity_pair(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
-    return ret !== 0;
-}
-
-/**
  * 새 대화 저장 폴더가 볼트 안의 상대 경로인지 확인합니다.
  * @param {string} input
  * @returns {boolean}
@@ -1228,26 +977,6 @@ export function is_whole_vault_research_intent(question) {
 }
 
 /**
- * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
- * @param {string} name
- * @returns {string}
- */
-export function normalize_entity_name(name) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.normalize_entity_name(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
  * 확장자 문자열을 RAG 제외 설정 계약에 맞게 정규화한다.
  * @param {string} extension
  * @returns {string}
@@ -1265,74 +994,6 @@ export function normalize_exclude_extension_json(extension) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
-}
-
-/**
- * `GraphRAG` LLM 추출 JSON payload를 저장 가능한 graph fact payload로 정규화한다.
- * @param {string} json_text
- * @returns {string}
- */
-export function normalize_extracted_graph_payload_json(json_text) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(json_text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.normalize_extracted_graph_payload_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` extraction confidence를 `[0, 1]` 범위로 정규화한다.
- * @param {number} confidence
- * @returns {number}
- */
-export function normalize_graph_confidence_or_default(confidence) {
-    const ret = wasm.normalize_graph_confidence_or_default(confidence);
-    return ret;
-}
-
-/**
- * `GraphRAG` extraction 이름을 비교 가능한 형태로 정규화한다.
- * @param {string} name
- * @returns {string}
- */
-export function normalize_graph_name(name) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.normalize_graph_name(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * fact evidence span을 source 길이 안의 안정적인 pair로 정규화한다.
- * @param {Uint32Array} starts
- * @param {Uint32Array} ends
- * @param {number} content_length
- * @returns {Uint32Array}
- */
-export function normalize_graph_source_spans_flat(starts, ends, content_length) {
-    const ptr0 = passArray32ToWasm0(starts, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray32ToWasm0(ends, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.normalize_graph_source_spans_flat(ptr0, len0, ptr1, len1, content_length);
-    var v3 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-    return v3;
 }
 
 /**
@@ -1375,26 +1036,6 @@ export function normalize_reasoning_chunk_json(content, reasoning) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` LLM raw 응답을 graph extraction parse 결과로 변환한다.
- * @param {string} raw_response
- * @returns {string}
- */
-export function parse_extracted_graph_payload_json(raw_response) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(raw_response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.parse_extracted_graph_payload_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -1820,26 +1461,6 @@ export function plan_chatgpt_json(input_json) {
 }
 
 /**
- * claim record snapshot에서 evidence score JSON plan을 만든다.
- * @param {string} claims_json
- * @returns {string}
- */
-export function plan_claim_evidence_scores_json(claims_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(claims_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_claim_evidence_scores_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
  * Extracts bounded JSON tool calls from the compatibility protocol.
  * @param {string} content
  * @returns {string}
@@ -1877,29 +1498,6 @@ export function plan_context_budget_append_json(remaining_chars, text) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` virtual source verification plan을 만든다.
- * @param {string} file_path
- * @param {string} unsupported_detail
- * @returns {string}
- */
-export function plan_context_graph_verification_json(file_path, unsupported_detail) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(file_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(unsupported_detail, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_context_graph_verification_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -1964,26 +1562,6 @@ export function plan_empty_file_index_record_json(entry_json, updated) {
         const ptr0 = passStringToWasm0(entry_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_empty_file_index_record_json(ptr0, len0, updated);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` entity resolution 후보 점수에서 최종 merge plan을 계산한다.
- * @param {string} input_json
- * @returns {string}
- */
-export function plan_entity_resolution_json(input_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_entity_resolution_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -2084,584 +1662,6 @@ export function plan_folder_mention_file_indices_json(folder_path, file_paths_js
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Graph extraction claim entity name을 entity id 목록으로 해석한다.
- * @param {string} entity_names_json
- * @param {string} lookup_records_json
- * @returns {string}
- */
-export function plan_graph_claim_entity_ids_json(entity_names_json, lookup_records_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(entity_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(lookup_records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_claim_entity_ids_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` community replacement에서 삭제할 기존 community id plan을 계산한다.
- * @param {string} communities_json
- * @param {string} ontology_schema_id
- * @returns {string}
- */
-export function plan_graph_community_replacement_delete_ids_json(communities_json, ontology_schema_id) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(communities_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_community_replacement_delete_ids_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Graph community summarizer의 entity/relation/claim grouping index plan을 계산한다.
- * @param {string} assignments_json
- * @param {string} entity_ids_json
- * @param {string} relations_json
- * @param {string} claims_json
- * @param {string} community_ids_json
- * @returns {string}
- */
-export function plan_graph_community_summary_groups_json(assignments_json, entity_ids_json, relations_json, claims_json, community_ids_json) {
-    let deferred6_0;
-    let deferred6_1;
-    try {
-        const ptr0 = passStringToWasm0(assignments_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(entity_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(relations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(claims_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(community_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_community_summary_groups_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
-        deferred6_0 = ret[0];
-        deferred6_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
-    }
-}
-
-/**
- * RAG vector indexing progress snapshot에서 ETA plan JSON을 만든다.
- * @param {string} record_keys_json
- * @param {string} requested_keys_json
- * @returns {string}
- */
-export function plan_graph_deletion_indices_json(record_keys_json, requested_keys_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(record_keys_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(requested_keys_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_deletion_indices_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` entity/relation string snapshot에서 relation edge record JSON plan을 만든다.
- * @param {string} entity_ids_json
- * @param {string} relation_source_ids_json
- * @param {string} relation_target_ids_json
- * @param {string} confidences_json
- * @returns {string}
- */
-export function plan_graph_edge_records_json(entity_ids_json, relation_source_ids_json, relation_target_ids_json, confidences_json) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const ptr0 = passStringToWasm0(entity_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(relation_source_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(relation_target_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(confidences_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_edge_records_json(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
-        deferred5_0 = ret[0];
-        deferred5_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` entity upsert merge field plan을 만든다.
- * @param {string} existing_json
- * @param {string} next_json
- * @returns {string}
- */
-export function plan_graph_entity_merge_json(existing_json, next_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(existing_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(next_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_entity_merge_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * ordered evidence score와 evidence snapshot에서 후보 lookup plan을 만든다.
- * @param {string} scores_json
- * @param {string} evidence_json
- * @returns {string}
- */
-export function plan_graph_evidence_candidate_lookup_json(scores_json, evidence_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(scores_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(evidence_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_evidence_candidate_lookup_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Graph evidence candidate를 최종 vector entry candidate로 해석한다.
- * @param {string} candidate_entry_ids_json
- * @param {string} entries_json
- * @param {number} candidate_limit
- * @returns {string}
- */
-export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_json, entries_json, candidate_limit) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(candidate_entry_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(entries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_evidence_entry_candidates_json(ptr0, len0, ptr1, len1, candidate_limit);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * context overflow가 난 extraction unit을 더 작은 Markdown 경계 child unit으로 나눈다.
- * @param {string} content
- * @param {number} split_depth
- * @returns {string}
- */
-export function plan_graph_extraction_child_units_json(content, split_depth) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_extraction_child_units_json(ptr0, len0, split_depth);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
- * @param {string} message
- * @param {number} status
- * @param {number} attempt_count
- * @param {number} consecutive_failures
- * @param {number} now_ms
- * @param {number} retry_after_ms
- * @returns {string}
- */
-export function plan_graph_extraction_failure_json(message, status, attempt_count, consecutive_failures, now_ms, retry_after_ms) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_extraction_failure_json(ptr0, len0, status, attempt_count, consecutive_failures, now_ms, retry_after_ms);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
- * @param {string} mention_names_json
- * @param {string} entities_json
- * @param {string} relations_json
- * @returns {string}
- */
-export function plan_graph_mention_context_json(mention_names_json, entities_json, relations_json) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(mention_names_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(entities_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(relations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_mention_context_json(ptr0, len0, ptr1, len1, ptr2, len2);
-        deferred4_0 = ret[0];
-        deferred4_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` query mode와 planner 결과에서 실행 action을 계산한다.
- * @param {string} configured_mode
- * @param {string} planned_mode
- * @param {boolean} evidence_first
- * @returns {string}
- */
-export function plan_graph_query_execution_json(configured_mode, planned_mode, evidence_first) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(configured_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(planned_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_query_execution_json(ptr0, len0, ptr1, len1, evidence_first);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * deterministic `GraphRAG` query plan을 `JSON` 문자열로 반환한다.
- * @param {string} question
- * @returns {string}
- */
-export function plan_graph_query_json(question) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_query_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` LLM planner raw 응답을 graph query plan JSON으로 변환한다.
- * @param {string} raw_response
- * @param {string} fallback_question
- * @returns {string}
- */
-export function plan_graph_query_response_json(raw_response, fallback_question) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(raw_response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(fallback_question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_query_response_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` indexing run에서 candidate/selected file path 목록을 계산한다.
- * @param {string} input_json
- * @returns {string}
- */
-export function plan_graph_rag_run_file_selection_json(input_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_run_file_selection_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
- * @param {string} file_paths_json
- * @returns {string}
- */
-export function plan_graph_rag_source_file_paths_json(file_paths_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_source_file_paths_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` status 계산에 필요한 vector entry id lookup plan을 만든다.
- * @param {string} evidence_entry_ids_json
- * @param {string} cache_entry_ids_json
- * @returns {string}
- */
-export function plan_graph_rag_status_entry_lookups_json(evidence_entry_ids_json, cache_entry_ids_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(evidence_entry_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(cache_entry_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_status_entry_lookups_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` status에 사용할 vector entry snapshot plan을 만든다.
- * @param {string} entries_json
- * @returns {string}
- */
-export function plan_graph_rag_status_entry_snapshot_json(entries_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(entries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_status_entry_snapshot_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` status에 사용할 candidate file snapshot plan을 만든다.
- * @param {string} file_records_json
- * @param {string} indexed_file_paths_json
- * @returns {string}
- */
-export function plan_graph_rag_status_file_snapshot_json(file_records_json, indexed_file_paths_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(file_records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(indexed_file_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_status_file_snapshot_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` index status summary plan을 만든다.
- * @param {string} input_json
- * @returns {string}
- */
-export function plan_graph_rag_status_json(input_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_status_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` store에서 prune할 unsupported graph file path 목록을 계산한다.
- * @param {string} evidence_json
- * @param {string} rejected_facts_json
- * @returns {string}
- */
-export function plan_graph_rag_unsupported_prune_paths_json(evidence_json, rejected_facts_json) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(evidence_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(rejected_facts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_rag_unsupported_prune_paths_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Graph extraction relation source/target name을 accepted entity index pair로 해석한다.
- * @param {string} relations_json
- * @param {string} lookup_records_json
- * @param {number} entity_count
- * @returns {string}
- */
-export function plan_graph_relation_endpoint_indices_json(relations_json, lookup_records_json, entity_count) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(relations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(lookup_records_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_relation_endpoint_indices_json(ptr0, len0, ptr1, len1, entity_count);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` community schema id matching index plan을 계산한다.
- * @param {string} community_schema_ids_json
- * @param {string} ontology_schema_id
- * @returns {string}
- */
-export function plan_graph_schema_community_indices_json(community_schema_ids_json, ontology_schema_id) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(community_schema_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_schema_community_indices_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` relation schema id matching index plan을 계산한다.
- * @param {string} relation_schema_ids_json
- * @param {string} ontology_schema_id
- * @returns {string}
- */
-export function plan_graph_schema_relation_indices_json(relation_schema_ids_json, ontology_schema_id) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(relation_schema_ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ontology_schema_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_schema_relation_indices_json(ptr0, len0, ptr1, len1);
-        deferred3_0 = ret[0];
-        deferred3_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Plans bounded retention of rebuildable `GraphRAG` jobs, responses, and circuit state.
- * @param {string} input_json
- * @returns {string}
- */
-export function plan_graph_storage_maintenance_json(input_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_graph_storage_maintenance_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -2790,7 +1790,7 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json, tota
  * Builds database names isolated by vault, storage contract, and embedding generation.
  *
  * `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
- * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시와 `GraphRAG` 저장소는 재사용합니다.
+ * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시는 재사용합니다.
  * @param {string} plugin_id
  * @param {string} vault_identity
  * @param {string} legacy_vault_name
@@ -2818,33 +1818,6 @@ export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, l
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` record snapshot에서 local evidence score `JSON` plan을 만든다.
- * @param {string} matches_json
- * @param {string} relations_json
- * @param {string} claims_json
- * @param {number} traversal_depth
- * @returns {string}
- */
-export function plan_local_evidence_scores_json(matches_json, relations_json, claims_json, traversal_depth) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(matches_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(relations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(claims_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_local_evidence_scores_json(ptr0, len0, ptr1, len1, ptr2, len2, traversal_depth);
-        deferred4_0 = ret[0];
-        deferred4_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -3326,7 +2299,7 @@ export function plan_rag_file_type_summary_json(files_json, no_extension_label) 
 }
 
 /**
- * graph store record key snapshot에서 삭제할 record index plan을 만든다.
+ * RAG 인덱싱의 예상 남은 시간을 계산합니다.
  * @param {string} input_json
  * @returns {string}
  */
@@ -3729,27 +2702,7 @@ export function plan_source_chunks_json(path, extension, content, max_size, over
 }
 
 /**
- * 변경 없는 청크의 근거를 최신 원문에 연결하고 삭제할 추출 단위를 반환합니다.
- * @param {string} input_json
- * @returns {string}
- */
-export function plan_source_graph_reconcile_json(input_json) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.plan_source_graph_reconcile_json(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * 공통 원문·BM25·임베딩·선택적 그래프의 준비 상태를 파일별로 반환합니다.
+ * 공통 원문·BM25·임베딩의 준비 상태를 파일별로 반환합니다.
  * @param {string} input_json
  * @returns {string}
  */
@@ -4178,32 +3131,6 @@ export function plan_vector_store_stats_json(file_paths_json, now) {
 }
 
 /**
- * `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
- * @param {Uint32Array} config
- * @param {Uint32Array} indices
- * @param {string} wire_values
- * @returns {string}
- */
-export function prune_graph_indexes_json(config, indices, wire_values) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passArray32ToWasm0(config, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(wire_values, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.prune_graph_indexes_json(ptr0, len0, ptr1, len1, ptr2, len2);
-        deferred4_0 = ret[0];
-        deferred4_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
  * Returns the Rust-owned delay for a recovery attempt, or zero when the session is exhausted.
  * @param {number} attempt
  * @returns {number}
@@ -4211,33 +3138,6 @@ export function prune_graph_indexes_json(config, indices, wire_values) {
 export function rag_automatic_recovery_delay_ms(attempt) {
     const ret = wasm.rag_automatic_recovery_delay_ms(attempt);
     return ret >>> 0;
-}
-
-/**
- * 그래프 요약의 벡터가 없거나 호환되지 않으면 본문으로 후보를 정렬합니다.
- * @param {string} question
- * @param {string} summaries_json
- * @param {Float64Array} query
- * @param {Float64Array} vectors
- * @param {string} lengths_json
- * @param {number} top_k
- * @returns {Float64Array}
- */
-export function rank_graph_community_pairs(question, summaries_json, query, vectors, lengths_json, top_k) {
-    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(summaries_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(query, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArrayF64ToWasm0(vectors, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passStringToWasm0(lengths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.rank_graph_community_pairs(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, top_k);
-    var v6 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v6;
 }
 
 /**
@@ -4297,33 +3197,6 @@ export function recompute_centroids(vectors, assignments, previous_centroids, di
 }
 
 /**
- * `GraphRAG` entity 병합 이후 참조 id를 교체하고 필요하면 순서를 보존해 중복 제거한다.
- * @param {string} references_json
- * @param {string} candidate_entity_id
- * @param {string} existing_entity_id
- * @param {boolean} deduplicate
- * @returns {string}
- */
-export function rewrite_graph_entity_references_json(references_json, candidate_entity_id, existing_entity_id, deduplicate) {
-    let deferred4_0;
-    let deferred4_1;
-    try {
-        const ptr0 = passStringToWasm0(references_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(candidate_entity_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(existing_entity_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.rewrite_graph_entity_references_json(ptr0, len0, ptr1, len1, ptr2, len2, deduplicate);
-        deferred4_0 = ret[0];
-        deferred4_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
  * retrieval source rank map에서 RRF score를 계산한다.
  * @param {Uint8Array} source_codes
  * @param {Float64Array} ranks
@@ -4337,69 +3210,6 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.rrf_score_or_nan(ptr0, len0, ptr1, len1, bm25_weight);
     return ret;
-}
-
-/**
- * `GraphRAG` record id part를 기존 extraction ID 규칙으로 정규화한다.
- * @param {string} part
- * @returns {string}
- */
-export function sanitize_graph_id_part(part) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passStringToWasm0(part, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.sanitize_graph_id_part(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
-}
-
-/**
- * `GraphRAG` entity merge score를 계산한다.
- * @param {string} candidate_names
- * @param {string} existing_names
- * @param {string} descriptions
- * @param {string} evidence_ids
- * @param {boolean} same_type
- * @param {number} embedding_score
- * @returns {number}
- */
-export function score_entity_match_or_nan(candidate_names, existing_names, descriptions, evidence_ids, same_type, embedding_score) {
-    const ptr0 = passStringToWasm0(candidate_names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(existing_names, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(descriptions, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(evidence_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ret = wasm.score_entity_match_or_nan(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, same_type, embedding_score);
-    return ret;
-}
-
-/**
- * `GraphRAG` local/evidence-first evidence score pair를 계산한다.
- * @param {Uint32Array} config
- * @param {Uint32Array} indices
- * @param {Float64Array} values
- * @returns {Float64Array}
- */
-export function score_local_evidence_pairs(config, indices, values) {
-    const ptr0 = passArray32ToWasm0(config, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(values, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.score_local_evidence_pairs(ptr0, len0, ptr1, len1, ptr2, len2);
-    var v4 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v4;
 }
 
 /**
@@ -4474,26 +3284,6 @@ export function should_offer_context7_for_prompt(prompt) {
     const ptr0 = passStringToWasm0(prompt, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.should_offer_context7_for_prompt(ptr0, len0);
-    return ret !== 0;
-}
-
-/**
- * `GraphRAG` runtime 재구성 여부를 판정한다.
- * @param {boolean} graph_rag_enabled
- * @param {string} graph_rag_model
- * @param {string} previous_status_state
- * @param {string} next_status_state
- * @param {boolean} graph_provider_attached
- * @returns {boolean}
- */
-export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled, graph_rag_model, previous_status_state, next_status_state, graph_provider_attached) {
-    const ptr0 = passStringToWasm0(graph_rag_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(previous_status_state, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(next_status_state, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled, ptr0, len0, ptr1, len1, ptr2, len2, graph_provider_attached);
     return ret !== 0;
 }
 
@@ -4702,11 +3492,6 @@ const VectorRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefin
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
-}
-
-function getArrayU32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 let cachedFloat32ArrayMemory0 = null;

@@ -20,21 +20,13 @@ import {
   type RustMergedRetrievalCandidatePlan,
 } from './rust-core';
 
-export type RetrievalCandidateSource =
-  | 'vector'
-  | 'bm25'
-  | 'ann'
-  | 'structural'
-  | 'graph-local'
-  | 'graph-global'
-  | 'evidence';
+export type RetrievalCandidateSource = 'vector' | 'bm25' | 'ann' | 'structural';
 export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'embedding' | 'reranker';
 
 export interface RagRetrievalRequest {
   question: string;
   queryVector: number[];
   candidateLimit: number;
-  fileBackedOnly?: boolean;
   requireSourceRevision?: boolean;
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
@@ -794,15 +786,7 @@ function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetri
 }
 
 function toRetrievalCandidateSource(source: string): RetrievalCandidateSource | null {
-  if (
-    source === 'vector' ||
-    source === 'bm25' ||
-    source === 'ann' ||
-    source === 'structural' ||
-    source === 'graph-local' ||
-    source === 'graph-global' ||
-    source === 'evidence'
-  ) {
+  if (source === 'vector' || source === 'bm25' || source === 'ann' || source === 'structural') {
     return source;
   }
   return null;

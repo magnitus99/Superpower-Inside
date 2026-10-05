@@ -125,11 +125,6 @@ export class VectorRuntimeIndex {
 }
 
 /**
- * `GraphRAG` relation edge를 무방향 endpoint pair 기준으로 집계한다.
- */
-export function aggregate_graph_edges_flat(source_indices: Uint32Array, target_indices: Uint32Array, confidences: Float64Array, node_count: number): Float64Array;
-
-/**
  * retrieval source score/rank를 source-aware RAG relevance 계산 입력으로 요약한다.
  */
 export function analyze_retrieval_sources(source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
@@ -200,19 +195,9 @@ export function create_content_hash(content: string): string;
 export function create_context_preview(text: string): string;
 
 /**
- * `GraphRAG` entity id를 기존 resolver 규칙으로 만든다.
- */
-export function create_entity_id(ontology_schema_id: string, type_id: string, canonical_name: string): string;
-
-/**
  * 벡터 entry snapshot 배열 fingerprint를 생성한다.
  */
 export function create_entries_fingerprint(entry_ids_json: string, content_hashes_json: string, indexed_ats_json: string, vector_lengths_json: string): string;
-
-/**
- * `GraphRAG` record id를 기존 extraction ID 규칙으로 만든다.
- */
-export function create_graph_id(parts: string): string;
 
 /**
  * Creates a collision-resistant deterministic key for one namespaced `IndexedDB` record.
@@ -236,26 +221,6 @@ export function derive_native_tool_coverage_receipt_json(results_json: string): 
 export function derive_research_coverage_receipt_json(input_json: string): string;
 
 /**
- * `GraphRAG` community detection의 node assignment와 modularity를 계산한다.
- */
-export function detect_communities_flat(source_indices: Uint32Array, target_indices: Uint32Array, weights: Float64Array, node_count: number, max_iterations: number): Float64Array;
-
-/**
- * `GraphRAG` string edge snapshot에서 community assignment JSON plan을 만든다.
- */
-export function detect_communities_from_edges_json(edges_json: string, max_iterations: number): string;
-
-/**
- * `GraphRAG` string edge snapshot에서 연결성 refinement를 포함한 계층 community plan을 만든다.
- */
-export function detect_leiden_hierarchy_from_edges_json(edges_json: string, max_iterations: number, max_levels: number): string;
-
-/**
- * `GraphRAG` LLM 응답에서 JSON object 텍스트를 추출한다. 실패하면 빈 문자열을 반환한다.
- */
-export function extract_json_object_text(raw_response: string): string;
-
-/**
  * `delta` 객체의 구조화 reasoning 필드를 추출한다.
  */
 export function extract_structured_reasoning(delta_json: string): string;
@@ -264,11 +229,6 @@ export function extract_structured_reasoning(delta_json: string): string;
  * vault 내부 참조 링크를 추출하고 `JSON` 문자열로 반환한다.
  */
 export function extract_vault_links_json(content: string): string;
-
-/**
- * 질문과 entity name 목록에서 언급된 `GraphRAG` entity index/score 쌍을 찾는다.
- */
-export function find_mentioned_entity_matches(question: string, ontology_schema_id: string, entity_schema_ids: string, canonical_names: string, aliases_by_entity: string, entity_hints: string): Float64Array;
 
 /**
  * 같은 본문의 기존 프롬프트 위치를 반환해 항목 중복을 방지합니다.
@@ -286,16 +246,6 @@ export function format_mcp_json(mcp_json_text: string): string;
 export function get_mcp_connection_state_rust(total_count: number, connected_count: number, failed_count: number, is_connecting: boolean): string;
 
 /**
- * 현재 Graph extraction parser/normalizer wire contract version을 반환한다.
- */
-export function graph_extraction_contract_version(): number;
-
-/**
- * RAG hybrid score를 계산한다.
- */
-export function hybrid_score_or_nan(combined_base: number, rrf_score: number, source_prior: number, source_evidence_score: number, best_evidence_rank: number, source_codes: Uint8Array): number;
-
-/**
  * 파일 경로 확장자가 제외 대상 목록에 있으면 `true`를 반환한다.
  */
 export function is_excluded_ext_json(file_path: string, extension_keys_json: string): boolean;
@@ -304,11 +254,6 @@ export function is_excluded_ext_json(file_path: string, extension_keys_json: str
  * vault path가 제외 pattern 목록에 매칭되는지 확인한다.
  */
 export function is_excluded_path(file_path: string, patterns: string): boolean;
-
-/**
- * `GraphRAG` extraction cache snapshot이 요청 key와 일치하는지 판정한다.
- */
-export function is_graph_extraction_cache_hit_json(cached_json: string, input_json: string): string;
 
 /**
  * 연결의 실제 주소가 로컬 처리 대상인지 판정합니다.
@@ -341,11 +286,6 @@ export function is_recommendable_exclude_extension_json(extension: string): bool
 export function is_relevant_result(config: Float64Array, source_codes: Uint8Array): boolean;
 
 /**
- * 두 entity id 쌍이 순서와 무관하게 같은 대상을 가리키는지 판정한다.
- */
-export function is_same_graph_entity_pair(first_left: string, first_right: string, second_left: string, second_right: string): boolean;
-
-/**
  * 새 대화 저장 폴더가 볼트 안의 상대 경로인지 확인합니다.
  */
 export function is_valid_settings_folder(input: string): boolean;
@@ -356,34 +296,9 @@ export function is_valid_settings_folder(input: string): boolean;
 export function is_whole_vault_research_intent(question: string): boolean;
 
 /**
- * `GraphRAG` entity 이름을 비교 가능한 형태로 정규화한다.
- */
-export function normalize_entity_name(name: string): string;
-
-/**
  * 확장자 문자열을 RAG 제외 설정 계약에 맞게 정규화한다.
  */
 export function normalize_exclude_extension_json(extension: string): string;
-
-/**
- * `GraphRAG` LLM 추출 JSON payload를 저장 가능한 graph fact payload로 정규화한다.
- */
-export function normalize_extracted_graph_payload_json(json_text: string): string;
-
-/**
- * `GraphRAG` extraction confidence를 `[0, 1]` 범위로 정규화한다.
- */
-export function normalize_graph_confidence_or_default(confidence: number): number;
-
-/**
- * `GraphRAG` extraction 이름을 비교 가능한 형태로 정규화한다.
- */
-export function normalize_graph_name(name: string): string;
-
-/**
- * fact evidence span을 source 길이 안의 안정적인 pair로 정규화한다.
- */
-export function normalize_graph_source_spans_flat(starts: Uint32Array, ends: Uint32Array, content_length: number): Uint32Array;
 
 /**
  * MCP tool 실행 결과에서 표시/모델 텍스트 추출 계약을 계산한다.
@@ -394,11 +309,6 @@ export function normalize_mcp_tool_result_json(result_json: string): string;
  * 구조화 reasoning과 태그 reasoning을 병합해 content/reasoning을 만들고 JSON으로 반환한다.
  */
 export function normalize_reasoning_chunk_json(content: string, reasoning: string): string;
-
-/**
- * `GraphRAG` LLM raw 응답을 graph extraction parse 결과로 변환한다.
- */
-export function parse_extracted_graph_payload_json(raw_response: string): string;
 
 /**
  * MCP tool 실행 인자 문자열을 TypeScript 호스트 경계 계약으로 정규화한다.
@@ -495,11 +405,6 @@ export function plan_chat_save_metadata_json(messages_json: string, existing_cre
 export function plan_chatgpt_json(input_json: string): string;
 
 /**
- * claim record snapshot에서 evidence score JSON plan을 만든다.
- */
-export function plan_claim_evidence_scores_json(claims_json: string): string;
-
-/**
  * Extracts bounded JSON tool calls from the compatibility protocol.
  */
 export function plan_compatibility_tool_calls_json(content: string): string;
@@ -508,11 +413,6 @@ export function plan_compatibility_tool_calls_json(content: string): string;
  * Context budget append 결과를 Rust에서 계산한다.
  */
 export function plan_context_budget_append_json(remaining_chars: number, text: string): string;
-
-/**
- * `GraphRAG` virtual source verification plan을 만든다.
- */
-export function plan_context_graph_verification_json(file_path: string, unsupported_detail: string): string;
 
 /**
  * RAG context source citation/block/source id plan을 만든다.
@@ -528,11 +428,6 @@ export function plan_diverse_result_indices_json(candidates_json: string, top_k:
  * 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
  */
 export function plan_empty_file_index_record_json(entry_json: string, updated: number): string;
-
-/**
- * `GraphRAG` entity resolution 후보 점수에서 최종 merge plan을 계산한다.
- */
-export function plan_entity_resolution_json(input_json: string): string;
 
 /**
  * evidence score 목록을 max-score, first-seen tie 순서로 candidate order plan으로 만든다.
@@ -553,131 +448,6 @@ export function plan_folder_lexical_evidence_indices_json(query: string, samples
  * folder mention에 포함할 markdown file index와 partial 여부를 `JSON` 문자열로 반환한다.
  */
 export function plan_folder_mention_file_indices_json(folder_path: string, file_paths_json: string, max_files: number): string;
-
-/**
- * Graph extraction claim entity name을 entity id 목록으로 해석한다.
- */
-export function plan_graph_claim_entity_ids_json(entity_names_json: string, lookup_records_json: string): string;
-
-/**
- * `GraphRAG` community replacement에서 삭제할 기존 community id plan을 계산한다.
- */
-export function plan_graph_community_replacement_delete_ids_json(communities_json: string, ontology_schema_id: string): string;
-
-/**
- * Graph community summarizer의 entity/relation/claim grouping index plan을 계산한다.
- */
-export function plan_graph_community_summary_groups_json(assignments_json: string, entity_ids_json: string, relations_json: string, claims_json: string, community_ids_json: string): string;
-
-/**
- * RAG vector indexing progress snapshot에서 ETA plan JSON을 만든다.
- */
-export function plan_graph_deletion_indices_json(record_keys_json: string, requested_keys_json: string): string;
-
-/**
- * `GraphRAG` entity/relation string snapshot에서 relation edge record JSON plan을 만든다.
- */
-export function plan_graph_edge_records_json(entity_ids_json: string, relation_source_ids_json: string, relation_target_ids_json: string, confidences_json: string): string;
-
-/**
- * `GraphRAG` entity upsert merge field plan을 만든다.
- */
-export function plan_graph_entity_merge_json(existing_json: string, next_json: string): string;
-
-/**
- * ordered evidence score와 evidence snapshot에서 후보 lookup plan을 만든다.
- */
-export function plan_graph_evidence_candidate_lookup_json(scores_json: string, evidence_json: string): string;
-
-/**
- * Graph evidence candidate를 최종 vector entry candidate로 해석한다.
- */
-export function plan_graph_evidence_entry_candidates_json(candidate_entry_ids_json: string, entries_json: string, candidate_limit: number): string;
-
-/**
- * context overflow가 난 extraction unit을 더 작은 Markdown 경계 child unit으로 나눈다.
- */
-export function plan_graph_extraction_child_units_json(content: string, split_depth: number): string;
-
-/**
- * Graph extraction provider 실패의 재시도 및 회로 차단 정책을 계산한다.
- */
-export function plan_graph_extraction_failure_json(message: string, status: number, attempt_count: number, consecutive_failures: number, now_ms: number, retry_after_ms: number): string;
-
-/**
- * `GraphRAG` mention context에서 표시할 entity/relation index plan을 만든다.
- */
-export function plan_graph_mention_context_json(mention_names_json: string, entities_json: string, relations_json: string): string;
-
-/**
- * `GraphRAG` query mode와 planner 결과에서 실행 action을 계산한다.
- */
-export function plan_graph_query_execution_json(configured_mode: string, planned_mode: string, evidence_first: boolean): string;
-
-/**
- * deterministic `GraphRAG` query plan을 `JSON` 문자열로 반환한다.
- */
-export function plan_graph_query_json(question: string): string;
-
-/**
- * `GraphRAG` LLM planner raw 응답을 graph query plan JSON으로 변환한다.
- */
-export function plan_graph_query_response_json(raw_response: string, fallback_question: string): string;
-
-/**
- * `GraphRAG` indexing run에서 candidate/selected file path 목록을 계산한다.
- */
-export function plan_graph_rag_run_file_selection_json(input_json: string): string;
-
-/**
- * `GraphRAG`가 처리할 markdown file path 목록을 입력 순서대로 계산한다.
- */
-export function plan_graph_rag_source_file_paths_json(file_paths_json: string): string;
-
-/**
- * `GraphRAG` status 계산에 필요한 vector entry id lookup plan을 만든다.
- */
-export function plan_graph_rag_status_entry_lookups_json(evidence_entry_ids_json: string, cache_entry_ids_json: string): string;
-
-/**
- * `GraphRAG` status에 사용할 vector entry snapshot plan을 만든다.
- */
-export function plan_graph_rag_status_entry_snapshot_json(entries_json: string): string;
-
-/**
- * `GraphRAG` status에 사용할 candidate file snapshot plan을 만든다.
- */
-export function plan_graph_rag_status_file_snapshot_json(file_records_json: string, indexed_file_paths_json: string): string;
-
-/**
- * `GraphRAG` index status summary plan을 만든다.
- */
-export function plan_graph_rag_status_json(input_json: string): string;
-
-/**
- * `GraphRAG` store에서 prune할 unsupported graph file path 목록을 계산한다.
- */
-export function plan_graph_rag_unsupported_prune_paths_json(evidence_json: string, rejected_facts_json: string): string;
-
-/**
- * Graph extraction relation source/target name을 accepted entity index pair로 해석한다.
- */
-export function plan_graph_relation_endpoint_indices_json(relations_json: string, lookup_records_json: string, entity_count: number): string;
-
-/**
- * `GraphRAG` community schema id matching index plan을 계산한다.
- */
-export function plan_graph_schema_community_indices_json(community_schema_ids_json: string, ontology_schema_id: string): string;
-
-/**
- * `GraphRAG` relation schema id matching index plan을 계산한다.
- */
-export function plan_graph_schema_relation_indices_json(relation_schema_ids_json: string, ontology_schema_id: string): string;
-
-/**
- * Plans bounded retention of rebuildable `GraphRAG` jobs, responses, and circuit state.
- */
-export function plan_graph_storage_maintenance_json(input_json: string): string;
 
 /**
  * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
@@ -708,14 +478,9 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json: stri
  * Builds database names isolated by vault, storage contract, and embedding generation.
  *
  * `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
- * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시와 `GraphRAG` 저장소는 재사용합니다.
+ * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시는 재사용합니다.
  */
 export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_identity: string, legacy_vault_name: string, embedding_namespace: string, index_namespace: string): string;
-
-/**
- * `GraphRAG` record snapshot에서 local evidence score `JSON` plan을 만든다.
- */
-export function plan_local_evidence_scores_json(matches_json: string, relations_json: string, claims_json: string, traversal_depth: number): string;
 
 /**
  * MCP server 후보 순서를 Rust에서 계산한다.
@@ -830,7 +595,7 @@ export function plan_rag_file_indexability_json(files_json: string, exclude_path
 export function plan_rag_file_type_summary_json(files_json: string, no_extension_label: string): string;
 
 /**
- * graph store record key snapshot에서 삭제할 record index plan을 만든다.
+ * RAG 인덱싱의 예상 남은 시간을 계산합니다.
  */
 export function plan_rag_indexing_eta_json(input_json: string): string;
 
@@ -925,12 +690,7 @@ export function plan_source_chunk_import_indices_json(input_json: string): strin
 export function plan_source_chunks_json(path: string, extension: string, content: string, max_size: number, overlap: number): string;
 
 /**
- * 변경 없는 청크의 근거를 최신 원문에 연결하고 삭제할 추출 단위를 반환합니다.
- */
-export function plan_source_graph_reconcile_json(input_json: string): string;
-
-/**
- * 공통 원문·BM25·임베딩·선택적 그래프의 준비 상태를 파일별로 반환합니다.
+ * 공통 원문·BM25·임베딩의 준비 상태를 파일별로 반환합니다.
  */
 export function plan_source_processing_json(input_json: string): string;
 
@@ -1020,19 +780,9 @@ export function plan_vector_store_replace_file_json(existing_file_paths_json: st
 export function plan_vector_store_stats_json(file_paths_json: string, now: number): string;
 
 /**
- * `GraphRAG` store pruning에서 삭제/업데이트할 record index plan을 계산한다.
- */
-export function prune_graph_indexes_json(config: Uint32Array, indices: Uint32Array, wire_values: string): string;
-
-/**
  * Returns the Rust-owned delay for a recovery attempt, or zero when the session is exhausted.
  */
 export function rag_automatic_recovery_delay_ms(attempt: number): number;
-
-/**
- * 그래프 요약의 벡터가 없거나 호환되지 않으면 본문으로 후보를 정렬합니다.
- */
-export function rank_graph_community_pairs(question: string, summaries_json: string, query: Float64Array, vectors: Float64Array, lengths_json: string, top_k: number): Float64Array;
 
 /**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
@@ -1050,29 +800,9 @@ export function recall_at_k(exact_indices: Uint32Array, approximate_indices: Uin
 export function recompute_centroids(vectors: Float64Array, assignments: Uint32Array, previous_centroids: Float64Array, dimensions: number): Float64Array;
 
 /**
- * `GraphRAG` entity 병합 이후 참조 id를 교체하고 필요하면 순서를 보존해 중복 제거한다.
- */
-export function rewrite_graph_entity_references_json(references_json: string, candidate_entity_id: string, existing_entity_id: string, deduplicate: boolean): string;
-
-/**
  * retrieval source rank map에서 RRF score를 계산한다.
  */
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
-
-/**
- * `GraphRAG` record id part를 기존 extraction ID 규칙으로 정규화한다.
- */
-export function sanitize_graph_id_part(part: string): string;
-
-/**
- * `GraphRAG` entity merge score를 계산한다.
- */
-export function score_entity_match_or_nan(candidate_names: string, existing_names: string, descriptions: string, evidence_ids: string, same_type: boolean, embedding_score: number): number;
-
-/**
- * `GraphRAG` local/evidence-first evidence score pair를 계산한다.
- */
-export function score_local_evidence_pairs(config: Uint32Array, indices: Uint32Array, values: Float64Array): Float64Array;
 
 /**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
@@ -1093,11 +823,6 @@ export function should_append_mcp_path_hint_rust(command: string, error_message:
  * Context7를 암묵적으로 제공할 만큼 programming intent가 분명한지 판정한다.
  */
 export function should_offer_context7_for_prompt(prompt: string): boolean;
-
-/**
- * `GraphRAG` runtime 재구성 여부를 판정한다.
- */
-export function should_rebuild_graph_runtime_for_graph_status(graph_rag_enabled: boolean, graph_rag_model: string, previous_status_state: string, next_status_state: string, graph_provider_attached: boolean): boolean;
 
 /**
  * 비동기 처리 결과가 현재 원문 revision에 속하는지 판정합니다.
@@ -1147,7 +872,6 @@ export interface InitOutput {
     readonly __wbg_bm25runtimeindex_free: (a: number, b: number) => void;
     readonly __wbg_ivfruntimeindex_free: (a: number, b: number) => void;
     readonly __wbg_vectorruntimeindex_free: (a: number, b: number) => void;
-    readonly aggregate_graph_edges_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly analyze_retrieval_sources: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
@@ -1177,41 +901,26 @@ export interface InitOutput {
     readonly count_keyword_matches: (a: number, b: number, c: number, d: number) => number;
     readonly create_content_hash: (a: number, b: number) => [number, number];
     readonly create_context_preview: (a: number, b: number) => [number, number];
-    readonly create_entity_id: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly create_entries_fingerprint: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly create_graph_id: (a: number, b: number) => [number, number];
-    readonly detect_communities_flat: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly detect_communities_from_edges_json: (a: number, b: number, c: number) => [number, number];
-    readonly detect_leiden_hierarchy_from_edges_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly extract_json_object_text: (a: number, b: number) => [number, number];
     readonly extract_structured_reasoning: (a: number, b: number) => [number, number];
     readonly extract_vault_links_json: (a: number, b: number) => [number, number];
-    readonly find_mentioned_entity_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly format_mcp_json: (a: number, b: number) => [number, number];
     readonly get_mcp_connection_state_rust: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly hybrid_score_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly is_excluded_ext_json: (a: number, b: number, c: number, d: number) => number;
     readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
-    readonly is_graph_extraction_cache_hit_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly is_mcp_tool_name_available: (a: number, b: number, c: number, d: number) => number;
     readonly is_mcp_tool_result_empty_json: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly is_protected_rag_document_extension_json: (a: number, b: number) => number;
     readonly is_recommendable_exclude_extension_json: (a: number, b: number) => number;
     readonly is_relevant_result: (a: number, b: number, c: number, d: number) => number;
-    readonly is_same_graph_entity_pair: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly ivfruntimeindex_cluster_count: (a: number) => number;
     readonly ivfruntimeindex_dimensions: (a: number) => number;
     readonly ivfruntimeindex_new: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly ivfruntimeindex_query: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly ivfruntimeindex_row_count: (a: number) => number;
-    readonly normalize_entity_name: (a: number, b: number) => [number, number];
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
-    readonly normalize_extracted_graph_payload_json: (a: number, b: number) => [number, number];
-    readonly normalize_graph_confidence_or_default: (a: number) => number;
-    readonly normalize_graph_source_spans_flat: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly parse_extracted_graph_payload_json: (a: number, b: number) => [number, number];
     readonly parse_mcp_tool_arguments_json: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
     readonly plan_assistant_response_classification_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1226,43 +935,16 @@ export interface InitOutput {
     readonly plan_chat_messages_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_chat_meta_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_chat_save_metadata_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_claim_evidence_scores_json: (a: number, b: number) => [number, number];
     readonly plan_context_budget_append_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_context_graph_verification_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_context_sources_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_diverse_result_indices_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_empty_file_index_record_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_entity_resolution_json: (a: number, b: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_graph_claim_entity_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_community_replacement_delete_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_community_summary_groups_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
-    readonly plan_graph_deletion_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_edge_records_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_graph_entity_merge_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_evidence_candidate_lookup_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_evidence_entry_candidates_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_graph_extraction_child_units_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_graph_extraction_failure_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_graph_mention_context_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_graph_query_execution_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_graph_query_json: (a: number, b: number) => [number, number];
-    readonly plan_graph_query_response_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_rag_run_file_selection_json: (a: number, b: number) => [number, number];
-    readonly plan_graph_rag_source_file_paths_json: (a: number, b: number) => [number, number];
-    readonly plan_graph_rag_status_entry_lookups_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_rag_status_entry_snapshot_json: (a: number, b: number) => [number, number];
-    readonly plan_graph_rag_status_file_snapshot_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_rag_status_json: (a: number, b: number) => [number, number];
-    readonly plan_graph_rag_unsupported_prune_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_relation_endpoint_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_graph_schema_community_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_implicit_folder_query_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_index_pending_files_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_local_evidence_scores_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_merged_retrieval_candidates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_merged_retrieval_candidates_by_entry_id: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -1290,21 +972,14 @@ export interface InitOutput {
     readonly plan_vector_store_remove_file_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vector_store_replace_file_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_vector_store_stats_json: (a: number, b: number, c: number) => [number, number];
-    readonly prune_graph_indexes_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly rank_graph_community_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recall_at_k: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly rewrite_graph_entity_references_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
-    readonly sanitize_graph_id_part: (a: number, b: number) => [number, number];
-    readonly score_entity_match_or_nan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
-    readonly score_local_evidence_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly select_relevant_result_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly should_append_mcp_path_hint_rust: (a: number, b: number, c: number, d: number) => number;
     readonly should_offer_context7_for_prompt: (a: number, b: number) => number;
-    readonly should_rebuild_graph_runtime_for_graph_status: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly source_revision_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly split_reasoning_tags_json: (a: number, b: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];
@@ -1317,41 +992,10 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
-    readonly normalize_graph_name: (a: number, b: number) => [number, number];
-    readonly graph_extraction_contract_version: () => number;
-    readonly plan_graph_schema_relation_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
-    readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
-    readonly plan_research_answer_contract_json: (a: number, b: number) => [number, number];
-    readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
-    readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
-    readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
     readonly plan_agentic_tool_turn_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
-    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
-    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
-    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_graph_storage_maintenance_json: (a: number, b: number) => [number, number];
-    readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
-    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
-    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
-    readonly plan_plugin_owned_file_maintenance_json: (a: number, b: number) => [number, number];
-    readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
-    readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
-    readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
-    readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
-    readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly plan_chatgpt_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_source_processing_json: (a: number, b: number) => [number, number];
     readonly find_reusable_prompt: (a: number, b: number, c: number, d: number) => number;
     readonly is_local_settings_provider: (a: number, b: number, c: number, d: number) => number;
     readonly is_valid_settings_folder: (a: number, b: number) => number;
@@ -1364,12 +1008,38 @@ export interface InitOutput {
     readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_source_graph_reconcile_json: (a: number, b: number) => [number, number];
     readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
-    readonly plan_chatgpt_json: (a: number, b: number) => [number, number];
-    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_source_processing_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
+    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
+    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
+    readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
+    readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
+    readonly plan_research_answer_contract_json: (a: number, b: number) => [number, number];
+    readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
+    readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
+    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly plan_plugin_owned_file_maintenance_json: (a: number, b: number) => [number, number];
+    readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

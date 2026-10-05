@@ -28,13 +28,6 @@ const baseRagConfig: RAGConfig = {
   annClusterCount: 0,
   annProbeCount: 4,
   structuralGraphEnabled: true,
-  entityAutoMergeThreshold: 0.88,
-  entityPendingMergeThreshold: 0.72,
-  graphRagEnabled: false,
-  graphRagModel: '',
-  graphRagMaxFilesPerRun: 50,
-  graphRagMaxConcurrentRequests: 1,
-  graphRagQueryMode: 'auto',
   enableBM25: true,
   bm25Weight: 0.3,
   performanceTuningMode: 'auto',
@@ -43,8 +36,6 @@ const baseRagConfig: RAGConfig = {
   indexingYieldMs: 25,
   slowEventLoopThresholdMs: 150,
   slowBatchThresholdMs: 3000,
-  graphRagAutoSyncEnabled: false,
-  graphRagAutoSyncIntervalMin: 30,
 };
 
 const baseChatConfig: ChatConfig = {

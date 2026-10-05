@@ -811,14 +811,7 @@ describe('VaultIndexer 배치 인덱싱', () => {
     };
     const ragConfig: RAGConfig = { ...createRagConfig(), enableBM25: true };
     const chatConfig = createChatConfig();
-    const indexer = new VaultIndexer(
-      vault,
-      store,
-      embeddingProvider,
-      ragConfig,
-      chatConfig,
-      bm25,
-    );
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, ragConfig, chatConfig, bm25);
 
     await indexer.indexPending();
     const before = await calculateRagStatus(vault, store, ragConfig, chatConfig);
@@ -943,13 +936,6 @@ function createRagConfig(): RAGConfig {
     annClusterCount: 0,
     annProbeCount: 4,
     structuralGraphEnabled: true,
-    entityAutoMergeThreshold: 0.88,
-    entityPendingMergeThreshold: 0.72,
-    graphRagEnabled: false,
-    graphRagModel: '',
-    graphRagMaxFilesPerRun: 50,
-    graphRagMaxConcurrentRequests: 1,
-    graphRagQueryMode: 'auto',
     enableBM25: false,
     bm25Weight: 0.3,
     performanceTuningMode: 'auto',
@@ -958,8 +944,6 @@ function createRagConfig(): RAGConfig {
     indexingYieldMs: 25,
     slowEventLoopThresholdMs: 150,
     slowBatchThresholdMs: 3000,
-    graphRagAutoSyncEnabled: false,
-    graphRagAutoSyncIntervalMin: 30,
   };
 }
 

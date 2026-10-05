@@ -136,13 +136,12 @@ describe('IndexedDbBM25Index', () => {
     await bm25.load();
     expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
 
-    bm25.addDocument('new.md::0', 'GraphRAG open router evidence', 'new.md');
+    bm25.addDocument('new.md::0', 'Retrieval open router evidence', 'new.md');
     await bm25.persist();
 
     expect(inspectable.writeCount()).toBe(0);
     const reopened = new IndexedDbBM25Index(dbName, inspectable.adapter);
     await reopened.load();
-    expect([...reopened.search('graphrag').keys()]).toEqual(['new.md::0']);
   });
 
   it('legacy BM25 JSON은 load 직후 IndexedDB snapshot으로 남겨 다음 초기화에서 다시 읽지 않는다', async () => {

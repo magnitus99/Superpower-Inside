@@ -43,7 +43,7 @@ export class IndexedDbDocumentCorpusStore implements DocumentCorpusStore {
         contentHash: first.contentHash,
         indexedAt: first.indexedAt,
         hasCompleteMetadata: true,
-        // 기존 그래프 입출력 계약의 count는 원문 청크 수로 매핑합니다.
+        // 원문 청크 수를 파일 인덱스에 기록합니다.
         vectorCount: documents.length,
         updated: first.indexedAt,
       });

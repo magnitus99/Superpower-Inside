@@ -58,10 +58,8 @@ describe('설정창 전체 개선 회귀 계약', () => {
     expect(result.error?.match(/Invalid JSON:/g)).toHaveLength(1);
     expect(result.error).toMatch(/line|column/);
   });
-  it('범위 입력에 슬라이더가 없으며 병합 기준의 개별 이름이 존재한다', () => {
+  it('범위 입력은 숫자 검증과 접근 가능한 이름을 사용한다', () => {
     expect(settings).not.toContain('.addSlider(');
-    expect(settings).toContain("t('settingsAutoMergeLabel')");
-    expect(settings).toContain("t('settingsPendingMergeLabel')");
     expect(settings).toContain('parseSettingsNumberRust');
     expect(settings).toContain('private labelSettingsControls(');
   });
@@ -77,10 +75,5 @@ describe('설정창 전체 개선 회귀 계약', () => {
     expect(prompt).toContain('previousFocus?.isConnected');
     expect(settings).toContain('superpower-inside-settings-block');
     expect(settings).toContain('findReusablePromptRust');
-  });
-  it('임베딩 전송 안내와 그래프 비용은 선택한 실제 연결을 사용한다', () => {
-    expect(settings).toContain('isLocalSettingsProviderRust');
-    expect(settings).toContain("t('settingsRemoteEmbeddingDetail')");
-    expect(settings).not.toContain("rag.graphRagModel.trim().toLowerCase().startsWith('ollama:')");
   });
 });

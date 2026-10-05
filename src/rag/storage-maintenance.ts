@@ -26,7 +26,6 @@ export interface RagStorageMaintenanceHost {
   }): Promise<{ complete: boolean }>;
   pruneEmbeddingCacheBatch(): Promise<{ remainingWork: boolean }>;
   reconcileBm25SourceBatch(validFilePaths: readonly string[]): Promise<{ remainingWork: boolean }>;
-  maintainGraphStorageBatch(validFilePaths: readonly string[]): Promise<{ remainingWork: boolean }>;
   cleanupStaleGenerationBatch(): Promise<IndexedDbCleanupResult>;
   cleanupInactiveVaultDatabaseBatch(): Promise<IndexedDbCleanupResult>;
   cleanupLegacyFileArtifacts(): Promise<{
@@ -70,11 +69,6 @@ export async function runRagStorageMaintenance(
   await runBoundedMaintenanceLoop(
     host,
     async () => host.reconcileBm25SourceBatch(await host.listValidFilePaths()),
-    isCancelled,
-  );
-  await runBoundedMaintenanceLoop(
-    host,
-    async () => host.maintainGraphStorageBatch(await host.listValidFilePaths()),
     isCancelled,
   );
 

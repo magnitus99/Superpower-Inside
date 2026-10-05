@@ -18,8 +18,7 @@ vi.mock('./rust-core', async (importOriginal) => {
     RustIvfRuntimeIndex: {
       build: rustIvfRuntimeBuildMock,
     },
-    planMergedRetrievalCandidatesByEntryIdRust:
-      planMergedRetrievalCandidatesByEntryIdRustMock,
+    planMergedRetrievalCandidatesByEntryIdRust: planMergedRetrievalCandidatesByEntryIdRustMock,
   };
 });
 
@@ -45,7 +44,7 @@ describe('IvfVectorCandidateProvider Rust bridge guard', () => {
     rustIvfRuntimeQueryMock.mockReturnValueOnce([
       { index: -1, score: 0.99 },
       { index: 100, score: 0.85 },
-      { index: 0, score: 0.70 },
+      { index: 0, score: 0.7 },
     ]);
     rustIvfRuntimeBuildMock.mockReturnValueOnce({
       clusterCount: 2,
@@ -86,10 +85,12 @@ describe('IvfVectorCandidateProvider Rust bridge guard', () => {
       { entry: shared, source: 'bm25', sourceScore: 0.9 },
       { entry: createEntry('other.md', [0, 1], 'other'), source: 'bm25', rank: 1 },
       { entry: shared, source: 'vector', sourceScore: 0.7, rank: 3 },
-      { entry: shared, source: 'graph-local', sourceScore: 0.6, rank: 4 },
+      { entry: shared, source: 'structural', sourceScore: 0.6, rank: 4 },
     ]);
 
-    const sharedIndex = groups.findIndex((group) => group.sources.some((source) => source.source === 'vector'));
+    const sharedIndex = groups.findIndex((group) =>
+      group.sources.some((source) => source.source === 'vector'),
+    );
     const sharedGroupEntry = groups[sharedIndex];
     expect(sharedIndex).toBe(0);
     expect(sharedGroupEntry?.entryIndex).toBe(0);
@@ -99,10 +100,12 @@ describe('IvfVectorCandidateProvider Rust bridge guard', () => {
 
     const vectorSource = sharedGroupEntry?.sources.find((source) => source.source === 'vector');
     const bm25Source = sharedGroupEntry?.sources.find((source) => source.source === 'bm25');
-    const graphLocalSource = sharedGroupEntry?.sources.find((source) => source.source === 'graph-local');
     expect(vectorSource).toEqual({ source: 'vector', sourceScore: 0.7, rank: 2 });
     expect(bm25Source).toEqual({ source: 'bm25', sourceScore: 0.9, rank: undefined });
-    expect(graphLocalSource).toEqual({ source: 'graph-local', sourceScore: 0.6, rank: 4 });
+    const structuralSource = sharedGroupEntry?.sources.find(
+      (source) => source.source === 'structural',
+    );
+    expect(structuralSource).toEqual({ source: 'structural', sourceScore: 0.6, rank: 4 });
     expect(groups[1]?.entryIndex).toBe(2);
     expect(groups[1]?.candidateIndexes).toEqual([2]);
     expect(groups[1]?.sources).toEqual([{ source: 'bm25', sourceScore: undefined, rank: 1 }]);

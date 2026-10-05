@@ -3,17 +3,8 @@ import Dexie from 'dexie';
 import type { DataAdapter, TFile } from 'obsidian';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { buildKnowledgeGraphContract } from '../graph/knowledge-contract';
-import { GraphRagQueryEngine } from '../graph/query-engine';
-import {
-  InMemoryKnowledgeGraphStore,
-  type GraphEntityRecord,
-  type GraphEvidenceRecord,
-  type GraphRelationRecord,
-} from '../graph/store';
 import { IndexedDbBM25Index } from './bm25';
 import { RAGQueryEngine } from './query';
-import type { RagRetrievalRequest, RetrievalCandidate } from './retrieval-pipeline';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 const bm25DbNames = new Set<string>();
@@ -24,6 +15,29 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('seed.md', [0.8, 0.6], 'seed text'),
+      createEntry('linked.md', [0, 1], 'linked text'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({
+        resolvedLinks: {
+          'seed.md': { 'linked.md': 1 },
+        },
+      }),
+    });
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'seed.md',
+      'linked.md',
+    ]);
+  });
+
   it('BM25 문서와 공통 원문의 revision이 다르면 이전 키워드 점수를 새 본문에 붙이지 않는다', async () => {
     const latest = createEntry('source.txt', [], '최신 원문');
     const sourceStore = new MemoryVectorStore();
@@ -362,163 +376,6 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
-  it('GraphRAG가 활성화되면 graph 후보가 낮은 vector score라도 최종 결과에 참여한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
-      createEntry('graph.md', [0, 1], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
-    expect(
-      results.find((result) => result.entry.metadata.filePath === 'graph.md')?.selectionReason,
-    ).toBe('strong-graph-evidence');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual([
-      expect.objectContaining({ providerId: 'exact-vector' }),
-      expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),
-    ]);
-  });
-
-  it('file-backed-only 검색은 virtual graph 후보를 provider top-k 전에 제외한다', async () => {
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    const vectorStore = new MemoryVectorStore();
-    const graphEngine = new VirtualFirstGraphRagQueryEngine(
-      graphStore,
-      vectorStore,
-      buildKnowledgeGraphContract(),
-    );
-    const engine = new RAGQueryEngine(null, createEmbeddingProvider([1, 0]), undefined, 0.3, 0, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('실제 원문 근거', 1, 0, undefined, {
-      fileBackedOnly: true,
-    });
-
-    expect(results.map((result) => result.sourcePath)).toEqual(['Notes/Actual.md']);
-  });
-
-  it('GraphRAG provider가 실패해도 기본 vector RAG 결과를 반환한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([createEntry('semantic.md', [1, 0], '기본 벡터 근거')]);
-    const graphEngine = new FailingGraphRagQueryEngine(
-      new InMemoryKnowledgeGraphStore(),
-      store,
-      buildKnowledgeGraphContract(),
-    );
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('질문', 1);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['semantic.md']);
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ providerId: 'graph-rag', status: 'error' }),
-      ]),
-    );
-  });
-
-  it('GraphRAG 근거 점수가 높으면 기본 threshold에서도 낮은 vector 후보를 유지한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
-      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3);
-
-    const graphEnabledEngine = new RAGQueryEngine(
-      store,
-      createEmbeddingProvider([1, 0]),
-      undefined,
-      0.3,
-      0.5,
-      {
-        graphRagEnabled: true,
-        graphRagQueryEngine: graphEngine,
-      },
-    );
-
-    const withoutGraph = await engine.query('Paul과 Barnabas 관계', 2);
-    const withGraph = await graphEnabledEngine.query('Paul과 Barnabas 관계', 2);
-
-    expect(withoutGraph.map((result) => result.entry.metadata.filePath)).not.toContain('graph.md');
-    expect(withGraph.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
-  });
-
-  it('GraphRAG 점수 후보가 직접 semantic 후보를 부당하게 앞지르지 않는다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
-      createEntry('graph.md', [0.2, 0.98], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'semantic.md',
-      'graph.md',
-    ]);
-  });
-
-  it('강한 GraphRAG 근거는 약한 semantic 후보보다 우선하되 직접 semantic 후보는 넘지 않는다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('direct.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
-      createEntry('weak-semantic.md', [0.9, 0.436], 'Paul과 Barnabas 이름만 언급하는 약한 문서'),
-      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 3);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'direct.md',
-      'graph.md',
-      'weak-semantic.md',
-    ]);
-  });
-
   it('현재 embedding model과 맞지 않는 stale 후보가 retrieval pool을 독점하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const freshEntry = createEntry('fresh.md', [0.9, 0.1], '현재 모델 벡터');
@@ -561,29 +418,6 @@ describe('RAGQueryEngine', () => {
     ).resolves.toMatchObject({ readiness: 'stale' });
   });
 
-  it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('seed.md', [0.8, 0.6], 'seed text'),
-      createEntry('linked.md', [0, 1], 'linked text'),
-    ]);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      structuralGraphEnabled: true,
-      structuralMetadataContext: createMetadataContext({
-        resolvedLinks: {
-          'seed.md': { 'linked.md': 1 },
-        },
-      }),
-    });
-
-    const results = await engine.query('질문', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'seed.md',
-      'linked.md',
-    ]);
-  });
-
   it('MMR 다양성 선택으로 같은 파일의 유사 청크가 topK를 독점하지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
@@ -622,38 +456,6 @@ function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
     embed: () => Promise.resolve(vector),
     embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => vector)),
   };
-}
-
-class FailingGraphRagQueryEngine extends GraphRagQueryEngine {
-  override query(): Promise<never> {
-    return Promise.reject(new Error('simulated graph retrieval failure'));
-  }
-}
-
-class VirtualFirstGraphRagQueryEngine extends GraphRagQueryEngine {
-  override query(request: RagRetrievalRequest): Promise<RetrievalCandidate[]> {
-    const candidates: RetrievalCandidate[] = [
-      ...Array.from({ length: request.candidateLimit }, (_, index) => ({
-        entry: createEntry(`graph://community/${index}`, [1, 0], `가상 요약 ${index}`),
-        source: 'graph-global' as const,
-        sourceScore: 1,
-      })),
-      {
-        entry: createEntry('Notes/Actual.md', [1, 0], '실제 원문 근거'),
-        source: 'graph-global',
-        sourceScore: 0.9,
-      },
-    ];
-    return Promise.resolve(
-      candidates
-        .filter(
-          (candidate) =>
-            (request.isEntryInScope?.(candidate.entry) ?? true) &&
-            (request.isEntryCompatible?.(candidate.entry) ?? true),
-        )
-        .slice(0, request.candidateLimit),
-    );
-  }
 }
 
 function createEntry(path: string, vector: number[], text: string, startLine = 0): VectorEntry {
@@ -715,54 +517,6 @@ class PathLookupStore extends MemoryVectorStore {
     const allowed = new Set(filePaths);
     return (await super.getEntries()).filter((entry) => allowed.has(entry.metadata.filePath));
   }
-}
-
-function createEvidence(): GraphEvidenceRecord {
-  return {
-    id: 'evidence::graph',
-    filePath: 'graph.md',
-    entryId: 'graph.md::0',
-    startLine: 0,
-    endLine: 0,
-    quote: 'Paul and Barnabas traveled together.',
-    contentHash: 'hash',
-    extractionModelKey: 'openai:gpt-4o-mini',
-    updatedAt: 1,
-  };
-}
-
-function createGraphEntity(name: string): GraphEntityRecord {
-  return {
-    id: `entity::general::person::${name.toLowerCase()}`,
-    ontologySchemaId: 'knowledge-graph',
-    ontologyVersion: 1,
-    typeId: 'person',
-    canonicalName: name,
-    aliases: [],
-    description: '',
-    properties: {},
-    confidence: 0.9,
-    evidenceIds: ['evidence::graph'],
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}
-
-function createGraphRelation(): GraphRelationRecord {
-  return {
-    id: 'relation::graph',
-    ontologySchemaId: 'knowledge-graph',
-    ontologyVersion: 1,
-    relationTypeId: 'collaborated_with',
-    sourceEntityId: 'entity::general::person::paul',
-    targetEntityId: 'entity::general::person::barnabas',
-    description: 'Paul and Barnabas traveled together.',
-    properties: {},
-    confidence: 0.9,
-    evidenceIds: ['evidence::graph'],
-    createdAt: 1,
-    updatedAt: 1,
-  };
 }
 
 function createMetadataContext(input: { resolvedLinks?: Record<string, Record<string, number>> }) {

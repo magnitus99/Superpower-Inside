@@ -226,15 +226,14 @@ describe('SourcePanel view model contract', () => {
         previewTruncated: true,
       },
       {
-        id: 'graph-1',
-        filePath: 'graph://community/product-philosophy',
+        id: 'rag-2',
+        filePath: 'Notes/Links.md',
         status: 'verified',
-        preview: 'Related themes are connected in the knowledge graph.',
-        graphType: 'community',
-        selectionReason: 'strong-graph-evidence',
+        selectionReason: 'strong-structural-evidence',
+        preview: '현재 연결된 노트 원문',
       },
       {
-        id: 'rag-2',
+        id: 'rag-3',
         filePath: 'Notes/Old.md',
         status: 'stale',
         detail: 'The note changed after this context was prepared.',
@@ -255,7 +254,6 @@ describe('SourcePanel view model contract', () => {
     );
     expect(view.cards[1]).toEqual(
       expect.objectContaining({
-        graphKindText: 'Knowledge theme',
         metaText: 'strong relationship match',
       }),
     );
@@ -267,7 +265,6 @@ describe('SourcePanel view model contract', () => {
     );
 
     const renderedText = JSON.stringify(view);
-    expect(renderedText).not.toContain('GraphRAG');
     expect(renderedText).not.toContain('vector');
     expect(renderedText).not.toContain('relevance 0.812');
   });
@@ -294,14 +291,6 @@ describe('SourcePanel view model contract', () => {
         detail: 'Only part of the folder was attached to fit the context budget.',
       },
       {
-        id: 'graph-rag:auto',
-        type: 'graph-rag',
-        name: 'auto',
-        label: 'GraphRAG 1 entity',
-        status: 'attached',
-        sourceIds: ['graph-1'],
-      },
-      {
         id: 'rag:skipped',
         type: 'rag',
         name: 'auto',
@@ -326,12 +315,6 @@ describe('SourcePanel view model contract', () => {
         title: 'Only the part that fit was included.',
       },
       {
-        id: 'graph-rag:auto',
-        className: 'superpower-inside-chat-context-chip graph-rag attached',
-        label: 'Checked knowledge graph',
-        title: undefined,
-      },
-      {
         id: 'rag:skipped',
         className: 'superpower-inside-chat-context-chip rag skipped',
         label: 'Vault search skipped',
@@ -348,7 +331,7 @@ describe('SourcePanel view model contract', () => {
         attachmentCount: 4,
         citationCount: 2,
         truncated: true,
-        includedAttachmentIds: ['file:a', 'rag:auto', 'graph:auto'],
+        includedAttachmentIds: ['file:a', 'rag:auto', 'server:local'],
         excludedAttachmentIds: ['rag:old'],
       }),
     ).toEqual({

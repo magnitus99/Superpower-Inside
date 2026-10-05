@@ -12,8 +12,8 @@ describe('IndexedDB vault lifecycle registry', () => {
       embeddingNamespace: 'embedding',
       indexNamespace: createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT),
     });
-    const foreign = 'superpower-inside:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:graph';
-    const databases = [layout.active.graph, foreign, 'SuperpowerInsideEmbeddingCache'];
+    const foreign = 'superpower-inside:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:corpus';
+    const databases = [foreign, 'SuperpowerInsideEmbeddingCache'];
     let registry: string | null = null;
     let now = 100;
     const deleteDatabase = vi.fn(() => Promise.resolve<'deleted'>('deleted'));
@@ -46,7 +46,6 @@ describe('IndexedDB vault lifecycle registry', () => {
     expect(retired.deletedNames).toEqual(
       expect.arrayContaining([foreign, 'SuperpowerInsideEmbeddingCache']),
     );
-    expect(deleteDatabase).not.toHaveBeenCalledWith(layout.active.graph);
   });
 
   it('recovers from malformed registry state without deleting newly discovered databases', async () => {

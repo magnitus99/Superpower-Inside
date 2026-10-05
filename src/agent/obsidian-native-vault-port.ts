@@ -46,7 +46,7 @@ export interface NativeVaultQueryEngineLike {
     topK: number,
     minScore?: number,
     filePathPrefixes?: readonly string[],
-    options?: { fileBackedOnly?: boolean; signal?: AbortSignal },
+    options?: { signal?: AbortSignal },
   ): Promise<QueryResult[]>;
   getLastRetrievalDiagnostics?(): readonly RetrievalProviderDiagnostic[];
   getIndexReadiness?(
@@ -213,7 +213,6 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     if (!seed.trim()) throw new Error(t('nativeVaultPlanUnavailable'));
     const results = await awaitWithAbort(
       engine.query(seed, Math.min(20, request.limit + 4), 0, undefined, {
-        fileBackedOnly: true,
         ...(signal ? { signal } : {}),
       }),
       signal,
@@ -396,7 +395,6 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         throwIfAborted(signal);
         const results = await awaitWithAbort(
           engine.query(query, request.limit, undefined, request.path ? [request.path] : undefined, {
-            fileBackedOnly: true,
             signal,
           }),
           signal,

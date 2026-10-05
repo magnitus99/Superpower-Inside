@@ -13,11 +13,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
-it('작업 디렉터리와 무관하게 네 worker를 독립된 번들과 기존 상수명으로 생성한다', () => {
+it('작업 디렉터리와 무관하게 세 worker를 독립된 번들과 기존 상수명으로 생성한다', () => {
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const root = mkdtempSync(join(tmpdir(), 'superpower-workers-'));
   const workers = [
-    ['graph/community', 'graph-community', 'GRAPH_COMMUNITY'],
     ['rag/bm25', 'bm25', 'BM25'],
     ['rag/vector-search', 'vector-search', 'VECTOR_SEARCH'],
     ['llm/ternlight', 'ternlight', 'TERNLIGHT'],

@@ -123,13 +123,13 @@ describe('RagRetrievalPipeline', () => {
     const coldProvider: CandidateProvider & {
       getReadiness(): { readiness: 'cold'; estimatedCost: 'high'; reason: string };
     } = {
-      id: 'cold-graph',
-      source: 'graph-local',
+      id: 'cold-structural',
+      source: 'structural',
       deadlineMs: 50,
       getReadiness: () => ({
         readiness: 'cold',
         estimatedCost: 'high',
-        reason: 'GraphRAG index has not been built yet.',
+        reason: '검색 인덱스가 아직 준비되지 않았습니다.',
       }),
       getCandidates: () => {
         coldCalls++;
@@ -157,12 +157,12 @@ describe('RagRetrievalPipeline', () => {
     expect(result.candidates.map((candidate) => candidate.entry.id)).toEqual([readyEntry.id]);
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
-        providerId: 'cold-graph',
-        source: 'graph-local',
+        providerId: 'cold-structural',
+        source: 'structural',
         status: 'skipped',
         readiness: 'cold',
         estimatedCost: 'high',
-        skippedReason: 'GraphRAG index has not been built yet.',
+        skippedReason: '검색 인덱스가 아직 준비되지 않았습니다.',
       }),
       expect.objectContaining({
         providerId: 'ready-vector',
@@ -177,14 +177,14 @@ describe('RagRetrievalPipeline', () => {
   it('provider readiness 계산 실패도 전체 retrieval 실패로 전파하지 않는다', async () => {
     const provider: CandidateProvider = {
       id: 'broken-readiness',
-      source: 'graph-local',
+      source: 'structural',
       deadlineMs: 50,
       getReadiness: () => {
         throw new Error('readiness failed');
       },
       getCandidates: () =>
         Promise.resolve([
-          { entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'graph-local' },
+          { entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'structural' },
         ]),
     };
     const pipeline = new RagRetrievalPipeline([provider]);

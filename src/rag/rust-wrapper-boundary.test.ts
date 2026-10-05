@@ -7,7 +7,6 @@ const repositoryRoot = resolve(__dirname, '../..');
 const packageJsonPath = resolve(repositoryRoot, 'package.json');
 const runtimeRoots = [
   'src/rag',
-  'src/graph',
   'src/chat/context.ts',
   'src/chat/context-budget.ts',
   'src/chat/context-expansion.ts',
@@ -84,7 +83,7 @@ describe('Rust wrapper boundary', () => {
     expect(reviewScript).toContain('statSync(mainJsPath).size');
   });
 
-  it('런타임 RAG/GraphRAG 소스에 TypeScript 계산 fallback helper를 두지 않는다', () => {
+  it('런타임 RAG 소스에 TypeScript 계산 fallback helper를 두지 않는다', () => {
     const runtimeFiles = runtimeRoots
       .flatMap(listTypeScriptFiles)
       .map((file) => relative(repositoryRoot, file));
@@ -122,17 +121,13 @@ describe('Rust wrapper boundary', () => {
         /Math\.max\(existing\.confidence,\s*next\.confidence\)/u,
         /cached\?\.contentHash\s*===\s*input\.contentHash/u,
         /cached\.extractionModelKey\s*===\s*input\.extractionModelKey/u,
-        /cached\.ontologySchemaId\s*===\s*input\.ontologySchemaId/u,
-        /cached\.ontologyVersion\s*===\s*input\.ontologyVersion/u,
         /const\s+pathSet\s*=\s*new Set\(filePaths\)/u,
         /const\s+idSet\s*=\s*new Set\(entryIds\)/u,
         /const\s+removedEvidenceIds\s*=\s*new Set/u,
-        /const\s+deletedEntityIdSet\s*=\s*new Set/u,
         /const\s+deletedRelationIdSet\s*=\s*new Set/u,
         /evidence\.filter\(\(e\)\s*=>\s*pathSet\.has\(e\.filePath\)\)/u,
         /facts\.filter\(\(f\)\s*=>\s*pathSet\.has\(f\.filePath\)\)/u,
         /cache\.filter\(\(c\)\s*=>\s*idSet\.has\(c\.entryId\)\)/u,
-        /claim\.entityIds\.filter\(\(id\)\s*=>\s*!deletedEntityIdSet\.has\(id\)\)/u,
         /claim\.relationIds\.filter\(\(id\)\s*=>\s*!deletedRelationIdSet\.has\(id\)\)/u,
         /function\s+withoutRemovedEvidence\b/u,
         /const\s+evidenceById\s*=\s*new Map/u,
@@ -144,8 +139,6 @@ describe('Rust wrapper boundary', () => {
         /function\s+pushEvidenceIndices\b/u,
         /function\s+clampScore\b/u,
         /function\s+getOrCreateNumericKey\b/u,
-        /function\s+detectCommunitiesWithRust\b/u,
-        /function\s+extractUniqueEntityIds\b/u,
         /const\s+compatibleEntities\s*=\s*entities\.filter/u,
         /let\s+bestMatch\b/u,
         /const\s+sourceAnalysis\s*=\s*analyzeRetrievalSources/u,
@@ -157,20 +150,12 @@ describe('Rust wrapper boundary', () => {
         /const\s+mentionedNames\s*=\s*new Set/u,
         /const\s+matchedEntities\s*=\s*entities\.filter/u,
         /const\s+matchedRelations\s*=\s*relations\.filter/u,
-        /const\s+entityById\s*=\s*new Map/u,
-        /const\s+entityIds\s*=\s*\(claim\.entityNames/u,
         /entitiesByName\.get\(normalizeName\(name\)\)\?\.id/u,
         /const\s+source\s*=\s*entitiesByName\.get\(normalizeName\(relation\.source\)\)/u,
         /const\s+target\s*=\s*entitiesByName\.get\(normalizeName\(relation\.target\)\)/u,
-        /function\s+isKnownEntityType\b/u,
         /function\s+isKnownClaimType\b/u,
-        /schema\.entityTypes\.some/u,
         /schema\.claimTypes\.some/u,
-        /const\s+entityIds\s*=\s*\[\.\.\.new Set\(entities\.map/u,
-        /const\s+entityIndexById\s*=\s*new Map\(entityIds\.map/u,
         /const\s+groupedEntities\s*=\s*new Map/u,
-        /const\s+communityRelations\s*=\s*new Map/u,
-        /const\s+communityClaims\s*=\s*new Map/u,
         /toLowerCase\(\)\.endsWith\('\.md'\)/u,
         /references\.some\(\(reference\)\s*=>\s*reference\.file\.path\s*===\s*file\.path\)/u,
         /\.find\(\(file\)\s*=>\s*file\.basename\s*===\s*plan\.fallbackBasename\)/u,
@@ -184,10 +169,7 @@ describe('Rust wrapper boundary', () => {
         /mentions\.filter\(\(item\)\s*=>\s*item\.type\s*===/u,
         /mentions\.some\(\(mention\)\s*=>\s*mention\.type\s*===/u,
         /mention\.type\s*===\s*'file'\s*\|\|\s*mention\.type\s*===\s*'folder'/u,
-        /entities\.find\(\(entity\)\s*=>\s*entity\.id\s*===\s*rel\.sourceEntityId/u,
-        /entities\.find\(\(entity\)\s*=>\s*entity\.id\s*===\s*rel\.targetEntityId/u,
         /matchedRelations\.slice\(0,\s*15\)/u,
-        /entity\.description\.slice\(0,\s*200\)/u,
         /rel\.description\.slice\(0,\s*150\)/u,
         /preferredServerNames\.filter/u,
         /!preferred\.includes\(serverName\)/u,
@@ -200,42 +182,16 @@ describe('Rust wrapper boundary', () => {
         /function\s+isProbablyText\b/u,
         /file\.stat\.size\s*===\s*0/u,
         /candidateFilePaths\.slice\(0,\s*this\.maxFilesPerRun\)/u,
-        /filterGraphRagMarkdownFilePaths\(\[\.\.\.this\.failedFilePaths\]\)\.sort\(\)/u,
-        /filterGraphRagMarkdownFilePaths\(\[\.\.\.options\.staleFilePaths\]\)\.sort\(\)/u,
-        /filterProcessableGraphRagFilePaths\([^)]*\)\.sort\(\)/u,
         /const\s+unsupportedFilePaths\s*=\s*new Set/u,
         /unsupportedFilePaths\.add\(record\.filePath\)/u,
-        /relations\.filter\(\(relation\)\s*=>\s*relation\.ontologySchemaId\s*===\s*this\.ontologySchema\.id\)/u,
-        /communities\)\.filter\(\s*\(community\)\s*=>\s*community\.ontologySchemaId\s*===\s*this\.ontologySchema\.id/u,
-        /\(community\)\s*=>\s*community\.ontologySchemaId\s*===\s*this\.ontologySchema\.id/u,
-        /community\.ontologySchemaId\s*===\s*ontologySchemaId/u,
         /items\.findIndex\(\(candidate\)\s*=>\s*candidate\.entry\.id\s*===\s*item\.entry\.id\)/u,
         /this\.queryMode\s*===\s*'local'/u,
         /this\.queryMode\s*===\s*'hybrid'/u,
         /autoPlan\.queryMode\s*===/u,
         /autoPlan\.evidenceFirst/u,
         /fallback selection loop/iu,
-        /function\s+(isSafeMention|extractEntityHints|isQuestionKeyword|createInitialCentroids|resolveClusterCount|cosineSimilarity|getHeadingRanges|isLineInRange|mergeEvidenceScores|createFileIndexRecordsFromEntries|createFileIndexRecord|toSortedFileTypeCounts|getExtensionLabel|extractSourceReferences|pathAliases|addWarning|detectQuestion|extractChoices|extractPrompt|extractLastQuestionBlock|isFollowUpSuggestion|isStructuredAnswer|parseMarkdownMessages|parseMessageMeta|extractNamedBlock|decodeTextBlock|extractPreview|countMarkdownMessages|parseInteger|deriveTitle|deriveSummary|createCitation|createPreview|isGraphVirtualSource|verifyGraphQueryResult)\b/u,
-        /\b(addLinkedFilePaths|getHeadingNeighborEntries|parseRerankResponse|applyRerankOrder|parsePlannerResponse|parseJsonObject|createPathCandidates|normalizeVaultPath|ensureMarkdownExtension|stripMarkdownExtension|extractSourceReferences|pathAliases|detectQuestion|extractChoices|extractPrompt|extractLastQuestionBlock|parseMarkdownMessages|parseMessageMeta|extractNamedBlock|decodeTextBlock|extractPreview|countMarkdownMessages|parseInteger|deriveTitle|deriveSummary|createCitation|createPreview|isGraphVirtualSource|verifyGraphQueryResult)\b/u,
         /claim\.evidenceIds\.map/u,
       ]),
-    ).toEqual([]);
-
-    expect(findOffenders(['src/graph/query-engine.ts'], [/function\s+mergeCandidates\b/u])).toEqual(
-      [],
-    );
-
-    expect(
-      findOffenders(
-        ['src/graph/status.ts'],
-        [
-          /function\s+getTotalCandidateFiles\b/u,
-          /function\s+getFileIndexRecords\b/u,
-          /function\s+filterProcessableGraphRagEntries\b/u,
-          /filterProcessableGraphRagFilePaths\(/u,
-          /entries\.filter\(\(entry\)\s*=>/u,
-        ],
-      ),
     ).toEqual([]);
   });
 

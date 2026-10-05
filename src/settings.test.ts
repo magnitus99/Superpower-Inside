@@ -27,10 +27,6 @@ import {
   buildEmbeddingModelOptions,
   resolveProviderReadiness,
   selectInitialEmbeddingModel,
-  buildGraphRagActionGroups,
-  getGraphRagIndexingResultNotice,
-  getGraphRagLiveStatusPresentation,
-  getGraphRagControlState,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
   normalizeRagPerformanceTuningMode,
@@ -72,6 +68,32 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
+  it('모델 옵션은 custom provider 내부 id 대신 사용자가 정한 이름을 표시한다', () => {
+    const options = buildChatModelOptions(
+      {
+        ...DEFAULT_SETTINGS,
+        customOpenAIProviders: [
+          {
+            id: 'custom-1',
+            name: 'Onyx Provider',
+            apiKey: 'key',
+            baseUrl: 'https://example.com/v1',
+            models: ['auto'],
+            enabled: true,
+            useRequestUrl: true,
+          },
+        ],
+      },
+      { currentModel: 'customOpenAI:custom-1:auto', includeEmpty: true },
+    );
+
+    expect(options).toContainEqual({
+      value: 'customOpenAI:custom-1:auto',
+      label: 'Onyx Provider / auto',
+    });
+    expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
+  });
+
   it('ChatGPT OAuth는 기기 로그인으로 준비 상태를 판정하고 기존 설정 값을 보존한다', () => {
     connectTestChatGPT('subscription');
     const settings = migrateLegacyProviderProfiles({
@@ -118,12 +140,6 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
     setLanguage('en');
     expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth)');
-  });
-  it('GraphRAG와 ontology 추출은 기본 비활성이며 자동 실행도 끈 상태다', () => {
-    expect(DEFAULT_SETTINGS.rag.graphRagEnabled).toBe(false);
-    expect(DEFAULT_SETTINGS.rag.graphRagAutoSyncEnabled).toBe(false);
-    expect(DEFAULT_SETTINGS.rag.graphRagModel).toBe('');
-    expect(DEFAULT_SETTINGS.rag.enableBM25).toBe(true);
   });
   it('provider profile model refs preserve provider id and colon-containing model ids', () => {
     const value = buildProviderModelRef('local-ollama', 'qwen3:8b-q8_0');
@@ -829,32 +845,6 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(options.some((option) => option.value === 'customOpenAI:disabled')).toBe(false);
   });
 
-  it('GraphRAG 모델 옵션은 custom provider 내부 id 대신 사용자가 정한 이름을 표시한다', () => {
-    const options = buildChatModelOptions(
-      {
-        ...DEFAULT_SETTINGS,
-        customOpenAIProviders: [
-          {
-            id: 'custom-1',
-            name: 'Onyx Graph Provider',
-            apiKey: 'key',
-            baseUrl: 'https://example.com/v1',
-            models: ['auto'],
-            enabled: true,
-            useRequestUrl: true,
-          },
-        ],
-      },
-      { currentModel: 'customOpenAI:custom-1:auto', includeEmpty: true },
-    );
-
-    expect(options).toContainEqual({
-      value: 'customOpenAI:custom-1:auto',
-      label: 'Onyx Graph Provider / auto',
-    });
-    expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
-  });
-
   it('채팅 저장 폴더 값은 레거시 이름이어도 저장된 값을 그대로 보존한다', () => {
     expect(normalizeChatSaveFolder('SuperObsidianByAI')).toBe('SuperObsidianByAI');
     expect(normalizeChatSaveFolder('SuperObsidianByAIChats')).toBe('SuperObsidianByAIChats');
@@ -877,7 +867,6 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.indexingYieldMs).toBe(25);
     expect(DEFAULT_SETTINGS.rag.slowEventLoopThresholdMs).toBe(150);
     expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
-    expect(DEFAULT_SETTINGS.rag.graphRagMaxConcurrentRequests).toBe(1);
   });
 
   it('내장 Ternlight는 페이싱 없이, 원격 프로바이더는 배치 제한과 함께 인덱싱한다', () => {
@@ -1014,7 +1003,6 @@ describe('RAG 설정 표시 헬퍼', () => {
       vectorStore: null as typeof vectorStore | null,
       getRagRuntimeState: vi.fn(() => ({
         ragStatus: plugin.eventDrivenRagStats,
-        graphRagStatus: null,
         vectorStore: plugin.vectorStore,
         embeddingProvider: null,
         ragIndexingScheduler: null,
@@ -1041,286 +1029,6 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(plugin.ensureRagRuntimeInitialized).toHaveBeenCalledOnce();
     expect(status?.totalDocuments).toBe(1);
-  });
-
-  it('GraphRAG 작업 버튼은 실행 범위와 차이를 라벨/설명에 드러낸다', () => {
-    const groups = buildGraphRagActionGroups({
-      controls: {
-        start: { disabled: false, reason: null },
-        cancel: { disabled: true, reason: '실행 중인 GraphRAG 인덱싱이 없습니다.' },
-        resume: { disabled: false, reason: null },
-      },
-      syncStale: { disabled: false, reason: null },
-      buildCommunities: { disabled: false, reason: null },
-      resetGraphRag: { disabled: false, reason: null },
-      openExplorer: { disabled: false, reason: null },
-      totalCandidateFiles: 50,
-      maxFilesPerRun: 20,
-      failedFileCount: 3,
-      staleFileCount: 7,
-    });
-
-    expect(groups.map((group) => group.label)).toEqual(['추출 실행', '그래프 정리', '결과 확인']);
-    expect(groups.flatMap((group) => group.actions.map((action) => action.label))).toEqual([
-      '전체 추출 실행',
-      '실행 중지',
-      '실패만 재시도 (3)',
-      '변경분 동기화 (7)',
-      '커뮤니티 다시 빌드',
-      'GraphRAG 데이터 초기화',
-      '탐색기 열기',
-    ]);
-    expect(groups[0]?.actions[0]?.description).toContain('대상 .md 노트 50개 중 최대 20개');
-    expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
-    expect(groups[1]?.actions[1]?.description).toContain(
-      '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
-    );
-    expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
-  });
-
-  it('GraphRAG live 상태는 현재 phase와 파일 진행률을 작은 패널 문구로 바꾼다', () => {
-    const status = getGraphRagLiveStatusPresentation({
-      isRunning: true,
-      phase: 'api-response-normalizing',
-      currentFile: 'folder/note.md',
-      processedFiles: 2,
-      skippedFiles: 1,
-      failedFiles: 1,
-      selectedFiles: 8,
-      processedChunks: 0,
-      skippedChunks: 0,
-      failedChunks: 0,
-      storedEvidence: 0,
-      storedEntities: 0,
-      storedRelations: 0,
-      storedClaims: 0,
-      storedRejectedFacts: 0,
-      cachedChunks: 0,
-    });
-
-    expect(status.active).toBe(true);
-    expect(status.title).toBe('지금 GraphRAG가 인덱싱 중입니다');
-    expect(status.phaseLabel).toBe('API 응답 정리 중');
-    expect(status.detail).toBe('4/8 파일 처리 중 (note.md) — 50%');
-    expect(status.chunkDetail).toBeNull();
-    expect(status.storageDetail).toBeNull();
-  });
-
-  it('GraphRAG live 상태는 청크 처리량과 저장 항목 수를 함께 보여준다', () => {
-    const status = getGraphRagLiveStatusPresentation({
-      isRunning: true,
-      phase: 'storing-results',
-      currentFile: 'folder/note.md',
-      processedFiles: 57,
-      skippedFiles: 0,
-      failedFiles: 2,
-      selectedFiles: 1406,
-      processedChunks: 12,
-      skippedChunks: 3,
-      failedChunks: 2,
-      storedEvidence: 12,
-      storedEntities: 38,
-      storedRelations: 21,
-      storedClaims: 9,
-      storedRejectedFacts: 2,
-      cachedChunks: 10,
-    });
-
-    expect(status.detail).toBe('59/1406 파일 처리 중 (note.md) — 4%');
-    expect(status.chunkDetail).toBe('청크 12개 저장 완료, 2개 실패');
-    expect(status.storageDetail).toBe('저장됨: 증거 12, 엔티티 38, 관계 21, 클레임 9, 거부 2');
-  });
-
-  it('GraphRAG live 상태는 실행 중이 아니면 비활성 패널 상태를 반환한다', () => {
-    expect(
-      getGraphRagLiveStatusPresentation({
-        isRunning: false,
-        phase: 'completed',
-        currentFile: null,
-        processedFiles: 5,
-        skippedFiles: 0,
-        failedFiles: 0,
-        selectedFiles: 5,
-        processedChunks: 3,
-        skippedChunks: 0,
-        failedChunks: 0,
-        storedEvidence: 3,
-        storedEntities: 2,
-        storedRelations: 1,
-        storedClaims: 1,
-        storedRejectedFacts: 0,
-        cachedChunks: 3,
-      }),
-    ).toEqual({
-      active: false,
-      title: 'GraphRAG 인덱싱 대기 중',
-      phaseLabel: '추출 완료',
-      detail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
-      chunkDetail: null,
-      storageDetail: null,
-    });
-  });
-
-  it('변경분 동기화가 처리할 파일 없이 끝나면 완료 대신 이유를 안내한다', () => {
-    const notice = getGraphRagIndexingResultNotice(
-      {
-        totalCandidateFiles: 0,
-        selectedFiles: 0,
-        processedFiles: 0,
-        skippedFiles: 0,
-        failedFiles: 0,
-        processedChunks: 0,
-        skippedChunks: 0,
-        failedChunks: 0,
-        cancelled: false,
-        startedAt: 1,
-        finishedAt: 2,
-        runId: 1,
-      },
-      'syncStale',
-    );
-
-    expect(notice).toBe(
-      'GraphRAG 변경분 동기화: 다시 추출할 파일이 없습니다. 모든 파일이 최신 상태이거나 현재 RAG 인덱스에 남아 있는 변경 후보가 없습니다.',
-    );
-  });
-
-  it('resetGraphRag 액션은 확인창 승인 시 plugin.resetGraphRagData를 호출하고 상태 갱신합니다', async () => {
-    const refreshSpy = vi.fn();
-    const plugin = {
-      app: {} as never,
-      settings: {
-        ...DEFAULT_SETTINGS,
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          graphRagEnabled: true,
-          graphRagModel: 'openai:gpt-4.1-mini',
-          graphRagMaxFilesPerRun: 10,
-        },
-      },
-      graphRagStatus: null,
-      knowledgeGraphStore: null,
-      vectorStore: null,
-      saveSettings: vi.fn(),
-      saveSettingsLight: vi.fn(),
-      reconnectMCP: vi.fn(),
-      setupAutoUpdate: vi.fn(),
-      isGraphRagIndexing: vi.fn(() => false),
-      cancelGraphRagIndexing: vi.fn(),
-      runGraphRagIndexing: vi.fn(),
-      resumeGraphRagIndexing: vi.fn(),
-      syncStaleGraphRag: vi.fn(),
-      buildGraphRagCommunities: vi.fn(),
-      resetGraphRagData: vi.fn(() => Promise.resolve()),
-      hasGraphRagRunner: vi.fn(() => true),
-      openGraphRagView: vi.fn(),
-      eventDrivenRagStats: null,
-      getRagRuntimeState: vi.fn(() => ({
-        ragStatus: null,
-        graphRagStatus: plugin.graphRagStatus,
-        vectorStore: plugin.vectorStore,
-        embeddingProvider: null,
-        ragIndexingScheduler: null,
-        ragIndexingStatus: null,
-        hasIndexer: false,
-        nextAutoUpdateAt: null,
-        lastAutoUpdateSkippedReason: null,
-        lastAutoUpdateResult: null,
-        lastInitError: null,
-        lastInitSkippedReason: null,
-      })),
-      initRAG: vi.fn(),
-      isRagIndexing: vi.fn(),
-      cancelRagIndexing: vi.fn(),
-      runRagIndexing: vi.fn(),
-      resumeRagIndexing: vi.fn(),
-      getRagPerformanceGuardState: vi.fn(),
-      createIndexedDbName: vi.fn(),
-      mcpRegistry: null,
-      refreshBus: {
-        on: vi.fn(() => refreshSpy),
-        emit: vi.fn(),
-      },
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        notice: vi.fn(),
-      },
-    };
-    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const spy = vi
-      .spyOn(tab as unknown as { updateGraphRagStats: () => void }, 'updateGraphRagStats')
-      .mockImplementation(() => {
-        return;
-      });
-    const action = {
-      id: 'resetGraphRag' as const,
-      groupId: 'maintain',
-      groupLabel: '그래프 정리',
-      label: 'GraphRAG 데이터 초기화',
-      description:
-        '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
-      iconName: 'trash-2',
-      state: { disabled: false, reason: null },
-      tone: 'danger' as const,
-    };
-    await (
-      tab as unknown as {
-        handleGraphRagAction: (
-          action: {
-            id: 'resetGraphRag';
-          },
-          cost: { costLabel: string },
-        ) => Promise<void>;
-      }
-    ).handleGraphRagAction(action, { costLabel: 'local' });
-
-    expect(modalPromptMocks.confirmWithModal).toHaveBeenCalledOnce();
-    expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
-    expect(spy).toHaveBeenCalledOnce();
-    spy.mockRestore();
-  });
-
-  it('GraphRAG 추출 모델이 없으면 provider 상태보다 모델 선택 안내를 먼저 표시한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: false,
-      hasModel: false,
-      isRunning: false,
-      totalCandidateFiles: 1,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe('GraphRAG 추출 모델을 선택하세요.');
-  });
-
-  it('GraphRAG 모델은 있지만 runner가 없으면 provider와 모델 목록 설정을 안내한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: false,
-      hasModel: true,
-      isRunning: false,
-      totalCandidateFiles: 1,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe(
-      '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
-    );
-  });
-
-  it('GraphRAG가 켜져 있고 대상 파일만 없으면 비활성 대신 대상 없음 사유를 표시한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: true,
-      hasModel: true,
-      isRunning: false,
-      totalCandidateFiles: 0,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe('공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.');
   });
 
   it('일반 설정 자동 저장은 RAG 런타임을 재초기화하지 않는다', async () => {

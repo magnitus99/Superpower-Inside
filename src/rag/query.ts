@@ -3,7 +3,6 @@ import type { VectorStore, VectorEntry } from './store';
 import type { IndexedDbBM25Index } from './bm25';
 import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
 import { BM25DocumentCorpusStore, FallbackRetrievalCorpusStore } from './corpus-store';
-import { GraphRagCandidateProvider, type GraphRagQueryEngine } from '../graph/query-engine';
 import {
   BM25CandidateProvider,
   ExactVectorCandidateProvider,
@@ -48,8 +47,8 @@ export interface QueryResult {
   retrievalSources?: string[];
   sourceEvidenceScore?: number;
   bestEvidenceRank?: number;
-  hasGraphOrStructuralEvidence?: boolean;
-  hasStrongGraphOrStructuralEvidence?: boolean;
+  hasStructuralEvidence?: boolean;
+  hasStrongStructuralEvidence?: boolean;
   selectionReason?: RustSourceSelectionReason;
   sourcePath: string;
   chunkRange: {
@@ -68,15 +67,11 @@ export interface RAGQueryEngineOptions {
   annMinEntryCount?: number;
   structuralGraphEnabled?: boolean;
   structuralMetadataContext?: StructuralMetadataContext;
-  graphRagEnabled?: boolean;
-  graphRagQueryEngine?: GraphRagQueryEngine;
-  graphRagReadiness?: () => RetrievalProviderReadiness;
   embeddingModel?: string;
   embeddingProvider?: string;
 }
 
 export interface RAGQueryOptions {
-  fileBackedOnly?: boolean;
   signal?: AbortSignal;
 }
 
@@ -154,14 +149,6 @@ export class RAGQueryEngine {
         ),
       );
     }
-    if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
-      providers.push(
-        new GraphRagCandidateProvider(
-          options.graphRagQueryEngine,
-          options.graphRagReadiness ?? defaultGraphRagReadiness,
-        ),
-      );
-    }
     this.retrievalPipeline = new RagRetrievalPipeline(providers);
   }
 
@@ -177,7 +164,7 @@ export class RAGQueryEngine {
     const candidatePaths = await this.getCandidatePaths?.();
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
-      this.isEntryInQueryScope(entry, filePathPrefixes, options.fileBackedOnly === true);
+      this.isEntryInQueryScope(entry, filePathPrefixes);
     let qVector: number[] = [];
     let embeddingFailure = false;
     if (this.embeddingProvider) {
@@ -198,7 +185,6 @@ export class RAGQueryEngine {
         question,
         queryVector: qVector,
         candidateLimit: topK * 8,
-        fileBackedOnly: options.fileBackedOnly === true,
         requireSourceRevision: this.corpusStore !== undefined,
         vectorFilter:
           qVector.length > 0
@@ -210,8 +196,7 @@ export class RAGQueryEngine {
               }
             : undefined,
         isEntryCompatible: (entry) =>
-          isInScope(entry) &&
-          this.isEntryCompatible(entry, qVector, filePathPrefixes, options.fileBackedOnly === true),
+          isInScope(entry) && this.isEntryCompatible(entry, qVector, filePathPrefixes),
         isEntryInScope: isInScope,
         filterCurrentCandidates: this.corpusStore
           ? (candidates) => this.filterCurrentCandidates(candidates)
@@ -279,8 +264,8 @@ export class RAGQueryEngine {
         retrievalSources: [...candidate.sources],
         sourceEvidenceScore: scorePlan.sourceEvidenceScore,
         bestEvidenceRank: scorePlan.bestEvidenceRank,
-        hasGraphOrStructuralEvidence: scorePlan.hasGraphOrStructuralEvidence,
-        hasStrongGraphOrStructuralEvidence: scorePlan.hasStrongGraphOrStructuralEvidence,
+        hasStructuralEvidence: scorePlan.hasStructuralEvidence,
+        hasStrongStructuralEvidence: scorePlan.hasStrongStructuralEvidence,
         selectionReason: scorePlan.selectionReason,
         sourcePath: entry.metadata.filePath,
         chunkRange: {
@@ -421,7 +406,6 @@ export class RAGQueryEngine {
     entry: VectorEntry,
     queryVector: readonly number[],
     filePathPrefixes?: readonly string[],
-    fileBackedOnly = false,
   ): boolean {
     if (queryVector.length > 0 && entry.vector.length > 0) {
       if (entry.vector.length !== queryVector.length) return false;
@@ -440,15 +424,13 @@ export class RAGQueryEngine {
         return false;
       }
     }
-    return this.isEntryInQueryScope(entry, filePathPrefixes, fileBackedOnly);
+    return this.isEntryInQueryScope(entry, filePathPrefixes);
   }
 
   private isEntryInQueryScope(
     entry: VectorEntry,
     filePathPrefixes: readonly string[] | undefined,
-    fileBackedOnly: boolean,
   ): boolean {
-    if (fileBackedOnly && entry.metadata.filePath.startsWith('graph://')) return false;
     return this.isEntryInPathScope(entry, filePathPrefixes);
   }
 
@@ -478,10 +460,6 @@ export class RAGQueryEngine {
       )
       .join('\n\n---\n\n');
   }
-}
-
-function defaultGraphRagReadiness(): RetrievalProviderReadiness {
-  return { readiness: 'partial', estimatedCost: 'free' };
 }
 
 function countKeywordMatches(queryTokens: string[], text: string): number {

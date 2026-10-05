@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  getLanguage,
-  isLocalizedValue,
-  resolveUiLanguage,
-  setLanguage,
-  t,
-} from './i18n';
+import { getLanguage, isLocalizedValue, resolveUiLanguage, setLanguage, t } from './i18n';
 
 afterEach(() => {
   setLanguage('en');
@@ -30,14 +24,6 @@ describe('UI 언어 계약', () => {
     expect(t('tabProviders')).toBe('AI connections');
     expect(t('providerNewName')).toBe('New provider');
     expect(/[가-힣]/u.test(`${t('tabProviders')} ${t('providerNewName')}`)).toBe(false);
-  });
-
-  it('RAG 안내는 공통 파일 범위와 GraphRAG의 .md 예외를 함께 밝힌다', () => {
-    setLanguage('en');
-
-    expect(t('ragFoundationDescription')).toContain('embeddings, BM25');
-    expect(t('ragFoundationDescription')).toContain('built-in vault tools');
-    expect(t('ragGraphSectionDescription')).toContain('.md notes');
   });
 
   it('양쪽 언어의 자동 생성 기본값을 식별한다', () => {
