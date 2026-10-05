@@ -1,6 +1,7 @@
 import esbuild from 'esbuild';
 import process from 'process';
 import { builtinModules } from 'node:module';
+import { mcpStdioNodeTimers } from './scripts/mcp-stdio-build.mjs';
 import {
   MAIN_JS_SIZE_LIMIT_BYTES,
   assertMainJsSize,
@@ -19,6 +20,7 @@ const buildOptions = {
   banner: { js: banner },
   entryPoints: ['main.ts'],
   bundle: true,
+  plugins: [mcpStdioNodeTimers],
   external: [
     'obsidian',
     'electron',
