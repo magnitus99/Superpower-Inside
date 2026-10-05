@@ -135,7 +135,7 @@ function latestPatina() {
   };
 }
 
-export function scoreArgs(language, online = false) {
+export function scoreArgs(language, online = true) {
   return [
     '--lang',
     language,
@@ -148,7 +148,7 @@ export function scoreArgs(language, online = false) {
   ];
 }
 
-function checkText(patina, file, text, online = false) {
+function checkText(patina, file, text, online = true) {
   const failed = [];
   for (const language of languages) {
     const result = patina(scoreArgs(language, online), languageText(text, language));
@@ -156,8 +156,13 @@ function checkText(patina, file, text, online = false) {
       const score = JSON.parse(result.stdout);
       console.log(`${file} [${language}]: ${score.overall ?? '?'} / ${threshold}`);
       validateScore(score, result.status, threshold);
-      if (online && !Number.isFinite(score.scores?.llm?.overall)) {
-        throw new Error('온라인 모델 점수 응답이 없습니다.');
+      if (
+        online &&
+        (!Number.isFinite(score.scores?.llm?.overall) ||
+          score.scores.llm.overall < 0 ||
+          score.scores.llm.overall > threshold)
+      ) {
+        throw new Error('온라인 모델 점수가 없거나 15점 기준을 초과했습니다.');
       }
     } catch (error) {
       console.error(`${file} [${language}]: ${error.message}\n${result.stdout}`);
@@ -238,7 +243,7 @@ function snapshots(mode, refs) {
 
 function run() {
   const [mode = '--worktree', ...args] = process.argv.slice(2);
-  if (!['--worktree', '--staged', '--push', '--fix', '--online'].includes(mode))
+  if (!['--worktree', '--staged', '--push', '--fix', '--online', '--offline'].includes(mode))
     throw new Error(`알 수 없는 실행 모드: ${mode}`);
   const refs = mode === '--push' ? pushRevisions(readFileSync(0, 'utf8')) : [];
   const patina = latestPatina();
@@ -267,7 +272,7 @@ function run() {
     const hash = createHash('sha256').update(text).digest('hex');
     if (seen.has(hash)) continue;
     seen.add(hash);
-    const failed = checkText(patina, snapshot.file, text, mode === '--online');
+    const failed = checkText(patina, snapshot.file, text, mode !== '--offline');
     if (failed.length) {
       passed = false;
       if (mode === '--staged' && !snapshot.file.endsWith('.json')) {

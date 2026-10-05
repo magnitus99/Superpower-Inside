@@ -18,7 +18,7 @@ describe('홍보 문구 검사 계약', () => {
     expect(scoreArgs('en', true)).toContain('codex-cli');
     expect(scoreArgs('en', true)).toContain('gpt-6.1-sol');
     expect(scoreArgs('en', true)).not.toContain('--offline');
-    expect(scoreArgs('ko')).toContain('--offline');
+    expect(scoreArgs('ko', false)).toContain('--offline');
     expect(scoreArgs('ko')).toContain('15');
   });
   it('한영 README와 홍보 문서를 포함하고 에이전트 규칙은 제외한다', () => {
@@ -158,6 +158,23 @@ if (args[0] === 'view') {
       writeFileSync(join(cwd, 'README.md'), 'Safe copy');
       expect(run(['--online'], { COPY_NO_LLM: '1' }).status).toBe(1);
       expect(run(['--online']).status).toBe(0);
+    }));
+
+  it('커밋 훅의 스테이징 검사는 온라인 모델 응답을 필수로 요구한다', () =>
+    fixture(({ cwd, git, run, calls }) => {
+      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
+      git('add', 'README.md');
+      expect(run(['--staged'], { COPY_NO_LLM: '1' }).status).toBe(1);
+      expect(run(['--staged']).status).toBe(0);
+      const scores = calls().filter((call) => call.args.includes('--score'));
+      expect(
+        scores.every(
+          (call) =>
+            !call.args.includes('--offline') &&
+            call.args.includes('codex-cli') &&
+            call.args.includes('gpt-6.1-sol'),
+        ),
+      ).toBe(true);
     }));
 
   it('스테이징 내용이 실패하면 수정된 작업 파일로 통과시키지 않는다', () =>
