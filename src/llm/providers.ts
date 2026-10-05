@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import { ChatGPTProvider } from './chatgpt-provider';
+import { prepareProviderRequest } from './request-budget';
 import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
@@ -298,6 +299,10 @@ class OpenAICompatibleProvider implements LLMProvider {
     tools?: ToolDefinition[],
     toolChoice?: ToolChoice,
   ): Record<string, unknown> {
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
@@ -445,8 +450,13 @@ class ClaudeProvider implements LLMProvider {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       max_tokens: 4096,
       temperature,
-      messages: this.normalizeMessages(messages),
-      system: messages.find((m) => m.role === 'system')?.content,
+      messages: this.normalizeMessages(
+        prepareProviderRequest(messages, this.capability.toolCalling ? tools : undefined).messages,
+      ),
+      system: messages
+        .filter((m) => m.role === 'system')
+        .map((message) => message.content)
+        .join('\n'),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
@@ -494,8 +504,13 @@ class ClaudeProvider implements LLMProvider {
       max_tokens: 4096,
       temperature,
       stream: true,
-      messages: this.normalizeMessages(messages),
-      system: messages.find((m) => m.role === 'system')?.content,
+      messages: this.normalizeMessages(
+        prepareProviderRequest(messages, this.capability.toolCalling ? tools : undefined).messages,
+      ),
+      system: messages
+        .filter((m) => m.role === 'system')
+        .map((message) => message.content)
+        .join('\n'),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
@@ -639,6 +654,10 @@ class OllamaProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
@@ -673,6 +692,10 @@ class OllamaProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),

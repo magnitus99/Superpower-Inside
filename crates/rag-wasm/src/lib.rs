@@ -42,7 +42,9 @@ pub use rag_recovery::{
 mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
+mod chat_input;
 mod chatgpt;
+pub use chat_input::{plan_chat_evidence_json, plan_chat_request_json};
 /// 프로바이더 연결 상태와 채팅 모델 선택 정책.
 mod provider_state;
 pub use chatgpt::plan_chatgpt_json;

@@ -1332,6 +1332,26 @@ export function plan_chat_context_mentions_json(mention_types_json) {
 }
 
 /**
+ * 현재 원문에서 질문에 맞는 완전한 Markdown 구간만 전달 근거로 선택합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_chat_evidence_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_chat_evidence_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 저장된 chat session markdown body에서 current-format message plan을 만든다.
  * @param {string} body
  * @param {number} now_timestamp
@@ -1408,6 +1428,26 @@ export function plan_chat_model_state_json(providers_json, configured_default) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 시스템 지침·최신 요청을 보존하며 오래된 완전한 턴만 예산에 따라 제외합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_chat_request_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_chat_request_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

@@ -159,6 +159,7 @@ import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
 import { planNativeToolCompatibilityFallbackRust } from '../rag/rust-core';
 import { prepareLoadedSessionMessages } from './session-recovery';
 import { buildProviderConversation } from './provider-conversation';
+import { prepareProviderRequest } from '../llm/request-budget';
 import {
   appendAgenticCheckpoint,
   planAgenticToolTurn,
@@ -2903,7 +2904,7 @@ export class ChatView extends ItemView {
           providerLabel,
           model: modelName,
           hasUserQuestion: true,
-          recentConversationMessageCount: Math.min(9, this.messages.length),
+          recentConversationMessageCount: this.messages.length,
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
@@ -2935,7 +2936,7 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
     };
     applyTurnEvent({ type: 'context-built' });
-    this.addMessage('user', text, undefined, undefined, {
+    const userMessageId = this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
       model: modelName,
@@ -2954,7 +2955,7 @@ export class ChatView extends ItemView {
     if (toolProtocol === 'compatibility' && providerCapability.toolCalling) {
       providerCapability = { ...providerCapability, toolCalling: false };
     }
-    const providerConversationSource = this.messages.slice(-10);
+    const providerConversationSource = [...this.messages];
     const providerConversationMessages = buildProviderConversation(
       providerConversationSource,
       toolProtocol,
@@ -3134,11 +3135,21 @@ export class ChatView extends ItemView {
           },
         );
       };
-      const streamInitialPass = (): Promise<void> =>
-        provider.streamChat(messages, consumeInitialChunk, 0.7, providerToolDefinitions, {
+      const streamInitialPass = (): Promise<void> => {
+        messages = prepareProviderRequest(messages, providerToolDefinitions).messages;
+        contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
+          recentConversationMessages: Math.max(
+            0,
+            messages.filter((message) => message.role !== 'system').length - 1,
+          ),
+        });
+        const userMessage = this.messages.find((message) => message.id === userMessageId);
+        if (userMessage) userMessage.dataBoundarySnapshot = contextMeta.dataBoundarySnapshot;
+        return provider.streamChat(messages, consumeInitialChunk, 0.7, providerToolDefinitions, {
           signal: abortController.signal,
           toolChoice: providerToolDefinitions ? initialAgentPlan?.toolChoice : undefined,
         });
+      };
 
       try {
         await streamInitialPass();
@@ -3878,6 +3889,10 @@ export class ChatView extends ItemView {
       providerMessages: ChatMessage[],
       toolChoice: ToolChoice,
     ): Promise<void> => {
+      providerMessages = prepareProviderRequest(
+        providerMessages,
+        args.toolProtocol === 'native' ? args.toolDefinitions : undefined,
+      ).messages;
       await args.provider.streamChat(
         providerMessages,
         (chunk: StreamChunk) => {
@@ -4597,7 +4612,7 @@ export class ChatView extends ItemView {
           providerLabel: message.providerLabel ?? message.providerKey,
           model: message.model,
           hasUserQuestion: true,
-          recentConversationMessageCount: Math.min(10, Math.max(0, messageIndex)),
+          recentConversationMessageCount: Math.max(0, messageIndex),
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
@@ -4618,7 +4633,7 @@ export class ChatView extends ItemView {
           dataBoundarySnapshot: resumeDataBoundarySnapshot,
         });
         const previousMessages = buildProviderConversation(
-          this.messages.slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex)),
+          this.messages.slice(0, Math.max(0, messageIndex)),
           resumeToolProtocol,
         );
         const baseMessages: ChatMessage[] = [

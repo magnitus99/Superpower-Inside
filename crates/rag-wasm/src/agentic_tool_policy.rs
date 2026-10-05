@@ -259,9 +259,16 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
     );
     let tool_budget_exhausted =
         input.phase == AgenticToolPhase::AfterTools && input.round >= input.max_rounds;
+    let investigation_closed = investigation_is_closed(
+        &input,
+        &ledger,
+        &requirements,
+        relation_requires_content,
+        requires_multiple_sources,
+    );
     let tool_choice = if next_action.requires_tool() {
         "required"
-    } else if input.phase == AgenticToolPhase::AfterTools {
+    } else if investigation_closed {
         "none"
     } else {
         "auto"
@@ -305,7 +312,14 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
         "requiredToolNames": required_tool_names,
         "requiredExternalServerNames": required_external_server_names,
         "checkpoint": checkpoint,
-        "ledger": {
+        "ledger": evidence_ledger_json(&ledger)
+    })
+    .to_string()
+}
+
+/// 호스트에 전달할 최소 조사 상태를 직렬화합니다.
+fn evidence_ledger_json(ledger: &EvidenceLedger) -> JsonValue {
+    json!({
             "successfulCalls": ledger.successful_calls,
             "failedCalls": ledger.failed_calls,
             "successfulExternalCalls": ledger.successful_external_calls,
@@ -318,9 +332,29 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
             "successfulLinks": ledger.successful_links,
             "successfulStats": ledger.successful_stats,
             "verifiedSources": ledger.verified_source_paths.len(),
-        }
     })
-    .to_string()
+}
+
+/// 반복 실패나 예산 소진만 추가 조사를 닫으며 최소 검증 성공은 닫지 않습니다.
+fn investigation_is_closed(
+    input: &AgenticToolTurnInput,
+    ledger: &EvidenceLedger,
+    requirements: &[NativeEvidenceRequirement],
+    relation_requires_content: bool,
+    requires_multiple_sources: bool,
+) -> bool {
+    input.phase == AgenticToolPhase::AfterTools && input.round >= input.max_rounds
+        || ledger.verification_exhausted(
+            requirements,
+            relation_requires_content,
+            requires_multiple_sources,
+        )
+        || explicit_external_verification_exhausted(input, ledger)
+        || ledger.failed_calls >= 2 && ledger.successful_calls == 0
+        || ledger.empty_searches >= 2 && ledger.complete_reads == 0
+        || requires_multiple_sources
+            && !ledger.has_required_source_diversity()
+            && ledger.distinct_search_attempts() >= 2
 }
 
 /// Parses the host wire format without adding a separate serialization dependency.
@@ -2374,7 +2408,7 @@ fn build_checkpoint(
             "The bounded searches did not produce a second distinct source. Do not invent the missing counterpoint; answer from verified evidence and state this source-diversity limitation explicitly."
         }
         NextAction::Answer => {
-            "If the evidence is sufficient, answer the current objective directly and completely."
+            "Minimum source verification is complete, but it does not prove that every explicit subquestion has evidence. Check the current objective against the available original text. If relevant evidence is missing or a needed original was compacted to a summary, use a focused tool within the remaining budget. Otherwise answer directly and completely; do not repeat successful investigation."
         }
     };
     format!(
@@ -2684,7 +2718,7 @@ mod tests {
             "maxRounds": 10
         }));
 
-        assert_eq!(result.get("toolChoice"), Some(&json!("none")));
+        assert_eq!(result.get("toolChoice"), Some(&json!("auto")));
         assert_eq!(result.get("nextAction"), Some(&json!("answer")));
         assert_eq!(result.pointer("/ledger/verifiedReads"), Some(&json!(1)));
         assert_eq!(result.pointer("/ledger/completeReads"), Some(&json!(1)));
@@ -2847,7 +2881,7 @@ mod tests {
         }));
 
         assert_eq!(result.get("nextAction"), Some(&json!("answer")));
-        assert_eq!(result.get("toolChoice"), Some(&json!("none")));
+        assert_eq!(result.get("toolChoice"), Some(&json!("auto")));
         assert!(
             result
                 .get("checkpoint")
@@ -3280,7 +3314,7 @@ mod tests {
         }));
 
         assert_eq!(result.get("nextAction"), Some(&json!("answer")));
-        assert_eq!(result.get("toolChoice"), Some(&json!("none")));
+        assert_eq!(result.get("toolChoice"), Some(&json!("auto")));
         assert_eq!(
             result
                 .pointer("/ledger/verifiedSources")

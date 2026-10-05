@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import { t } from '../i18n';
+import { prepareProviderRequest } from './request-budget';
 import { planChatGPTRust } from '../rag/rust-core';
 import { chatGPTOAuth } from './chatgpt-oauth';
 import {
@@ -117,6 +118,10 @@ export class ChatGPTProvider implements LLMProvider {
     options?: ChatOptions,
   ): Promise<StreamChunk> {
     throwIfAborted(options?.signal);
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+    ).messages;
     const body = planChatGPTRust<Record<string, unknown>>({
       operation: 'request',
       model: this.model,

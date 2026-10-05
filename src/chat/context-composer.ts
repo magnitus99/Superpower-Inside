@@ -25,6 +25,7 @@ export interface DataBoundaryInput {
 }
 
 export interface DataBoundaryProviderUsage {
+  recentConversationMessages?: number;
   toolResultCount?: number;
   researchDocumentCount?: number;
   mcpServerNames?: readonly string[];
@@ -141,6 +142,10 @@ export function withDataBoundaryProviderUsage(
   }
   const nextPayload = {
     ...providerPayload,
+    recentConversationMessages:
+      usage.recentConversationMessages === undefined
+        ? providerPayload.recentConversationMessages
+        : Math.max(0, Math.trunc(usage.recentConversationMessages)),
     toolResults:
       usage.toolResultCount === undefined
         ? providerPayload.toolResults

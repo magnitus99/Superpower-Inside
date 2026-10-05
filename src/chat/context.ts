@@ -6,9 +6,9 @@ import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
 import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
-  createContextPreviewRust,
   planChatContextMentionsRust,
   planContextSourcesRust,
+  planChatEvidenceRust,
   planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
   planImplicitFolderQueryPathsRust,
@@ -86,6 +86,19 @@ function getVaultContextRules(): string {
   ].join('\n');
 }
 
+interface AppendedEvidence {
+  complete: boolean;
+  actualChars: number;
+  sourceIds: string[];
+}
+
+type AppendEvidence = (
+  source: RustContextSourceInput,
+  prefix: string,
+  label: string,
+  remainingSources?: number,
+) => AppendedEvidence;
+
 export async function buildChatContext(
   question: string,
   options: BuildContextOptions,
@@ -97,6 +110,7 @@ export async function buildChatContext(
   const budget = createContextBudget(maxContextChars);
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
+  const attachedPaths = new Set<string>();
   const warnings: string[] = [];
   const resolver = createAppMentionResolver(options.app, options.mcpRegistry);
   const mentions = parseMentions(question, resolver);
@@ -110,21 +124,71 @@ export async function buildChatContext(
   const shouldUseAutoRag = mentionPlan.useAutoRag;
 
   const appendBlock = (block: ContextBlock): boolean => {
-    if (block.citation) citations.push(block.citation);
-    return budget.append(block);
+    return budget.append({
+      ...block,
+      text: `${budget.getBlocks().length > 0 ? '\n\n---\n\n' : ''}${block.text}`,
+    });
+  };
+  const appendEvidence: AppendEvidence = (source, prefix, label, remainingSources = 1) => {
+    const plan = planChatEvidenceRust({
+      question,
+      source,
+      sourceId: `${prefix}-${citations.length + 1}`,
+      label,
+      remainingSources,
+      maxChars: budget.getRemainingChars(),
+    });
+    const sourceIds: string[] = [];
+    const before = budget.getRemainingChars();
+    for (const block of plan?.blocks ?? []) {
+      if (!appendBlock({ text: block.text })) break;
+      const citation = plan?.citations.find((item) => item.id === block.sourceId);
+      if (citation) {
+        citations.push(citation);
+        sourceIds.push(citation.id);
+        attachedPaths.add(citation.filePath);
+      }
+    }
+    return {
+      complete: plan?.complete === true && sourceIds.length === plan.sourceIds.length,
+      actualChars: before - budget.getRemainingChars(),
+      sourceIds,
+    };
   };
 
-  for (const mention of selectByRustIndices(mentions, mentionPlan.fileIndices, { dedupe: true })) {
+  const explicitFiles = selectByRustIndices(mentions, mentionPlan.fileIndices, { dedupe: true });
+  const explicitFolders = selectByRustIndices(mentions, mentionPlan.folderIndices, {
+    dedupe: true,
+  });
+  const fileResults: Array<{ file: TFile; content: string }> = [];
+  for (const [index, mention] of explicitFiles.entries()) {
     const fileResult = await appendFileMention(
       mention.name,
       options.app,
-      appendBlock,
+      appendEvidence,
       attachments,
-      citations,
       options.candidatePaths,
+      explicitFiles.length - index + explicitFolders.length,
     );
     if (!fileResult) continue;
+    fileResults.push(fileResult);
+  }
 
+  for (const [index, mention] of explicitFolders.entries()) {
+    await appendFolderMention(
+      mention.name,
+      options.app,
+      appendEvidence,
+      attachments,
+      maxFolderFiles,
+      options.candidatePaths,
+      question,
+      options.ragEngine,
+      explicitFolders.length - index - 1,
+    );
+  }
+
+  for (const fileResult of fileResults) {
     const expansion = await expandReferencedVaultFiles(
       fileResult.file,
       fileResult.content,
@@ -134,22 +198,10 @@ export async function buildChatContext(
     );
     warnings.push(...expansion.warnings);
     for (const reference of expansion.references) {
-      appendReferenceFile(reference.file, reference.content, appendBlock, attachments, citations);
+      if (attachedPaths.has(reference.file.path)) continue;
+      appendReferenceFile(reference.file, reference.content, appendEvidence, attachments);
+      attachedPaths.add(reference.file.path);
     }
-  }
-
-  for (const mention of selectByRustIndices(mentions, mentionPlan.folderIndices, {
-    dedupe: true,
-  })) {
-    await appendFolderMention(
-      mention.name,
-      options.app,
-      appendBlock,
-      attachments,
-      citations,
-      maxFolderFiles,
-      options.candidatePaths,
-    );
   }
 
   const explicitFolderPaths = new Set(
@@ -173,9 +225,8 @@ export async function buildChatContext(
         folderPath,
         expandedQuery,
         options.app,
-        appendBlock,
+        appendEvidence,
         attachments,
-        citations,
         Math.min(3, maxFolderFiles),
         options.candidatePaths,
       );
@@ -224,9 +275,16 @@ export async function buildChatContext(
         citations.length + 1,
         'rag',
       ) ?? { citations: [], blocks: [], sourceIds: [], rejectedCount: 0 };
-      citations.push(...sourcePlan.citations);
-      for (const block of sourcePlan.blocks) {
-        appendBlock({ text: block.text });
+      citations.push(...sourcePlan.citations.filter((citation) => citation.status !== 'verified'));
+      const ragSourceIds: string[] = [];
+      let ragChars = 0;
+      let ragPartial = false;
+      for (const [index, source] of sourceInputs.entries()) {
+        if (verifications[index]?.status !== 'verified') continue;
+        const result = appendEvidence(source, 'rag', 'Source');
+        ragSourceIds.push(...result.sourceIds);
+        ragChars += result.actualChars;
+        ragPartial ||= !result.complete;
       }
       const diagnosticsText = formatRetrievalDiagnostics(
         options.ragEngine.getLastRetrievalDiagnostics?.() ?? [],
@@ -235,10 +293,10 @@ export async function buildChatContext(
         id: 'rag:auto',
         type: 'rag',
         name: 'auto',
-        label: t('contextAutoRagDetail', { count: sourcePlan.sourceIds.length }),
-        status: sourcePlan.sourceIds.length > 0 ? 'attached' : 'low-relevance',
+        label: t('contextAutoRagDetail', { count: ragSourceIds.length }),
+        status: ragPartial ? 'partial' : ragSourceIds.length > 0 ? 'attached' : 'low-relevance',
         detail:
-          sourcePlan.sourceIds.length > 0
+          ragSourceIds.length > 0
             ? combineAttachmentDetails([
                 formatAutoRagReason(mentionPlan.autoRagReason),
                 sourcePlan.rejectedCount > 0
@@ -249,8 +307,9 @@ export async function buildChatContext(
             : t('contextNoRelevantDocs'),
         reason: t('contextAutoRagTitle'),
         estimatedChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
-        actualChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
-        sourceIds: sourcePlan.sourceIds,
+        actualChars: ragChars,
+        sourceIds: ragSourceIds,
+        excluded: ragPartial && ragSourceIds.length === 0,
         autoRagReason: mentionPlan.autoRagReason,
       });
     } catch (err) {
@@ -291,7 +350,7 @@ export async function buildChatContext(
     .getBlocks()
     .map((block) => block.text)
     .filter(Boolean)
-    .join('\n\n---\n\n');
+    .join('');
   const warningText = warnings.length > 0 ? `\n\n[Context Warnings]\n${warnings.join('\n')}` : '';
   return {
     systemPrompt: contextText
@@ -313,9 +372,8 @@ async function appendImplicitFolderEvidence(
   folderPath: string,
   expandedQuery: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
   topK: number,
   candidatePaths?: ReadonlySet<string>,
 ): Promise<void> {
@@ -354,24 +412,16 @@ async function appendImplicitFolderEvidence(
   let attachedChars = 0;
   let partial = false;
 
-  for (const { file, content } of selected) {
-    const citation: SourceCitation = {
-      id: `folder-auto-${citations.length + 1}`,
-      filePath: file.path,
-      status: 'verified',
-      preview: createContextPreviewRust(content) ?? '',
-    };
-    sourceIds.push(citation.id);
-    attachedChars += content.length;
-    if (
-      !appendBlock({
-        citation,
-        text: `[Automatically selected vault file: ${file.path}]\n${content}`,
-      })
-    ) {
-      partial = true;
-      break;
-    }
+  for (const [index, { file, content }] of selected.entries()) {
+    const result = appendEvidence(
+      { filePath: file.path, text: content },
+      'folder-auto',
+      'Automatically selected vault file',
+      selected.length - index,
+    );
+    sourceIds.push(...result.sourceIds);
+    attachedChars += result.actualChars;
+    partial ||= !result.complete;
   }
 
   attachments.push({
@@ -379,7 +429,7 @@ async function appendImplicitFolderEvidence(
     type: 'folder',
     name: folderPath,
     label: t('contextImplicitFolderDetail', { name: folderPath, count: sourceIds.length }),
-    status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
+    status: partial ? 'partial' : sourceIds.length === 0 ? 'missing' : 'attached',
     detail:
       sourceIds.length === 0
         ? t('contextImplicitFolderNoMatch', { name: folderPath })
@@ -387,6 +437,7 @@ async function appendImplicitFolderEvidence(
     reason: t('contextAutoRagTitle'),
     estimatedChars: selected.reduce((total, item) => total + item.content.length, 0),
     actualChars: attachedChars,
+    excluded: partial && sourceIds.length === 0,
     fileCount: sourceIds.length,
     filteredCount: Math.max(0, indexableFiles.length - selected.length),
     sourceIds,
@@ -548,10 +599,10 @@ type QueryResultVerification = RustContextSourceVerification;
 async function appendFileMention(
   path: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
   candidatePaths?: ReadonlySet<string>,
+  remainingSources = 1,
 ): Promise<{ file: TFile; content: string } | null> {
   const file = app.vault.getAbstractFileByPath(path);
   if (!(file instanceof TFile) || (candidatePaths && !candidatePaths.has(file.path))) {
@@ -568,28 +619,25 @@ async function appendFileMention(
 
   try {
     const content = await app.vault.cachedRead(file);
-    const citation: SourceCitation = {
-      id: `file-${citations.length + 1}`,
-      filePath: file.path,
-      status: 'verified',
-      preview: createContextPreviewRust(content) ?? '',
-    };
-    const attachedFully = appendBlock({
-      citation,
-      text: `[File: ${file.path}]\n${content}`,
-    });
+    const result = appendEvidence(
+      { filePath: file.path, text: content },
+      'file',
+      'File',
+      remainingSources,
+    );
     attachments.push({
       id: `file:${file.path}`,
       type: 'file',
       name: file.path,
       label: file.path,
-      status: attachedFully ? 'attached' : 'partial',
-      detail: attachedFully ? undefined : t('contextPartialBudget'),
+      status: result.complete ? 'attached' : 'partial',
+      detail: result.complete ? undefined : t('contextPartialBudget'),
       reason: t('chatFileMentionChip', { name: file.path }),
       estimatedChars: content.length,
-      actualChars: content.length,
+      actualChars: result.actualChars,
       pinned: true,
-      sourceIds: [citation.id],
+      sourceIds: result.sourceIds,
+      excluded: result.sourceIds.length === 0,
     });
     return { file, content };
   } catch (err) {
@@ -613,42 +661,39 @@ async function appendFileMention(
 function appendReferenceFile(
   file: TFile,
   content: string,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
 ): void {
-  const citation: SourceCitation = {
-    id: `reference-${citations.length + 1}`,
-    filePath: file.path,
-    status: 'verified',
-    preview: createContextPreviewRust(content) ?? '',
-  };
-  const attachedFully = appendBlock({
-    citation,
-    text: `[Reference File: ${file.path}]\n${content}`,
-  });
+  const result = appendEvidence(
+    { filePath: file.path, text: content },
+    'reference',
+    'Reference File',
+  );
   attachments.push({
     id: `reference:${file.path}`,
     type: 'reference',
     name: file.path,
     label: file.path,
-    status: attachedFully ? 'attached' : 'partial',
-    detail: attachedFully ? undefined : t('contextPartialBudget'),
+    status: result.complete ? 'attached' : 'partial',
+    detail: result.complete ? undefined : t('contextPartialBudget'),
     reason: t('chatFileMentionChip', { name: file.path }),
     estimatedChars: content.length,
-    actualChars: content.length,
-    sourceIds: [citation.id],
+    actualChars: result.actualChars,
+    sourceIds: result.sourceIds,
+    excluded: result.sourceIds.length === 0,
   });
 }
 
 async function appendFolderMention(
   path: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
   maxFolderFiles: number,
   candidatePaths?: ReadonlySet<string>,
+  question = '',
+  ragEngine?: RagQueryLike | null,
+  remainingFolders = 0,
 ): Promise<void> {
   const folder = app.vault.getAbstractFileByPath(path);
   if (!(folder instanceof TFolder)) {
@@ -679,31 +724,68 @@ async function appendFolderMention(
     indexableFiles.map((file) => file.path),
     maxFolderFiles,
   );
-  const files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
+  let files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
+  // 작은 폴더는 그대로 첨부하고, 제한된 폴더는 기존 검색으로 질문에 맞는 원문을 우선합니다.
+  if (filePlan?.partial && question) {
+    const results = ragEngine
+      ? await ragEngine.query(question, maxFolderFiles, undefined, [path]).catch(() => [])
+      : [];
+    const filesByPath = new Map(indexableFiles.map((file) => [file.path, file]));
+    const rankedFiles = [
+      ...new Map(
+        results.flatMap((result) => {
+          const file = filesByPath.get(result.entry.metadata.filePath);
+          return file ? [[file.path, file] as const] : [];
+        }),
+      ).values(),
+    ];
+    if (rankedFiles.length > 0) {
+      const rankedPlan = planFolderMentionFilesRust(
+        path,
+        rankedFiles.map((file) => file.path),
+        maxFolderFiles,
+      );
+      files = selectByRustIndices(rankedFiles, rankedPlan?.indices, { dedupe: true });
+    } else {
+      const samples: string[] = [];
+      for (let offset = 0; offset < indexableFiles.length; offset += 8) {
+        samples.push(
+          ...(await Promise.all(
+            indexableFiles
+              .slice(offset, offset + 8)
+              .map(
+                async (file) => `${file.path}\n${await app.vault.cachedRead(file).catch(() => '')}`,
+              ),
+          )),
+        );
+      }
+      const indices =
+        planFolderLexicalEvidenceIndicesRust(question, samples, maxFolderFiles, 'any') ?? [];
+      if (indices.length > 0)
+        files = selectByRustIndices(indexableFiles, indices, { dedupe: true });
+    }
+  }
   const sourceIds: string[] = [];
   let partial = filePlan?.partial ?? false;
   let folderLimitReason: FolderLimitReason | undefined =
     filePlan?.limitReason === 'max-files' ? 'max-files' : undefined;
   let readErrorCount = 0;
+  let actualChars = 0;
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     try {
       const content = await app.vault.cachedRead(file);
-      const citation: SourceCitation = {
-        id: `folder-${citations.length + 1}`,
-        filePath: file.path,
-        status: 'verified',
-        preview: createContextPreviewRust(content) ?? '',
-      };
-      sourceIds.push(citation.id);
-      const attachedFully = appendBlock({
-        citation,
-        text: `[Folder File: ${file.path}]\n${content}`,
-      });
-      if (!attachedFully) {
+      const result = appendEvidence(
+        { filePath: file.path, text: content },
+        'folder',
+        'Folder File',
+        files.length - index + remainingFolders,
+      );
+      sourceIds.push(...result.sourceIds);
+      actualChars += result.actualChars;
+      if (!result.complete) {
         partial = true;
         folderLimitReason = 'budget';
-        break;
       }
     } catch {
       partial = true;
@@ -717,7 +799,7 @@ async function appendFolderMention(
     type: 'folder',
     name: path,
     label: path,
-    status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
+    status: partial ? 'partial' : sourceIds.length === 0 ? 'missing' : 'attached',
     detail: partial
       ? formatFolderPartialDetail(folderLimitReason, maxFolderFiles, readErrorCount)
       : undefined,
@@ -725,6 +807,8 @@ async function appendFolderMention(
     fileCount: files.length,
     filteredCount: filePlan?.matchedCount ? Math.max(0, filePlan.matchedCount - files.length) : 0,
     sourceIds,
+    actualChars,
+    excluded: sourceIds.length === 0,
     folderLimitReason,
   });
 }

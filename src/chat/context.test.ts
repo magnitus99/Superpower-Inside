@@ -18,6 +18,82 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('긴 명시 파일과 폴더를 함께 지정하면 양쪽 근거를 먼저 예약한다', async () => {
+    const first = createFile(
+      'A.md',
+      `# Background\n${'Unrelated.\n'.repeat(150)}# Deployment\nA deployment owner is Mina.`,
+      1000,
+    );
+    const second = createFile('docs/B.md', 'B deployment owner is Joon.', 1000);
+    const folder = createFolder('docs');
+    const context = await buildChatContext('@[A.md] @[docs] deployment owner를 비교해줘.', {
+      app: createApp(
+        new Map([
+          [first.path, first],
+          [second.path, second],
+        ]),
+        new Map([[folder.path, folder]]),
+      ),
+      maxContextChars: 650,
+    });
+    expect(context.systemPrompt).toContain('owner is Mina');
+    expect(context.systemPrompt).toContain('owner is Joon');
+  });
+
+  it('폴더의 긴 첫 파일이 부분 첨부되어도 다음 파일의 근거를 전달한다', async () => {
+    const first = createFile(
+      'docs/A.md',
+      `# Background\n${'Unrelated.\n'.repeat(150)}# Deployment\nA deployment owner is Mina.`,
+      1000,
+    );
+    const second = createFile('docs/B.md', 'B deployment owner is Joon.', 1000);
+    const folder = createFolder('docs');
+    const context = await buildChatContext('@[docs] deployment owner를 비교해줘.', {
+      app: createApp(
+        new Map([
+          [first.path, first],
+          [second.path, second],
+        ]),
+        new Map([[folder.path, folder]]),
+      ),
+      maxContextChars: 650,
+    });
+    expect(context.systemPrompt).toContain('owner is Mina');
+    expect(context.systemPrompt).toContain('owner is Joon');
+  });
+
+  it('폴더 검색 결과의 순서를 유지하고 범위 밖 결과와 최대 파일 수를 제한한다', async () => {
+    const files = [
+      createFile('docs/A.md', '첫 파일', 1000),
+      createFile('docs/B.md', '관련 파일', 1000),
+      createFile('outside.md', '범위 밖', 1000),
+    ];
+    const folder = createFolder('docs');
+    const context = await buildChatContext('@[docs] 관련 파일을 찾아줘.', {
+      app: createApp(
+        new Map(files.map((file) => [file.path, file])),
+        new Map([[folder.path, folder]]),
+      ),
+      maxFolderFiles: 1,
+      ragEngine: createRagEngine([
+        createResult('outside.md', '범위 밖', 'hash'),
+        createResult('docs/B.md', '관련 파일', 'hash'),
+        createResult('docs/A.md', '첫 파일', 'hash'),
+      ]),
+    });
+    expect(
+      context.citations
+        .filter((citation) => citation.status === 'verified')
+        .map((citation) => citation.filePath),
+    ).toEqual(['docs/B.md']);
+    expect(context.systemPrompt).not.toContain('범위 밖');
+    expect(context.systemPrompt).not.toContain('첫 파일');
+    expect(context.attachments[0]).toMatchObject({
+      fileCount: 1,
+      filteredCount: 1,
+      status: 'partial',
+    });
+  });
   it('폴더 멘션과 원문 링크 확장에도 동일한 검색 대상 목록을 적용한다', async () => {
     const visible = createFile('notes/visible.md', '공개 근거 [[hidden]]', 1000);
     const hidden = createFile('notes/hidden.md', '제외된 문서의 근거', 1000);
@@ -267,6 +343,71 @@ describe('buildChatContext RAG 출처 검증', () => {
 });
 
 describe('buildChatContext 참조 문서 확장', () => {
+  it('명시 파일 둘을 참조 확장보다 먼저 전달하고 제외한 참조를 검증 출처로 등록하지 않는다', async () => {
+    const first = createFile('a.md', '[[reference]]', 1000);
+    const second = createFile('b.md', '비교할 두 번째 근거', 1000);
+    const reference = createFile('reference.md', '참조 자료 '.repeat(100), 1000);
+    const context = await buildChatContext('@[a.md] @[b.md] 비교해줘', {
+      app: createApp(new Map([first, second, reference].map((file) => [file.path, file]))),
+      maxContextChars: 180,
+    });
+    expect(context.systemPrompt).toContain(second.content);
+    expect(
+      context.citations
+        .filter((citation) => citation.status === 'verified')
+        .map((citation) => citation.filePath),
+    ).toEqual(['a.md', 'b.md']);
+    expect(context.attachments.find((attachment) => attachment.type === 'reference')).toMatchObject(
+      { actualChars: 0, sourceIds: [], excluded: true },
+    );
+  });
+
+  it('예산을 초과한 긴 문서의 후반부에서 질문과 관련된 완전한 구간을 전달한다', async () => {
+    const file = createFile(
+      'decision.md',
+      '# 배경\n' +
+        '배경 기록입니다.\n'.repeat(150) +
+        '\n# 배포 결정\n배포는 금요일에 진행하며 담당자는 민수입니다.',
+      1000,
+    );
+    const context = await buildChatContext('@[decision.md] 배포 담당자는 누구야?', {
+      app: createApp(new Map([[file.path, file]])),
+      maxContextChars: 300,
+    });
+    expect(context.systemPrompt).toContain('담당자는 민수');
+    expect(context.attachments[0]).toMatchObject({ status: 'partial' });
+    expect(context.attachments[0]?.actualChars).toBeLessThanOrEqual(300);
+    expect(context.citations[0]?.line).toBeGreaterThan(100);
+    expect(context.citations[0]?.preview).toContain('민수');
+  });
+
+  it('한정된 폴더 내용 질문은 열거 순서보다 범위 안의 관련 문서를 우선한다', async () => {
+    const folder = createFolder('docs');
+    const unrelated = createFile('docs/a.md', '장보기 목록', 1000);
+    const relevant = createFile('docs/z.md', '배포 담당자는 민수입니다.', 1000);
+    const context = await buildChatContext('@[docs] 배포 담당자를 찾아줘', {
+      app: createApp(
+        new Map([unrelated, relevant].map((file) => [file.path, file])),
+        new Map([[folder.path, folder]]),
+      ),
+      maxFolderFiles: 1,
+    });
+    expect(context.systemPrompt).toContain(relevant.content);
+    expect(context.systemPrompt).not.toContain(unrelated.content);
+  });
+
+  it('예산 밖 RAG 구간은 전달 출처와 실제 문자 수에 포함하지 않는다', async () => {
+    const file = createFile('note.md', '현재 내용', 1000);
+    const context = await buildChatContext('질문', {
+      app: createApp(new Map([[file.path, file]])),
+      ragEngine: createRagEngine([
+        createResult(file.path, file.content, createContentHash(file.content)),
+      ]),
+      maxContextChars: 1,
+    });
+    expect(context.citations.filter((citation) => citation.status === 'verified')).toEqual([]);
+    expect(context.attachments[0]).toMatchObject({ actualChars: 0, sourceIds: [], excluded: true });
+  });
   it('폴더 멘션 파일 선택과 partial 여부는 Rust folder plan을 따른다', async () => {
     const folder = createFolder('제품문서');
     const first = createFile('제품문서/a.md', '첫 문서', 1000);

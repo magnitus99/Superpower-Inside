@@ -164,6 +164,22 @@ describe('context composer contract', () => {
     ]);
   });
 
+  it('공통 입력 예산으로 제외된 대화를 실제 전송 개수에 반영한다', () => {
+    const initial = createDataBoundarySnapshot({
+      providerLabel: 'Ollama',
+      model: 'local',
+      hasUserQuestion: true,
+      recentConversationMessageCount: 24,
+      hasSystemPrompt: true,
+      attachments: [],
+      citations: [],
+      mcpServerNames: [],
+    });
+    const updated = withDataBoundaryProviderUsage(initial, { recentConversationMessages: 4 });
+    expect(updated.providerPayload?.recentConversationMessages).toBe(4);
+    expect(initial.providerPayload?.recentConversationMessages).toBe(24);
+  });
+
   it('볼트 전체 조사는 실제 provider envelope만 데이터 경계에 표시한다', () => {
     const initial = createResearchDataBoundarySnapshot({
       providerLabel: 'OpenRouter',

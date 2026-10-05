@@ -157,7 +157,7 @@ describe('적극적 도구 오케스트레이션 경계', () => {
     expect(plan?.checkpoint).toContain('another distinct relevant source');
   });
 
-  it('비교 근거가 충분해지면 도구 선택을 닫고 즉시 최종 합성으로 전환한다', () => {
+  it('비교의 최소 검증을 마친 뒤에도 남은 예산으로 누락된 근거를 확인할 수 있다', () => {
     const toolCalls: ToolCallRecord[] = [
       {
         id: 'search-compare-complete',
@@ -189,11 +189,13 @@ describe('적극적 도구 오케스트레이션 경계', () => {
     });
 
     expect(plan).toMatchObject({
-      toolChoice: 'none',
+      toolChoice: 'auto',
       shouldRetryWithoutTools: false,
       nextAction: 'answer',
       ledger: { verifiedSources: 2 },
     });
+    expect(plan?.checkpoint).toContain('Minimum source verification');
+    expect(plan?.checkpoint).toContain('every explicit subquestion');
   });
 
   it('사용자가 직접 붙인 파일 근거가 있으면 불필요한 첫 검색을 강제하지 않는다', () => {

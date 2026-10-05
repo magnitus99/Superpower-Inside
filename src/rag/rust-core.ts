@@ -1,5 +1,7 @@
 import {
   plan_chatgpt_json,
+  plan_chat_evidence_json,
+  plan_chat_request_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
   plan_source_processing_json,
@@ -1199,6 +1201,62 @@ export interface RustContextBudgetAppendPlan {
   remainingChars: number;
   complete: boolean;
   appended: boolean;
+}
+
+export interface RustChatEvidencePlan extends RustContextSourcePlan {
+  complete: boolean;
+  actualChars: number;
+}
+
+export interface RustChatRequestPlan {
+  indices: number[];
+  usedBytes: number;
+}
+
+/** 원문 구간 선택과 전송 예산 계산은 Rust의 결정적 계약을 사용합니다. */
+export function planChatEvidenceRust(input: {
+  question: string;
+  source: RustContextSourceInput;
+  sourceId: string;
+  label: string;
+  maxChars: number;
+  remainingSources?: number;
+}): RustChatEvidencePlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_chat_evidence_json(JSON.stringify(input)));
+    if (!isContextSourcePlan(parsed)) return null;
+    const plan = parsed as RustContextSourcePlan & Partial<RustChatEvidencePlan>;
+    return typeof plan.complete === 'boolean' && isValidNonNegativeInteger(plan.actualChars)
+      ? { ...parsed, complete: plan.complete, actualChars: plan.actualChars }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 완전한 턴을 선택하며 시스템 지침과 최신 요청은 잘라내지 않습니다. */
+export function planChatRequestRust(input: {
+  messages: readonly unknown[];
+  reservedBytes: number;
+  maxBytes: number;
+}): RustChatRequestPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_chat_request_json(JSON.stringify(input)));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const plan = parsed as Partial<RustChatRequestPlan>;
+    return Array.isArray(plan.indices) &&
+      plan.indices.every(
+        (index) => isValidNonNegativeInteger(index) && index < input.messages.length,
+      ) &&
+      isValidNonNegativeInteger(plan.usedBytes) &&
+      plan.usedBytes <= input.maxBytes
+      ? { indices: plan.indices, usedBytes: plan.usedBytes }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface RustChatContextMentionPlan {
