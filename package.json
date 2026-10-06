@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run && npm run check:i18n && npm run chat:ux-gate && npm run chat:quality-eval",
     "chat:quality-eval": "node scripts/evaluate-chat-quality.mjs",
+    "chat:tool-eval": "node scripts/evaluate-chat-quality.mjs --obsidian-vault .test-vault",
     "test:e2e": "vitest run src/e2e/product-journeys.test.ts",
     "chat:ux-gate": "node scripts/check-chat-ux-fixtures.mjs",
     "rag:perf-gate": "node scripts/bench-rag-wrapper.mjs",

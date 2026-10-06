@@ -12,12 +12,15 @@ import {
   syntheticVault,
   evaluateToolLoop,
   evaluateRetrieval,
+  isEvaluationHostAlive,
 } from './chat-tool-evaluation.mjs';
+import { createPublicToolCases } from './chat-tool-scenarios.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = JSON.parse(
   await readFile(path.join(repository, 'tests/fixtures/chat-quality.json'), 'utf8'),
 );
+fixture.cases.push(...createPublicToolCases());
 
 // 볼트 I/O만 합성 데이터로 치환하며 컨텍스트·도구·provider 구현은 그대로 번들합니다.
 const obsidianAdapter = `
@@ -66,6 +69,7 @@ async function compileRuntime(root, directory) {
     export { createProviderForStrategy } from './src/llm/providers';
     export { getEffectiveSystemPrompt } from './src/chat/prompt-library';
     export { setLanguage } from './src/i18n';
+    export { appLogger } from './src/utils/logger';
     export { initializeChatGPTOAuth } from './src/llm/chatgpt-oauth';
     export { getRagCandidateFiles } from './src/utils/vault';
     export { createToolEvidencePrompt, createCompatibilityToolPrompt, parseCompatibilityToolTurn } from './src/chat/tool-protocol';
@@ -281,8 +285,19 @@ try {
   const runtime = await compileRuntime(repository, currentDirectory);
   const obsidianVault = option('--obsidian-vault');
   if (obsidianVault) {
-    if (!option('--output')) throw new Error('Obsidian 평가에는 --output 경로가 필요합니다.');
     if (option('--compare-ref')) throw new Error('실제 볼트 비교는 각 ref에서 따로 실행하세요.');
+    if (option('--fixtures')) throw new Error('실제 볼트 사례는 메모리에서만 생성합니다.');
+    const count = Number(option('--cases') ?? 80);
+    const concurrency = Number(option('--concurrency') ?? 2);
+    if (
+      !Number.isInteger(count) ||
+      count < 1 ||
+      count > 800 ||
+      !Number.isInteger(concurrency) ||
+      concurrency < 1 ||
+      concurrency > 4
+    )
+      throw new Error('평가 개수 또는 동시 실행 범위 오류');
     const helper = path.join(directory, 'tool-evaluation.cjs');
     await build({
       entryPoints: [path.join(repository, 'scripts/chat-tool-evaluation.mjs')],
@@ -292,63 +307,54 @@ try {
       outfile: helper,
       logLevel: 'silent',
     });
-    const testsPath = path.resolve(
-      option('--fixtures') ?? path.join(repository, 'tests/fixtures/chat-quality-vault.json'),
-    );
-    const output = path.resolve(option('--output'));
+    const output = path.resolve(option('--output') ?? path.join(directory, 'summary.json'));
     const statusPath = path.join(directory, 'status.json');
     const code = `void (async()=>{let stage='runtime';try{const runtime=require(${JSON.stringify(path.join(currentDirectory, 'runtime.cjs'))});
       runtime.setLanguage('ko'); const helper=require(${JSON.stringify(helper)});
-      const tests=JSON.parse(require('node:fs').readFileSync(${JSON.stringify(testsPath)},'utf8')).cases;
       const settings=app.plugins.plugins['superpower-inside']?.settings;
       if(!settings)throw new Error('plugin-unavailable');
-      stage='evaluation';const report=await helper.evaluateObsidianVault(runtime,app,settings,tests);
+      stage='evaluation';require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({running:true,hostPid:process.pid}));
+      const report=await helper.evaluateObsidianVault(runtime,app,settings,{
+        count:${count},concurrency:${concurrency},localOnly:${args.includes('--local-only')},signal:AbortSignal.timeout(87*60_000),
+        onProgress:progress=>require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({running:true,hostPid:process.pid,...progress}))});
       require('node:fs').writeFileSync(${JSON.stringify(output)},JSON.stringify(report,null,2));
       require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({completed:true}));
     }catch(error){require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({completed:false,stage,status:Number.isInteger(error.status)?error.status:null}));}})();'평가 시작'`;
     const result = execFileSync(
-      option('--obsidian-cli') ?? '/Applications/Obsidian.app/Contents/MacOS/Obsidian',
+      option('--obsidian-cli') ?? '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
       [`vault=${obsidianVault}`, 'eval', `code=${code}`],
       { encoding: 'utf8', timeout: 30 * 60_000 },
     );
     if (result.includes('Error:')) throw new Error('Obsidian 평가 스크립트를 시작하지 못했습니다.');
-    const deadline = Date.now() + 30 * 60_000;
-    while (
-      !(await access(statusPath).then(
-        () => true,
-        () => false,
-      ))
-    ) {
+    const deadline = Date.now() + 90 * 60_000;
+    let status;
+    let lastProgress = 0;
+    while (true) {
+      status = await readFile(statusPath, 'utf8').then(
+        (value) => JSON.parse(value),
+        () => null,
+      );
+      if (status && !status.running) break;
+      if (status?.running && !isEvaluationHostAlive(status.hostPid))
+        throw new Error('Obsidian 평가 호스트가 종료되었습니다.');
       if (Date.now() >= deadline) throw new Error('Obsidian 평가 대기 시간이 초과되었습니다.');
+      if (status && Date.now() - lastProgress >= 30_000) {
+        console.log(
+          JSON.stringify({
+            completed: status.completed,
+            total: status.total,
+            passed: status.passed,
+          }),
+        );
+        lastProgress = Date.now();
+      }
       await wait(500);
     }
-    const status = JSON.parse(await readFile(statusPath, 'utf8'));
     if (!status.completed)
       throw new Error(`실제 볼트 평가 실패: 단계=${status.stage}, HTTP=${status.status ?? '없음'}`);
     const report = JSON.parse(await readFile(output, 'utf8'));
-    console.log(
-      JSON.stringify(
-        {
-          mode: report.mode,
-          model: report.model,
-          candidateFiles: report.candidateFiles,
-          current: report.current.map(
-            ({ id, protocol, contractPassed, elapsedMs, toolCalls, providerCalls }) => ({
-              id,
-              protocol,
-              contractPassed,
-              elapsedMs,
-              toolCalls,
-              providerCalls,
-            }),
-          ),
-          output,
-        },
-        null,
-        2,
-      ),
-    );
-    if (report.current.some((item) => !item.contractPassed)) process.exitCode = 1;
+    console.log(JSON.stringify(report, null, 2));
+    if (report.failed > 0) process.exitCode = 1;
     await rm(directory, { recursive: true, force: true });
     process.exit(process.exitCode ?? 0);
   }
@@ -381,16 +387,19 @@ try {
       {
         mode: report.mode,
         model: report.model,
-        current: current.map(
-          ({ id, protocol, contractPassed, elapsedMs, providerCalls, toolCalls }) => ({
+        executions: current.length,
+        passed: current.filter((item) => item.contractPassed).length,
+        failed: current.filter((item) => !item.contractPassed).length,
+        failures: current
+          .filter((item) => !item.contractPassed)
+          .map(({ id, protocol, contractPassed, elapsedMs, providerCalls, toolCalls }) => ({
             id,
             protocol,
             contractPassed,
             elapsedMs,
             providerCalls,
             toolCalls,
-          }),
-        ),
+          })),
         baseline: report.baseline?.map(({ id, contractPassed }) => ({ id, contractPassed })),
         output: output ?? null,
       },
@@ -402,7 +411,7 @@ try {
 } catch (error) {
   // provider 응답·헤더·자격 증명은 오류 출력에 넣지 않습니다.
   console.error(
-    !option('--settings')
+    !option('--settings') && !option('--obsidian-vault')
       ? error.message
       : error.message?.startsWith('설정') || error.message?.startsWith('선택 모델')
         ? error.message
