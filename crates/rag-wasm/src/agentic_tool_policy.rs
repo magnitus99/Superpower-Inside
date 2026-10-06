@@ -1438,7 +1438,8 @@ fn record_successful_read(ledger: &mut EvidenceLedger, result: &JsonValue) {
     if !read.truncated
         && (ledger.candidate_source_paths.is_empty()
             || verifies_pending_candidate
-            || verifies_pending_link)
+            || verifies_pending_link
+            || !search_candidate_was_pending && !link_candidate_was_pending)
     {
         ledger.verified_source_paths.insert(read.path.clone());
     }
@@ -3577,6 +3578,30 @@ mod tests {
 
         assert_eq!(result.get("nextAction"), Some(&json!("answer")));
         assert_eq!(result.get("requiredToolNames"), Some(&json!([])));
+    }
+
+    #[test]
+    fn linked_comparison_counts_the_seed_read_after_the_linked_read() {
+        let mut calls = vec![json!({
+            "name":"superpower_inside_links", "status":"success",
+            "arguments":"{\"path\":\"Decision.md\"}",
+            "result":normalized_links_result("Decision.md")
+        })];
+        for path in ["Reason.md", "Decision.md"] {
+            calls.push(json!({
+                "name":"superpower_inside_read", "status":"success",
+                "arguments":json!({"path":path}).to_string(),
+                "result":normalized_read_result(path, false)
+            }));
+        }
+        let result = plan(&json!({
+            "question":"내 노트 Decision.md의 값과 연결된 노트의 값을 확인해 비교해줘.",
+            "hasAttachedEvidence":false, "explicitToolServerCount":0,
+            "availableToolNames":["superpower_inside_links","superpower_inside_read"],
+            "toolCalls":calls, "phase":"after-tools", "round":3, "maxRounds":10
+        }));
+        assert_eq!(result.pointer("/ledger/verifiedSources"), Some(&json!(2)));
+        assert_eq!(result.get("nextAction"), Some(&json!("answer")));
     }
 
     #[test]

@@ -2793,12 +2793,7 @@ struct FolderLexicalQuery {
 
 /// 폴더 검색과 묶음 검색이 공유하는 어휘 질의를 준비한다.
 fn prepare_folder_lexical_query(query: &str) -> Option<FolderLexicalQuery> {
-    let tokens = tokenize(query)
-        .into_iter()
-        .filter(|token| token != "or" && token != "and")
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let tokens = native_lexical_hit::primary_query_terms(query);
     if tokens.is_empty() {
         return None;
     }

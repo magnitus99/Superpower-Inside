@@ -474,4 +474,33 @@ mod tests {
             ""
         );
     }
+    #[test]
+    fn lexical_all_matches_identifiers_and_paths_without_requiring_expanded_tokens() {
+        for (query, path, content, field) in [
+            (
+                "IDENT_2 Exact",
+                "record.md",
+                "IDENT_2 Exact: value",
+                "content",
+            ),
+            ("set/Target-1.md", "set/Target-1.md", "value", "path"),
+            (
+                "with space/Target-1.md",
+                "with space/Target-1.md",
+                "value",
+                "path",
+            ),
+            ("자료/Target-1.md", "자료/Target-1.md", "value", "path"),
+        ] {
+            let request = json!({"queries":[query],"limit":3,"match":"all","field":field});
+            let samples = json!([{"path":path,"content":content}]);
+            let raw = plan_native_vault_lexical_batch_json(
+                &request.to_string(),
+                &samples.to_string(),
+                "null",
+            );
+            let result: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            assert_eq!(result.get("totalHits"), Some(&json!(1)), "{query}");
+        }
+    }
 }
