@@ -6,6 +6,7 @@ import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
   getRagFileTypeSummary,
+  getFrontmatterExcludedFiles,
   isRagCandidateFile,
   countFilesByExtensions,
   isExcludedExt,
@@ -124,6 +125,46 @@ describe('RAG 제외 패턴', () => {
 });
 
 describe('RAG 후보 파일', () => {
+  it('YAML 제외 목록은 경로 제외 문서도 표시하며 본문을 변경하지 않는다', async () => {
+    const files = [
+      createFile('hidden.md'),
+      createFile('Archive/hidden.md'),
+      createFile('visible.md'),
+    ];
+    const contents = new Map(
+      files.map((file) => [file.path, '---\nsuperpower-inside-exclude: true\n---\nsecret']),
+    );
+    contents.set('visible.md', '---\nsuperpower-inside-exclude: false\n---\npublic');
+    const vault = createVault(files, contents);
+    expect((await getFrontmatterExcludedFiles(vault)).map((file) => file.path)).toEqual([
+      'hidden.md',
+      'Archive/hidden.md',
+    ]);
+    expect(contents.get('hidden.md')).toContain('superpower-inside-exclude: true');
+  });
+  it('최상위 YAML의 true만 제외하고 변경·해제는 캐시 갱신 없이 반영한다', async () => {
+    const hidden = createFile('hidden.md');
+    const contents = new Map([
+      ['hidden.md', '---\n"superpower-inside-exclude": true # 비공개\n---\nsecret'],
+      ['visible.md', '---\nsuperpower-inside-exclude: false\n---\npublic'],
+      ['quoted.md', '---\nsuperpower-inside-exclude: "true"\n---\npublic'],
+      ['body.md', '# 본문\nsuperpower-inside-exclude: true'],
+    ]);
+    const vault = createVault(
+      [hidden, ...['visible.md', 'quoted.md', 'body.md'].map((path) => createFile(path))],
+      contents,
+    );
+    expect(
+      (await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).map((file) => file.path),
+    ).toEqual(['visible.md', 'quoted.md', 'body.md']);
+    await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
+      false,
+    );
+    contents.set(hidden.path, '---\nsuperpower-inside-exclude: false\n---\npublic');
+    await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
+      true,
+    );
+  });
   it('마크다운 외 텍스트 파일도 후보에 포함하고 제외 확장자와 경로를 적용한다', async () => {
     const vault = createVault([
       createFile('note.md'),

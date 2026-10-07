@@ -27,6 +27,7 @@ import {
   count_files_by_extensions_json,
   is_excluded_path,
   is_excluded_ext_json,
+  is_rag_frontmatter_excluded_json,
   is_recommendable_exclude_extension_json,
   is_mcp_tool_name_available,
   is_whole_vault_research_intent,
@@ -1061,6 +1062,8 @@ export interface RustRagFileEligibilityInput {
   fileName: string;
   extension: string;
   size: number;
+  frontmatter?: unknown;
+  frontmatterUnreadable?: boolean;
 }
 
 export interface RustRagFileTextProbeInput {
@@ -2958,6 +2961,15 @@ export function planRagFileContentProbeIndicesRust(
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     return isNonNegativeIntegerArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isRagFrontmatterExcludedRust(frontmatter: unknown): boolean | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return is_rag_frontmatter_excluded_json(JSON.stringify(frontmatter ?? null));
   } catch {
     return null;
   }

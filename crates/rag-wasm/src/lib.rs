@@ -6980,6 +6980,27 @@ struct RagFileEligibilityInput {
     extension: String,
     /// file size in bytes.
     size: u64,
+    /// Obsidian이 읽은 YAML의 명시적인 제외 여부.
+    frontmatter_excluded: bool,
+    /// 읽기 또는 YAML 파싱 실패 시 내용을 노출하지 않는다.
+    frontmatter_unreadable: bool,
+}
+
+/// Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+#[wasm_bindgen]
+pub fn is_rag_frontmatter_excluded_json(frontmatter_json: &str) -> bool {
+    serde_json::from_str::<JsonValue>(frontmatter_json)
+        .ok()
+        .as_ref()
+        .is_some_and(is_rag_frontmatter_excluded)
+}
+
+/// 파싱된 최상위 속성의 boolean true를 확인한다.
+fn is_rag_frontmatter_excluded(frontmatter: &JsonValue) -> bool {
+    frontmatter
+        .get("superpower-inside-exclude")
+        .and_then(JsonValue::as_bool)
+        == Some(true)
 }
 
 /// TS host boundary가 읽은 unknown file text sample.
@@ -10173,7 +10194,9 @@ fn is_rag_file_excluded_before_probe(
     exclude_paths: &[String],
     excluded_extensions: &BTreeSet<String>,
 ) -> bool {
-    is_vault_path_excluded(&file.file_path, exclude_paths.iter().map(String::as_str))
+    file.frontmatter_excluded
+        || file.frontmatter_unreadable
+        || is_vault_path_excluded(&file.file_path, exclude_paths.iter().map(String::as_str))
         || excluded_extensions.contains(&rag_file_extension(file))
 }
 
@@ -11861,6 +11884,13 @@ fn parse_rag_file_eligibility_inputs_json(payload: &str) -> Option<Vec<RagFileEl
                 .unwrap_or_default()
                 .to_owned(),
             size: object.get("size")?.as_u64()?,
+            frontmatter_excluded: object
+                .get("frontmatter")
+                .is_some_and(is_rag_frontmatter_excluded),
+            frontmatter_unreadable: object
+                .get("frontmatterUnreadable")
+                .and_then(JsonValue::as_bool)
+                == Some(true),
         });
     }
     Some(files)
@@ -12911,6 +12941,27 @@ mod tests {
                 r#"[{"index":4,"readable":true,"sample":"plain text content"},{"index":5,"readable":true,"sample":"\u0000binary"}]"#,
             ),
             "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
+        );
+    }
+
+    /// YAML의 명시적인 boolean만 모든 후보 판정에서 제외한다.
+    #[test]
+    fn rag_frontmatter_exclusions_are_shared_by_file_plans() {
+        assert!(is_rag_frontmatter_excluded_json(
+            r#"{"superpower-inside-exclude":true}"#
+        ));
+        for value in [
+            r#"{"superpower-inside-exclude":false}"#,
+            r#"{"superpower-inside-exclude":"true"}"#,
+            r#"{"nested":{"superpower-inside-exclude":true}}"#,
+            "null",
+        ] {
+            assert!(!is_rag_frontmatter_excluded_json(value));
+        }
+        let files = r#"[{"filePath":"hidden.md","fileName":"hidden.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":true}},{"filePath":"public.md","fileName":"public.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":false}}]"#;
+        assert_eq!(
+            plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
+            r#"{"candidateIndices":[1],"summaryInputs":[{"filePath":"public.md","extension":"md","indexable":true}]}"#,
         );
     }
 

@@ -408,7 +408,27 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(first).toMatchObject({ files: [{ path: alpha.path }], nextCursor: 1, total: 2 });
     expect(second).toMatchObject({ files: [{ path: beta.path }], nextCursor: null, total: 2 });
     expect(refreshed.total).toBe(3);
-    expect(getCandidateFiles).toHaveBeenCalledTimes(2);
+    expect(getCandidateFiles).toHaveBeenCalledTimes(3);
+  });
+
+  it('연속 목록 페이지에서도 새로 제외된 파일은 노출하지 않는다', async () => {
+    const alpha = createFile('Alpha.md', 'alpha');
+    const beta = createFile('Beta.md', 'beta');
+    const gamma = createFile('Gamma.md', 'gamma');
+    let candidates: readonly TFile[] = [alpha, beta, gamma];
+    const port = createNativeVaultPort(createApp([alpha, beta, gamma]), () =>
+      Promise.resolve(candidates),
+    );
+    const first = await port.list({ action: 'list', path: '', cursor: 0, limit: 1 });
+    candidates = [alpha, gamma];
+    const next = await port.list({
+      action: 'list',
+      path: '',
+      cursor: first.nextCursor ?? 0,
+      limit: 10,
+    });
+    expect(next.files.map((file) => file.path)).toEqual([gamma.path]);
+    expect(next.total).toBe(2);
   });
 
   it('임베딩 엔진이 없어도 Rust lexical plan으로 Vault를 검색한다', async () => {

@@ -952,6 +952,18 @@ export function is_protected_rag_document_extension_json(extension) {
 }
 
 /**
+ * Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+ * @param {string} frontmatter_json
+ * @returns {boolean}
+ */
+export function is_rag_frontmatter_excluded_json(frontmatter_json) {
+    const ptr0 = passStringToWasm0(frontmatter_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_rag_frontmatter_excluded_json(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
  * RAG 제외 가능한 확장자인지 확인한다.
  * @param {string} extension
  * @returns {boolean}

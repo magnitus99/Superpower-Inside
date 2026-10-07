@@ -7,6 +7,7 @@ import {
   isExcludedPath,
   isExcludedExt,
   isRagIndexableFile,
+  isRagFileExcluded,
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
@@ -694,6 +695,22 @@ export class VaultIndexer {
       );
     }
     file = currentFile;
+    if (await isRagFileExcluded(this.vault, file, this.ragConfig, this.chatConfig)) {
+      await this.removeFile(file.path);
+      if (progressTracker) {
+        progressTracker.skipped += 1;
+        completeProgressFile(progressTracker, 0, 0);
+        emitIndexingProgress(options, progressTracker, 'file-complete');
+      }
+      this.logger.debug('File indexing skipped by the current exclusion policy.', {
+        data: { path: file.path },
+      });
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
     const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
     if (!progressTracker) {
       emitIndexingProgress(options, tracker, 'plan');
@@ -842,9 +859,27 @@ export class VaultIndexer {
       !currentSnapshot ||
       !isSourceRevisionCurrentRust(snapshot.revision, currentSnapshot.revision)
     ) {
+      if (
+        isCurrentVaultFile(latestFile) &&
+        (await isRagFileExcluded(this.vault, latestFile, this.ragConfig, this.chatConfig))
+      )
+        await this.removeFile(file.path);
       this.logger.debug('Late embedding result skipped because source revision changed.', {
         data: { path: file.path },
       });
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
+    if (
+      await isRagFileExcluded(this.vault, currentSnapshot.file, this.ragConfig, this.chatConfig)
+    ) {
+      await this.removeFile(file.path);
       tracker.skipped += 1;
       completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
       emitIndexingProgress(options, tracker, 'file-complete');
@@ -1208,8 +1243,7 @@ export function registerModifyEvent(
   const ref = vault.on('modify', async (file) => {
     if (!isTFileLike(file)) return;
     const f = file;
-    if (!shouldConsiderRagPath(f.path, excludePaths, excludeExts)) return;
-    if (!(await isRagIndexableFile(vault, f))) {
+    if (!(await shouldIndexRagFile(vault, f, excludePaths, excludeExts))) {
       await indexer.removeByFilePath?.(f.path);
       onComplete?.(f);
       return;

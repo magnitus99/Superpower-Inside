@@ -20,6 +20,76 @@ import { createContentHash } from './hash';
 
 const bm25DbNames = new Set<string>();
 
+describe('인덱싱 제외 정책', () => {
+  it.each(['yaml', 'path', 'extension'])(
+    '대기 중 %s 제외로 바뀐 문서는 임베딩하지 않고 기존 인덱스를 제거한다',
+    async (kind) => {
+      const contents = new Map([['private.md', 'private secret']]);
+      const vault = createVault(contents);
+      const file = vault.getFiles()[0];
+      const store = new MemoryVectorStore();
+      const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+      const config = createRagConfig();
+      const dbName = `exclusion-${kind}-${Date.now()}`;
+      bm25DbNames.add(dbName);
+      const bm25 = new IndexedDbBM25Index(dbName);
+      const indexer = new VaultIndexer(
+        vault,
+        store,
+        { embedBatch } as unknown as EmbeddingProvider,
+        config,
+        createChatConfig(),
+        bm25,
+      );
+      await indexer.indexFile(file);
+      expect(await store.getIndexedFilePaths()).toContain(file.path);
+      if (kind === 'yaml')
+        contents.set(file.path, '---\nsuperpower-inside-exclude: true\n---\nprivate secret');
+      if (kind === 'path') config.excludePaths.push(file.path);
+      if (kind === 'extension') config.excludeExts.push('md');
+      embedBatch.mockClear();
+      const result = await indexer.indexFile(file);
+      expect(result.skipped).toBe(1);
+      expect(embedBatch).not.toHaveBeenCalled();
+      expect(await store.getIndexedFilePaths()).not.toContain(file.path);
+      expect(await bm25.getSourcePaths()).not.toContain(file.path);
+      if (kind === 'yaml') {
+        contents.set(file.path, '---\nsuperpower-inside-exclude: false\n---\npublic');
+        await indexer.indexFile(file);
+        expect(embedBatch).toHaveBeenCalledOnce();
+        expect(await store.getIndexedFilePaths()).toContain(file.path);
+        expect(await bm25.getSourcePaths()).toContain(file.path);
+      }
+      bm25.close();
+    },
+  );
+  it('임베딩 응답을 기다리는 동안 YAML로 제외하면 늦은 벡터와 BM25를 모두 제거한다', async () => {
+    const contents = new Map([['private.md', 'private secret']]);
+    const vault = createVault(contents);
+    const file = vault.getFiles()[0];
+    const store = new MemoryVectorStore();
+    const dbName = `exclusion-inflight-${Date.now()}`;
+    bm25DbNames.add(dbName);
+    const bm25 = new IndexedDbBM25Index(dbName);
+    const embedBatch = vi.fn((texts: string[]) => {
+      contents.set(file.path, '---\nsuperpower-inside-exclude: true\n---\nprivate secret');
+      return Promise.resolve(texts.map(() => [1, 0]));
+    });
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      { embedBatch } as unknown as EmbeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+      bm25,
+    );
+    expect((await indexer.indexFile(file)).skipped).toBe(1);
+    expect(await store.getEntries()).toEqual([]);
+    expect(await bm25.getSourcePaths()).not.toContain(file.path);
+    bm25.close();
+  });
+});
+
 afterEach(async () => {
   await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
   bm25DbNames.clear();

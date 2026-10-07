@@ -26,6 +26,12 @@ fixture.cases.push(...createPublicToolCases());
 const obsidianAdapter = `
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { load } from 'js-yaml';
+export const parseYaml = load;
+export function getFrontMatterInfo(content) {
+  const match = /^\\uFEFF?---\\r?\\n([\\s\\S]*?)\\r?\\n(?:---|\\.\\.\\.)(?:\\r?\\n|$)/.exec(content);
+  return { exists: match !== null, frontmatter: match?.[1] ?? '' };
+}
 export const TFile = globalThis.app?.vault.getFiles()[0]?.constructor ?? class {};
 export const TFolder = globalThis.app?.vault.getRoot()?.constructor ?? class {};
 export class FileView {}
@@ -103,6 +109,7 @@ async function compileRuntime(root, directory) {
           builder.onLoad({ filter: /.*/, namespace: 'synthetic' }, () => ({
             contents: obsidianAdapter,
             loader: 'js',
+            resolveDir: repository,
           }));
         },
       },

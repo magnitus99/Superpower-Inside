@@ -1,9 +1,11 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
+import { getFrontMatterInfo, parseYaml } from 'obsidian';
 import { t } from '../i18n';
 import {
   isExcludedPathRust,
   countFilesByExtensionsRust,
   isExcludedExtRust,
+  isRagFrontmatterExcludedRust,
   planRagFileContentProbeIndicesRust,
   planRagFileIndexabilityRust,
   planRagFileTypeSummaryRust,
@@ -80,6 +82,25 @@ export async function isRagCandidateFile(
 export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boolean> {
   const plan = await planRagFileIndexability(vault, [file], [], []);
   return selectByRustIndices([file], plan.candidateIndices, { dedupe: true }).length === 1;
+}
+
+/** 개별 작업에서도 경로·확장자·현재 YAML 제외를 다시 확인합니다. */
+export async function isRagFileExcluded(
+  vault: Vault,
+  file: TFile,
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): Promise<boolean> {
+  if (
+    isExcludedPath(file.path, getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir)) ||
+    isExcludedExt(file.path, ragConfig.excludeExts)
+  )
+    return true;
+  const metadata = await readRagFrontmatter(vault, file);
+  return (
+    metadata.frontmatterUnreadable === true ||
+    isRagFrontmatterExcludedRust(metadata.frontmatter) !== false
+  );
 }
 
 export async function getRagFileTypeSummary(
@@ -177,12 +198,56 @@ async function planRagFileIndexability(
   const inputs = files.map(toRagFileEligibilityInput);
   const probeIndices = planRagFileContentProbeIndicesRust(inputs, excludePaths, excludeExts) ?? [];
   const textProbes = await readRagFileTextProbes(vault, files, probeIndices);
+  const initialPlan = planRagFileIndexabilityRust(inputs, excludePaths, excludeExts, textProbes);
+  for (const index of initialPlan?.candidateIndices ?? []) {
+    const file = files[index];
+    const input = inputs[index];
+    if (file && input) Object.assign(input, await readRagFrontmatter(vault, file));
+  }
   return (
     planRagFileIndexabilityRust(inputs, excludePaths, excludeExts, textProbes) ?? {
       candidateIndices: [],
       summaryInputs: [],
     }
   );
+}
+
+/** 메타데이터 캐시 갱신 전에도 현재 YAML을 그대로 Rust 경계에 전달합니다. */
+async function readRagFrontmatter(
+  vault: Vault,
+  file: TFile,
+): Promise<Pick<RustRagFileEligibilityInput, 'frontmatter' | 'frontmatterUnreadable'>> {
+  if (file.extension.toLowerCase() !== 'md' && file.extension.toLowerCase() !== 'markdown')
+    return {};
+  let content: string;
+  try {
+    content = await vault.cachedRead(file);
+  } catch {
+    // 실제 본문 읽기 경로가 기존 오류·부분 첨부 상태를 표시하도록 유지합니다.
+    return {};
+  }
+  try {
+    if (!content.startsWith('---') && !content.startsWith('\uFEFF---'))
+      return { frontmatter: null };
+    const info = getFrontMatterInfo(content);
+    const frontmatter: unknown = info.exists ? parseYaml(info.frontmatter) : null;
+    return { frontmatter };
+  } catch {
+    return { frontmatterUnreadable: true };
+  }
+}
+
+/** YAML에서 제외한 문서는 경로·확장자 설정과 독립적으로 읽기 전용 목록에 표시합니다. */
+export async function getFrontmatterExcludedFiles(vault: Vault): Promise<TFile[]> {
+  const excluded: TFile[] = [];
+  for (const file of vault.getFiles()) {
+    const frontmatter = await readRagFrontmatter(vault, file);
+    if (frontmatter.frontmatter === undefined || frontmatter.frontmatterUnreadable) continue;
+    const result = isRagFrontmatterExcludedRust(frontmatter.frontmatter);
+    if (result === null) throw new Error('Frontmatter exclusion policy is unavailable.');
+    if (result) excluded.push(file);
+  }
+  return excluded;
 }
 
 async function readRagFileTextProbes(

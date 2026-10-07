@@ -732,7 +732,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       snapshot.expectedCursor === cursor &&
       snapshot.filtersKey === filtersKey
     ) {
-      return snapshot.files;
+      const currentPaths = new Set(
+        (await this.fileScope.listCandidateFiles()).map((file) => file.path),
+      );
+      return snapshot.files.filter((file) => currentPaths.has(file.path));
     }
     this.listSnapshot = null;
     const files = await this.fileScope.listCandidateFiles();

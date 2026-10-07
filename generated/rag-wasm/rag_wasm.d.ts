@@ -281,6 +281,11 @@ export function is_mcp_tool_result_empty_json(result_json: string, display_text:
 export function is_protected_rag_document_extension_json(extension: string): boolean;
 
 /**
+ * Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+ */
+export function is_rag_frontmatter_excluded_json(frontmatter_json: string): boolean;
+
+/**
  * RAG 제외 가능한 확장자인지 확인한다.
  */
 export function is_recommendable_exclude_extension_json(extension: string): boolean;
@@ -937,6 +942,7 @@ export interface InitOutput {
     readonly is_mcp_tool_name_available: (a: number, b: number, c: number, d: number) => number;
     readonly is_mcp_tool_result_empty_json: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly is_protected_rag_document_extension_json: (a: number, b: number) => number;
+    readonly is_rag_frontmatter_excluded_json: (a: number, b: number) => number;
     readonly is_recommendable_exclude_extension_json: (a: number, b: number) => number;
     readonly is_relevant_result: (a: number, b: number, c: number, d: number) => number;
     readonly ivfruntimeindex_cluster_count: (a: number) => number;

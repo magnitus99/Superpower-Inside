@@ -39,6 +39,24 @@ const baseRagConfig: RAGConfig = {
 };
 
 describe('RAG 기반 네이티브 Vault 파일 범위', () => {
+  it('YAML 제외는 목록·개별 읽기 정책에 즉시 반영되고 제거하면 다시 포함된다', async () => {
+    const hidden = createFile('Hidden.md');
+    const visible = createFile('Visible.md');
+    let content = '---\nsuperpower-inside-exclude: true\n---\nsecret';
+    const app = createApp([hidden, visible]);
+    app.vault.cachedRead = (file) =>
+      Promise.resolve(file.path === hidden.path ? content : 'public');
+    const scope = new RagNativeVaultFileScope(
+      app,
+      () => baseRagConfig,
+      () => chatConfig,
+    );
+    await expect(scope.listCandidateFiles()).resolves.toEqual([visible]);
+    await expect(scope.isCandidateFile(hidden)).resolves.toBe(false);
+    content = 'public';
+    await expect(scope.listCandidateFiles()).resolves.toEqual([hidden, visible]);
+    await expect(scope.isCandidateFile(hidden)).resolves.toBe(true);
+  });
   it('전체 목록과 단일 파일 판정에 현재 RAG 설정을 동일하게 적용한다', async () => {
     const note = createFile('Notes/Overview.md');
     const source = createFile('src/main.ts');
