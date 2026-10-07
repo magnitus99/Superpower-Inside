@@ -13,6 +13,20 @@ function resolver(): MentionResolver {
 }
 
 describe('parseMentions', () => {
+  it('현재 문서와 열린 탭을 실제 파일 참조로 확장하고 브래킷 경로를 보존한다', () => {
+    const host = {
+      ...resolver(),
+      workspaceFiles: { current: ['Notes/today.md'], tabs: ['Notes/today.md', 'Project Plan.md'] },
+    };
+    expect(parseMentions('@current @tabs', host)).toEqual([
+      { raw: '@current', type: 'file', name: 'Notes/today.md' },
+      { raw: '@tabs', type: 'file', name: 'Notes/today.md' },
+      { raw: '@tabs', type: 'file', name: 'Project Plan.md' },
+    ]);
+    expect(
+      parseMentions('@current @tabs', { ...resolver(), workspaceFiles: { current: [], tabs: [] } }),
+    ).toEqual([]);
+  });
   it('일반 파일, 폴더, MCP 서버 멘션을 분류한다', () => {
     expect(parseMentions('@browser @Notes/today.md @Notes', resolver())).toEqual([
       { raw: '@browser', type: 'server', name: 'browser' },

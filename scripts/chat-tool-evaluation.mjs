@@ -58,6 +58,10 @@ export function syntheticVault(runtime, test) {
   return {
     files,
     app: {
+      workspace: {
+        getActiveFile: () => null,
+        iterateAllLeaves: () => {},
+      },
       vault: {
         getFiles: () => files,
         getMarkdownFiles: () => files,

@@ -24,6 +24,7 @@ import { parseMentions, type MentionResolver } from './mention-parser';
 import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { isRagIndexableFile } from '../utils/vault';
+import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -61,6 +62,7 @@ export async function resolveChatRagEngine(
 
 interface BuildContextOptions {
   app: App;
+  workspaceFiles?: WorkspaceMentionFiles;
   candidatePaths?: ReadonlySet<string>;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
@@ -112,7 +114,11 @@ export async function buildChatContext(
   const citations: SourceCitation[] = [];
   const attachedPaths = new Set<string>();
   const warnings: string[] = [];
-  const resolver = createAppMentionResolver(options.app, options.mcpRegistry);
+  const resolver = createAppMentionResolver(
+    options.app,
+    options.mcpRegistry,
+    options.workspaceFiles,
+  );
   const mentions = parseMentions(question, resolver);
   const mentionPlan = planChatContextMentionsRust(mentions.map((mention) => mention.type)) ?? {
     fileIndices: [],
@@ -161,7 +167,10 @@ export async function buildChatContext(
     dedupe: true,
   });
   const fileResults: Array<{ file: TFile; content: string }> = [];
+  const requestedPaths = new Set<string>();
   for (const [index, mention] of explicitFiles.entries()) {
+    if (requestedPaths.has(mention.name)) continue;
+    requestedPaths.add(mention.name);
     const fileResult = await appendFileMention(
       mention.name,
       options.app,
@@ -463,8 +472,13 @@ function dedupeQueryResults(results: readonly QueryResult[]): QueryResult[] {
   });
 }
 
-export function createAppMentionResolver(app: App, registry?: MCPRegistry | null): MentionResolver {
+export function createAppMentionResolver(
+  app: App,
+  registry?: MCPRegistry | null,
+  workspaceFiles?: WorkspaceMentionFiles,
+): MentionResolver {
   return {
+    workspaceFiles: workspaceFiles ?? captureWorkspaceMentionFiles(app),
     isServer: (name: string) =>
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,

@@ -507,6 +507,14 @@ export interface I18nKeys {
   chatAutoRagChip: string;
   chatFolderMentionChip: string;
   chatFileMentionChip: string;
+  chatCurrentMention: string;
+  chatTabsMention: string;
+  chatWorkspaceMentions: string;
+  chatCurrentMentionEmpty: string;
+  chatTabsMentionEmpty: string;
+  chatReferenceAvailable: string;
+  chatReferenceMissing: string;
+  chatReferenceUnavailable: string;
   chatReadinessProviderMissing: string;
   chatReadinessProviderMissingDetail: string;
   chatReadinessModelMissing: string;
@@ -2044,11 +2052,19 @@ const ko: I18nKeys = {
   chatMcpReconnectCompleteNotice: 'MCP 서버 재연결 완료',
   chatSearchButton: '검색',
   chatMessageSearchAria: '메시지 검색',
-  chatInputPlaceholder: '메시지를 입력하세요...',
+  chatInputPlaceholder: '메시지를 입력하세요. @로 문서·폴더·도구 참조',
   chatMessageSearchPrompt: '검색할 메시지 내용을 입력하세요.',
   chatAutoRagChip: '관련 노트',
   chatFolderMentionChip: '폴더 {name}',
   chatFileMentionChip: '파일 {name}',
+  chatCurrentMention: '@current · 현재 문서',
+  chatTabsMention: '@tabs · 열린 문서 {count}개',
+  chatWorkspaceMentions: '보고 있는 문서',
+  chatCurrentMentionEmpty: '현재 문서가 없습니다.',
+  chatTabsMentionEmpty: '열린 문서가 없습니다.',
+  chatReferenceAvailable: '사용 가능',
+  chatReferenceMissing: '찾을 수 없음',
+  chatReferenceUnavailable: '참조를 확인할 수 없습니다.',
   chatReadinessProviderMissing: 'Provider 설정 필요',
   chatReadinessProviderMissingDetail:
     '설정에서 최소 하나의 LLM Provider를 활성화해야 전송할 수 있습니다.',
@@ -3712,11 +3728,19 @@ const en: I18nKeys = {
   chatMcpReconnectCompleteNotice: 'MCP servers reconnected.',
   chatSearchButton: 'Search',
   chatMessageSearchAria: 'Search messages',
-  chatInputPlaceholder: 'Enter a message...',
+  chatInputPlaceholder: 'Enter a message. Use @ for documents, folders, or tools',
   chatMessageSearchPrompt: 'Enter message text to search for.',
   chatAutoRagChip: 'Related notes',
   chatFolderMentionChip: 'Folder {name}',
   chatFileMentionChip: 'File {name}',
+  chatCurrentMention: '@current · Current document',
+  chatTabsMention: '@tabs · {count} open documents',
+  chatWorkspaceMentions: 'Workspace documents',
+  chatCurrentMentionEmpty: 'No current document.',
+  chatTabsMentionEmpty: 'No open documents.',
+  chatReferenceAvailable: 'Available',
+  chatReferenceMissing: 'Not found',
+  chatReferenceUnavailable: 'References could not be checked.',
   chatReadinessProviderMissing: 'Provider setup required',
   chatReadinessProviderMissingDetail:
     'Enable at least one LLM provider in settings before sending.',

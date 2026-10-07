@@ -7151,6 +7151,8 @@ struct MentionCandidate {
     raw: String,
     /// resolver에 넘길 mention 이름.
     name: String,
+    /// 작업공간 별칭은 브래킷으로 지정한 실제 경로와 구분한다.
+    workspace: Option<&'static str>,
 }
 
 /// `u32` index를 `usize`로 바꾸고 범위를 확인한다.
@@ -10492,7 +10494,16 @@ fn push_mention_candidate(
     candidates: &mut Vec<MentionCandidate>,
     seen: &mut Vec<String>,
 ) {
-    let key = name.to_lowercase();
+    let workspace = match raw.to_lowercase().as_str() {
+        "@current" => Some("current"),
+        "@tabs" => Some("tabs"),
+        _ => None,
+    };
+    let key = if workspace.is_some() {
+        format!("@{}", name.to_lowercase())
+    } else {
+        name.to_lowercase()
+    };
     if seen.iter().any(|item| item == &key) {
         return;
     }
@@ -10500,6 +10511,7 @@ fn push_mention_candidate(
     candidates.push(MentionCandidate {
         raw: raw.to_owned(),
         name: name.to_owned(),
+        workspace,
     });
 }
 
@@ -12114,8 +12126,11 @@ fn serialize_mention_candidates_json(candidates: &[MentionCandidate]) -> String 
     let body = candidates
         .iter()
         .map(|candidate| {
+            let workspace = candidate
+                .workspace
+                .map_or_else(String::new, |name| format!(",\"workspace\":\"{name}\""));
             format!(
-                "{{\"raw\":\"{}\",\"name\":\"{}\"}}",
+                "{{\"raw\":\"{}\",\"name\":\"{}\"{workspace}}}",
                 escape_json_string(&candidate.raw),
                 escape_json_string(&candidate.name),
             )
@@ -13311,6 +13326,15 @@ mod tests {
         assert_eq!(
             candidates,
             "[{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"},{\"raw\":\"@[entity: Paul]\",\"name\":\"entity: Paul\"},{\"raw\":\"@browser\",\"name\":\"browser\"},{\"raw\":\"@Notes/today.md\",\"name\":\"Notes/today.md\"},{\"raw\":\"@missing\",\"name\":\"missing\"}]",
+        );
+    }
+
+    /// 작업공간 키워드는 실제 경로와 별도로 구분하고 브래킷 경로를 보존한다.
+    #[test]
+    fn workspace_mentions_preserve_literal_paths() {
+        assert_eq!(
+            parse_mention_candidates_json("@current @tabs @[current] @CURRENT"),
+            r#"[{"raw":"@[current]","name":"current"},{"raw":"@current","name":"current","workspace":"current"},{"raw":"@tabs","name":"tabs","workspace":"tabs"}]"#,
         );
     }
 

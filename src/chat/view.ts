@@ -20,6 +20,8 @@ import type {
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
+import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
+import { renderComposerReferencePreview } from './composer-reference-preview';
 import { openSessionHistoryModal } from './session-modal';
 import {
   buildChatContext,
@@ -85,7 +87,7 @@ import {
   type ChatRecoveryAction,
 } from './chat-error-actions';
 import {
-  createContextPreviewChips,
+  createLiveContextPreviewChips,
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
@@ -258,7 +260,11 @@ export class ChatView extends ItemView {
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
   private mentionSelectedIndex: number;
-  private mentionItems: { label: string; value: string; type: 'server' | 'file' | 'folder' }[];
+  private mentionItems: {
+    label: string;
+    value: string;
+    type: 'workspace' | 'server' | 'file' | 'folder';
+  }[];
   private mentionStartIndex: number;
   private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
@@ -406,6 +412,13 @@ export class ChatView extends ItemView {
     });
 
     this.buildInputArea(root);
+    const refreshReferences = (): void => this.renderContextPreview(this.inputArea?.value ?? '');
+    this.registerEvent(this.app.workspace.on('file-open', refreshReferences));
+    this.registerEvent(this.app.workspace.on('layout-change', refreshReferences));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', refreshReferences));
+    this.registerEvent(this.app.vault.on('create', refreshReferences));
+    this.registerEvent(this.app.vault.on('delete', refreshReferences));
+    this.registerEvent(this.app.vault.on('rename', refreshReferences));
     this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
     this.registerRefreshBusEvents();
@@ -674,10 +687,15 @@ export class ChatView extends ItemView {
     const runStatusIcon = runStatus.createSpan({
       cls: 'superpower-inside-chat-run-control-status-icon',
     });
-    setIcon(runStatusIcon, 'sparkles');
+    runStatusIcon.addClass('superpower-inside-composer-spinner');
+    runStatusIcon.setAttribute('aria-hidden', 'true');
     runStatus.createSpan({ text: t('chatRunActive') });
 
-    this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
+    this.contextPreviewEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-context-preview',
+      attr: { 'aria-live': 'polite', 'aria-label': t('chatWorkspaceMentions') },
+    });
+    this.contextPreviewEl.addEventListener('focusin', () => this.hideMentionDropdown());
     this.renderContextPreview('');
 
     const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
@@ -688,6 +706,8 @@ export class ChatView extends ItemView {
         rows: '2',
         'aria-label': t('chatInputPlaceholder'),
         'aria-controls': this.mentionDropdownId,
+        'aria-autocomplete': 'list',
+        'aria-expanded': 'false',
       },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
@@ -752,15 +772,11 @@ export class ChatView extends ItemView {
 
   private renderContextPreview(text: string): void {
     if (!this.contextPreviewEl) return;
-    this.contextPreviewEl.empty();
-    const mentions = text.trim() ? this.parseMentions(text) : [];
-    const chips = createContextPreviewChips(mentions);
-    for (const chip of chips.slice(0, 8)) {
-      this.contextPreviewEl.createSpan({
-        cls: `superpower-inside-chat-context-chip ${chip.cls}`,
-        text: chip.label,
-      });
-    }
+    const resolver = createAppMentionResolver(this.app, this.plugin.mcpRegistry);
+    renderComposerReferencePreview(
+      this.contextPreviewEl,
+      createLiveContextPreviewChips(text, resolver),
+    );
   }
 
   private invalidateActiveChatRun(restoreDraft: boolean): void {
@@ -971,6 +987,7 @@ export class ChatView extends ItemView {
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
+    if (e.isComposing) return;
     const mentionOpen = Boolean(
       this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS),
     );
@@ -1044,6 +1061,18 @@ export class ChatView extends ItemView {
   private buildMentionItems(): void {
     this.mentionItems = [];
     const query = this.mentionQuery;
+    for (const value of ['current', 'tabs']) {
+      if (value.includes(query)) {
+        this.mentionItems.push({
+          label:
+            value === 'current'
+              ? t('chatCurrentMention')
+              : t('chatTabsMention', { count: captureWorkspaceMentionFiles(this.app).tabs.length }),
+          value,
+          type: 'workspace',
+        });
+      }
+    }
 
     const registry = this.plugin.mcpRegistry;
     if (registry) {
@@ -1101,7 +1130,7 @@ export class ChatView extends ItemView {
 
   private showMentionDropdown(): void {
     if (!this.inputArea || !this.container || this.mentionItems.length === 0) {
-      setHidden(this.mentionDropdown, true);
+      this.hideMentionDropdown();
       return;
     }
 
@@ -1113,55 +1142,28 @@ export class ChatView extends ItemView {
     }
     this.mentionDropdown.empty();
     setHidden(this.mentionDropdown, false);
-
-    const serverItems = this.mentionItems.filter((i) => i.type === 'server');
-    const fileItems = this.mentionItems.filter((i) => i.type === 'file');
-    const folderItems = this.mentionItems.filter((i) => i.type === 'folder');
-
-    if (serverItems.length > 0) {
+    this.inputArea.setAttribute('aria-expanded', 'true');
+    for (const [type, label, icon] of [
+      ['workspace', t('chatWorkspaceMentions'), 'panels-top-left'],
+      ['server', t('mcpMentionServers'), 'plug'],
+      ['file', t('mcpMentionFiles'), 'file-text'],
+      ['folder', t('mcpMentionFolders'), 'folder'],
+    ] as const) {
+      const items = this.mentionItems.filter((item) => item.type === type);
+      if (items.length === 0) continue;
       const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
       group.createDiv({
         cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionServers'),
+        text: label,
       });
-      for (const item of serverItems) {
+      for (const item of items) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        el.id = `${this.mentionDropdownId}-${this.mentionItems.indexOf(item)}`;
         el.setAttribute('role', 'option');
         el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '🔌' });
+        setIcon(el.createSpan({ cls: 'superpower-inside-mention-item-icon' }), icon);
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
-        el.addEventListener('click', () => this.insertMention(item));
-      }
-    }
-
-    if (folderItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
-      group.createDiv({
-        cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionFolders'),
-      });
-      for (const item of folderItems) {
-        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
-        el.setAttribute('role', 'option');
-        el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon folder', text: '📁' });
-        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
-        el.addEventListener('click', () => this.insertMention(item));
-      }
-    }
-
-    if (fileItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
-      group.createDiv({
-        cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionFiles'),
-      });
-      for (const item of fileItems) {
-        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
-        el.setAttribute('role', 'option');
-        el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '📄' });
-        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
+        el.addEventListener('mousedown', (event) => event.preventDefault());
         el.addEventListener('click', () => this.insertMention(item));
       }
     }
@@ -1202,6 +1204,8 @@ export class ChatView extends ItemView {
     if (targetIndex >= items.length) targetIndex = 0;
 
     this.mentionSelectedIndex = targetIndex;
+    this.inputArea?.setAttribute('aria-activedescendant', items[targetIndex].id);
+    items[targetIndex].scrollIntoView({ block: 'nearest' });
     for (let i = 0; i < items.length; i++) {
       items[i].toggleClass('selected', i === targetIndex);
       if (isDomInstance(items[i], HTMLElement)) {
@@ -1221,7 +1225,7 @@ export class ChatView extends ItemView {
   private insertMention(item: {
     label: string;
     value: string;
-    type: 'server' | 'file' | 'folder';
+    type: 'workspace' | 'server' | 'file' | 'folder';
   }): void {
     if (!this.inputArea) return;
     const value = this.inputArea.value;
@@ -1235,9 +1239,13 @@ export class ChatView extends ItemView {
     this.inputArea.setSelectionRange(newCursorPos, newCursorPos);
     this.hideMentionDropdown();
     this.autoResizeInput();
+    this.renderContextPreview(this.inputArea.value);
+    this.inputArea.focus();
   }
 
   private hideMentionDropdown(): void {
+    this.inputArea?.setAttribute('aria-expanded', 'false');
+    this.inputArea?.removeAttribute('aria-activedescendant');
     if (this.mentionDropdown) {
       setHidden(this.mentionDropdown, true);
     }
@@ -2789,6 +2797,7 @@ export class ChatView extends ItemView {
   private async handleSend(): Promise<void> {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
+    const workspaceFiles = captureWorkspaceMentionFiles(this.app);
     const regeneration = this.pendingRegeneration;
     const previousUserQuestions = selectPreviousUserQuestions(
       this.messages,
@@ -2880,6 +2889,7 @@ export class ChatView extends ItemView {
             text,
             previousUserQuestions,
             providerCapability.maxToolRounds > 0,
+            workspaceFiles,
           );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
@@ -3679,6 +3689,7 @@ export class ChatView extends ItemView {
   }
 
   private setLoading(loading: boolean): void {
+    if (loading) this.hideMentionDropdown();
     const state = createComposerLoadingState(loading);
     this.isStreaming = state.isStreaming;
     if (this.sendBtn) {
@@ -3691,6 +3702,7 @@ export class ChatView extends ItemView {
       );
     }
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
+    this.inputArea?.setAttribute('aria-busy', String(loading));
     if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
     setHidden(this.runControlEl, state.runControl.hidden);
@@ -4751,6 +4763,7 @@ export class ChatView extends ItemView {
     lastUserText: string,
     previousUserQuestions: readonly string[] = [],
     deferImplicitFolderEvidenceToTools = false,
+    workspaceFiles: WorkspaceMentionFiles = captureWorkspaceMentionFiles(this.app),
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -4777,6 +4790,7 @@ export class ChatView extends ItemView {
     );
     const context = await buildChatContext(lastUserText, {
       app: this.app,
+      workspaceFiles,
       candidatePaths: new Set(candidateFiles.map((file) => file.path)),
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,

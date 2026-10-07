@@ -1403,6 +1403,7 @@ export interface RustMentionedEntityInput {
 export interface RustMentionCandidate {
   raw: string;
   name: string;
+  workspace?: 'current' | 'tabs';
 }
 
 export interface RustMcpJsonValidationResult {
@@ -5634,7 +5635,13 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustMentionCandidate>;
-  return typeof candidate.raw === 'string' && typeof candidate.name === 'string';
+  return (
+    typeof candidate.raw === 'string' &&
+    typeof candidate.name === 'string' &&
+    (candidate.workspace === undefined ||
+      candidate.workspace === 'current' ||
+      candidate.workspace === 'tabs')
+  );
 }
 
 function isFiniteMetricRecord(value: unknown): value is Partial<Record<string, number>> {

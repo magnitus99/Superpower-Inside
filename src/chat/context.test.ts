@@ -18,6 +18,39 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('현재 문서와 열린 문서의 원문을 함께 컨텍스트에 전달한다', async () => {
+    const first = createFile('Notes/현재.md', '현재 문서의 근거', 1000);
+    const second = createFile('Notes/다른.md', '다른 문서의 근거', 1000);
+    const context = await buildChatContext('@current @tabs', {
+      app: createApp(
+        new Map([
+          [first.path, first],
+          [second.path, second],
+        ]),
+      ),
+      workspaceFiles: { current: [first.path], tabs: [first.path, second.path] },
+    });
+    expect(context.systemPrompt).toContain('현재 문서의 근거');
+    expect(context.systemPrompt).toContain('다른 문서의 근거');
+    expect(context.attachments).toHaveLength(2);
+  });
+  it('전송 시 문서 스냅샷을 읽어 열린 문서의 중복 첨부와 검색 범위 밖 유출을 막는다', async () => {
+    const first = createFile('Notes/현재.md', '현재 문서의 근거', 1000);
+    const second = createFile('Notes/다른.md', '다른 문서의 근거', 1000);
+    const context = await buildChatContext('@current @tabs @[Notes/현재.md]', {
+      app: createApp(
+        new Map([
+          [first.path, first],
+          [second.path, second],
+        ]),
+      ),
+      workspaceFiles: { current: [first.path], tabs: [first.path, second.path] },
+      candidatePaths: new Set([first.path]),
+    });
+    expect(context.systemPrompt).toContain('현재 문서의 근거');
+    expect(context.systemPrompt).not.toContain('다른 문서의 근거');
+    expect(context.attachments.filter((item) => item.name === first.path)).toHaveLength(1);
+  });
   it('긴 명시 파일과 폴더를 함께 지정하면 양쪽 근거를 먼저 예약한다', async () => {
     const first = createFile(
       'A.md',
@@ -740,6 +773,7 @@ function createApp(
   readErrors = new Set<string>(),
 ): App {
   return {
+    workspace: { getActiveFile: () => null, iterateAllLeaves: () => undefined },
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path) ?? folders.get(path) ?? null,
       cachedRead: (file: TFile & { content: string }) =>

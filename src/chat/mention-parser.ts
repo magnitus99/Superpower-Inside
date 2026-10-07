@@ -1,4 +1,5 @@
 import { parseMentionCandidatesRust, planChatContextMentionsRust } from '../rag/rust-core';
+import type { WorkspaceMentionFiles } from './workspace-mentions';
 
 export interface ParsedMention {
   raw: string;
@@ -7,6 +8,7 @@ export interface ParsedMention {
 }
 
 export interface MentionResolver {
+  workspaceFiles?: WorkspaceMentionFiles;
   isServer(name: string): boolean;
   isFile(name: string): boolean;
   isFolder(name: string): boolean;
@@ -27,6 +29,12 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
   };
 
   for (const candidate of candidates) {
+    if (candidate.workspace) {
+      for (const path of resolver.workspaceFiles?.[candidate.workspace] ?? []) {
+        mentions.push({ raw: candidate.raw, type: 'file', name: path });
+      }
+      continue;
+    }
     addMention(candidate.raw, candidate.name);
   }
 

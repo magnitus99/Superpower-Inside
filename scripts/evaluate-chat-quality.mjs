@@ -28,6 +28,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 export const TFile = globalThis.app?.vault.getFiles()[0]?.constructor ?? class {};
 export const TFolder = globalThis.app?.vault.getRoot()?.constructor ?? class {};
+export class FileView {}
 export function normalizePath(value) { return value.replaceAll('\\\\', '/'); }
 export function getAllTags(cache) {
   const frontmatter = cache.frontmatter?.tags;

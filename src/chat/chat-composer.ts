@@ -1,4 +1,6 @@
 import { t } from '../i18n';
+import { parseMentionCandidatesRust } from '../rag/rust-core';
+import type { MentionResolver } from './mention-parser';
 
 export interface ComposerLoadingState {
   isStreaming: boolean;
@@ -51,6 +53,58 @@ export interface ContextPreviewMention {
 export interface ContextPreviewChip {
   label: string;
   cls: string;
+  detail?: string;
+  paths?: readonly string[];
+  valid?: boolean;
+}
+
+/** 파싱은 Rust에 맡기고 호스트의 파일·폴더 상태를 입력 미리보기에 연결한다. */
+export function createLiveContextPreviewChips(
+  text: string,
+  resolver: MentionResolver,
+): ContextPreviewChip[] {
+  const chips = createContextPreviewChips([]);
+  const candidates = parseMentionCandidatesRust(text);
+  if (!candidates) return [...chips, { label: t('chatReferenceUnavailable'), cls: 'missing' }];
+  for (const candidate of candidates) {
+    if (candidate.workspace) {
+      const paths = resolver.workspaceFiles?.[candidate.workspace] ?? [];
+      const valid = paths.length > 0 && paths.every((path) => resolver.isFile(path));
+      chips.push({
+        label:
+          candidate.workspace === 'current'
+            ? t('chatCurrentMention')
+            : t('chatTabsMention', { count: paths.length }),
+        cls: 'workspace',
+        paths,
+        valid,
+        detail:
+          paths.length > 0
+            ? t(valid ? 'chatReferenceAvailable' : 'chatReferenceMissing')
+            : t(
+                candidate.workspace === 'current'
+                  ? 'chatCurrentMentionEmpty'
+                  : 'chatTabsMentionEmpty',
+              ),
+      });
+      continue;
+    }
+    const type = resolver.isServer(candidate.name)
+      ? 'server'
+      : resolver.isFile(candidate.name)
+        ? 'file'
+        : resolver.isFolder(candidate.name)
+          ? 'folder'
+          : 'missing';
+    chips.push({
+      label: candidate.raw,
+      cls: type,
+      valid: type !== 'missing',
+      paths: [candidate.name],
+      detail: t(type === 'missing' ? 'chatReferenceMissing' : 'chatReferenceAvailable'),
+    });
+  }
+  return chips;
 }
 
 export function createComposerLoadingState(loading: boolean): ComposerLoadingState {
