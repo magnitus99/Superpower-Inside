@@ -1967,9 +1967,9 @@ const ko: I18nKeys = {
   localModelsDetail:
     '다운로드 후 오프라인으로 사용합니다. 모델을 변경하면 검색 인덱스를 다시 만듭니다.',
   localModelTernlightDetail:
-    '빠른 기본 모델 · 약 10 MB · 384차원 · 최대 128토큰. 짧은 영어 텍스트 위주로 사용할 때 적합합니다.',
+    '목적: 짧은 영어 노트의 빠른 검색 · 다국어: 비권장(영어 중심) · 다운로드: 약 10 MB · 권장 최소(추정): 시스템 RAM 4 GB, GPU 불필요.',
   localModelGemmaDetail:
-    '다국어 검색 후보 · FP32 · 약 1.27 GB · 768차원 · 최대 2,048토큰. 100개 이상의 언어를 지원하며 실행 시 다운로드 크기보다 많은 메모리를 사용합니다. 이 볼트에서의 정확도는 별도 비교가 필요합니다.',
+    '목적: 한국어·다국어 노트 검색 · 다국어: 한국어 포함 100개 이상 언어 · 다운로드: 약 1.27 GB(FP32) · 권장 최소(추정): 시스템 RAM 8 GB, GPU 불필요.',
   localModelMissing: '다운로드 필요',
   localModelReady: '로컬 파일 있음',
   localModelChecking: '로컬 파일 확인 중',
@@ -3679,9 +3679,9 @@ const en: I18nKeys = {
   localEmbeddingProvider: 'Built-in local models',
   localModelsDetail: 'Use offline after downloading. Changing models rebuilds the search index.',
   localModelTernlightDetail:
-    'Fast default · about 10 MB · 384 dimensions · up to 128 tokens. Suited to short English text.',
+    'Purpose: fast search of short English notes · Multilingual: not recommended; English-focused · Download: about 10 MB · Estimated recommended minimum: 4 GB system RAM; no GPU required.',
   localModelGemmaDetail:
-    'Multilingual search candidate · FP32 · about 1.27 GB · 768 dimensions · up to 2,048 tokens. Supports over 100 languages and needs more memory to run than its download size. Accuracy on this vault needs a separate comparison.',
+    'Purpose: search Korean and multilingual notes · Multilingual: over 100 languages, including Korean · Download: about 1.27 GB (FP32) · Estimated recommended minimum: 8 GB system RAM; no GPU required.',
   localModelMissing: 'Download required',
   localModelReady: 'Local files available',
   localModelChecking: 'Checking local files',
