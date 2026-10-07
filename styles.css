@@ -2252,6 +2252,18 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin-top: 8px;
 }
 
+.superpower-inside-frontmatter-exclusions {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-frontmatter-exclusion-path {
+  padding: var(--superpower-inside-row-padding) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-exclude-count-meta {
   display: flex;
   align-items: center;

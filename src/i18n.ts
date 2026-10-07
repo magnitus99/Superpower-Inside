@@ -323,6 +323,11 @@ export interface I18nKeys {
   autoUpdateIntervalDesc: string;
   intervalMinutes: string;
   excludePaths: string;
+  frontmatterExclusions: string;
+  frontmatterExclusionsDesc: string;
+  frontmatterExclusionsEmpty: string;
+  frontmatterExclusionsLoading: string;
+  frontmatterExclusionsError: string;
   excludeChatFolder: string;
   excludeChatFolderDesc: string;
   excludePathsDesc: string;
@@ -1854,6 +1859,12 @@ const ko: I18nKeys = {
   autoUpdateIntervalDesc: '자동 인덱싱 간격 (1~99분, 자연수)',
   intervalMinutes: '분',
   excludePaths: '제외할 경로',
+  frontmatterExclusions: 'YAML로 제외한 문서',
+  frontmatterExclusionsDesc:
+    '문서 맨 위 YAML에 superpower-inside-exclude: true를 넣으면 내장 볼트 도구·BM25·임베딩에서 제외됩니다. 다시 포함하려면 문서에서 속성을 지우거나 false로 바꾸세요.',
+  frontmatterExclusionsEmpty: 'YAML로 제외한 문서가 없습니다.',
+  frontmatterExclusionsLoading: '문서의 YAML을 확인하는 중입니다.',
+  frontmatterExclusionsError: '제외 문서 목록을 불러오지 못했습니다.',
   excludePathsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 폴더나 경로 패턴을 관리합니다.',
   excludeExts: '제외할 확장자',
   excludeExtsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 파일 확장자를 관리합니다.',
@@ -3529,6 +3540,12 @@ const en: I18nKeys = {
   autoUpdateIntervalDesc: 'Automatic indexing interval (1–99 minutes, integer)',
   intervalMinutes: 'minutes',
   excludePaths: 'Exclude Paths',
+  frontmatterExclusions: 'Documents excluded by YAML',
+  frontmatterExclusionsDesc:
+    'Add superpower-inside-exclude: true to the YAML at the top of a document to exclude it from built-in vault tools, BM25, and embeddings. To include it again, remove the property or set it to false in the document.',
+  frontmatterExclusionsEmpty: 'No documents excluded by YAML.',
+  frontmatterExclusionsLoading: 'Checking document YAML.',
+  frontmatterExclusionsError: 'Could not load the excluded document list.',
   excludePathsDesc:
     'Manage folders or path patterns shared by the embedding, BM25, and built-in vault tool exclusions.',
   excludeExts: 'Exclude Extensions',

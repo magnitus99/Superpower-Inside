@@ -77,6 +77,7 @@ import {
 } from './utils/rag-exclude-validation';
 import {
   countFilesByExtensions,
+  getFrontmatterExcludedFiles,
   getEffectiveExcludePaths,
   getRagFileTypeSummary,
 } from './utils/vault';
@@ -1349,6 +1350,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
   private excludeCountRenderer: (() => void) | null = null;
+  private frontmatterExclusionRenderer: (() => void) | null = null;
   private fileScopeRenderer: (() => void) | null = null;
   // RAG 상태 패널의 DOM 참조 (부분 업데이트용)
   private ragStatusGrid: HTMLElement | null = null;
@@ -1514,6 +1516,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.mcpStatusRefresh?.detach();
     this.mcpStatusRefresh = null;
     this.excludeCountRenderer = null;
+    this.frontmatterExclusionRenderer = null;
     this.fileScopeRenderer = null;
     this.unregisterRefreshBusSubscriptions();
     this.resetRagDomReferences();
@@ -1553,6 +1556,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.tabPanels.clear();
     this.builtTabPanelIds.clear();
     containerEl.empty();
+    this.frontmatterExclusionRenderer = null;
     // RefreshBus 구독: 이벤트 수신 시 부분 업데이트
     const bus = this.plugin.refreshBus;
     if (bus) {
@@ -1586,6 +1590,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshBusUnsubscribers.push(
         bus.on('exclude-counts', () => {
           this.excludeCountRenderer?.();
+          this.frontmatterExclusionRenderer?.();
           this.fileScopeRenderer?.();
         }),
       );
@@ -4231,6 +4236,45 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         refreshLabel: t('refresh'),
       },
     });
+    this.buildFrontmatterExclusions(section);
+  }
+  private buildFrontmatterExclusions(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName(t('frontmatterExclusions'))
+      .setDesc(t('frontmatterExclusionsDesc'));
+    const list = containerEl.createDiv({
+      cls: 'superpower-inside-frontmatter-exclusions',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+    let revision = 0;
+    const refresh = async (): Promise<void> => {
+      const currentRevision = ++revision;
+      list.setText(t('frontmatterExclusionsLoading'));
+      try {
+        const files = await getFrontmatterExcludedFiles(this.app.vault);
+        if (currentRevision !== revision || this.frontmatterExclusionRenderer !== render) return;
+        list.empty();
+        if (files.length === 0) list.setText(t('frontmatterExclusionsEmpty'));
+        for (const file of files)
+          list.createDiv({ cls: 'superpower-inside-frontmatter-exclusion-path', text: file.path });
+      } catch {
+        if (currentRevision === revision && this.frontmatterExclusionRenderer === render)
+          list.setText(t('frontmatterExclusionsError'));
+      }
+    };
+    const render = (): void => {
+      void refresh();
+    };
+    this.frontmatterExclusionRenderer = render;
+    for (const ref of [
+      this.app.vault.on('create', render),
+      this.app.vault.on('modify', render),
+      this.app.vault.on('delete', render),
+      this.app.vault.on('rename', render),
+    ]) {
+      this.refreshBusUnsubscribers.push(() => this.app.vault.offref(ref));
+    }
+    render();
   }
   private buildIndexingOptionsSection(containerEl: HTMLElement): void {
     const section = this.createRagGroup(containerEl, t('settingsAuto182'));

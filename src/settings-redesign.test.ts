@@ -11,6 +11,19 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('YAML 제외 문서 목록은 읽기 전용이고 문서 변경 시 새로고침한다', () => {
+    const start = settingsSource.indexOf('private buildFrontmatterExclusions(');
+    const end = settingsSource.indexOf('private buildIndexingOptionsSection(', start);
+    const source = settingsSource.slice(start, end);
+    expect(source).toContain('getFrontmatterExcludedFiles');
+    expect(source).toContain("'aria-live': 'polite'");
+    expect(source).not.toContain('removeButton');
+    expect(source).not.toContain('.modify(');
+    for (const event of ['create', 'modify', 'delete', 'rename'])
+      expect(source).toContain(`this.app.vault.on('${event}', render)`);
+    expect(source).toContain('this.app.vault.offref(ref)');
+    expect(settingsSource).toContain('this.frontmatterExclusionRenderer?.()');
+  });
   it('공통 섹션 제목은 Obsidian heading을 쓰고 저장 상태는 화면 제목 옆에 둔다', () => {
     const start = settingsSource.indexOf('private createSettingsSection(');
     const end = settingsSource.indexOf('private createSettingsStatusRow(', start);
