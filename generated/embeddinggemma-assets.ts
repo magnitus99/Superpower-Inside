@@ -2,8 +2,8 @@
 export const EMBEDDINGGEMMA_ASSETS = [
   {
     "file": "embeddinggemma-worker.js",
-    "size": 547540,
-    "sha256": "d8b5d7c4aa730a76d70eeb07263035d61dce42a84a6f9c97e08b6b87e4f6ecc5",
+    "size": 547164,
+    "sha256": "084970c5ebfe4e6e0e1a2b3b8ecbbc48b085bb25e6e285f733d78101669b3c0e",
     "url": ""
   },
   {
@@ -14,8 +14,8 @@ export const EMBEDDINGGEMMA_ASSETS = [
   },
   {
     "file": "embeddinggemma-runtime.mjs",
-    "size": 24381,
-    "sha256": "c57ca56328877353a575e51bbca6f18450027d6c9bf2307a2cb2c41363b4de9f",
+    "size": 23833,
+    "sha256": "9903dac3aebde6f1527580da37e4129bdaab378eb5936e7fb1877be88f693c25",
     "url": ""
   },
   {

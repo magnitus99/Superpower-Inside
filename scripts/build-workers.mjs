@@ -1,4 +1,4 @@
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -32,9 +32,12 @@ for (const [entry, output, constant] of workers) {
   );
 }
 
+// Electron의 process와 관계없이 worker와 별도 WASM 로더가 브라우저 환경을 사용합니다.
+const browserDefines = { process: 'undefined', 'globalThis.process': 'undefined' };
 const gemma = await build({
   entryPoints: [resolve(root, 'src/llm/embeddinggemma-worker-entry.ts')],
   bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022',
+  define: browserDefines,
   minify: true, legalComments: 'none',
 });
 await writeFile(resolve(root, 'embeddinggemma-worker.js'), gemma.outputFiles[0].contents);
@@ -43,7 +46,15 @@ const runtimeFiles = [
   ['ort-wasm-simd-threaded.mjs', 'embeddinggemma-runtime.mjs'],
 ];
 for (const [source, target] of runtimeFiles) {
-  await copyFile(resolve(root, `node_modules/onnxruntime-web/dist/${source}`), resolve(root, target));
+  const sourcePath = resolve(root, `node_modules/onnxruntime-web/dist/${source}`);
+  if (source.endsWith('.mjs')) {
+    const result = await transform(await readFile(sourcePath, 'utf8'), {
+      define: browserDefines, format: 'esm', target: 'es2022', minify: true, legalComments: 'none',
+    });
+    await writeFile(resolve(root, target), result.code);
+  } else {
+    await copyFile(sourcePath, resolve(root, target));
+  }
 }
 const assets = [];
 for (const file of ['embeddinggemma-worker.js', ...runtimeFiles.map(([, target]) => target)]) {
