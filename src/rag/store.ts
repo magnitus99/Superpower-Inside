@@ -81,7 +81,7 @@ export interface VectorSearchWorkerLike {
     dbName: string;
     queryVector: readonly number[];
     topK: number;
-    filter?: Omit<VectorSearchFilter, 'filePathPrefixes'>;
+    filter?: VectorSearchFilter;
     signal?: AbortSignal;
   }): Promise<Array<{ id: string; score: number }>>;
   close(reason?: Error): void;
@@ -649,10 +649,7 @@ export class IndexedDbVectorStore implements VectorStore {
   async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
     const totalEntries = await this.db.vectors.count();
     if (totalEntries > this.hydrateAllEntryLimit) {
-      if (
-        this.vectorSearchWorkerAvailable &&
-        normalizeFilePathPrefixes(request.filter?.filePathPrefixes).length === 0
-      ) {
+      if (this.vectorSearchWorkerAvailable) {
         try {
           return await this.searchInWorker(request);
         } catch (error) {
@@ -1042,13 +1039,7 @@ export class IndexedDbVectorStore implements VectorStore {
       dbName: this.db.name,
       queryVector: request.queryVector,
       topK: request.topK,
-      filter: request.filter
-        ? {
-            embeddingProvider: request.filter.embeddingProvider,
-            embeddingModel: request.filter.embeddingModel,
-            dimension: request.filter.dimension,
-          }
-        : undefined,
+      filter: request.filter,
       signal: request.signal,
     });
     throwIfAborted(request.signal);
@@ -1056,8 +1047,7 @@ export class IndexedDbVectorStore implements VectorStore {
     return hits.flatMap((hit, index) => {
       const record = records[index];
       if (!record || !matchesVectorRecordSearchFilter(record, request.filter)) return [];
-      // The large-vault worker builds a Rust exact runtime index. Report the
-      // algorithm that actually ran even when the caller merely preferred ANN.
+      // 대형 볼트 작업자는 정확 검색 인덱스를 사용하므로 실제 실행한 알고리즘을 표시한다.
       return [{ entry: vectorEntryFromRecord(record), score: hit.score, mode: 'exact' }];
     });
   }

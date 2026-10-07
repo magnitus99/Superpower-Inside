@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter, TFile } from 'obsidian';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { IndexedDbBM25Index } from './bm25';
 import { RAGQueryEngine } from './query';
@@ -15,6 +15,49 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('구조 검색도 같은 작업자 준비 시간을 허용하고 30ms 고정 제한을 재사용하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('seed.md', [1, 0], 'seed evidence')]);
+    const search = store.search.bind(store);
+    vi.spyOn(store, 'search').mockImplementation(async (request) => {
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+      return search(request);
+    });
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({ resolvedLinks: {} }),
+    });
+    await engine.query('seed', 2);
+    expect(
+      engine.getLastRetrievalDiagnostics().find((item) => item.providerId === 'structural-graph')
+        ?.status,
+    ).toBe('ok');
+  });
+
+  it('후보가 topK보다 많아도 벡터 없는 BM25 결과를 유지한다', async () => {
+    const store = new MemoryVectorStore();
+    const entries = Array.from({ length: 8 }, (_, index) =>
+      createEntry(`lecture-${index}.txt`, [], 'no accident keyword'),
+    );
+    await store.add(entries);
+    const bm25 = await createBm25([]);
+    for (const entry of entries) {
+      bm25.addCorpusDocument({
+        id: entry.id,
+        sourcePath: entry.metadata.filePath,
+        text: entry.metadata.text,
+        sourceMtime: entry.metadata.sourceMtime,
+        sourceSize: entry.metadata.sourceSize,
+        contentHash: entry.metadata.contentHash,
+      });
+    }
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { corpusStore: store });
+    const results = await engine.query('accident', 3, 0);
+    expect(results).toHaveLength(3);
+    expect(results.every((result) => result.bm25Score > 0)).toBe(true);
+  });
+
   it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

@@ -238,6 +238,32 @@ describe('IndexedDbVectorStore', () => {
     );
   });
 
+  it('큰 폴더 검색도 작업자에 범위를 전달하고 외부 결과는 제거한다', async () => {
+    const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
+      Promise.resolve([
+        { id: 'notes/a.md::0', score: 1 },
+        { id: 'outside.md::0', score: 0.9 },
+      ]),
+    );
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 1,
+      vectorSearchWorkerFactory: () => ({ search, close: vi.fn() }),
+    });
+    await store.add([
+      createEntry('notes/a.md', 0, [1, 0], 'a'),
+      createEntry('outside.md', 0, [0.9, 0.1], 'b'),
+    ]);
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 2,
+      filter: { filePathPrefixes: ['notes'] },
+    });
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: { filePathPrefixes: ['notes'] } }),
+    );
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['notes/a.md']);
+  });
+
   it('검색/runtime index cache는 설정한 LRU 예산 안에서만 유지된다', async () => {
     const store = createStore(createDbName(), {
       hydrateAllEntryLimit: 100,

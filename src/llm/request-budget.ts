@@ -17,7 +17,15 @@ export function prepareProviderRequest(
   const plan = planChatRequestRust({ messages: bounded, reservedBytes, maxBytes });
   if (!plan) throw new Error(t('chatInputBudgetExceeded'));
   return {
-    messages: plan.indices.flatMap((index) => (bounded[index] ? [bounded[index]] : [])),
+    messages: [
+      ...plan.indices.flatMap((index) =>
+        bounded[index]?.role === 'system' ? [bounded[index]] : [],
+      ),
+      ...(plan.summary ? [{ role: 'user' as const, content: plan.summary }] : []),
+      ...plan.indices.flatMap((index) =>
+        bounded[index] && bounded[index].role !== 'system' ? [bounded[index]] : [],
+      ),
+    ],
     usedBytes: plan.usedBytes,
   };
 }

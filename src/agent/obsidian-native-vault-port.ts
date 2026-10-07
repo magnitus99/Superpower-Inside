@@ -112,7 +112,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const filteredFiles = request.filters
       ? this.filterFiles(await this.fileScope.listCandidateFiles(), request.filters, request.path)
       : undefined;
-    if (request.mode === 'exact' || (request.field !== undefined && request.field !== 'both')) {
+    if (request.mode === 'exact' || request.mode === 'word' || (request.field !== undefined && request.field !== 'both')) {
       return this.searchLexically(
         request,
         queries,
@@ -1038,7 +1038,7 @@ function buildSearchResult(
     truncated?: boolean;
     scopeRestricted?: boolean;
     filters?: RustNativeVaultFilters;
-    mode?: 'auto' | 'exact';
+    mode?: 'auto' | 'exact' | 'word';
     field?: 'both' | 'content' | 'path';
   } = {},
 ): NativeVaultSearchResult {

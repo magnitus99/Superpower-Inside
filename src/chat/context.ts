@@ -9,6 +9,7 @@ import {
   planChatContextMentionsRust,
   planContextSourcesRust,
   planChatEvidenceRust,
+  planChatUniqueResultIndicesRust,
   planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
   planImplicitFolderQueryPathsRust,
@@ -128,6 +129,13 @@ export async function buildChatContext(
     autoRagReason: 'disabled',
   };
   const shouldUseAutoRag = mentionPlan.useAutoRag;
+  const expandedQuery =
+    options.queryExpander && (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
+      ? await options.queryExpander(question).catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          return question;
+        })
+      : question;
 
   const appendBlock = (block: ContextBlock): boolean => {
     return budget.append({
@@ -137,7 +145,7 @@ export async function buildChatContext(
   };
   const appendEvidence: AppendEvidence = (source, prefix, label, remainingSources = 1) => {
     const plan = planChatEvidenceRust({
-      question,
+      question: expandedQuery,
       source,
       sourceId: `${prefix}-${citations.length + 1}`,
       label,
@@ -191,7 +199,7 @@ export async function buildChatContext(
       attachments,
       maxFolderFiles,
       options.candidatePaths,
-      question,
+      expandedQuery,
       options.ragEngine,
       explicitFolders.length - index - 1,
     );
@@ -218,10 +226,6 @@ export async function buildChatContext(
       (mention) => mention.name,
     ),
   );
-  const expandedQuery =
-    shouldUseAutoRag && options.queryExpander
-      ? await options.queryExpander(question).catch(() => question)
-      : question;
   const implicitFolderPaths =
     shouldUseAutoRag && options.deferImplicitFolderEvidenceToTools !== true
       ? (
@@ -265,11 +269,17 @@ export async function buildChatContext(
           dedupe: true,
         });
       }
-      const attachedPaths = new Set(citations.map((citation) => citation.filePath));
-      const uniqueResults = dedupeQueryResults(results).filter(
+      const deduped = dedupeQueryResults(results);
+      const uniqueResults = selectByRustIndices(
+        deduped,
+        planChatUniqueResultIndicesRust(
+          deduped.map(contextSourceInputFromQueryResult),
+          citations,
+        ) ?? [],
+        { dedupe: true },
+      ).filter(
         (result) =>
-          !attachedPaths.has(result.entry.metadata.filePath) &&
-          (!options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath)),
+          !options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath),
       );
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
@@ -304,6 +314,7 @@ export async function buildChatContext(
         name: 'auto',
         label: t('contextAutoRagDetail', { count: ragSourceIds.length }),
         status: ragPartial ? 'partial' : ragSourceIds.length > 0 ? 'attached' : 'low-relevance',
+        alreadyAttached: results.length > 0 && uniqueResults.length === 0,
         detail:
           ragSourceIds.length > 0
             ? combineAttachmentDetails([
@@ -313,7 +324,16 @@ export async function buildChatContext(
                   : null,
                 diagnosticsText,
               ])
-            : t('contextNoRelevantDocs'),
+            : combineAttachmentDetails([
+                results.length > 0 && uniqueResults.length === 0
+                  ? t('contextRagAlreadyAttached')
+                  : sourcePlan.rejectedCount > 0
+                    ? t('contextRejectedCandidatesExcluded', { count: sourcePlan.rejectedCount })
+                    : uniqueResults.length > 0
+                      ? t('contextFolderPartialBudget')
+                      : t('contextNoRelevantDocs'),
+                diagnosticsText,
+              ]),
         reason: t('contextAutoRagTitle'),
         estimatedChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
         actualChars: ragChars,

@@ -116,7 +116,7 @@ import {
   createRecoveryMessageActionId,
 } from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
-import { expandVaultSearchQueryLocally } from './vault-query-expansion';
+import { expandVaultSearchQuery } from './vault-query-expansion';
 import {
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -2890,6 +2890,8 @@ export class ChatView extends ItemView {
             previousUserQuestions,
             providerCapability.maxToolRounds > 0,
             workspaceFiles,
+            provider,
+            abortController.signal,
           );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
@@ -4102,6 +4104,7 @@ export class ChatView extends ItemView {
       const mcpServerNames = collectCompletedMcpServerNames(allToolCalls);
       return {
         ...args.meta,
+        toolRound: round,
         dataBoundarySnapshot: args.meta.dataBoundarySnapshot
           ? withDataBoundaryProviderUsage(args.meta.dataBoundarySnapshot, {
               toolResultCount,
@@ -4351,6 +4354,7 @@ export class ChatView extends ItemView {
         let groundedRepairCitations: SourceCitation[] = [];
         let answerContract = enforceNativeToolAnswerContract(accumulatedText, allToolCalls);
         if (answerContract.violationCodes.length > 0) {
+          const originalContract = answerContract;
           try {
             const originalAnswer = accumulatedText;
             const repaired = await this.streamGroundedAnswerRepair({
@@ -4379,14 +4383,25 @@ export class ChatView extends ItemView {
                   accumulatedText,
                   turnCitations,
                 );
+              } else {
+                answerContract = originalContract;
               }
             }
-          } catch {
+          } catch (error) {
             if (!isChatRunActive(this.activeRun, args.run)) return;
-            // 교정 요청 자체가 실패해도 검증되지 않은 원문은 노출하지 않고 기존 안전 문구를 사용합니다.
+            this.plugin.logger.warn(
+              'Grounded answer repair failed; preserving claims allowed by the coverage contract.',
+              { source: 'chat.answer-contract', error },
+            );
           }
         }
         accumulatedText = answerContract.content;
+        if (answerContract.violationCodes.length > 0) {
+          this.plugin.logger.warn('Unsupported answer claims removed.', {
+            source: 'chat.answer-contract',
+            data: { violationCodes: answerContract.violationCodes },
+          });
+        }
         const classification = classifyAssistantResponse({
           content: accumulatedText,
           reasoning: accumulatedReasoning,
@@ -4617,6 +4632,9 @@ export class ChatView extends ItemView {
           currentQuestion,
           previousUserQuestions,
           provider.capability.maxToolRounds > 0,
+          captureWorkspaceMentionFiles(this.app),
+          provider,
+          abortController.signal,
         );
         if (!isChatRunActive(this.activeRun, run)) return;
         const toolDefinitions = await this.collectToolDefinitions(
@@ -4764,6 +4782,8 @@ export class ChatView extends ItemView {
     previousUserQuestions: readonly string[] = [],
     deferImplicitFolderEvidenceToTools = false,
     workspaceFiles: WorkspaceMentionFiles = captureWorkspaceMentionFiles(this.app),
+    provider?: LLMProvider,
+    signal?: AbortSignal,
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
@@ -4797,7 +4817,7 @@ export class ChatView extends ItemView {
       ragMinScore: this.plugin.settings.rag.minScore,
       deferImplicitFolderEvidenceToTools,
       queryExpander: (question) =>
-        Promise.resolve(expandVaultSearchQueryLocally(question, previousUserQuestions)),
+        expandVaultSearchQuery(question, provider, previousUserQuestions, signal),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 

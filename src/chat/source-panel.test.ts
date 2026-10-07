@@ -323,6 +323,46 @@ describe('SourcePanel view model contract', () => {
     ]);
   });
 
+  it('이미 첨부된 검색 근거와 검색 오류를 빈 결과와 구분한다', () => {
+    const views = createContextAttachmentChipViews([
+      {
+        id: 'covered',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'low-relevance',
+        alreadyAttached: true,
+        detail: 'Existing evidence covers these ranges.',
+      },
+      {
+        id: 'failed',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'error',
+        detail: 'Search timed out.',
+      },
+      {
+        id: 'full',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'partial',
+        sourceIds: [],
+        detail: 'Context budget is full.',
+      },
+    ]);
+    expect(views[0]).toEqual({
+      id: 'covered',
+      className: 'superpower-inside-chat-context-chip rag attached',
+      label: 'Related evidence already attached',
+      title: 'Existing evidence covers these ranges.',
+    });
+    expect(views[1]?.label).toBe('Related note search failed');
+    expect(views[2]?.label).toBe('Context attachment limit reached');
+    expect(views[2]?.title).toBe('Context budget is full.');
+  });
+
   it('keeps diagnostics available without turning the answer into an index dashboard', () => {
     expect(
       createContextBudgetView({

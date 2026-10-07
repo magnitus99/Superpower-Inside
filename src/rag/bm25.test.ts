@@ -233,6 +233,49 @@ describe('IndexedDbBM25Index', () => {
     expect(bm25.isTokenizerCurrent).toBe(true);
   });
 
+  it('종료된 작업자는 한 번만 복원하고 저장된 원문 코퍼스를 보존한다', async () => {
+    let created = 0;
+    let fail: ((event: ErrorEvent) => void) | undefined;
+    const workerFactory: BM25WorkerFactory = () => {
+      created++;
+      let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+      return {
+        worker: {
+          postMessage: (message) =>
+            queueMicrotask(() =>
+              respond?.({
+                data: { id: message.id, ready: true, tokenizerCurrent: true, totalDocs: 1 },
+              } as MessageEvent<BM25WorkerResponse>),
+            ),
+          terminate: vi.fn(),
+          setOnMessage: (handler) => {
+            respond = handler;
+          },
+          setOnError: (handler) => {
+            fail = handler;
+          },
+        },
+        dispose: vi.fn(),
+      };
+    };
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+    await bm25.load();
+    bm25.addDocument('doc::0', '원문은 보존됩니다.', 'doc.md');
+    await bm25.persist();
+    await Promise.resolve();
+    fail?.({ message: 'worker failed' } as ErrorEvent);
+    expect(bm25.isReady).toBe(false);
+    await Promise.all([bm25.recoverClosedWorker(), bm25.recoverClosedWorker()]);
+    expect(created).toBe(2);
+    expect(bm25.isReady).toBe(true);
+    expect(await bm25.getCorpusDocumentsByIds(['doc::0'])).toEqual([
+      expect.objectContaining({ text: '원문은 보존됩니다.' }),
+    ]);
+    bm25.close();
+  });
+
   it('worker hydration 중 들어온 증분 변경은 초기화 완료 뒤 순서대로 적용한다', async () => {
     const operations: string[] = [];
     const workerControl: {
@@ -289,6 +332,13 @@ describe('IndexedDbBM25Index', () => {
     await Promise.resolve();
     expect(operations).toEqual(['initialize']);
 
+    let prepared = false;
+    const preparing = bm25.recoverClosedWorker().then(() => {
+      prepared = true;
+    });
+    await Promise.resolve();
+    expect(prepared).toBe(false);
+
     const initializeRequestId = workerControl.initializeRequestId;
     const onMessage = workerControl.onMessage;
     if (initializeRequestId === undefined || onMessage === undefined) {
@@ -303,6 +353,8 @@ describe('IndexedDbBM25Index', () => {
       },
     } as unknown as MessageEvent<BM25WorkerResponse>);
     await loading;
+    await preparing;
+    expect(prepared).toBe(true);
     const hits = await bm25.searchTopWithSources('hydration', 1);
 
     expect(operations).toEqual(['initialize', 'add', 'search-top']);

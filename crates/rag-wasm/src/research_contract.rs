@@ -697,20 +697,55 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
     };
 
     let normalized = answer.to_lowercase();
-    let whole_read_claim = contains_whole_read_claim(&normalized);
-    let broad_negative_claim = contains_broad_negative_claim(&normalized);
-    let detected_negative_claim =
-        broad_negative_claim || contains_exact_negative_claim(&normalized);
+    let violation_codes = answer_violation_codes(&normalized, flags, native_search_scopes);
+    let negative_claim =
+        contains_broad_negative_claim(&normalized) || contains_exact_negative_claim(&normalized);
+    let allowed = violation_codes.is_empty();
+    let mut plan = json!({
+        "allowed": allowed,
+        "action": if allowed { "allow" } else { "repair" },
+        "violationCodes": violation_codes,
+        "safeCoverageText": safe_coverage_text(korean, flags, negative_claim),
+    });
+    if !allowed {
+        // 교정이 실패해도 범위를 넘는 문장만 제거하고 나머지 인용·발견은 보존한다.
+        let safe_answer = answer
+            .split_inclusive(['.', '!', '?', '\n', '。'])
+            .filter(|fragment| {
+                answer_violation_codes(&fragment.to_lowercase(), flags, native_search_scopes)
+                    .is_empty()
+            })
+            .collect::<String>();
+        if !safe_answer.trim().is_empty()
+            && answer_violation_codes(&safe_answer.to_lowercase(), flags, native_search_scopes)
+                .is_empty()
+            && let Some(object) = plan.as_object_mut()
+        {
+            object.insert("safeAnswer".to_owned(), json!(safe_answer.trim()));
+        }
+    }
+    plan.to_string()
+}
+
+/// 같은 범위 계약으로 전체 답변과 보존할 문장을 판정한다.
+fn answer_violation_codes(
+    normalized: &str,
+    flags: CoverageFlags,
+    native_search_scopes: Option<&[NativeSearchScope]>,
+) -> Vec<&'static str> {
+    let whole_read_claim = contains_whole_read_claim(normalized);
+    let broad_negative_claim = contains_broad_negative_claim(normalized);
+    let detected_negative_claim = broad_negative_claim || contains_exact_negative_claim(normalized);
     let native_negative_claim_relevant = native_search_scopes
         .as_ref()
-        .is_none_or(|scopes| !scopes.is_empty() || contains_vault_search_scope(&normalized));
+        .is_none_or(|scopes| !scopes.is_empty() || contains_vault_search_scope(normalized));
     let negative_claim = detected_negative_claim && native_negative_claim_relevant;
-    let scoped_negative_claim = negative_claim && contains_scoped_negative_claim(&normalized);
+    let scoped_negative_claim = negative_claim && contains_scoped_negative_claim(normalized);
     let unscoped_broad_negative_claim =
-        negative_claim && contains_unscoped_broad_negative_claim(&normalized);
+        negative_claim && contains_unscoped_broad_negative_claim(normalized);
     let native_scope_matches = native_search_scopes
         .as_ref()
-        .is_none_or(|scopes| native_scoped_negative_claims_match(&normalized, scopes));
+        .is_none_or(|scopes| native_scoped_negative_claims_match(normalized, scopes));
     let mut violation_codes = Vec::<&str>::new();
 
     if whole_read_claim && !flags.all_inventory_evidence_analyzed() {
@@ -722,14 +757,7 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
         violation_codes.push("exact-negative-coverage-incomplete");
     }
 
-    let allowed = violation_codes.is_empty();
-    json!({
-        "allowed": allowed,
-        "action": if allowed { "allow" } else { "repair" },
-        "violationCodes": violation_codes,
-        "safeCoverageText": safe_coverage_text(korean, flags, negative_claim),
-    })
-    .to_string()
+    violation_codes
 }
 
 /// Parses candidate-selection input and applies a safe default provider budget.
@@ -1568,52 +1596,79 @@ fn contains_whole_read_claim(normalized: &str) -> bool {
 
 /// Detects an unqualified broad absence assertion.
 fn contains_broad_negative_claim(normalized: &str) -> bool {
-    [
-        "전혀 없",
-        "관련 자료가 없",
-        "관련 자료는 없",
-        "자료는 없",
-        "근거는 없",
-        "내용은 없",
-        "내용이 없",
-        "아무 자료도 없",
-        "아무것도 없",
-        "하나도 없",
-        "하나도 찾을 수 없",
-        "자료가 존재하지 않",
-        "근거가 존재하지 않",
-        "nothing in the vault",
-        "no related material",
-        "no relevant material",
-        "no evidence exists",
-        "none exists",
-        "could not find any",
-        "couldn't find any",
-        "does not contain any",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
+    answer_fragments(normalized).any(|fragment| {
+        !is_denied_absence_claim(fragment)
+            && [
+                "자료가 전혀 없",
+                "자료는 전혀 없",
+                "근거가 전혀 없",
+                "근거는 전혀 없",
+                "내용이 전혀 없",
+                "내용은 전혀 없",
+                "관련 자료가 없",
+                "관련 자료는 없",
+                "자료는 없",
+                "근거는 없",
+                "내용은 없",
+                "내용이 없",
+                "아무 자료도 없",
+                "자료가 하나도 없",
+                "근거가 하나도 없",
+                "볼트에 아무것도 없",
+                "볼트에는 아무것도 없",
+                "하나도 찾을 수 없",
+                "자료가 존재하지 않",
+                "근거가 존재하지 않",
+                "nothing in the vault",
+                "no related material",
+                "no relevant material",
+                "no evidence exists",
+                "no material exists",
+                "could not find any",
+                "couldn't find any",
+                "does not contain any",
+            ]
+            .iter()
+            .any(|marker| fragment.contains(marker))
+    })
 }
 
 /// Detects a qualified or direct-mention negative assertion.
 fn contains_exact_negative_claim(normalized: &str) -> bool {
+    answer_fragments(normalized).any(|fragment| {
+        !is_denied_absence_claim(fragment)
+            && [
+                "찾지 못",
+                "찾을 수 없",
+                "발견하지 못",
+                "확인되지 않",
+                "존재하지 않",
+                "직접 언급이 없",
+                "did not find",
+                "could not find",
+                "couldn't find",
+                "does not exist",
+                "do not exist",
+                "no direct mention",
+                "not found in",
+            ]
+            .iter()
+            .any(|marker| fragment.contains(marker))
+    })
+}
+
+/// 자료 부재를 부정하는 표현을 부재 단정으로 오인하지 않는다.
+fn is_denied_absence_claim(fragment: &str) -> bool {
     [
-        "찾지 못",
-        "찾을 수 없",
-        "발견하지 못",
-        "확인되지 않",
-        "존재하지 않",
-        "직접 언급이 없",
-        "did not find",
-        "could not find",
-        "couldn't find",
-        "does not exist",
-        "do not exist",
-        "no direct mention",
-        "not found in",
+        "없다는 것이 아닙",
+        "없다는 뜻은 아닙",
+        "없다고 단정할 수 없",
+        "찾지 못했다는 뜻은 아닙",
+        "does not mean there is no",
+        "doesn't mean there is no",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker))
+    .any(|marker| fragment.contains(marker))
 }
 
 /// Detects language that limits a negative conclusion to the verified evidence scope.
@@ -2709,6 +2764,30 @@ mod tests {
                 violations.contains(&json!(expected_code)),
                 "{answer} should produce {expected_code}: {output}"
             );
+        }
+    }
+
+    #[test]
+    fn answer_contract_preserves_topic_absence_quotes_but_rejects_missing_evidence() {
+        let paths = numbered_paths(2);
+        let receipt = parse_output(&derive_research_coverage_receipt_json(
+            &coverage_input(&paths, &[], &[0], &[], &[]).to_string(),
+        ));
+        for answer in [
+            "직접적인 일치: “이 세상에 우연은 전혀 없다.”\n> 이 세상에는 우연이 없습니다. 전혀 없습니다.",
+            "> 우연에 의한 것은 아무것도 없습니다. 강연은 우연에 의한 것은 하나도 없다고 주장합니다.",
+            "강연은 ‘운은 없다’고 설명합니다. 자료가 전혀 없다는 뜻은 아닙니다.",
+        ] {
+            let output = parse_output(&plan_research_answer_contract_json(
+                &json!({ "answer": answer, "receipt": receipt }).to_string(),
+            ));
+            assert_eq!(output.get("allowed"), Some(&json!(true)), "{output}");
+        }
+        for answer in ["관련 자료가 전혀 없습니다.", "근거는 전혀 없습니다."] {
+            let output = parse_output(&plan_research_answer_contract_json(
+                &json!({ "answer": answer, "receipt": receipt }).to_string(),
+            ));
+            assert_eq!(output.get("allowed"), Some(&json!(false)), "{output}");
         }
     }
 

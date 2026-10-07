@@ -52,6 +52,20 @@ describe('provider 공통 입력 예산', () => {
     expect(request.usedBytes).toBeLessThanOrEqual(5000);
   });
 
+  it('생략된 대화의 관련 발췌를 비신뢰 요약으로 남기고 최신 목표를 보존한다', () => {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: '고정 지침' },
+      { role: 'user', content: '담당자는 Mina입니다.\n' + '이전 자료 '.repeat(1000) },
+      { role: 'assistant', content: '담당자 Mina의 마감은 금요일입니다.' },
+      { role: 'user', content: 'Mina 담당자와 마감을 정리해줘.' },
+    ];
+    const result = prepareProviderRequest(messages, undefined, 3000);
+    expect(result.messages[1]?.content).toContain('[Superpower Inside conversation summary]');
+    expect(result.messages[1]?.content).toContain('담당자는 Mina');
+    expect(result.messages.at(-1)).toEqual(messages.at(-1));
+    expect(result.usedBytes).toBeLessThanOrEqual(3000);
+  });
+
   it('checkpoint와 compatibility 결과를 최신 사용자 턴에 포함한다', () => {
     const messages: ChatMessage[] = [
       { role: 'system', content: '고정 지침' },

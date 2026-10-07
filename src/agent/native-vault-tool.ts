@@ -69,7 +69,7 @@ export interface NativeVaultSearchResult extends NativeVaultResultBase {
   queries?: string[];
   path: string;
   match: 'all' | 'any' | 'phrase';
-  mode?: 'auto' | 'exact';
+  mode?: 'auto' | 'exact' | 'word';
   field?: 'both' | 'content' | 'path';
   filters?: RustNativeVaultFilters;
   scopeRestricted?: boolean;
@@ -669,7 +669,7 @@ function createNativeSearchOptions(): Record<string, unknown> {
   return {
     mode: {
       type: 'string',
-      enum: ['auto', 'exact'],
+      enum: ['auto', 'exact', 'word'],
       description: t('nativeVaultSearchModeDescription'),
     },
     field: {

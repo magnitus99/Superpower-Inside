@@ -129,6 +129,7 @@ export interface ContextAttachment {
   reason?: string;
   estimatedChars?: number;
   actualChars?: number;
+  alreadyAttached?: boolean;
   pinned?: boolean;
   excluded?: boolean;
   fileCount?: number;

@@ -420,6 +420,11 @@ export function plan_chat_request_json(input_json: string): string;
 export function plan_chat_save_metadata_json(messages_json: string, existing_created: string, option_title: string, now_iso: string): string;
 
 /**
+ * 검증된 첨부 구간이 완전히 포함하는 검색 후보만 제외한다.
+ */
+export function plan_chat_unique_result_indices_json(sources_json: string, citations_json: string): string;
+
+/**
  * 호스트 I/O에 필요한 결정적 결과를 생성한다. 잘못된 입력은 빈 결과로 닫는다.
  */
 export function plan_chatgpt_json(input_json: string): string;
@@ -760,6 +765,11 @@ export function plan_structural_linked_paths_json(seed_paths_json: string, edges
 export function plan_tool_result_source_references_json(citations_json: string): string;
 
 /**
+ * 오래된 도구 결과는 출처·범위·오류와 질문에 맞는 원문 구간을 보존해 축약한다.
+ */
+export function plan_tool_result_summary_json(content: string, question: string, max_bytes: number): string;
+
+/**
  * vault link target의 path candidate와 basename fallback을 `JSON` 문자열로 반환한다.
  */
 export function plan_vault_link_candidates_json(source_path: string, raw_target: string): string;
@@ -770,6 +780,11 @@ export function plan_vault_link_candidates_json(source_path: string, raw_target:
 export function plan_vault_link_fallback_index_json(fallback_basename: string, basenames_json: string): string;
 
 /**
+ * 모델이 제안한 검색어는 제한된 데이터로만 사용하며 원문 질문을 대체하지 않는다.
+ */
+export function plan_vault_query_expansion_json(question: string, response: string): string;
+
+/**
  * Plans stale file-index paths from a bounded host page.
  */
 export function plan_vector_file_index_batch_json(records_json: string, embedding_provider: string, embedding_model: string, max_deletions: number): string;
@@ -778,6 +793,11 @@ export function plan_vector_file_index_batch_json(records_json: string, embeddin
  * Plans stale vector ids from a bounded metadata-only host page.
  */
 export function plan_vector_record_batch_json(records_json: string, embedding_provider: string, embedding_model: string, expected_dimension: number, max_deletions: number): string;
+
+/**
+ * 파일 경계에 맞는 벡터 검색 범위의 인덱스를 선택한다.
+ */
+export function plan_vector_scope_indices_json(paths_json: string, prefixes_json: string): string;
 
 /**
  * vector store add mutation plan을 `JSON` 문자열로 만든다.
@@ -998,6 +1018,7 @@ export interface InitOutput {
     readonly plan_structural_linked_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vault_link_candidates_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vault_link_fallback_index_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_vector_scope_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vector_store_add_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vector_store_lookup_by_file_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vector_store_lookup_by_ids_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1024,15 +1045,40 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
+    readonly plan_agentic_tool_turn_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
+    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly find_reusable_prompt: (a: number, b: number, c: number, d: number) => number;
     readonly is_local_settings_provider: (a: number, b: number, c: number, d: number) => number;
     readonly is_valid_settings_folder: (a: number, b: number) => number;
     readonly parse_settings_number: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_chatgpt_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
+    readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
+    readonly plan_chat_evidence_json: (a: number, b: number) => [number, number];
+    readonly plan_chat_request_json: (a: number, b: number) => [number, number];
+    readonly plan_chat_unique_result_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_tool_result_summary_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_vault_query_expansion_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly plan_plugin_owned_file_maintenance_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_compatibility_tool_calls_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_filtered_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_vault_lexical_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
-    readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
+    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly plan_source_processing_json: (a: number, b: number) => [number, number];
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
     readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
     readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
@@ -1040,40 +1086,18 @@ export interface InitOutput {
     readonly plan_research_candidate_selection_json: (a: number, b: number) => [number, number];
     readonly plan_research_provider_ledger_transition_json: (a: number, b: number) => [number, number];
     readonly plan_research_provider_request_budget_json: (a: number, b: number) => [number, number];
-    readonly plan_agentic_tool_turn_json: (a: number, b: number) => [number, number];
-    readonly plan_source_processing_json: (a: number, b: number) => [number, number];
-    readonly plan_chat_evidence_json: (a: number, b: number) => [number, number];
-    readonly plan_chat_request_json: (a: number, b: number) => [number, number];
+    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
     readonly plan_native_vault_link_paths_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_native_vault_list_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_native_vault_read_range_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_vault_search_rrf_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_vault_stats_json: (a: number, b: number) => [number, number];
     readonly plan_native_vault_tool_request_json: (a: number, b: number) => [number, number];
-    readonly is_whole_vault_research_intent: (a: number, b: number) => number;
     readonly plan_repeated_tool_call_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_research_citation_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_research_request_failure_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_chat_model_state_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_native_tool_compatibility_fallback_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
-    readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
-    readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
-    readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
-    readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
-    readonly plan_plugin_owned_file_maintenance_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];
-    readonly plan_rag_automatic_recovery_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
-    readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
-    readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly plan_vector_file_index_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly plan_vector_record_batch_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
-    readonly rag_automatic_recovery_delay_ms: (a: number) => number;
-    readonly plan_chatgpt_json: (a: number, b: number) => [number, number];
-    readonly plan_native_vault_lexical_hit_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
     readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;

@@ -1519,6 +1519,29 @@ export function plan_chat_save_metadata_json(messages_json, existing_created, op
 }
 
 /**
+ * 검증된 첨부 구간이 완전히 포함하는 검색 후보만 제외한다.
+ * @param {string} sources_json
+ * @param {string} citations_json
+ * @returns {string}
+ */
+export function plan_chat_unique_result_indices_json(sources_json, citations_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(sources_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(citations_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_chat_unique_result_indices_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * 호스트 I/O에 필요한 결정적 결과를 생성한다. 잘못된 입력은 빈 결과로 닫는다.
  * @param {string} input_json
  * @returns {string}
@@ -3020,6 +3043,30 @@ export function plan_tool_result_source_references_json(citations_json) {
 }
 
 /**
+ * 오래된 도구 결과는 출처·범위·오류와 질문에 맞는 원문 구간을 보존해 축약한다.
+ * @param {string} content
+ * @param {string} question
+ * @param {number} max_bytes
+ * @returns {string}
+ */
+export function plan_tool_result_summary_json(content, question, max_bytes) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_tool_result_summary_json(ptr0, len0, ptr1, len1, max_bytes);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * vault link target의 path candidate와 basename fallback을 `JSON` 문자열로 반환한다.
  * @param {string} source_path
  * @param {string} raw_target
@@ -3057,6 +3104,29 @@ export function plan_vault_link_fallback_index_json(fallback_basename, basenames
         const ptr1 = passStringToWasm0(basenames_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.plan_vault_link_fallback_index_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 모델이 제안한 검색어는 제한된 데이터로만 사용하며 원문 질문을 대체하지 않는다.
+ * @param {string} question
+ * @param {string} response
+ * @returns {string}
+ */
+export function plan_vault_query_expansion_json(question, response) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_vault_query_expansion_json(ptr0, len0, ptr1, len1);
         deferred3_0 = ret[0];
         deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -3117,6 +3187,29 @@ export function plan_vector_record_batch_json(records_json, embedding_provider, 
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * 파일 경계에 맞는 벡터 검색 범위의 인덱스를 선택한다.
+ * @param {string} paths_json
+ * @param {string} prefixes_json
+ * @returns {string}
+ */
+export function plan_vector_scope_indices_json(paths_json, prefixes_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(prefixes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_vector_scope_indices_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 

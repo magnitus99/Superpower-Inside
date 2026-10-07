@@ -174,6 +174,9 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
   switch (attachment.type) {
     case 'rag':
       if (isVaultSearchSkipped(attachment)) return t('contextChipVaultSearchSkipped');
+      if (attachment.alreadyAttached) return t('contextChipEvidenceAlreadyAttached');
+      if (attachment.status === 'error') return t('contextChipRelatedSearchFailed');
+      if (attachment.status === 'partial' && sourceCount === 0) return t('contextChipContextFull');
       if (attachment.status === 'attached' || attachment.status === 'partial') {
         return sourceCount > 0
           ? t('contextChipRelatedNotes', {
@@ -205,7 +208,11 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
 }
 
 function createContextAttachmentClassName(attachment: ContextAttachment): string {
-  const displayStatus = isVaultSearchSkipped(attachment) ? 'skipped' : attachment.status;
+  const displayStatus = isVaultSearchSkipped(attachment)
+    ? 'skipped'
+    : attachment.alreadyAttached
+      ? 'attached'
+      : attachment.status;
   return `superpower-inside-chat-context-chip ${attachment.type} ${displayStatus}`;
 }
 
@@ -213,6 +220,8 @@ function normalizeContextAttachmentDetail(attachment: ContextAttachment): string
   if (!attachment.detail) return undefined;
   if (attachment.type === 'rag') {
     if (isVaultSearchSkipped(attachment)) return t('contextChipDetailSkipped');
+    if (attachment.status === 'partial' && attachment.sourceIds?.length === 0)
+      return normalizeSourceDetail(attachment.detail);
     if (attachment.status === 'attached' || attachment.status === 'partial') {
       return t('contextChipDetailAuto');
     }

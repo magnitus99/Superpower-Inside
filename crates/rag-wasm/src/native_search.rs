@@ -10,7 +10,7 @@ pub fn normalize_search_options(
 ) -> Result<Map<String, Value>, &'static str> {
     let mut result = Map::new();
     for (key, allowed) in [
-        ("mode", &["auto", "exact"][..]),
+        ("mode", &["auto", "exact", "word"][..]),
         ("field", &["both", "content", "path"][..]),
     ] {
         if let Some(value) = object.get(key) {
@@ -206,7 +206,7 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
         || !matches!(field, "both" | "content" | "path")
         || request
             .get("mode")
-            .is_some_and(|mode| !matches!(mode.as_str(), Some("auto" | "exact")))
+            .is_some_and(|mode| !matches!(mode.as_str(), Some("auto" | "exact" | "word")))
         || queries.iter().any(|query| {
             !query
                 .as_str()
@@ -225,6 +225,11 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
             }
         })
         .collect::<Vec<_>>();
+    let word_queries = prepare_word_queries(
+        queries,
+        request.get("mode").and_then(Value::as_str) == Some("word"),
+        match_mode,
+    );
     let samples = serde_json::from_str::<Vec<Value>>(samples_json).ok()?;
     if samples.len() > 8 {
         return None;
@@ -253,7 +258,12 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
         }
         let content = content.as_str()?;
         let mut matched = false;
-        for ((query, prepared), stream) in queries.iter().zip(&prepared_queries).zip(&mut streams) {
+        for (((query, prepared), word), stream) in queries
+            .iter()
+            .zip(&prepared_queries)
+            .zip(&word_queries)
+            .zip(&mut streams)
+        {
             let query = query.as_str()?;
             if let Some(candidate) = lexical_candidate(
                 query,
@@ -262,7 +272,7 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
                 content,
                 match_mode,
                 field,
-                exact,
+                (exact, word.as_deref()),
             ) {
                 matched = true;
                 stream.push(candidate);
@@ -320,11 +330,22 @@ fn lexical_candidate(
     content: &str,
     match_mode: &str,
     field: &str,
-    exact: bool,
+    literal: (bool, Option<&[regex::Regex]>),
 ) -> Option<Value> {
+    let (exact, word) = literal;
     let searchable_path = if field == "content" { "" } else { path };
     let searchable_content = if field == "path" { "" } else { content };
-    let score = if exact {
+    let score = if let Some(word) = word {
+        if word_match_count(word, searchable_path, match_mode) > 0 {
+            10_000
+        } else {
+            let count = word_match_count(word, searchable_content, match_mode);
+            if count == 0 {
+                return None;
+            }
+            u32::try_from(count.min(9_999)).ok()?
+        }
+    } else if exact {
         if searchable_path.contains(query) {
             10_000
         } else if searchable_content.contains(query) {
@@ -340,18 +361,32 @@ fn lexical_candidate(
             match_mode,
         )?
     };
-    let evidence = if exact {
-        exact_evidence(query, searchable_content)
-    } else {
-        serde_json::from_str::<Value>(
-            &super::native_lexical_hit::plan_native_vault_lexical_hit_json(
-                query,
-                searchable_content,
-                match_mode,
-            ),
-        )
-        .ok()
-    };
+    let evidence = word.map_or_else(
+        || {
+            if exact {
+                exact_evidence(query, searchable_content)
+            } else {
+                serde_json::from_str::<Value>(
+                    &super::native_lexical_hit::plan_native_vault_lexical_hit_json(
+                        query,
+                        searchable_content,
+                        match_mode,
+                    ),
+                )
+                .ok()
+            }
+        },
+        |word| {
+            word.iter()
+                .filter_map(|pattern| pattern.find(searchable_content))
+                .min_by_key(regex::Match::start)
+                .and_then(|found| {
+                    searchable_content
+                        .get(found.start()..found.end())
+                        .and_then(|query| exact_evidence(query, searchable_content))
+                })
+        },
+    );
     Some(json!({
         "path": path, "score": score,
         "startLine": evidence.as_ref().and_then(|evidence| evidence.get("startLine")).cloned().unwrap_or_else(|| json!(1)),
@@ -379,13 +414,103 @@ fn exact_evidence(query: &str, content: &str) -> Option<Value> {
         .find('\n')
         .map_or(content.len(), |end| offset + end);
     Some(
-        json!({ "startLine": start_line, "endLine": end_line, "preview": super::build_context_preview(content.get(line_start..line_end)?) }),
+        json!({ "startLine": start_line, "endLine": end_line, "preview": match_preview(content.get(line_start..line_end)?, offset.saturating_sub(line_start)) }),
     )
+}
+
+/// 긴 행의 앞부분 대신 실제 일치 위치 주변을 표시한다.
+fn match_preview(line: &str, offset: usize) -> String {
+    let before = line.get(..offset).unwrap_or_default().chars().count();
+    line.chars()
+        .skip(before.saturating_sub(80))
+        .take(220)
+        .collect()
+}
+
+/// 단어 검색의 정규식은 묶음마다 한 번만 준비한다.
+fn prepare_word_queries(
+    queries: &[Value],
+    word: bool,
+    match_mode: &str,
+) -> Vec<Option<Vec<regex::Regex>>> {
+    queries
+        .iter()
+        .map(|query| {
+            if word {
+                let query = query.as_str().unwrap_or_default();
+                let terms = if match_mode == "phrase" {
+                    vec![query]
+                } else {
+                    query.split_whitespace().collect()
+                };
+                terms
+                    .into_iter()
+                    .map(|term| {
+                        regex::Regex::new(&format!(r"(?i)\b{}\b", regex::escape(term))).ok()
+                    })
+                    .collect()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// any는 한 단어 이상, all은 모든 단어의 정확한 경계 일치를 요구한다.
+fn word_match_count(patterns: &[regex::Regex], text: &str, match_mode: &str) -> usize {
+    let mut total = 0_usize;
+    for pattern in patterns {
+        let count = pattern.find_iter(text).count();
+        if match_mode == "all" && count == 0 {
+            return 0;
+        }
+        total = total.saturating_add(count);
+    }
+    total
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_search_respects_any_all_and_phrase_for_multiple_terms() {
+        let samples = json!([
+            {"path":"a.txt", "content":"No accident happens."},
+            {"path":"b.txt", "content":"Luck and accident are discussed."},
+            {"path":"c.txt", "content":"No accident luck here."},
+            {"path":"d.txt", "content":"Unlucky accidental events."}
+        ]);
+        for (mode, expected) in [("any", 3), ("all", 2), ("phrase", 1)] {
+            let request = json!({"queries":["accident luck"],"limit":10,"match":mode,"mode":"word","field":"content"});
+            let value: Value = serde_json::from_str(&plan_native_vault_lexical_batch_json(
+                &request.to_string(),
+                &samples.to_string(),
+                "null",
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(value.get("totalHits"), Some(&json!(expected)), "{mode}");
+        }
+    }
+
+    #[test]
+    fn word_search_avoids_substrings_and_preserves_late_match_preview() {
+        let samples = json!([{"path":"a.txt", "content":"strawberries"}, {"path":"b.txt", "content":format!("intro\n{} STRAW is not chance", "x".repeat(400))}]);
+        let raw = plan_native_vault_lexical_batch_json(
+            r#"{"queries":["straw"],"limit":10,"match":"phrase","mode":"word","field":"content"}"#,
+            &samples.to_string(),
+            "null",
+        );
+        let value: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        assert_eq!(value.get("totalHits"), Some(&json!(1)));
+        assert_eq!(value.pointer("/streams/0/0/startLine"), Some(&json!(2)));
+        assert!(
+            value
+                .pointer("/streams/0/0/preview")
+                .and_then(Value::as_str)
+                .is_some_and(|preview| preview.contains("STRAW"))
+        );
+    }
 
     #[test]
     fn bounded_batches_keep_late_high_rank_and_count_each_file_once() {

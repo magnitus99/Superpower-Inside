@@ -44,7 +44,10 @@ pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
 mod chatgpt;
-pub use chat_input::{plan_chat_evidence_json, plan_chat_request_json};
+pub use chat_input::{
+    plan_chat_evidence_json, plan_chat_request_json, plan_chat_unique_result_indices_json,
+    plan_tool_result_summary_json, plan_vault_query_expansion_json,
+};
 /// 프로바이더 연결 상태와 채팅 모델 선택 정책.
 mod provider_state;
 pub use chatgpt::plan_chatgpt_json;
@@ -1446,6 +1449,38 @@ pub fn plan_diverse_result_indices_json(candidates_json: &str, top_k: usize) -> 
         return String::new();
     };
     serialize_usize_array_json(&indexes)
+}
+
+/// 파일 경계에 맞는 벡터 검색 범위의 인덱스를 선택한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_vector_scope_indices_json(paths_json: &str, prefixes_json: &str) -> String {
+    let Ok(paths) = serde_json::from_str::<Vec<String>>(paths_json) else {
+        return String::new();
+    };
+    let Ok(prefixes) = serde_json::from_str::<Vec<String>>(prefixes_json) else {
+        return String::new();
+    };
+    let prefixes = prefixes
+        .iter()
+        .map(|prefix| prefix.trim().trim_end_matches('/'))
+        .filter(|prefix| !prefix.is_empty())
+        .collect::<Vec<_>>();
+    let indices = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, path)| {
+            (prefixes.is_empty()
+                || prefixes.iter().any(|prefix| {
+                    path == prefix
+                        || path
+                            .strip_prefix(prefix)
+                            .is_some_and(|tail| tail.starts_with('/'))
+                }))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    serialize_usize_array_json(&indices)
 }
 
 /// evidence score 목록을 max-score, first-seen tie 순서로 candidate order plan으로 만든다.
@@ -5377,8 +5412,7 @@ fn select_diverse_index_plan(
     if top_k == 0 || scores.is_empty() {
         return Some(Vec::new());
     }
-    if dimensions == 0
-        || vectors.len() != scores.len().saturating_mul(dimensions)
+    if vectors.len() != scores.len().saturating_mul(dimensions)
         || source_keys.len() != scores.len()
         || heading_keys.len() != scores.len()
         || scores.iter().any(|score| !score.is_finite())
@@ -5390,8 +5424,12 @@ fn select_diverse_index_plan(
         return Some((0..scores.len()).collect());
     }
 
-    let rows = vectors.chunks_exact(dimensions).collect::<Vec<_>>();
-    if rows.len() != scores.len() {
+    let rows = if dimensions == 0 {
+        Vec::new()
+    } else {
+        vectors.chunks_exact(dimensions).collect::<Vec<_>>()
+    };
+    if dimensions > 0 && rows.len() != scores.len() {
         return None;
     }
 
@@ -5446,10 +5484,16 @@ fn plan_diverse_result_indices(
         return Some((0..candidates.len()).collect());
     }
 
-    let dimensions = candidates.first()?.vector.len();
-    if dimensions == 0 {
-        return None;
-    }
+    let first_dimensions = candidates.first()?.vector.len();
+    // 어휘 후보에는 벡터가 없으므로 혼합 결과는 출처·헤딩 다양성을 적용한다.
+    let dimensions = if candidates
+        .iter()
+        .all(|candidate| candidate.vector.len() == first_dimensions)
+    {
+        first_dimensions
+    } else {
+        0
+    };
     let mut scores = Vec::with_capacity(candidates.len());
     let mut vectors = Vec::with_capacity(candidates.len().saturating_mul(dimensions));
     let mut source_key_by_path = BTreeMap::<String, u32>::new();
@@ -5458,11 +5502,13 @@ fn plan_diverse_result_indices(
     let mut heading_keys = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
-        if candidate.vector.len() != dimensions {
+        if candidate.vector.iter().any(|value| !value.is_finite()) {
             return None;
         }
         scores.push(candidate.score);
-        vectors.extend(candidate.vector.iter().copied());
+        if dimensions > 0 {
+            vectors.extend(candidate.vector.iter().copied());
+        }
         source_keys.push(diverse_result_string_key(
             &mut source_key_by_path,
             &candidate.source_path,
@@ -8885,8 +8931,12 @@ fn context_source_citation_json(
         JsonValue::String(file_path.to_owned()),
     );
     copy_optional_json_string(result, &mut citation, "heading");
-    copy_optional_json_number_as(result, &mut citation, "startLine", "line");
-    copy_optional_json_number_as(result, &mut citation, "endLine", "endLine");
+    // 저장 청크는 0부터, 사용자 표시와 도구 인용은 1부터 행을 센다.
+    for (input, output) in [("startLine", "line"), ("endLine", "endLine")] {
+        if let Some(line) = result.get(input).and_then(JsonValue::as_u64) {
+            citation.insert(output.to_owned(), serde_json::json!(line.saturating_add(1)));
+        }
+    }
     copy_optional_json_number_as(result, &mut citation, "score", "score");
     copy_optional_json_number_as(result, &mut citation, "vectorScore", "vectorScore");
     copy_optional_json_number_as(result, &mut citation, "bm25Score", "bm25Score");
@@ -13213,7 +13263,7 @@ mod tests {
 
         assert_eq!(
             plan_context_sources_json(results, verifications, 7, "rag"),
-            "{\"citations\":[{\"id\":\"rag-7\",\"filePath\":\"note.md\",\"heading\":\"핵심\",\"line\":3,\"endLine\":5,\"score\":0.91,\"vectorScore\":0.8,\"bm25Score\":0.2,\"status\":\"verified\",\"preview\":\"긴 본문 요약\",\"previewTruncated\":false},{\"id\":\"rag-8\",\"filePath\":\"stale.md\",\"line\":0,\"score\":0.6,\"vectorScore\":0.4,\"bm25Score\":0.3,\"status\":\"stale\",\"detail\":\"파일이 변경됨\",\"preview\":\"오래된 본문\",\"previewTruncated\":false}],\"blocks\":[{\"sourceId\":\"rag-7\",\"text\":\"[Source rag-7: note.md # 핵심]\\n  긴   본문\\n\\n요약 \"}],\"sourceIds\":[\"rag-7\"],\"rejectedCount\":1}",
+            "{\"citations\":[{\"id\":\"rag-7\",\"filePath\":\"note.md\",\"heading\":\"핵심\",\"line\":4,\"endLine\":6,\"score\":0.91,\"vectorScore\":0.8,\"bm25Score\":0.2,\"status\":\"verified\",\"preview\":\"긴 본문 요약\",\"previewTruncated\":false},{\"id\":\"rag-8\",\"filePath\":\"stale.md\",\"line\":1,\"score\":0.6,\"vectorScore\":0.4,\"bm25Score\":0.3,\"status\":\"stale\",\"detail\":\"파일이 변경됨\",\"preview\":\"오래된 본문\",\"previewTruncated\":false}],\"blocks\":[{\"sourceId\":\"rag-7\",\"text\":\"[Source rag-7: note.md # 핵심]\\n  긴   본문\\n\\n요약 \"}],\"sourceIds\":[\"rag-7\"],\"rejectedCount\":1}",
         );
     }
 
@@ -14301,6 +14351,16 @@ mod tests {
             ),
             "[0,2]",
         );
+    }
+
+    #[test]
+    fn diversity_preserves_lexical_and_mixed_candidates() {
+        for candidates in [
+            r#"[{"score":1,"vector":[],"sourcePath":"same.md"},{"score":0.99,"vector":[],"sourcePath":"same.md"},{"score":0.98,"vector":[],"sourcePath":"other.md"}]"#,
+            r#"[{"score":1,"vector":[1,0],"sourcePath":"same.md"},{"score":0.99,"vector":[],"sourcePath":"same.md"},{"score":0.98,"vector":[0,1],"sourcePath":"other.md"}]"#,
+        ] {
+            assert_eq!(plan_diverse_result_indices_json(candidates, 2), "[0,2]");
+        }
     }
 
     /// vector metadata의 file index record grouping과 complete 판정은 Rust가 담당한다.

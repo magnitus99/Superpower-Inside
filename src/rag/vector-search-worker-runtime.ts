@@ -14,7 +14,7 @@ interface VectorSearchWorkerRequest {
   dbName: string;
   queryVector: number[];
   topK: number;
-  filter?: Omit<VectorSearchFilter, 'filePathPrefixes'>;
+  filter?: VectorSearchFilter;
 }
 
 export interface VectorSearchWorkerResponse {
@@ -72,7 +72,7 @@ export class VectorSearchWorkerRuntime {
     dbName: string;
     queryVector: readonly number[];
     topK: number;
-    filter?: Omit<VectorSearchFilter, 'filePathPrefixes'>;
+    filter?: VectorSearchFilter;
     signal?: AbortSignal;
   }): Promise<VectorSearchWorkerHit[]> {
     const response = await this.request(
@@ -109,7 +109,9 @@ export class VectorSearchWorkerRuntime {
   ): Promise<VectorSearchWorkerResponse> {
     if (this.closed) return Promise.reject(new Error('Vector search worker is closed.'));
     if (signal?.aborted) {
-      return Promise.reject(new DOMException('Vector search worker request cancelled.', 'AbortError'));
+      return Promise.reject(
+        new DOMException('Vector search worker request cancelled.', 'AbortError'),
+      );
     }
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {

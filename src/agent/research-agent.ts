@@ -709,7 +709,9 @@ export class VaultResearchAgent {
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
-      return t('vaultResearchAnswerContractFallback');
+      return firstPlan.safeAnswer
+        ? `${firstPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+        : t('vaultResearchAnswerContractFallback');
     }
     const secondPlan = planResearchAnswerContractRust({
       answer: repaired,
@@ -717,7 +719,13 @@ export class VaultResearchAgent {
       receipt: coverage,
     });
     if (!secondPlan) throw new Error(t('vaultResearchContractUnavailable'));
-    return secondPlan.allowed ? repaired : t('vaultResearchAnswerContractFallback');
+    return secondPlan.allowed
+      ? repaired
+      : secondPlan.safeAnswer
+        ? `${secondPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+        : firstPlan.safeAnswer
+          ? `${firstPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+          : t('vaultResearchAnswerContractFallback');
   }
 
   private createNoEvidenceContent(

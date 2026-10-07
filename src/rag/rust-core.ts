@@ -2,6 +2,9 @@ import {
   plan_chatgpt_json,
   plan_chat_evidence_json,
   plan_chat_request_json,
+  plan_tool_result_summary_json,
+  plan_vault_query_expansion_json,
+  plan_chat_unique_result_indices_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
   plan_source_processing_json,
@@ -178,7 +181,7 @@ export type RustNativeVaultToolRequest =
       path: string;
       limit: number;
       match: 'all' | 'any' | 'phrase';
-      mode?: 'auto' | 'exact';
+      mode?: 'auto' | 'exact' | 'word';
       field?: 'both' | 'content' | 'path';
       filters?: RustNativeVaultFilters;
     }
@@ -1248,6 +1251,57 @@ export interface RustChatEvidencePlan extends RustContextSourcePlan {
 export interface RustChatRequestPlan {
   indices: number[];
   usedBytes: number;
+  summary?: string;
+}
+
+export function planChatUniqueResultIndicesRust(
+  sources: readonly RustContextSourceInput[],
+  citations: readonly unknown[],
+): number[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const indices: unknown = JSON.parse(
+      plan_chat_unique_result_indices_json(JSON.stringify(sources), JSON.stringify(citations)),
+    );
+    return Array.isArray(indices) &&
+      indices.every((index) => isValidNonNegativeInteger(index) && index < sources.length)
+      ? indices
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planToolResultSummaryRust(
+  content: string,
+  question: string,
+  maxBytes: number,
+): string | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return plan_tool_result_summary_json(content, question, maxBytes) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function planVaultQueryExpansionRust(
+  question: string,
+  response = '',
+): { needsTranslation: boolean; query: string } | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const plan: unknown = JSON.parse(plan_vault_query_expansion_json(question, response));
+    if (
+      !isStringRecordValueMap(plan) ||
+      typeof plan.needsTranslation !== 'boolean' ||
+      typeof plan.query !== 'string'
+    )
+      return null;
+    return { needsTranslation: plan.needsTranslation, query: plan.query };
+  } catch {
+    return null;
+  }
 }
 
 /** 원문 구간 선택과 전송 예산 계산은 Rust의 결정적 계약을 사용합니다. */
@@ -1288,8 +1342,13 @@ export function planChatRequestRust(input: {
         (index) => isValidNonNegativeInteger(index) && index < input.messages.length,
       ) &&
       isValidNonNegativeInteger(plan.usedBytes) &&
+      (plan.summary === undefined || typeof plan.summary === 'string') &&
       plan.usedBytes <= input.maxBytes
-      ? { indices: plan.indices, usedBytes: plan.usedBytes }
+      ? {
+          indices: plan.indices,
+          usedBytes: plan.usedBytes,
+          ...(plan.summary === undefined ? {} : { summary: plan.summary }),
+        }
       : null;
   } catch {
     return null;
@@ -3726,6 +3785,7 @@ export interface RustResearchAnswerContractPlan {
   action: 'allow' | 'repair';
   violationCodes: RustResearchAnswerViolationCode[];
   safeCoverageText: string;
+  safeAnswer?: string;
 }
 
 export function planResearchCandidateSelectionRust(
@@ -4144,6 +4204,7 @@ function isResearchAnswerContractPlan(value: unknown): value is RustResearchAnsw
     new Set(violationCodes).size === violationCodes.length &&
     allowed === (value.action === 'allow' && violationCodes.length === 0) &&
     isStringValue(value.safeCoverageText) &&
+    (value.safeAnswer === undefined || isStringValue(value.safeAnswer)) &&
     value.safeCoverageText.length > 0
   );
 }
@@ -5524,7 +5585,10 @@ function isNativeVaultToolRequest(value: unknown): value is RustNativeVaultToolR
           queries.every((query) => typeof query === 'string' && query.length > 0))) &&
       typeof value.path === 'string' &&
       isNonNegativeSafeInteger(value.limit) &&
-      (value.mode === undefined || value.mode === 'auto' || value.mode === 'exact') &&
+      (value.mode === undefined ||
+        value.mode === 'auto' ||
+        value.mode === 'exact' ||
+        value.mode === 'word') &&
       (value.field === undefined ||
         value.field === 'both' ||
         value.field === 'content' ||

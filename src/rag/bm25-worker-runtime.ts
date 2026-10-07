@@ -131,6 +131,10 @@ export class BM25WorkerRuntime {
     this.pending.clear();
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   private request(
     request: Omit<BM25WorkerRequest, 'id'>,
     signal?: AbortSignal,
@@ -142,7 +146,12 @@ export class BM25WorkerRuntime {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       const abort = (): void => {
-        this.close(new DOMException('BM25 worker request cancelled.', 'AbortError'));
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        window.clearTimeout(pending.timeoutId);
+        pending.removeAbortListener();
+        pending.reject(new DOMException('BM25 worker request cancelled.', 'AbortError'));
       };
       signal?.addEventListener('abort', abort, { once: true });
       const timeoutId = window.setTimeout(() => {

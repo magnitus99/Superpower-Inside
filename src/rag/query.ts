@@ -143,7 +143,7 @@ export class RAGQueryEngine {
           vectorStore,
           options.structuralMetadataContext,
           1,
-          30,
+          undefined,
           options.corpusStore ?? vectorStore ?? undefined,
           bm25Index,
         ),

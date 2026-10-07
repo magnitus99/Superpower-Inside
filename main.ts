@@ -1544,7 +1544,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async prepareRagForChat(): Promise<boolean> {
-    return this.ragEngine ? true : this.ensureRagRuntimeInitialized();
+    const initialized = this.ragEngine ? true : await this.ensureRagRuntimeInitialized();
+    if (this.bm25Index) await this.bm25Index.recoverClosedWorker();
+    return initialized;
   }
 
   private getRagIndexerNotInitializedReason(): string {

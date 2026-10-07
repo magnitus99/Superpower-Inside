@@ -14,6 +14,7 @@ import {
   planResearchAnswerContractRust,
   planToolResultSourceReferencesRust,
   planToolCallBlocksRust,
+  planToolResultSummaryRust,
   type RustResearchAnswerViolationCode,
   type RustToolCallBlockReason,
 } from '../rag/rust-core';
@@ -24,7 +25,6 @@ import {
   type MCPRegistryLike,
 } from './mcp-tool-execution';
 import type { McpToolBindingAllowlist } from './mcp-tool-wire';
-import { truncateUtf8Text } from '../utils/text-budget';
 
 /** 여러 툴 라운드가 provider context를 독점하지 않도록 유지하는 전체 결과 예산입니다. */
 export const MAX_TOOL_TRANSCRIPT_BYTES = 192 * 1024;
@@ -185,7 +185,9 @@ export function enforceNativeToolAnswerContract(
   return plan.allowed
     ? { content, violationCodes: [] }
     : {
-        content: t('vaultResearchAnswerContractFallback'),
+        content: plan.safeAnswer
+          ? `${plan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+          : t('vaultResearchAnswerContractFallback'),
         violationCodes: [...plan.violationCodes],
         safeCoverageText: plan.safeCoverageText,
       };
@@ -214,7 +216,7 @@ export function markRepeatedToolCalls(
   history: readonly ToolCallRecord[],
   candidates: readonly ToolCallRecord[],
   maxRepeats = 2,
-  maxNativeSearchCalls = 4,
+  maxNativeSearchCalls = 8,
 ): ToolCallRecord[] {
   const completedHistory = history.filter(
     (toolCall) => toolCall.status === 'success' || toolCall.status === 'error',
@@ -393,6 +395,11 @@ export function boundToolTranscript(
   maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
 ): ChatMessage[] {
   const bounded = messages.map((message) => ({ ...message }));
+  const question =
+    [...messages]
+      .reverse()
+      .find((message) => message.role === 'user' && !isToolTranscriptMessage(message))?.content ??
+    '';
   const encoder = new TextEncoder();
   const byteLength = (message: ChatMessage): number =>
     encoder.encode(JSON.stringify(message)).byteLength;
@@ -407,7 +414,11 @@ export function boundToolTranscript(
     const message = bounded[index];
     if (!message || !isToolTranscriptMessage(message) || index === newestToolIndex) continue;
     const previousBytes = byteLength(message);
-    const compactContent = createToolResultSummaryEnvelope(message.content);
+    const compactContent = createToolResultSummaryEnvelope(
+      message.content,
+      TOOL_RESULT_SUMMARY_BYTES,
+      question,
+    );
     if (compactContent === message.content) continue;
     bounded[index] = { ...message, content: compactContent };
     totalBytes += byteLength(bounded[index]) - previousBytes;
@@ -437,11 +448,13 @@ function isToolTranscriptMessage(message: ChatMessage): boolean {
 function createToolResultSummaryEnvelope(
   content: string,
   maxSummaryBytes = TOOL_RESULT_SUMMARY_BYTES,
+  question = '',
 ): string {
-  const summary = truncateUtf8Text(content, maxSummaryBytes).text;
+  const planned = planToolResultSummaryRust(content, question, maxSummaryBytes);
+  if (planned) return planned;
   const payload: ToolResultSummaryResumePayload = {
     kind: 'tool-result-summary',
-    summary,
+    summary: '',
     originalResultAvailable: false,
   };
   return JSON.stringify(payload);

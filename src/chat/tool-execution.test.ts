@@ -452,6 +452,34 @@ describe('LLM 도구 실행 라우터', () => {
     });
   });
 
+  it('교정이 실패해도 확인된 인용을 보존하고 미확인 전수 주장은 제거한다', () => {
+    const answer =
+      '전체 파일을 모두 읽었습니다.\nIt is Within You에서 "there is no accident"를 확인했습니다. [tool-1]';
+    const result = enforceNativeToolAnswerContract(answer, [
+      createToolCall({
+        executionKind: 'native',
+        status: 'success',
+        normalizedResult: JSON.stringify({
+          action: 'read',
+          path: 'It is Within You.txt',
+          startLine: 36,
+          endLine: 36,
+          content: 'there is no accident',
+        }),
+      }),
+    ]);
+    expect(result.content).toContain('It is Within You');
+    expect(result.content).toContain('[tool-1]');
+    expect(result.content).not.toContain('전체 파일');
+    expect(result.violationCodes).toContain('whole-read-claim-unverified');
+    expect(
+      enforceNativeToolAnswerContract(
+        '관련 자료가 없다는 것이 아닙니다. 확인 범위가 제한되어 있습니다.',
+        [],
+      ).violationCodes,
+    ).toEqual([]);
+  });
+
   it('볼트 범위를 주장하지 않는 일반 지식의 부정문은 변경하지 않는다', () => {
     const answer = '현재 과학계에는 그 초자연적 주장을 입증하는 근거는 없습니다.';
 
@@ -790,9 +818,9 @@ describe('LLM 도구 실행 라우터', () => {
     expect(planned[0]?.result).toBe('같은 도구와 인자가 반복되어 이 호출을 중단했습니다.');
   });
 
-  it('한 답변에서 서로 다른 Vault 검색도 네 번까지만 허용한다', () => {
+  it('한 답변에서 서로 다른 검색을 여덟 번 허용하고 읽기는 제한하지 않는다', () => {
     setLanguage('ko');
-    const searches = Array.from({ length: 5 }, (_, index) =>
+    const searches = Array.from({ length: 9 }, (_, index) =>
       createToolCall({
         id: `search-${index}`,
         arguments: JSON.stringify({ action: 'search', query: `query-${index}` }),
@@ -805,14 +833,14 @@ describe('LLM 도구 실행 라우터', () => {
 
     const planned = markRepeatedToolCalls([], [...searches, read]);
 
-    expect(planned.slice(0, 4).every((call) => call.status === 'running')).toBe(true);
-    expect(planned[4]).toMatchObject({
-      id: 'search-4',
+    expect(planned.slice(0, 8).every((call) => call.status === 'running')).toBe(true);
+    expect(planned[8]).toMatchObject({
+      id: 'search-8',
       status: 'error',
       result: '한 답변에서 허용된 볼트 검색 횟수에 도달해 이 호출을 중단했습니다.',
       resultSummary: '한 답변에서 허용된 볼트 검색 횟수에 도달해 이 호출을 중단했습니다.',
     });
-    expect(planned[5]).toMatchObject({ id: 'read', status: 'running' });
+    expect(planned[9]).toMatchObject({ id: 'read', status: 'running' });
   });
 });
 

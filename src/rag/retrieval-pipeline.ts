@@ -96,7 +96,7 @@ export class ExactVectorCandidateProvider implements CandidateProvider {
 
   constructor(
     private readonly vectorStore: VectorStore,
-    readonly deadlineMs = 300,
+    readonly deadlineMs = 5_000,
   ) {}
 
   async getCandidates(
@@ -149,7 +149,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
   constructor(
     private readonly vectorStore: VectorStore,
     private readonly options: IvfVectorCandidateProviderOptions,
-    readonly deadlineMs = 300,
+    readonly deadlineMs = 5_000,
   ) {}
 
   async getCandidates(
@@ -231,7 +231,7 @@ export class BM25CandidateProvider implements CandidateProvider {
   constructor(
     private readonly corpusStore: RetrievalCorpusStore,
     private readonly bm25Index: IndexedDbBM25Index,
-    readonly deadlineMs = 80,
+    readonly deadlineMs = 2_000,
   ) {}
 
   getReadiness(): RetrievalProviderReadiness {
@@ -359,7 +359,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     private readonly vectorStore: VectorStore | null,
     private readonly metadata: StructuralMetadataContext,
     private readonly seedLimit = 1,
-    readonly deadlineMs = 30,
+    readonly deadlineMs = 5_000,
     private readonly corpusStore: RetrievalCorpusStore = requireCorpusStore(vectorStore),
     private readonly bm25Index?: IndexedDbBM25Index,
   ) {}
