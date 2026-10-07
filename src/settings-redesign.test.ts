@@ -137,13 +137,38 @@ describe('설정 화면 리디자인 구조', () => {
   it('임베딩 연결이 없으면 상태 제목과 이유를 구분해 안내를 중복하지 않는다', () => {
     const start = settingsSource.indexOf('private buildEmbeddingProviderSection(');
     const end = settingsSource.indexOf(
-      'if (isProfilePending)',
+      'this.disposeLocalModelSettings',
       settingsSource.indexOf('const localNote', start),
     );
     const source = settingsSource.slice(start, end);
     expect(source.match(/t\('ragIndexerSelectEmbeddingModel'\)/g)).toHaveLength(1);
     expect(source).toContain("t('ragOverviewUnavailable')");
     expect(source).toContain("selectedProvider ? 'shield-check' : 'circle-alert'");
+  });
+
+  it('임베딩 안내와 모델 파일은 공통 접힘 안에 두고 적용과 취소는 앞에 둔다', () => {
+    const start = settingsSource.indexOf('private buildEmbeddingProviderSection(');
+    const end = settingsSource.indexOf('const rag = this.plugin.settings.rag;', start);
+    const source = settingsSource.slice(start, end);
+    const details = source.indexOf('const modelDetails = this.createRagDisclosure(');
+    expect(details).toBeGreaterThan(source.indexOf('const cancelBtn'));
+    expect(source).toContain("'embedding-model-details'");
+    expect(source).toContain("t('localModelsTitle')");
+    expect(source).toContain('const noteContainer = selectedProvider ? modelDetails.content : section;');
+    expect(source).toContain('noteContainer.createDiv(');
+    expect(source).toMatch(/buildLocalEmbeddingModelSettings\(\s*modelDetails.content,/);
+    const localSource = readFileSync(resolve(root, 'src/llm/local-embedding-settings.ts'), 'utf8');
+    expect(localSource).not.toContain('.setHeading()');
+    expect(localSource).toContain("text: t('localModelsDetail')");
+  });
+
+  it('기본 모델 파일은 카드 대신 평평한 행으로 표시하고 적용 버튼은 내용 폭을 따른다', () => {
+    expect(styles).toMatch(
+      /\.superpower-inside-local-models \.setting-item\.superpower-inside-local-model-row\s*\{[^}]*margin:\s*0;[^}]*border-radius:\s*0;[^}]*background:\s*transparent;[^}]*box-shadow:\s*none/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-controls\.superpower-inside-embedding-pending-actions button\s*\{[^}]*flex:\s*0 1 auto;[^}]*min-width:\s*0/s,
+    );
   });
 
   it('검색 품질은 기본값을 표시하고 세 항목만 초기화한다', () => {

@@ -1610,7 +1610,15 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-embedding-pending-actions {
-  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--superpower-inside-row-padding);
+  margin: var(--superpower-inside-row-padding) 0;
+}
+
+.superpower-inside-rag-controls.superpower-inside-embedding-pending-actions button {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .superpower-inside-logs-subtitle {
@@ -7625,14 +7633,27 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-local-models {
-  margin-block: var(--superpower-inside-row-padding);
+  margin: 0;
 }
 
-.superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row {
+.superpower-inside-local-models-detail {
+  padding-block: var(--superpower-inside-row-padding);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-local-models .setting-item.superpower-inside-local-model-row {
   align-items: flex-start;
   gap: 16px;
-  padding-block: var(--superpower-inside-row-padding);
+  margin: 0;
+  padding: var(--superpower-inside-row-padding) 0;
+  border: 0;
   border-top: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row > .setting-item-control {

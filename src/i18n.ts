@@ -1962,7 +1962,7 @@ const ko: I18nKeys = {
   ragWorkflowTuneTitle: '고급 조정',
   ragWorkflowTuneDetail: '검색 품질은 기본 흐름이 안정된 뒤 조정합니다.',
   ragLocalEmbeddingTitle: '기본 제공: 기기에서 실행하는 임베딩',
-  localModelsTitle: '기본 모델 파일',
+  localModelsTitle: '모델 안내 및 로컬 파일',
   localEmbeddingProvider: '기본 로컬 모델',
   localModelsDetail:
     '다운로드 후 오프라인으로 사용합니다. 모델을 변경하면 검색 인덱스를 다시 만듭니다.',
@@ -3675,7 +3675,7 @@ const en: I18nKeys = {
   ragWorkflowTuneTitle: 'Tune Advanced',
   ragWorkflowTuneDetail: 'Adjust search quality after the base flow is stable.',
   ragLocalEmbeddingTitle: 'Included: on-device embeddings',
-  localModelsTitle: 'Built-in model files',
+  localModelsTitle: 'Model details and local files',
   localEmbeddingProvider: 'Built-in local models',
   localModelsDetail: 'Use offline after downloading. Changing models rebuilds the search index.',
   localModelTernlightDetail:

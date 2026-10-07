@@ -20,7 +20,7 @@ export function buildLocalEmbeddingModelSettings(
 ): () => void {
   const models = getLocalEmbeddingModels(options);
   const group = container.createDiv({ cls: 'superpower-inside-local-models' });
-  new Setting(group).setName(t('localModelsTitle')).setDesc(t('localModelsDetail')).setHeading();
+  group.createDiv({ cls: 'superpower-inside-local-models-detail', text: t('localModelsDetail') });
   const disposers: (() => void)[] = [];
   for (const model of MODEL_ROWS) {
     const setting = new Setting(group).setName(model.name).setDesc(t(model.detail));

@@ -2729,36 +2729,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const isLocal =
         selectedProvider &&
         isLocalSettingsProviderRust(selectedProvider.strategy, selectedProvider.baseUrl) === true;
-      const localNote = section.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
-      const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
-      setIcon(icon, selectedProvider ? 'shield-check' : 'circle-alert');
-      const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
-      copy.createDiv({
-        cls: 'superpower-inside-rag-local-embedding-title',
-        text: selectedProvider
-          ? isLocal
-            ? t('ragLocalEmbeddingTitle')
-            : t('settingsRemoteEmbeddingTitle')
-          : t('ragOverviewUnavailable'),
-      });
-      copy.createDiv({
-        cls: 'superpower-inside-rag-local-embedding-detail',
-        text: !selectedProvider
-          ? t('ragIndexerSelectEmbeddingModel')
-          : selectedProvider.strategy === 'ternlight'
-            ? t('ragLocalEmbeddingDetail')
-            : isLocal
-              ? t('settingsLocalEndpointDetail')
-              : t('settingsRemoteEmbeddingDetail'),
-      });
-      this.disposeLocalModelSettings?.();
-      this.disposeLocalModelSettings = buildLocalEmbeddingModelSettings(
-        section,
-        this.getTernlightRuntimeOptions(),
-        {
-          remove: (id) => this.plugin.deleteLocalEmbeddingModel(id),
-        },
-      );
       if (isProfilePending) {
         const btnRow = section.createDiv({
           cls: 'superpower-inside-rag-controls superpower-inside-embedding-pending-actions',
@@ -2824,6 +2794,42 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           }
         });
       }
+      const modelDetails = this.createRagDisclosure(
+        section,
+        'embedding-model-details',
+        t('localModelsTitle'),
+      );
+      const noteContainer = selectedProvider ? modelDetails.content : section;
+      const localNote = noteContainer.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
+      const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
+      setIcon(icon, selectedProvider ? 'shield-check' : 'circle-alert');
+      const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-title',
+        text: selectedProvider
+          ? isLocal
+            ? t('ragLocalEmbeddingTitle')
+            : t('settingsRemoteEmbeddingTitle')
+          : t('ragOverviewUnavailable'),
+      });
+      copy.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-detail',
+        text: !selectedProvider
+          ? t('ragIndexerSelectEmbeddingModel')
+          : selectedProvider.strategy === 'ternlight'
+            ? t('ragLocalEmbeddingDetail')
+            : isLocal
+              ? t('settingsLocalEndpointDetail')
+              : t('settingsRemoteEmbeddingDetail'),
+      });
+      this.disposeLocalModelSettings?.();
+      this.disposeLocalModelSettings = buildLocalEmbeddingModelSettings(
+        modelDetails.content,
+        this.getTernlightRuntimeOptions(),
+        {
+          remove: (id) => this.plugin.deleteLocalEmbeddingModel(id),
+        },
+      );
       const statusEl = section.createDiv({ cls: 'superpower-inside-connection-status' });
       statusEl.setAttribute('role', 'status');
       statusEl.setAttribute('aria-live', 'polite');
