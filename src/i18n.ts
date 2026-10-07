@@ -1969,7 +1969,7 @@ const ko: I18nKeys = {
   localModelTernlightDetail:
     '목적: 짧은 영어 노트의 빠른 검색 · 언어: 영어 전용(다국어 미지원) · 다운로드: 약 10 MB · 권장 최소(추정): 시스템 RAM 4 GB, GPU 불필요.',
   localModelGemmaDetail:
-    '목적: 한국어·다국어 노트 검색 · 언어: 한국어·영어·일본어·아랍어·러시아어·힌디어 등(100개 이상 언어 학습) · 다운로드: 약 1.27 GB(FP32) · 권장 최소(추정): 시스템 RAM 8 GB, GPU 불필요.',
+    '목적: 다국어 노트 검색 · 언어: 100개 이상 학습(공개 검색 평가: 아랍어·벵골어·핀란드어·일본어·한국어·러시아어·텔루구어) · 다운로드: 약 1.27 GB(FP32) · 권장 최소(추정): 시스템 RAM 8 GB, GPU 불필요.',
   localModelMissing: '다운로드 필요',
   localModelReady: '로컬 파일 있음',
   localModelChecking: '로컬 파일 확인 중',
@@ -3681,7 +3681,7 @@ const en: I18nKeys = {
   localModelTernlightDetail:
     'Purpose: fast search of short English notes · Languages: English only; no multilingual support · Download: about 10 MB · Estimated recommended minimum: 4 GB system RAM; no GPU required.',
   localModelGemmaDetail:
-    'Purpose: search Korean and multilingual notes · Languages: Korean, English, Japanese, Arabic, Russian, Hindi and more; trained on over 100 languages · Download: about 1.27 GB (FP32) · Estimated recommended minimum: 8 GB system RAM; no GPU required.',
+    'Purpose: search multilingual notes · Languages: trained on over 100; published retrieval evaluations: Arabic, Bengali, Finnish, Japanese, Korean, Russian, Telugu · Download: about 1.27 GB (FP32) · Estimated recommended minimum: 8 GB system RAM; no GPU required.',
   localModelMissing: 'Download required',
   localModelReady: 'Local files available',
   localModelChecking: 'Checking local files',
