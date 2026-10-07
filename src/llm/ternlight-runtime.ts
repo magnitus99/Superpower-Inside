@@ -113,7 +113,11 @@ class TernlightWorkerRuntime {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       const abort = (): void => {
-        this.close(new DOMException('Ternlight embedding cancelled.', 'AbortError'));
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        pending.removeAbortListener();
+        pending.reject(new DOMException('Ternlight embedding cancelled.', 'AbortError'));
       };
       signal?.addEventListener('abort', abort, { once: true });
       this.pending.set(id, {
@@ -155,6 +159,8 @@ export async function embedTernlightBatch(
   try {
     return await runtime.embedBatch(texts, signal);
   } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError'))
+      throw error;
     if (initializationKey === createInitializationKey(options)) {
       runtime.close();
       if (activeRuntime === runtime) activeRuntime = null;

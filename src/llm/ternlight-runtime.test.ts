@@ -62,7 +62,7 @@ describe('Ternlight worker runtime', () => {
     expect(factory.terminated).toHaveBeenCalledTimes(0);
   });
 
-  it('terminates the worker when an embedding request is cancelled', async () => {
+  it('임베딩 취소는 요청만 거부하고 작업자는 보존한다', async () => {
     const factory = createFakeWorkerFactory(() => new Promise<number[][]>(() => undefined));
     const controller = new AbortController();
     const embedding = embedTernlightBatch(
@@ -74,7 +74,7 @@ describe('Ternlight worker runtime', () => {
     controller.abort();
 
     await expect(embedding).rejects.toMatchObject({ name: 'AbortError' });
-    expect(factory.terminated).toHaveBeenCalledTimes(1);
+    expect(factory.terminated).not.toHaveBeenCalled();
   });
 });
 
