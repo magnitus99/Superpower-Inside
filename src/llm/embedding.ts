@@ -3,6 +3,8 @@ import Dexie from 'dexie';
 import { t } from '../i18n';
 import { createIndexedDbRecordKeyRust, planIndexedDbBoundedRetentionRust } from '../rag/rust-core';
 import { assertValidEmbeddingBatch } from './embedding-validation';
+import { EmbeddingGemmaRuntime } from './embeddinggemma-runtime';
+import { embeddingGemmaInputsRust } from '../rag/rust-core';
 import {
   closeTernlightRuntime,
   embedTernlightBatch,
@@ -42,6 +44,7 @@ class EmbeddingCacheDB extends Dexie {
 }
 
 export interface EmbeddingProvider {
+  readonly asymmetricInputs?: boolean;
   embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
   embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]>;
   close?(): void;
@@ -49,6 +52,36 @@ export interface EmbeddingProvider {
 
 export interface EmbeddingOptions {
   signal?: AbortSignal;
+}
+
+export class EmbeddingGemmaProvider implements EmbeddingProvider {
+  readonly asymmetricInputs = true;
+  private readonly runtime: EmbeddingGemmaRuntime;
+  constructor(options: TernlightRuntimeOptions) {
+    this.runtime = new EmbeddingGemmaRuntime(options);
+  }
+
+  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    const [vector] = await this.embedInputs([text], 'query', options);
+    return vector;
+  }
+  embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    return this.embedInputs(texts, 'document', options);
+  }
+  close(): void {
+    this.runtime.close();
+  }
+  private async embedInputs(
+    texts: string[],
+    kind: 'query' | 'document',
+    options?: EmbeddingOptions,
+  ): Promise<number[][]> {
+    const inputs = embeddingGemmaInputsRust(texts, kind);
+    if (!inputs) throw new Error('EmbeddingGemma input preparation requires the Rust core.');
+    const vectors = await this.runtime.embed(inputs, options?.signal);
+    assertValidEmbeddingBatch(vectors, texts.length, 'EmbeddingGemma embedding batch');
+    return vectors;
+  }
 }
 
 export interface EmbeddingRetryOptions {
@@ -654,13 +687,16 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     this.cacheKeys.push(hash);
   }
 
-  private computeHash(text: string): string {
-    return requireIndexedDbRecordKey(this.cacheNamespace, text);
+  private computeHash(text: string, kind: 'query' | 'document'): string {
+    return requireIndexedDbRecordKey(
+      this.inner.asymmetricInputs ? `${this.cacheNamespace}:${kind}` : this.cacheNamespace,
+      text,
+    );
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
     throwIfAborted(options?.signal);
-    const hash = this.computeHash(text);
+    const hash = this.computeHash(text, 'query');
     throwIfAborted(options?.signal);
     const mem = this.memoryCache.get(hash);
     if (mem) {
@@ -699,7 +735,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     throwIfAborted(options?.signal);
     const hashes: string[] = [];
     for (const t of texts) {
-      hashes.push(this.computeHash(t));
+      hashes.push(this.computeHash(t, 'document'));
       throwIfAborted(options?.signal);
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];

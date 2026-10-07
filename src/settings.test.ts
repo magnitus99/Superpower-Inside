@@ -508,8 +508,35 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(
       migrated.providerProfiles.find((profile) => profile.strategy === 'ternlight')?.models,
-    ).toEqual([expect.objectContaining({ id: 'ternlight-base', kind: 'embedding' })]);
+    ).toEqual([
+      expect.objectContaining({ id: 'ternlight-base', kind: 'embedding' }),
+      expect.objectContaining({ id: 'embeddinggemma-300m', kind: 'embedding' }),
+    ]);
     expect(buildChatModelOptions(migrated, { currentModel: '' })).toEqual([]);
+  });
+
+  it('추가 기본 모델의 선택과 검증 기록을 마이그레이션 후에도 유지한다', () => {
+    const initial = migrateLegacyProviderProfiles({ ...DEFAULT_SETTINGS, providerProfiles: [] });
+    initial.rag = {
+      ...initial.rag,
+      embeddingModel: 'embeddinggemma-300m',
+      embeddingModelRef: 'profile:ternlight:embeddinggemma-300m',
+    };
+    const gemma = initial.providerProfiles
+      .find((profile) => profile.strategy === 'ternlight')
+      ?.models.find((model) => model.id === 'embeddinggemma-300m');
+    if (!gemma) throw new Error('모델이 없습니다.');
+    gemma.verification = { chatStatus: 'unknown', embeddingStatus: 'failed', lastError: 'offline' };
+    const migrated = migrateLegacyProviderProfiles(initial);
+    expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:embeddinggemma-300m');
+    expect(
+      migrated.providerProfiles.find((profile) => profile.strategy === 'ternlight')?.models[1]
+        .verification,
+    ).toEqual(gemma.verification);
+    expect(resolveRagPerformanceSettings('ternlight', 'embeddinggemma-300m')).toMatchObject({
+      enabled: true,
+      maxEmbeddingBatchSize: 1,
+    });
   });
 
   it('저장된 자동 프로바이더 이름은 현재 언어로 표시하고 사용자 이름은 보존한다', () => {
@@ -589,6 +616,7 @@ describe('RAG 설정 표시 헬퍼', () => {
             id: 'ternlight-base',
             kind: 'embedding',
           }),
+          expect.objectContaining({ id: 'embeddinggemma-300m', kind: 'embedding' }),
         ],
       }),
     );
@@ -808,8 +836,12 @@ describe('RAG 설정 표시 헬퍼', () => {
     const models = buildEmbeddingModels();
     const providerOptions = buildEmbeddingProviderOptions([]);
 
-    expect(providerOptions).toContainEqual({ value: 'ternlight', label: 'Ternlight (Local)' });
-    expect(models.ternlight.map((model) => model.id)).toEqual(['ternlight-base']);
+    expect(providerOptions).toContainEqual({ value: 'ternlight', label: '기본 로컬 모델' });
+    expect(models.ternlight.map((model) => model.id)).toEqual([
+      'ternlight-base',
+      'embeddinggemma-300m',
+    ]);
+    expect(models.ternlight[1].dimensions).toBe(768);
     expect(models.ternlight[0]).toMatchObject({
       name: '@ternlight/base',
       dimensions: 384,

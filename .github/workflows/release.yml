@@ -57,6 +57,9 @@ jobs:
             main.js
             styles.css
             tern_engine_bg.wasm
+            embeddinggemma-worker.js
+            embeddinggemma-runtime.wasm
+            embeddinggemma-runtime.mjs
             THIRD_PARTY_NOTICES.md
 
       - name: Create GitHub Release
@@ -67,6 +70,9 @@ jobs:
             main.js
             styles.css
             tern_engine_bg.wasm
+            embeddinggemma-worker.js
+            embeddinggemma-runtime.wasm
+            embeddinggemma-runtime.mjs
             THIRD_PARTY_NOTICES.md
           generate_release_notes: false
           fail_on_unmatched_files: true

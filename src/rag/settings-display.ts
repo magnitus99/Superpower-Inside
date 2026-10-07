@@ -103,13 +103,15 @@ export type RagPerformanceSettings =
 /** 내장 Ternlight는 전용 Web Worker에서 계산하므로 런타임 페이싱이 필요하지 않습니다. */
 export function resolveRagPerformanceSettings(
   embeddingStrategy: ProviderStrategyKey,
+  modelId?: string,
 ): RagPerformanceSettings {
-  if (embeddingStrategy === 'ternlight') {
+  if (embeddingStrategy === 'ternlight' && modelId !== 'embeddinggemma-300m') {
     return { enabled: false };
   }
   return {
     enabled: true,
-    maxEmbeddingBatchSize: embeddingStrategy === 'ollama' ? 1 : 32,
+    maxEmbeddingBatchSize:
+      embeddingStrategy === 'ollama' || modelId === 'embeddinggemma-300m' ? 1 : 32,
     indexingYieldMs: 0,
     slowEventLoopThresholdMs: 24,
     slowBatchThresholdMs: 1500,

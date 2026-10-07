@@ -291,6 +291,20 @@ describe('OpenAIEmbeddingProvider', () => {
 });
 
 describe('CachedEmbeddingProvider', () => {
+  it('비대칭 임베딩은 같은 텍스트의 질의와 문서 캐시를 구분한다', async () => {
+    const inner = {
+      asymmetricInputs: true,
+      embed: vi.fn(() => Promise.resolve([1, 0])),
+      embedBatch: vi.fn(() => Promise.resolve([[0, 1]])),
+    };
+    const provider = new CachedEmbeddingProvider(inner, 'gemma::test', { persistent: false });
+    await expect(provider.embed('같은 문장')).resolves.toEqual([1, 0]);
+    await expect(provider.embedBatch(['같은 문장'])).resolves.toEqual([[0, 1]]);
+    await expect(provider.embed('같은 문장')).resolves.toEqual([1, 0]);
+    expect(inner.embed).toHaveBeenCalledTimes(1);
+    expect(inner.embedBatch).toHaveBeenCalledTimes(1);
+    provider.close();
+  });
   it('provider와 model을 함께 cache namespace에 포함한다', () => {
     expect(createEmbeddingCacheNamespace('openai', 'shared-model')).toBe('openai::shared-model');
     expect(createEmbeddingCacheNamespace('ollama', 'shared-model')).toBe('ollama::shared-model');

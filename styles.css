@@ -7624,6 +7624,74 @@ button.superpower-inside-prompt-danger-btn:disabled {
   line-height: 1.65;
 }
 
+.superpower-inside-local-models {
+  margin-block: var(--superpower-inside-row-padding);
+}
+
+.superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row {
+  align-items: flex-start;
+  gap: 16px;
+  padding-block: var(--superpower-inside-row-padding);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row > .setting-item-control {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.superpower-inside-local-model-status,
+.superpower-inside-local-model-amount {
+  margin-top: var(--superpower-inside-row-padding);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-local-model-amount {
+  font-variant-numeric: tabular-nums;
+}
+
+.superpower-inside-local-model-error {
+  color: var(--text-error);
+}
+
+.superpower-inside-local-model-progress {
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin-top: var(--superpower-inside-row-padding);
+  border: 0;
+  background: var(--background-modifier-border);
+  accent-color: var(--interactive-accent);
+}
+
+.superpower-inside-local-model-progress::-webkit-progress-bar {
+  background: var(--background-modifier-border);
+}
+
+.superpower-inside-local-model-progress::-webkit-progress-value {
+  background: var(--interactive-accent);
+}
+
+.superpower-inside-local-models [hidden] {
+  display: none;
+}
+
+@container superpower-inside-settings (max-width: 520px) {
+  .superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row > .setting-item-control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 .superpower-inside-settings-input-feedback {
   flex-basis: 100%;
   font-size: var(--font-ui-small);

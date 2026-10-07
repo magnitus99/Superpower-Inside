@@ -17,6 +17,7 @@ import {
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
 const ternlightEmbedMock = vi.hoisted(() => vi.fn());
+const gemmaMocks = vi.hoisted(() => ({ embed: vi.fn(), close: vi.fn() }));
 
 vi.mock('obsidian', () => ({
   requestUrl: requestUrlMock,
@@ -25,6 +26,10 @@ vi.mock('obsidian', () => ({
 vi.mock('./embedding', () => ({
   TernlightEmbeddingProvider: class {
     embed = ternlightEmbedMock;
+  },
+  EmbeddingGemmaProvider: class {
+    embed = gemmaMocks.embed;
+    close = gemmaMocks.close;
   },
 }));
 
@@ -366,6 +371,18 @@ describe('provider validation', () => {
     );
 
     expect(result.error).toBe('Ternlight가 올바르지 않은 임베딩 벡터를 반환했습니다: 3차원');
+  });
+
+  it('EmbeddingGemma의 768차원 검증 뒤 검사용 작업자를 정리한다', async () => {
+    gemmaMocks.embed.mockResolvedValueOnce(Array.from({ length: 768 }, () => 0.1));
+    const result = await testEmbeddingGenerationForStrategy(
+      'ternlight',
+      'embeddinggemma-300m',
+      baseConfig,
+      ternlightRuntime,
+    );
+    expect(result).toMatchObject({ valid: true, models: ['embeddinggemma-300m'] });
+    expect(gemmaMocks.close).toHaveBeenCalled();
   });
 
   it('Custom OpenAI 호환 모델 검색 URL을 /v1/models로 정규화한다', async () => {

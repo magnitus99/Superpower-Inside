@@ -126,6 +126,9 @@ function validateBuiltAssets() {
     'main.js',
     'styles.css',
     'tern_engine_bg.wasm',
+    'embeddinggemma-worker.js',
+    'embeddinggemma-runtime.wasm',
+    'embeddinggemma-runtime.mjs',
     'THIRD_PARTY_NOTICES.md',
   ]) {
     if (!existsSync(path.join(root, asset))) {
@@ -142,6 +145,14 @@ function validateBuiltAssets() {
     }
   }
   const ternlightPath = path.join(root, 'tern_engine_bg.wasm');
+  const gemmaManifest = readText('generated/embeddinggemma-assets.ts').match(/= ([\s\S]+) as const;/u)?.[1];
+  if (!gemmaManifest) errors.push('EmbeddingGemma asset manifest is missing');
+  else for (const asset of JSON.parse(gemmaManifest).filter((asset) => !asset.url)) {
+    const file = path.join(root, asset.file);
+    if (!existsSync(file)) continue;
+    const bytes = readFileSync(file);
+    if (bytes.length !== asset.size || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) errors.push(`EmbeddingGemma release asset mismatch: ${asset.file}`);
+  }
   if (existsSync(ternlightPath)) {
     const bytes = readFileSync(ternlightPath);
     const checksum = createHash('sha256').update(bytes).digest('hex');

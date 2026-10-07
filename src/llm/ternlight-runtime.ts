@@ -1,7 +1,8 @@
-import { normalizePath, type App } from 'obsidian';
+import { type App } from 'obsidian';
 
 import { TERNLIGHT_WORKER_SOURCE } from '../../generated/ternlight-worker-source';
-import { ensureTernlightModel, TERNLIGHT_MODEL_FILE_NAME } from './ternlight-model';
+import { TERNLIGHT_MODEL_FILE_NAME } from './ternlight-model';
+import { getLocalEmbeddingModels } from './local-embedding-models';
 
 export interface TernlightRuntimeOptions {
   app: App;
@@ -10,10 +11,11 @@ export interface TernlightRuntimeOptions {
   createWorker?: TernlightWorkerFactory;
 }
 
-interface TernlightWorkerRequest {
+export interface TernlightWorkerRequest {
   id: number;
   operation: 'initialize' | 'embed';
   wasmBytes?: ArrayBuffer;
+  assets?: Record<string, ArrayBuffer>;
   texts?: string[];
 }
 
@@ -45,7 +47,7 @@ interface PendingRequest {
   removeAbortListener(): void;
 }
 
-class TernlightWorkerRuntime {
+export class TernlightWorkerRuntime {
   private readonly worker: TernlightWorkerAdapter;
   private readonly disposeWorker: () => void;
   private readonly pending = new Map<number, PendingRequest>();
@@ -64,6 +66,10 @@ class TernlightWorkerRuntime {
 
   async initialize(wasmBytes: ArrayBuffer): Promise<void> {
     await this.request({ operation: 'initialize', wasmBytes }, undefined, [wasmBytes]);
+  }
+
+  async initializeAssets(assets: Record<string, ArrayBuffer>): Promise<void> {
+    await this.request({ operation: 'initialize', assets }, undefined, Object.values(assets));
   }
 
   async embedBatch(texts: string[], signal?: AbortSignal): Promise<number[][]> {
@@ -145,6 +151,7 @@ class TernlightWorkerRuntime {
 let initialization: Promise<TernlightWorkerRuntime> | null = null;
 let initializationKey = '';
 let activeRuntime: TernlightWorkerRuntime | null = null;
+let runtimeRevision = 0;
 
 export async function embedTernlightBatch(
   options: TernlightRuntimeOptions,
@@ -175,13 +182,15 @@ async function getTernlightRuntime(
 ): Promise<TernlightWorkerRuntime> {
   const nextKey = createInitializationKey(options);
   if (initializationKey !== nextKey) {
+    runtimeRevision++;
     activeRuntime?.close();
     activeRuntime = null;
     initialization = null;
     initializationKey = nextKey;
   }
-  initialization ??= initializeTernlight(options).catch((error: unknown) => {
-    initialization = null;
+  const revision = runtimeRevision;
+  initialization ??= initializeTernlight(options, revision).catch((error: unknown) => {
+    if (revision === runtimeRevision) initialization = null;
     throw error;
   });
   return initialization;
@@ -189,18 +198,16 @@ async function getTernlightRuntime(
 
 async function initializeTernlight(
   options: TernlightRuntimeOptions,
+  revision: number,
 ): Promise<TernlightWorkerRuntime> {
-  const modelPath = normalizePath(
-    `${options.app.vault.configDir}/plugins/${options.pluginId}/${TERNLIGHT_MODEL_FILE_NAME}`,
-  );
-  const wasmBytes = await ensureTernlightModel({
-    adapter: options.app.vault.adapter,
-    modelPath,
-    pluginVersion: options.pluginVersion,
-  });
+  const models = getLocalEmbeddingModels(options);
+  await models.prepare('ternlight-base', false);
+  const wasmBytes = await models.read('ternlight-base', TERNLIGHT_MODEL_FILE_NAME);
+  if (revision !== runtimeRevision) throw new Error('Ternlight initialization was cancelled.');
   const runtime = new TernlightWorkerRuntime(options.createWorker ?? createBrowserWorker);
   try {
     await runtime.initialize(wasmBytes);
+    if (revision !== runtimeRevision) throw new Error('Ternlight initialization was cancelled.');
     activeRuntime = runtime;
     return runtime;
   } catch (error) {
@@ -210,6 +217,7 @@ async function initializeTernlight(
 }
 
 export function closeTernlightRuntime(): void {
+  runtimeRevision++;
   activeRuntime?.close();
   activeRuntime = null;
   initialization = null;

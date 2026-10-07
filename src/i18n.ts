@@ -386,6 +386,26 @@ export interface I18nKeys {
   ragWorkflowTuneTitle: string;
   ragWorkflowTuneDetail: string;
   ragLocalEmbeddingTitle: string;
+  localModelsTitle: string;
+  localEmbeddingProvider: string;
+  localModelsDetail: string;
+  localModelTernlightDetail: string;
+  localModelGemmaDetail: string;
+  localModelMissing: string;
+  localModelReady: string;
+  localModelChecking: string;
+  localModelDownloading: string;
+  localModelVerifying: string;
+  localModelDeleting: string;
+  localModelError: string;
+  localModelDownload: string;
+  localModelCancel: string;
+  localModelCancelling: string;
+  localModelRetry: string;
+  localModelDelete: string;
+  localModelDeleteConfirm: string;
+  localModelDeleteDone: string;
+  localModelProgress: string;
   ragLocalEmbeddingDetail: string;
   ragTernlightPerformanceSummary: string;
   ragStatusSectionDescription: string;
@@ -1941,7 +1961,31 @@ const ko: I18nKeys = {
   ragWorkflowIndexDetail: '변경분만 갱신하고, 모델을 바꿨을 때만 전체 재인덱싱합니다.',
   ragWorkflowTuneTitle: '고급 조정',
   ragWorkflowTuneDetail: '검색 품질은 기본 흐름이 안정된 뒤 조정합니다.',
-  ragLocalEmbeddingTitle: '기본 제공: Ternlight 온디바이스 임베딩',
+  ragLocalEmbeddingTitle: '기본 제공: 기기에서 실행하는 임베딩',
+  localModelsTitle: '기본 모델 파일',
+  localEmbeddingProvider: '기본 로컬 모델',
+  localModelsDetail:
+    '다운로드 후 오프라인으로 사용합니다. 모델을 변경하면 검색 인덱스를 다시 만듭니다.',
+  localModelTernlightDetail:
+    '빠른 기본 모델 · 약 10 MB · 384차원 · 최대 128토큰. 짧은 영어 텍스트 위주로 사용할 때 적합합니다.',
+  localModelGemmaDetail:
+    '다국어 검색 후보 · FP32 · 약 1.27 GB · 768차원 · 최대 2,048토큰. 100개 이상의 언어를 지원하며 실행 시 다운로드 크기보다 많은 메모리를 사용합니다. 이 볼트에서의 정확도는 별도 비교가 필요합니다.',
+  localModelMissing: '다운로드 필요',
+  localModelReady: '로컬 파일 있음',
+  localModelChecking: '로컬 파일 확인 중',
+  localModelDownloading: '다운로드 중',
+  localModelVerifying: '파일 무결성 확인 중',
+  localModelDeleting: '로컬 파일 삭제 중',
+  localModelError: '모델 준비에 실패했습니다. 연결과 저장 공간을 확인한 뒤 다시 시도하세요.',
+  localModelDownload: '다운로드',
+  localModelCancel: '다운로드 취소',
+  localModelCancelling: '취소 중 · 현재 전송이 끝나면 멈춥니다.',
+  localModelRetry: '다시 시도',
+  localModelDelete: '로컬 파일 삭제',
+  localModelDeleteConfirm:
+    '{model}의 다운로드한 로컬 파일을 삭제할까요? 노트, 설정과 검색 인덱스는 유지됩니다. 사용 중인 모델이면 작업을 중단하며, 다시 사용하려면 다운로드가 필요합니다.',
+  localModelDeleteDone: '{model}의 로컬 파일을 삭제했습니다.',
+  localModelProgress: '{model}: {completed} / {total} MB',
   ragLocalEmbeddingDetail:
     '노트는 기기를 벗어나지 않으며 API 키나 Ollama 서버가 필요 없습니다. 모델 파일이 없으면 한 번 자동으로 내려받아 무결성을 확인한 뒤 오프라인으로 사용합니다.',
   ragTernlightPerformanceSummary:
@@ -3630,7 +3674,31 @@ const en: I18nKeys = {
     'Update changed notes first; reindex everything only after model changes.',
   ragWorkflowTuneTitle: 'Tune Advanced',
   ragWorkflowTuneDetail: 'Adjust search quality after the base flow is stable.',
-  ragLocalEmbeddingTitle: 'Included by default: Ternlight on-device embeddings',
+  ragLocalEmbeddingTitle: 'Included: on-device embeddings',
+  localModelsTitle: 'Built-in model files',
+  localEmbeddingProvider: 'Built-in local models',
+  localModelsDetail: 'Use offline after downloading. Changing models rebuilds the search index.',
+  localModelTernlightDetail:
+    'Fast default · about 10 MB · 384 dimensions · up to 128 tokens. Suited to short English text.',
+  localModelGemmaDetail:
+    'Multilingual search candidate · FP32 · about 1.27 GB · 768 dimensions · up to 2,048 tokens. Supports over 100 languages and needs more memory to run than its download size. Accuracy on this vault needs a separate comparison.',
+  localModelMissing: 'Download required',
+  localModelReady: 'Local files available',
+  localModelChecking: 'Checking local files',
+  localModelDownloading: 'Downloading',
+  localModelVerifying: 'Verifying file integrity',
+  localModelDeleting: 'Deleting local files',
+  localModelError:
+    'Model preparation failed. Check your connection and available storage, then retry.',
+  localModelDownload: 'Download',
+  localModelCancel: 'Cancel download',
+  localModelCancelling: 'Cancelling · waiting for the current transfer to finish.',
+  localModelRetry: 'Retry',
+  localModelDelete: 'Delete local files',
+  localModelDeleteConfirm:
+    'Delete the downloaded local files for {model}? Notes, settings and the search index are kept. Work using this model will stop, and you will need to download it again to use it.',
+  localModelDeleteDone: 'Deleted local files for {model}.',
+  localModelProgress: '{model}: {completed} / {total} MB',
   ragLocalEmbeddingDetail:
     'Notes stay on this device with no API key or Ollama server. If the model file is missing, it is downloaded once, verified, and then used offline.',
   ragTernlightPerformanceSummary:

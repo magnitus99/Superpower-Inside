@@ -25,6 +25,8 @@ it('작업 디렉터리와 무관하게 세 worker를 독립된 번들과 기존
     mkdirSync(join(root, 'scripts'));
     copyFileSync(join(repo, 'scripts/build-workers.mjs'), join(root, 'scripts/build-workers.mjs'));
     symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
+    mkdirSync(join(root, 'src/llm'), { recursive: true });
+    writeFileSync(join(root, 'src/llm/embeddinggemma-worker-entry.ts'), 'globalThis.workerKind = "GEMMA";');
     for (const [entry, , constant] of workers) {
       const path = join(root, `src/${entry}-worker-entry.ts`);
       mkdirSync(dirname(path), { recursive: true });
@@ -38,6 +40,10 @@ it('작업 디렉터리와 무관하게 세 worker를 독립된 번들과 기존
       expect(encoded).toBeDefined();
       expect(JSON.parse(encoded)).toContain(`workerKind="${constant}"`);
     }
+    expect(readFileSync(join(root, 'embeddinggemma-worker.js'), 'utf8')).toContain('workerKind="GEMMA"');
+    const manifest = readFileSync(join(root, 'generated/embeddinggemma-assets.ts'), 'utf8');
+    expect(manifest).toContain('embeddinggemma-runtime.wasm');
+    expect(manifest).toContain('onnx/model.onnx_data');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

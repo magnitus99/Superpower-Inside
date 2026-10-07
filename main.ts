@@ -37,6 +37,7 @@ import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
   TernlightEmbeddingProvider,
+  EmbeddingGemmaProvider,
   CachedEmbeddingProvider,
   createEmbeddingCacheNamespace,
   type EmbeddingProvider,
@@ -46,6 +47,10 @@ import {
   importLegacyJsonVectorStore,
   type VectorStore,
 } from './src/rag/store';
+import {
+  getLocalEmbeddingModels,
+  type LocalEmbeddingModelId,
+} from './src/llm/local-embedding-models';
 import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
 import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
 import { IndexedDbDocumentCorpusStore } from './src/rag/document-corpus-store';
@@ -463,6 +468,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
   cancelRagIndexing(): void {
     this.ragIndexAbortController?.abort();
     this.ragIndexingScheduler?.cancel();
+  }
+
+  async deleteLocalEmbeddingModel(modelId: LocalEmbeddingModelId): Promise<void> {
+    const selected = resolveProviderModelRef(
+      this.settings,
+      this.settings.rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    if (selected?.profile.strategy === 'ternlight' && selected.modelId === modelId) {
+      this.cancelRagIndexing();
+      this.embeddingProvider?.close?.();
+    }
+    await getLocalEmbeddingModels({
+      app: this.app,
+      pluginId: this.manifest.id,
+      pluginVersion: this.manifest.version,
+    }).remove(modelId);
+    this.refreshBus?.emit('rag', {
+      status: 'success',
+      detail: t('localModelDeleteDone', { model: modelId }),
+    });
   }
 
   resumeRagIndexing(): boolean {
@@ -1958,15 +1984,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
       if (profile.strategy === 'ternlight') {
-        rawProvider = new TernlightEmbeddingProvider(
-          embeddingModel,
-          {
-            app: this.app,
-            pluginId: this.manifest.id,
-            pluginVersion: this.manifest.version,
-          },
-          { logger: this.getLogger() },
-        );
+        rawProvider =
+          embeddingModel === 'embeddinggemma-300m'
+            ? new EmbeddingGemmaProvider({
+                app: this.app,
+                pluginId: this.manifest.id,
+                pluginVersion: this.manifest.version,
+              })
+            : new TernlightEmbeddingProvider(
+                embeddingModel,
+                {
+                  app: this.app,
+                  pluginId: this.manifest.id,
+                  pluginVersion: this.manifest.version,
+                },
+                { logger: this.getLogger() },
+              );
       } else if (profile.strategy === 'ollama') {
         rawProvider = new OllamaEmbeddingProvider(
           baseUrl ?? 'http://localhost:11434',
@@ -1988,7 +2021,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       this.embeddingProvider = embeddingProvider;
 
-      const performanceSettings = resolveRagPerformanceSettings(profile.strategy);
+      const performanceSettings = resolveRagPerformanceSettings(profile.strategy, embeddingModel);
       this.ragPerformanceGuard = performanceSettings.enabled
         ? new PerformanceGuard({
             enabled: true,

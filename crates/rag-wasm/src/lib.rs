@@ -10,7 +10,10 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// 기본 임베딩 모델의 입력 형식과 다운로드 응답 검증.
+mod local_embedding;
 mod source_document;
+pub use local_embedding::{embedding_gemma_inputs_json, local_model_range_matches};
 pub use source_document::{plan_source_chunk_import_indices_json, plan_source_chunks_json};
 mod source_processing;
 pub use source_processing::plan_source_processing_json;

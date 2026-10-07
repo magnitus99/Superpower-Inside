@@ -86,7 +86,9 @@ function createRuntimeOptions(createWorker: TernlightWorkerFactory, version = 'w
       vault: {
         configDir: '.obsidian',
         adapter: {
-          exists: vi.fn().mockResolvedValue(true),
+          exists: vi.fn((path: string) =>
+            Promise.resolve(path.endsWith(TERNLIGHT_MODEL_FILE_NAME)),
+          ),
           readBinary: vi.fn().mockResolvedValue(model),
           writeBinary: vi.fn(),
           remove: vi.fn(),

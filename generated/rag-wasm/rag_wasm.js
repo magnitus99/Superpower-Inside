@@ -740,6 +740,26 @@ export function derive_research_coverage_receipt_json(input_json) {
 }
 
 /**
+ * 검색 질의와 문서에 공식 `EmbeddingGemma` 접두사를 적용한다.
+ * @param {string} texts_json
+ * @param {string} kind
+ * @returns {string | undefined}
+ */
+export function embedding_gemma_inputs_json(texts_json, kind) {
+    const ptr0 = passStringToWasm0(texts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.embedding_gemma_inputs_json(ptr0, len0, ptr1, len1);
+    let v3;
+    if (ret[0] !== 0) {
+        v3 = getStringFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    }
+    return v3;
+}
+
+/**
  * `delta` 객체의 구조화 reasoning 필드를 추출한다.
  * @param {string} delta_json
  * @returns {string}
@@ -1011,6 +1031,23 @@ export function is_whole_vault_research_intent(question) {
     const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.is_whole_vault_research_intent(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
+ * 다운로드 응답의 HTTP 상태, 구간과 길이가 요청과 일치하는지 검사한다.
+ * @param {number} start
+ * @param {number} end
+ * @param {number} total
+ * @param {number} status
+ * @param {number} length
+ * @param {string} content_range
+ * @returns {boolean}
+ */
+export function local_model_range_matches(start, end, total, status, length, content_range) {
+    const ptr0 = passStringToWasm0(content_range, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.local_model_range_matches(start, end, total, status, length, ptr0, len0);
     return ret !== 0;
 }
 

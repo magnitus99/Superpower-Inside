@@ -27,6 +27,8 @@ import { isMcpStdioAvailable } from './mcp/platform';
 import { RefreshAction } from './utils/refresh-action';
 import { runActionWithFeedback } from './utils/action-feedback';
 import { confirmWithModal } from './utils/modal-prompts';
+import { buildLocalEmbeddingModelSettings } from './llm/local-embedding-settings';
+import type { LocalEmbeddingModelId } from './llm/local-embedding-models';
 import type { VectorStore } from './rag/store';
 import { isIndexingCancelledError, type IndexingResult } from './rag/indexer';
 import type { RAGIndexingScheduler, RagIndexingSchedulerStatus } from './rag/indexing-scheduler';
@@ -350,7 +352,7 @@ export function getProviderStrategyLabels(): Record<ProviderStrategyKey, string>
     openai: 'OpenAI API',
     openAIChatGPT: t('providerChatGPTLabel'),
     openAICompatible: 'OpenAI-Compatible',
-    ternlight: 'Ternlight (Local)',
+    ternlight: t('localEmbeddingProvider'),
   };
 }
 
@@ -391,6 +393,12 @@ export function buildEmbeddingModels(): Record<BuiltInEmbeddingProviderKey, Embe
         name: '@ternlight/base',
         dimensions: 384,
         description: t('settingsAuto006'),
+      },
+      {
+        id: 'embeddinggemma-300m',
+        name: 'EmbeddingGemma 300M',
+        dimensions: 768,
+        description: t('localModelGemmaDetail'),
       },
     ],
     openai: [
@@ -463,7 +471,7 @@ export function buildEmbeddingProviderOptions(
   const options: EmbeddingProviderOption[] = Object.entries(EMBEDDING_PROVIDER_LABELS).map(
     ([value, label]) => ({
       value: value as BuiltInEmbeddingProviderKey,
-      label,
+      label: value === 'ternlight' ? t('localEmbeddingProvider') : label,
     }),
   );
   for (const provider of customProviders) {
@@ -706,6 +714,7 @@ function normalizeProviderProfile(
 }
 
 export function getProviderProfileDisplayName(profile: ProviderProfileConfig): string {
+  if (profile.strategy === 'ternlight') return t('localEmbeddingProvider');
   return profile.name.trim() || t('providerNewName');
 }
 
@@ -722,6 +731,9 @@ function ensureTernlightProviderProfile(profiles: ProviderProfileConfig[]): stri
   const model = createProviderModel(TERNLIGHT_MODEL_ID, 'embedding', {
     embeddingStatus: 'success',
   });
+  const gemma = createProviderModel('embeddinggemma-300m', 'embedding', {
+    embeddingStatus: 'success',
+  });
   if (existingIndex >= 0) {
     const existing = profiles[existingIndex];
     profiles[existingIndex] = {
@@ -731,7 +743,12 @@ function ensureTernlightProviderProfile(profiles: ProviderProfileConfig[]): stri
       apiKey: '',
       baseUrl: '',
       enabled: true,
-      models: [model],
+      models: [
+        model,
+        existing.models.find(
+          (candidate) => candidate.id === gemma.id && candidate.kind === 'embedding',
+        ) ?? gemma,
+      ],
     };
     return existing.id;
   }
@@ -750,7 +767,7 @@ function ensureTernlightProviderProfile(profiles: ProviderProfileConfig[]): stri
     apiKey: '',
     baseUrl: '',
     enabled: true,
-    models: [model],
+    models: [model, gemma],
   });
   return profileId;
 }
@@ -998,6 +1015,7 @@ export interface PluginLike {
   reconnectMCP(): Promise<string[]>;
   setupAutoUpdate(): void;
   resetPluginData(): Promise<void>;
+  deleteLocalEmbeddingModel(modelId: LocalEmbeddingModelId): Promise<void>;
   openAgentDiagnosticsView(): void;
   getAgentDiagnosticsFilePath(): string;
   getAgentDiagnosticsEventLogPath(): string;
@@ -1363,6 +1381,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private cancelIndexingButton: HTMLButtonElement | null = null;
   private resumeIndexingButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
+  private disposeLocalModelSettings: (() => void) | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
   private expandedProviderProfileId: string | null = null;
@@ -1529,6 +1548,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     super.hide();
   }
   private resetRagDomReferences(): void {
+    this.disposeLocalModelSettings?.();
+    this.disposeLocalModelSettings = null;
     this.generalStatusBody = null;
     this.chatStatusBody = null;
     this.chatModelDropdownEl = null;
@@ -2730,6 +2751,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               ? t('settingsLocalEndpointDetail')
               : t('settingsRemoteEmbeddingDetail'),
       });
+      this.disposeLocalModelSettings?.();
+      this.disposeLocalModelSettings = buildLocalEmbeddingModelSettings(
+        section,
+        this.getTernlightRuntimeOptions(),
+        {
+          remove: (id) => this.plugin.deleteLocalEmbeddingModel(id),
+        },
+      );
       if (isProfilePending) {
         const btnRow = section.createDiv({
           cls: 'superpower-inside-rag-controls superpower-inside-embedding-pending-actions',
@@ -3708,7 +3737,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       );
       return provider ? getCustomOpenAIProviderDisplayName(provider) : t('providerCustomDockTitle');
     }
-    return EMBEDDING_PROVIDER_LABELS[providerKey];
+    return providerKey === 'ternlight'
+      ? t('localEmbeddingProvider')
+      : EMBEDDING_PROVIDER_LABELS[providerKey];
   }
   private getRagSetupWarning(): string | null {
     const rag = this.plugin.settings.rag;
@@ -4315,14 +4346,16 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.setDependentInputState(text.inputEl, this.plugin.settings.rag.autoUpdateEnabled);
         autoUpdateInput = text.inputEl;
       });
-    const embeddingStrategy =
-      resolveProviderModelRef(
-        this.plugin.settings,
-        this.pendingEmbeddingModel ?? this.plugin.settings.rag.embeddingModelRef ?? '',
-        'embedding',
-      )?.profile.strategy ?? null;
-    if (embeddingStrategy) {
-      const performanceSettings = resolveRagPerformanceSettings(embeddingStrategy);
+    const embeddingSelection = resolveProviderModelRef(
+      this.plugin.settings,
+      this.pendingEmbeddingModel ?? this.plugin.settings.rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    if (embeddingSelection) {
+      const performanceSettings = resolveRagPerformanceSettings(
+        embeddingSelection.profile.strategy,
+        embeddingSelection.modelId,
+      );
       section.createDiv({
         cls: 'superpower-inside-rag-performance-summary',
         text: performanceSettings.enabled
@@ -4350,7 +4383,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         text.inputEl.max = '5000';
       });
     // Ollama 임베딩 모델 컨텍스트 길이 경고
-    if (embeddingStrategy === 'ollama') {
+    if (embeddingSelection?.profile.strategy === 'ollama') {
       const warnEl = chunkSizeSetting.descEl.createEl('div', {
         cls: 'superpower-inside-settings-warning',
       });

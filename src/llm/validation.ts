@@ -6,7 +6,7 @@ import type {
   ProviderConfig,
   ProviderStrategyKey,
 } from '../settings';
-import { TernlightEmbeddingProvider } from './embedding';
+import { TernlightEmbeddingProvider, EmbeddingGemmaProvider } from './embedding';
 import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import type { ProviderKey } from './providers';
 
@@ -473,7 +473,7 @@ class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
   constructor(private readonly runtime: TernlightRuntimeOptions | undefined) {}
 
   async validateConnection(modelId: string): Promise<ValidationResult> {
-    if (modelId !== 'ternlight-base') {
+    if (modelId !== 'ternlight-base' && modelId !== 'embeddinggemma-300m') {
       return {
         valid: false,
         models: [],
@@ -484,8 +484,8 @@ class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
     return result.valid
       ? {
           valid: true,
-          models: ['ternlight-base'],
-          modelDetails: [{ id: 'ternlight-base' }],
+          models: [modelId],
+          modelDetails: [{ id: modelId }],
         }
       : result;
   }
@@ -495,9 +495,17 @@ class TernlightEmbeddingValidator implements EmbeddingConnectionValidator {
       return { valid: false, models: [], error: t('validationTernlightUnavailable') };
     }
     try {
-      const provider = new TernlightEmbeddingProvider(modelId, this.runtime);
-      const vector = await provider.embed('test');
-      return vector.length === 384
+      const provider =
+        modelId === 'embeddinggemma-300m'
+          ? new EmbeddingGemmaProvider(this.runtime)
+          : new TernlightEmbeddingProvider(modelId, this.runtime);
+      let vector: number[];
+      try {
+        vector = await provider.embed('test');
+      } finally {
+        if (modelId === 'embeddinggemma-300m') provider.close();
+      }
+      return vector.length === (modelId === 'embeddinggemma-300m' ? 768 : 384)
         ? { valid: true, models: [modelId] }
         : {
             valid: false,

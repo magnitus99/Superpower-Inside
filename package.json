@@ -28,6 +28,7 @@
     "format": "prettier --write src/ main.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@ternlight/base": "0.1.0",
     "dexie": "^4.0.11"

@@ -1,4 +1,6 @@
 import {
+  embedding_gemma_inputs_json,
+  local_model_range_matches,
   plan_chatgpt_json,
   plan_chat_evidence_json,
   plan_chat_request_json,
@@ -1577,6 +1579,32 @@ export function formatMcpConnectionErrorRust(
 export function createContentHashRust(content: string): string | null {
   if (!ensureRustCore()) return null;
   return create_content_hash(content);
+}
+
+export function embeddingGemmaInputsRust(
+  texts: string[],
+  kind: 'query' | 'document',
+): string[] | null {
+  if (!ensureRustCore()) return null;
+  const result = embedding_gemma_inputs_json(JSON.stringify(texts), kind);
+  if (!result) return null;
+  const parsed: unknown = JSON.parse(result);
+  return Array.isArray(parsed) && parsed.every((text): text is string => typeof text === 'string')
+    ? parsed
+    : null;
+}
+
+export function localModelRangeMatchesRust(
+  start: number,
+  end: number,
+  total: number,
+  status: number,
+  length: number,
+  contentRange: string,
+): boolean {
+  return (
+    ensureRustCore() && local_model_range_matches(start, end, total, status, length, contentRange)
+  );
 }
 
 export function tokenizeRust(text: string): string[] | null {
