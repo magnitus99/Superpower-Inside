@@ -173,4 +173,18 @@ describe('프롬프트 보관함 모달 구조', () => {
     expect(stylesSource).toContain('@media (max-width: 760px)');
     expect(stylesSource).toContain('@media (max-width: 520px)');
   });
+
+  it('Obsidian의 고정 버튼 높이와 nowrap을 해제하고 기본 버튼 면보다 구체적인 선택자를 쓴다', () => {
+    const listItemRule = stylesSource.match(
+      /button\.superpower-inside-prompt-list-item\s*\{([^}]+)\}/,
+    )?.[1];
+    expect(listItemRule).toContain('height: auto;');
+    expect(listItemRule).toContain('white-space: normal;');
+    for (const suffix of ['close', 'primary-btn', 'secondary-btn', 'danger-btn']) {
+      expect(stylesSource).toContain(`button.superpower-inside-prompt-${suffix}`);
+    }
+    expect(stylesSource).toContain(
+      '.superpower-inside-prompt-modal button.superpower-inside-settings-disclosure-button',
+    );
+  });
 });

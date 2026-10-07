@@ -1315,7 +1315,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   line-height: 1.4;
 }
 
-.superpower-inside-prompt-close {
+button.superpower-inside-prompt-close {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -1331,7 +1331,7 @@ button.superpower-inside-settings-status-row:focus-visible {
   cursor: pointer;
 }
 
-.superpower-inside-prompt-close:hover {
+button.superpower-inside-prompt-close:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
 }
@@ -1367,13 +1367,15 @@ button.superpower-inside-settings-status-row:focus-visible {
   overflow: auto;
 }
 
-.superpower-inside-prompt-list-item {
+button.superpower-inside-prompt-list-item {
   display: block;
   width: 100%;
+  height: auto;
   margin: 0 0 4px;
   padding: 10px;
   color: var(--text-normal);
   text-align: left;
+  white-space: normal;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-m);
@@ -1381,11 +1383,11 @@ button.superpower-inside-settings-status-row:focus-visible {
   cursor: pointer;
 }
 
-.superpower-inside-prompt-list-item:hover {
+button.superpower-inside-prompt-list-item:hover {
   background: var(--background-modifier-hover);
 }
 
-.superpower-inside-prompt-list-item.is-active {
+button.superpower-inside-prompt-list-item.is-active {
   background: var(--background-primary);
   border-color: var(--background-modifier-border-hover);
 }
@@ -1448,37 +1450,45 @@ button.superpower-inside-settings-status-row:focus-visible {
   padding-top: 4px;
 }
 
-.superpower-inside-prompt-primary-btn,
-.superpower-inside-prompt-secondary-btn,
-.superpower-inside-prompt-danger-btn {
+button.superpower-inside-prompt-primary-btn,
+button.superpower-inside-prompt-secondary-btn,
+button.superpower-inside-prompt-danger-btn {
+  height: auto;
   min-height: 32px;
   padding: 6px 10px;
+  white-space: normal;
   border-radius: var(--radius-s);
   cursor: pointer;
 }
 
-.superpower-inside-prompt-primary-btn {
+button.superpower-inside-prompt-primary-btn {
   color: var(--text-on-accent);
   background: var(--interactive-accent);
   border: 1px solid var(--interactive-accent);
 }
 
-.superpower-inside-prompt-secondary-btn {
+button.superpower-inside-prompt-secondary-btn {
   color: var(--text-normal);
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-prompt-danger-btn {
+button.superpower-inside-prompt-danger-btn {
   color: var(--text-error);
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
 }
 
-.superpower-inside-prompt-primary-btn:disabled,
-.superpower-inside-prompt-secondary-btn:disabled,
-.superpower-inside-prompt-danger-btn:disabled {
+button.superpower-inside-prompt-primary-btn:disabled,
+button.superpower-inside-prompt-secondary-btn:disabled,
+button.superpower-inside-prompt-danger-btn:disabled {
   cursor: default;
+}
+
+.superpower-inside-prompt-modal button.superpower-inside-settings-disclosure-button {
+  height: auto;
+  background: transparent;
+  box-shadow: none;
 }
 
 .superpower-inside-prompt-generation {
