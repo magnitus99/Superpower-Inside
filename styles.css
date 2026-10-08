@@ -868,6 +868,7 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-settings-workspace button.superpower-inside-settings-disclosure-button {
+  height: auto;
   border: 0;
   border-radius: 0;
   background: transparent;

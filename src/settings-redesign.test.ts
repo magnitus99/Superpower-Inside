@@ -377,9 +377,13 @@ describe('설정 화면 리디자인 구조', () => {
 
   it('빠른 시작은 이름으로 미리보기를 펼치고 적용 행동과 초기화 영역을 구분한다', () => {
     const start = settingsSource.indexOf('private buildChatPromptSection(');
-    const end = settingsSource.indexOf('\n  private getChatPromptPresets(', start);
+    const end = settingsSource.indexOf('\n  private applyChatPromptPreset(', start);
     const source = settingsSource.slice(start, end);
 
+    expect(source).toContain('getChatPromptPresets().entries()');
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-workspace button\.superpower-inside-settings-disclosure-button\s*\{[^}]*height:\s*auto;/s,
+    );
     expect(source).toContain("className: 'superpower-inside-chat-preset-row'");
     expect(source).toContain("t('settingsPresetPreview') + ': ' + preset.label");
     expect(source).toContain('preview.content.before(button)');

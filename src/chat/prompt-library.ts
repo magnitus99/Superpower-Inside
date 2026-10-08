@@ -35,34 +35,95 @@ export function getDefaultObsidianSystemPrompt(): string {
   return t('defaultObsidianSystemPrompt');
 }
 
-export function getPromptDirectionPresets(): PromptDirectionPreset[] {
-  return [
+export interface ChatPromptPreset extends PromptDirectionPreset {
+  description: string;
+  prompt: string;
+}
+
+export function getChatPromptPresets(): ChatPromptPreset[] {
+  const cases: (PromptDirectionPreset & { description: string })[] = [
+    {
+      id: 'source-grounded',
+      label: t('promptPresetSourceGroundedLabel'),
+      description: t('promptPresetSourceGroundedDescription'),
+      instruction: t('promptPresetSourceGroundedInstruction'),
+    },
     {
       id: 'knowledge-connection',
       label: t('promptPresetKnowledgeConnectionLabel'),
+      description: t('promptPresetKnowledgeConnectionDescription'),
       instruction: t('promptPresetKnowledgeConnectionInstruction'),
+    },
+    {
+      id: 'reading-notes',
+      label: t('promptPresetReadingNotesLabel'),
+      description: t('promptPresetReadingNotesDescription'),
+      instruction: t('promptPresetReadingNotesInstruction'),
     },
     {
       id: 'research-notes',
       label: t('promptPresetResearchNotesLabel'),
+      description: t('promptPresetResearchNotesDescription'),
       instruction: t('promptPresetResearchNotesInstruction'),
+    },
+    {
+      id: 'study-coach',
+      label: t('promptPresetStudyCoachLabel'),
+      description: t('promptPresetStudyCoachDescription'),
+      instruction: t('promptPresetStudyCoachInstruction'),
+    },
+    {
+      id: 'meeting-notes',
+      label: t('promptPresetMeetingNotesLabel'),
+      description: t('promptPresetMeetingNotesDescription'),
+      instruction: t('promptPresetMeetingNotesInstruction'),
     },
     {
       id: 'project-notes',
       label: t('promptPresetProjectNotesLabel'),
+      description: t('promptPresetProjectNotesDescription'),
       instruction: t('promptPresetProjectNotesInstruction'),
     },
     {
       id: 'daily-review',
       label: t('promptPresetDailyReviewLabel'),
+      description: t('promptPresetDailyReviewDescription'),
       instruction: t('promptPresetDailyReviewInstruction'),
     },
     {
       id: 'writing-draft',
       label: t('promptPresetWritingDraftLabel'),
+      description: t('promptPresetWritingDraftDescription'),
       instruction: t('promptPresetWritingDraftInstruction'),
     },
+    {
+      id: 'creative-writing',
+      label: t('promptPresetCreativeWritingLabel'),
+      description: t('promptPresetCreativeWritingDescription'),
+      instruction: t('promptPresetCreativeWritingInstruction'),
+    },
+    {
+      id: 'vault-organization',
+      label: t('promptPresetVaultOrganizationLabel'),
+      description: t('promptPresetVaultOrganizationDescription'),
+      instruction: t('promptPresetVaultOrganizationInstruction'),
+    },
+    {
+      id: 'technical-notes',
+      label: t('promptPresetTechnicalNotesLabel'),
+      description: t('promptPresetTechnicalNotesDescription'),
+      instruction: t('promptPresetTechnicalNotesInstruction'),
+    },
   ];
+  const sharedPrompt = getDefaultObsidianSystemPrompt();
+  return cases.map((preset) => ({
+    ...preset,
+    prompt: [sharedPrompt, preset.instruction].join('\n\n'),
+  }));
+}
+
+export function getPromptDirectionPresets(): PromptDirectionPreset[] {
+  return getChatPromptPresets().map(({ id, label, instruction }) => ({ id, label, instruction }));
 }
 
 export function createDefaultPromptEntry(now = new Date().toISOString()): PromptLibraryEntry {

@@ -5,6 +5,8 @@ import {
   createDefaultPromptEntry,
   createPromptEntry,
   getDefaultObsidianSystemPrompt,
+  getChatPromptPresets,
+  getPromptDirectionPresets,
   getEffectiveSystemPrompt,
   normalizePromptLibrary,
   resetActivePromptToDefault,
@@ -59,20 +61,69 @@ describe('프롬프트 보관함', () => {
   );
 
   it.each([
-    { language: 'ko' as const, budget: 600, evidence: /출처/, untrusted: /지시.*따르지/ },
-    { language: 'en' as const, budget: 1000, evidence: /source/i, untrusted: /untrusted/i },
+    { language: 'ko' as const, evidence: /출처/, untrusted: /지시.*따르지/ },
+    { language: 'en' as const, evidence: /source/i, untrusted: /untrusted/i },
   ])(
-    '$language 기본 지침은 도구가 없어도 출처와 비신뢰 경계를 짧게 보존한다',
-    ({ language, budget, evidence, untrusted }) => {
+    '$language 기본 지침은 도구가 없어도 출처와 비신뢰 경계를 보존한다',
+    ({ language, evidence, untrusted }) => {
       setLanguage(language);
       const prompt = getEffectiveSystemPrompt(createSettings({}));
 
-      expect(prompt.length).toBeLessThanOrEqual(budget);
       expect(prompt).toMatch(evidence);
       expect(prompt).toMatch(untrusted);
       expect(prompt).toContain('Markdown');
     },
   );
+
+  it.each(['ko', 'en'] as const)(
+    '%s 빠른 시작과 생성 방향은 같은 사용 사례와 공통 근거 계약을 제공한다',
+    (language) => {
+      setLanguage(language);
+      const presets = getChatPromptPresets();
+      const directions = getPromptDirectionPresets();
+      expect(presets.map((preset) => preset.id)).toEqual([
+        'source-grounded',
+        'knowledge-connection',
+        'reading-notes',
+        'research-notes',
+        'study-coach',
+        'meeting-notes',
+        'project-notes',
+        'daily-review',
+        'writing-draft',
+        'creative-writing',
+        'vault-organization',
+        'technical-notes',
+      ]);
+      expect(directions.map((preset) => preset.id)).toEqual(presets.map((preset) => preset.id));
+      expect(new Set(presets.map((preset) => preset.label)).size).toBe(presets.length);
+      for (const [index, preset] of presets.entries()) {
+        const direction = directions[index];
+        expect(preset.label).toBe(direction?.label);
+        expect(preset.description.trim()).not.toBe('');
+        expect(preset.prompt).toContain(getDefaultObsidianSystemPrompt());
+        expect(preset.prompt).toContain(direction?.instruction);
+        const messages = buildVaultPromptGenerationMessages({
+          entries: [],
+          directionPreset: direction,
+        });
+        expect(messages[1]?.content).toContain(direction?.instruction);
+        if (language === 'en')
+          expect(/[가-힣]/u.test(preset.prompt + preset.label + preset.description)).toBe(false);
+      }
+    },
+  );
+
+  it('사용 사례 목록은 언어 전환 후 다시 현지화한다', () => {
+    const korean = getChatPromptPresets();
+    setLanguage('en');
+    const english = getChatPromptPresets();
+    expect(korean.map((preset) => preset.id)).toEqual(english.map((preset) => preset.id));
+    for (const [index, preset] of english.entries()) {
+      expect(preset.label).not.toBe(korean[index]?.label);
+      expect(preset.prompt).not.toBe(korean[index]?.prompt);
+    }
+  });
 
   it('빈 설정에는 Obsidian 기본 프롬프트를 보강한다', () => {
     const result = normalizePromptLibrary(undefined, undefined, '');

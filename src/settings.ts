@@ -65,6 +65,7 @@ import {
 import {
   createPromptEntry,
   getActivePromptEntry,
+  getChatPromptPresets,
   resetActivePromptToDefault,
   setActivePromptEntry,
   type PromptLibraryEntry,
@@ -4651,7 +4652,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('chatPromptShortcutsDesc'),
     );
     const presetList = shortcuts.content.createDiv({ cls: 'superpower-inside-chat-preset-list' });
-    for (const [presetIndex, preset] of this.getChatPromptPresets().entries()) {
+    for (const [presetIndex, preset] of getChatPromptPresets().entries()) {
       const preview = this.createSettingsDisclosure(
         presetList,
         'preset-' + presetIndex,
@@ -4687,39 +4688,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         new Notice(t('settingsAuto220'));
       }),
     );
-  }
-  private getChatPromptPresets(): {
-    label: string;
-    description: string;
-    prompt: string;
-  }[] {
-    return [
-      {
-        label: t('settingsAuto204'),
-        description: t('settingsAuto205'),
-        prompt: t('settingsAuto206'),
-      },
-      {
-        label: t('settingsAuto207'),
-        description: t('settingsAuto208'),
-        prompt: t('settingsAuto209'),
-      },
-      {
-        label: t('settingsAuto210'),
-        description: t('settingsAuto211'),
-        prompt: t('settingsAuto212'),
-      },
-      {
-        label: t('settingsAuto213'),
-        description: t('settingsAuto214'),
-        prompt: t('settingsAuto215'),
-      },
-      {
-        label: t('settingsAuto216'),
-        description: t('settingsAuto217'),
-        prompt: t('settingsAuto218'),
-      },
-    ];
   }
   private applyChatPromptPreset(preset: {
     label: string;
