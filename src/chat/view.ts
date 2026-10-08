@@ -1,7 +1,7 @@
 import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
 import type { PluginLike } from '../settings';
 import { resolveChatModelState } from './chat-model-state';
-import { buildStoredChatModelRef, createChatProviderForModel } from '../llm/provider-resolution';
+import { buildStoredChatModelRef, prepareChatProviderForModel } from '../llm/provider-resolution';
 import type {
   ChatMessage,
   LLMProvider,
@@ -67,6 +67,7 @@ import {
   VaultResearchAgent,
   getVaultResearchPhaseLabel,
   isWholeVaultResearchRequest,
+  isScopedVaultResearchRequest,
 } from '../agent/research-agent';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
@@ -116,7 +117,7 @@ import {
   createRecoveryMessageActionId,
 } from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
-import { expandVaultSearchQuery } from './vault-query-expansion';
+import { expandVaultSearchPlan } from './vault-query-expansion';
 import {
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -2838,7 +2839,7 @@ export class ChatView extends ItemView {
     let provider: LLMProvider;
 
     try {
-      const resolved = createChatProviderForModel(this.plugin.settings, selectedModel);
+      const resolved = await prepareChatProviderForModel(this.plugin.settings, selectedModel);
       if (!resolved) {
         new Notice(t('noActiveProviderNotice'));
         releaseSetupRun();
@@ -2876,7 +2877,13 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const wholeVaultResearch = isWholeVaultResearchRequest(text);
+    const mentionedFolders = this.parseMentions(text).filter(
+      (mention) => mention.type === 'folder',
+    );
+    const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
+    const wholeVaultResearch =
+      isWholeVaultResearchRequest(text) ||
+      Boolean(researchScopePath && isScopedVaultResearchRequest(text));
     const explicitlyMentionedServers = wholeVaultResearch ? [] : this.getMentionedServerNames(text);
     const mentionedServers = wholeVaultResearch
       ? []
@@ -2884,7 +2891,25 @@ export class ChatView extends ItemView {
     let promptContext: ContextBuildResult;
     try {
       promptContext = wholeVaultResearch
-        ? { systemPrompt: null, attachments: [], citations: [], warnings: [] }
+        ? {
+            systemPrompt: null,
+            attachments: researchScopePath
+              ? [
+                  {
+                    id: 'research-scope',
+                    type: 'folder',
+                    name: researchScopePath,
+                    label: researchScopePath,
+                    status: 'attached',
+                    scopeOnly: true,
+                    sourceIds: [],
+                    actualChars: 0,
+                  },
+                ]
+              : [],
+            citations: [],
+            warnings: [],
+          }
         : await this.buildPromptContext(
             text,
             previousUserQuestions,
@@ -2905,7 +2930,18 @@ export class ChatView extends ItemView {
       return;
     }
     if (!isChatRunActive(this.activeRun, run)) return;
-    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
+    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot
+      ? { ...promptContext.contextBudgetSnapshot, modelContext: provider.contextBudget }
+      : provider.contextBudget
+        ? {
+            maxChars: provider.contextBudget.evidenceChars,
+            usedChars: 0,
+            attachmentCount: 0,
+            citationCount: 0,
+            truncated: false,
+            modelContext: provider.contextBudget,
+          }
+        : undefined;
     const dataBoundarySnapshot = wholeVaultResearch
       ? createResearchDataBoundarySnapshot({
           providerLabel,
@@ -3047,8 +3083,18 @@ export class ChatView extends ItemView {
       ];
 
       if (wholeVaultResearch) {
+        const researchQueries = await expandVaultSearchPlan(
+          text,
+          provider,
+          previousUserQuestions,
+          abortController.signal,
+        );
         const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
           question: text,
+          scopePath: researchScopePath,
+          searchQuestion: researchQueries.variants.length
+            ? JSON.stringify([researchQueries.query, ...researchQueries.variants])
+            : researchQueries.query,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
           signal: abortController.signal,
@@ -3148,7 +3194,11 @@ export class ChatView extends ItemView {
         );
       };
       const streamInitialPass = (): Promise<void> => {
-        messages = prepareProviderRequest(messages, providerToolDefinitions).messages;
+        messages = prepareProviderRequest(
+          messages,
+          providerToolDefinitions,
+          provider.contextBudget?.inputBytes,
+        ).messages;
         contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
           recentConversationMessages: Math.max(
             0,
@@ -3891,6 +3941,7 @@ export class ChatView extends ItemView {
       completedToolCalls,
       args.toolProtocol,
       args.assistantReasoning,
+      args.provider.contextBudget?.inputBytes,
     );
     const roundCheckpoint =
       args.toolProtocol === 'compatibility' && args.toolDefinitions.length > 0
@@ -3908,6 +3959,7 @@ export class ChatView extends ItemView {
       providerMessages = prepareProviderRequest(
         providerMessages,
         args.toolProtocol === 'native' ? args.toolDefinitions : undefined,
+        args.provider.contextBudget?.inputBytes,
       ).messages;
       await args.provider.streamChat(
         providerMessages,
@@ -4622,7 +4674,7 @@ export class ChatView extends ItemView {
       const providerReinjectableToolCalls = selectProviderReinjectableToolCalls(updated);
       if (providerReinjectableToolCalls.length > 0 && message.providerKey && message.model) {
         if (!isChatRunActive(this.activeRun, run)) return;
-        const resumedProvider = createChatProviderForModel(
+        const resumedProvider = await prepareChatProviderForModel(
           this.plugin.settings,
           buildStoredChatModelRef(message.providerKey, message.model),
         );
@@ -4815,9 +4867,10 @@ export class ChatView extends ItemView {
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
       ragMinScore: this.plugin.settings.rag.minScore,
+      maxContextChars: provider?.contextBudget?.evidenceChars,
       deferImplicitFolderEvidenceToTools,
       queryExpander: (question) =>
-        expandVaultSearchQuery(question, provider, previousUserQuestions, signal),
+        expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 

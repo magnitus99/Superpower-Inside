@@ -13,8 +13,12 @@ use wasm_bindgen::prelude::wasm_bindgen;
 /// 기본 임베딩 모델의 입력 형식과 다운로드 응답 검증.
 mod local_embedding;
 mod source_document;
+mod source_metadata;
 pub use local_embedding::{embedding_gemma_inputs_json, local_model_range_matches};
 pub use source_document::{plan_source_chunk_import_indices_json, plan_source_chunks_json};
+pub use source_metadata::{
+    plan_native_vault_source_citation_indices_json, plan_source_metadata_json,
+};
 mod source_processing;
 pub use source_processing::plan_source_processing_json;
 
@@ -46,6 +50,8 @@ mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
+mod model_context;
+pub use model_context::{plan_model_context_json, plan_provider_model_details_json};
 mod chatgpt;
 pub use chat_input::{
     plan_chat_evidence_json, plan_chat_request_json, plan_chat_unique_result_indices_json,
@@ -82,9 +88,9 @@ pub use tool_result_resume::plan_tool_result_source_references_json;
 /// Whole-vault research intent and hierarchical reduce batching policy.
 mod research_agent;
 pub use research_agent::{
-    is_whole_vault_research_intent, plan_repeated_tool_call_indices_json,
-    plan_research_citation_indices_json, plan_research_request_failure_json,
-    plan_research_summary_batches_json,
+    is_scoped_vault_research_intent, is_whole_vault_research_intent,
+    plan_repeated_tool_call_indices_json, plan_research_citation_indices_json,
+    plan_research_request_failure_json, plan_research_summary_batches_json,
 };
 
 /// Evidence-bounded research planning, coverage, and answer-claim policy.

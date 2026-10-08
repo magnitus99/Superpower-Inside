@@ -42,6 +42,7 @@ import {
   planChatModelStateRust,
   isExcludedPathRust,
   planProviderProfileStateRust,
+  planProviderModelDetailsRust,
   planProviderVerificationResetRust,
   type RustChatModelStatePlan,
   type RustProviderProfileStatePlan,
@@ -170,6 +171,8 @@ export interface ProviderModelVerification {
   lastError?: string;
 }
 export interface ProviderModelConfig {
+  contextLength?: number;
+  maxOutputTokens?: number;
   id: string;
   kind: ProviderModelKind;
   verification: ProviderModelVerification;
@@ -310,6 +313,16 @@ export function upsertProviderProfileModel(
   const merged: ProviderModelConfig = {
     id,
     kind,
+    ...(candidate.contextLength !== undefined
+      ? { contextLength: candidate.contextLength }
+      : existing?.contextLength !== undefined
+        ? { contextLength: existing.contextLength }
+        : {}),
+    ...(candidate.maxOutputTokens !== undefined
+      ? { maxOutputTokens: candidate.maxOutputTokens }
+      : existing?.maxOutputTokens !== undefined
+        ? { maxOutputTokens: existing.maxOutputTokens }
+        : {}),
     verification: {
       chatStatus:
         candidate.verification.chatStatus ?? existing?.verification.chatStatus ?? 'unknown',
@@ -676,7 +689,16 @@ function normalizeProviderProfileModel(value: unknown): ProviderModelConfig | nu
     !Array.isArray(source.verification)
       ? (source.verification as Partial<ProviderModelVerification>)
       : {};
-  return createProviderModel(id, kind, verificationSource);
+  const details = planProviderModelDetailsRust('openai', {
+    data: [
+      { id, context_length: source.contextLength, max_completion_tokens: source.maxOutputTokens },
+    ],
+  })?.[0];
+  return {
+    ...createProviderModel(id, kind, verificationSource),
+    ...(details?.contextLength ? { contextLength: details.contextLength } : {}),
+    ...(details?.maxOutputTokens ? { maxOutputTokens: details.maxOutputTokens } : {}),
+  };
 }
 
 function normalizeProviderProfile(
@@ -1162,6 +1184,7 @@ interface ProviderModelImportCandidate {
   id: string;
   name?: string;
   contextLength?: number;
+  maxOutputTokens?: number;
 }
 
 class ProviderModelImportModal extends Modal {
@@ -2805,7 +2828,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         t('localModelsTitle'),
       );
       const noteContainer = selectedProvider ? modelDetails.content : section;
-      const localNote = noteContainer.createDiv({ cls: 'superpower-inside-rag-local-embedding-note' });
+      const localNote = noteContainer.createDiv({
+        cls: 'superpower-inside-rag-local-embedding-note',
+      });
       const icon = localNote.createSpan({ cls: 'superpower-inside-rag-local-embedding-icon' });
       setIcon(icon, selectedProvider ? 'shield-check' : 'circle-alert');
       const copy = localNote.createDiv({ cls: 'superpower-inside-rag-local-embedding-copy' });
@@ -6015,10 +6040,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       onSubmit: async (modelIds) => {
         const previousModels = profile.models;
         for (const modelId of modelIds) {
-          profile.models = upsertProviderProfileModel(
-            profile.models,
-            createProviderModel(modelId, 'general'),
-          );
+          profile.models = upsertProviderProfileModel(profile.models, {
+            ...createProviderModel(modelId, 'general'),
+            ...candidates.find((candidate) => candidate.id === modelId),
+          });
         }
         try {
           const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });

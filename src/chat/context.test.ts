@@ -18,6 +18,53 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('도구가 활성화된 큰 폴더는 검색 범위만 전달한다', async () => {
+    const files = Array.from({ length: 15 }, (_, index) =>
+      createFile('fixtures/' + index + '.md', '합성 부품 설명'.repeat(1000), 1000),
+    );
+    const folder = createFolder('fixtures');
+    const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+    const context = await buildChatContext('@[fixtures] 교체할 케이블을 찾아줘', {
+      app: createApp(
+        new Map(files.map((file) => [file.path, file])),
+        new Map([[folder.path, folder]]),
+      ),
+      ragEngine: { query },
+      deferImplicitFolderEvidenceToTools: true,
+    });
+    expect(context.citations).toEqual([]);
+    expect(context.attachments[0]).toMatchObject({
+      name: 'fixtures',
+      fileCount: 15,
+      sourceIds: [],
+      excluded: false,
+    });
+    expect(context.systemPrompt).toContain('fixtures');
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { question: '교체할 케이블', variants: ['copper cable', 'ceramic connector'] },
+    { question: '点検するセンサー', variants: ['optical sensor', 'pressure switch'] },
+  ])('각 번역 질의를 지정 폴더 안에서 검색한다: $question', async ({ question, variants }) => {
+    const files = [
+      createFile('fixtures/a.md', '합성 부품 자료', 1000),
+      createFile('outside.md', '다른 범위의 자료', 1000),
+    ];
+    const folder = createFolder('fixtures');
+    const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+    await buildChatContext('@[fixtures] ' + question, {
+      app: createApp(
+        new Map(files.map((file) => [file.path, file])),
+        new Map([[folder.path, folder]]),
+      ),
+      ragEngine: { query },
+      queryExpander: () => Promise.resolve({ query: question, variants }),
+    });
+    for (const variant of variants)
+      expect(query).toHaveBeenCalledWith(variant, expect.any(Number), undefined, ['fixtures']);
+    expect(query.mock.calls.every((args) => args[3]?.[0] === 'fixtures')).toBe(true);
+  });
   it('현재 문서와 열린 문서의 원문을 함께 컨텍스트에 전달한다', async () => {
     const first = createFile('Notes/현재.md', '현재 문서의 근거', 1000);
     const second = createFile('Notes/다른.md', '다른 문서의 근거', 1000);

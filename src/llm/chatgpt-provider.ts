@@ -1,7 +1,8 @@
 import { requestUrl } from 'obsidian';
 import { t } from '../i18n';
 import { prepareProviderRequest } from './request-budget';
-import { planChatGPTRust } from '../rag/rust-core';
+import { planChatGPTRust, planProviderModelDetailsRust } from '../rag/rust-core';
+import type { ProviderModelInfo } from './validation';
 import { chatGPTOAuth } from './chatgpt-oauth';
 import {
   resolveProviderCapability,
@@ -64,11 +65,12 @@ async function authenticatedRequest(
 }
 
 export async function fetchChatGPTModels(profileId: string): Promise<string[]> {
+  return (await fetchChatGPTModelDetails(profileId)).map((model) => model.id);
+}
+
+export async function fetchChatGPTModelDetails(profileId: string): Promise<ProviderModelInfo[]> {
   const response = await authenticatedRequest(profileId, 'models');
-  const models = planChatGPTRust<string[]>({
-    operation: 'models',
-    value: response.json as unknown,
-  });
+  const models = planProviderModelDetailsRust('openAIChatGPT', response.json);
   if (!models?.length) throw new Error(t('chatGPTResponseInvalid'));
   return models;
 }
@@ -121,6 +123,7 @@ export class ChatGPTProvider implements LLMProvider {
     messages = prepareProviderRequest(
       messages,
       this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
     ).messages;
     const body = planChatGPTRust<Record<string, unknown>>({
       operation: 'request',

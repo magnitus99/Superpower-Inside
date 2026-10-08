@@ -24,7 +24,8 @@ pub fn plan_vault_query_expansion_json(question: &str, response: &str) -> String
         .chars()
         .any(|character| character.is_alphabetic() && !character.is_ascii());
     if response.is_empty() {
-        return json!({"needsTranslation":needs_translation, "query":question}).to_string();
+        return json!({"needsTranslation":needs_translation, "query":question, "variants":[]})
+            .to_string();
     }
     let Ok(terms) = serde_json::from_str::<Vec<String>>(response) else {
         return String::new();
@@ -37,7 +38,7 @@ pub fn plan_vault_query_expansion_json(question: &str, response: &str) -> String
     {
         return String::new();
     }
-    json!({"needsTranslation":needs_translation, "query":terms.iter().map(|term| term.trim()).collect::<Vec<_>>().join(" ")}).to_string()
+    json!({"needsTranslation":needs_translation, "query":question, "variants":terms.iter().map(|term| term.trim()).collect::<Vec<_>>()}).to_string()
 }
 
 /// 검증된 첨부 구간이 완전히 포함하는 검색 후보만 제외한다.
@@ -109,7 +110,8 @@ pub fn plan_tool_result_summary_json(content: &str, question: &str, max_bytes: u
             }
             if let Some(text) = object.get("content").and_then(JsonValue::as_str) {
                 let source = json!({"filePath":object.get("path").and_then(JsonValue::as_str).unwrap_or("tool-result"), "text":text, "startLine":object.get("startLine").and_then(JsonValue::as_u64).unwrap_or(1).saturating_sub(1)});
-                let evidence = plan_chat_evidence_json(&json!({"question":question, "source":source, "sourceId":"compressed-tool", "label":"Tool excerpt", "maxChars":allowance, "remainingSources":1}).to_string());
+                let source_id = object.get("citations").and_then(JsonValue::as_array).and_then(|citations| citations.first()).and_then(|citation| citation.get("id")).and_then(JsonValue::as_str).unwrap_or("compressed-tool");
+                let evidence = plan_chat_evidence_json(&json!({"question":question, "source":source, "sourceId":source_id, "label":"Tool excerpt", "maxChars":allowance, "remainingSources":1}).to_string());
                 if let Ok(evidence) = serde_json::from_str::<JsonValue>(&evidence) {
                     summary.insert("excerpts".to_owned(), evidence);
                 }
@@ -189,6 +191,8 @@ struct EvidenceFormat<'a> {
     path: &'a str,
     /// 원문 구간의 시작 줄입니다.
     start: usize,
+    /// 네이티브 도구와 같은 경로·행 범위 식별자를 생성합니다.
+    native_source_ids: bool,
 }
 
 /// 현재 원문에서 질문에 맞는 완전한 Markdown 구간만 전달 근거로 선택합니다.
@@ -255,19 +259,26 @@ pub fn plan_chat_evidence_json(input_json: &str) -> String {
     {
         chunks.insert(0, header);
     }
-    let selected = select_evidence_chunks(
-        &chunks,
-        content,
-        question,
-        &EvidenceFormat {
-            source,
-            id,
-            label,
-            path,
-            start,
-        },
-        allowance,
-    );
+    let format = EvidenceFormat {
+        source,
+        id,
+        label,
+        path,
+        start,
+        native_source_ids: input.get("nativeSourceIds").and_then(JsonValue::as_bool) == Some(true),
+    };
+    let selected = select_evidence_chunks(&chunks, content, question, &format, allowance);
+    serialize_evidence_plan(&chunks, selected, &format, allowance, complete)
+}
+
+/// 전달한 구간에 해당하는 인용과 실제 사용량만 직렬화합니다.
+fn serialize_evidence_plan(
+    chunks: &[Chunk],
+    selected: BTreeSet<usize>,
+    format: &EvidenceFormat<'_>,
+    allowance: usize,
+    complete: bool,
+) -> String {
     let mut blocks = Vec::new();
     let mut citations = Vec::new();
     let mut source_ids = Vec::new();
@@ -275,8 +286,22 @@ pub fn plan_chat_evidence_json(input_json: &str) -> String {
         let Some(chunk) = chunks.get(index) else {
             continue;
         };
-        let source_id = evidence_source_id(id, citations.len());
-        let (text, citation) = evidence_block(chunk, source, &source_id, label, path, start);
+        let source_id = chunk_source_id(
+            chunk,
+            format.id,
+            format.path,
+            format.start,
+            citations.len(),
+            format.native_source_ids,
+        );
+        let (text, citation) = evidence_block(
+            chunk,
+            format.source,
+            &source_id,
+            format.label,
+            format.path,
+            format.start,
+        );
         blocks.push(json!({"sourceId": source_id, "text": text}));
         citations.push(citation);
         source_ids.push(source_id);
@@ -300,6 +325,28 @@ fn evidence_source_id(id: &str, offset: usize) -> String {
     format!("{prefix}-{ordinal}")
 }
 
+/// 검증한 원문의 행 범위로 네이티브 인용 ID를 생성합니다.
+fn chunk_source_id(
+    chunk: &Chunk,
+    id: &str,
+    path: &str,
+    start: usize,
+    offset: usize,
+    native: bool,
+) -> String {
+    if native {
+        format!(
+            "vault:{path}:{}-{}",
+            chunk.metadata.start_line + start + 1,
+            chunk.metadata.end_line + start + 1
+        )
+    } else if id.starts_with("vault:") {
+        id.to_owned()
+    } else {
+        evidence_source_id(id, offset)
+    }
+}
+
 /// 질문과 관련된 완전한 구간을 예산 안에서 선택합니다.
 fn select_evidence_chunks(
     chunks: &[Chunk],
@@ -309,10 +356,30 @@ fn select_evidence_chunks(
     allowance: usize,
 ) -> BTreeSet<usize> {
     let tokens = tokenize(question).join("\u{1f}");
+    let phrases =
+        serde_json::from_str::<Vec<String>>(question).unwrap_or_else(|_| vec![question.to_owned()]);
     let mut ranked = chunks
         .iter()
         .enumerate()
-        .map(|(index, chunk)| (index, count_keyword_matches(&tokens, &chunk.text)))
+        .map(|(index, chunk)| {
+            let normalized = chunk.text.to_lowercase();
+            let phrase_score = phrases
+                .iter()
+                .take(4)
+                .filter(|phrase| {
+                    phrase.split_whitespace().count() > 1
+                        && normalized.contains(&phrase.to_lowercase())
+                })
+                .count();
+            (
+                index,
+                count_keyword_matches(&tokens, &chunk.text).saturating_add(
+                    u32::try_from(phrase_score)
+                        .unwrap_or(0)
+                        .saturating_mul(1000),
+                ),
+            )
+        })
         .collect::<Vec<_>>();
     let has_matches = ranked.iter().any(|(_, score)| *score > 0);
     for (index, score) in &mut ranked {
@@ -340,7 +407,14 @@ fn select_evidence_chunks(
             continue;
         }
         // 정렬 후 숫자 폭이 커질 가능성까지 보수적으로 예약합니다.
-        let reserved_id = evidence_source_id(format.id, chunks.len());
+        let reserved_id = chunk_source_id(
+            chunk,
+            format.id,
+            format.path,
+            format.start,
+            chunks.len(),
+            format.native_source_ids,
+        );
         let (text, _) = evidence_block(
             chunk,
             format.source,
@@ -354,6 +428,26 @@ fn select_evidence_chunks(
             selected.insert(index);
             used = used.saturating_add(size);
         }
+    }
+    let redundant = selected
+        .iter()
+        .copied()
+        .filter(|index| {
+            let Some(chunk) = chunks.get(*index) else {
+                return false;
+            };
+            metadata_prefix_end(&chunk.text) == Some(chunk.metadata.end_line)
+                && selected.iter().any(|other| {
+                    other != index
+                        && chunks.get(*other).is_some_and(|other| {
+                            other.metadata.start_line <= chunk.metadata.start_line
+                                && other.metadata.end_line >= chunk.metadata.end_line
+                        })
+                })
+        })
+        .collect::<Vec<_>>();
+    for index in redundant {
+        selected.remove(&index);
     }
     selected
 }

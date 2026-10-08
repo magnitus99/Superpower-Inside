@@ -46,6 +46,83 @@ vi.mock('obsidian', () => {
 });
 
 describe('Obsidian 네이티브 Vault 포트', () => {
+  it('원문 변경 시 과거 메타데이터를 남기지 않고 다시 계산한다', async () => {
+    const file = createFile(
+      'fixtures/maintenance.md',
+      'title: Pump inspection\ntype: maintenance\ndate: 2041-04-02\n\n3-Apr-2041',
+    );
+    const port = createNativeVaultPort(createApp([file]));
+    const original = await port.read({ action: 'read', path: file.path, startLine: 1, endLine: 5 });
+    expect(original.metadata?.dateStatus).toBe('conflict');
+    expect(original.metadata?.entries).toContainEqual({
+      field: 'type',
+      value: 'maintenance',
+      line: 2,
+      origin: 'header',
+      status: 'known',
+    });
+    file.content = '제목: 교체 부품 목록\n유형: inventory\n날짜: not-recorded';
+    file.stat.mtime++;
+    const updated = await port.read({ action: 'read', path: file.path, startLine: 1, endLine: 3 });
+    expect(updated.metadata).toMatchObject({ dateStatus: 'unknown' });
+    expect(updated.metadata?.entries.some((entry) => entry.value === '2041-04-02')).toBe(false);
+    expect(updated.metadata?.header?.content).toContain('교체 부품 목록');
+  });
+  it.each([
+    { first: 'copper relay', second: 'ceramic fuse' },
+    { first: '파란 나사', second: '빨간 케이블' },
+  ])('분리된 질의의 일치 구간을 한 문서에서 함께 보존한다: $first', async ({ first, second }) => {
+    const file = createFile(
+      'fixtures/parts.md',
+      '\n' + first + '\n\nOther.\n\nOther.\n\n' + second + '\n',
+    );
+    const result = await createNativeVaultPort(createApp([file])).search({
+      action: 'search',
+      query: first,
+      queries: [first, second],
+      path: 'fixtures',
+      limit: 10,
+      match: 'phrase',
+      mode: 'word',
+      field: 'content',
+    });
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0].passages?.map((passage) => passage.startLine)).toEqual([1, 7]);
+    expect(
+      result.citations
+        .filter((citation) => citation.status === 'verified')
+        .map((citation) => citation.id),
+    ).toEqual(['vault:fixtures/parts.md:1-3', 'vault:fixtures/parts.md:7-9']);
+  });
+  it('서로 다른 일치 구간과 명시한 저자 정보를 원문 행으로 전달한다', async () => {
+    const file = createFile(
+      'fixtures/inspection.md',
+      '제목: 압력 센서 점검\n날짜: not-recorded\n\n저자: 합성 작성자 A\n\nThe copper relay is ready.\n\nUnrelated.\n\nA COPPER RELAY needs inspection.',
+    );
+    const port = createNativeVaultPort(createApp([file]));
+    const result = await port.search({
+      action: 'search',
+      query: 'copper relay',
+      path: 'fixtures',
+      limit: 10,
+      match: 'phrase',
+      mode: 'word',
+      field: 'content',
+    });
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0].passages).toHaveLength(2);
+    expect(result.hits[0].metadata).toMatchObject({ dateStatus: 'unknown' });
+    expect(
+      result.citations
+        .filter((citation) => citation.status === 'verified')
+        .map((citation) => citation.line),
+    ).toEqual([5, 9, 1, 4]);
+    const read = await port.read({ action: 'read', path: file.path, startLine: 10, endLine: 10 });
+    expect(read.content).toBe('A COPPER RELAY needs inspection.');
+    expect(
+      read.metadata?.entries.some((entry) => entry.field === 'author' && entry.line === 4),
+    ).toBe(true);
+  });
   it.each(
     ['lexical', 'indexed'].flatMap((mode) =>
       ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({

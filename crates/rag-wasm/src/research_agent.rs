@@ -9,6 +9,23 @@ const MAX_RESEARCH_RETRY_DELAY_MS: u64 = 30_000;
 /// Floating-point form used for JavaScript numeric Retry-After validation.
 const MAX_RESEARCH_RETRY_DELAY_MS_F64: f64 = 30_000.0;
 
+/// 명시 폴더의 개념 비교와 종합은 인용문 한 곳을 찾는 요청과 구분한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn is_scoped_vault_research_intent(question: &str) -> bool {
+    let normalized = question.to_lowercase();
+    let has_action = [
+        "종합", "비교", "개요", "관계", "전체", "모든", "요약", "정리", "분석", "조사", "concept",
+        "compare", "synthes", "overview", "summar",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term));
+    let narrow_quote = ["인용", "구절", "문단", "quote", "quotation"]
+        .iter()
+        .any(|term| normalized.contains(term));
+    has_action && !narrow_quote
+}
+
 /// Detects explicit requests that require whole-vault coverage instead of top-k retrieval.
 #[must_use]
 #[wasm_bindgen]

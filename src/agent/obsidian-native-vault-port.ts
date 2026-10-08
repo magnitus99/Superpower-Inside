@@ -6,6 +6,7 @@ import type {
 } from '../rag/retrieval-pipeline';
 import {
   createContextPreviewRust,
+  planSourceMetadataRust,
   planNativeVaultFilteredIndicesRust,
   planNativeVaultLexicalBatchRust,
   planNativeVaultLexicalHitRust,
@@ -112,7 +113,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const filteredFiles = request.filters
       ? this.filterFiles(await this.fileScope.listCandidateFiles(), request.filters, request.path)
       : undefined;
-    if (request.mode === 'exact' || request.mode === 'word' || (request.field !== undefined && request.field !== 'both')) {
+    if (
+      request.mode === 'exact' ||
+      request.mode === 'word' ||
+      (request.field !== undefined && request.field !== 'both')
+    ) {
       return this.searchLexically(
         request,
         queries,
@@ -194,6 +199,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     }
     selectedLines[0] = firstLine.slice(startOffset);
     const selectedContent = selectedLines.join('\n');
+    const metadata = planSourceMetadataRust(content) ?? undefined;
     const citation = createCitation(
       file.path,
       range.startLine,
@@ -211,7 +217,13 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       totalLines: lines.length,
       truncated: range.truncated,
       content: selectedContent,
-      citations: [citation],
+      metadata,
+      citations: [
+        citation,
+        ...(metadata?.evidence ?? []).map((passage) =>
+          createCitation(file.path, passage.startLine, passage.endLine, passage.content),
+        ),
+      ],
     };
   }
 
@@ -563,6 +575,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         startLine: range.startLine,
         endLine: range.endLine,
         preview,
+        metadata: planSourceMetadataRust(content) ?? undefined,
         recommendedReadRange: {
           startLine: range.startLine,
           endLine: range.endLine,
@@ -640,6 +653,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
             startLine: recommendedReadRange.startLine,
             endLine: recommendedReadRange.endLine,
             preview: entry.preview,
+            passages: entry.passages,
+            metadata: entry.metadata,
             retrievalSources: ['live-lexical'],
             selectionReason: 'keyword',
             matchedQueries: queries[queryIndex] ? [queries[queryIndex]] : [],
@@ -1050,7 +1065,7 @@ function buildSearchResult(
     else hit.requiresRead = true;
     return hit;
   });
-  const citations = hits.map((hit) =>
+  const citations = hits.flatMap((hit) => [
     createCitation(
       hit.path,
       hit.startLine,
@@ -1061,7 +1076,24 @@ function buildSearchResult(
       hit.citationStatus,
       hit.selectionReason,
     ),
-  );
+    ...((coverage.mode === 'word' && match === 'phrase') || coverage.mode === 'exact'
+      ? (hit.passages ?? []).map((passage) =>
+          createCitation(
+            hit.path,
+            passage.startLine,
+            passage.endLine,
+            passage.content,
+            hit.heading,
+            hit.score,
+            'verified',
+            hit.selectionReason,
+          ),
+        )
+      : []),
+    ...(hit.metadata?.evidence ?? []).map((passage) =>
+      createCitation(hit.path, passage.startLine, passage.endLine, passage.content),
+    ),
+  ]);
   const totalHits = coverage.totalHits ?? hits.length;
   return {
     action: 'search',

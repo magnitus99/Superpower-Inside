@@ -1011,6 +1011,18 @@ export function is_relevant_result(config, source_codes) {
 }
 
 /**
+ * 명시 폴더의 개념 비교와 종합은 인용문 한 곳을 찾는 요청과 구분한다.
+ * @param {string} question
+ * @returns {boolean}
+ */
+export function is_scoped_vault_research_intent(question) {
+    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_scoped_vault_research_intent(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
  * 새 대화 저장 폴더가 볼트 안의 상대 경로인지 확인합니다.
  * @param {string} input
  * @returns {boolean}
@@ -2032,6 +2044,26 @@ export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json, sou
 }
 
 /**
+ * 토크나이저가 공개되지 않은 모델은 UTF-8 바이트를 보수적인 입력 토큰 상한으로 사용한다.
+ * @param {string} metadata
+ * @returns {string}
+ */
+export function plan_model_context_json(metadata) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(metadata, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_model_context_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Plans whether one failed native-tool request may retry with the text compatibility protocol.
  * @param {string} input_json
  * @returns {string}
@@ -2216,6 +2248,29 @@ export function plan_native_vault_search_rrf_json(candidates_json, query_count, 
 }
 
 /**
+ * 잘림 후 남아 있는 검색 구간·메타데이터만 출처로 남기고 중복 ID는 검증된 값을 우선한다.
+ * @param {string} hits
+ * @param {string} citations
+ * @returns {string}
+ */
+export function plan_native_vault_source_citation_indices_json(hits, citations) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(hits, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(citations, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_native_vault_source_citation_indices_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * 읽기 전용 볼트 통계 응답을 위해 Markdown 파일 크기를 집계한다.
  * @param {string} file_sizes_json
  * @returns {string}
@@ -2292,6 +2347,29 @@ export function plan_prompt_library_summary_json(entries_json) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 모델 이름으로 한도를 추측하지 않는다. 없는 정보는 호스트에 생략해서 반환한다.
+ * @param {string} provider
+ * @param {string} payload
+ * @returns {string}
+ */
+export function plan_provider_model_details_json(provider, payload) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(payload, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_provider_model_details_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -2885,6 +2963,26 @@ export function plan_source_chunks_json(path, extension, content, max_size, over
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * 제목·날짜·저자·유형의 원문 행과 날짜 충돌 상태를 반환한다.
+ * @param {string} content
+ * @returns {string}
+ */
+export function plan_source_metadata_json(content) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_metadata_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

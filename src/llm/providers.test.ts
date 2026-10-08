@@ -19,6 +19,41 @@ import {
 
 const requestUrlMock = vi.mocked(requestUrl);
 
+it.each(['openai', 'openRouter', 'claude', 'ollama'] as const)(
+  '동적 모델 예산을 %s 실제 HTTP 요청과 출력 예약에 전달한다',
+  async (key) => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: {
+        choices: [{ message: { content: 'answer' } }],
+        content: [{ type: 'text', text: 'answer' }],
+        message: { content: 'answer' },
+      },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      key,
+      { apiKey: '', models: ['selected'], enabled: true },
+      'selected',
+    );
+    await provider.chat([{ role: 'user', content: 'a'.repeat(60000) }], undefined, undefined, {
+      inputBudgetBytes: 128000,
+      maxOutputTokens: 1024,
+      contextTokens: 200000,
+    });
+    const request = requestUrlMock.mock.calls.at(-1)?.[0];
+    if (!request || typeof request === 'string' || typeof request.body !== 'string')
+      throw new Error('요청 본문이 없습니다.');
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+    if (key === 'openai') expect(body.max_completion_tokens).toBe(1024);
+    else if (key === 'ollama')
+      expect(body.options).toMatchObject({ num_ctx: 200000, num_predict: 1024 });
+    else expect(body.max_tokens).toBe(1024);
+  },
+);
+
 it('buffered provider 오류는 HTTP 상태와 Retry-After를 구조화해 전달한다', async () => {
   requestUrlMock.mockResolvedValueOnce({
     status: 429,

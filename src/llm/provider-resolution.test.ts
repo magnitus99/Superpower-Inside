@@ -1,6 +1,7 @@
 import { connectTestChatGPT } from '../test/chatgpt';
 import { chatGPTOAuth } from './chatgpt-oauth';
 import { describe, expect, it, vi } from 'vitest';
+import { requestUrl } from 'obsidian';
 
 vi.mock('obsidian', () => ({
   App: class {},
@@ -18,9 +19,64 @@ import {
   migrateLegacyProviderProfiles,
   type SuperpowerInsideSettings,
 } from '../settings';
-import { buildStoredChatModelRef, createChatProviderForModel } from './provider-resolution';
+import {
+  buildStoredChatModelRef,
+  createChatProviderForModel,
+  prepareChatProviderForModel,
+} from './provider-resolution';
 
 describe('채팅 provider 실행 연결', () => {
+  it('선택 프로필의 HTTP 모델 정보가 실제 채팅 요청의 예산과 출력 한도로 이어진다', async () => {
+    const settings = createCanonicalSettings();
+    vi.mocked(requestUrl)
+      .mockReset()
+      .mockResolvedValueOnce({
+        status: 200,
+        text: '',
+        json: {
+          data: [
+            { id: 'working', context_length: 8192, max_completion_tokens: 512 },
+            { id: 'other', context_length: 128000 },
+          ],
+        },
+      } as Awaited<ReturnType<typeof requestUrl>>)
+      .mockResolvedValueOnce({
+        status: 200,
+        text: '',
+        json: { choices: [{ message: { content: '확인한 답변' } }] },
+      } as Awaited<ReturnType<typeof requestUrl>>);
+    const resolved = await prepareChatProviderForModel(settings, 'profile:remote:working');
+    expect(resolved?.provider.contextBudget).toMatchObject({
+      contextTokens: 8192,
+      outputTokens: 512,
+      source: 'provider',
+    });
+    expect(vi.mocked(requestUrl).mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://example.com/v1/models',
+      method: 'GET',
+    });
+    expect(await resolved?.provider.chat([{ role: 'user', content: '질문' }])).toBe('확인한 답변');
+    const request = vi.mocked(requestUrl).mock.calls[1]?.[0];
+    expect(
+      typeof request === 'object' && typeof request.body === 'string'
+        ? JSON.parse(request.body)
+        : {},
+    ).toMatchObject({
+      model: 'working',
+      max_tokens: 512,
+    });
+  });
+
+  it('현재 모델 조회에 실패하면 저장된 과거 한도를 재사용하지 않고 기본값을 쓴다', async () => {
+    const settings = createCanonicalSettings();
+    settings.providerProfiles[0].models[0].contextLength = 128000;
+    vi.mocked(requestUrl).mockReset().mockRejectedValueOnce(new Error('offline'));
+    const resolved = await prepareChatProviderForModel(settings, 'profile:remote:working');
+    expect(resolved?.provider.contextBudget).toMatchObject({
+      contextTokens: 50000,
+      source: 'fallback',
+    });
+  });
   it('ChatGPT canonical 모델은 OAuth 로그인 후 실행하고 임베딩 후보를 제외한다', () => {
     connectTestChatGPT('remote');
     const settings = createCanonicalSettings();

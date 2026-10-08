@@ -15,6 +15,31 @@ import {
   createProviderForStrategy,
   type LLMProvider,
 } from './providers';
+import { fetchModelContext, withModelContext } from './model-context';
+
+/** 선택된 모델의 공급자 연결에서 한도를 새로 확인한 뒤 채팅·연구를 연결한다. */
+export async function prepareChatProviderForModel(
+  settings: SuperpowerInsideSettings,
+  modelRef: string,
+): Promise<ResolvedChatProvider | null> {
+  const resolved = createChatProviderForModel(settings, modelRef);
+  if (!resolved) return null;
+  const profile = resolveUsableProviderModelRef(settings, modelRef, 'general');
+  const parsed = parseProviderModelRef(modelRef);
+  const config = profile
+    ? { ...profile.profile, models: profile.profile.models.map((model) => model.id) }
+    : parsed.kind === 'legacy-custom-openai'
+      ? settings.customOpenAIProviders.find((item) => item.id === parsed.providerId)
+      : parsed.kind === 'legacy'
+        ? settings[parsed.providerKey]
+        : undefined;
+  if (!config) return null;
+  const strategy =
+    profile?.profile.strategy ??
+    (parsed.kind === 'legacy' ? parsed.providerKey : 'openAICompatible');
+  const budget = await fetchModelContext(strategy, config, resolved.model);
+  return { ...resolved, provider: withModelContext(resolved.provider, budget) };
+}
 
 export interface ResolvedChatProvider {
   provider: LLMProvider;

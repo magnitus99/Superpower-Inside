@@ -1,6 +1,7 @@
 import type { ToolDefinition } from '../llm/providers';
 import {
   planNativeVaultToolRequestRust,
+  planNativeVaultSourceCitationIndicesRust,
   type RustNativeVaultToolRequest,
   type RustNativeVaultFilters,
 } from '../rag/rust-core';
@@ -36,6 +37,8 @@ const NATIVE_VAULT_ACTION_BY_TOOL_NAME: Readonly<
 };
 
 export interface NativeVaultSearchHit {
+  passages?: import('../rag/rust-core').SourcePassage[];
+  metadata?: import('../rag/rust-core').SourceDocumentMetadata;
   path: string;
   heading?: string;
   startLine: number;
@@ -81,6 +84,7 @@ export interface NativeVaultSearchResult extends NativeVaultResultBase {
 }
 
 export interface NativeVaultReadResult extends NativeVaultResultBase {
+  metadata?: import('../rag/rust-core').SourceDocumentMetadata;
   action: 'read';
   path: string;
   startLine: number;
@@ -286,7 +290,7 @@ function boundRelatedModelResult(
 function boundReadModelResult(result: NativeVaultReadResult): NativeVaultToolExecutionResultShape {
   const sanitized: NativeVaultReadResult = {
     ...result,
-    citations: result.citations.slice(0, 1).map(boundCitationText),
+    citations: result.citations.map(boundCitationText),
   };
   const serialized = serializeNativeResult(sanitized);
   if (fitsNativeModelBudget(serialized)) return { result: sanitized, modelText: serialized };
@@ -332,13 +336,17 @@ function createReadPrefixResult(
     nextStartOffset,
     truncated: true,
     content,
-    citations: result.citations.map((citation) => ({
-      ...citation,
-      id: `vault:${result.path}:${result.startLine}-${boundedEndLine}`,
-      line: result.startLine,
-      endLine: boundedEndLine,
-      preview: truncateUtf8Text(content, 1024, '').text,
-    })),
+    citations: result.citations.map((citation, index) =>
+      index === 0
+        ? {
+            ...citation,
+            id: `vault:${result.path}:${result.startLine}-${boundedEndLine}`,
+            line: result.startLine,
+            endLine: boundedEndLine,
+            preview: truncateUtf8Text(content, 1024, '').text,
+          }
+        : citation,
+    ),
   };
 }
 
@@ -358,7 +366,9 @@ function boundSearchModelResult(
     candidate = {
       ...result,
       hits: hits.slice(0, keep),
-      citations: citations.slice(0, keep),
+      citations: (
+        planNativeVaultSourceCitationIndicesRust(hits.slice(0, keep), citations) ?? []
+      ).flatMap((index) => (citations[index] ? [citations[index]] : [])),
       truncated: true,
     };
     candidateText = serializeNativeResult(candidate);

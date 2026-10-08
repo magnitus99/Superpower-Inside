@@ -1,4 +1,9 @@
 import {
+  plan_native_vault_source_citation_indices_json,
+  plan_source_metadata_json,
+  is_scoped_vault_research_intent,
+  plan_model_context_json,
+  plan_provider_model_details_json,
   embedding_gemma_inputs_json,
   local_model_range_matches,
   plan_chatgpt_json,
@@ -161,11 +166,56 @@ export interface RustNativeVaultFilters {
 }
 
 export interface RustNativeVaultLexicalCandidate {
+  passages?: SourcePassage[];
+  metadata?: SourceDocumentMetadata;
   path: string;
   score: number;
   startLine: number;
   endLine: number;
   preview: string;
+}
+
+export interface SourcePassage {
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
+export function planNativeVaultSourceCitationIndicesRust(
+  hits: readonly unknown[],
+  citations: readonly unknown[],
+): number[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return JSON.parse(
+      plan_native_vault_source_citation_indices_json(
+        JSON.stringify(hits),
+        JSON.stringify(citations),
+      ),
+    ) as number[];
+  } catch {
+    return null;
+  }
+}
+export interface SourceDocumentMetadata {
+  evidence: SourcePassage[];
+  entries: Array<{
+    field: string;
+    value: string;
+    line: number;
+    origin: 'header' | 'body' | 'byline';
+    status: 'known' | 'unknown';
+  }>;
+  dateStatus: 'known' | 'unknown' | 'conflict';
+  header: SourcePassage | null;
+}
+export function planSourceMetadataRust(content: string): SourceDocumentMetadata | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return JSON.parse(plan_source_metadata_json(content)) as SourceDocumentMetadata;
+  } catch {
+    return null;
+  }
 }
 
 export interface RustNativeVaultLexicalState {
@@ -1256,6 +1306,50 @@ export interface RustChatRequestPlan {
   summary?: string;
 }
 
+export interface ModelContextBudget {
+  contextTokens: number;
+  outputTokens: number;
+  marginTokens: number;
+  inputBytes: number;
+  evidenceChars: number;
+  researchFileChars: number;
+  researchProviderBudget: { maxSelectedItems: number; batchSize: number; maxBatches: number };
+  source: 'provider' | 'fallback';
+  counting: 'utf8-upper-bound';
+}
+
+export function isScopedVaultResearchIntentRust(question: string): boolean | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return is_scoped_vault_research_intent(question);
+  } catch {
+    return null;
+  }
+}
+
+export function planModelContextRust(metadata: unknown): ModelContextBudget | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return JSON.parse(plan_model_context_json(JSON.stringify(metadata))) as ModelContextBudget;
+  } catch {
+    return null;
+  }
+}
+
+export function planProviderModelDetailsRust(
+  provider: string,
+  payload: unknown,
+): Array<{ id: string; name?: string; contextLength?: number; maxOutputTokens?: number }> | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return JSON.parse(
+      plan_provider_model_details_json(provider, JSON.stringify(payload)),
+    ) as Array<{ id: string; name?: string; contextLength?: number; maxOutputTokens?: number }>;
+  } catch {
+    return null;
+  }
+}
+
 export function planChatUniqueResultIndicesRust(
   sources: readonly RustContextSourceInput[],
   citations: readonly unknown[],
@@ -1290,7 +1384,7 @@ export function planToolResultSummaryRust(
 export function planVaultQueryExpansionRust(
   question: string,
   response = '',
-): { needsTranslation: boolean; query: string } | null {
+): { needsTranslation: boolean; query: string; variants: string[] } | null {
   if (!ensureRustCore()) return null;
   try {
     const plan: unknown = JSON.parse(plan_vault_query_expansion_json(question, response));
@@ -1300,7 +1394,11 @@ export function planVaultQueryExpansionRust(
       typeof plan.query !== 'string'
     )
       return null;
-    return { needsTranslation: plan.needsTranslation, query: plan.query };
+    return {
+      needsTranslation: plan.needsTranslation,
+      query: plan.query,
+      variants: plan.variants as string[],
+    };
   } catch {
     return null;
   }
@@ -1314,6 +1412,7 @@ export function planChatEvidenceRust(input: {
   label: string;
   maxChars: number;
   remainingSources?: number;
+  nativeSourceIds?: boolean;
 }): RustChatEvidencePlan | null {
   if (!ensureRustCore()) return null;
   try {

@@ -68,6 +68,9 @@ export interface ToolDefinition {
 export type ToolChoice = 'auto' | 'required' | 'none';
 
 export interface ChatOptions {
+  inputBudgetBytes?: number;
+  maxOutputTokens?: number;
+  contextTokens?: number;
   signal?: AbortSignal;
   toolChoice?: ToolChoice;
 }
@@ -210,6 +213,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 }
 
 export interface LLMProvider {
+  readonly contextBudget?: import('../rag/rust-core').ModelContextBudget;
   readonly capability: ProviderCapabilitySnapshot;
   getObservedModel?(): string | undefined;
   chat(
@@ -273,7 +277,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: ChatOptions,
   ): Promise<string> {
     throwIfChatAborted(options?.signal);
-    const body = this.buildChatBody(messages, temperature, false, tools, options?.toolChoice);
+    const body = this.buildChatBody(messages, temperature, false, tools, options);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -298,21 +302,27 @@ class OpenAICompatibleProvider implements LLMProvider {
     temperature: number,
     stream: boolean,
     tools?: ToolDefinition[],
-    toolChoice?: ToolChoice,
+    options?: ChatOptions,
   ): Record<string, unknown> {
     messages = prepareProviderRequest(
       messages,
       this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
     ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
       temperature,
       stream,
+      ...(options?.maxOutputTokens
+        ? this.capability.providerKey === 'openai'
+          ? { max_completion_tokens: options.maxOutputTokens }
+          : { max_tokens: options.maxOutputTokens }
+        : {}),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
-      if (toolChoice) body.tool_choice = toolChoice;
+      if (options?.toolChoice) body.tool_choice = options.toolChoice;
     }
     return body;
   }
@@ -325,7 +335,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: StreamChatOptions,
   ): Promise<void> {
     throwIfChatAborted(options?.signal);
-    const body = this.buildChatBody(messages, temperature, true, tools, options?.toolChoice);
+    const body = this.buildChatBody(messages, temperature, true, tools, options);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -460,10 +470,14 @@ class ClaudeProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: 4096,
+      max_tokens: options?.maxOutputTokens ?? 4096,
       temperature,
       messages: this.normalizeMessages(
-        prepareProviderRequest(messages, this.capability.toolCalling ? tools : undefined).messages,
+        prepareProviderRequest(
+          messages,
+          this.capability.toolCalling ? tools : undefined,
+          options?.inputBudgetBytes,
+        ).messages,
       ),
       system: messages
         .filter((m) => m.role === 'system')
@@ -513,11 +527,15 @@ class ClaudeProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: 4096,
+      max_tokens: options?.maxOutputTokens ?? 4096,
       temperature,
       stream: true,
       messages: this.normalizeMessages(
-        prepareProviderRequest(messages, this.capability.toolCalling ? tools : undefined).messages,
+        prepareProviderRequest(
+          messages,
+          this.capability.toolCalling ? tools : undefined,
+          options?.inputBudgetBytes,
+        ).messages,
       ),
       system: messages
         .filter((m) => m.role === 'system')
@@ -677,11 +695,16 @@ class OllamaProvider implements LLMProvider {
     messages = prepareProviderRequest(
       messages,
       this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
     ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
-      options: { temperature },
+      options: {
+        temperature,
+        ...(options?.contextTokens ? { num_ctx: options.contextTokens } : {}),
+        ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
+      },
       stream: false,
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
@@ -716,11 +739,16 @@ class OllamaProvider implements LLMProvider {
     messages = prepareProviderRequest(
       messages,
       this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
     ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
-      options: { temperature },
+      options: {
+        temperature,
+        ...(options?.contextTokens ? { num_ctx: options.contextTokens } : {}),
+        ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
+      },
       stream: !this.useRequestUrlForStreaming,
       think: true,
     };

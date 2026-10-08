@@ -60,6 +60,38 @@ import {
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
 
+it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한다', () => {
+  const profile = {
+    id: 'limits',
+    name: 'Limits',
+    strategy: 'openRouter' as const,
+    enabled: true,
+    apiKey: '',
+    models: [
+      {
+        id: 'selected',
+        kind: 'general' as const,
+        contextLength: 128000,
+        maxOutputTokens: 4096,
+        verification: { chatStatus: 'success' as const, embeddingStatus: 'unknown' as const },
+      },
+    ],
+  };
+  const settings = migrateLegacyProviderProfiles({
+    ...structuredClone(DEFAULT_SETTINGS),
+    providerProfiles: [profile],
+  });
+  const model = settings.providerProfiles.find((item) => item.id === 'limits')!.models[0];
+  expect(model).toMatchObject({ contextLength: 128000, maxOutputTokens: 4096 });
+  expect(
+    upsertProviderProfileModel([model], {
+      id: model.id,
+      kind: 'general',
+      verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+    })[0].contextLength,
+  ).toBe(128000);
+});
+
 afterEach(() => {
   vi.useRealTimers();
   modalPromptMocks.confirmWithModal.mockClear();

@@ -262,10 +262,17 @@ export function appendAssistantToolRound(
   toolCalls: readonly ToolCallRecord[],
   protocol: ToolTranscriptProtocol = 'native',
   assistantReasoning?: string,
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
 ): ChatMessage[] {
   return protocol === 'native'
-    ? encodeNativeToolTranscript(messages, assistantContent, toolCalls, assistantReasoning)
-    : encodeCompatibilityToolTranscript(messages, assistantContent, toolCalls);
+    ? encodeNativeToolTranscript(
+        messages,
+        assistantContent,
+        toolCalls,
+        assistantReasoning,
+        maxBytes,
+      )
+    : encodeCompatibilityToolTranscript(messages, assistantContent, toolCalls, maxBytes);
 }
 
 export function encodeNativeToolTranscript(
@@ -273,41 +280,46 @@ export function encodeNativeToolTranscript(
   assistantContent: string,
   toolCalls: readonly ToolCallRecord[],
   assistantReasoning?: string,
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
 ): ChatMessage[] {
   const completedToolCalls = selectProviderReinjectableToolCalls(toolCalls).flatMap((toolCall) => {
     const providerPayload = getToolReinjectionPayload(toolCall);
     return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
   });
   if (completedToolCalls.length === 0) return [...messages];
-  return boundToolTranscript([
-    ...messages,
-    {
-      role: 'assistant',
-      content: assistantContent,
-      ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
-      toolCalls: completedToolCalls.map(({ toolCall }) => ({
-        id: toolCall.id,
-        type: 'function' as const,
-        function: {
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-        },
+  return boundToolTranscript(
+    [
+      ...messages,
+      {
+        role: 'assistant',
+        content: assistantContent,
+        ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
+        toolCalls: completedToolCalls.map(({ toolCall }) => ({
+          id: toolCall.id,
+          type: 'function' as const,
+          function: {
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          },
+        })),
+      },
+      ...completedToolCalls.map(({ toolCall, providerPayload }) => ({
+        role: 'tool' as const,
+        content: providerPayload,
+        tool_call_id: toolCall.id,
+        name: toolCall.name,
+        tool_result_is_error: toolCall.status === 'error',
       })),
-    },
-    ...completedToolCalls.map(({ toolCall, providerPayload }) => ({
-      role: 'tool' as const,
-      content: providerPayload,
-      tool_call_id: toolCall.id,
-      name: toolCall.name,
-      tool_result_is_error: toolCall.status === 'error',
-    })),
-  ]);
+    ],
+    maxBytes,
+  );
 }
 
 export function encodeCompatibilityToolTranscript(
   messages: readonly ChatMessage[],
   assistantContent: string,
   toolCalls: readonly ToolCallRecord[],
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
 ): ChatMessage[] {
   // 후속 라운드에서 downgrade되어도 이전 네이티브 이력이 provider에 남지 않게 합니다.
   const compatibleMessages = messages.map((message): ChatMessage => {
@@ -348,7 +360,7 @@ export function encodeCompatibilityToolTranscript(
     const providerPayload = getToolReinjectionPayload(toolCall);
     return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
   });
-  if (completedToolCalls.length === 0) return boundToolTranscript(compatibleMessages);
+  if (completedToolCalls.length === 0) return boundToolTranscript(compatibleMessages, maxBytes);
 
   const toolRequestBlocks = completedToolCalls.map(
     ({ toolCall }) =>
@@ -364,17 +376,20 @@ export function encodeCompatibilityToolTranscript(
     content: providerPayload,
   }));
 
-  return boundToolTranscript([
-    ...compatibleMessages,
-    {
-      role: 'assistant',
-      content: joinAssistantToolRoundText(assistantContent, toolRequestBlocks.join('\n')),
-    },
-    {
-      role: 'user',
-      content: encodeCompatibilityToolResults(toolResults),
-    },
-  ]);
+  return boundToolTranscript(
+    [
+      ...compatibleMessages,
+      {
+        role: 'assistant',
+        content: joinAssistantToolRoundText(assistantContent, toolRequestBlocks.join('\n')),
+      },
+      {
+        role: 'user',
+        content: encodeCompatibilityToolResults(toolResults),
+      },
+    ],
+    maxBytes,
+  );
 }
 
 function encodeCompatibilityToolResults(results: readonly unknown[]): string {
@@ -393,6 +408,7 @@ function encodeCompatibilityToolResults(results: readonly unknown[]): string {
 export function boundToolTranscript(
   messages: readonly ChatMessage[],
   maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
+  preserveNewest = true,
 ): ChatMessage[] {
   const bounded = messages.map((message) => ({ ...message }));
   const question =
@@ -412,7 +428,12 @@ export function boundToolTranscript(
 
   for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
     const message = bounded[index];
-    if (!message || !isToolTranscriptMessage(message) || index === newestToolIndex) continue;
+    if (
+      !message ||
+      !isToolTranscriptMessage(message) ||
+      (preserveNewest && index === newestToolIndex)
+    )
+      continue;
     const previousBytes = byteLength(message);
     const compactContent = createToolResultSummaryEnvelope(
       message.content,
@@ -427,7 +448,12 @@ export function boundToolTranscript(
   if (totalBytes > maxBytes) {
     for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
       const message = bounded[index];
-      if (!message || !isToolTranscriptMessage(message) || index === newestToolIndex) continue;
+      if (
+        !message ||
+        !isToolTranscriptMessage(message) ||
+        (preserveNewest && index === newestToolIndex)
+      )
+        continue;
       const previousBytes = byteLength(message);
       const compactContent = createToolResultSummaryEnvelope('', MINIMAL_TOOL_RESULT_SUMMARY_BYTES);
       bounded[index] = { ...message, content: compactContent };

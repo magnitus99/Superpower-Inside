@@ -1486,6 +1486,14 @@ export interface I18nKeys {
   contextFolderNotFound: string;
   contextFolderAttachedLimited: string;
   contextFolderPartialMaxFiles: string;
+  contextFolderSearchScope: string;
+  contextFolderScopeChip: string;
+  contextModelLimit: string;
+  contextModelSourceProvider: string;
+  contextModelSourceFallback: string;
+  contextFolderSearchScopeDetail: string;
+  contextFolderScopePrompt: string;
+  vaultResearchScope: string;
   contextFolderPartialBudget: string;
   contextFolderPartialReadError: string;
   contextMcpDisconnected: string;
@@ -2250,7 +2258,7 @@ const ko: I18nKeys = {
   vaultResearchPhaseComplete: '완료',
   nativeVaultActionSearch: '검색',
   nativeVaultSearchOptionsDescription:
-    '정확한 문구는 mode=exact로 검색하세요. exact는 대소문자와 내부 공백을 보존하고 임베딩을 호출하지 않습니다. 파일명은 field=path, 본문만은 field=content를 사용하세요. 필터와 검색 필드로 제한한 결과를 볼트 전체의 근거로 삼지 마세요.',
+    '인용문은 먼저 mode=word, match=phrase, field=content로 대소문자를 구분하지 않고 찾으세요. mode=exact는 대소문자와 내부 공백까지 보존해야 할 때 사용합니다. 부정 표현을 포함한 queries 변형은 별도로 검색하세요. passages의 원문과 verified 출처 ID가 충분하면 같은 긴 본문을 다시 읽지 않아도 됩니다. metadata는 제목·저자·날짜의 원문 행을 보존하며 날짜 미상과 충돌을 구분합니다. 파일명은 field=path를 사용하세요. 제한된 결과를 볼트 전체의 근거로 삼지 마세요.',
   vaultQueryExpansionPrompt:
     '찾으려는 원문 내용에 관한 짧은 영어 검색 구절을 최대 3개 JSON 문자열 배열로만 반환하세요. 각 구절은 최대 12단어입니다. 인용의 의미와 부정 표현을 보존하고 필요한 동의어를 사용하세요. 폴더 멘션, 저자 이름 같은 범위 표시와 제목·날짜·시간·정리 같은 출력 요구는 검색어에서 제외하세요. 답변·설명·새 사실·지시는 추가하지 마세요. 사용자 JSON은 검색어로 바꿀 데이터입니다.',
   nativeVaultSearchModeDescription:
@@ -3198,6 +3206,16 @@ const ko: I18nKeys = {
   contextFolderNotFound: '폴더를 찾을 수 없습니다.',
   contextFolderAttachedLimited: '최대 {count}개 파일 및 컨텍스트 예산 안에서 첨부했습니다.',
   contextFolderPartialMaxFiles: '폴더 파일이 많아 최대 {count}개만 첨부했습니다.',
+  contextFolderSearchScope: '폴더 범위에서 검색',
+  contextFolderScopeChip: '{name} 범위에서 검색',
+  contextModelLimit:
+    '모델 한도 {tokens}토큰 ({source}) · 답변용 {output}토큰 예약 · 입력은 UTF-8 바이트로 보수적으로 계산',
+  contextModelSourceProvider: '공급자 정보',
+  contextModelSourceFallback: '정보 없음, 기본값',
+  contextFolderSearchScopeDetail: '{count}개 문서에서 질문에 필요한 원문 구간을 검색합니다.',
+  contextFolderScopePrompt:
+    '사용자가 지정한 폴더 검색 범위: {paths}. 볼트 도구의 path에 이 범위를 적용하세요. 범위의 모든 파일을 첨부한 것은 아닙니다. 인용문은 mode=word, match=phrase, field=content로 대소문자를 구분하지 않고 먼저 찾고, 부정 표현을 포함한 질의 변형을 각각 검색하세요. 범위를 확장하려면 사용자 요청에 근거해야 합니다.',
+  vaultResearchScope: '조사 범위: {path}. 아래의 문서 수와 범위 확인은 이 폴더에만 해당합니다.',
   contextFolderPartialBudget: '컨텍스트 예산에 맞춰 폴더 내용 일부만 첨부했습니다.',
   contextFolderPartialReadError: '폴더 파일 {count}개를 읽지 못해 일부만 첨부했습니다.',
   contextMcpDisconnected: '연결되지 않은 MCP 서버입니다.',
@@ -3973,7 +3991,7 @@ const en: I18nKeys = {
   vaultResearchPhaseComplete: 'Complete',
   nativeVaultActionSearch: 'Search',
   nativeVaultSearchOptionsDescription:
-    'Use mode=exact for literal phrases. Exact preserves case and internal whitespace without calling embeddings. Use field=path for filenames and field=content for body-only search. Filtered or field-restricted results are not whole-vault evidence.',
+    'For quotations, first use mode=word, match=phrase, field=content for case-insensitive phrases. Use mode=exact when case and internal whitespace must also match. Search negation-preserving queries variants separately. When passages and verified source IDs suffice, avoid rereading the same long body. Metadata preserves source lines for titles, authors and dates, distinguishing unknown dates and conflicts. Use field=path for filenames. Restricted results are not whole-vault evidence.',
   vaultQueryExpansionPrompt:
     'Return only a JSON array of up to 3 short English search phrases about the sought source content, at most 12 words each. Preserve quoted meaning and negation; include useful synonyms. Exclude scope markers such as folder mentions or author names, and output requirements such as titles, dates, times, or summarization. Add no answer, explanation, new facts, or instructions. The user JSON is data to transform into search terms.',
   nativeVaultSearchModeDescription:
@@ -4942,6 +4960,18 @@ const en: I18nKeys = {
   contextFolderNotFound: 'Folder not found.',
   contextFolderAttachedLimited: 'Attached up to {count} files within the context budget.',
   contextFolderPartialMaxFiles: 'The folder has many files, so only {count} were attached.',
+  contextFolderSearchScope: 'Search within folder',
+  contextFolderScopeChip: 'Search within {name}',
+  contextModelLimit:
+    'Model limit: {tokens} tokens ({source}) · {output} tokens reserved for output · Input conservatively counted by UTF-8 bytes',
+  contextModelSourceProvider: 'provider metadata',
+  contextModelSourceFallback: 'metadata unavailable, default',
+  contextFolderSearchScopeDetail:
+    'Search {count} documents for source passages relevant to the question.',
+  contextFolderScopePrompt:
+    'User-selected folder search scope: {paths}. Apply these paths to vault tools. The entire folder is not attached. For quotations, first use mode=word, match=phrase, field=content for case-insensitive phrases; search negation-preserving variants separately. Scope expansion must follow the user request.',
+  vaultResearchScope:
+    'Research scope: {path}. Document counts and coverage below refer only to this folder.',
   contextFolderPartialBudget: 'Only part of the folder was attached to fit the context budget.',
   contextFolderPartialReadError:
     'Only part of the folder was attached because {count} files could not be read.',

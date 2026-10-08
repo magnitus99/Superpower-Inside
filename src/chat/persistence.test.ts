@@ -2,12 +2,10 @@ import type { DataAdapter, Vault } from 'obsidian';
 import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
-import {
-  executeMcpToolCalls,
-  type MCPRegistryLike,
-} from './mcp-tool-execution';
+import { executeMcpToolCalls, type MCPRegistryLike } from './mcp-tool-execution';
 import { listChats, loadChat, saveChat } from './persistence';
 import { appendAssistantToolRound } from './tool-execution';
+import { planModelContextRust } from '../rag/rust-core';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -256,6 +254,7 @@ describe('chat persistence', () => {
         branchRoot: 'Chats/root.md',
         variantOf: 'msg-root',
         contextBudgetSnapshot: {
+          modelContext: planModelContextRust({ contextLength: 128000 })!,
           maxChars: 12_000,
           usedChars: 4_200,
           remainingChars: 7_800,
@@ -335,6 +334,7 @@ describe('chat persistence', () => {
       branchRoot: 'Chats/root.md',
       variantOf: 'msg-root',
       contextBudgetSnapshot: {
+        modelContext: planModelContextRust({ contextLength: 128000 })!,
         maxChars: 12_000,
         usedChars: 4_200,
         remainingChars: 7_800,

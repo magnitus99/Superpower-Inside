@@ -6,14 +6,15 @@ import { appLogger } from '../utils/logger';
 const MAX_EXPANDED_QUERY_CHARS = 500;
 
 /** 선택된 채팅 모델로 검색 개념만 번역하며 볼트 본문은 전송하지 않습니다. */
-export async function expandVaultSearchQuery(
+export async function expandVaultSearchPlan(
   question: string,
   provider: LLMProvider | undefined,
   previousUserQuestions: readonly string[] = [],
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ query: string; variants: string[] }> {
   const fallback = expandVaultSearchQueryLocally(question, previousUserQuestions);
-  if (!provider || !planVaultQueryExpansionRust(question)?.needsTranslation) return fallback;
+  if (!provider || !planVaultQueryExpansionRust(question)?.needsTranslation)
+    return { query: question, variants: fallback === question ? [] : [fallback] };
   if (signal?.aborted) throw new DOMException('Search expansion cancelled.', 'AbortError');
   const controller = new AbortController();
   const abort = (): void => controller.abort();
@@ -42,18 +43,32 @@ export async function expandVaultSearchQuery(
         );
       }),
     ]);
-    return planVaultQueryExpansionRust(question, response)?.query ?? fallback;
+    const plan = planVaultQueryExpansionRust(question, response);
+    return plan
+      ? { query: plan.query, variants: plan.variants }
+      : { query: question, variants: [] };
   } catch (error) {
     if (signal?.aborted) throw error;
     appLogger.warn('Search query expansion unavailable; using local terms.', {
       source: 'chat.query-expansion',
       error,
     });
-    return fallback;
+    return { query: question, variants: fallback === question ? [] : [fallback] };
   } finally {
     if (timeout !== undefined) window.clearTimeout(timeout);
     signal?.removeEventListener('abort', abort);
   }
+}
+
+/** 레거시 문자열 호출부도 구절 경계를 잃지 않도록 JSON 배열로 전달한다. */
+export async function expandVaultSearchQuery(
+  question: string,
+  provider: LLMProvider | undefined,
+  previousUserQuestions: readonly string[] = [],
+  signal?: AbortSignal,
+): Promise<string> {
+  const plan = await expandVaultSearchPlan(question, provider, previousUserQuestions, signal);
+  return plan.variants.length ? JSON.stringify([plan.query, ...plan.variants]) : plan.query;
 }
 
 export function expandVaultSearchQueryLocally(

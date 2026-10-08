@@ -3,6 +3,45 @@ import { prepareProviderRequest } from './request-budget';
 import type { ChatMessage, ToolDefinition } from './providers';
 
 describe('provider 공통 입력 예산', () => {
+  it('큰 최신 도구 결과를 줄여도 질문과 검증한 원문 구절을 보존한다', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'copper relay 점검 구절' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'read', type: 'function', function: { name: 'read', arguments: '{}' } }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'read',
+        content: JSON.stringify({
+          action: 'read',
+          path: 'fixtures/inspection.md',
+          startLine: 1,
+          endLine: 501,
+          totalLines: 501,
+          content: 'unrelated\n'.repeat(500) + 'copper relay requires inspection',
+          truncated: false,
+          citations: [
+            {
+              id: 'vault:fixtures/inspection.md:1-501',
+              filePath: 'fixtures/inspection.md',
+              line: 1,
+              endLine: 501,
+              preview: '',
+            },
+          ],
+        }),
+      },
+    ];
+    const request = prepareProviderRequest(messages, undefined, 3000);
+    expect(request.usedBytes).toBeLessThanOrEqual(3000);
+    expect(request.messages[0].content).toBe('copper relay 점검 구절');
+    expect(request.messages.at(-1)?.content).toContain('copper relay');
+    expect(request.messages.at(-1)?.content).toContain('originalResultAvailable');
+    expect(request.messages.at(-1)?.content).toContain('vault:fixtures/inspection.md:1-501');
+    expect(request.messages.at(-1)?.content).not.toContain('compressed-tool');
+  });
   it('짧은 대화는 10개를 넘겨도 모두 보존한다', () => {
     const messages: ChatMessage[] = Array.from({ length: 24 }, (_, index) => ({
       role: index % 2 === 0 ? 'user' : 'assistant',

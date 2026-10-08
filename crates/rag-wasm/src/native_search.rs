@@ -215,16 +215,7 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
     {
         return None;
     }
-    let prepared_queries = queries
-        .iter()
-        .map(|query| {
-            if exact {
-                None
-            } else {
-                super::prepare_folder_lexical_query(query.as_str().unwrap_or_default())
-            }
-        })
-        .collect::<Vec<_>>();
+    let prepared_queries = prepare_lexical_queries(queries, exact);
     let word_queries = prepare_word_queries(
         queries,
         request.get("mode").and_then(Value::as_str) == Some("word"),
@@ -257,6 +248,13 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
             continue;
         }
         let content = content.as_str()?;
+        let passages = combined_matching_passages(
+            queries,
+            &word_queries,
+            if field == "path" { "" } else { content },
+            match_mode,
+            exact,
+        );
         let mut matched = false;
         for (((query, prepared), word), stream) in queries
             .iter()
@@ -272,7 +270,7 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
                 content,
                 match_mode,
                 field,
-                (exact, word.as_deref()),
+                (exact, word.as_deref(), &passages),
             ) {
                 matched = true;
                 stream.push(candidate);
@@ -290,6 +288,23 @@ fn lexical_batch(request_json: &str, samples_json: &str, previous_json: &str) ->
     Some(
         json!({ "streams": streams, "totalHits": total_hits, "scannedFiles": scanned_files, "unreadableFiles": unreadable_files }),
     )
+}
+
+/// 리터럴 검색 외의 정규화된 어휘는 파일 순회 전에 한 번만 준비한다.
+fn prepare_lexical_queries(
+    queries: &[Value],
+    exact: bool,
+) -> Vec<Option<super::FolderLexicalQuery>> {
+    queries
+        .iter()
+        .map(|query| {
+            if exact {
+                None
+            } else {
+                super::prepare_folder_lexical_query(query.as_str().unwrap_or_default())
+            }
+        })
+        .collect()
 }
 
 /// 이전 묶음의 계수와 후보 상한을 검증한다. 잘못된 wire는 초기 상태로 대체하지 않는다.
@@ -330,9 +345,9 @@ fn lexical_candidate(
     content: &str,
     match_mode: &str,
     field: &str,
-    literal: (bool, Option<&[regex::Regex]>),
+    literal: (bool, Option<&[regex::Regex]>, &[Value]),
 ) -> Option<Value> {
-    let (exact, word) = literal;
+    let (exact, word, passages) = literal;
     let searchable_path = if field == "content" { "" } else { path };
     let searchable_content = if field == "path" { "" } else { content };
     let score = if let Some(word) = word {
@@ -389,10 +404,135 @@ fn lexical_candidate(
     );
     Some(json!({
         "path": path, "score": score,
+        "passages": passages,
+        "metadata": serde_json::from_str::<Value>(&super::plan_source_metadata_json(searchable_content)).ok(),
         "startLine": evidence.as_ref().and_then(|evidence| evidence.get("startLine")).cloned().unwrap_or_else(|| json!(1)),
         "endLine": evidence.as_ref().and_then(|evidence| evidence.get("endLine")).cloned().unwrap_or_else(|| json!(1)),
         "preview": evidence.as_ref().and_then(|evidence| evidence.get("preview")).cloned().unwrap_or_else(|| json!(if field == "path" { path.to_owned() } else { super::build_context_preview(content) })),
     }))
+}
+
+/// 질의마다 한 구간씩 먼저 선택해 대표 후보가 다른 변형의 근거를 지우지 않게 한다.
+fn combined_matching_passages(
+    queries: &[Value],
+    words: &[Option<Vec<regex::Regex>>],
+    content: &str,
+    mode: &str,
+    exact: bool,
+) -> Vec<Value> {
+    let streams = queries
+        .iter()
+        .zip(words)
+        .map(|(query, word)| {
+            matching_passages(
+                query.as_str().unwrap_or_default(),
+                content,
+                mode,
+                exact,
+                word.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut ranges = Vec::<(usize, usize)>::new();
+    for depth in 0..4 {
+        for stream in &streams {
+            let Some(passage) = stream.get(depth) else {
+                continue;
+            };
+            let Some((start, end)) = passage
+                .get("startLine")
+                .and_then(Value::as_u64)
+                .and_then(|line| usize::try_from(line).ok())
+                .zip(
+                    passage
+                        .get("endLine")
+                        .and_then(Value::as_u64)
+                        .and_then(|line| usize::try_from(line).ok()),
+                )
+            else {
+                continue;
+            };
+            if let Some(previous) = ranges
+                .iter_mut()
+                .find(|range| start <= range.1 && end >= range.0)
+            {
+                previous.0 = previous.0.min(start);
+                previous.1 = previous.1.max(end);
+            } else if ranges.len() < 4 {
+                ranges.push((start, end));
+            }
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged = Vec::<(usize, usize)>::new();
+    for (start, end) in ranges {
+        if let Some(previous) = merged.last_mut()
+            && start <= previous.1
+        {
+            previous.1 = previous.1.max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    let lines = content.split('\n').collect::<Vec<_>>();
+    merged
+        .into_iter()
+        .filter_map(|(start, end)| {
+            let text = lines.get(start.saturating_sub(1)..end)?.join("\n");
+            (text.encode_utf16().count() <= 2400)
+                .then(|| json!({"startLine":start,"endLine":end,"content":text}))
+        })
+        .collect()
+}
+
+/// 같은 파일의 서로 다른 일치를 유지하고 겹치는 문맥만 합친다. 원문은 최대 4구간이다.
+fn matching_passages(
+    query: &str,
+    content: &str,
+    match_mode: &str,
+    exact: bool,
+    word: Option<&[regex::Regex]>,
+) -> Vec<Value> {
+    let lines = content.split('\n').collect::<Vec<_>>();
+    let mut ranges = Vec::<(usize, usize)>::new();
+    let primary = super::native_lexical_hit::primary_query_terms(query).join("\u{1f}");
+    for (index, line) in lines.iter().enumerate() {
+        let matched = word.map_or_else(
+            || {
+                if exact {
+                    line.contains(query)
+                } else if match_mode == "phrase" {
+                    line.to_lowercase().contains(&query.to_lowercase())
+                } else {
+                    super::count_keyword_matches(&primary, line) > 0
+                }
+            },
+            |patterns| word_match_count(patterns, line, match_mode) > 0,
+        );
+        if !matched {
+            continue;
+        }
+        let start = index.saturating_sub(1);
+        let end = (index + 1).min(lines.len().saturating_sub(1));
+        if let Some(previous) = ranges.last_mut()
+            && start <= previous.1
+        {
+            previous.1 = end;
+        } else if ranges.len() < 4 {
+            ranges.push((start, end));
+        } else {
+            break;
+        }
+    }
+    ranges
+        .into_iter()
+        .filter_map(|(start, end)| {
+            let text = lines.get(start..=end)?.join("\n");
+            // 긴 한 행을 임의로 자르고 전체 문단을 읽었다고 표시하지 않는다.
+            (text.encode_utf16().count() <= 2400)
+                .then(|| json!({"startLine":start+1,"endLine":end+1,"content":text}))
+        })
+        .collect()
 }
 
 /// 리터럴 구간의 실제 행 번호를 보존한다. 대소문자와 공백을 바꾸지 않는다.

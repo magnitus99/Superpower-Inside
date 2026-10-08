@@ -133,6 +133,7 @@ export interface ContextAttachment {
   pinned?: boolean;
   excluded?: boolean;
   fileCount?: number;
+  scopeOnly?: boolean;
   filteredCount?: number;
   autoRagReason?: AutoRagReason;
   folderLimitReason?: FolderLimitReason;
@@ -164,6 +165,7 @@ export interface ToolRoundLog {
 }
 
 export interface ContextBudgetSnapshot {
+  modelContext?: import('../rag/rust-core').ModelContextBudget;
   maxChars: number;
   usedChars: number;
   remainingChars?: number;

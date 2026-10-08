@@ -13,6 +13,7 @@ import {
   planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
   planImplicitFolderQueryPathsRust,
+  planModelContextRust,
   type RustAutoRagReason,
   type RustContextSourceInput,
   type RustContextSourceVerification,
@@ -72,13 +73,13 @@ interface BuildContextOptions {
   maxReferenceFiles?: number;
   ragTopK?: number;
   ragMinScore?: number;
-  queryExpander?: (question: string) => Promise<string>;
+  queryExpander?: (question: string) => Promise<string | { query: string; variants: string[] }>;
   /** 활성 도구 루프가 후보 검색·읽기를 맡을 때 비싼 암시적 폴더 전체 선별을 건너뜁니다. */
   deferImplicitFolderEvidenceToTools?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
-const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
+const DEFAULT_MAX_CONTEXT_CHARS = planModelContextRust({})?.evidenceChars ?? 0;
 const DEFAULT_MAX_REFERENCE_FILES = 6;
 const DEFAULT_RAG_TOP_K = 5;
 function getVaultContextRules(): string {
@@ -129,13 +130,16 @@ export async function buildChatContext(
     autoRagReason: 'disabled',
   };
   const shouldUseAutoRag = mentionPlan.useAutoRag;
-  const expandedQuery =
+  const expansion =
     options.queryExpander && (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
       ? await options.queryExpander(question).catch((error: unknown) => {
           if (error instanceof DOMException && error.name === 'AbortError') throw error;
           return question;
         })
       : question;
+  const queryPlan = typeof expansion === 'string' ? { query: expansion, variants: [] } : expansion;
+  const queries = [queryPlan.query, ...queryPlan.variants];
+  const expandedQuery = queryPlan.variants.length ? JSON.stringify(queries) : queryPlan.query;
 
   const appendBlock = (block: ContextBlock): boolean => {
     return budget.append({
@@ -202,6 +206,8 @@ export async function buildChatContext(
       expandedQuery,
       options.ragEngine,
       explicitFolders.length - index - 1,
+      options.deferImplicitFolderEvidenceToTools,
+      queries,
     );
   }
 
@@ -250,11 +256,23 @@ export async function buildChatContext(
       attachment.id.startsWith('folder:auto:') && (attachment.sourceIds?.length ?? 0) > 0,
   );
 
-  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence) {
+  const deferredFolder = attachments.some((attachment) => attachment.scopeOnly);
+  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence && !deferredFolder) {
     try {
-      let results = await options.ragEngine.query(expandedQuery, ragTopK, options.ragMinScore);
+      const prefixes = explicitFolders.length
+        ? explicitFolders.map((folder) => folder.name)
+        : undefined;
+      const retrieve = (query: string, topK: number, minScore?: number): Promise<QueryResult[]> =>
+        prefixes
+          ? options.ragEngine!.query(query, topK, minScore, prefixes)
+          : options.ragEngine!.query(query, topK, minScore);
+      let results = (
+        await Promise.all(queries.map((query) => retrieve(query, ragTopK, options.ragMinScore)))
+      ).flat();
       if (results.length === 0) {
-        const fallbackCandidates = await options.ragEngine.query(expandedQuery, ragTopK * 3, 0);
+        const fallbackCandidates = (
+          await Promise.all(queries.map((query) => retrieve(query, ragTopK * 3, 0)))
+        ).flat();
         const fallbackIndices =
           planFolderLexicalEvidenceIndicesRust(
             expandedQuery,
@@ -279,7 +297,9 @@ export async function buildChatContext(
         { dedupe: true },
       ).filter(
         (result) =>
-          !options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath),
+          (!options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath)) &&
+          (!prefixes ||
+            prefixes.some((prefix) => result.entry.metadata.filePath.startsWith(`${prefix}/`))),
       );
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
@@ -381,10 +401,21 @@ export async function buildChatContext(
     .filter(Boolean)
     .join('');
   const warningText = warnings.length > 0 ? `\n\n[Context Warnings]\n${warnings.join('\n')}` : '';
+  const scopeText = explicitFolders.length
+    ? t('contextFolderScopePrompt', {
+        paths: JSON.stringify(explicitFolders.map((folder) => folder.name)),
+      })
+    : '';
   return {
-    systemPrompt: contextText
-      ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
-      : warningText.trim() || null,
+    systemPrompt:
+      [
+        scopeText,
+        contextText
+          ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
+          : warningText.trim(),
+      ]
+        .filter(Boolean)
+        .join('\n\n') || null,
     attachments,
     citations,
     warnings,
@@ -728,6 +759,8 @@ async function appendFolderMention(
   question = '',
   ragEngine?: RagQueryLike | null,
   remainingFolders = 0,
+  deferEvidenceToTools = false,
+  queries: readonly string[] = [question],
 ): Promise<void> {
   const folder = app.vault.getAbstractFileByPath(path);
   if (!(folder instanceof TFolder)) {
@@ -758,11 +791,35 @@ async function appendFolderMention(
     indexableFiles.map((file) => file.path),
     maxFolderFiles,
   );
+  if (filePlan?.partial && deferEvidenceToTools) {
+    attachments.push({
+      id: `folder:${path}`,
+      type: 'folder',
+      name: path,
+      label: path,
+      status: 'attached',
+      scopeOnly: true,
+      reason: t('contextFolderSearchScope'),
+      detail: t('contextFolderSearchScopeDetail', { count: indexableFiles.length }),
+      fileCount: indexableFiles.length,
+      filteredCount: 0,
+      sourceIds: [],
+      actualChars: 0,
+      excluded: false,
+    });
+    return;
+  }
   let files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
   // 작은 폴더는 그대로 첨부하고, 제한된 폴더는 기존 검색으로 질문에 맞는 원문을 우선합니다.
   if (filePlan?.partial && question) {
     const results = ragEngine
-      ? await ragEngine.query(question, maxFolderFiles, undefined, [path]).catch(() => [])
+      ? (
+          await Promise.all(
+            queries.map((query) =>
+              ragEngine.query(query, maxFolderFiles, undefined, [path]).catch(() => []),
+            ),
+          )
+        ).flat()
       : [];
     const filesByPath = new Map(indexableFiles.map((file) => [file.path, file]));
     const rankedFiles = [
@@ -813,7 +870,7 @@ async function appendFolderMention(
         { filePath: file.path, text: content },
         'folder',
         'Folder File',
-        files.length - index + remainingFolders,
+        files.length - index + remainingFolders + (filePlan?.partial ? DEFAULT_RAG_TOP_K : 0),
       );
       sourceIds.push(...result.sourceIds);
       actualChars += result.actualChars;

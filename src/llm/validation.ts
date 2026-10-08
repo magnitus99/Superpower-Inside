@@ -9,11 +9,13 @@ import type {
 import { TernlightEmbeddingProvider, EmbeddingGemmaProvider } from './embedding';
 import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import type { ProviderKey } from './providers';
+import { planProviderModelDetailsRust } from '../rag/rust-core';
 
 export interface ProviderModelInfo {
   id: string;
   name?: string;
   contextLength?: number;
+  maxOutputTokens?: number;
 }
 
 export interface ValidationResult {
@@ -125,18 +127,43 @@ interface OpenAIModelRecord {
   name?: string;
 }
 
-interface AnthropicModelRecord {
-  id: string;
-  display_name?: string;
+export async function fetchOllamaModelInfo(
+  key: 'ollama' | 'ollamaCloud',
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  model: string,
+): Promise<ProviderModelInfo | undefined> {
+  const response = await requestUrl({
+    url: `${normalizeOllamaBaseUrl(config.baseUrl?.trim() || getFixedProviderBaseUrl(key))}/api/show`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(key === 'ollamaCloud' ? buildBearerHeaders(config.apiKey) : {}),
+    },
+    body: JSON.stringify({ model }),
+    throw: false,
+  });
+  if (response.status >= 400) return undefined;
+  return planProviderModelDetailsRust('ollama', {
+    ...(response.json as Record<string, unknown>),
+    id: model,
+  })?.[0];
 }
 
-interface OpenRouterModelRecord extends OpenAIModelRecord {
-  context_length?: number;
-  architecture?: {
-    modality?: string;
-    input_modalities?: string[];
-    output_modalities?: string[];
-  };
+/** 목록의 페이지 수와 무관하게 선택한 Claude 모델 자체의 한도를 조회한다. */
+export async function fetchAnthropicModelInfo(
+  config: ProviderConfig | CustomOpenAIProviderConfig,
+  model: string,
+): Promise<ProviderModelInfo | undefined> {
+  const response = await requestUrl({
+    url: `${ANTHROPIC_BASE_URL}/models/${encodeURIComponent(model)}`,
+    method: 'GET',
+    headers: { 'x-api-key': config.apiKey.trim(), 'anthropic-version': '2023-06-01' },
+    throw: false,
+  });
+  if (response.status >= 400) return undefined;
+  return planProviderModelDetailsRust('claude', { data: [response.json] })?.find(
+    (detail) => detail.id === model,
+  );
 }
 
 class OpenAICompatibleValidator implements ProviderConnectionValidator {
@@ -164,24 +191,8 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
         };
       }
 
-      if (this.isOpenRouter) {
-        const data = (res.json as { data?: OpenRouterModelRecord[] }) ?? {};
-        const modelDetails =
-          data.data
-            ?.map((model) => ({
-              id: model.id,
-              name: model.name,
-              contextLength: model.context_length,
-            }))
-            .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
-        return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
-      }
-
-      const data = (res.json as { data?: OpenAIModelRecord[] }) ?? { data: [] };
       const modelDetails =
-        data.data
-          ?.map((model) => ({ id: model.id, name: model.name }))
-          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+        planProviderModelDetailsRust(this.isOpenRouter ? 'openRouter' : 'openai', res.json) ?? [];
       return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
@@ -244,11 +255,7 @@ class AnthropicValidator implements ProviderConnectionValidator {
           error: classifyHttpError(res.status, getResponseText(res.text)),
         };
       }
-      const data = (res.json as { data?: AnthropicModelRecord[] }) ?? {};
-      const modelDetails =
-        data.data
-          ?.map((model) => ({ id: model.id, name: model.display_name }))
-          .sort((a, b) => a.id.localeCompare(b.id)) ?? [];
+      const modelDetails = planProviderModelDetailsRust('claude', res.json) ?? [];
       return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
     } catch (err) {
       return { valid: false, models: [], error: classifyFetchError(err) };
@@ -526,10 +533,14 @@ function createProviderValidator(
     return {
       fetchModels: async () => {
         try {
-          const { fetchChatGPTModels } = await import('./chatgpt-provider');
+          const { fetchChatGPTModelDetails } = await import('./chatgpt-provider');
+          const modelDetails = await fetchChatGPTModelDetails(
+            'id' in config ? config.id : 'profile',
+          );
           return {
             valid: true,
-            models: await fetchChatGPTModels('id' in config ? config.id : 'profile'),
+            models: modelDetails.map((model) => model.id),
+            modelDetails,
           };
         } catch (error) {
           return {

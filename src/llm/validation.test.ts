@@ -6,6 +6,8 @@ import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import {
   fetchProviderModels,
   fetchProviderModelsForStrategy,
+  fetchOllamaModelInfo,
+  fetchAnthropicModelInfo,
   normalizeOpenAICompatibleBaseUrl,
   testEmbeddingGeneration,
   testEmbeddingGenerationForStrategy,
@@ -45,6 +47,82 @@ const ternlightRuntime = {
 } satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
+  it('Claude 상세 조회는 선택 ID와 인증 헤더를 보내고 다른 ID의 한도를 거부한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { id: 'claude-selected', max_input_tokens: 200000, max_tokens: 8192 },
+    });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'claude-selected')).toEqual({
+      id: 'claude-selected',
+      contextLength: 200000,
+      maxOutputTokens: 8192,
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://api.anthropic.com/v1/models/claude-selected',
+      method: 'GET',
+      headers: { 'x-api-key': baseConfig.apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { id: 'different', max_input_tokens: 200000 },
+    });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'claude-selected')).toBeUndefined();
+    requestUrlMock.mockResolvedValueOnce({ status: 404 });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'missing')).toBeUndefined();
+  });
+  it('Ollama 선택 모델의 show API에서 모델 아키텍처 한도를 확인하고 누락은 추측하지 않는다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { model_info: { 'general.architecture': 'llama', 'llama.context_length': 8192 } },
+    });
+    expect(await fetchOllamaModelInfo('ollama', baseConfig, 'selected')).toEqual({
+      id: 'selected',
+      contextLength: 8192,
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'http://localhost:11434/api/show',
+      method: 'POST',
+      body: JSON.stringify({ model: 'selected' }),
+    });
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { model_info: { 'llama.context_length': 999999 } },
+    });
+    expect(await fetchOllamaModelInfo('ollama', baseConfig, 'selected')).toEqual({
+      id: 'selected',
+    });
+  });
+  it('공급자가 보장한 경로 한도와 출력 한도를 사용하고 문자열·음수는 배제한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: {
+        data: [
+          {
+            id: 'selected',
+            context_length: 128000,
+            top_provider: { context_length: 64000, max_completion_tokens: 2048 },
+          },
+          { id: 'invalid', context_length: '128000' },
+        ],
+      },
+    });
+    expect((await fetchProviderModels('openRouter', baseConfig)).modelDetails).toEqual([
+      { id: 'invalid' },
+      { id: 'selected', contextLength: 64000, maxOutputTokens: 2048 },
+    ]);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { data: [{ id: 'claude', max_input_tokens: 200000, max_tokens: 8192 }] },
+    });
+    expect((await fetchProviderModels('claude', baseConfig)).modelDetails?.[0]).toMatchObject({
+      contextLength: 200000,
+      maxOutputTokens: 8192,
+    });
+  });
   it('최종 output이 비어 있어도 완료된 항목의 답변으로 OAuth 모델 검사를 통과한다', async () => {
     connectTestChatGPT();
     requestUrlMock.mockResolvedValueOnce({
@@ -67,12 +145,22 @@ describe('provider validation', () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: '',
-      json: { models: [{ slug: 'selected-model' }] },
+      json: {
+        models: [
+          {
+            slug: 'selected-model',
+            context_window: 128000,
+            max_context_window: 256000,
+            effective_context_window_percent: 90,
+          },
+        ],
+      },
       headers: {},
     });
     expect(await fetchProviderModelsForStrategy('openAIChatGPT', baseConfig)).toMatchObject({
       valid: true,
       models: ['selected-model'],
+      modelDetails: [{ id: 'selected-model', contextLength: 115200 }],
     });
     expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
       headers: { Authorization: 'Bearer oauth-access' },
