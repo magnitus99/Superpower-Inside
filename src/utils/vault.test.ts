@@ -8,6 +8,7 @@ import {
   getRagFileTypeSummary,
   getFrontmatterExcludedFiles,
   isRagCandidateFile,
+  isRagFileExcluded,
   countFilesByExtensions,
   isExcludedExt,
   isExcludedPath,
@@ -142,7 +143,7 @@ describe('RAG 후보 파일', () => {
     ]);
     expect(contents.get('hidden.md')).toContain('superpower-inside-exclude: true');
   });
-  it('최상위 YAML의 true만 제외하고 변경·해제는 캐시 갱신 없이 반영한다', async () => {
+  it('최상위 속성은 false 외에 모두 제외하고 변경·해제는 캐시 갱신 없이 반영한다', async () => {
     const hidden = createFile('hidden.md');
     const contents = new Map([
       ['hidden.md', '---\n"superpower-inside-exclude": true # 비공개\n---\nsecret'],
@@ -156,7 +157,7 @@ describe('RAG 후보 파일', () => {
     );
     expect(
       (await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).map((file) => file.path),
-    ).toEqual(['visible.md', 'quoted.md', 'body.md']);
+    ).toEqual(['visible.md', 'body.md']);
     await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
       false,
     );
@@ -164,6 +165,45 @@ describe('RAG 후보 파일', () => {
     await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
       true,
     );
+  });
+  it.each(['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'])(
+    'YAML 값 %s는 설정 목록·전체 후보·개별 파일 정책에서 함께 제외한다',
+    async (value) => {
+      const hidden = createFile('hidden.md');
+      const visible = createFile('visible.md');
+      const contents = new Map([
+        [hidden.path, `---\nsuperpower-inside-exclude: ${value}\n---\nsecret`],
+        [visible.path, '---\nnested:\n  superpower-inside-exclude: true\n---\npublic'],
+      ]);
+      const vault = createVault([hidden, visible], contents);
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([hidden]);
+      expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([visible]);
+      expect(await isRagFileExcluded(vault, hidden, baseRagConfig, baseChatConfig)).toBe(true);
+      contents.set(hidden.path, 'public');
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([]);
+      expect(await isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).toBe(true);
+    },
+  );
+  it.each(['false', '"false"'])(
+    '값 %s는 설정 목록에서 빠지고 후보 목록과 개별 파일 정책에서 허용한다',
+    async (value) => {
+      const file = createFile('visible.md');
+      const vault = createVault(
+        [file],
+        new Map([[file.path, `---\nsuperpower-inside-exclude: ${value}\n---\npublic`]]),
+      );
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([]);
+      expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([file]);
+      expect(await isRagFileExcluded(vault, file, baseRagConfig, baseChatConfig)).toBe(false);
+    },
+  );
+  it('YAML을 읽을 수 없는 문서는 후보와 개별 인덱싱에서 함께 차단한다', async () => {
+    const file = createFile('private.md');
+    const vault = createVault([file]);
+    vault.cachedRead = () => Promise.reject(new Error('unreadable'));
+    expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([]);
+    expect(await isRagCandidateFile(vault, file, baseRagConfig, baseChatConfig)).toBe(false);
+    expect(await isRagFileExcluded(vault, file, baseRagConfig, baseChatConfig)).toBe(true);
   });
   it('마크다운 외 텍스트 파일도 후보에 포함하고 제외 확장자와 경로를 적용한다', async () => {
     const vault = createVault([

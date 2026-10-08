@@ -17,10 +17,90 @@ import { calculateRagStatus } from './status';
 import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
 import { createContentHash } from './hash';
+import { RAGQueryEngine } from './query';
+import { getRagCandidateFiles } from '../utils/vault';
 
 const bm25DbNames = new Set<string>();
 
 describe('인덱싱 제외 정책', () => {
+  it.each(
+    ['vector', 'bm25', 'hybrid', 'ann'].flatMap((mode) =>
+      ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({
+        mode,
+        value,
+      })),
+    ),
+  )(
+    '$mode 검색은 YAML 값 $value의 제외와 복구를 공유하며 오래된 인덱스도 차단한다',
+    async ({ mode, value }) => {
+      const contents = new Map([['private.md', 'uniquesecret private evidence']]);
+      const vault = createVault(contents);
+      const file = vault.getFiles()[0];
+      const store = new MemoryVectorStore();
+      const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+      const provider: EmbeddingProvider = {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch,
+      };
+      const config = createRagConfig();
+      const chat = createChatConfig();
+      const dbName = `exclusion-search-${mode}-${crypto.randomUUID()}`;
+      bm25DbNames.add(dbName);
+      const bm25 = new IndexedDbBM25Index(dbName);
+      try {
+        await bm25.load();
+        const indexer = new VaultIndexer(vault, store, provider, config, chat, bm25);
+        await indexer.indexFile(file);
+        const engine = new RAGQueryEngine(
+          mode === 'bm25' ? null : store,
+          mode === 'bm25' ? null : provider,
+          mode === 'vector' ? undefined : bm25,
+          mode === 'bm25' ? 1 : 0.3,
+          0,
+          {
+            corpusStore: store,
+            annEnabled: mode === 'ann',
+            annMinEntryCount: 1,
+            getCandidatePaths: async () =>
+              new Set(
+                (await getRagCandidateFiles(vault, config, chat)).map(
+                  (candidate) => candidate.path,
+                ),
+              ),
+          },
+        );
+        expect(
+          (await engine.query('uniquesecret', 5, 0)).map((result) => result.sourcePath),
+        ).toContain(file.path);
+        contents.set(
+          file.path,
+          `---\nsuperpower-inside-exclude: ${value}\n---\nuniquesecret private evidence`,
+        );
+        // 제거 이벤트를 처리하기 전의 벡터·키워드 인덱스도 검색 결과에 나타나면 안 됩니다.
+        expect(await store.getIndexedFilePaths()).toContain(file.path);
+        expect(await bm25.getSourcePaths()).toContain(file.path);
+        expect(await engine.query('uniquesecret', 5, 0)).toEqual([]);
+        embedBatch.mockClear();
+        await indexer.indexFile(file);
+        expect(embedBatch).not.toHaveBeenCalled();
+        expect(await store.getIndexedFilePaths()).toEqual([]);
+        expect(await bm25.getSourcePaths()).toEqual([]);
+        for (const frontmatter of [
+          '---\nsuperpower-inside-exclude: false\n---\n',
+          '---\nsuperpower-inside-exclude: "false"\n---\n',
+          '',
+        ]) {
+          contents.set(file.path, `${frontmatter}uniquesecret private evidence`);
+          await indexer.indexFile(file);
+          expect(
+            (await engine.query('uniquesecret', 5, 0)).map((result) => result.sourcePath),
+          ).toContain(file.path);
+        }
+      } finally {
+        bm25.close();
+      }
+    },
+  );
   it.each(['yaml', 'path', 'extension'])(
     '대기 중 %s 제외로 바뀐 문서는 임베딩하지 않고 기존 인덱스를 제거한다',
     async (kind) => {

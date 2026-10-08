@@ -283,7 +283,15 @@ export class RAGQueryEngine {
       threshold,
       this.bm25Index?.isReady ?? false,
     );
-    return selectDiverseResults(relevantResults, topK);
+    // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다.
+    const currentPaths = await this.getCandidatePaths?.();
+    throwIfQueryAborted(options.signal);
+    return selectDiverseResults(
+      currentPaths
+        ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))
+        : relevantResults,
+      topK,
+    );
   }
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {

@@ -7035,7 +7035,7 @@ struct RagFileEligibilityInput {
     frontmatter_unreadable: bool,
 }
 
-/// Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+/// 최상위 YAML 속성이 있으면 false 외에는 제외한다.
 #[wasm_bindgen]
 pub fn is_rag_frontmatter_excluded_json(frontmatter_json: &str) -> bool {
     serde_json::from_str::<JsonValue>(frontmatter_json)
@@ -7044,12 +7044,11 @@ pub fn is_rag_frontmatter_excluded_json(frontmatter_json: &str) -> bool {
         .is_some_and(is_rag_frontmatter_excluded)
 }
 
-/// 파싱된 최상위 속성의 boolean true를 확인한다.
+/// 속성 삭제와 false만 YAML 제외를 해제한다.
 fn is_rag_frontmatter_excluded(frontmatter: &JsonValue) -> bool {
     frontmatter
         .get("superpower-inside-exclude")
-        .and_then(JsonValue::as_bool)
-        == Some(true)
+        .is_some_and(|value| value != false && value != "false")
 }
 
 /// TS host boundary가 읽은 unknown file text sample.
@@ -12997,15 +12996,35 @@ mod tests {
         );
     }
 
-    /// YAML의 명시적인 boolean만 모든 후보 판정에서 제외한다.
+    /// 최상위 속성이 존재하면 false를 제외한 모든 값을 차단한다.
     #[test]
     fn rag_frontmatter_exclusions_are_shared_by_file_plans() {
-        assert!(is_rag_frontmatter_excluded_json(
-            r#"{"superpower-inside-exclude":true}"#
-        ));
+        for value in [
+            JsonValue::Bool(true),
+            serde_json::json!("true"),
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!("트루"),
+            serde_json::json!(""),
+            JsonValue::Null,
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let frontmatter = serde_json::json!({"superpower-inside-exclude": value});
+            assert!(is_rag_frontmatter_excluded_json(&frontmatter.to_string()));
+            let files = serde_json::json!([{
+                "filePath": "hidden.md", "fileName": "hidden.md", "extension": "md",
+                "size": 10, "frontmatter": frontmatter,
+            }]);
+            assert_eq!(
+                plan_rag_file_indexability_json(&files.to_string(), "[]", "[]", "[]"),
+                r#"{"candidateIndices":[],"summaryInputs":[]}"#,
+            );
+        }
         for value in [
             r#"{"superpower-inside-exclude":false}"#,
-            r#"{"superpower-inside-exclude":"true"}"#,
+            r#"{"superpower-inside-exclude":"false"}"#,
+            "{}",
             r#"{"nested":{"superpower-inside-exclude":true}}"#,
             "null",
         ] {

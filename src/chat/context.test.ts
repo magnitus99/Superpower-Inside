@@ -688,8 +688,21 @@ describe('buildChatContext UX reason metadata', () => {
       new Map([[folder.path, folder]]),
       new Set([unreadable.path]),
     );
+    const cachedRead = app.vault.cachedRead.bind(app.vault);
+    let policyRead = true;
+    app.vault.cachedRead = (file) => {
+      if (file.path === unreadable.path && policyRead) {
+        policyRead = false;
+        return Promise.resolve('unreadable');
+      }
+      return cachedRead(file);
+    };
 
-    const context = await buildChatContext('@[docs] summarize', { app });
+    const context = await buildChatContext('@[docs] summarize', {
+      app,
+      // 후보 확인 후 본문 읽기에서 실패하는 상황을 검증합니다.
+      candidatePaths: new Set([unreadable.path, readable.path]),
+    });
 
     const folderAttachment = context.attachments.find(
       (attachment) => attachment.type === 'folder' && attachment.name === 'docs',

@@ -223,8 +223,8 @@ async function readRagFrontmatter(
   try {
     content = await vault.cachedRead(file);
   } catch {
-    // 실제 본문 읽기 경로가 기존 오류·부분 첨부 상태를 표시하도록 유지합니다.
-    return {};
+    // 제외 속성을 확인할 수 없으면 오래된 인덱스도 검색에 사용하지 않습니다.
+    return { frontmatterUnreadable: true };
   }
   try {
     if (!content.startsWith('---') && !content.startsWith('\uFEFF---'))

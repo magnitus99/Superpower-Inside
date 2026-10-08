@@ -15,6 +15,31 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('검색 임베딩 대기 중 제외한 문서는 오래된 벡터·BM25가 남아도 반환하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    const entry = createEntry('private.md', [1, 0], 'specialterm');
+    await store.add([entry]);
+    const bm25 = await createBm25([]);
+    bm25.addDocument(entry.id, entry.metadata.text);
+    let paths = new Set(['private.md']);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => {
+          paths = new Set();
+          return Promise.resolve([1, 0]);
+        },
+        embedBatch: () => Promise.resolve([]),
+      },
+      bm25,
+      0.3,
+      0,
+      {
+        getCandidatePaths: () => Promise.resolve(paths),
+      },
+    );
+    expect(await engine.query('specialterm', 5, 0)).toEqual([]);
+  });
   it('구조 검색도 같은 작업자 준비 시간을 허용하고 30ms 고정 제한을 재사용하지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([createEntry('seed.md', [1, 0], 'seed evidence')]);

@@ -972,7 +972,7 @@ export function is_protected_rag_document_extension_json(extension) {
 }
 
 /**
- * Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+ * 최상위 YAML 속성이 있으면 false 외에는 제외한다.
  * @param {string} frontmatter_json
  * @returns {boolean}
  */

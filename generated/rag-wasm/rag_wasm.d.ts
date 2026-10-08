@@ -286,7 +286,7 @@ export function is_mcp_tool_result_empty_json(result_json: string, display_text:
 export function is_protected_rag_document_extension_json(extension: string): boolean;
 
 /**
- * Obsidian이 파싱한 최상위 YAML 속성에서 boolean true만 제외로 판정한다.
+ * 최상위 YAML 속성이 있으면 false 외에는 제외한다.
  */
 export function is_rag_frontmatter_excluded_json(frontmatter_json: string): boolean;
 

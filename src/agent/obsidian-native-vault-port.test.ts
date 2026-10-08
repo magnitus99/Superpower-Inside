@@ -1,8 +1,12 @@
 import { TFile, TFolder, type App } from 'obsidian';
+import { createRequire } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 import { RAGQueryEngine, type QueryResult } from '../rag/query';
 import { MemoryVectorStore } from '../rag/store';
 import { createContentHash } from '../rag/hash';
+import type { RAGConfig, ChatConfig } from '../settings';
+import { RagNativeVaultFileScope } from './rag-native-vault-file-scope';
+import { NativeVaultToolRuntime } from './native-vault-tool';
 import {
   ObsidianNativeVaultToolPort,
   type NativeVaultQueryEngineLike,
@@ -22,6 +26,16 @@ vi.mock('obsidian', () => {
     children: unknown[] = [];
   }
   return {
+    getFrontMatterInfo: (content: string) => {
+      const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(content);
+      return { exists: match !== null, frontmatter: match?.[1] ?? '' };
+    },
+    parseYaml: (source: string): unknown => {
+      const yaml = createRequire(import.meta.url)('js-yaml') as {
+        load: (source: string) => unknown;
+      };
+      return yaml.load(source);
+    },
     TFile: MockTFile,
     TFolder: MockTFolder,
     getAllTags: (cache: { tags?: { tag: string }[]; frontmatter?: { tags?: string[] } }) => [
@@ -32,6 +46,101 @@ vi.mock('obsidian', () => {
 });
 
 describe('Obsidian 네이티브 Vault 포트', () => {
+  it.each(
+    ['lexical', 'indexed'].flatMap((mode) =>
+      ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({
+        mode,
+        value,
+      })),
+    ),
+  )(
+    'YAML 값 $value의 제외는 $mode 도구 호출의 검색·목록·읽기·연관·링크·통계에 모두 적용된다',
+    async ({ mode, value }) => {
+      const hidden = createFile(
+        'private.md',
+        `---\nsuperpower-inside-exclude: ${value}\n---\nuniquesecret [[visible]]`,
+      );
+      const visible = createFile('visible.md', 'public [[private]]');
+      const app = createApp([hidden, visible], { 'visible.md': { 'private.md': 1 } });
+      const rag: RAGConfig = {
+        excludePaths: [],
+        excludeExts: [],
+        excludeChatFolder: false,
+        chunkSize: 100,
+        overlap: 0,
+        embeddingProvider: 'openai',
+        embeddingModel: 'test',
+        autoUpdateEnabled: false,
+        autoUpdateIntervalMin: 5,
+        minScore: 0,
+        annEnabled: false,
+        annClusterCount: 0,
+        annProbeCount: 4,
+        structuralGraphEnabled: true,
+        enableBM25: true,
+        bm25Weight: 0.3,
+        performanceTuningMode: 'auto',
+        performanceGuardEnabled: true,
+        maxEmbeddingBatchSize: 32,
+        indexingYieldMs: 25,
+        slowEventLoopThresholdMs: 150,
+        slowBatchThresholdMs: 3000,
+      };
+      const chat: ChatConfig = {
+        saveFolder: 'Chats',
+        defaultModel: '',
+        promptLibrary: [],
+        mcpToolExecutionPolicy: 'mentioned-auto',
+        autoSaveEnabled: false,
+        autoSaveDebounceMs: 1000,
+        enforceMcpTools: false,
+      };
+      const scope = new RagNativeVaultFileScope(
+        app,
+        () => rag,
+        () => chat,
+      );
+      const query = vi.fn(() =>
+        Promise.resolve([
+          createQueryResult(hidden.path, 'stale', 0, ['vector', 'bm25'], 'keyword-vector'),
+        ]),
+      );
+      const runtime = new NativeVaultToolRuntime(
+        new ObsidianNativeVaultToolPort(app, scope, () =>
+          mode === 'indexed' ? createReadyQueryEngineDouble(query) : null,
+        ),
+      );
+      const search = await runtime.execute(
+        JSON.stringify({ action: 'search', query: 'uniquesecret' }),
+      );
+      expect(JSON.parse(search.modelText)).toMatchObject({ hits: [] });
+      expect(search.citations).toEqual([]);
+      expect(JSON.stringify(search)).not.toContain('uniquesecret [[visible]]');
+      const list = await runtime.execute(JSON.stringify({ action: 'list' }));
+      expect(JSON.stringify(list)).toContain('visible.md');
+      expect(JSON.stringify(list)).not.toContain('private.md');
+      const stats = await runtime.execute(JSON.stringify({ action: 'stats' }));
+      expect(JSON.parse(stats.modelText)).toMatchObject({ fileCount: 1 });
+      for (const action of ['read', 'related', 'links']) {
+        await expect(
+          runtime.execute(JSON.stringify({ action, path: hidden.path })),
+        ).rejects.toThrow();
+      }
+      const links = await runtime.execute(JSON.stringify({ action: 'links', path: visible.path }));
+      expect(JSON.stringify(links)).not.toContain('private.md');
+      for (const frontmatter of [
+        '---\nsuperpower-inside-exclude: false\n---\n',
+        '---\nsuperpower-inside-exclude: "false"\n---\n',
+        '',
+      ]) {
+        hidden.content = `${frontmatter}uniquesecret [[visible]]`;
+        const restored = await runtime.execute(
+          JSON.stringify({ action: 'read', path: hidden.path }),
+        );
+        expect(JSON.stringify(restored)).toContain('uniquesecret');
+      }
+    },
+  );
   it('단일 파일 경로도 검색과 목록의 동일한 범위로 처리한다', async () => {
     const files = [
       createFile('Notes/Target.txt', 'inner conversation\nVictor'),
