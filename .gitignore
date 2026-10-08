@@ -13,6 +13,11 @@ agent-diagnostics.ndjson*
 agent-diagnostics-safe-mode.json
 .env.test.local
 
+# 로컬 임베딩 모델 다운로드와 삭제 표식
+/embeddinggemma-300m/
+/ternlight-base.deleted
+/embeddinggemma-300m.deleted
+
 # 개발용 Obsidian 테스트 볼트
 .test-vault/
 
