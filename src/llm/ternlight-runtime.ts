@@ -25,6 +25,9 @@ export interface TernlightWorkerResponse {
   rows?: number;
   values?: ArrayBuffer;
   error?: string;
+  backend?: 'webgpu' | 'wasm';
+  threads?: number;
+  fallbackReason?: string;
 }
 
 export interface TernlightWorkerAdapter {
@@ -54,7 +57,10 @@ export class TernlightWorkerRuntime {
   private nextRequestId = 1;
   private closed = false;
 
-  constructor(createWorker: TernlightWorkerFactory) {
+  constructor(
+    createWorker: TernlightWorkerFactory,
+    private readonly onRuntimeStatus?: (response: TernlightWorkerResponse) => void,
+  ) {
     const handle = createWorker();
     this.worker = handle.worker;
     this.disposeWorker = () => handle.dispose();
@@ -144,6 +150,7 @@ export class TernlightWorkerRuntime {
       request.reject(new Error(response.error));
       return;
     }
+    this.onRuntimeStatus?.(response);
     request.resolve(response);
   }
 }

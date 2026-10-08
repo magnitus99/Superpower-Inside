@@ -38,12 +38,20 @@ const gemma = await build({
   entryPoints: [resolve(root, 'src/llm/embeddinggemma-worker-entry.ts')],
   bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022',
   define: browserDefines,
+  plugins: [{
+    name: 'onnx-webgpu',
+    setup(builder) {
+      builder.onResolve({ filter: /^onnxruntime-web$/ }, () => ({
+        path: resolve(root, 'node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs'),
+      }));
+    },
+  }],
   minify: true, legalComments: 'none',
 });
 await writeFile(resolve(root, 'embeddinggemma-worker.js'), gemma.outputFiles[0].contents);
 const runtimeFiles = [
-  ['ort-wasm-simd-threaded.wasm', 'embeddinggemma-runtime.wasm'],
-  ['ort-wasm-simd-threaded.mjs', 'embeddinggemma-runtime.mjs'],
+  ['ort-wasm-simd-threaded.asyncify.wasm', 'embeddinggemma-runtime.wasm'],
+  ['ort-wasm-simd-threaded.asyncify.mjs', 'embeddinggemma-runtime.mjs'],
 ];
 for (const [source, target] of runtimeFiles) {
   const sourcePath = resolve(root, `node_modules/onnxruntime-web/dist/${source}`);

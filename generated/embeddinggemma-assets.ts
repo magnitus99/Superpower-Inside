@@ -2,20 +2,20 @@
 export const EMBEDDINGGEMMA_ASSETS = [
   {
     "file": "embeddinggemma-worker.js",
-    "size": 547164,
-    "sha256": "084970c5ebfe4e6e0e1a2b3b8ecbbc48b085bb25e6e285f733d78101669b3c0e",
+    "size": 548143,
+    "sha256": "84e0859307f483653b59edd8d5a68c2fcc72808bc67abb59dffa31e898de21f7",
     "url": ""
   },
   {
     "file": "embeddinggemma-runtime.wasm",
-    "size": 14264838,
-    "sha256": "06ba057753da3847e4c24f02d91ab133455b0817c69a44993a9a53a2146df9e3",
+    "size": 26861777,
+    "sha256": "49871f5a4409519797e127440868a6d1923339d9185907f301a5b2a1d90af082",
     "url": ""
   },
   {
     "file": "embeddinggemma-runtime.mjs",
-    "size": 23833,
-    "sha256": "9903dac3aebde6f1527580da37e4129bdaab378eb5936e7fb1877be88f693c25",
+    "size": 52203,
+    "sha256": "f109aa09155b8c628a11790458d6f68a172ebf8f5f6a978fe0fa3b1ad778f563",
     "url": ""
   },
   {

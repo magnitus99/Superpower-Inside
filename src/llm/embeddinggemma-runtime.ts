@@ -1,5 +1,6 @@
 import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
 import { getLocalEmbeddingModels } from './local-embedding-models';
+import { appLogger } from '../utils/logger';
 import {
   TernlightWorkerRuntime,
   type TernlightRuntimeOptions,
@@ -10,6 +11,7 @@ export class EmbeddingGemmaRuntime {
   private initialization: Promise<TernlightWorkerRuntime> | null = null;
   private runtime: TernlightWorkerRuntime | null = null;
   private revision = 0;
+  private backend: 'webgpu' | 'wasm' | undefined;
 
   constructor(private readonly options: TernlightRuntimeOptions) {}
 
@@ -34,6 +36,7 @@ export class EmbeddingGemmaRuntime {
     this.runtime?.close();
     this.runtime = null;
     this.initialization = null;
+    this.backend = undefined;
   }
 
   private async initialize(revision: number): Promise<TernlightWorkerRuntime> {
@@ -45,6 +48,18 @@ export class EmbeddingGemmaRuntime {
     if (revision !== this.revision) throw new Error('EmbeddingGemma initialization was cancelled.');
     const runtime = new TernlightWorkerRuntime(
       this.options.createWorker ?? (() => createWorker(assets['embeddinggemma-worker.js'])),
+      (response) => {
+        if (!response.backend || response.backend === this.backend) return;
+        this.backend = response.backend;
+        const logger = appLogger.child('embedding.gemma');
+        const data = {
+          backend: response.backend,
+          threads: response.threads,
+          reason: response.fallbackReason,
+        };
+        if (response.fallbackReason) logger.warn('EmbeddingGemma switched to CPU.', { data });
+        else logger.info('EmbeddingGemma compute backend selected.', { data });
+      },
     );
     this.runtime = runtime;
     try {
