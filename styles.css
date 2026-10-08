@@ -7096,6 +7096,13 @@ button.superpower-inside-prompt-danger-btn:disabled {
   white-space: normal;
 }
 
+.superpower-inside-chat-container
+  .superpower-inside-chat-assistant-response-panel.is-answer
+  .superpower-inside-chat-bubble.assistant {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .superpower-inside-chat-bubble.assistant > :first-child {
   margin-top: 0;
 }

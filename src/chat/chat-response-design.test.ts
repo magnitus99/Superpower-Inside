@@ -110,4 +110,10 @@ describe('assistant 단일 캔버스 디자인 계약', () => {
       /\.superpower-inside-chat-assistant-response\s+\.superpower-inside-chat-bubble\.assistant\s*\{[^}]*font-size:\s*var\(--font-ui-small\)[^}]*line-height:\s*1\.85/s,
     );
   });
+
+  it('assistant 답변 본문은 드래그해 텍스트를 선택할 수 있다', () => {
+    expect(styles).toMatch(
+      /\.superpower-inside-chat-container\s+\.superpower-inside-chat-assistant-response-panel\.is-answer\s+\.superpower-inside-chat-bubble\.assistant\s*\{[^}]*user-select:\s*text;[^}]*-webkit-user-select:\s*text;/s,
+    );
+  });
 });
