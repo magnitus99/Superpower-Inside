@@ -7,6 +7,7 @@ import { readSourceFileSnapshot } from '../rag/source-snapshot';
 import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
   planChatContextMentionsRust,
+  planTagMentionsRust,
   planContextSourcesRust,
   planChatEvidenceRust,
   planChatUniqueResultIndicesRust,
@@ -27,6 +28,7 @@ import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { isRagIndexableFile } from '../utils/vault';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
+import { collectTagMentionFiles, resolveTagMentionFiles } from './tag-mentions';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -125,10 +127,12 @@ export async function buildChatContext(
   const mentionPlan = planChatContextMentionsRust(mentions.map((mention) => mention.type)) ?? {
     fileIndices: [],
     folderIndices: [],
+    tagIndices: [],
     serverIndices: [],
     useAutoRag: false,
     autoRagReason: 'disabled',
   };
+  // 명시 태그는 해당 문서의 원문을 첨부하며 전체 볼트 RAG로 범위를 넓히지 않는다.
   const shouldUseAutoRag = mentionPlan.useAutoRag;
   const expansion =
     options.queryExpander && (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
@@ -178,6 +182,7 @@ export async function buildChatContext(
   const explicitFolders = selectByRustIndices(mentions, mentionPlan.folderIndices, {
     dedupe: true,
   });
+  const explicitTags = selectByRustIndices(mentions, mentionPlan.tagIndices, { dedupe: true });
   const fileResults: Array<{ file: TFile; content: string }> = [];
   const requestedPaths = new Set<string>();
   for (const [index, mention] of explicitFiles.entries()) {
@@ -189,7 +194,7 @@ export async function buildChatContext(
       appendEvidence,
       attachments,
       options.candidatePaths,
-      explicitFiles.length - index + explicitFolders.length,
+      explicitFiles.length - index + explicitFolders.length + explicitTags.length,
     );
     if (!fileResult) continue;
     fileResults.push(fileResult);
@@ -208,6 +213,19 @@ export async function buildChatContext(
       explicitFolders.length - index - 1,
       options.deferImplicitFolderEvidenceToTools,
       queries,
+    );
+  }
+
+  for (const [index, mention] of explicitTags.entries()) {
+    await appendTagMention(
+      mention.name,
+      options,
+      appendEvidence,
+      attachments,
+      citations,
+      attachedPaths,
+      maxFolderFiles,
+      explicitTags.length - index - 1,
     );
   }
 
@@ -376,7 +394,7 @@ export async function buildChatContext(
         detail: stringifyError(err),
       });
     }
-  } else if (options.ragEngine && !shouldUseAutoRag) {
+  } else if (options.ragEngine && !shouldUseAutoRag && mentionPlan.tagIndices.length === 0) {
     attachments.push({
       id: 'rag:auto',
       type: 'rag',
@@ -406,10 +424,14 @@ export async function buildChatContext(
         paths: JSON.stringify(explicitFolders.map((folder) => folder.name)),
       })
     : '';
+  const tagScopeText = explicitTags.length
+    ? t('contextTagScopePrompt', { tags: JSON.stringify(explicitTags.map((tag) => tag.name)) })
+    : '';
   return {
     systemPrompt:
       [
         scopeText,
+        tagScopeText,
         contextText
           ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
           : warningText.trim(),
@@ -530,6 +552,7 @@ export function createAppMentionResolver(
 ): MentionResolver {
   return {
     workspaceFiles: workspaceFiles ?? captureWorkspaceMentionFiles(app),
+    tagFiles: (tag) => resolveTagMentionFiles(app, tag),
     isServer: (name: string) =>
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,
@@ -746,6 +769,84 @@ function appendReferenceFile(
     actualChars: result.actualChars,
     sourceIds: result.sourceIds,
     excluded: result.sourceIds.length === 0,
+  });
+}
+
+async function appendTagMention(
+  tag: string,
+  options: BuildContextOptions,
+  appendEvidence: AppendEvidence,
+  attachments: ContextAttachment[],
+  citations: SourceCitation[],
+  attachedPaths: ReadonlySet<string>,
+  maxFiles: number,
+  remainingTags: number,
+): Promise<void> {
+  const snapshot = collectTagMentionFiles(options.app);
+  const allMatches = planTagMentionsRust(snapshot.tags, tag);
+  const matches = selectByRustIndices(
+    snapshot.files.map((file, index) => ({ file, tags: snapshot.tags[index] ?? [] })),
+    allMatches?.fileIndices,
+    { dedupe: true },
+  );
+  const eligible = await Promise.all(
+    matches.map(
+      async ({ file }) =>
+        (!options.candidatePaths || options.candidatePaths.has(file.path)) &&
+        (await isRagIndexableFile(options.app.vault, file)),
+    ),
+  );
+  const files = matches.filter((_file, index) => eligible[index]);
+  const plan = planTagMentionsRust(
+    files.map((row) => row.tags),
+    tag,
+    maxFiles,
+  );
+  const selected = selectByRustIndices(files, plan?.fileIndices, { dedupe: true });
+  const fileAttachments: ContextAttachment[] = [];
+  const sourceIds: string[] = [];
+  for (const [index, { file }] of selected.entries()) {
+    if (attachedPaths.has(file.path)) {
+      sourceIds.push(
+        ...citations
+          .filter((citation) => citation.filePath === file.path)
+          .map((citation) => citation.id),
+      );
+      continue;
+    }
+    await appendFileMention(
+      file.path,
+      options.app,
+      appendEvidence,
+      fileAttachments,
+      options.candidatePaths,
+      selected.length - index + remainingTags,
+    );
+  }
+  sourceIds.push(...fileAttachments.flatMap((attachment) => attachment.sourceIds ?? []));
+  const partial =
+    (plan?.matchedCount ?? 0) > selected.length ||
+    fileAttachments.some((attachment) => attachment.status !== 'attached');
+  attachments.push({
+    id: `tag:${tag}`,
+    type: 'tag',
+    name: tag,
+    label: `@${tag}`,
+    status: partial ? 'partial' : sourceIds.length ? 'attached' : 'missing',
+    reason: t('chatTagMentionCount', { count: files.length }),
+    detail: partial
+      ? t('chatTagMentionPartial', { total: files.length, count: maxFiles })
+      : files.length
+        ? undefined
+        : t('chatTagMentionEmpty'),
+    fileCount: selected.length,
+    filteredCount: files.length - selected.length,
+    sourceIds,
+    actualChars: fileAttachments.reduce(
+      (sum, attachment) => sum + (attachment.actualChars ?? 0),
+      0,
+    ),
+    excluded: sourceIds.length === 0,
   });
 }
 

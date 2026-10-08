@@ -50,6 +50,8 @@ mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
+mod tag_mentions;
+pub use tag_mentions::plan_tag_mentions_json;
 mod model_context;
 pub use model_context::{plan_model_context_json, plan_provider_model_details_json};
 mod chatgpt;
@@ -7228,6 +7230,8 @@ struct MentionCandidate {
     name: String,
     /// 작업공간 별칭은 브래킷으로 지정한 실제 경로와 구분한다.
     workspace: Option<&'static str>,
+    /// 명시적인 태그 문법은 실제 경로와 구분한다.
+    tag: Option<String>,
 }
 
 /// `u32` index를 `usize`로 바꾸고 범위를 확인한다.
@@ -8683,6 +8687,8 @@ struct ChatContextMentionPlan {
     file_indices: Vec<usize>,
     /// folder mention index 목록.
     folder_indices: Vec<usize>,
+    /// 태그 지목 index 목록.
+    tag_indices: Vec<usize>,
     /// server mention index 목록.
     server_indices: Vec<usize>,
     /// 자동 RAG 실행 여부.
@@ -8845,6 +8851,7 @@ fn truncate_utf16_scalar_boundary(text: &str, max_units: usize) -> (&str, usize)
 fn plan_chat_context_mentions(mention_types: &[String]) -> Option<ChatContextMentionPlan> {
     let mut file_indices = Vec::<usize>::new();
     let mut folder_indices = Vec::<usize>::new();
+    let mut tag_indices = Vec::<usize>::new();
     let mut server_indices = Vec::<usize>::new();
     let mut has_server_mention = false;
     let mut has_vault_mention = false;
@@ -8863,12 +8870,18 @@ fn plan_chat_context_mentions(mention_types: &[String]) -> Option<ChatContextMen
                 server_indices.push(index);
                 has_server_mention = true;
             }
+            "tag" => {
+                tag_indices.push(index);
+                has_vault_mention = true;
+            }
             _ => return None,
         }
     }
 
-    let use_auto_rag = !has_server_mention || has_vault_mention;
-    let auto_rag_reason = if mention_types.is_empty() {
+    let use_auto_rag = (!has_server_mention || has_vault_mention) && tag_indices.is_empty();
+    let auto_rag_reason = if !tag_indices.is_empty() {
+        "disabled"
+    } else if mention_types.is_empty() {
         "no-mentions"
     } else if has_server_mention && !has_vault_mention {
         "server-only"
@@ -8884,6 +8897,7 @@ fn plan_chat_context_mentions(mention_types: &[String]) -> Option<ChatContextMen
     Some(ChatContextMentionPlan {
         file_indices,
         folder_indices,
+        tag_indices,
         server_indices,
         use_auto_rag,
         auto_rag_reason,
@@ -9668,9 +9682,10 @@ fn serialize_context_budget_append_plan_json(plan: &ContextBudgetAppendPlan) -> 
 /// chat context mention plan을 JSON 문자열로 직렬화한다.
 fn serialize_chat_context_mention_plan_json(plan: &ChatContextMentionPlan) -> String {
     format!(
-        "{{\"fileIndices\":{},\"folderIndices\":{},\"serverIndices\":{},\"useAutoRag\":{},\"autoRagReason\":\"{}\"}}",
+        "{{\"fileIndices\":{},\"folderIndices\":{},\"tagIndices\":{},\"serverIndices\":{},\"useAutoRag\":{},\"autoRagReason\":\"{}\"}}",
         serialize_usize_array_json(&plan.file_indices),
         serialize_usize_array_json(&plan.folder_indices),
+        serialize_usize_array_json(&plan.tag_indices),
         serialize_usize_array_json(&plan.server_indices),
         plan.use_auto_rag,
         plan.auto_rag_reason,
@@ -10545,12 +10560,21 @@ fn collect_word_mention_candidates(
         let raw_start = offset;
         offset = offset.saturating_add(character.len_utf8());
         let name_start = offset;
+        let is_tag = content
+            .get(raw_start..)
+            .is_some_and(|tail| tail.starts_with("@#"));
 
         while offset < content.len() {
             let Some(next) = content.get(offset..).and_then(|tail| tail.chars().next()) else {
                 break;
             };
-            if next == '@' || next.is_whitespace() {
+            if next == '@'
+                || next.is_whitespace()
+                || (is_tag
+                    && offset > name_start
+                    && next.is_ascii_punctuation()
+                    && !matches!(next, '_' | '-' | '/'))
+            {
                 break;
             }
             offset = offset.saturating_add(next.len_utf8());
@@ -10575,16 +10599,29 @@ fn push_mention_candidate(
     candidates: &mut Vec<MentionCandidate>,
     seen: &mut Vec<String>,
 ) {
+    let tag = if raw.starts_with("@#") {
+        let Some(tag) = tag_mentions::normalize_tag(name) else {
+            return;
+        };
+        Some(tag)
+    } else {
+        None
+    };
     let workspace = match raw.to_lowercase().as_str() {
         "@current" => Some("current"),
         "@tabs" => Some("tabs"),
         _ => None,
     };
-    let key = if workspace.is_some() {
-        format!("@{}", name.to_lowercase())
-    } else {
-        name.to_lowercase()
-    };
+    let key = tag.as_ref().map_or_else(
+        || {
+            if workspace.is_some() {
+                format!("@{}", name.to_lowercase())
+            } else {
+                name.to_lowercase()
+            }
+        },
+        |tag| format!("tag:{tag}"),
+    );
     if seen.iter().any(|item| item == &key) {
         return;
     }
@@ -10593,6 +10630,7 @@ fn push_mention_candidate(
         raw: raw.to_owned(),
         name: name.to_owned(),
         workspace,
+        tag,
     });
 }
 
@@ -12217,8 +12255,11 @@ fn serialize_mention_candidates_json(candidates: &[MentionCandidate]) -> String 
             let workspace = candidate
                 .workspace
                 .map_or_else(String::new, |name| format!(",\"workspace\":\"{name}\""));
+            let tag = candidate.tag.as_ref().map_or_else(String::new, |tag| {
+                format!(",\"tag\":\"{}\"", escape_json_string(tag))
+            });
             format!(
-                "{{\"raw\":\"{}\",\"name\":\"{}\"{workspace}}}",
+                "{{\"raw\":\"{}\",\"name\":\"{}\"{workspace}{tag}}}",
                 escape_json_string(&candidate.raw),
                 escape_json_string(&candidate.name),
             )
@@ -13343,11 +13384,11 @@ mod tests {
     fn chat_context_mentions_are_planned_in_rust() {
         assert_eq!(
             plan_chat_context_mentions_json(r#"["server","file","folder","server"]"#),
-            "{\"fileIndices\":[1],\"folderIndices\":[2],\"serverIndices\":[0,3],\"useAutoRag\":true,\"autoRagReason\":\"server-and-vault\"}",
+            "{\"fileIndices\":[1],\"folderIndices\":[2],\"tagIndices\":[],\"serverIndices\":[0,3],\"useAutoRag\":true,\"autoRagReason\":\"server-and-vault\"}",
         );
         assert_eq!(
             plan_chat_context_mentions_json(r#"["server"]"#),
-            "{\"fileIndices\":[],\"folderIndices\":[],\"serverIndices\":[0],\"useAutoRag\":false,\"autoRagReason\":\"server-only\"}",
+            "{\"fileIndices\":[],\"folderIndices\":[],\"tagIndices\":[],\"serverIndices\":[0],\"useAutoRag\":false,\"autoRagReason\":\"server-only\"}",
         );
     }
 
@@ -13464,6 +13505,21 @@ mod tests {
         assert_eq!(
             parse_mention_candidates_json("@current @tabs @[current] @CURRENT"),
             r#"[{"raw":"@[current]","name":"current"},{"raw":"@current","name":"current","workspace":"current"},{"raw":"@tabs","name":"tabs","workspace":"tabs"}]"#,
+        );
+    }
+
+    /// 태그 뒤 문장 구분자는 지목에 포함하지 않고 브래킷 경로는 그대로 보존한다.
+    #[test]
+    fn tag_mentions_preserve_boundaries() {
+        assert_eq!(
+            parse_mention_candidates_json(
+                "@#Research, @#research @#📚/notes! @[#Research] @#1984 @#"
+            ),
+            r##"[{"raw":"@[#Research]","name":"#Research"},{"raw":"@#Research","name":"#Research","tag":"#research"},{"raw":"@#📚/notes","name":"#📚/notes","tag":"#📚/notes"}]"##,
+        );
+        assert_eq!(
+            plan_chat_context_mentions_json(r#"["tag","server"]"#),
+            r#"{"fileIndices":[],"folderIndices":[],"tagIndices":[0],"serverIndices":[1],"useAutoRag":false,"autoRagReason":"disabled"}"#
         );
     }
 

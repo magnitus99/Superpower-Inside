@@ -46,7 +46,7 @@ export interface ComposerDraftSnapshot {
 }
 
 export interface ContextPreviewMention {
-  type: 'file' | 'server' | 'folder';
+  type: 'file' | 'server' | 'folder' | 'tag';
   name: string;
 }
 
@@ -63,10 +63,23 @@ export function createLiveContextPreviewChips(
   text: string,
   resolver: MentionResolver,
 ): ContextPreviewChip[] {
-  const chips = createContextPreviewChips([]);
   const candidates = parseMentionCandidatesRust(text);
+  const chips = candidates?.some((candidate) => candidate.tag) ? [] : createContextPreviewChips([]);
   if (!candidates) return [...chips, { label: t('chatReferenceUnavailable'), cls: 'missing' }];
   for (const candidate of candidates) {
+    if (candidate.tag) {
+      const paths = resolver.tagFiles?.(candidate.tag) ?? [];
+      chips.push({
+        label: candidate.raw,
+        cls: 'tag',
+        paths,
+        valid: paths.length > 0,
+        detail: t(paths.length ? 'chatTagMentionCount' : 'chatTagMentionEmpty', {
+          count: paths.length,
+        }),
+      });
+      continue;
+    }
     if (candidate.workspace) {
       const paths = resolver.workspaceFiles?.[candidate.workspace] ?? [];
       const valid = paths.length > 0 && paths.every((path) => resolver.isFile(path));
@@ -153,6 +166,7 @@ export function resolveComposerKeyAction(input: ComposerKeyInput): ComposerKeyAc
 }
 
 function createMentionChipLabel(mention: ContextPreviewMention): string {
+  if (mention.type === 'tag') return `@${mention.name}`;
   if (mention.type === 'server') return t('chatToolMentionChip', { name: mention.name });
   if (mention.type === 'folder') return t('chatFolderMentionChip', { name: mention.name });
   return t('chatFileMentionChip', { name: mention.name });

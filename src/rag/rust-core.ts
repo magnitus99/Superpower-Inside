@@ -48,6 +48,7 @@ import {
   normalize_exclude_extension_json,
   normalize_reasoning_chunk_json,
   parse_mention_candidates_json,
+  plan_tag_mentions_json,
   plan_agentic_tool_turn_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
@@ -1459,6 +1460,7 @@ export function planChatRequestRust(input: {
 export interface RustChatContextMentionPlan {
   fileIndices: number[];
   folderIndices: number[];
+  tagIndices: number[];
   serverIndices: number[];
   useAutoRag: boolean;
   autoRagReason: RustAutoRagReason;
@@ -1567,6 +1569,45 @@ export interface RustMentionCandidate {
   raw: string;
   name: string;
   workspace?: 'current' | 'tabs';
+  tag?: string;
+}
+
+export interface RustTagMentionPlan {
+  tags: string[];
+  fileIndices: number[];
+  matchedCount: number;
+}
+
+export function planTagMentionsRust(
+  fileTags: readonly (readonly string[])[],
+  query: string,
+  maxFiles = fileTags.length,
+): RustTagMentionPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_tag_mentions_json(
+        JSON.stringify(fileTags),
+        query,
+        normalizeNonNegativeInteger(maxFiles),
+      ),
+    );
+    if (!parsed || typeof parsed !== 'object') return null;
+    const plan = parsed as Partial<RustTagMentionPlan>;
+    if (
+      !Array.isArray(plan.tags) ||
+      !plan.tags.every(isStringValue) ||
+      !isBoundedIndexArray(plan.fileIndices, fileTags.length) ||
+      !Number.isInteger(plan.matchedCount) ||
+      typeof plan.matchedCount !== 'number' ||
+      plan.matchedCount < plan.fileIndices.length ||
+      plan.matchedCount > fileTags.length
+    )
+      return null;
+    return plan as RustTagMentionPlan;
+  } catch {
+    return null;
+  }
 }
 
 export interface RustMcpJsonValidationResult {
@@ -5841,6 +5882,7 @@ function isMentionCandidate(value: unknown): value is RustMentionCandidate {
   return (
     typeof candidate.raw === 'string' &&
     typeof candidate.name === 'string' &&
+    (candidate.tag === undefined || typeof candidate.tag === 'string') &&
     (candidate.workspace === undefined ||
       candidate.workspace === 'current' ||
       candidate.workspace === 'tabs')
@@ -6903,6 +6945,7 @@ function isChatContextMentionPlan(
   return (
     isBoundedIndexArray(plan.fileIndices, mentionCount) &&
     isBoundedIndexArray(plan.folderIndices, mentionCount) &&
+    isBoundedIndexArray(plan.tagIndices, mentionCount) &&
     isBoundedIndexArray(plan.serverIndices, mentionCount) &&
     typeof plan.useAutoRag === 'boolean' &&
     isAutoRagReason(plan.autoRagReason)
@@ -6910,7 +6953,7 @@ function isChatContextMentionPlan(
 }
 
 function isChatContextMentionType(value: string): boolean {
-  return value === 'file' || value === 'folder' || value === 'server';
+  return value === 'file' || value === 'folder' || value === 'server' || value === 'tag';
 }
 
 function isAutoRagReason(value: unknown): value is RustAutoRagReason {

@@ -21,6 +21,8 @@ import type {
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
+import { collectTagMentionFiles } from './tag-mentions';
+import { planTagMentionsRust } from '../rag/rust-core';
 import { renderComposerReferencePreview } from './composer-reference-preview';
 import { openSessionHistoryModal } from './session-modal';
 import {
@@ -264,7 +266,7 @@ export class ChatView extends ItemView {
   private mentionItems: {
     label: string;
     value: string;
-    type: 'workspace' | 'server' | 'file' | 'folder';
+    type: 'workspace' | 'server' | 'file' | 'folder' | 'tag';
   }[];
   private mentionStartIndex: number;
   private readonly mentionDropdownId: string;
@@ -1126,6 +1128,10 @@ export class ChatView extends ItemView {
       }
     }
 
+    const tagSnapshot = collectTagMentionFiles(this.app);
+    for (const tag of planTagMentionsRust(tagSnapshot.tags, query)?.tags ?? []) {
+      this.mentionItems.push({ label: `@${tag}`, value: tag, type: 'tag' });
+    }
     this.mentionSelectedIndex = this.mentionItems.length > 0 ? 0 : -1;
   }
 
@@ -1149,6 +1155,7 @@ export class ChatView extends ItemView {
       ['server', t('mcpMentionServers'), 'plug'],
       ['file', t('mcpMentionFiles'), 'file-text'],
       ['folder', t('mcpMentionFolders'), 'folder'],
+      ['tag', t('chatMentionTags'), 'hash'],
     ] as const) {
       const items = this.mentionItems.filter((item) => item.type === type);
       if (items.length === 0) continue;
@@ -1159,6 +1166,10 @@ export class ChatView extends ItemView {
       });
       for (const item of items) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        if (item.type === 'tag') {
+          el.addClass('superpower-inside-mention-item-tag');
+          el.setAttribute('title', item.label);
+        }
         el.id = `${this.mentionDropdownId}-${this.mentionItems.indexOf(item)}`;
         el.setAttribute('role', 'option');
         el.setAttribute('aria-selected', 'false');
@@ -1226,7 +1237,7 @@ export class ChatView extends ItemView {
   private insertMention(item: {
     label: string;
     value: string;
-    type: 'workspace' | 'server' | 'file' | 'folder';
+    type: 'workspace' | 'server' | 'file' | 'folder' | 'tag';
   }): void {
     if (!this.inputArea) return;
     const value = this.inputArea.value;
@@ -2877,13 +2888,13 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const mentionedFolders = this.parseMentions(text).filter(
-      (mention) => mention.type === 'folder',
-    );
+    const contextMentions = this.parseMentions(text);
+    const mentionedFolders = contextMentions.filter((mention) => mention.type === 'folder');
     const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
     const wholeVaultResearch =
-      isWholeVaultResearchRequest(text) ||
-      Boolean(researchScopePath && isScopedVaultResearchRequest(text));
+      !contextMentions.some((mention) => mention.type === 'tag') &&
+      (isWholeVaultResearchRequest(text) ||
+        Boolean(researchScopePath && isScopedVaultResearchRequest(text)));
     const explicitlyMentionedServers = wholeVaultResearch ? [] : this.getMentionedServerNames(text);
     const mentionedServers = wholeVaultResearch
       ? []
@@ -4850,7 +4861,7 @@ export class ChatView extends ItemView {
     const skipAutoRag = this.skipAutoRagOnce;
     this.skipAutoRagOnce = false;
     const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
-      skipAutoRag,
+      skipAutoRag || this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
       () => this.plugin.ragEngine,
     );

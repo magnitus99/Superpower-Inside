@@ -153,7 +153,10 @@ pub fn plan_native_vault_filtered_indices_json(files_json: &str, filters_json: &
                     tags.is_some_and(|tags| {
                         tags.iter().any(|candidate| {
                             candidate.as_str().is_some_and(|candidate| {
-                                candidate.trim_start_matches('#').to_lowercase() == tag
+                                super::tag_mentions::matches_tag(
+                                    &candidate.trim_start_matches('#').to_lowercase(),
+                                    tag,
+                                )
                             })
                         })
                     })
@@ -611,6 +614,17 @@ fn word_match_count(patterns: &[regex::Regex], text: &str, match_mode: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    /// 모델이 추가 조사해도 채팅 태그 지목과 같은 하위 태그 범위를 유지한다.
+    #[test]
+    fn tag_filters_include_nested_tags_without_prefix_collisions() {
+        assert_eq!(
+            super::plan_native_vault_filtered_indices_json(
+                r##"[{"modifiedAt":0,"tags":["#Research/設計"]},{"modifiedAt":0,"tags":["#RESEARCH"]},{"modifiedAt":0,"tags":["#researcher"]}]"##,
+                r#"{"tags":["research"]}"#
+            ),
+            "[0,1]"
+        );
+    }
     use super::*;
 
     #[test]

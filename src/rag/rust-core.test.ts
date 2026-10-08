@@ -1645,6 +1645,7 @@ describe('Rust WASM RAG core bridge', () => {
     expect(planChatContextMentionsRust(['server', 'file', 'folder', 'server'])).toEqual({
       fileIndices: [1],
       folderIndices: [2],
+      tagIndices: [],
       serverIndices: [0, 3],
       useAutoRag: true,
       autoRagReason: 'server-and-vault',
@@ -1652,6 +1653,7 @@ describe('Rust WASM RAG core bridge', () => {
     expect(planChatContextMentionsRust(['server'])).toEqual({
       fileIndices: [],
       folderIndices: [],
+      tagIndices: [],
       serverIndices: [0],
       useAutoRag: false,
       autoRagReason: 'server-only',

@@ -3,12 +3,13 @@ import type { WorkspaceMentionFiles } from './workspace-mentions';
 
 export interface ParsedMention {
   raw: string;
-  type: 'file' | 'server' | 'folder';
+  type: 'file' | 'server' | 'folder' | 'tag';
   name: string;
 }
 
 export interface MentionResolver {
   workspaceFiles?: WorkspaceMentionFiles;
+  tagFiles?(tag: string): readonly string[];
   isServer(name: string): boolean;
   isFile(name: string): boolean;
   isFolder(name: string): boolean;
@@ -29,6 +30,10 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
   };
 
   for (const candidate of candidates) {
+    if (candidate.tag) {
+      mentions.push({ raw: candidate.raw, type: 'tag', name: candidate.tag });
+      continue;
+    }
     if (candidate.workspace) {
       for (const path of resolver.workspaceFiles?.[candidate.workspace] ?? []) {
         mentions.push({ raw: candidate.raw, type: 'file', name: path });

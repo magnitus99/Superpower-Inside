@@ -13,6 +13,19 @@ function resolver(): MentionResolver {
 }
 
 describe('parseMentions', () => {
+  it('태그는 경로·서버와 구분하고 존재하지 않는 태그도 빈 범위로 보존한다', () => {
+    expect(
+      parseMentions('@#연구/설계 @#RESEARCH @#research @#missing @[#literal.md]', {
+        ...resolver(),
+        isFile: (name) => name === '#literal.md',
+      }),
+    ).toEqual([
+      { raw: '@[#literal.md]', type: 'file', name: '#literal.md' },
+      { raw: '@#연구/설계', type: 'tag', name: '#연구/설계' },
+      { raw: '@#RESEARCH', type: 'tag', name: '#research' },
+      { raw: '@#missing', type: 'tag', name: '#missing' },
+    ]);
+  });
   it('현재 문서와 열린 탭을 실제 파일 참조로 확장하고 브래킷 경로를 보존한다', () => {
     const host = {
       ...resolver(),

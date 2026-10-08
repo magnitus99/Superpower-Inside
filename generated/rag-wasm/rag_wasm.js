@@ -3158,6 +3158,30 @@ export function plan_structural_linked_paths_json(seed_paths_json, edges_json) {
 }
 
 /**
+ * 호스트 메타데이터로 자동완성과 정확한 태그·하위 태그 파일 범위를 계산한다.
+ * @param {string} file_tags_json
+ * @param {string} query
+ * @param {number} max_files
+ * @returns {string}
+ */
+export function plan_tag_mentions_json(file_tags_json, query, max_files) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(file_tags_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_tag_mentions_json(ptr0, len0, ptr1, len1, max_files);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * citation 배열에서 본문을 제외한 bounded source reference JSON 배열만 만든다.
  * @param {string} citations_json
  * @returns {string}

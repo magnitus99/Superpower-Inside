@@ -9,6 +9,24 @@ import {
 } from './chat-composer';
 
 describe('ChatComposer state contract', () => {
+  it('태그 참조는 일치 문서 수·경로와 빈 범위를 미리 보여준다', () => {
+    const chips = createLiveContextPreviewChips('@#연구 @#missing', {
+      isFile: () => true,
+      isFolder: () => false,
+      isServer: () => false,
+      tagFiles: (tag) => (tag === '#연구' ? ['Notes/A.md', 'Notes/B.md'] : []),
+    });
+    expect(chips).toContainEqual(
+      expect.objectContaining({
+        label: '@#연구',
+        cls: 'tag',
+        paths: ['Notes/A.md', 'Notes/B.md'],
+        valid: true,
+        detail: '하위 태그 포함 · 문서 2개',
+      }),
+    );
+    expect(chips).toContainEqual(expect.objectContaining({ label: '@#missing', valid: false }));
+  });
   it('붙여넣은 참조의 실제 경로와 빈 작업공간·누락 경로 상태를 즉시 표시한다', () => {
     const chips = createLiveContextPreviewChips('@current @tabs @[없는 폴더/문서.md] @Notes', {
       workspaceFiles: { current: ['Notes/A.md'], tabs: [] },

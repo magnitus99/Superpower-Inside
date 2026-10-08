@@ -14,10 +14,87 @@ vi.mock('obsidian', () => {
     stat = { ctime: 0, mtime: 0, size: 0 };
   }
   class MockTFolder {}
-  return { TFile: MockTFile, TFolder: MockTFolder };
+  return {
+    TFile: MockTFile,
+    TFolder: MockTFolder,
+    getAllTags: (cache: { tags?: { tag: string }[]; frontmatter?: { tags?: string[] } }) => [
+      ...(cache.tags ?? []).map((tag) => tag.tag),
+      ...(cache.frontmatter?.tags ?? []).map((tag) => `#${tag}`),
+    ],
+  };
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('태그의 본문·속성·하위 태그 문서만 첨부하고 중복·제외·범위 밖 자료를 막는다', async () => {
+    const files = [
+      createFile('Alpha.md', '합성 태그 본문 근거', 1000),
+      createFile('Beta.md', '합성 속성 태그 근거', 1000),
+      createFile('Gamma.md', '범위 밖 자료', 1000),
+      createFile('Hidden.md', '---\nsuperpower-inside-exclude: true\n---\n제외 자료', 1000),
+    ];
+    const metadata = new Map([
+      ['Alpha.md', { tags: [{ tag: '#Research/설계' }] }],
+      ['Beta.md', { frontmatter: { tags: ['research'] } }],
+      ['Gamma.md', { tags: [{ tag: '#researcher' }] }],
+      [
+        'Hidden.md',
+        { tags: [{ tag: '#research' }], frontmatter: { 'superpower-inside-exclude': true } },
+      ],
+    ]);
+    const app = createApp(
+      new Map(files.map((file) => [file.path, file])),
+      new Map(),
+      new Set(),
+      metadata,
+    );
+    const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+    const context = await buildChatContext('@#RESEARCH @#research @Alpha.md', {
+      app,
+      ragEngine: { query },
+    });
+    expect(context.systemPrompt).toContain('합성 태그 본문 근거');
+    expect(context.systemPrompt).toContain('합성 속성 태그 근거');
+    expect(context.systemPrompt).not.toContain('범위 밖 자료');
+    expect(context.systemPrompt).not.toContain('제외 자료');
+    expect(context.citations.map((citation) => citation.filePath)).toEqual(['Alpha.md', 'Beta.md']);
+    expect(context.attachments.filter((item) => item.type === 'tag')).toHaveLength(1);
+    expect(query).not.toHaveBeenCalled();
+    const bounded = await buildChatContext('@#research', { app, maxFolderFiles: 1 });
+    expect(bounded.attachments[0]).toMatchObject({
+      type: 'tag',
+      status: 'partial',
+      fileCount: 1,
+      filteredCount: 1,
+    });
+    const restricted = await buildChatContext('@#research', {
+      app,
+      candidatePaths: new Set(['Beta.md']),
+    });
+    expect(restricted.citations.map((citation) => citation.filePath)).toEqual(['Beta.md']);
+    const empty = await buildChatContext('@#missing', { app, ragEngine: { query } });
+    expect(empty.citations).toEqual([]);
+    expect(empty.attachments[0]).toMatchObject({ type: 'tag', status: 'missing', excluded: true });
+    metadata.set('Beta.md', { frontmatter: { tags: ['other'] } });
+    const changed = await buildChatContext('@#research', { app });
+    expect(changed.citations.map((citation) => citation.filePath)).toEqual(['Alpha.md']);
+  });
+
+  it('태그 첨부의 읽기 실패와 분량 제한을 부분 첨부로 표시한다', async () => {
+    const files = [
+      createFile('A.md', '합성 근거'.repeat(1000), 1000),
+      createFile('B.md', '합성 근거', 1000),
+    ];
+    const metadata = new Map(files.map((file) => [file.path, { tags: [{ tag: '#topic' }] }]));
+    const app = createApp(
+      new Map(files.map((file) => [file.path, file])),
+      new Map(),
+      new Set(['B.md']),
+      metadata,
+    );
+    const context = await buildChatContext('@#topic', { app, maxContextChars: 300 });
+    expect(context.attachments[0]).toMatchObject({ type: 'tag', status: 'partial' });
+    expect(context.contextBudgetSnapshot?.usedChars).toBeLessThanOrEqual(300);
+  });
   it('도구가 활성화된 큰 폴더는 검색 범위만 전달한다', async () => {
     const files = Array.from({ length: 15 }, (_, index) =>
       createFile('fixtures/' + index + '.md', '합성 부품 설명'.repeat(1000), 1000),
@@ -831,6 +908,10 @@ function createApp(
   files: Map<string, TFile & { content: string }>,
   folders = new Map<string, TFolder & { path: string }>(),
   readErrors = new Set<string>(),
+  tagMetadata = new Map<
+    string,
+    { tags?: { tag: string }[]; frontmatter?: Record<string, unknown> }
+  >(),
 ): App {
   return {
     workspace: { getActiveFile: () => null, iterateAllLeaves: () => undefined },
@@ -844,6 +925,7 @@ function createApp(
       getFiles: () => [...files.values()],
     },
     metadataCache: {
+      getFileCache: (file: TFile) => tagMetadata.get(file.path) ?? null,
       getFirstLinkpathDest: (linkpath: string, sourcePath: string) => {
         const sourceFolder = sourcePath.split('/').slice(0, -1).join('/');
         const candidates = [

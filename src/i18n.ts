@@ -545,6 +545,11 @@ export interface I18nKeys {
   chatWorkspaceMentions: string;
   chatCurrentMentionEmpty: string;
   chatTabsMentionEmpty: string;
+  chatMentionTags: string;
+  chatTagMentionCount: string;
+  chatTagMentionEmpty: string;
+  chatTagMentionPartial: string;
+  contextTagScopePrompt: string;
   chatReferenceAvailable: string;
   chatReferenceMissing: string;
   chatReferenceUnavailable: string;
@@ -2148,6 +2153,13 @@ const ko: I18nKeys = {
   chatWorkspaceMentions: '보고 있는 문서',
   chatCurrentMentionEmpty: '현재 문서가 없습니다.',
   chatTabsMentionEmpty: '열린 문서가 없습니다.',
+  chatMentionTags: '태그',
+  chatTagMentionCount: '하위 태그 포함 · 문서 {count}개',
+  chatTagMentionEmpty: '이 태그의 첨부 가능한 문서가 없습니다.',
+  chatTagMentionPartial:
+    '태그 문서 {total}개 중 최대 {count}개를 첨부합니다. 파일 수·분량 제한이나 읽기 실패로 일부 근거만 전달될 수 있습니다.',
+  contextTagScopePrompt:
+    '사용자가 지정한 태그 범위: {tags}. 대소문자를 구분하지 않고 하위 태그도 포함합니다. 답변 근거는 이 태그 범위와 함께 명시한 파일·폴더에 한정하세요. 도구로 추가 조사할 때도 태그 범위를 확인하세요. 첨부가 일부일 수 있으므로 첨부되지 않은 문서가 없다고 단정하지 마세요.',
   chatReferenceAvailable: '사용 가능',
   chatReferenceMissing: '찾을 수 없음',
   chatReferenceUnavailable: '참조를 확인할 수 없습니다.',
@@ -3880,6 +3892,13 @@ const en: I18nKeys = {
   chatWorkspaceMentions: 'Workspace documents',
   chatCurrentMentionEmpty: 'No current document.',
   chatTabsMentionEmpty: 'No open documents.',
+  chatMentionTags: 'Tags',
+  chatTagMentionCount: 'Including nested tags · {count} documents',
+  chatTagMentionEmpty: 'No attachable documents for this tag.',
+  chatTagMentionPartial:
+    'Attaching up to {count} of {total} tagged documents. File or context limits and read failures may leave some evidence out.',
+  contextTagScopePrompt:
+    'User-selected tag scope: {tags}. Match tags case-insensitively, including nested tags. Ground the answer in this tag scope and any explicitly mentioned files or folders. Check the tag scope when investigating further with tools. Attachments may be partial; do not infer that unattached documents are absent.',
   chatReferenceAvailable: 'Available',
   chatReferenceMissing: 'Not found',
   chatReferenceUnavailable: 'References could not be checked.',

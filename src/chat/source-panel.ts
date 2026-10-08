@@ -233,6 +233,8 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
           })
         : name;
     }
+    case 'tag':
+      return `@${attachment.name}`;
     case 'reference':
       return t('contextChipReferenceAttached', { name });
     case 'file':

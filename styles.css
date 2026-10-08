@@ -4631,6 +4631,11 @@ button.superpower-inside-prompt-danger-btn:disabled {
   color: var(--text-muted);
 }
 
+.superpower-inside-mention-item-tag .superpower-inside-mention-item-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* MCP Status Bar in Chat */
 .superpower-inside-chat-mcp-status-bar {
   display: flex;
