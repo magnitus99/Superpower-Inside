@@ -3931,7 +3931,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
 .superpower-inside-chat-citation-marker {
   border-bottom: 1px dotted var(--interactive-accent);
   color: var(--text-accent);
-  cursor: default;
+  cursor: pointer;
   font-weight: 600;
 }
 
@@ -7362,8 +7362,9 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-chat-assistant-response .superpower-inside-chat-citation-marker {
-  display: inline-flex;
-  align-items: center;
+  display: inline;
+  overflow-wrap: anywhere;
+  white-space: normal;
   padding: 1px 5px;
   border: 0;
   border-radius: 5px;

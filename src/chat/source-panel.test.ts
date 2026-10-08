@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguage } from '../i18n';
+import { planModelContextRust } from '../rag/rust-core';
 import {
   SourcePanel,
   createCitationSectionView,
+  createCitationMarkerView,
   createContextAttachmentChipViews,
   createContextBudgetView,
   createDataBoundaryView,
@@ -156,8 +158,67 @@ afterAll(() => {
 });
 
 describe('SourcePanel view model contract', () => {
+  it('검색 범위를 첨부한 문서 수로 표시하지 않고 모델 기본값과 예약 공간을 구분한다', () => {
+    setLanguage('ko');
+    const scope = createContextAttachmentChipViews([
+      {
+        id: 'folder:docs',
+        type: 'folder',
+        name: 'docs',
+        label: 'docs',
+        status: 'attached',
+        scopeOnly: true,
+        fileCount: 19,
+        sourceIds: [],
+      },
+    ]);
+    expect(scope[0].label).toBe('docs 범위에서 검색');
+    expect(scope[0].label).not.toContain('19');
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({})!,
+    };
+    expect(createContextBudgetView(snapshot).detailText).toContain('50000토큰');
+    expect(createContextBudgetView(snapshot).detailText).toContain('정보 없음, 기본값');
+    expect(shouldRenderContextBudget(snapshot)).toBe(true);
+    setLanguage('en');
+  });
   beforeEach(() => {
     setLanguage('en');
+  });
+
+  it('내부 출처 ID 대신 합성 파일 경로와 원문 범위를 표시한다', () => {
+    setLanguage('ko');
+    const view = createCitationMarkerView({
+      id: 'folder-7',
+      filePath: 'fixtures/parts.md',
+      line: 12,
+      endLine: 14,
+      status: 'verified',
+      preview: '합성 부품 설명',
+    });
+    expect(view.label).toBe('fixtures/parts.md · 12–14행');
+    expect(view.ariaLabel).toBe('fixtures/parts.md · 12–14행 출처로 이동');
+    expect(JSON.stringify(view)).not.toContain('folder-7');
+  });
+
+  it('출처 위치가 없거나 단일 행이면 내부 번호나 중복 범위를 표시하지 않는다', () => {
+    const citation: SourceCitation = {
+      id: 'rag-1',
+      filePath: 'Notes/A.md',
+      preview: '',
+    };
+    expect(createCitationMarkerView(citation).label).toBe('Notes/A.md');
+    expect(createCitationMarkerView({ ...citation, line: 3, endLine: 3 }).label).toBe(
+      'Notes/A.md · line 3',
+    );
+    expect(createCitationMarkerView({ ...citation, line: 3, endLine: 6 }).label).toBe(
+      'Notes/A.md · line 3–6',
+    );
   });
 
   it('실제 출처 패널의 첨부 표시 경로에서 포함·부분 포함·연결 실패 상태를 보존한다', () => {

@@ -89,6 +89,24 @@ export function createCitationCardView(citation: SourceCitation): CitationCardVi
   };
 }
 
+/** 내부 출처 ID는 연결에만 쓰고 화면에는 실제 파일과 원문 위치를 표시합니다. */
+export function createCitationMarkerView(citation: SourceCitation): {
+  label: string;
+  ariaLabel: string;
+} {
+  const line =
+    citation.line === undefined
+      ? ''
+      : t('sourceLineMeta', {
+          line:
+            citation.endLine !== undefined && citation.endLine > citation.line
+              ? `${citation.line}–${citation.endLine}`
+              : citation.line,
+        });
+  const label = [citation.filePath, line].filter(Boolean).join(' · ');
+  return { label, ariaLabel: t('citationMarkerAria', { id: label }) };
+}
+
 export function createSourceWarningViews(
   warnings: readonly SourceValidationWarning[],
 ): SourceWarningView[] {
@@ -128,16 +146,34 @@ export function createContextBudgetView(snapshot: ContextBudgetSnapshot): Contex
       count: includedCount,
       itemLabel: formatItemLabel(includedCount),
     }),
-    detailText: t('contextBudgetItemsLeftOut', {
-      count: excludedCount,
-      itemLabel: formatItemLabel(excludedCount),
-    }),
+    detailText: [
+      snapshot.modelContext
+        ? t('contextModelLimit', {
+            tokens: snapshot.modelContext.contextTokens,
+            source:
+              snapshot.modelContext.source === 'provider'
+                ? t('contextModelSourceProvider')
+                : t('contextModelSourceFallback'),
+            output: snapshot.modelContext.outputTokens,
+          })
+        : '',
+      t('contextBudgetItemsLeftOut', {
+        count: excludedCount,
+        itemLabel: formatItemLabel(excludedCount),
+      }),
+    ]
+      .filter(Boolean)
+      .join(' · '),
     truncatedText: snapshot.truncated ? t('contextBudgetTruncated') : undefined,
   };
 }
 
 export function shouldRenderContextBudget(snapshot: ContextBudgetSnapshot): boolean {
-  return snapshot.truncated || (snapshot.excludedAttachmentIds?.length ?? 0) > 0;
+  return (
+    Boolean(snapshot.modelContext) ||
+    snapshot.truncated ||
+    (snapshot.excludedAttachmentIds?.length ?? 0) > 0
+  );
 }
 
 export interface DataBoundaryView {
@@ -187,6 +223,7 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
       }
       return t('contextChipNoRelatedNotes');
     case 'folder': {
+      if (attachment.scopeOnly) return t('contextFolderScopeChip', { name });
       const fileCount = attachment.fileCount ?? attachment.sourceIds?.length ?? 0;
       return fileCount > 0
         ? t('contextChipFolderNotesUsed', {
@@ -357,7 +394,7 @@ export class SourcePanel {
       const card = content.createDiv({ cls: cardView.className });
       card.setAttribute('tabindex', '0');
       card.setAttribute('data-citation-id', cardView.id);
-      card.setAttribute('aria-label', t('citationMarkerAria', { id: cardView.id }));
+      card.setAttribute('aria-label', createCitationMarkerView(citation).ariaLabel);
       card.addEventListener('focus', () => this.setCitationHighlight(container, cardView.id, true));
       card.addEventListener('blur', () => this.setCitationHighlight(container, cardView.id, false));
       card.addEventListener('mouseenter', () =>
@@ -582,6 +619,7 @@ export class SourcePanel {
     if (!isDomInstance(bubble, HTMLElement)) return;
     const ids = citations.map((citation) => citation.id).filter(Boolean);
     if (ids.length === 0) return;
+    const citationsById = new Map(citations.map((citation) => [citation.id, citation]));
     const pattern = new RegExp(`\\b(${ids.map(escapeRegExp).join('|')})\\b`, 'g');
     const doc = container.ownerDocument;
     const walker = doc.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
@@ -607,12 +645,19 @@ export class SourcePanel {
           fragments.push(doc.createTextNode(text.slice(lastIndex, match.index)));
         }
         const citationId = match[1] ?? '';
-        const marker = doc.createElement('span');
+        const citation = citationsById.get(citationId);
+        if (!citation) continue;
+        const view = createCitationMarkerView(citation);
+        const marker = doc.createElement('a');
         marker.addClass('superpower-inside-chat-citation-marker');
-        marker.setAttribute('tabindex', '0');
+        marker.setAttribute('href', '#');
         marker.setAttribute('data-citation-id', citationId);
-        marker.setAttribute('aria-label', t('citationMarkerAria', { id: citationId }));
-        marker.setText(citationId);
+        marker.setAttribute('aria-label', view.ariaLabel);
+        marker.setText(view.label);
+        marker.addEventListener('click', (event) => {
+          event.preventDefault();
+          void this.handlers.openCitation(citation);
+        });
         marker.addEventListener('focus', () =>
           this.setCitationHighlight(container, citationId, true),
         );
