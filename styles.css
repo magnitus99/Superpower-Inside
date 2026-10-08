@@ -2275,6 +2275,12 @@ button.superpower-inside-prompt-danger-btn:disabled {
   font-size: var(--font-ui-smaller);
 }
 
+.superpower-inside-document-exclusion-hotkey {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-frontmatter-exclusion-path {
   padding: var(--superpower-inside-row-padding) 0;
   border-bottom: 1px solid var(--background-modifier-border);

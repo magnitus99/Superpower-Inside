@@ -324,6 +324,14 @@ export interface I18nKeys {
   intervalMinutes: string;
   excludePaths: string;
   frontmatterExclusions: string;
+  cmdToggleDocumentExclusion: string;
+  documentExclusionEnabled: string;
+  documentExclusionDisabled: string;
+  documentExclusionFailed: string;
+  documentExclusionHotkeyDesc: string;
+  documentExclusionHotkeyConfigure: string;
+  documentExclusionHotkeyUnset: string;
+  documentExclusionHotkeyUnavailable: string;
   frontmatterExclusionsDesc: string;
   frontmatterExclusionsEmpty: string;
   frontmatterExclusionsLoading: string;
@@ -1886,8 +1894,17 @@ const ko: I18nKeys = {
   intervalMinutes: '분',
   excludePaths: '제외할 경로',
   frontmatterExclusions: 'YAML로 제외한 문서',
+  cmdToggleDocumentExclusion: '현재 문서의 검색 제외 전환',
+  documentExclusionEnabled: '검색에서 제외했습니다: {path}',
+  documentExclusionDisabled: 'YAML 제외를 해제했습니다: {path}. 다른 제외 규칙은 계속 적용됩니다.',
+  documentExclusionFailed: '문서 제외 상태를 바꾸지 못했습니다.',
+  documentExclusionHotkeyDesc:
+    '현재 문서의 YAML 제외를 켜거나 끕니다. 명령 팔레트에서도 검색할 수 있습니다. 단축키 설정에서 키를 지정하거나 충돌을 확인하세요.',
+  documentExclusionHotkeyConfigure: '단축키 설정',
+  documentExclusionHotkeyUnset: '미설정',
+  documentExclusionHotkeyUnavailable: '단축키 설정을 사용할 수 없습니다.',
   frontmatterExclusionsDesc:
-    '문서 맨 위 YAML에 superpower-inside-exclude: true를 넣으면 내장 볼트 도구·BM25·임베딩에서 제외됩니다. 다시 포함하려면 문서에서 속성을 지우거나 false로 바꾸세요.',
+    '문서 맨 위 YAML에 superpower-inside-exclude 속성이 있으면 임베딩·BM25·RAG·내장 볼트 도구 모두에서 제외됩니다. 값이 false인 경우만 예외이며 따옴표 유무는 상관없습니다. 해제하려면 속성을 삭제하거나 아래 명령으로 전환하세요. 경로·확장자 등 다른 제외 규칙은 계속 적용됩니다.',
   frontmatterExclusionsEmpty: 'YAML로 제외한 문서가 없습니다.',
   frontmatterExclusionsLoading: '문서의 YAML을 확인하는 중입니다.',
   frontmatterExclusionsError: '제외 문서 목록을 불러오지 못했습니다.',
@@ -3598,8 +3615,17 @@ const en: I18nKeys = {
   intervalMinutes: 'minutes',
   excludePaths: 'Exclude Paths',
   frontmatterExclusions: 'Documents excluded by YAML',
+  cmdToggleDocumentExclusion: 'Toggle search exclusion for current document',
+  documentExclusionEnabled: 'Excluded from search: {path}',
+  documentExclusionDisabled: 'YAML exclusion removed: {path}. Other exclusion rules still apply.',
+  documentExclusionFailed: 'Could not change the document exclusion.',
+  documentExclusionHotkeyDesc:
+    'Toggle YAML exclusion for the current document. You can also find this command in the command palette. Assign a key or check conflicts in Hotkeys.',
+  documentExclusionHotkeyConfigure: 'Set hotkey',
+  documentExclusionHotkeyUnset: 'Not assigned',
+  documentExclusionHotkeyUnavailable: 'Hotkey settings are unavailable.',
   frontmatterExclusionsDesc:
-    'Add superpower-inside-exclude: true to the YAML at the top of a document to exclude it from built-in vault tools, BM25, and embeddings. To include it again, remove the property or set it to false in the document.',
+    'A superpower-inside-exclude property in the YAML at the top of a document excludes it from embeddings, BM25, RAG, and built-in vault tools. Only false is exempt, with or without quotes. Remove the property or use the command below to clear YAML exclusion. Other exclusions, such as paths and extensions, still apply.',
   frontmatterExclusionsEmpty: 'No documents excluded by YAML.',
   frontmatterExclusionsLoading: 'Checking document YAML.',
   frontmatterExclusionsError: 'Could not load the excluded document list.',

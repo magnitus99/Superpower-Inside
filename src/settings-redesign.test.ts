@@ -11,6 +11,22 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('YAML 제외 영역에서 토글 명령의 현재 핫키와 기본 설정 화면 진입을 제공한다', () => {
+    const start = settingsSource.indexOf('private buildFrontmatterExclusions(');
+    const end = settingsSource.indexOf('private buildIndexingOptionsSection(', start);
+    const source = settingsSource.slice(start, end);
+    expect(source).toContain('getDocumentExclusionHotkeyLabel');
+    expect(source).toContain('openDocumentExclusionHotkeys');
+    expect(source).toContain("t('documentExclusionHotkeyUnset')");
+    expect(source).toContain("t('documentExclusionHotkeyUnavailable')");
+    expect(source).not.toContain('saveSettings(');
+    expect(mainSource).toContain('id: TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID');
+    expect(mainSource).toContain('toggleDocumentExclusion(this.app, file)');
+    expect(mainSource).toContain("if (!file || file.extension !== 'md') return false;");
+    const commandStart = mainSource.indexOf('id: TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID');
+    const commandEnd = mainSource.indexOf("id: 'open-ai-chat'", commandStart);
+    expect(mainSource.slice(commandStart, commandEnd)).not.toContain('hotkeys:');
+  });
   it('YAML 제외 문서 목록은 읽기 전용이고 문서 변경 시 새로고침한다', () => {
     const start = settingsSource.indexOf('private buildFrontmatterExclusions(');
     const end = settingsSource.indexOf('private buildIndexingOptionsSection(', start);
@@ -154,7 +170,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(details).toBeGreaterThan(source.indexOf('const cancelBtn'));
     expect(source).toContain("'embedding-model-details'");
     expect(source).toContain("t('localModelsTitle')");
-    expect(source).toContain('const noteContainer = selectedProvider ? modelDetails.content : section;');
+    expect(source).toContain(
+      'const noteContainer = selectedProvider ? modelDetails.content : section;',
+    );
     expect(source).toContain('noteContainer.createDiv(');
     expect(source).toMatch(/buildLocalEmbeddingModelSettings\(\s*modelDetails.content,/);
     const localSource = readFileSync(resolve(root, 'src/llm/local-embedding-settings.ts'), 'utf8');
@@ -747,7 +765,10 @@ describe('설정 화면 리디자인 구조', () => {
     const subscriptionEnd = settingsSource.indexOf('\n        }),', subscriptionStart);
     const subscriptionSource = settingsSource.slice(subscriptionStart, subscriptionEnd);
     const repopulateStart = settingsSource.indexOf('private repopulateDefaultModelDropdown()');
-    const repopulateEnd = settingsSource.indexOf('\n  private createSettingsSection', repopulateStart);
+    const repopulateEnd = settingsSource.indexOf(
+      '\n  private createSettingsSection',
+      repopulateStart,
+    );
     const repopulateSource = settingsSource.slice(repopulateStart, repopulateEnd);
     expect(subscriptionSource).toContain('this.repopulateDefaultModelDropdown()');
     expect(repopulateSource).not.toContain("refreshBus.emit('models'");

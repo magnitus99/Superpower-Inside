@@ -13,6 +13,10 @@ import {
   writeJsonToVault,
 } from './src/utils/vault';
 import {
+  TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
+  toggleDocumentExclusion,
+} from './src/utils/document-exclusion';
+import {
   type SuperpowerInsideSettings,
   DEFAULT_SETTINGS,
   isCustomOpenAIEmbeddingProviderKey,
@@ -325,6 +329,44 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     // 명령어
+    this.addCommand({
+      id: TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
+      name: t('cmdToggleDocumentExclusion'),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== 'md') return false;
+        if (!checking) {
+          void toggleDocumentExclusion(this.app, file)
+            .then(async (excluded) => {
+              new Notice(
+                t(excluded ? 'documentExclusionEnabled' : 'documentExclusionDisabled', {
+                  path: file.path,
+                }),
+              );
+              if (excluded) {
+                try {
+                  await this.vaultIndexer?.removeFile(file.path);
+                } catch (error) {
+                  this.getLogger().warn('Excluded document index cleanup failed.', {
+                    source: 'vault.exclusion',
+                    error,
+                  });
+                }
+              }
+              this.refreshBus.emit('rag', { status: 'success' });
+              this.refreshBus.emit('exclude-counts', { status: 'success' });
+            })
+            .catch((error: unknown) => {
+              this.getLogger().error('Document exclusion toggle failed.', {
+                source: 'vault.exclusion',
+                error,
+              });
+              new Notice(t('documentExclusionFailed'));
+            });
+        }
+        return true;
+      },
+    });
     this.addCommand({
       id: 'open-ai-chat',
       name: t('cmdOpenAiChat'),

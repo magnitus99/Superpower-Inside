@@ -83,6 +83,11 @@ import {
   getEffectiveExcludePaths,
   getRagFileTypeSummary,
 } from './utils/vault';
+import { TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID } from './utils/document-exclusion';
+import {
+  getDocumentExclusionHotkeyLabel,
+  openDocumentExclusionHotkeys,
+} from './utils/document-exclusion-hotkeys';
 import { isLocalizedValue, setLanguage, type Language, t } from './i18n';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
@@ -4279,6 +4284,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t('frontmatterExclusions'))
       .setDesc(t('frontmatterExclusionsDesc'));
+    const commandId = `${this.plugin.manifest?.id ?? 'superpower-inside'}:${TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID}`;
+    const hotkey = getDocumentExclusionHotkeyLabel(this.app, commandId);
+    const hotkeySetting = new Setting(containerEl)
+      .setName(t('cmdToggleDocumentExclusion'))
+      .setDesc(t('documentExclusionHotkeyDesc'));
+    hotkeySetting.controlEl.createSpan({
+      cls: 'superpower-inside-document-exclusion-hotkey',
+      text:
+        hotkey === ''
+          ? t('documentExclusionHotkeyUnset')
+          : (hotkey ?? t('documentExclusionHotkeyUnavailable')),
+    });
+    hotkeySetting.addButton((button) => {
+      button.setButtonText(t('documentExclusionHotkeyConfigure')).setDisabled(hotkey === null);
+      button.onClick(() => {
+        if (!openDocumentExclusionHotkeys(this.app, commandId))
+          new Notice(t('documentExclusionHotkeyUnavailable'));
+      });
+    });
     const list = containerEl.createDiv({
       cls: 'superpower-inside-frontmatter-exclusions',
       attr: { role: 'status', 'aria-live': 'polite' },
