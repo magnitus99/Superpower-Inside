@@ -111,7 +111,7 @@ export function resolveRagPerformanceSettings(
   return {
     enabled: true,
     maxEmbeddingBatchSize:
-      embeddingStrategy === 'ollama' || modelId === 'embeddinggemma-300m' ? 1 : 32,
+      modelId === 'embeddinggemma-300m' ? 4 : embeddingStrategy === 'ollama' ? 1 : 32,
     indexingYieldMs: 0,
     slowEventLoopThresholdMs: 24,
     slowBatchThresholdMs: 1500,

@@ -2134,16 +2134,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
             this.ragPerformanceGuard?.getBatchSize() ?? adaptiveBatchSize,
           getIndexingYieldMs: () => this.ragPerformanceGuard?.getYieldMs() ?? indexingYieldMs,
           onBatchComplete: async (durationMs, batchSize) => {
+            this.ragPerformanceGuard?.recordBatchDuration(durationMs, batchSize);
+            const eventLoopLagMs = await this.ragPerformanceGuard?.measureEventLoopLag();
+            const guardState = this.ragPerformanceGuard?.getState();
             this.getLogger().debug('RAG embedding batch completed.', {
               source: 'rag.indexing',
               data: {
                 durationMs: Math.round(durationMs),
                 batchSize,
-                guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
+                guardState: guardState?.mode ?? 'normal',
+                eventLoopLagMs,
+                nextBatchSize: guardState?.currentBatchSize ?? adaptiveBatchSize,
+                yieldMs: guardState?.currentYieldMs ?? 0,
               },
             });
-            this.ragPerformanceGuard?.recordBatchDuration(durationMs, batchSize);
-            await this.ragPerformanceGuard?.measureEventLoopLag();
           },
           onProgress: (progress) => {
             void this.recordAgentDiagnosticsBreadcrumb({

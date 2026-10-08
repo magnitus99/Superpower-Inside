@@ -535,7 +535,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual(gemma.verification);
     expect(resolveRagPerformanceSettings('ternlight', 'embeddinggemma-300m')).toMatchObject({
       enabled: true,
-      maxEmbeddingBatchSize: 1,
+      maxEmbeddingBatchSize: 4,
     });
   });
 

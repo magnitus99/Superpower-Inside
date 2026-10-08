@@ -14,6 +14,31 @@ describe('PerformanceGuard', () => {
     vi.useRealTimers();
   });
 
+  it('Gemma의 다중 청크 배치는 과부하에서 축소하고 정상 속도로 돌아오면 자동 복구한다', () => {
+    const guard = new PerformanceGuard({
+      ...OPTIONS,
+      initialBatchSize: 4,
+      slowBatchThresholdMs: 1500,
+      slowEventLoopThresholdMs: 24,
+    });
+    expect(guard.getBatchSize()).toBe(4);
+    guard.recordBatchDuration(12_000, 4);
+    expect(guard.getBatchSize()).toBe(2);
+    guard.recordBatchDuration(6_000, 2);
+    expect(guard.getBatchSize()).toBe(1);
+    guard.recordEventLoopLag(200);
+    expect(guard.getYieldMs()).toBe(176);
+    for (let index = 0; index < 8; index++) {
+      guard.recordBatchDuration(100, guard.getBatchSize());
+      guard.recordEventLoopLag(5);
+    }
+    expect(guard.getState()).toMatchObject({
+      mode: 'normal',
+      currentBatchSize: 4,
+      currentYieldMs: 0,
+    });
+  });
+
   it('느린 요청은 고정 sleep을 추가하지 않고 다음 배치 크기를 자동 축소한다', () => {
     const guard = new PerformanceGuard(OPTIONS);
 
