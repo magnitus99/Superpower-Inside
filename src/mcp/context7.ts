@@ -42,6 +42,9 @@ export function shouldShowPluginAwareContext7Warning(input: {
   pluginAwareEnabled: boolean;
   servers: readonly (Pick<MCPServerConfig, 'name' | 'command'> &
     Partial<Pick<MCPServerConfig, 'args'>>)[];
+  connected?: boolean;
 }): boolean {
-  return input.pluginAwareEnabled && !hasContext7McpServer(input.servers);
+  return (
+    input.pluginAwareEnabled && (!hasContext7McpServer(input.servers) || input.connected === false)
+  );
 }

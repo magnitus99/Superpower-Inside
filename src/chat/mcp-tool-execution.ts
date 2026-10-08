@@ -14,9 +14,9 @@ import { matchesMcpProviderToolAlias, type McpToolBindingAllowlist } from './mcp
 import type { ToolCallRecord, ToolExecutionPolicy } from './types';
 
 export interface MCPToolClientLike {
-  listTools(): Promise<
-    { name: string; description?: string; inputSchema?: Record<string, unknown> }[]
-  >;
+  listTools(
+    signal?: AbortSignal,
+  ): Promise<{ name: string; description?: string; inputSchema?: Record<string, unknown> }[]>;
   callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 }
 

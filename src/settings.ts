@@ -99,6 +99,7 @@ import {
 import type { TernlightRuntimeOptions } from './llm/ternlight-runtime';
 import {
   createDefaultContext7McpServer,
+  isContext7McpServer,
   shouldShowPluginAwareContext7Warning,
 } from './mcp/context7';
 import {
@@ -5224,6 +5225,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       shouldShowPluginAwareContext7Warning({
         pluginAwareEnabled: enabled,
         servers: this.plugin.settings.mcpServers,
+        connected: this.plugin.settings.mcpServers.some(
+          (server) =>
+            isContext7McpServer(server) &&
+            this.plugin.mcpRegistry?.getConnectionStatus(server.name) === 'connected',
+        ),
       })
     ) {
       this.createSettingsNotice(body, {

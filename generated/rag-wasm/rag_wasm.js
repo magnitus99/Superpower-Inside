@@ -2311,6 +2311,32 @@ export function plan_native_vault_tool_request_json(arguments_json) {
 }
 
 /**
+ * 현재 요청에 관련된 인덱스를 반환하며 네 번째 항목으로 조회 상한 초과를 알린다.
+ * @param {string} prompt
+ * @param {string} previous_json
+ * @param {string} plugins_json
+ * @returns {string}
+ */
+export function plan_plugin_aware_indices_json(prompt, previous_json, plugins_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(prompt, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(previous_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(plugins_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_plugin_aware_indices_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Plans bounded cleanup for files whose names prove that this plugin owns them.
  * @param {string} input_json
  * @returns {string}
@@ -3614,6 +3640,30 @@ export function select_diverse_indices(scores, vectors, dimensions, source_keys,
     var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v5;
+}
+
+/**
+ * Context7 검색에서 이름이 일치하는 단일 문서 ID만 선택한다.
+ * 동명이거나 모호한 후보는 임의로 첫 결과를 선택하지 않는다.
+ * @param {string} plugin_json
+ * @param {string} result_json
+ * @returns {string}
+ */
+export function select_plugin_context7_library_id(plugin_json, result_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(plugin_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(result_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.select_plugin_context7_library_id(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
 }
 
 /**

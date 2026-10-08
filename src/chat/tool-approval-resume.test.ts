@@ -152,9 +152,13 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     const loopSource = viewSource.slice(loopStart, loopEnd);
 
     expect(initialBoundarySource).toContain('hasSystemPrompt: true');
-    expect(initialBoundarySource).toContain('mcpServerNames: []');
+    expect(initialBoundarySource).toContain(
+      'mcpServerNames: promptContext.preparedMcpServerNames ?? []',
+    );
     expect(resumeBoundarySource).toContain('hasSystemPrompt: true');
-    expect(resumeBoundarySource).toContain('mcpServerNames: []');
+    expect(resumeBoundarySource).toContain(
+      'mcpServerNames: promptContext.preparedMcpServerNames ?? []',
+    );
     expect(loopSource).toContain('collectCompletedMcpServerNames(allToolCalls)');
     expect(loopSource).toContain('mcpServerNames,');
   });

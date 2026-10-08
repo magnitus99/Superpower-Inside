@@ -7,7 +7,8 @@ describe('플러그인 인식 Context7 서버 선택', () => {
     const servers = getPluginAwareServerNames({
       mentionedServerNames: ['serper'],
       pluginAwareEnabled: true,
-      userText: 'TypeScript API 사용법을 알려줘',
+      plugins: [{ id: 'sample-query', name: 'Sample Query' }],
+      userText: 'Sample Query로 목록 만들어줘',
       registry: createRegistry('connected'),
     });
 
@@ -18,6 +19,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
     const servers = getPluginAwareServerNames({
       mentionedServerNames: ['context7'],
       pluginAwareEnabled: true,
+      plugins: [{ id: 'sample-query', name: 'Sample Query' }],
       userText: '아무 질문',
       registry: createRegistry('connected'),
     });
@@ -30,7 +32,8 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: false,
-        userText: 'TypeScript API',
+        plugins: [{ id: 'sample-query', name: 'Sample Query' }],
+        userText: 'Sample Query 사용법',
         registry: createRegistry('connected'),
       }),
     ).toEqual([]);
@@ -38,7 +41,8 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: true,
-        userText: 'TypeScript API',
+        plugins: [{ id: 'sample-query', name: 'Sample Query' }],
+        userText: 'Sample Query 사용법',
         registry: createRegistry('disconnected'),
       }),
     ).toEqual([]);
@@ -49,6 +53,7 @@ describe('플러그인 인식 Context7 서버 선택', () => {
       getPluginAwareServerNames({
         mentionedServerNames: [],
         pluginAwareEnabled: true,
+        plugins: [{ id: 'sample-query', name: 'Sample Query' }],
         userText: '오로라 프로젝트의 진행 상황을 알려줘',
         registry: createRegistry('connected'),
       }),

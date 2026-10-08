@@ -1259,7 +1259,14 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(buildMcpJsonEditorValue([])).toBe(JSON.stringify({ mcpServers: {} }, null, 2));
   });
 
-  it('플러그인 인식 생성이 켜졌고 Context7가 없을 때만 경고한다', () => {
+  it('플러그인 인식 생성이 켜졌고 Context7가 없거나 연결되지 않았을 때 경고한다', () => {
+    expect(
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: true,
+        servers: DEFAULT_SETTINGS.mcpServers,
+        connected: false,
+      }),
+    ).toBe(true);
     expect(
       shouldShowPluginAwareContext7Warning({
         pluginAwareEnabled: true,

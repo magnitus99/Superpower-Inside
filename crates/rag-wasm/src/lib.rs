@@ -10,6 +10,9 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+mod plugin_aware;
+pub use plugin_aware::{plan_plugin_aware_indices_json, select_plugin_context7_library_id};
+
 /// 기본 임베딩 모델의 입력 형식과 다운로드 응답 검증.
 mod local_embedding;
 mod source_document;

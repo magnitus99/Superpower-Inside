@@ -47,6 +47,8 @@ export interface RagQueryLike {
 }
 
 export interface ContextBuildResult {
+  preparedMcpServerNames?: string[];
+  pluginDocumentationFailure?: string;
   systemPrompt: string | null;
   attachments: ContextAttachment[];
   citations: SourceCitation[];

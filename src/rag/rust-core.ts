@@ -1,4 +1,6 @@
 import {
+  plan_plugin_aware_indices_json,
+  select_plugin_context7_library_id,
   plan_native_vault_source_citation_indices_json,
   plan_source_metadata_json,
   is_scoped_vault_research_intent,
@@ -5286,6 +5288,43 @@ export function planToolResultSourceReferencesRust(
 export function shouldOfferContext7ForPromptRust(prompt: string): boolean | null {
   if (!ensureRustCore()) return null;
   return should_offer_context7_for_prompt(prompt);
+}
+
+export function planPluginAwareIndicesRust(
+  prompt: string,
+  previousQuestions: readonly string[],
+  plugins: readonly { id: string; name?: string }[],
+): number[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_plugin_aware_indices_json(
+        prompt,
+        JSON.stringify(previousQuestions),
+        JSON.stringify(plugins),
+      ),
+    );
+    return Array.isArray(parsed) &&
+      parsed.every(
+        (index: unknown) =>
+          typeof index === 'number' &&
+          Number.isInteger(index) &&
+          index >= 0 &&
+          index < plugins.length,
+      )
+      ? (parsed as number[])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function selectPluginContext7LibraryIdRust(
+  plugin: { id: string; name?: string },
+  result: unknown,
+): string | null {
+  if (!ensureRustCore()) return null;
+  return select_plugin_context7_library_id(JSON.stringify(plugin), JSON.stringify(result)) || null;
 }
 
 function planDiverseResultIndicesFallback(

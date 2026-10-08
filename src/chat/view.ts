@@ -22,7 +22,7 @@ import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
 import { collectTagMentionFiles } from './tag-mentions';
-import { planTagMentionsRust } from '../rag/rust-core';
+import { planTagMentionsRust, planPluginAwareIndicesRust } from '../rag/rust-core';
 import { renderComposerReferencePreview } from './composer-reference-preview';
 import { openSessionHistoryModal } from './session-modal';
 import {
@@ -74,6 +74,9 @@ import {
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
+import { buildPluginAwareDocumentation } from './plugin-aware-docs';
+import { getActivePluginInfo } from '../utils/obsidian-compat';
+import { confirmWithModal } from '../utils/modal-prompts';
 import { validateAnswerSources } from './source-validation';
 import {
   classifyAssistantResponse,
@@ -2892,6 +2895,11 @@ export class ChatView extends ItemView {
     const mentionedFolders = contextMentions.filter((mention) => mention.type === 'folder');
     const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
     const wholeVaultResearch =
+      !(
+        this.plugin.settings.pluginAwareEnabled &&
+        planPluginAwareIndicesRust(text, previousUserQuestions, getActivePluginInfo(this.app))
+          ?.length
+      ) &&
       !contextMentions.some((mention) => mention.type === 'tag') &&
       (isWholeVaultResearchRequest(text) ||
         Boolean(researchScopePath && isScopedVaultResearchRequest(text)));
@@ -2967,7 +2975,7 @@ export class ChatView extends ItemView {
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
-          mcpServerNames: [],
+          mcpServerNames: promptContext.preparedMcpServerNames ?? [],
         });
     const branchOf = regeneration ? (this.session.filePath ?? undefined) : undefined;
     const userVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
@@ -3050,6 +3058,22 @@ export class ChatView extends ItemView {
 
     try {
       const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));
+      if (promptContext.pluginDocumentationFailure) {
+        this.updateMessage(
+          assistantId,
+          promptContext.pluginDocumentationFailure,
+          true,
+          undefined,
+          undefined,
+          {
+            ...contextMeta,
+            status: 'complete',
+            turnStage: 'complete',
+            stopReason: 'complete',
+          },
+        );
+        return;
+      }
       const toolsEnabled = maxToolRounds > 0;
       const toolDefinitions = toolsEnabled
         ? await this.collectToolDefinitions(mentionedServers, explicitlyMentionedServers, run)
@@ -4164,7 +4188,12 @@ export class ChatView extends ItemView {
     let turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
     const withCurrentProviderUsage = (): MessageMetaInput => {
       const toolResultCount = selectProviderReinjectableToolCalls(allToolCalls).length;
-      const mcpServerNames = collectCompletedMcpServerNames(allToolCalls);
+      const mcpServerNames = [
+        ...new Set([
+          ...(args.meta.dataBoundarySnapshot?.sentToMcp ?? []),
+          ...collectCompletedMcpServerNames(allToolCalls),
+        ]),
+      ];
       return {
         ...args.meta,
         toolRound: round,
@@ -4562,6 +4591,7 @@ export class ChatView extends ItemView {
       mentionedServerNames,
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       userText: text,
+      plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
       registry: this.plugin.mcpRegistry,
     });
   }
@@ -4700,6 +4730,22 @@ export class ChatView extends ItemView {
           abortController.signal,
         );
         if (!isChatRunActive(this.activeRun, run)) return;
+        if (promptContext.pluginDocumentationFailure) {
+          this.updateMessage(
+            messageId,
+            promptContext.pluginDocumentationFailure,
+            true,
+            undefined,
+            updated,
+            {
+              contextAttachments: promptContext.attachments,
+              status: 'complete',
+              turnStage: 'complete',
+              stopReason: 'complete',
+            },
+          );
+          return;
+        }
         const toolDefinitions = await this.collectToolDefinitions(
           mentionedServers,
           explicitlyMentionedServers,
@@ -4714,7 +4760,7 @@ export class ChatView extends ItemView {
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
-          mcpServerNames: [],
+          mcpServerNames: promptContext.preparedMcpServerNames ?? [],
         });
         const resumeToolModelKey = `${message.providerKey}\u0000${message.model}`;
         const resumeToolProtocol: ToolTranscriptProtocol =
@@ -4852,10 +4898,26 @@ export class ChatView extends ItemView {
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
     if (systemPrompt) parts.push(systemPrompt);
 
-    if (this.plugin.settings.pluginAwareEnabled) {
-      const { formatActivePluginsForPrompt } = await import('../utils/obsidian-compat');
-      const pluginInfo = formatActivePluginsForPrompt(this.app);
-      if (pluginInfo) parts.push(pluginInfo);
+    const pluginDocumentation = await buildPluginAwareDocumentation({
+      enabled: this.plugin.settings.pluginAwareEnabled,
+      question: lastUserText,
+      previousQuestions: previousUserQuestions,
+      plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
+      registry: this.plugin.mcpRegistry,
+      executionMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+      approve: () => confirmWithModal(this.app, t('pluginAwareDocumentationApproval')),
+      signal,
+    });
+    if (pluginDocumentation) parts.push(pluginDocumentation.prompt);
+    if (pluginDocumentation?.failureMessage) {
+      return {
+        systemPrompt: parts.join('\n'),
+        attachments: pluginDocumentation.attachments,
+        citations: [],
+        warnings: [],
+        preparedMcpServerNames: pluginDocumentation.serverNames,
+        pluginDocumentationFailure: pluginDocumentation.failureMessage,
+      };
     }
 
     const skipAutoRag = this.skipAutoRagOnce;
@@ -4887,6 +4949,9 @@ export class ChatView extends ItemView {
 
     return {
       ...context,
+      preparedMcpServerNames: pluginDocumentation?.serverNames,
+      pluginDocumentationFailure: pluginDocumentation?.failureMessage,
+      attachments: [...(pluginDocumentation?.attachments ?? []), ...context.attachments],
       systemPrompt: parts.length > 0 ? parts.join('\n') : null,
     };
   }

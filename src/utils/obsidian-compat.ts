@@ -8,7 +8,7 @@ interface PluginManifestLike {
   description?: string;
 }
 
-interface ActivePluginInfo {
+export interface ActivePluginInfo {
   id: string;
   name?: string;
   version?: string;
