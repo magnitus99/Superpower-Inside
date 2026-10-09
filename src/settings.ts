@@ -6013,7 +6013,38 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
       setIcon(removeButton, 'x');
       removeButton.setAttribute('aria-label', t('settingsRemoveNamed', { name: model.id }));
+      removeButton.addEventListener('click', () => {
+        void this.removeProviderProfileModel(profile, model.id, removeButton);
+      });
     }
+  }
+
+  private async removeProviderProfileModel(
+    profile: ProviderProfileConfig,
+    modelId: string,
+    button: HTMLButtonElement,
+  ): Promise<void> {
+    await runActionWithFeedback({
+      button,
+      restoreText: false,
+      action: async () => {
+        if (!(await confirmWithModal(this.app, t('providerRemoveModelConfirm', { model: modelId })))) {
+          return { status: 'noop', detail: t('actionCancelledNotice') };
+        }
+        const previousModels = profile.models;
+        profile.models = profile.models.filter((model) => model.id !== modelId);
+        try {
+          const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          if (!saved.success) throw new Error(t('settingsApplyFailed'));
+        } catch (err) {
+          profile.models = previousModels;
+          throw err;
+        }
+        this.notifyProviderModelsChanged();
+        return { status: 'success', detail: t('providerModelRemoved', { model: modelId }) };
+      },
+    });
+    this.refreshProvidersTab(profile.id);
   }
 
   private openProviderModelImportModal(

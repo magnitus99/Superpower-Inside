@@ -60,6 +60,87 @@ import {
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
 
+describe('프로바이더 모델 제거', () => {
+  const setup = () => {
+    const profile = {
+      id: 'sample',
+      name: 'Sample',
+      strategy: 'openAI' as const,
+      enabled: true,
+      apiKey: '',
+      models: [
+        {
+          id: 'chat-sample',
+          kind: 'general' as const,
+          verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+        },
+        {
+          id: 'embedding-sample',
+          kind: 'embedding' as const,
+          verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+        },
+      ],
+    };
+    const plugin = {
+      settings: { ...structuredClone(DEFAULT_SETTINGS), providerProfiles: [profile] },
+      saveSettings: vi.fn().mockResolvedValue({ success: true }),
+      refreshBus: { emit: vi.fn() },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const state = tab as unknown as {
+      removeProviderProfileModel(
+        target: typeof profile,
+        modelId: string,
+        button: HTMLButtonElement,
+      ): Promise<void>;
+      refreshProvidersTab(profileId: string): void;
+    };
+    const refresh = vi.spyOn(state, 'refreshProvidersTab').mockImplementation(() => {});
+    const button = { disabled: false } as HTMLButtonElement;
+    modalPromptMocks.confirmWithModal.mockResolvedValue(true);
+    return { profile, plugin, state, refresh, button };
+  };
+
+  it.each(['chat-sample', 'embedding-sample'])(
+    '확인 후 %s만 제거하고 저장·모델 목록을 갱신한다',
+    async (modelId) => {
+      const { profile, plugin, state, refresh, button } = setup();
+      await state.removeProviderProfileModel(profile, modelId, button);
+      expect(profile.models.map((model) => model.id)).toEqual(
+        modelId === 'chat-sample' ? ['embedding-sample'] : ['chat-sample'],
+      );
+      expect(plugin.saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
+      expect(plugin.refreshBus.emit).toHaveBeenCalledWith('models', { status: 'success' });
+      expect(refresh).toHaveBeenCalledWith(profile.id);
+      expect(button.disabled).toBe(false);
+    },
+  );
+
+  it('확인을 취소하면 모델과 저장 상태를 보존한다', async () => {
+    const { profile, plugin, state, button } = setup();
+    const previousModels = profile.models;
+    modalPromptMocks.confirmWithModal.mockResolvedValueOnce(false);
+    await state.removeProviderProfileModel(profile, 'chat-sample', button);
+    expect(profile.models).toBe(previousModels);
+    expect(plugin.saveSettings).not.toHaveBeenCalled();
+    expect(plugin.refreshBus.emit).not.toHaveBeenCalled();
+  });
+
+  it.each(['result', 'throw'])(
+    '저장 실패(%s) 시 모델을 복원하고 성공 갱신을 하지 않는다',
+    async (failure) => {
+      const { profile, plugin, state, button } = setup();
+      const previousModels = profile.models;
+      if (failure === 'result') plugin.saveSettings.mockResolvedValueOnce({ success: false });
+      else plugin.saveSettings.mockRejectedValueOnce(new Error('save failed'));
+      await state.removeProviderProfileModel(profile, 'chat-sample', button);
+      expect(profile.models).toBe(previousModels);
+      expect(plugin.refreshBus.emit).not.toHaveBeenCalled();
+      expect(button.disabled).toBe(false);
+    },
+  );
+});
+
 it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한다', () => {
   const profile = {
     id: 'limits',

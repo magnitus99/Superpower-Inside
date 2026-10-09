@@ -11,6 +11,13 @@ const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.t
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
+  it('채팅·임베딩 모델 제거 버튼을 저장과 확인을 수행하는 동작에 연결한다', () => {
+    const start = settingsSource.indexOf('private buildProviderProfileModelSection(');
+    const end = settingsSource.indexOf('private openProviderModelImportModal(', start);
+    const source = settingsSource.slice(start, end);
+    expect(source).toContain("removeButton.addEventListener('click'");
+    expect(source).toContain('this.removeProviderProfileModel(profile, model.id, removeButton)');
+  });
   it('YAML 제외 영역에서 토글 명령의 현재 핫키와 기본 설정 화면 진입을 제공한다', () => {
     const start = settingsSource.indexOf('private buildFrontmatterExclusions(');
     const end = settingsSource.indexOf('private buildIndexingOptionsSection(', start);

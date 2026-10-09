@@ -1128,6 +1128,8 @@ export interface I18nKeys {
   providerConnectionsEmpty: string;
   providerNewName: string;
   providerRemoveModel: string;
+  providerRemoveModelConfirm: string;
+  providerModelRemoved: string;
   providerNoModelsAdded: string;
   providerChatModelId: string;
   providerEmbeddingModelId: string;
@@ -2817,6 +2819,8 @@ const ko: I18nKeys = {
   providerConnectionsEmpty: '연결된 프로바이더가 없습니다. 위에서 새 연결을 추가하세요.',
   providerNewName: '새 프로바이더',
   providerRemoveModel: '모델 제거',
+  providerRemoveModelConfirm: '“{model}” 모델을 목록에서 제거할까요?',
+  providerModelRemoved: '“{model}” 모델을 목록에서 제거했습니다.',
   providerNoModelsAdded: '아직 추가한 모델이 없습니다.',
   providerChatModelId: '채팅 모델 ID',
   providerEmbeddingModelId: '임베딩 모델 ID',
@@ -4601,6 +4605,8 @@ const en: I18nKeys = {
   providerConnectionsEmpty: 'No provider connections are configured. Add one above.',
   providerNewName: 'New provider',
   providerRemoveModel: 'Remove model',
+  providerRemoveModelConfirm: 'Remove “{model}” from the model list?',
+  providerModelRemoved: 'Removed “{model}” from the model list.',
   providerNoModelsAdded: 'No models added yet.',
   providerChatModelId: 'Chat model ID',
   providerEmbeddingModelId: 'Embedding model ID',
