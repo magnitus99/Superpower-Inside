@@ -118,7 +118,15 @@ export async function buildPluginAwareDocumentation(
         continue;
       }
       const result = await requestDocumentation(
-        (signal) => client.callTool('query-docs', { libraryId, query }, signal),
+        (signal) =>
+          client.callTool(
+            'query-docs',
+            {
+              libraryId,
+              query: `${query} Prefer built-in syntax that works with default settings. Include required settings, permission prerequisites, and breaking changes affecting the installed version.`,
+            },
+            signal,
+          ),
         options.signal,
       );
       checkAborted(options.signal);

@@ -49,6 +49,8 @@ describe('모델에 의존하지 않는 플러그인 문서 준비', () => {
     expect(input.client.callTool.mock.calls[1]?.[1]).toMatchObject({
       libraryId: '/author/sample-query',
     });
+    expect(input.client.callTool.mock.calls[1]?.[1].query).toContain('default settings');
+    expect(input.client.callTool.mock.calls[1]?.[1].query).toContain('breaking changes');
     expect(result?.prompt).toContain('SAMPLE_QUERY');
     expect(result?.prompt).toContain('1.2.3');
     expect(result?.attachments[0]?.status).toBe('attached');
