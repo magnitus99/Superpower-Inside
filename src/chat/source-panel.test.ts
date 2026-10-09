@@ -182,10 +182,50 @@ describe('SourcePanel view model contract', () => {
       truncated: false,
       modelContext: planModelContextRust({})!,
     };
-    expect(createContextBudgetView(snapshot).detailText).toContain('50000토큰');
+    expect(createContextBudgetView(snapshot).detailText).toContain('50,000토큰');
     expect(createContextBudgetView(snapshot).detailText).toContain('정보 없음, 기본값');
     expect(shouldRenderContextBudget(snapshot)).toBe(true);
     setLanguage('en');
+  });
+  it('한영 모델 한도와 출력 한도 숫자를 천 단위로 구분하고 계산 방식은 표시하지 않는다', () => {
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({ contextLength: 128_000 })!,
+    };
+    for (const language of ['ko', 'en'] as const) {
+      setLanguage(language);
+      const detail = createContextBudgetView(snapshot).detailText;
+      expect(detail).toContain('128,000');
+      expect(detail).toContain('4,096');
+      expect(detail).not.toMatch(/UTF|bytes|바이트/iu);
+      expect(detail).not.toMatch(/예약|reserved/iu);
+    }
+  });
+  it('공급자 출력 한도와 기본값을 구분하고 네이티브 출력에는 임의 한도를 표시하지 않는다', () => {
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({ contextLength: 128_000, maxOutputTokens: 65_536 })!,
+    };
+    setLanguage('ko');
+    expect(createContextBudgetView(snapshot).detailText).toContain(
+      '출력 한도 65,536토큰 (공급자 정보)',
+    );
+    snapshot.modelContext = planModelContextRust({ maxInputTokens: 128_000 })!;
+    expect(createContextBudgetView(snapshot).detailText).toContain('입력 한도 128,000토큰');
+    expect(createContextBudgetView(snapshot).detailText).toContain(
+      '출력 한도 4,096토큰 (정보 없음, 기본값)',
+    );
+    snapshot.modelContext = planModelContextRust({ contextLength: 128_000, nativeOutput: true })!;
+    expect(createContextBudgetView(snapshot).detailText).toContain('출력은 모델 기본 동작');
+    expect(createContextBudgetView(snapshot).detailText).not.toContain('4,096');
   });
   beforeEach(() => {
     setLanguage('en');

@@ -1,4 +1,4 @@
-import { t } from '../i18n';
+import { getLanguage, t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import type {
   ContextAttachment,
@@ -148,14 +148,29 @@ export function createContextBudgetView(snapshot: ContextBudgetSnapshot): Contex
     }),
     detailText: [
       snapshot.modelContext
-        ? t('contextModelLimit', {
-            tokens: snapshot.modelContext.contextTokens,
-            source:
-              snapshot.modelContext.source === 'provider'
-                ? t('contextModelSourceProvider')
-                : t('contextModelSourceFallback'),
-            output: snapshot.modelContext.outputTokens,
-          })
+        ? t(
+            snapshot.modelContext.maxInputTokens && !snapshot.modelContext.sharedContextTokens
+              ? 'contextModelInputLimit'
+              : 'contextModelLimit',
+            {
+              tokens: snapshot.modelContext.contextTokens.toLocaleString(getLanguage()),
+              source:
+                snapshot.modelContext.source === 'provider'
+                  ? t('contextModelSourceProvider')
+                  : t('contextModelSourceFallback'),
+            },
+          )
+        : '',
+      snapshot.modelContext
+        ? snapshot.modelContext.nativeOutput
+          ? t('contextModelNativeOutput')
+          : t('contextModelOutputLimit', {
+              output: snapshot.modelContext.outputTokens.toLocaleString(getLanguage()),
+              source:
+                snapshot.modelContext.outputSource === 'provider'
+                  ? t('contextModelSourceProvider')
+                  : t('contextModelSourceFallback'),
+            })
         : '',
       t('contextBudgetItemsLeftOut', {
         count: excludedCount,

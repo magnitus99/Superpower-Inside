@@ -1484,6 +1484,9 @@ export interface I18nKeys {
   contextFolderSearchScope: string;
   contextFolderScopeChip: string;
   contextModelLimit: string;
+  contextModelInputLimit: string;
+  contextModelOutputLimit: string;
+  contextModelNativeOutput: string;
   contextModelSourceProvider: string;
   contextModelSourceFallback: string;
   contextFolderSearchScopeDetail: string;
@@ -3227,8 +3230,10 @@ const ko: I18nKeys = {
   contextFolderPartialMaxFiles: '폴더 파일이 많아 최대 {count}개만 첨부했습니다.',
   contextFolderSearchScope: '폴더 범위에서 검색',
   contextFolderScopeChip: '{name} 범위에서 검색',
-  contextModelLimit:
-    '모델 한도 {tokens}토큰 ({source}) · 답변용 {output}토큰 예약 · 입력은 UTF-8 바이트로 보수적으로 계산',
+  contextModelLimit: '컨텍스트 한도 {tokens}토큰 ({source})',
+  contextModelInputLimit: '입력 한도 {tokens}토큰 ({source})',
+  contextModelOutputLimit: '출력 한도 {output}토큰 ({source})',
+  contextModelNativeOutput: '출력은 모델 기본 동작',
   contextModelSourceProvider: '공급자 정보',
   contextModelSourceFallback: '정보 없음, 기본값',
   contextFolderSearchScopeDetail: '{count}개 문서에서 질문에 필요한 원문 구간을 검색합니다.',
@@ -5015,8 +5020,10 @@ const en: I18nKeys = {
   contextFolderPartialMaxFiles: 'The folder has many files, so only {count} were attached.',
   contextFolderSearchScope: 'Search within folder',
   contextFolderScopeChip: 'Search within {name}',
-  contextModelLimit:
-    'Model limit: {tokens} tokens ({source}) · {output} tokens reserved for output · Input conservatively counted by UTF-8 bytes',
+  contextModelLimit: 'Context limit: {tokens} tokens ({source})',
+  contextModelInputLimit: 'Input limit: {tokens} tokens ({source})',
+  contextModelOutputLimit: 'Output limit: {output} tokens ({source})',
+  contextModelNativeOutput: 'Output uses model defaults',
   contextModelSourceProvider: 'provider metadata',
   contextModelSourceFallback: 'metadata unavailable, default',
   contextFolderSearchScopeDetail:
