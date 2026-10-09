@@ -102,24 +102,65 @@ describe('설정 화면 리디자인 구조', () => {
     }
   });
 
-  it('섹션 헤더와 본문은 같은 안쪽 여백으로 제목과 마지막 행을 테두리에서 띄운다', () => {
+  it('섹션은 제목과 간격으로 구분하고 상태 요약에만 경계 하나를 둔다', () => {
     expect(
-      /\.superpower-inside-settings-section-header\s*\{[^}]*border-bottom:\s*1px[^}]*background:\s*var\(--background-primary-alt\)/s.test(
+      /\.superpower-inside-settings-section-header\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent/s.test(
         styles,
       ),
     ).toBe(true);
     for (const prefix of ['settings', 'rag']) {
       expect(
-        new RegExp(
-          `\\.superpower-inside-${prefix}-section-body\\s*\\{[^}]*padding:\\s*var\\(--superpower-inside-${prefix}-section-padding\\);`,
-        ).test(styles),
+        new RegExp(`\\.superpower-inside-${prefix}-section-body\\s*\\{[^}]*padding:\\s*0;`).test(
+          styles,
+        ),
       ).toBe(true);
+      expect(styles).toMatch(
+        new RegExp(
+          `\\.superpower-inside-${prefix}-section\\s*\\{[^}]*border:\\s*0;[^}]*background:\\s*transparent`,
+        ),
+      );
     }
     expect(
       /\.superpower-inside-rag-group-title\s*\{[^}]*margin-bottom:\s*var\(--superpower-inside-rag-row-padding\)/.test(
         styles,
       ),
     ).toBe(true);
+  });
+
+  it('수평 탭은 글자를 줄이지 않고 바 안에서만 스크롤하며 선택을 드러낸다', () => {
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-tabs\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow-x:\s*auto;[^}]*border:\s*0/s,
+    );
+    expect(settingsSource).toContain(
+      "button.scrollIntoView({ block: 'nearest', inline: 'nearest' })",
+    );
+    expect(styles).not.toMatch(
+      /\.superpower-inside-chat-assistant-response-tab\s*\{[^}]*font-size:\s*11px/s,
+    );
+  });
+
+  it('동일 그룹 내부 행과 펼침 영역은 중복 선을 만들지 않는다', () => {
+    for (const selector of [
+      '.superpower-inside-settings-section-body > .setting-item',
+      '.superpower-inside-settings-row',
+      '.superpower-inside-settings-disclosure',
+      '.superpower-inside-settings-disclosure-content > .setting-item',
+      '.superpower-inside-local-models .setting-item.superpower-inside-local-model-row',
+    ]) {
+      const start = styles.indexOf(`${selector} {`);
+      const rule = styles.slice(start, styles.indexOf('}', start));
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(rule).not.toMatch(/border-(?:top|bottom):\s*1px/);
+    }
+  });
+
+  it('긴 복구 행동은 네이티브 버튼 높이와 줄바꿈 제한을 해당 영역에서 해제한다', () => {
+    expect(styles).toMatch(
+      /\.superpower-inside-settings-primary-action\s*\{[^}]*height:\s*auto;[^}]*white-space:\s*normal/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-controls-group button\s*\{[^}]*height:\s*auto;[^}]*white-space:\s*normal/s,
+    );
   });
 
   it('연결 행은 설명이 남은 폭을 채워 이름 길이와 무관하게 상태와 화살표를 정렬한다', () => {

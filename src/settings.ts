@@ -1779,6 +1779,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         button.classList.add('is-active');
         button.setAttribute('aria-selected', 'true');
         button.tabIndex = 0;
+        button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       } else {
         button.classList.remove('is-active');
         button.setAttribute('aria-selected', 'false');

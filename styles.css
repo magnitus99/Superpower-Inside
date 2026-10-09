@@ -439,9 +439,13 @@
 /* 설정 탭 */
 .superpower-inside-settings-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 2px;
-  border-bottom: 1px solid var(--background-modifier-border);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 2px 2px 4px;
+  border: 0;
   margin: 12px 0 16px;
 }
 
@@ -456,7 +460,9 @@
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   cursor: pointer;
-  margin-bottom: -1px;
+  height: auto;
+  min-height: 44px;
+  white-space: nowrap;
   transition:
     color 0.15s ease,
     border-color 0.15s ease;
@@ -577,10 +583,9 @@
   min-width: 0;
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--superpower-inside-settings-border);
-  border-radius: var(--superpower-inside-settings-radius);
-  background: var(--superpower-inside-settings-surface);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .superpower-inside-settings-workspace
@@ -602,9 +607,10 @@
 }
 
 .superpower-inside-settings-section-header {
-  padding: var(--superpower-inside-settings-section-padding);
-  border-bottom: 1px solid var(--superpower-inside-settings-border);
-  background: var(--background-primary-alt);
+  margin-bottom: var(--superpower-inside-row-padding);
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .superpower-inside-settings-section-header .setting-item-heading {
@@ -641,14 +647,14 @@
 }
 
 .superpower-inside-settings-section-body {
-  padding: var(--superpower-inside-settings-section-padding);
+  min-width: 0;
+  padding: 0;
 }
 
 .superpower-inside-settings-section-body > .setting-item {
   margin: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -679,7 +685,6 @@
   min-width: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
 }
@@ -698,7 +703,6 @@
   margin: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -720,7 +724,6 @@
 
 .superpower-inside-settings-workspace button.superpower-inside-settings-status-row {
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
   background-color: transparent;
@@ -811,8 +814,19 @@ button.superpower-inside-settings-status-row:focus-visible {
 }
 
 .superpower-inside-settings-primary-action {
+  height: auto;
   min-height: 32px;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-settings-root .setting-item-control > button {
+  height: auto;
+  min-height: 32px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .superpower-inside-settings-notice {
@@ -841,7 +855,6 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-settings-disclosure {
   min-width: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
 }
 
 .superpower-inside-settings-section-body > .superpower-inside-settings-disclosure:first-child {
@@ -937,7 +950,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -1018,14 +1030,12 @@ button.superpower-inside-settings-status-row:focus-visible {
 
 .superpower-inside-provider-profile-content > .superpower-inside-settings-notice {
   padding-top: var(--superpower-inside-settings-row-padding);
-  border-top: 1px solid var(--superpower-inside-settings-border);
 }
 
 .superpower-inside-provider-connection-group,
 .superpower-inside-provider-model-group {
   min-width: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
 }
 
 .superpower-inside-provider-group-title {
@@ -1059,7 +1069,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   margin: 0;
   padding: var(--superpower-inside-settings-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -1092,7 +1101,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   gap: 0;
   overflow: visible;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   background: transparent;
 }
@@ -1100,7 +1108,6 @@ button.superpower-inside-settings-status-row:focus-visible {
 .superpower-inside-provider-workspace .superpower-inside-settings-model-item {
   min-width: 0;
   padding: 8px 0;
-  border-bottom: 1px solid var(--superpower-inside-settings-border);
   border-radius: 0;
   cursor: default;
 }
@@ -1132,7 +1139,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   gap: 0 12px;
   align-items: center;
   padding: var(--superpower-inside-settings-row-padding) 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
 }
 
 .superpower-inside-chat-preset-row > .superpower-inside-settings-disclosure-button {
@@ -1156,7 +1162,6 @@ button.superpower-inside-settings-status-row:focus-visible {
   line-height: 1.45;
   overflow-wrap: anywhere;
   padding: var(--superpower-inside-settings-row-padding) 0;
-  border-top: 1px solid var(--superpower-inside-settings-border);
 }
 
 .superpower-inside-settings-danger-actions {
@@ -1496,9 +1501,8 @@ button.superpower-inside-prompt-danger-btn:disabled {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 0;
+  padding-top: 8px;
 }
 
 .superpower-inside-prompt-generation-heading {
@@ -2060,7 +2064,10 @@ button.superpower-inside-prompt-danger-btn:disabled {
   justify-content: center;
   gap: 6px;
   min-height: 32px;
-  white-space: nowrap;
+  height: auto;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .superpower-inside-rag-status-label {
@@ -2137,8 +2144,10 @@ button.superpower-inside-prompt-danger-btn:disabled {
   gap: 6px;
   flex: 1 1 auto;
   min-width: 150px;
-  max-width: none;
+  height: auto;
+  max-width: 100%;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .superpower-inside-rag-controls-group button[hidden] {
@@ -4299,7 +4308,9 @@ button.superpower-inside-prompt-danger-btn:disabled {
   font-family: inherit;
   font-size: var(--font-ui-small);
   line-height: 1.5;
-  transition: border-color 0.15s ease, height 0.12s ease;
+  transition:
+    border-color 0.15s ease,
+    height 0.12s ease;
 }
 
 .superpower-inside-chat-input:focus {
@@ -5241,7 +5252,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   justify-content: space-between;
   gap: var(--size-4-3);
   padding: var(--size-4-4);
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .superpower-inside-session-modal-heading {
@@ -5263,12 +5273,12 @@ button.superpower-inside-prompt-danger-btn:disabled {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
 }
 
 .superpower-inside-session-search-input {
   flex: 1;
+  min-width: 0;
   padding: 6px 10px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
@@ -5332,7 +5342,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   top: 0;
   background: var(--background-primary);
   z-index: 1;
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .superpower-inside-session-group-label {
@@ -5341,7 +5350,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-session-group-count {
   font-weight: 400;
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
@@ -5352,7 +5361,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   justify-content: space-between;
   gap: var(--size-4-3);
   padding: 10px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
   cursor: pointer;
   transition: background 0.15s ease;
 }
@@ -5373,14 +5381,14 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-session-item-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
 .superpower-inside-session-item-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   font-weight: var(--font-semibold);
   color: var(--text-normal);
 }
@@ -5408,12 +5416,11 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-session-item-preview {
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   line-height: 1.4;
 }
 
@@ -5445,13 +5452,12 @@ button.superpower-inside-prompt-danger-btn:disabled {
   align-items: center;
   justify-content: flex-end;
   padding: 6px 16px;
-  border-top: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
 }
 
 .superpower-inside-session-count {
   font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .superpower-inside-session-rename-inline {
@@ -6444,14 +6450,16 @@ button.superpower-inside-prompt-danger-btn:disabled {
   min-width: 0;
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--superpower-inside-rag-border);
-  border-radius: var(--superpower-inside-rag-radius);
-  background: var(--superpower-inside-rag-surface);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .superpower-inside-rag-section-header {
-  padding: var(--superpower-inside-rag-section-padding);
+  margin-bottom: var(--superpower-inside-row-padding);
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .superpower-inside-rag-section-copy {
@@ -6476,13 +6484,13 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-rag-section-body {
-  padding: var(--superpower-inside-rag-section-padding);
+  min-width: 0;
+  padding: 0;
 }
 
 .superpower-inside-rag-group {
   min-width: 0;
   padding: var(--superpower-inside-rag-row-padding) 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
 }
 
 .superpower-inside-rag-section-body > .superpower-inside-rag-group:first-child {
@@ -6507,7 +6515,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   border-right: 0;
   border-bottom: 0;
   border-left: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -6517,7 +6524,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   min-width: 0;
   padding: var(--superpower-inside-rag-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
   border-radius: 0;
   background: transparent;
 }
@@ -6562,7 +6568,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   display: grid;
   gap: 10px;
   padding-top: var(--superpower-inside-rag-row-padding);
-  border-top: 1px solid var(--superpower-inside-rag-border);
 }
 
 .superpower-inside-rag-primary-actions .superpower-inside-rag-controls-group button {
@@ -6572,7 +6577,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-rag-disclosure {
   min-width: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
 }
 
 .superpower-inside-rag-section-body > .superpower-inside-rag-disclosure:first-child {
@@ -6660,7 +6664,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   margin: 0;
   padding: var(--superpower-inside-rag-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
   border-radius: 0;
   background: transparent;
   color: var(--text-muted);
@@ -6676,7 +6679,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   margin: 0;
   padding: var(--superpower-inside-rag-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
   border-radius: 0;
   background: transparent;
 }
@@ -6690,7 +6692,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   flex-direction: column;
   gap: 16px;
   margin-top: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
 }
 
 .superpower-inside-rag-action-group {
@@ -6759,7 +6760,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 0 12px;
   margin-top: 8px;
-  border-top: 1px solid var(--superpower-inside-rag-border);
 }
 
 .superpower-inside-rag-metric,
@@ -6772,7 +6772,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
 .superpower-inside-rag-recommendation-row {
   padding: var(--superpower-inside-rag-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--superpower-inside-rag-border);
   border-radius: 0;
   background: transparent;
 }
@@ -7015,7 +7014,10 @@ button.superpower-inside-prompt-danger-btn:disabled {
   gap: 17px;
   min-width: 0;
   margin-top: 7px;
-  border-bottom: 1px solid var(--background-modifier-border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 2px 2px 4px;
+  border: 0;
 }
 
 .superpower-inside-chat-assistant-response-tabs[hidden],
@@ -7029,7 +7031,8 @@ button.superpower-inside-prompt-danger-btn:disabled {
   flex: 0 0 auto;
   min-width: 0;
   min-height: 38px;
-  margin: 0 0 -1px;
+  height: auto;
+  margin: 0;
   padding: 8px 0;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -7115,7 +7118,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
 .superpower-inside-chat-reasoning {
   margin: 0;
   border: 0;
-  border-bottom: 1px solid var(--background-modifier-border);
   border-radius: 0;
   background: transparent;
 }
@@ -7153,7 +7155,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   gap: 6px;
   min-width: 0;
   padding: 11px 2px;
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .superpower-inside-tool-call-group:first-of-type {
@@ -7340,11 +7341,9 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-chat-citations.embedded .superpower-inside-chat-citation-preview {
-  display: -webkit-box;
   margin-top: 5px;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   line-height: 1.4;
 }
 
@@ -7395,7 +7394,6 @@ button.superpower-inside-prompt-danger-btn:disabled {
   width: 100%;
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid var(--background-modifier-border);
   opacity: 1;
 }
 
@@ -7536,7 +7534,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
   .superpower-inside-chat-assistant-response-tab {
     min-height: 36px;
     padding-inline: 3px;
-    font-size: 11px;
+    font-size: var(--font-ui-smaller);
   }
 
   .superpower-inside-chat-assistant-response-panel {
@@ -7670,13 +7668,14 @@ button.superpower-inside-prompt-danger-btn:disabled {
   margin: 0;
   padding: var(--superpower-inside-row-padding) 0;
   border: 0;
-  border-top: 1px solid var(--background-modifier-border);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
-.superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row > .setting-item-control {
+.superpower-inside-settings-section-body
+  .setting-item.superpower-inside-local-model-row
+  > .setting-item-control {
   flex: 0 0 auto;
   align-self: flex-start;
 }
@@ -7727,7 +7726,9 @@ button.superpower-inside-prompt-danger-btn:disabled {
     gap: 8px;
   }
 
-  .superpower-inside-settings-section-body .setting-item.superpower-inside-local-model-row > .setting-item-control {
+  .superpower-inside-settings-section-body
+    .setting-item.superpower-inside-local-model-row
+    > .setting-item-control {
     width: 100%;
     justify-content: flex-end;
   }
@@ -7752,4 +7753,65 @@ button.superpower-inside-prompt-danger-btn:disabled {
 .superpower-inside-settings-block textarea:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
+}
+
+/* 모달의 탐색·행동·포커스는 Obsidian 기본 버튼과 충돌하지 않게 범위를 지정합니다. */
+.superpower-inside-session-modal button.superpower-inside-session-open {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  text-align: left;
+  white-space: normal;
+}
+
+.superpower-inside-session-modal :is(button, input):focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.superpower-inside-session-item-actions,
+.superpower-inside-session-inline-actions {
+  flex-wrap: wrap;
+}
+
+.superpower-inside-session-modal .superpower-inside-session-item-actions button {
+  height: auto;
+  min-width: 28px;
+  min-height: 28px;
+  white-space: normal;
+}
+
+.superpower-inside-prompt-action-help {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-prompt-action-help[hidden] {
+  display: none;
+}
+
+@media (max-width: 520px) {
+  .superpower-inside-session-overlay {
+    padding: 12px;
+  }
+  .superpower-inside-session-modal {
+    max-height: calc(100dvh - 24px);
+  }
+  .superpower-inside-session-item {
+    flex-wrap: wrap;
+  }
+  .superpower-inside-session-item-info {
+    flex-basis: 100%;
+  }
+  .superpower-inside-session-item-actions {
+    justify-content: flex-end;
+    width: 100%;
+  }
 }

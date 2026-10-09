@@ -1,12 +1,15 @@
 import type { App, Vault } from 'obsidian';
+import { setIcon } from 'obsidian';
 import { t } from '../i18n';
+import { isDomInstance } from '../utils/dom';
 import type { RefreshBus } from '../utils/refresh-bus';
 import { runActionWithFeedback } from '../utils/action-feedback';
 import { deleteChat, listChatMetasAsync, renameChat } from './persistence';
 import type { ChatSessionMeta } from './types';
+import { getPromptModalTabTarget } from './prompt-library-modal-state';
 
-const SESSION_MODAL_STYLE_ID = 'superpower-inside-session-modal-styles';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
+let sessionModalSequence = 0;
 
 /** 날짜를 기준으로 세션을 그룹핑하기 위한 키 */
 type DateGroup = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'older';
@@ -52,21 +55,34 @@ export function openSessionHistoryModal(
 ): void {
   const activeVault = app.vault;
   void vault;
-  ensureSessionModalStyles(containerEl.ownerDocument);
-
+  const doc = containerEl.ownerDocument;
+  const previousFocus = doc.activeElement;
+  const modalId = `superpower-inside-session-modal-${++sessionModalSequence}`;
   const overlay = containerEl.createDiv({ cls: 'superpower-inside-session-overlay' });
-  const modal = overlay.createDiv({ cls: 'superpower-inside-session-modal' });
+  const modal = overlay.createDiv({
+    cls: 'superpower-inside-session-modal',
+    attr: {
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': `${modalId}-title`,
+      tabindex: '-1',
+    },
+  });
 
   // 제목 표시줄
   const titleBar = modal.createDiv({ cls: 'superpower-inside-session-modal-title' });
-  titleBar.createDiv({ cls: 'superpower-inside-session-modal-heading', text: t('chatHistory') });
+  titleBar.createDiv({
+    cls: 'superpower-inside-session-modal-heading',
+    text: t('chatHistory'),
+    attr: { id: `${modalId}-title`, role: 'heading', 'aria-level': '2' },
+  });
 
   const titleActions = titleBar.createDiv({ cls: 'superpower-inside-session-title-actions' });
   const closeBtn = titleActions.createEl('button', {
     cls: 'superpower-inside-session-close-btn',
-    text: '×',
-    attr: { type: 'button', 'aria-label': t('cancel') },
+    attr: { type: 'button', 'aria-label': t('closeLabel') },
   });
+  setIcon(closeBtn, 'x');
 
   // 검색 입력
   const searchContainer = modal.createDiv({ cls: 'superpower-inside-session-search-container' });
@@ -94,10 +110,16 @@ export function openSessionHistoryModal(
   let allMetas: ChatSessionMeta[] = [];
   let searchQuery = '';
   let isClosed = false;
+  let unsubscribeSessions = (): void => undefined;
+  let focusPath: string | null = null;
 
   const close = (): void => {
+    if (isClosed) return;
     isClosed = true;
+    unsubscribeSessions();
     overlay.remove();
+    if (previousFocus?.isConnected && isDomInstance(previousFocus, HTMLElement))
+      previousFocus.focus();
   };
 
   const renderLoading = (): void => {
@@ -119,6 +141,8 @@ export function openSessionHistoryModal(
     listEl.empty();
     listEl.createDiv({ cls: 'superpower-inside-session-empty', text: t('error') });
     countEl.setText('');
+    const retry = listEl.createEl('button', { text: t('retryLabel'), attr: { type: 'button' } });
+    retry.addEventListener('click', () => void loadMetas());
   };
 
   const formatRelativeTime = (dateStr: string): string => {
@@ -140,11 +164,16 @@ export function openSessionHistoryModal(
   };
 
   const renderMetas = (metas: ChatSessionMeta[]): void => {
+    const activeRow = doc.activeElement?.closest<HTMLElement>('.superpower-inside-session-item');
+    if (activeRow && listEl.contains(activeRow))
+      focusPath ??= activeRow.dataset.sessionPath ?? null;
     listEl.empty();
     deleteConfirmPath = null;
 
     if (metas.length === 0) {
       renderEmpty(searchQuery.length > 0);
+      if (focusPath) searchInput.focus();
+      focusPath = null;
       return;
     }
 
@@ -180,9 +209,14 @@ export function openSessionHistoryModal(
         const itemEl = listEl.createDiv({
           cls: `superpower-inside-session-item${isCurrentSession ? ' is-active' : ''}`,
         });
+        itemEl.dataset.sessionPath = meta.filePath;
 
         const infoEl = itemEl.createDiv({ cls: 'superpower-inside-session-item-info' });
-        const titleRow = infoEl.createDiv({ cls: 'superpower-inside-session-item-title-row' });
+        const openBtn = infoEl.createEl('button', {
+          cls: 'superpower-inside-session-open',
+          attr: { type: 'button', ...(isCurrentSession ? { 'aria-current': 'true' } : {}) },
+        });
+        const titleRow = openBtn.createDiv({ cls: 'superpower-inside-session-item-title-row' });
         titleRow.createSpan({ cls: 'superpower-inside-session-item-title', text: meta.title });
 
         if (isCurrentSession) {
@@ -193,7 +227,7 @@ export function openSessionHistoryModal(
         }
 
         if (meta.provider || meta.model) {
-          const metaLine = infoEl.createDiv({ cls: 'superpower-inside-session-item-meta' });
+          const metaLine = openBtn.createDiv({ cls: 'superpower-inside-session-item-meta' });
           const parts: string[] = [];
           if (meta.provider) parts.push(meta.provider);
           if (meta.model) parts.push(meta.model);
@@ -203,29 +237,29 @@ export function openSessionHistoryModal(
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         } else {
-          const metaLine = infoEl.createDiv({ cls: 'superpower-inside-session-item-meta' });
+          const metaLine = openBtn.createDiv({ cls: 'superpower-inside-session-item-meta' });
           metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         }
 
         if (meta.preview) {
-          infoEl.createDiv({ cls: 'superpower-inside-session-item-preview', text: meta.preview });
+          openBtn.createDiv({ cls: 'superpower-inside-session-item-preview', text: meta.preview });
         }
 
         const actionsEl = itemEl.createDiv({ cls: 'superpower-inside-session-item-actions' });
         const renameBtn = actionsEl.createEl('button', {
-          text: '📝',
           attr: { type: 'button', 'aria-label': t('chatRenameSession') },
         });
         const deleteBtn = actionsEl.createEl('button', {
-          text: '🗑️',
           attr: { type: 'button', 'aria-label': t('chatDeleteSession') },
         });
+        setIcon(renameBtn, 'pencil');
+        setIcon(deleteBtn, 'trash-2');
 
-        itemEl.addEventListener('click', () => {
-          onLoadSession(meta.filePath);
+        openBtn.addEventListener('click', () => {
           close();
+          onLoadSession(meta.filePath);
         });
         renameBtn.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -249,6 +283,7 @@ export function openSessionHistoryModal(
             action: async () => {
               try {
                 await deleteChat(app.fileManager, activeVault, meta.filePath);
+                focusPath = meta.filePath;
                 await loadMetas();
                 return { status: 'success', detail: t('chatSessionDeletedNotice') };
               } catch (err) {
@@ -263,8 +298,11 @@ export function openSessionHistoryModal(
             },
           });
         });
+        if (focusPath === meta.filePath) openBtn.focus();
       }
     }
+    if (focusPath && !metas.some((meta) => meta.filePath === focusPath)) searchInput.focus();
+    focusPath = null;
   };
 
   const startRename = (meta: ChatSessionMeta, itemEl: HTMLElement): void => {
@@ -294,16 +332,23 @@ export function openSessionHistoryModal(
           const nextTitle = inputEl.value.trim();
           if (!nextTitle) {
             const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
-            if (!isClosed) renderMetas(freshMetas);
+            if (!isClosed) {
+              focusPath = meta.filePath;
+              renderMetas(freshMetas);
+            }
             return { status: 'noop', detail: t('chatSessionRenameEmptyNotice') };
           }
           if (nextTitle === meta.title) {
             const freshMetas = await listChatMetasAsync(activeVault, saveFolder);
-            if (!isClosed) renderMetas(freshMetas);
+            if (!isClosed) {
+              focusPath = meta.filePath;
+              renderMetas(freshMetas);
+            }
             return { status: 'noop', detail: t('chatSessionRenameNoChangeNotice') };
           }
           try {
             await renameChat(activeVault, meta.filePath, nextTitle);
+            focusPath = meta.filePath;
             await loadMetas();
             return { status: 'success', detail: t('chatSessionRenamedNotice') };
           } catch (err) {
@@ -319,10 +364,18 @@ export function openSessionHistoryModal(
     };
 
     saveBtn.addEventListener('click', () => void save());
-    cancelBtn.addEventListener('click', () => void loadMetas());
+    cancelBtn.addEventListener('click', () => {
+      focusPath = meta.filePath;
+      void loadMetas();
+    });
     inputEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') void save();
-      if (event.key === 'Escape') void loadMetas();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        focusPath = meta.filePath;
+        void loadMetas();
+      }
     });
     inputEl.focus();
     inputEl.select();
@@ -370,291 +423,36 @@ export function openSessionHistoryModal(
     filterAndRender();
   });
 
-  searchInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      close();
-    }
-  });
-
   closeBtn.addEventListener('click', close);
   // 초기 로드
   void loadMetas();
 
   // sessions 이벤트 수신 시 자동 갱신
   if (sessionsEventBus?.on) {
-    const unsub = sessionsEventBus.on('sessions', () => {
+    unsubscribeSessions = sessionsEventBus.on('sessions', () => {
       if (!isClosed) void loadMetas();
     });
-    overlay.addEventListener('remove', unsub);
   }
 
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });
 
-  // Escape 키 전역 핸들러
-  const handleKeyDown = (event: KeyboardEvent): void => {
+  overlay.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      event.preventDefault();
       close();
+      return;
     }
-  };
-  containerEl.ownerDocument.addEventListener('keydown', handleKeyDown);
-
-  // 정리 시 이벤트 리스너 제거
-  const cleanup = (): void => {
-    containerEl.ownerDocument.removeEventListener('keydown', handleKeyDown);
-  };
-  overlay.addEventListener('remove', cleanup);
-}
-
-function ensureSessionModalStyles(documentRef: Document): void {
-  if (documentRef.getElementById(SESSION_MODAL_STYLE_ID)) return;
-
-  const styleEl = documentRef.createElement('style');
-  styleEl.id = SESSION_MODAL_STYLE_ID;
-  styleEl.textContent = `
-.superpower-inside-session-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--layer-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--size-4-6);
-  background: rgba(var(--mono-rgb-0), 0.62);
-}
-
-.superpower-inside-session-modal {
-  width: min(620px, 100%);
-  max-height: 75vh;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-l);
-  background: var(--background-primary);
-  color: var(--text-normal);
-  box-shadow: var(--shadow-l);
-  overflow: hidden;
-}
-
-.superpower-inside-session-modal-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-4-3);
-  padding: var(--size-4-4);
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.superpower-inside-session-modal-heading {
-  margin: 0;
-  font-size: var(--font-ui-large);
-}
-
-.superpower-inside-session-title-actions,
-.superpower-inside-session-item-actions,
-.superpower-inside-session-inline-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-2);
-}
-
-/* Search bar */
-.superpower-inside-session-search-container {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-}
-
-.superpower-inside-session-search-input {
-  flex: 1;
-  padding: 6px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-primary);
-  color: var(--text-normal);
-  font-size: var(--font-ui-small);
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.superpower-inside-session-search-input:focus {
-  border-color: var(--interactive-accent);
-}
-
-.superpower-inside-session-search-input::placeholder {
-  color: var(--text-faint);
-}
-
-.superpower-inside-session-search-clear {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 50%;
-  background: var(--background-modifier-hover);
-  color: var(--text-muted);
-  font-size: 14px;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-  line-height: 1;
-}
-
-.superpower-inside-session-search-clear:hover {
-  background: var(--background-modifier-error);
-  color: var(--text-on-accent);
-}
-
-/* List */
-.superpower-inside-session-modal-list {
-  overflow-y: auto;
-  padding: 0;
-  flex: 1;
-}
-
-/* Date group header */
-.superpower-inside-session-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px 4px;
-  font-size: var(--font-ui-smaller);
-  font-weight: 700;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  position: sticky;
-  top: 0;
-  background: var(--background-primary);
-  z-index: 1;
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.superpower-inside-session-group-label {
-  font-weight: 700;
-}
-
-.superpower-inside-session-group-count {
-  font-weight: 400;
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-}
-
-/* Session item */
-.superpower-inside-session-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-4-3);
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.superpower-inside-session-item:hover {
-  background: var(--background-modifier-hover);
-}
-
-.superpower-inside-session-item.is-active {
-  background: var(--background-modifier-success);
-  border-left: 3px solid var(--interactive-accent);
-}
-
-.superpower-inside-session-item-info {
-  min-width: 0;
-  flex: 1;
-}
-
-.superpower-inside-session-item-title-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.superpower-inside-session-item-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: var(--font-semibold);
-  color: var(--text-normal);
-}
-
-.superpower-inside-session-current-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  flex-shrink: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.superpower-inside-session-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  margin-top: 2px;
-  flex-wrap: wrap;
-}
-
-.superpower-inside-session-item-preview {
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.4;
-}
-
-.superpower-inside-session-empty {
-  padding: var(--size-4-8);
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.superpower-inside-session-refresh-btn,
-.superpower-inside-session-close-btn,
-.superpower-inside-session-item-actions button {
-  color: var(--text-normal);
-}
-
-.superpower-inside-session-item-actions button.is-confirming {
-  background: var(--background-modifier-error);
-  color: var(--text-on-accent);
-}
-
-.superpower-inside-session-title-input {
-  width: 100%;
-  margin-bottom: var(--size-2-2);
-}
-
-/* Footer count */
-.superpower-inside-session-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 6px 16px;
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-}
-
-.superpower-inside-session-count {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-}
-`;
-  documentRef.head.appendChild(styleEl);
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(
+      modal.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
+    ).filter((control) => control.getClientRects().length > 0);
+    const next = getPromptModalTabTarget(focusable, doc.activeElement, event.shiftKey);
+    if (next) {
+      event.preventDefault();
+      next.focus();
+    }
+  });
+  searchInput.focus();
 }

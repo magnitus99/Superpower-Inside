@@ -834,6 +834,7 @@ export class ChatView extends ItemView {
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
+    this.inputArea?.focus({ preventScroll: true });
   }
 
   private populateModelSelect(): void {

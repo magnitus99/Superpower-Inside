@@ -1504,6 +1504,9 @@ export interface I18nKeys {
   settingsSaveMcpReconnectFailed: string;
   promptSettingsSaveFailed: string;
   promptMutationInProgress: string;
+  promptProtectedReason: string;
+  retryLabel: string;
+  promptSaveBeforeApply: string;
   manualPromptDescription: string;
   promptDeleteConfirm: string;
   promptBodyRequired: string;
@@ -3256,6 +3259,9 @@ const ko: I18nKeys = {
   settingsSaveMcpReconnectFailed: '설정 저장 후 MCP 재연결 중 {count}개 서버 실패',
   promptSettingsSaveFailed: '프롬프트 보관함 설정을 저장하지 못했습니다: {message}',
   promptMutationInProgress: '현재 작업이 끝난 뒤 프롬프트 보관함을 닫을 수 있습니다.',
+  promptProtectedReason: '기본 프롬프트는 삭제할 수 없습니다.',
+  retryLabel: '다시 시도',
+  promptSaveBeforeApply: '편집 내용을 저장한 뒤 대화에 적용하거나 기본값으로 지정하세요.',
   manualPromptDescription: '직접 작성한 프롬프트',
   promptDeleteConfirm: '"{title}" 프롬프트를 삭제하시겠습니까?',
   promptBodyRequired: '시스템 프롬프트 본문을 입력하세요.',
@@ -5052,6 +5058,10 @@ const en: I18nKeys = {
   settingsSaveMcpReconnectFailed: 'Settings saved, but {count} MCP server reconnects failed',
   promptSettingsSaveFailed: 'Could not save prompt library settings: {message}',
   promptMutationInProgress: 'You can close the prompt library after the current action finishes.',
+  promptProtectedReason: 'The built-in prompt cannot be deleted.',
+  retryLabel: 'Retry',
+  promptSaveBeforeApply:
+    'Save your edits before applying this prompt or setting it as the default.',
   manualPromptDescription: 'Manually written prompt',
   promptDeleteConfirm: 'Delete the "{title}" prompt?',
   promptBodyRequired: 'Enter the system prompt body.',

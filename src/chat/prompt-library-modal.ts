@@ -508,6 +508,7 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
         description: descriptionInput.value,
         content: contentInput.value,
       };
+      updateActionAvailability();
     };
     for (const input of [titleInput, descriptionInput, contentInput])
       input.addEventListener('input', keepDraft);
@@ -527,8 +528,9 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
       () => void saveSelectedPrompt(titleInput, descriptionInput, contentInput),
     );
 
+    let applyBtn: HTMLButtonElement | null = null;
     if (options.onApplyToSession) {
-      const applyBtn = actionRow.createEl('button', {
+      applyBtn = actionRow.createEl('button', {
         cls: 'superpower-inside-prompt-secondary-btn',
         text: t('applyToCurrentSession'),
         attr: { type: 'button' },
@@ -554,6 +556,31 @@ export function openPromptLibraryModal(options: OpenPromptLibraryModalOptions): 
     });
     deleteBtn.disabled = entry.id === DEFAULT_OBSIDIAN_PROMPT_ID;
     deleteBtn.addEventListener('click', () => void deleteSelectedPrompt());
+
+    if (deleteBtn.disabled) {
+      const protectedReason = form.createDiv({
+        cls: 'superpower-inside-prompt-action-help',
+        text: t('promptProtectedReason'),
+        attr: { id: `${modalId}-protected-reason` },
+      });
+      deleteBtn.setAttribute('aria-describedby', protectedReason.id);
+    }
+    const draftReason = form.createDiv({
+      cls: 'superpower-inside-prompt-action-help',
+      text: t('promptSaveBeforeApply'),
+      attr: { id: `${modalId}-draft-reason`, role: 'status' },
+    });
+    const updateActionAvailability = (): void => {
+      draftReason.hidden = !draft;
+      if (applyBtn) {
+        applyBtn.disabled = Boolean(draft);
+        applyBtn.setAttribute('aria-describedby', draftReason.id);
+      }
+      defaultBtn.disabled =
+        Boolean(draft) || entry.id === options.plugin.settings.chat.activePromptId;
+      defaultBtn.setAttribute('aria-describedby', draftReason.id);
+    };
+    updateActionAvailability();
 
     renderGenerationPanel(detailPane);
   };
